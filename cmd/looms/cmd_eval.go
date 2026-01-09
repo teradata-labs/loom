@@ -23,13 +23,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	_ "modernc.org/sqlite" // SQLite driver
 )

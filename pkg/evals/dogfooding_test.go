@@ -28,9 +28,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/config"
 	"gopkg.in/yaml.v3"
 )
 

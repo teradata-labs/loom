@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
 func TestNewClient(t *testing.T) {

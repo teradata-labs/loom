@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/google/uuid"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 )
 

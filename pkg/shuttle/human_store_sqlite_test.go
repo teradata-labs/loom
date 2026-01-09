@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 func TestSQLiteHumanRequestStore_BasicOperations(t *testing.T) {

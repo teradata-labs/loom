@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 
 	// Import SQLite driver for tests
 	_ "github.com/mutecomm/go-sqlcipher/v4"
