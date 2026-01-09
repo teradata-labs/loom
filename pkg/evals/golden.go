@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/sergi/go-diff/diffmatchpatch"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // CompareWithGoldenFile compares actual output with a golden file

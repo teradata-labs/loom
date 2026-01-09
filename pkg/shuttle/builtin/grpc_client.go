@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/dynamic/grpcdynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	reflectpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"

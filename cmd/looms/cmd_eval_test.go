@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/agent"
 )
 
 // TestAgentWrapper_Execute verifies the agentWrapper correctly calls agent.Chat

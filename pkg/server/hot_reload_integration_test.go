@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"go.uber.org/zap"
 )
 

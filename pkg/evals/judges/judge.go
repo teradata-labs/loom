@@ -25,13 +25,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	hawkcore "github.com/teradata-labs/hawk/pkg/core"
 	hawkjudge "github.com/teradata-labs/hawk/pkg/core/judge"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

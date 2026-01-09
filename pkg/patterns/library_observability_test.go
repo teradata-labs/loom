@@ -7,9 +7,9 @@ package patterns
 import (
 	"testing"
 
-	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 // TestLibrary_LoadObservability verifies that pattern loading operations are instrumented.

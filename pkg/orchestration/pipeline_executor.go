@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 

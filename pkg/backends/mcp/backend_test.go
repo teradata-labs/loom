@@ -10,10 +10,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/teradata-labs/loom/pkg/fabric"
-	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"go.uber.org/zap/zaptest"
 )
 

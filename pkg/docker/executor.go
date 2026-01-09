@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	"github.com/teradata-labs/loom/pkg/docker/runtime"
-	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/docker/runtime"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
 

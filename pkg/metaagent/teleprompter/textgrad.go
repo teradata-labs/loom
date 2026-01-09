@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 

@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

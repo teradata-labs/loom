@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // TestJudgeDataFlow_Debug validates data flow from RecordUsage -> DB -> AnalyzePatternEffectiveness

@@ -9,9 +9,9 @@ import (
 	"context"
 	"fmt"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // CustomRuntime configures containers with arbitrary images and entrypoints.

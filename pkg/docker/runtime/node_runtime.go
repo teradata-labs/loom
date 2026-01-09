@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"strings"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // NodeRuntime configures Node.js containers with npm package management.

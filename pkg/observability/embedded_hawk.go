@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/teradata-labs/hawk/pkg/core"
 	"github.com/google/uuid"
+	"github.com/teradata-labs/hawk/pkg/core"
 	"go.uber.org/zap"
 )
 
