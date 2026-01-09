@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	_ "github.com/mutecomm/go-sqlcipher/v4"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

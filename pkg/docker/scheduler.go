@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/docker/docker/client"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

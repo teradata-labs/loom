@@ -14,9 +14,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

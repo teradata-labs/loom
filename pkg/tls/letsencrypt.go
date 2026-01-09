@@ -21,12 +21,12 @@ import (
 	"sync"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge/http01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap"
 )
 

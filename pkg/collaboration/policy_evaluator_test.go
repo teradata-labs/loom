@@ -9,9 +9,9 @@ import (
 	"context"
 	"testing"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"go.uber.org/zap/zaptest"
 )
 

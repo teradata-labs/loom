@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -30,7 +31,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
-	"github.com/fsnotify/fsnotify"
 	"go.uber.org/zap"
 )
 

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/teradata-labs/loom/pkg/observability"
 	_ "github.com/mutecomm/go-sqlcipher/v4"
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 // SQLiteHumanRequestStore provides persistent SQLite storage for human requests.

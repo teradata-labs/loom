@@ -8,8 +8,8 @@ package evals
 import (
 	"testing"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/stretchr/testify/assert"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 func TestMetricsCalculator_Calculate(t *testing.T) {

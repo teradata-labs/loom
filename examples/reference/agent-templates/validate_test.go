@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/orchestration"
 )
 
 // Test that all example agent templates are valid and can be loaded

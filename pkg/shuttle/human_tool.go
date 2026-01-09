@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/google/uuid"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
 
