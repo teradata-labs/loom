@@ -113,10 +113,17 @@ func NewStdioTransport(config StdioConfig) (*StdioTransport, error) {
 	// Monitor stderr in background
 	go t.monitorStderr()
 
+	// Log env vars (redact sensitive values for security)
+	envVarKeys := make([]string, 0, len(config.Env))
+	for k := range config.Env {
+		envVarKeys = append(envVarKeys, k)
+	}
+
 	config.Logger.Info("MCP server started",
 		zap.String("command", config.Command),
 		zap.Strings("args", config.Args),
 		zap.Int("pid", cmd.Process.Pid),
+		zap.Strings("env_vars", envVarKeys), // Log keys only, not values
 	)
 
 	return t, nil
