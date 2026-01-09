@@ -1022,6 +1022,7 @@ func runServe(cmd *cobra.Command, args []string) {
 							"shell_execute":                   true, // Auto-registered for all agents
 							"tool_search":                     true, // Auto-registered when tool registry available
 							"recall_conversation":             true, // Registered with memory/swap layer
+							"clear_recalled_context":          true, // Registered with memory/swap layer
 							"search_conversation":             true, // Registered with memory/swap layer
 							"get_tool_result":                 true, // Async tool result retrieval
 							"get_error_details":               true, // Error details retrieval
