@@ -185,6 +185,17 @@ func (s *MultiAgentServer) SetMCPManager(mgr *manager.Manager, configPath string
 	s.logger = logger
 }
 
+// SetLogger injects the logger for server operations.
+// This should be called after NewMultiAgentServer() to enable logging.
+func (s *MultiAgentServer) SetLogger(logger *zap.Logger) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	s.logger = logger
+}
+
 // SetToolRegistry injects the tool registry for dynamic tool discovery.
 // This should be called after NewMultiAgentServer() to enable tool_search indexing of MCP tools.
 func (s *MultiAgentServer) SetToolRegistry(registry *toolregistry.Registry) {
