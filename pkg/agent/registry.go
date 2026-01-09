@@ -92,9 +92,12 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		config.Logger = zap.NewNop()
 	}
 
-	// Ensure config directory exists
+	// Ensure config directories exist
 	if err := ensureDir(filepath.Join(config.ConfigDir, "agents")); err != nil {
 		return nil, fmt.Errorf("failed to create agents directory: %w", err)
+	}
+	if err := ensureDir(filepath.Join(config.ConfigDir, "workflows")); err != nil {
+		return nil, fmt.Errorf("failed to create workflows directory: %w", err)
 	}
 
 	// Open SQLite database with optional encryption
