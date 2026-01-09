@@ -1,0 +1,194 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: sql-core
+  version: 1.0.0
+  domain: sql
+  description: "Standard SQL patterns for data quality, timeseries analysis, and text processing (database-agnostic)"
+  labels:
+    vendor: standard
+    category: sql
+    maturity: production
+
+spec:
+  entries:
+    # Data Quality Patterns
+    - name: data_profiling
+      description: "Database-agnostic data profiling using standard SQL for column statistics and quality metrics"
+      trigger_conditions:
+        - "user asks about data profiling with standard SQL"
+        - "user needs database-agnostic profiling"
+        - "user asks to profile data without vendor functions"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/data_quality/data_profiling.yaml
+
+        Standard SQL profiling metrics:
+        - COUNT, DISTINCT, NULL percentage
+        - MIN, MAX, AVG for numeric columns
+        - Basic distribution analysis
+        - Completeness and cardinality
+      priority: 80
+      tags:
+        - sql
+        - data-quality
+        - profiling
+        - standard
+
+    - name: data_validation
+      description: "Standard SQL data validation rules and constraint checking"
+      trigger_conditions:
+        - "user asks about SQL validation"
+        - "user needs database-agnostic validation"
+        - "user asks to validate with standard SQL"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/data_quality/data_validation.yaml
+
+        Validation types:
+        - NOT NULL checks
+        - Range validation (BETWEEN)
+        - Format validation (LIKE patterns)
+        - Referential integrity (EXISTS)
+        - CHECK constraint verification
+      priority: 75
+      tags:
+        - sql
+        - data-quality
+        - validation
+        - standard
+
+    - name: duplicate_detection
+      description: "Duplicate detection using standard SQL window functions and GROUP BY"
+      trigger_conditions:
+        - "user asks about SQL duplicate detection"
+        - "user needs portable duplicate detection"
+        - "user asks to find duplicates with standard SQL"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/data_quality/duplicate_detection.yaml
+
+        Standard SQL techniques:
+        - ROW_NUMBER() for ranking duplicates
+        - GROUP BY with HAVING COUNT(*) > 1
+        - Self-joins for fuzzy matching
+        - PARTITION BY for key-based detection
+      priority: 85
+      tags:
+        - sql
+        - data-quality
+        - duplicates
+        - standard
+
+    - name: missing_value_analysis
+      description: "Analyze and handle NULL values using standard SQL"
+      trigger_conditions:
+        - "user asks about NULL analysis in SQL"
+        - "user asks to handle missing values with SQL"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/data_quality/missing_value_analysis.yaml
+
+        Standard SQL techniques:
+        - NULL percentage calculations
+        - COALESCE for imputation
+        - CASE WHEN for conditional fills
+        - LAG/LEAD for forward/backward fill
+      priority: 70
+      tags:
+        - sql
+        - data-quality
+        - missing-values
+        - standard
+
+    - name: outlier_detection
+      description: "Statistical outlier detection using standard SQL (percentiles, Z-score approximation)"
+      trigger_conditions:
+        - "user asks about outlier detection in SQL"
+        - "user asks to find anomalies with SQL"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/data_quality/outlier_detection.yaml
+
+        Standard SQL methods:
+        - PERCENTILE_CONT for IQR method
+        - STDDEV for Z-score approximation
+        - MIN/MAX for range-based detection
+      priority: 65
+      tags:
+        - sql
+        - data-quality
+        - outliers
+        - standard
+
+    # Timeseries Patterns
+    - name: moving_average
+      description: "Calculate moving averages and rolling statistics using SQL window functions"
+      trigger_conditions:
+        - "user asks about moving average"
+        - "user asks about rolling statistics"
+        - "user mentions window functions for timeseries"
+        - "user asks about smoothing data"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/timeseries/moving_average.yaml
+
+        Standard SQL window functions:
+        - AVG() OVER (ORDER BY ... ROWS BETWEEN ...)
+        - SUM() OVER for cumulative totals
+        - LAG/LEAD for period-over-period
+        - Exponential moving average approximation
+      priority: 75
+      tags:
+        - sql
+        - timeseries
+        - moving-average
+        - standard
+
+    - name: arima
+      description: "ARIMA time series forecasting setup and data preparation using SQL"
+      trigger_conditions:
+        - "user asks about ARIMA"
+        - "user asks about time series forecasting"
+        - "user mentions autoregressive models"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/timeseries/arima.yaml
+
+        SQL preparation for ARIMA:
+        - Data stationarity checks
+        - Lag feature creation
+        - Differencing for trend removal
+        - Autocorrelation analysis setup
+      priority: 60
+      tags:
+        - sql
+        - timeseries
+        - forecasting
+        - arima
+        - standard
+
+    # Text Patterns
+    - name: ngram
+      description: "Generate n-grams from text data using SQL string functions"
+      trigger_conditions:
+        - "user asks about n-grams"
+        - "user asks about text tokenization"
+        - "user mentions text feature extraction"
+        - "user asks about word sequences"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/sql/text/ngram.yaml
+
+        Standard SQL text operations:
+        - SUBSTRING for character n-grams
+        - String splitting for word n-grams
+        - CONCAT for sequence generation
+        - Frequency analysis with GROUP BY
+      priority: 55
+      tags:
+        - sql
+        - text
+        - ngram
+        - nlp
+        - standard

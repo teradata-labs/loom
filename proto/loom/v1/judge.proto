@@ -1,0 +1,550 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// JudgeService provides multi-judge LLM evaluation capabilities.
+// Coordinates multiple judges with different criteria to evaluate agent outputs.
+service JudgeService {
+  // EvaluateWithJudges runs multiple judges against an agent output
+  rpc EvaluateWithJudges(EvaluateRequest) returns (EvaluateResponse);
+
+  // EvaluateWithJudgesStream runs multiple judges with streaming progress updates
+  // Useful for long-running evaluations (MIPRO, BootstrapFewShot) with progress feedback
+  rpc EvaluateWithJudgesStream(EvaluateRequest) returns (stream EvaluateProgress);
+
+  // RegisterJudge registers a new judge configuration
+  rpc RegisterJudge(RegisterJudgeRequest) returns (RegisterJudgeResponse);
+
+  // GetJudgeHistory retrieves historical judge evaluations
+  rpc GetJudgeHistory(GetJudgeHistoryRequest) returns (GetJudgeHistoryResponse);
+}
+
+// EvaluateRequest contains the context and configuration for multi-judge evaluation
+message EvaluateRequest {
+  // Context of the evaluation (agent output, pattern used, etc.)
+  EvaluationContext context = 1;
+
+  // IDs of judges to run (references JudgeConfig.name)
+  repeated string judge_ids = 2;
+
+  // Aggregation strategy for combining verdicts
+  AggregationStrategy aggregation = 3;
+
+  // Execution mode (sync, async, or hybrid)
+  ExecutionMode execution_mode = 4;
+
+  // Export results to Hawk
+  bool export_to_hawk = 5;
+
+  // Timeout for entire evaluation (seconds)
+  int32 timeout_seconds = 6;
+
+  // Fail fast: abort if any critical judge fails
+  bool fail_fast = 7;
+}
+
+// EvaluationContext provides all context needed for judge evaluation
+message EvaluationContext {
+  // Agent that generated the output
+  string agent_id = 1;
+
+  // Session ID for tracing
+  string session_id = 2;
+
+  // User prompt/input
+  string prompt = 3;
+
+  // Agent response/output
+  string response = 4;
+
+  // Pattern used (if any)
+  string pattern_used = 5;
+
+  // Tools used by agent
+  repeated string tools_used = 6;
+
+  // Cost in USD
+  double cost_usd = 7;
+
+  // Latency in milliseconds
+  int64 latency_ms = 8;
+
+  // Trace ID for observability
+  string trace_id = 9;
+
+  // Additional context metadata
+  map<string, string> metadata = 10;
+}
+
+// EvaluateResponse contains aggregated results from multiple judges
+message EvaluateResponse {
+  // Overall pass/fail verdict
+  bool passed = 1;
+
+  // Individual judge results
+  repeated JudgeResult verdicts = 2;
+
+  // Dimension scores (quality, cost, safety, domain) -> score (0-100)
+  map<string, double> dimension_scores = 3;
+
+  // Final aggregated score (0-100)
+  double final_score = 4;
+
+  // Explanation of the verdict
+  string explanation = 5;
+
+  // Suggestions for improvement
+  repeated string suggestions = 6;
+
+  // Aggregated metrics
+  AggregatedJudgeMetrics aggregated = 7;
+
+  // Metadata about evaluation
+  EvaluationMetadata metadata = 8;
+}
+
+// JudgeResult represents a single judge's verdict
+message JudgeResult {
+  // Judge identifier
+  string judge_id = 1;
+
+  // Judge name
+  string judge_name = 2;
+
+  // Judge model used (e.g., "claude-sonnet-4-5")
+  string judge_model = 3;
+
+  // Evaluation criteria used
+  repeated string criteria = 4;
+
+  // Hawk's 4 core scores (0-100)
+  int32 factual_accuracy = 5;
+  int32 hallucination_score = 6; // Lower is better
+  int32 query_quality = 7;
+  int32 completeness = 8;
+
+  // Overall score for this judge (weighted combination of above)
+  double overall_score = 9;
+
+  // Pass/fail verdict
+  string verdict = 10; // "PASS", "FAIL", "PARTIAL"
+
+  // Detailed reasoning
+  string reasoning = 11;
+
+  // Issues found
+  repeated string issues = 12;
+
+  // Suggestions for improvement
+  repeated string suggestions = 13;
+
+  // Execution time (ms)
+  int64 execution_time_ms = 14;
+
+  // Cost in USD
+  double cost_usd = 15;
+
+  // Error message (if judge failed to execute)
+  string error = 16;
+
+  // Timestamp
+  google.protobuf.Timestamp judged_at = 17;
+
+  // Dimension-specific scores (quality, cost, safety, domain)
+  map<string, double> dimension_scores = 18;
+}
+
+// AggregatedJudgeMetrics combines metrics from all judges
+message AggregatedJudgeMetrics {
+  // Weighted average score (0-100)
+  double weighted_average_score = 1;
+
+  // Minimum score across all judges
+  double min_score = 2;
+
+  // Maximum score across all judges
+  double max_score = 3;
+
+  // Standard deviation of scores
+  double score_stddev = 4;
+
+  // Pass rate (% of judges that passed)
+  double pass_rate = 5;
+
+  // Aggregation strategy used
+  AggregationStrategy strategy = 6;
+
+  // Total execution time (ms)
+  int64 total_execution_time_ms = 7;
+
+  // Total cost (USD)
+  double total_cost_usd = 8;
+
+  // Average scores by dimension
+  map<string, double> avg_dimension_scores = 9;
+}
+
+// EvaluationMetadata contains metadata about the evaluation run
+message EvaluationMetadata {
+  // Total number of judges run
+  int32 total_judges = 1;
+
+  // Number of judges that passed
+  int32 passed_judges = 2;
+
+  // Number of judges that failed
+  int32 failed_judges = 3;
+
+  // Number of judges that timed out
+  int32 timeout_judges = 4;
+
+  // Execution mode used
+  ExecutionMode execution_mode = 5;
+
+  // Total cost (USD)
+  double total_cost_usd = 6;
+
+  // Total execution time (ms)
+  int64 total_execution_time_ms = 7;
+
+  // Exported to Hawk
+  bool exported_to_hawk = 8;
+}
+
+// MultiJudgeConfig configures multi-judge evaluation
+message MultiJudgeConfig {
+  // Judges to run
+  repeated JudgeConfig judges = 1;
+
+  // Aggregation strategy
+  AggregationStrategy aggregation = 2;
+
+  // Parallel execution (default: true)
+  bool parallel = 3;
+
+  // Timeout per judge (seconds)
+  int32 timeout_seconds = 4;
+
+  // Fail-fast: abort if any critical judge fails
+  bool fail_fast = 5;
+
+  // Execution mode
+  ExecutionMode execution_mode = 6;
+
+  // Export to Hawk
+  bool export_to_hawk = 7;
+}
+
+// JudgeConfig defines a single judge
+message JudgeConfig {
+  // Unique judge identifier
+  string id = 1;
+
+  // Judge name (e.g., "quality-judge", "cost-judge")
+  string name = 2;
+
+  // Evaluation criteria description
+  string criteria = 3;
+
+  // Weight for aggregation (default: 1.0)
+  double weight = 4;
+
+  // Minimum passing score (0-100, default: 80)
+  int32 min_passing_score = 5;
+
+  // Criticality level
+  JudgeCriticality criticality = 6;
+
+  // Custom judge prompt template (optional)
+  string custom_prompt = 7;
+
+  // LLM model to use for this judge (optional, uses default if not specified)
+  string model = 8;
+
+  // Judge type
+  JudgeType type = 9;
+
+  // Agent ID (if type is AGENT_JUDGE)
+  string agent_id = 10;
+
+  // Dimensions this judge evaluates
+  repeated JudgeDimension dimensions = 11;
+
+  // Phase 8: Custom dimension support (for JUDGE_DIMENSION_CUSTOM only)
+  // If dimensions contains JUDGE_DIMENSION_CUSTOM, this field must be set.
+  // This name becomes the key in dimension_scores map (e.g., "teradata_compliance", "hipaa_compliance")
+  string custom_dimension_name = 20;
+
+  // Phase 8: Custom dimension description (optional, for documentation/UI)
+  string custom_dimension_description = 21;
+
+  // Retry configuration (Phase 7)
+  RetryConfig retry_config = 30;
+}
+
+// AggregationStrategy defines how to combine multi-judge results
+enum AggregationStrategy {
+  AGGREGATION_STRATEGY_UNSPECIFIED = 0;
+
+  // Weighted average of scores
+  AGGREGATION_STRATEGY_WEIGHTED_AVERAGE = 1;
+
+  // All judges must pass
+  AGGREGATION_STRATEGY_ALL_MUST_PASS = 2;
+
+  // Majority must pass (>50%)
+  AGGREGATION_STRATEGY_MAJORITY_PASS = 3;
+
+  // Any judge passing is sufficient
+  AGGREGATION_STRATEGY_ANY_PASS = 4;
+
+  // Use minimum score across all judges
+  AGGREGATION_STRATEGY_MIN_SCORE = 5;
+
+  // Use maximum score across all judges
+  AGGREGATION_STRATEGY_MAX_SCORE = 6;
+}
+
+// ExecutionMode defines when judges run
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+
+  // All judges run synchronously (blocks response)
+  EXECUTION_MODE_SYNCHRONOUS = 1;
+
+  // All judges run asynchronously (background)
+  EXECUTION_MODE_ASYNCHRONOUS = 2;
+
+  // Critical judges sync, non-critical async (balanced)
+  EXECUTION_MODE_HYBRID = 3;
+}
+
+// JudgeCriticality defines judge priority
+enum JudgeCriticality {
+  JUDGE_CRITICALITY_UNSPECIFIED = 0;
+
+  // Non-critical: can run async
+  JUDGE_CRITICALITY_NON_CRITICAL = 1;
+
+  // Critical: must run sync
+  JUDGE_CRITICALITY_CRITICAL = 2;
+
+  // Safety-critical: highest priority, blocks everything
+  JUDGE_CRITICALITY_SAFETY_CRITICAL = 3;
+}
+
+// JudgeType defines the implementation type
+enum JudgeType {
+  JUDGE_TYPE_UNSPECIFIED = 0;
+
+  // Uses Hawk's embedded judge library
+  JUDGE_TYPE_HAWK = 1;
+
+  // Uses Loom agent as judge
+  JUDGE_TYPE_AGENT = 2;
+
+  // Custom judge implementation
+  JUDGE_TYPE_CUSTOM = 3;
+}
+
+// JudgeDimension defines evaluation dimensions
+enum JudgeDimension {
+  JUDGE_DIMENSION_UNSPECIFIED = 0;
+
+  // Quality and correctness
+  JUDGE_DIMENSION_QUALITY = 1;
+
+  // Cost efficiency
+  JUDGE_DIMENSION_COST = 2;
+
+  // Safety and guardrails
+  JUDGE_DIMENSION_SAFETY = 3;
+
+  // Domain compliance
+  JUDGE_DIMENSION_DOMAIN = 4;
+
+  // Performance and latency
+  JUDGE_DIMENSION_PERFORMANCE = 5;
+
+  // Usability and clarity
+  JUDGE_DIMENSION_USABILITY = 6;
+
+  // Phase 8: Custom dimensions (user-defined)
+  JUDGE_DIMENSION_CUSTOM = 100;
+}
+
+// RegisterJudgeRequest registers a new judge
+message RegisterJudgeRequest {
+  // Judge configuration
+  JudgeConfig config = 1;
+}
+
+// RegisterJudgeResponse confirms judge registration
+message RegisterJudgeResponse {
+  // Registered judge ID
+  string judge_id = 1;
+
+  // Success message
+  string message = 2;
+}
+
+// GetJudgeHistoryRequest retrieves judge evaluation history
+message GetJudgeHistoryRequest {
+  // Filter by agent ID
+  string agent_id = 1;
+
+  // Filter by pattern
+  string pattern_name = 2;
+
+  // Filter by judge ID
+  string judge_id = 3;
+
+  // Time range start
+  google.protobuf.Timestamp start_time = 4;
+
+  // Time range end
+  google.protobuf.Timestamp end_time = 5;
+
+  // Limit results
+  int32 limit = 6;
+
+  // Offset for pagination
+  int32 offset = 7;
+}
+
+// GetJudgeHistoryResponse returns judge evaluation history
+message GetJudgeHistoryResponse {
+  // Historical evaluations
+  repeated HistoricalEvaluation evaluations = 1;
+
+  // Total count (for pagination)
+  int32 total_count = 2;
+}
+
+// HistoricalEvaluation represents a past judge evaluation
+message HistoricalEvaluation {
+  // Evaluation ID
+  string id = 1;
+
+  // Agent ID
+  string agent_id = 2;
+
+  // Pattern used
+  string pattern_name = 3;
+
+  // Multi-judge result
+  EvaluateResponse result = 4;
+
+  // Timestamp
+  google.protobuf.Timestamp evaluated_at = 5;
+}
+
+// RetryConfig defines retry behavior for judge evaluations (Phase 7)
+message RetryConfig {
+  // Maximum retry attempts (0 = no retry, default = 3)
+  int32 max_attempts = 1;
+
+  // Initial backoff duration (ms, default = 1000)
+  int32 initial_backoff_ms = 2;
+
+  // Max backoff duration (ms, default = 8000)
+  int32 max_backoff_ms = 3;
+
+  // Backoff multiplier (default = 2.0 for exponential)
+  double backoff_multiplier = 4;
+
+  // Retry on specific HTTP status codes (default: [429, 500, 502, 503])
+  repeated int32 retry_on_status = 5;
+
+  // Circuit breaker configuration
+  CircuitBreakerConfig circuit_breaker = 6;
+}
+
+// CircuitBreakerConfig defines circuit breaker behavior (Phase 7)
+message CircuitBreakerConfig {
+  // Number of consecutive failures to open circuit (default = 5)
+  int32 failure_threshold = 1;
+
+  // Time to wait before trying again (ms, default = 60000 = 1 minute)
+  int32 reset_timeout_ms = 2;
+
+  // Number of successful requests to close circuit (default = 2)
+  int32 success_threshold = 3;
+
+  // Enable circuit breaker (default = true)
+  bool enabled = 4;
+}
+
+// Phase 11: Streaming evaluation progress messages
+// EvaluateProgress provides real-time updates during long-running evaluations
+message EvaluateProgress {
+  oneof progress {
+    JudgeStarted judge_started = 1;
+    JudgeCompleted judge_completed = 2;
+    ExampleCompleted example_completed = 3;
+    EvaluationCompleted evaluation_completed = 4;
+  }
+}
+
+// JudgeStarted indicates a judge evaluation has begun
+message JudgeStarted {
+  // Judge identifier
+  string judge_id = 1;
+
+  // Example number being evaluated (0-indexed)
+  int32 example_number = 2;
+
+  // Timestamp when evaluation started
+  google.protobuf.Timestamp started_at = 3;
+}
+
+// JudgeCompleted indicates a judge evaluation has finished
+message JudgeCompleted {
+  // Judge identifier
+  string judge_id = 1;
+
+  // Example number that was evaluated (0-indexed)
+  int32 example_number = 2;
+
+  // Judge evaluation result
+  JudgeResult result = 3;
+
+  // Duration in milliseconds
+  int64 duration_ms = 4;
+}
+
+// ExampleCompleted indicates all judges have evaluated an example
+message ExampleCompleted {
+  // Example number that completed (0-indexed)
+  int32 example_number = 1;
+
+  // Total number of examples in evaluation
+  int32 total_examples = 2;
+
+  // Current cumulative score across all examples evaluated so far
+  double current_score = 3;
+
+  // Whether this example passed
+  bool passed = 4;
+
+  // Results from all judges for this example
+  repeated JudgeResult results = 5;
+}
+
+// EvaluationCompleted indicates the entire evaluation has finished
+message EvaluationCompleted {
+  // Final evaluation response
+  EvaluateResponse final_result = 1;
+
+  // Total duration in milliseconds
+  int64 total_duration_ms = 2;
+}

@@ -1,0 +1,86 @@
+# Binaries
+bin/
+!vantage-mcp-binaries/bin/
+*.exe
+!vantage-mcp-binaries/**/*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# MCP servers (batteries-included binaries - not tracked)
+mcp-servers/
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+dist/
+build/
+
+# Temporary files
+tmp/
+temp/
+
+# Logs
+*.log
+logs/
+
+# Secrets
+*.key
+*.pem
+*.crt
+credentials.json
+
+# Hugo documentation build artifacts
+cmd/looms/docs/*
+!cmd/looms/docs/public/
+cmd/looms/docs/public/*
+!cmd/looms/docs/public/.gitkeep
+website/public/
+website/resources/
+.hugo_build.lock
+
+# Built binaries (in root or bin directory only)
+/looms
+/loom
+/loom-standalone
+bin/loom
+bin/looms
+bin/loom-standalone
+
+# Hawk binaries (batteries included distribution)
+
+# Database files
+*.db
+!vantage-mcp-binaries/**/*.db
+*.db-shm
+*.db-wal
+examples/orchestration-dogfood/dogfood
+examples/orchestration-dogfood/all_patterns_output.txt
+examples/orchestration-dogfood/dogfood
+*.tar.gz

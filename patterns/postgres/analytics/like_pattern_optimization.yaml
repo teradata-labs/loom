@@ -1,0 +1,72 @@
+name: like_pattern_optimization
+title: "LIKE Pattern Optimization"
+description: "Fixes inefficient LIKE queries with leading wildcards"
+category: analytics
+difficulty: beginner
+backend_type: postgres
+priority: 80
+
+parameters:
+  - name: table_name
+    type: string
+    required: true
+    description: "Table with LIKE query"
+
+  - name: column_name
+    type: string
+    required: true
+    description: "Column being searched"
+
+  - name: pattern
+    type: string
+    required: true
+    description: "LIKE pattern"
+
+templates:
+  problem_detection: |
+    -- PROBLEM: Leading wildcard prevents index usage
+    SELECT * FROM {{.table_name}}
+    WHERE {{.column_name}} LIKE '{{.pattern}}'
+
+  solution_btree: |
+    -- SOLUTION 1: Use B-tree index with pattern without leading wildcard
+    -- Only works if pattern doesn't start with %
+    CREATE INDEX idx_{{.table_name}}_{{.column_name}}_btree
+    ON {{.table_name}}({{.column_name}});
+
+  solution_gin: |
+    -- SOLUTION 2: Use GIN index with pg_trgm for pattern matching
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE INDEX idx_{{.table_name}}_{{.column_name}}_gin
+    ON {{.table_name}} USING gin({{.column_name}} gin_trgm_ops);
+
+  solution_full_text: |
+    -- SOLUTION 3: Use full-text search for text queries
+    CREATE INDEX idx_{{.table_name}}_{{.column_name}}_fts
+    ON {{.table_name}} USING gin(to_tsvector('english', {{.column_name}}));
+
+examples:
+  - name: "Email domain search"
+    parameters:
+      table_name: users
+      column_name: email
+      pattern: "%@example.com"
+    expected_result: "Recommend pg_trgm GIN index"
+
+  - name: "Name search"
+    parameters:
+      table_name: users
+      column_name: first_name
+      pattern: "John%"
+    expected_result: "B-tree index sufficient"
+
+use_cases:
+  - "Optimize email domain searches"
+  - "Speed up name pattern matching"
+  - "Fix slow LIKE queries"
+
+validation:
+  rules:
+    - "Check if pattern starts with % (leading wildcard)"
+    - "Verify pg_trgm extension available"
+    - "Estimate index size impact"

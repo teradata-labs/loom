@@ -1,0 +1,57 @@
+# MongoDB Backend Configuration
+# Usage: Reference this file in your looms.yaml agent configuration
+#
+# Note: MongoDB access via REST API (e.g., MongoDB Data API, MongoDB Atlas API)
+# For direct MongoDB driver access, use an MCP backend with a MongoDB MCP server
+
+apiVersion: loom/v1
+kind: Backend
+name: mongodb-backend
+type: rest
+description: MongoDB database backend via REST API (Atlas Data API or similar)
+
+rest:
+  # MongoDB Data API endpoint (Atlas or self-hosted)
+  # Example: https://data.mongodb-api.com/app/data-xxxxx/endpoint/data/v1
+  base_url: ${MONGODB_API_URL:-https://data.mongodb-api.com/app/your-app-id/endpoint/data/v1}
+
+  # Authentication
+  auth:
+    type: apikey
+    token: ${MONGODB_API_KEY}
+    header_name: api-key
+
+  # Custom headers
+  headers:
+    Content-Type: application/json
+    Accept: application/json
+
+  # Timeouts and retries
+  timeout_seconds: 30
+  max_retries: 3
+
+# Schema discovery (limited for REST APIs)
+schema_discovery:
+  enabled: false
+
+# Tool generation for MongoDB operations
+tool_generation:
+  enable_all: false
+  tools:
+    - find_documents
+    - insert_document
+    - update_document
+    - delete_document
+    - aggregate
+
+# Health check
+health_check:
+  enabled: true
+  interval_seconds: 300
+  timeout_seconds: 10
+
+# Usage Notes:
+# - This config assumes MongoDB Data API (REST interface)
+# - For native MongoDB driver, create an MCP backend instead
+# - Atlas Data API docs: https://www.mongodb.com/docs/atlas/api/data-api/
+# - Operations map to REST endpoints (POST for queries, etc.)

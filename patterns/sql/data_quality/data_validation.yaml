@@ -1,0 +1,755 @@
+# === METADATA START ===
+name: data_validation
+title: "Data Validation and Quality Rules"
+description: |
+  Validate data against business rules, constraints, and expectations to ensure data quality.
+  Data validation catches errors early, prevents bad data from propagating, and ensures
+  analytics and ML models operate on clean, trustworthy data.
+
+  Validation types:
+  - Schema validation: Data types, formats, lengths
+  - Range validation: Min/max, allowed values
+  - Business rule validation: Domain-specific constraints
+  - Referential integrity: Foreign key relationships
+  - Format validation: Emails, dates, phone numbers, URLs
+  - Cross-field validation: Logical consistency
+
+category: data_quality
+difficulty: intermediate
+teradata_function: SQL_CASE_STATEMENTS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - ETL pipeline validation (catch errors before load)
+  - API input validation (reject invalid requests)
+  - Data migration testing (source vs target)
+  - Regulatory compliance (PCI, HIPAA, GDPR)
+  - ML data quality checks (before training)
+  - Real-time data monitoring (detect anomalies)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing table to validate"
+    example: "customer_data"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table to validate"
+    example: "customers"
+
+  # --- Parameter 3: Validation Rules ---
+  - name: validation_rules
+    type: array[rule]
+    required: false
+    description: "Custom validation rules to apply"
+    example: '[{"column": "age", "rule": "between 0 and 120"}]'
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used to identify specific invalid records in results
+    required: true
+    description: "Primary identifier for flagging invalid records"
+    example: "customer_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_VALIDATION TEMPLATE ===
+  # LLM-HINT: Start with this for row-level validation across multiple rules
+  basic_validation:
+    description: "Multi-column validation with pass/fail flags"
+    sql: |
+      -- Comprehensive data validation
+      SELECT
+        {{id_column}},
+        -- Email validation
+        CASE
+          WHEN {{email_column}} IS NULL THEN 'Missing email'
+          WHEN NOT REGEXP_SIMILAR({{email_column}}, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$', 'i')
+          THEN 'Invalid email format'
+          ELSE 'Valid'
+        END as email_validation,
+        -- Age validation
+        CASE
+          WHEN {{age_column}} IS NULL THEN 'Missing age'
+          WHEN {{age_column}} < 0 OR {{age_column}} > 120 THEN 'Age out of range'
+          ELSE 'Valid'
+        END as age_validation,
+        -- Date validation
+        CASE
+          WHEN {{date_column}} IS NULL THEN 'Missing date'
+          WHEN {{date_column}} > CURRENT_DATE THEN 'Future date not allowed'
+          WHEN {{date_column}} < DATE '1900-01-01' THEN 'Date too far in past'
+          ELSE 'Valid'
+        END as date_validation,
+        -- Overall status
+        CASE
+          WHEN ({{email_column}} IS NULL OR
+                NOT REGEXP_SIMILAR({{email_column}}, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$', 'i') OR
+                {{age_column}} IS NULL OR
+                {{age_column}} < 0 OR {{age_column}} > 120 OR
+                {{date_column}} IS NULL OR
+                {{date_column}} > CURRENT_DATE)
+          THEN 'FAILED'
+          ELSE 'PASSED'
+        END as overall_status
+      FROM {{database}}.{{table}};
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - email_column
+      - age_column
+      - date_column
+
+  # === VALIDATION_SUMMARY TEMPLATE ===
+  # LLM-HINT: Use for aggregate statistics showing counts of failures per rule
+  validation_summary:
+    description: "Aggregate validation results - how many records fail each rule"
+    sql: |
+      -- Validation summary by rule
+      WITH validation_results AS (
+        SELECT
+          {{id_column}},
+          CASE WHEN {{column}} IS NULL THEN 1 ELSE 0 END as null_check,
+          CASE WHEN {{column}} < {{min_value}} THEN 1 ELSE 0 END as min_check,
+          CASE WHEN {{column}} > {{max_value}} THEN 1 ELSE 0 END as max_check,
+          CASE WHEN {{column}} IS NULL OR
+                    {{column}} < {{min_value}} OR
+                    {{column}} > {{max_value}}
+               THEN 1 ELSE 0 END as any_failure
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        COUNT(*) as total_records,
+        SUM(null_check) as null_failures,
+        SUM(min_check) as min_value_failures,
+        SUM(max_check) as max_value_failures,
+        SUM(any_failure) as total_failures,
+        COUNT(*) - SUM(any_failure) as passed_records,
+        CAST(SUM(any_failure) * 100.0 / COUNT(*) AS DECIMAL(5,2)) as failure_rate_pct
+      FROM validation_results;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+      - min_value
+      - max_value
+
+  # === REFERENTIAL_INTEGRITY TEMPLATE ===
+  # LLM-HINT: Finds orphaned records where foreign key has no matching parent
+  referential_integrity:
+    description: "Check foreign key relationships - find orphaned records"
+    sql: |
+      -- Referential integrity check
+      SELECT
+        child.{{child_id}},
+        child.{{foreign_key}},
+        CASE
+          WHEN parent.{{parent_key}} IS NULL THEN 'Orphaned (no parent)'
+          ELSE 'Valid'
+        END as referential_integrity_status
+      FROM {{child_database}}.{{child_table}} child
+      LEFT JOIN {{parent_database}}.{{parent_table}} parent
+        ON child.{{foreign_key}} = parent.{{parent_key}}
+      WHERE parent.{{parent_key}} IS NULL;
+    required_parameters:
+      - child_database
+      - child_table
+      - child_id
+      - foreign_key
+      - parent_database
+      - parent_table
+      - parent_key
+
+  # === FORMAT_VALIDATION TEMPLATE ===
+  # LLM-HINT: Uses REGEXP_SIMILAR to check email, phone, zipcode, SSN, URL patterns
+  format_validation:
+    description: "Validate string formats using regex patterns"
+    sql: |
+      -- Format validation using regular expressions
+      SELECT
+        {{id_column}},
+        {{column}},
+        CASE
+          -- Email format
+          WHEN '{{format_type}}' = 'email' AND
+               NOT REGEXP_SIMILAR({{column}}, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$', 'i')
+          THEN 'Invalid email'
+          -- Phone format (US: ###-###-####)
+          WHEN '{{format_type}}' = 'phone' AND
+               NOT REGEXP_SIMILAR({{column}}, '^[0-9]{3}-[0-9]{3}-[0-9]{4}$')
+          THEN 'Invalid phone'
+          -- ZIP code (US: ##### or #####-####)
+          WHEN '{{format_type}}' = 'zipcode' AND
+               NOT REGEXP_SIMILAR({{column}}, '^[0-9]{5}(-[0-9]{4})?$')
+          THEN 'Invalid ZIP'
+          -- SSN (###-##-####)
+          WHEN '{{format_type}}' = 'ssn' AND
+               NOT REGEXP_SIMILAR({{column}}, '^[0-9]{3}-[0-9]{2}-[0-9]{4}$')
+          THEN 'Invalid SSN'
+          -- URL
+          WHEN '{{format_type}}' = 'url' AND
+               NOT REGEXP_SIMILAR({{column}}, '^https?://[A-Za-z0-9.-]+', 'i')
+          THEN 'Invalid URL'
+          -- Date (YYYY-MM-DD)
+          WHEN '{{format_type}}' = 'date' AND
+               NOT REGEXP_SIMILAR({{column}}, '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          THEN 'Invalid date format'
+          ELSE 'Valid'
+        END as format_validation_status
+      FROM {{database}}.{{table}}
+      WHERE {{column}} IS NOT NULL;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+      - format_type
+
+  # === RANGE_VALIDATION TEMPLATE ===
+  # LLM-HINT: Checks numeric values fall within min/max bounds
+  range_validation:
+    description: "Validate numeric values are within acceptable ranges"
+    sql: |
+      -- Range validation for numeric columns
+      SELECT
+        {{id_column}},
+        {{column}},
+        {{min_value}} as expected_min,
+        {{max_value}} as expected_max,
+        CASE
+          WHEN {{column}} IS NULL THEN 'Null value'
+          WHEN {{column}} < {{min_value}} THEN 'Below minimum'
+          WHEN {{column}} > {{max_value}} THEN 'Above maximum'
+          ELSE 'Valid'
+        END as range_validation_status,
+        CASE
+          WHEN {{column}} < {{min_value}} THEN {{min_value}} - {{column}}
+          WHEN {{column}} > {{max_value}} THEN {{column}} - {{max_value}}
+          ELSE 0
+        END as deviation_amount
+      FROM {{database}}.{{table}}
+      WHERE {{column}} IS NOT NULL
+        AND ({{column}} < {{min_value}} OR {{column}} > {{max_value}});
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+      - min_value
+      - max_value
+
+  # === ENUM_VALIDATION TEMPLATE ===
+  # LLM-HINT: Verifies categorical values are in allowed list
+  enum_validation:
+    description: "Check if values are in allowed list (categorical validation)"
+    sql: |
+      -- Enum/categorical validation
+      SELECT
+        {{id_column}},
+        {{column}},
+        CASE
+          WHEN {{column}} IS NULL THEN 'Null value'
+          WHEN {{column}} NOT IN ({{allowed_values}}) THEN 'Invalid value'
+          ELSE 'Valid'
+        END as enum_validation_status
+      FROM {{database}}.{{table}}
+      WHERE {{column}} IS NOT NULL
+        AND {{column}} NOT IN ({{allowed_values}});
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+      - allowed_values
+
+  # === CROSS_FIELD_VALIDATION TEMPLATE ===
+  # LLM-HINT: Checks logical consistency between column pairs (e.g., start < end)
+  cross_field_validation:
+    description: "Validate logical relationships between multiple columns"
+    sql: |
+      -- Cross-field logical validation
+      SELECT
+        {{id_column}},
+        {{column1}},
+        {{column2}},
+        CASE
+          -- End date must be after start date
+          WHEN {{column1}} > {{column2}}
+          THEN 'End date before start date'
+          -- Date range must be reasonable
+          WHEN {{column2}} - {{column1}} > INTERVAL '10' YEAR
+          THEN 'Date range too large'
+          -- Both must be present or both absent
+          WHEN ({{column1}} IS NULL AND {{column2}} IS NOT NULL) OR
+               ({{column1}} IS NOT NULL AND {{column2}} IS NULL)
+          THEN 'Incomplete date range'
+          ELSE 'Valid'
+        END as cross_field_validation_status
+      FROM {{database}}.{{table}}
+      WHERE {{column1}} IS NOT NULL OR {{column2}} IS NOT NULL;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column1
+      - column2
+
+  # === UNIQUENESS_VALIDATION TEMPLATE ===
+  # LLM-HINT: Detects duplicate values in columns that should be unique
+  uniqueness_validation:
+    description: "Validate that key columns have unique values (no duplicates)"
+    sql: |
+      -- Uniqueness constraint validation
+      WITH duplicate_check AS (
+        SELECT
+          {{column}},
+          COUNT(*) as occurrence_count
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+        GROUP BY {{column}}
+        HAVING COUNT(*) > 1
+      )
+      SELECT
+        t.{{id_column}},
+        t.{{column}},
+        d.occurrence_count,
+        CASE
+          WHEN d.occurrence_count > 1 THEN 'Duplicate value'
+          ELSE 'Unique'
+        END as uniqueness_validation_status
+      FROM {{database}}.{{table}} t
+      JOIN duplicate_check d
+        ON t.{{column}} = d.{{column}};
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+
+  # === DATA_TYPE_VALIDATION TEMPLATE ===
+  # LLM-HINT: Uses REGEXP patterns to check if strings can cast to target type
+  data_type_validation:
+    description: "Check if string columns can be safely cast to target types"
+    sql: |
+      -- Data type conversion validation
+      SELECT
+        {{id_column}},
+        {{column}},
+        CASE
+          -- Try to cast to INTEGER
+          WHEN '{{target_type}}' = 'INTEGER' THEN
+            CASE
+              WHEN {{column}} IS NULL THEN 'Null'
+              WHEN REGEXP_SIMILAR({{column}}, '^-?[0-9]+$') THEN 'Valid'
+              ELSE 'Cannot cast to INTEGER'
+            END
+          -- Try to cast to DECIMAL
+          WHEN '{{target_type}}' = 'DECIMAL' THEN
+            CASE
+              WHEN {{column}} IS NULL THEN 'Null'
+              WHEN REGEXP_SIMILAR({{column}}, '^-?[0-9]+\.?[0-9]*$') THEN 'Valid'
+              ELSE 'Cannot cast to DECIMAL'
+            END
+          -- Try to cast to DATE
+          WHEN '{{target_type}}' = 'DATE' THEN
+            CASE
+              WHEN {{column}} IS NULL THEN 'Null'
+              WHEN REGEXP_SIMILAR({{column}}, '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') THEN 'Valid'
+              ELSE 'Cannot cast to DATE'
+            END
+          ELSE 'Unknown target type'
+        END as type_validation_status
+      FROM {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+      - target_type
+
+  # === COMPLETENESS_VALIDATION TEMPLATE ===
+  # LLM-HINT: Checks required fields are not NULL or empty strings
+  completeness_validation:
+    description: "Check required fields are not null or empty"
+    sql: |
+      -- Completeness validation for required fields
+      SELECT
+        {{id_column}},
+        CASE WHEN {{column1}} IS NULL OR TRIM({{column1}}) = '' THEN 'Missing' ELSE 'Present' END as {{column1}}_status,
+        CASE WHEN {{column2}} IS NULL OR TRIM({{column2}}) = '' THEN 'Missing' ELSE 'Present' END as {{column2}}_status,
+        CASE WHEN {{column3}} IS NULL OR TRIM({{column3}}) = '' THEN 'Missing' ELSE 'Present' END as {{column3}}_status,
+        CASE
+          WHEN ({{column1}} IS NULL OR TRIM({{column1}}) = '') OR
+               ({{column2}} IS NULL OR TRIM({{column2}}) = '') OR
+               ({{column3}} IS NULL OR TRIM({{column3}}) = '')
+          THEN 'Incomplete'
+          ELSE 'Complete'
+        END as completeness_status
+      FROM {{database}}.{{table}}
+      WHERE ({{column1}} IS NULL OR TRIM({{column1}}) = '') OR
+            ({{column2}} IS NULL OR TRIM({{column2}}) = '') OR
+            ({{column3}} IS NULL OR TRIM({{column3}}) = '');
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column1
+      - column2
+      - column3
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Data Validation ---
+  - name: "Customer Data Validation"
+    description: "Validate customer records before analytics"
+    parameters:
+      database: "crm"
+      table: "customers"
+      id_column: "customer_id"
+    expected_result: |
+      Validation Results:
+
+      Total records: 100,000
+
+      Email validation:
+      - Valid: 95,000 (95%)
+      - Invalid format: 3,000 (3%)
+      - Missing: 2,000 (2%)
+
+      Age validation:
+      - Valid: 98,000 (98%)
+      - Out of range: 1,500 (1.5%)
+      - Missing: 500 (0.5%)
+
+      Date validation:
+      - Valid: 99,500 (99.5%)
+      - Future date: 300 (0.3%)
+      - Missing: 200 (0.2%)
+
+      Overall:
+      - Passed all validations: 92,000 (92%)
+      - Failed at least one: 8,000 (8%)
+
+      Action:
+      - Fix 3,000 invalid emails
+      - Review 1,500 age outliers
+      - Reject 300 future dates
+      - Set quality threshold: 95% pass rate
+
+  # --- Example 2: Order Referential Integrity ---
+  - name: "Order Referential Integrity"
+    description: "Find orders with invalid customer references"
+    parameters:
+      child_database: "sales"
+      child_table: "orders"
+      parent_database: "crm"
+      parent_table: "customers"
+      foreign_key: "customer_id"
+      parent_key: "customer_id"
+    expected_result: |
+      Referential Integrity Check:
+
+      Total orders: 500,000
+      Orphaned orders: 2,500 (0.5%)
+
+      Orphaned order breakdown:
+      - Customer deleted: 1,800 (72%)
+      - Invalid customer_id: 500 (20%)
+      - Data entry error: 200 (8%)
+
+      Financial impact:
+      - Orphaned order value: $125,000
+      - Average orphaned order: $50
+
+      Action:
+      - Implement foreign key constraint
+      - Soft-delete customers instead of hard delete
+      - Add customer_id validation in order API
+      - Create orphan order cleanup job
+
+  # --- Example 3: Product Price Validation ---
+  - name: "Product Price Validation"
+    description: "Ensure product prices are in valid range"
+    parameters:
+      database: "inventory"
+      table: "products"
+      column: "price"
+      min_value: 0.01
+      max_value: 10000.00
+    expected_result: |
+      Price Validation:
+
+      Total products: 50,000
+
+      Range violations:
+      - Below minimum ($0.01): 15 products
+        - $0.00: 10 (data entry error)
+        - Negative: 5 (system bug)
+
+      - Above maximum ($10,000): 8 products
+        - $15,000-$50,000: 5 (luxury items - valid)
+        - $999,999: 3 (placeholder values)
+
+      Action:
+      - Fix 10 zero prices
+      - Fix 5 negative prices
+      - Fix 3 placeholder prices
+      - Raise max limit to $50,000 for luxury items
+      - Add price validation in product admin
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Too Many Failures ---
+  - error: "Too many validation failures"
+    cause: "Validation rules too strict or data quality poor"
+    solution: "Review rules with domain experts. Implement progressive validation (warning vs error)."
+
+  # --- Error 2: Slow Regex ---
+  - error: "Regex validation too slow"
+    cause: "Complex regex on millions of rows"
+    solution: "Sample for testing. Create indexed computed column for frequently validated patterns."
+
+  # --- Error 3: False Positives ---
+  - error: "False positives in format validation"
+    cause: "Regex too restrictive (e.g., international phone formats)"
+    solution: "Support multiple formats. Use OR conditions in regex for variations."
+
+  # --- Error 4: Rule Sync Issues ---
+  - error: "Validation rules out of sync with application"
+    cause: "Rules defined in multiple places"
+    solution: "Centralize validation rules. Use database constraints and share with application."
+
+  # --- Error 5: NULL vs Empty String ---
+  - error: "Can't validate NULL vs empty string"
+    cause: "Application treats them differently but SQL sees them same"
+    solution: "Standardize: use NULL for missing, empty string for intentionally blank. Add TRIM check."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Data Validation Best Practices
+
+  ### 1. Validate Early and Often
+
+  **Validation layers:**
+  - **Application:** Client-side and server-side
+  - **API:** Request validation before processing
+  - **ETL:** Before loading into warehouse
+  - **Database:** Constraints and triggers
+  - **Analytics:** Before model training
+
+  **Fail fast:** Reject bad data at entry point, don't let it propagate.
+
+  ### 2. Define Clear Validation Rules
+
+  **Document for each field:**
+  - Data type and format
+  - Required vs optional
+  - Valid range or values
+  - Business rules
+  - Error messages
+
+  **Example:**
+  ```yaml
+  email:
+    type: string
+    required: true
+    format: RFC 5322
+    max_length: 255
+    validation: must contain @ and domain
+    error: "Invalid email format"
+  ```
+
+  ### 3. Prioritize Validation Rules
+
+  **Critical (block processing):**
+  - Schema violations (wrong type)
+  - Missing required fields
+  - Referential integrity violations
+  - Security issues (SQL injection, XSS)
+
+  **Warning (flag but allow):**
+  - Format inconsistencies
+  - Suspicious values
+  - Unusual patterns
+  - Missing optional fields
+
+  **Info (log only):**
+  - Style issues
+  - Optimization opportunities
+
+  ### 4. Use Database Constraints
+
+  **Leverage database features:**
+  ```sql
+  CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    age INT CHECK (age >= 0 AND age <= 120),
+    created_date DATE DEFAULT CURRENT_DATE
+      CHECK (created_date <= CURRENT_DATE),
+    FOREIGN KEY (country_id) REFERENCES countries(id)
+  );
+  ```
+
+  **Benefits:**
+  - Enforced at database level
+  - Can't be bypassed
+  - Automatic error handling
+
+  ### 5. Build Validation Reports
+
+  **Track validation metrics:**
+  - % records passing validation
+  - Common validation failures
+  - Trends over time
+  - Validation rule performance
+
+  **Automated validation dashboard:**
+  ```sql
+  CREATE VIEW data_quality_dashboard AS
+  SELECT
+    CURRENT_DATE as check_date,
+    'customers' as table_name,
+    COUNT(*) as total_records,
+    SUM(CASE WHEN validation_status = 'PASS' THEN 1 ELSE 0 END) as passed,
+    SUM(CASE WHEN validation_status = 'FAIL' THEN 1 ELSE 0 END) as failed,
+    validation_rule
+  FROM validation_results
+  GROUP BY validation_rule;
+  ```
+
+  ### 6. Handle Validation Failures
+
+  **Options:**
+  1. **Reject:** Block entire batch (strict)
+  2. **Quarantine:** Move invalid records to error table
+  3. **Flag:** Mark as invalid but keep
+  4. **Auto-fix:** Apply corrections automatically
+  5. **Manual review:** Queue for human validation
+
+  **Choose based on:**
+  - Data criticality
+  - Failure rate
+  - Business impact
+  - Available resources
+
+  ### 7. Validate Formats with Care
+
+  **Common pitfalls:**
+  - Phone: International formats vary
+  - Email: RFC allows unusual patterns
+  - Dates: Multiple valid formats
+  - Names: Special characters legitimate
+
+  **Be permissive:**
+  - Accept multiple formats
+  - Normalize after validation
+  - Don't reject edge cases
+  - Test with real data
+
+  ### 8. Cross-Field Validation
+
+  **Check logical relationships:**
+  ```sql
+  -- Start date before end date
+  WHERE start_date > end_date
+
+  -- Age matches birth date
+  WHERE age <> YEAR(CURRENT_DATE) - YEAR(birth_date)
+
+  -- Shipping address required if shipped
+  WHERE status = 'Shipped' AND shipping_address IS NULL
+
+  -- Total price matches line items
+  WHERE order_total <> (SELECT SUM(price * quantity) FROM line_items)
+  ```
+
+  ### 9. Performance Optimization
+
+  **For large-scale validation:**
+  - Index columns used in validation
+  - Validate incrementally (only new/changed)
+  - Use sampling for exploratory checks
+  - Parallelize validation checks
+  - Cache validation results
+
+  **Avoid:**
+  - Complex regex on every row
+  - Multiple full table scans
+  - Correlated subqueries
+
+  ### 10. Test Your Validation
+
+  **Create test cases:**
+  - Valid data (should pass)
+  - Invalid data (should fail)
+  - Edge cases (boundary values)
+  - NULL handling
+  - Empty strings
+  - Unicode/special characters
+
+  **Example test suite:**
+  ```sql
+  -- Test email validation
+  SELECT
+    'test@example.com' as email, 'Should pass' as expected;
+  SELECT
+    'invalid-email' as email, 'Should fail' as expected;
+  SELECT
+    NULL as email, 'Should fail (required)' as expected;
+  ```
+
+  ### 11. Continuous Monitoring
+
+  **Set up alerts:**
+  - Validation failure rate > threshold
+  - New validation error types
+  - Sudden data quality degradation
+  - Specific high-value records failing
+
+  **Proactive monitoring:**
+  - Daily validation reports
+  - Quality score trends
+  - Failed record sample review
+
+  ### 12. Document Everything
+
+  **Maintain validation catalog:**
+  - All validation rules
+  - Rule rationale
+  - Examples of pass/fail
+  - Change history
+  - Ownership
+
+  **Share with:**
+  - Data engineers
+  - Application developers
+  - Business analysts
+  - Data governance team
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - data_profiling
+  - outlier_detection
+  - missing_value_analysis
+  - duplicate_detection
+# === RELATED_PATTERNS END ===

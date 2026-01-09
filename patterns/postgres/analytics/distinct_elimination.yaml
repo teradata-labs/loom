@@ -1,0 +1,407 @@
+# === METADATA START ===
+name: distinct_elimination
+title: "DISTINCT Elimination"
+description: "Removes unnecessary DISTINCT clauses that slow down queries by analyzing uniqueness constraints, query structure, and suggesting more efficient alternatives"
+category: analytics
+difficulty: intermediate
+backend_type: postgres
+priority: 70
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - "Remove redundant DISTINCT on primary keys"
+  - "Optimize unique value queries"
+  - "Replace DISTINCT with GROUP BY for better performance"
+  - "Convert DISTINCT to EXISTS for existence checks"
+  - "Identify when DISTINCT is unnecessary due to unique constraints"
+  - "Speed up grouped queries by eliminating DISTINCT"
+  - "Reduce query execution time by 30-80%"
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: query
+    type: string
+    required: true
+    description: "Query using DISTINCT to analyze"
+    example: "SELECT DISTINCT id FROM users"
+
+  - name: table_name
+    type: string
+    required: false
+    description: "Main table being queried"
+    example: "users"
+
+  - name: schema_name
+    type: string
+    required: false
+    description: "Schema name (defaults to public)"
+    default: "public"
+    example: "public"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  check_necessary: |
+    -- Check if DISTINCT is actually necessary
+    -- Query: {{.query}}
+
+    -- Step 1: Compare row counts with and without DISTINCT
+    SELECT 'With DISTINCT' AS query_type, COUNT(*) AS row_count
+    FROM (
+      {{.query}}
+    ) AS with_distinct
+    UNION ALL
+    SELECT 'Without DISTINCT' AS query_type, COUNT(*) AS row_count
+    FROM (
+      -- Remove DISTINCT from query
+      {{.query_without_distinct}}
+    ) AS without_distinct;
+
+    -- If counts are equal, DISTINCT is unnecessary
+
+    -- Step 2: Check for unique constraints on selected columns
+    SELECT
+      tc.table_schema,
+      tc.table_name,
+      tc.constraint_type,
+      kcu.column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+      AND tc.table_schema = kcu.table_schema
+    WHERE tc.table_schema = '{{.schema_name}}'
+      AND tc.table_name = '{{.table_name}}'
+      AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+    ORDER BY kcu.ordinal_position;
+
+    -- Step 3: Analyze column cardinality
+    SELECT
+      tablename,
+      attname AS column_name,
+      n_distinct,
+      CASE
+        WHEN n_distinct = -1 THEN 'Unique (100%)'
+        WHEN n_distinct < 0 THEN 'Approximately ' || ABS(n_distinct * 100)::text || '% unique'
+        ELSE n_distinct::text || ' distinct values'
+      END AS cardinality_info
+    FROM pg_stats
+    WHERE schemaname = '{{.schema_name}}'
+      AND tablename = '{{.table_name}}'
+    ORDER BY attname;
+
+  alternative_group_by: |
+    -- Replace DISTINCT with GROUP BY for better performance
+    -- Original query with DISTINCT:
+    -- {{.query}}
+
+    -- Optimized query using GROUP BY:
+    -- If selecting single column:
+    SELECT column_name
+    FROM {{.schema_name}}.{{.table_name}}
+    GROUP BY column_name;
+
+    -- If selecting multiple columns:
+    SELECT column1, column2, column3
+    FROM {{.schema_name}}.{{.table_name}}
+    GROUP BY column1, column2, column3;
+
+    -- If you need aggregates (this is when GROUP BY really shines):
+    SELECT
+      category,
+      COUNT(*) AS count,
+      MIN(price) AS min_price,
+      MAX(price) AS max_price
+    FROM {{.schema_name}}.{{.table_name}}
+    GROUP BY category;
+
+    -- GROUP BY can use indexes more effectively than DISTINCT
+    -- and allows you to add aggregates without rewriting the query
+
+  alternative_exists: |
+    -- Replace DISTINCT with EXISTS for existence checks
+    -- This is MUCH faster when you only need to know if values exist
+
+    -- Bad: Using DISTINCT to check if any orders exist per user
+    SELECT DISTINCT user_id
+    FROM orders
+    WHERE status = 'completed';
+
+    -- Good: Using EXISTS
+    SELECT u.id
+    FROM users u
+    WHERE EXISTS (
+      SELECT 1
+      FROM orders o
+      WHERE o.user_id = u.id
+        AND o.status = 'completed'
+    );
+
+    -- EXISTS is faster because:
+    -- 1. Stops scanning as soon as first match found
+    -- 2. No need to sort/deduplicate results
+    -- 3. Can use indexes more efficiently
+
+  rewrite_joins: |
+    -- DISTINCT often appears after JOINs that create duplicates
+    -- Better approach: Fix the join logic or use subqueries
+
+    -- Bad: DISTINCT to handle one-to-many join
+    SELECT DISTINCT u.id, u.name
+    FROM users u
+    JOIN orders o ON u.id = o.user_id;
+
+    -- Good: Make it explicit what you want
+    SELECT u.id, u.name
+    FROM users u
+    WHERE EXISTS (
+      SELECT 1 FROM orders o WHERE o.user_id = u.id
+    );
+
+    -- Or if you need order data:
+    SELECT u.id, u.name, array_agg(o.id) AS order_ids
+    FROM users u
+    LEFT JOIN orders o ON u.id = o.user_id
+    GROUP BY u.id, u.name;
+
+  verification: |
+    -- Verify optimization impact
+
+    -- Step 1: Compare query plans
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{.query}};
+
+    -- vs optimized version:
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{.optimized_query}};
+
+    -- Look for:
+    -- - "Unique" or "HashAggregate" nodes (added by DISTINCT)
+    -- - Execution time differences
+    -- - Buffer usage
+
+    -- Step 2: Check sort operations
+    -- DISTINCT often requires sorting, which shows as "Sort" node
+    -- GROUP BY can sometimes use indexes, showing as "Index Scan"
+
+    -- Step 3: Measure performance improvement
+    -- Expected improvements:
+    -- - 30-50% faster for simple DISTINCT removal
+    -- - 50-80% faster when replacing with GROUP BY + index
+    -- - 80-95% faster when replacing with EXISTS
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Unnecessary DISTINCT on primary key"
+    parameters:
+      query: "SELECT DISTINCT id FROM users WHERE status = 'active'"
+      table_name: "users"
+      schema_name: "public"
+    expected_result: |
+      Analysis: id is primary key (unique constraint exists)
+
+      DISTINCT is unnecessary - primary keys are already unique.
+
+      Optimized query:
+      SELECT id FROM users WHERE status = 'active';
+
+      Expected improvement:
+      - Before: 25ms execution (unnecessary unique operation)
+      - After:  15ms execution (40% faster)
+      - Removed HashAggregate node from query plan
+
+  - name: "DISTINCT to GROUP BY conversion"
+    parameters:
+      query: "SELECT DISTINCT category FROM products WHERE price > 100"
+      table_name: "products"
+      schema_name: "public"
+    expected_result: |
+      Analysis: Query needs unique categories
+
+      Recommendation: Use GROUP BY instead of DISTINCT
+
+      Optimized query:
+      SELECT category FROM products WHERE price > 100 GROUP BY category;
+
+      Why GROUP BY is better:
+      - Can use index on category more efficiently
+      - Allows adding aggregates (COUNT, SUM) without rewrite
+      - More explicit about intent
+
+      Expected improvement:
+      - Before: 45ms execution (HashAggregate on 50K rows)
+      - After:  28ms execution (Index Scan + GroupAggregate, 38% faster)
+
+      Bonus: Easy to extend with aggregates:
+      SELECT category, COUNT(*), AVG(price) FROM products WHERE price > 100 GROUP BY category;
+
+  - name: "DISTINCT with JOIN to EXISTS conversion"
+    parameters:
+      query: "SELECT DISTINCT u.id, u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'completed'"
+      table_name: "users"
+      schema_name: "public"
+    expected_result: |
+      Analysis: DISTINCT is masking one-to-many join duplicates
+
+      Problem: Join creates duplicate user rows (one per order)
+      Original approach: Use DISTINCT to deduplicate
+
+      Better approach: Use EXISTS to avoid duplicates
+
+      Optimized query:
+      SELECT u.id, u.name
+      FROM users u
+      WHERE EXISTS (
+        SELECT 1 FROM orders o
+        WHERE o.user_id = u.id AND o.status = 'completed'
+      );
+
+      Expected improvement:
+      - Before: 180ms execution (join 100K users × 500K orders, then deduplicate)
+      - After:  35ms execution (80% faster, no deduplication needed)
+      - Memory usage reduced significantly (no intermediate join results)
+
+  - name: "Partial DISTINCT removal with constraints"
+    parameters:
+      query: "SELECT DISTINCT order_id, user_id FROM order_items"
+      table_name: "order_items"
+      schema_name: "public"
+    expected_result: |
+      Analysis: Checking for unique constraint on (order_id, user_id)
+
+      If unique constraint exists on these columns:
+      DISTINCT is unnecessary - remove it entirely
+
+      If no constraint exists:
+      Check if duplicates actually exist in data:
+      - If no duplicates: Consider adding unique constraint, then remove DISTINCT
+      - If duplicates exist: DISTINCT is necessary, but consider if business logic is correct
+
+      Query to check for duplicates:
+      SELECT order_id, user_id, COUNT(*)
+      FROM order_items
+      GROUP BY order_id, user_id
+      HAVING COUNT(*) > 1;
+
+      If this returns no rows, DISTINCT is unnecessary!
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## DISTINCT Elimination Best Practices
+
+  ### 1. Check if DISTINCT is Truly Needed
+  Before using DISTINCT, ask:
+  - Are there actually duplicates in the data?
+  - Is there a unique constraint that guarantees uniqueness?
+  - Am I hiding a data quality issue with DISTINCT?
+
+  ### 2. DISTINCT is Expensive
+  What DISTINCT does internally:
+  - Scans all rows
+  - Sorts or hashes to find duplicates
+  - Stores intermediate results in memory
+
+  Cost increases with:
+  - Number of rows
+  - Number of columns in SELECT
+  - Column data types (large text fields are expensive)
+
+  ### 3. Prefer GROUP BY Over DISTINCT
+  ```sql
+  -- Slower: DISTINCT (generic deduplication)
+  SELECT DISTINCT category FROM products;
+
+  -- Faster: GROUP BY (can use indexes)
+  SELECT category FROM products GROUP BY category;
+  ```
+
+  GROUP BY advantages:
+  - Can use indexes more effectively
+  - Allows adding aggregates (COUNT, SUM, AVG)
+  - More explicit about intent
+  - Better query optimization by planner
+
+  ### 4. Use EXISTS for Existence Checks
+  ```sql
+  -- Bad: DISTINCT to find users with orders
+  SELECT DISTINCT user_id FROM orders WHERE status = 'completed';
+
+  -- Good: EXISTS stops at first match
+  SELECT id FROM users WHERE EXISTS (
+    SELECT 1 FROM orders WHERE user_id = users.id AND status = 'completed'
+  );
+  ```
+
+  ### 5. Fix Bad Joins Instead of Using DISTINCT
+  DISTINCT as a bandaid for one-to-many joins is a code smell:
+  ```sql
+  -- Bad: DISTINCT hiding join explosion
+  SELECT DISTINCT u.name FROM users u JOIN orders o ON u.id = o.user_id;
+
+  -- Good: Use proper subquery or aggregation
+  SELECT u.name FROM users u
+  WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+  ```
+
+  ### 6. Check for Unique Constraints
+  ```sql
+  -- Find tables with unique constraints
+  SELECT table_name, constraint_name, constraint_type
+  FROM information_schema.table_constraints
+  WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+    AND table_name = 'your_table';
+  ```
+
+  If selecting columns with unique constraint, DISTINCT is redundant.
+
+  ### 7. Use DISTINCT ON for Partial Uniqueness
+  Postgres-specific feature for controlled deduplication:
+  ```sql
+  -- Get most recent order per user (faster than DISTINCT + subquery)
+  SELECT DISTINCT ON (user_id) user_id, created_at, total
+  FROM orders
+  ORDER BY user_id, created_at DESC;
+  ```
+
+  ### 8. Analyze Query Plans
+  Look for these nodes in EXPLAIN output:
+  - `HashAggregate`: DISTINCT using hash table (memory intensive)
+  - `Unique`: DISTINCT using sort (requires sorted input)
+  - `Sort`: Often appears before Unique (expensive!)
+
+  GROUP BY may show:
+  - `GroupAggregate`: Efficient if data already sorted
+  - `HashAggregate`: Similar to DISTINCT but can add aggregates
+
+  ### 9. When DISTINCT is Actually Good
+  DISTINCT is appropriate when:
+  - Data truly has duplicates (not due to bad joins)
+  - Columns don't have unique constraint
+  - Query is simple (single table, few columns)
+  - You can't use GROUP BY (e.g., selecting all columns)
+
+  ### 10. Memory Layers for Query Optimization
+  - **Kernel Layer**: Cache table constraints and index definitions for quick lookup during analysis
+  - **L1 Cache**: Keep recent query plans (last 5-10 queries) showing DISTINCT usage and alternatives tested
+  - **L2 Compressed**: Archive optimization decisions and performance improvements from earlier in conversation
+  - **Swap Layer**: Store complete query optimization history for long-running projects; use recall_conversation to reference DISTINCT patterns analyzed weeks ago
+  This enables consistent optimization patterns and avoids re-analyzing similar queries.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - query_rewrite
+  - join_optimization
+  - subquery_to_join
+  - missing_index_analysis
+# === RELATED_PATTERNS END ===
+
+validation:
+  rules:
+    - "Verify DISTINCT is needed (check for actual duplicates)"
+    - "Check if PK/unique constraint exists on selected columns"
+    - "Compare GROUP BY performance vs DISTINCT"
+    - "Confirm optimization maintains correct results"

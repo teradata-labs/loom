@@ -1,0 +1,380 @@
+# === METADATA START ===
+name: key_detection
+title: "Primary Key Detection Using Signatures"
+description: |
+  Automatically detect primary key candidates using column signatures and "keyness" analysis.
+
+  **WHAT IS KEYNESS?**
+  Keyness = Distinct Count / Row Count
+  - 1.0: Perfect key (every value unique)
+  - 0.9-0.99: Strong key candidate (near-unique)
+  - 0.5-0.89: Weak key candidate
+  - < 0.5: Not a key (low cardinality)
+
+  **DETECTION METHODS:**
+  1. **Single Column Keys**: Analyze keyness for each column
+  2. **Composite Keys**: Combine columns to achieve high keyness
+  3. **Surrogate Key Detection**: Identify synthetic/auto-increment keys
+  4. **Functional Dependencies**: Find columns determined by keys
+
+  **WHY USE SIGNATURES FOR KEY DETECTION?**
+  - Fast: No full table scans needed after signature generation
+  - Accurate: Uses HyperLogLog for precise distinct count estimation
+  - Scalable: Works on billion-row tables
+  - Automatic: No manual schema analysis required
+
+  **REQUIREMENTS:**
+  Requires SIGNATURES table populated by signature_generation pattern.
+  Uses UDFS.Count_Estimate(), UDFS.IsSurrogate() functions.
+
+  **CRITICAL: Verification**
+  Always verify detected keys with COLLECT STATISTICS and manual inspection.
+  High keyness doesn't guarantee uniqueness constraint satisfaction.
+
+category: data_discovery
+difficulty: intermediate
+teradata_function: Count_Estimate, IsSurrogate
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Automatically discover primary keys in undocumented tables
+  - Validate existing primary index choices
+  - Find candidate keys for normalization
+  - Detect surrogate/synthetic keys
+  - Support data lineage and impact analysis
+  - Guide index design decisions
+  - Enable automated schema documentation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database to analyze for keys"
+    example: "semantic_data"
+
+  - name: table
+    type: string
+    required: false
+    description: "Specific table to analyze (optional)"
+    example: "customers"
+
+  - name: keyness_threshold
+    type: number
+    required: false
+    default: 0.95
+    description: "Minimum keyness for key candidate (0.0-1.0)"
+    example: "0.95"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  single_column_keys:
+    description: "Find single-column key candidates using keyness"
+    sql: |
+      -- Single-column key candidates
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        ROW_COUNT,
+        UDFS.Count_Estimate(SIG_DATA) AS distinct_count,
+        CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+          NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) AS keyness,
+        UDFS.Null_Count(SIG_DATA) AS null_count,
+        UDFS.IsSurrogate(SIG_DATA) AS is_surrogate,
+        CASE
+          WHEN CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+               NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) >= 0.999 THEN 'PERFECT_KEY'
+          WHEN CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+               NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) >= {{keyness_threshold}} THEN 'STRONG_KEY'
+          WHEN CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+               NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) >= 0.80 THEN 'WEAK_KEY'
+          ELSE 'NOT_KEY'
+        END AS key_classification
+      FROM {{database}}.SIGNATURES
+      WHERE 1=1
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+        AND VALUE_COUNT > 0  -- Skip empty columns
+        AND UDFS.Null_Count(SIG_DATA) = 0  -- Keys can't have NULLs
+        AND CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+            NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) >= {{keyness_threshold}}
+      ORDER BY keyness DESC, TABLE_NAME, COLUMN_NAME;
+
+  surrogate_keys:
+    description: "Detect synthetic/auto-increment keys"
+    sql: |
+      -- Surrogate key detection
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        ROW_COUNT,
+        UDFS.Count_Estimate(SIG_DATA) AS distinct_count,
+        UDFS.IsSurrogate(SIG_DATA) AS is_surrogate,
+        CASE
+          WHEN UDFS.IsSurrogate(SIG_DATA) = 1 THEN 'SYNTHETIC_KEY'
+          ELSE 'NATURAL_KEY'
+        END AS key_type
+      FROM {{database}}.SIGNATURES
+      WHERE 1=1
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+        AND COLUMN_TYPE = 'I'  -- Integer columns only
+        AND UDFS.IsSurrogate(SIG_DATA) = 1
+      ORDER BY TABLE_NAME, COLUMN_NAME;
+
+      -- IsSurrogate criteria:
+      -- 1. Type is INTEGER
+      -- 2. Min value is 0 or 1
+      -- 3. Range (max - min) ≈ distinct count (sequential)
+
+  composite_key_candidates:
+    description: "Find pairs of columns that together form strong keys"
+    sql: |
+      -- Composite key candidates (2-column combinations)
+      WITH WEAK_KEYS AS (
+        SELECT
+          TABLE_NAME,
+          COLUMN_NAME,
+          ROW_COUNT,
+          UDFS.Count_Estimate(SIG_DATA) AS distinct_count,
+          CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+            NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) AS keyness
+        FROM {{database}}.SIGNATURES
+        WHERE 1=1
+          {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+          AND keyness BETWEEN 0.50 AND 0.95  -- Weak keys only
+          AND UDFS.Null_Count(SIG_DATA) = 0
+      )
+      SELECT
+        k1.TABLE_NAME,
+        k1.COLUMN_NAME AS col1,
+        k2.COLUMN_NAME AS col2,
+        k1.ROW_COUNT,
+        k1.distinct_count AS col1_distinct,
+        k2.distinct_count AS col2_distinct,
+        k1.keyness AS col1_keyness,
+        k2.keyness AS col2_keyness,
+        -- Estimated composite keyness (conservative)
+        LEAST(1.0, k1.keyness * k2.keyness * 1.5) AS estimated_composite_keyness,
+        k1.COLUMN_NAME || ',' || k2.COLUMN_NAME AS composite_key_candidate
+      FROM WEAK_KEYS k1
+      JOIN WEAK_KEYS k2
+        ON k1.TABLE_NAME = k2.TABLE_NAME
+        AND k1.COLUMN_NAME < k2.COLUMN_NAME  -- Avoid duplicates
+      WHERE LEAST(1.0, k1.keyness * k2.keyness * 1.5) >= {{keyness_threshold}}
+      ORDER BY estimated_composite_keyness DESC;
+
+  key_verification:
+    description: "Verify detected key with actual distinct count query"
+    sql: |
+      -- Verify key candidate with exact count
+      SELECT
+        '{{table}}' AS table_name,
+        '{{column}}' AS column_name,
+        COUNT(*) AS total_rows,
+        COUNT(DISTINCT {{column}}) AS distinct_values,
+        COUNT({{column}}) AS non_null_values,
+        CAST(COUNT(DISTINCT {{column}}) AS DOUBLE PRECISION) /
+          NULLIFZERO(COUNT(*)) AS actual_keyness,
+        CASE
+          WHEN COUNT(DISTINCT {{column}}) = COUNT(*) THEN 'PERFECT_KEY'
+          WHEN COUNT(DISTINCT {{column}}) = COUNT({{column}}) AND COUNT({{column}}) < COUNT(*) THEN 'KEY_WITH_NULLS'
+          ELSE 'DUPLICATES_EXIST'
+        END AS verification_result
+      FROM {{database}}.{{table}};
+
+  keys_by_table:
+    description: "Summary of key candidates per table"
+    sql: |
+      -- Key summary by table
+      SELECT
+        TABLE_NAME,
+        COUNT(*) AS key_candidates,
+        COUNT(CASE WHEN keyness >= 0.999 THEN 1 END) AS perfect_keys,
+        COUNT(CASE WHEN keyness >= 0.95 AND keyness < 0.999 THEN 1 END) AS strong_keys,
+        COUNT(CASE WHEN UDFS.IsSurrogate(SIG_DATA) = 1 THEN 1 END) AS surrogate_keys,
+        MAX(keyness) AS max_keyness,
+        MAX(CASE WHEN keyness >= {{keyness_threshold}} THEN COLUMN_NAME END) AS best_key_column
+      FROM {{database}}.SIGNATURES
+      WHERE CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+            NULLIFZERO(CAST(ROW_COUNT AS DOUBLE PRECISION)) >= {{keyness_threshold}}
+        AND UDFS.Null_Count(SIG_DATA) = 0
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+      GROUP BY TABLE_NAME
+      ORDER BY perfect_keys DESC, strong_keys DESC;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Detect single-column keys in database"
+    parameters:
+      database: "semantic_data"
+      keyness_threshold: 0.95
+    expected_result: |
+      Key Candidates Found:
+
+      | TABLE_NAME    | COLUMN_NAME  | KEYNESS | KEY_CLASS    | IS_SURROGATE |
+      |---------------|--------------|---------|--------------|--------------|
+      | customers     | customer_id  | 1.000   | PERFECT_KEY  | 1            |
+      | orders        | order_id     | 1.000   | PERFECT_KEY  | 1            |
+      | products      | sku          | 0.998   | STRONG_KEY   | 0            |
+      | transactions  | txn_id       | 1.000   | PERFECT_KEY  | 1            |
+      | employees     | employee_id  | 1.000   | PERFECT_KEY  | 1            |
+
+      Interpretation:
+      - customer_id, order_id, txn_id, employee_id: Surrogate keys (auto-increment)
+      - sku: Natural key (product identifier)
+
+  - name: "Find composite key candidates"
+    parameters:
+      database: "sales"
+      table: "order_items"
+      keyness_threshold: 0.95
+    expected_result: |
+      No single-column keys found (keyness < 0.95 for all columns).
+
+      Composite Key Candidates:
+
+      | TABLE    | COL1     | COL2       | COL1_KEY | COL2_KEY | COMPOSITE_KEY |
+      |----------|----------|------------|----------|----------|---------------|
+      | order_it | order_id | item_seq   | 0.65     | 0.15     | 0.98          |
+      | order_it | order_id | product_id | 0.65     | 0.80     | 1.00          |
+
+      Recommendation:
+      - PRIMARY KEY (order_id, product_id) achieves keyness = 1.0
+      - Alternative: (order_id, item_seq) achieves keyness = 0.98
+
+  - name: "Detect surrogate keys"
+    parameters:
+      database: "semantic_data"
+    expected_result: |
+      Surrogate Keys Detected:
+
+      | TABLE_NAME  | COLUMN_NAME    | DISTINCT_CNT | KEY_TYPE      |
+      |-------------|----------------|--------------|---------------|
+      | customers   | customer_id    | 50000        | SYNTHETIC_KEY |
+      | orders      | order_id       | 125000       | SYNTHETIC_KEY |
+      | products    | product_id     | 5000         | SYNTHETIC_KEY |
+
+      Characteristics of Surrogate Keys:
+      - Type: INTEGER
+      - Range: Starts at 1
+      - Sequential: No gaps (or minimal gaps)
+      - Distinct count ≈ max_value - min_value + 1
+
+      These are likely auto-increment or IDENTITY columns.
+
+  - name: "Verify key candidate"
+    parameters:
+      database: "sales"
+      table: "customers"
+      column: "email"
+    expected_result: |
+      Key Verification for customers.email:
+
+      - Total rows: 50,000
+      - Distinct values: 49,876
+      - Non-null values: 49,876
+      - Actual keyness: 0.998
+      - Result: DUPLICATES_EXIST (124 duplicate emails)
+
+      Analysis:
+      - High keyness (0.998) suggests near-uniqueness
+      - But not a perfect key due to 124 duplicates
+      - Likely data quality issue (same person, multiple accounts)
+      - Consider adding UNIQUE constraint after deduplication
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Key Detection Best Practices
+
+  ### 1. Generate Signatures First
+  Key detection requires populated SIGNATURES table:
+  ```sql
+  -- Run signature_generation pattern first
+  INSERT INTO SIGNATURES SELECT ... UDFS.SIGNATURE(column) ...
+  ```
+
+  ### 2. Set Appropriate Keyness Threshold
+  **Thresholds:**
+  - 0.999: Perfect or near-perfect keys
+  - 0.95: Strong key candidates (recommended default)
+  - 0.80: Weak keys, may need composite approach
+  - < 0.80: Not a key
+
+  ### 3. Verify NULL Handling
+  Keys must not contain NULLs:
+  ```sql
+  WHERE UDFS.Null_Count(SIG_DATA) = 0
+  ```
+
+  ### 4. Always Verify Detected Keys
+  Signature-based detection is statistical:
+  ```sql
+  -- Verify with exact count
+  SELECT COUNT(*), COUNT(DISTINCT key_column)
+  FROM table;
+  ```
+
+  ### 5. Distinguish Surrogate vs Natural Keys
+  ```sql
+  -- Surrogate: System-generated (auto-increment)
+  WHERE UDFS.IsSurrogate(SIG_DATA) = 1
+
+  -- Natural: Business-meaningful (SKU, SSN, email)
+  WHERE UDFS.IsSurrogate(SIG_DATA) = 0
+  ```
+
+  ### 6. Consider Composite Keys
+  When no single column has high keyness:
+  - Combine columns with medium keyness (0.5-0.9)
+  - Test combinations: estimated_keyness = k1 * k2 * 1.5
+  - Verify with: COUNT(DISTINCT col1, col2)
+
+  ### 7. Check Existing Primary Index
+  Compare detected keys with actual PI:
+  ```sql
+  SELECT DatabaseName, TableName, ColumnName
+  FROM DBC.IndicesV
+  WHERE IndexType = 'P'  -- Primary Index
+    AND DatabaseName = 'semantic_data';
+  ```
+
+  ### 8. Memory Layers for Key Detection
+  - **Kernel Layer**: Cache keyness thresholds and IsSurrogate rules
+  - **L1 Cache**: Keep recent key detection results (last 5-8 tables) for comparison
+  - **L2 Compressed**: Archive detected keys showing keyness trends
+  - **Swap Layer**: Store complete key analysis history; use recall_conversation to compare current key choices against earlier schema designs
+  This enables tracking when keys degrade (keyness drops) or validating schema evolution decisions.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "High keyness but verification shows duplicates"
+    cause: "HyperLogLog distinct count estimate has error margin (~1-2%)"
+    solution: "Always verify with exact COUNT(DISTINCT) query before creating PRIMARY INDEX"
+
+  - error: "No keys detected for table"
+    cause: "All columns have low keyness, need composite key"
+    solution: "Use composite_key_candidates template to find column combinations"
+
+  - error: "IsSurrogate returns 0 for auto-increment column"
+    cause: "Column has gaps in sequence (deleted rows not backfilled)"
+    solution: "IsSurrogate requires nearly-sequential values. Check (max - min) ≈ distinct_count"
+
+  - error: "Key detection finds column with NULLs"
+    cause: "WHERE clause missing NULL filter"
+    solution: "Add: WHERE UDFS.Null_Count(SIG_DATA) = 0"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - signature_generation  # Must run first to populate SIGNATURES
+  - foreign_key_detection  # Use detected keys to find FK relationships
+  - pi_skew_detection  # Validate detected keys don't cause skew
+  - statistics_collection  # Collect stats on detected keys
+# === RELATED_PATTERNS END ===

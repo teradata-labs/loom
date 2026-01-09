@@ -1,0 +1,101 @@
+# Llama 3.1 8B Optimized Agent Configuration
+# This configuration is specifically tuned for Llama 3.1 8B to maximize performance
+# and reliability while working within the constraints of smaller models.
+#
+# Key Optimizations:
+# - Lower max_tokens (4096 instead of 8192) for more focused responses
+# - Reduced context window usage for better stability
+# - Aggressive memory compression to prevent context overflow
+# - Fewer max iterations to avoid confusion loops
+# - Concise system prompts to save tokens for actual work
+
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: llama_3.1_8b_agent
+  version: "1.0.0"
+  description: General-purpose agent optimized for Llama 3.1 8B performance
+  labels:
+    author: loom-team
+    model_family: llama
+    model_size: 8b
+    optimization_target: performance
+    tags: llama-3.1,8b,optimized,local
+spec:
+
+  # Concise system prompt - avoid verbose instructions
+  # Llama 3.1 8B works best with direct, task-focused prompts
+  system_prompt: |
+    You are a helpful assistant that uses available tools to accomplish tasks.
+
+    Important guidelines:
+    - Call tools when needed to get accurate information
+    - Never fabricate data - only report what tools actually return
+    - If a tool fails, acknowledge it and try a different approach
+    - Be concise and focused in your responses
+    - When you have enough information, provide your final answer
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+
+  config:
+    max_turns: 8  # Reduce from default 10 to avoid confusion
+    max_tool_executions: 20  # Lower than default 30
+    timeout_seconds: 300
+
+  # Patterns can consume significant context - load selectively
+  patterns_dir: ""  # Empty = disable pattern library by default
+
+  # Use patterns only when explicitly needed:
+  # patterns_dir: "patterns/libraries/sql-core.yaml"  # Load specific pattern
+  # patterns_dir: "patterns"  # Load all patterns (use only with large models)
+
+  retry:
+    enabled: true
+    max_retries: 3
+    initial_delay: 1s
+    max_delay: 10s
+
+---
+# Usage Notes:
+#
+# 1. For SQL tasks with Llama 3.1 8B:
+#    - Load only sql-core patterns: patterns_dir: "patterns/libraries/sql-core.yaml"
+#    - Or use MCP servers instead of patterns for better context efficiency
+#
+# 2. For general tasks:
+#    - Keep patterns_dir empty
+#    - Register only the specific tools you need
+#
+# 3. Performance tips:
+#    - Llama 3.1 8B has excellent tool calling support
+#    - Works best with 3-5 tools maximum per conversation
+#    - Prefers short, focused system prompts (< 500 tokens)
+#    - Performs better with explicit examples than abstract guidelines
+#
+# 4. Context management:
+#    - The 100K context limit leaves ~28K for tool results and conversation
+#    - If you see degraded performance, enable compression earlier:
+#      memory.compression_threshold: 0.6  # Compress at 60% instead of 70%
+#
+# 5. Example initialization:
+#    ```go
+#    cfg, err := agent.LoadConfigFromFile("examples/reference/agents/llama-3.1-8b-optimized.yaml")
+#    if err != nil {
+#        log.Fatal(err)
+#    }
+#
+#    agent, err := agent.NewFromConfig(cfg, backend, llmProvider)
+#    if err != nil {
+#        log.Fatal(err)
+#    }
+#    ```
+#
+# 6. Comparison with larger models:
+#    - Llama 3.1 70B can use max_tokens: 8192 and max_iterations: 15
+#    - Claude Sonnet can use full 200K context with all patterns loaded
+#    - Llama 3.1 8B trades context size for speed and local deployment

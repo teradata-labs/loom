@@ -1,0 +1,617 @@
+# === METADATA START ===
+name: document_analyzer
+title: "Document Content Analysis"
+backend_type: document
+description: |
+  Analyze document content to extract insights, classify documents, identify entities,
+  and understand document structure and meaning. Works with parsed document text.
+
+  **ANALYSIS CAPABILITIES:**
+
+  **Classification:**
+  - Document type (invoice, contract, report, email)
+  - Topic classification (legal, financial, technical)
+  - Content category (marketing, operations, HR)
+
+  **Entity Extraction:**
+  - Named entities (people, organizations, locations)
+  - Dates and time references
+  - Monetary amounts and financial data
+  - Contact information (emails, phones)
+
+  **Content Analysis:**
+  - Key information extraction
+  - Document summarization
+  - Sentiment analysis
+  - Language detection
+
+  **Structure Analysis:**
+  - Section detection (headers, paragraphs)
+  - Table of contents extraction
+  - Citation and reference extraction
+  - Document quality assessment
+
+  **USE CASES:**
+  - Automatic document categorization
+  - Contract analysis and clause extraction
+  - Invoice processing and data extraction
+  - Email triage and routing
+  - Document search and retrieval
+  - Compliance checking
+  - Document quality scoring
+
+category: document
+difficulty: intermediate
+tags: [analysis, nlp, classification, extraction, entities]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Classify documents by type and topic
+  - Extract named entities from contracts
+  - Summarize long reports automatically
+  - Detect document language
+  - Extract key dates and amounts from invoices
+  - Analyze document sentiment and tone
+  - Compare document similarity
+  - Score document quality and completeness
+  - Extract contact information
+  - Build document search indexes with metadata
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: document_text
+    type: string
+    required: true
+    description: "Text content of document (from file_parser)"
+    example: "Annual Report 2024..."
+
+  - name: analysis_type
+    type: string
+    required: false
+    description: "Type of analysis (classification, entities, summary, sentiment)"
+    example: "entities"
+    default: "all"
+
+  - name: language
+    type: string
+    required: false
+    description: "Document language (auto-detected if not specified)"
+    example: "en"
+    default: "auto"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  document_classification:
+    description: "Classify document by type and topic using LLM"
+    content: |
+      Analyze this document and classify it.
+
+      Document text:
+      ```
+      {{document_text}}
+      ```
+
+      Provide:
+      1. Document Type (invoice, contract, report, email, memo, letter, etc.)
+      2. Topic Categories (legal, financial, technical, marketing, HR, etc.)
+      3. Industry (if applicable)
+      4. Confidence Score (0-1)
+
+      Return as JSON:
+      {
+        "document_type": "...",
+        "topics": ["...", "..."],
+        "industry": "...",
+        "confidence": 0.95
+      }
+    expected_output: |
+      {
+        "document_type": "annual_report",
+        "topics": ["financial", "business"],
+        "industry": "technology",
+        "confidence": 0.97
+      }
+
+  entity_extraction:
+    description: "Extract named entities and key information"
+    content: |
+      Extract all important entities and information from this document.
+
+      Document text:
+      ```
+      {{document_text}}
+      ```
+
+      Extract:
+      1. People (names, titles, roles)
+      2. Organizations (companies, institutions)
+      3. Locations (cities, countries, addresses)
+      4. Dates (mentioned dates, deadlines, periods)
+      5. Money (amounts, currencies, financial figures)
+      6. Contact Info (emails, phones, websites)
+      7. Product Names
+      8. Legal Entities (contract parties, case numbers)
+
+      Return as JSON with arrays for each category.
+    expected_output: |
+      {
+        "people": [
+          {"name": "John Smith", "title": "CEO", "role": "signatory"}
+        ],
+        "organizations": [
+          {"name": "Acme Corp", "type": "company"},
+          {"name": "SEC", "type": "regulatory"}
+        ],
+        "locations": [
+          {"name": "New York", "type": "city"},
+          {"address": "123 Main St, NY 10001", "type": "address"}
+        ],
+        "dates": [
+          {"date": "2024-12-31", "context": "fiscal year end"},
+          {"date": "2025-01-15", "context": "filing deadline"}
+        ],
+        "money": [
+          {"amount": 10000000, "currency": "USD", "context": "revenue"}
+        ],
+        "contacts": [
+          {"email": "john@acme.com", "phone": "+1-555-0100"}
+        ]
+      }
+
+  key_information_extraction:
+    description: "Extract key facts and data points"
+    content: |
+      Extract the most important information from this document.
+      Focus on actionable facts, key metrics, and critical details.
+
+      Document text:
+      ```
+      {{document_text}}
+      ```
+
+      Provide:
+      1. Main Topic/Purpose
+      2. Key Facts (5-10 bullet points)
+      3. Important Numbers/Metrics
+      4. Action Items or Deadlines
+      5. Stakeholders Mentioned
+
+      Return as structured JSON.
+    expected_output: |
+      {
+        "main_topic": "Q4 2024 Financial Results",
+        "key_facts": [
+          "Revenue increased 25% YoY to $10M",
+          "Launched 3 new products",
+          "Expanded to European market"
+        ],
+        "metrics": {
+          "revenue": "$10M",
+          "growth_rate": "25%",
+          "customer_count": "5000"
+        },
+        "action_items": [
+          {"task": "File annual report", "deadline": "2025-01-31"}
+        ],
+        "stakeholders": ["Board of Directors", "Shareholders", "SEC"]
+      }
+
+  document_summarization:
+    description: "Generate concise summary of document"
+    content: |
+      Summarize this document in {{summary_length}} sentences.
+      Focus on the main points and key takeaways.
+
+      Document text:
+      ```
+      {{document_text}}
+      ```
+
+      Provide:
+      1. One-sentence summary (headline)
+      2. Short summary ({{summary_length}} sentences)
+      3. Key takeaways (3-5 bullet points)
+
+      Return as JSON.
+    parameters:
+      - name: summary_length
+        default: "3"
+    expected_output: |
+      {
+        "headline": "Company reports record revenue growth in Q4 2024",
+        "summary": "The company achieved record revenue of $10M in Q4 2024, representing 25% year-over-year growth. Three new products were launched and expansion into European markets began. The board approved plans for continued investment in R&D.",
+        "key_takeaways": [
+          "Revenue: $10M (+25% YoY)",
+          "3 new product launches",
+          "European market expansion",
+          "Continued R&D investment"
+        ]
+      }
+
+  sentiment_analysis:
+    description: "Analyze document tone and sentiment"
+    content: |
+      Analyze the tone and sentiment of this document.
+
+      Document text:
+      ```
+      {{document_text}}
+      ```
+
+      Assess:
+      1. Overall Sentiment (positive, negative, neutral)
+      2. Tone (formal, casual, urgent, friendly, aggressive)
+      3. Confidence Level (how certain is the sentiment)
+      4. Key Emotional Indicators (words/phrases indicating sentiment)
+
+      Return as JSON.
+    expected_output: |
+      {
+        "sentiment": "positive",
+        "sentiment_score": 0.78,
+        "tone": ["formal", "optimistic"],
+        "confidence": 0.92,
+        "emotional_indicators": [
+          {"phrase": "record growth", "sentiment": "positive"},
+          {"phrase": "exceeded expectations", "sentiment": "positive"}
+        ]
+      }
+
+  language_detection:
+    description: "Detect document language and encoding"
+    content: |
+      # Language Detection (Python)
+
+      from langdetect import detect, detect_langs
+      import langid
+
+      def detect_language(text):
+          """Detect document language"""
+          # Method 1: langdetect (Google's language-detection library)
+          try:
+              language = detect(text)
+              # Get probability distribution
+              langs = detect_langs(text)
+              return {
+                  'language': language,
+                  'confidence': langs[0].prob,
+                  'alternatives': [(lang.lang, lang.prob) for lang in langs]
+              }
+          except:
+              pass
+
+          # Method 2: langid (fallback)
+          try:
+              lang, confidence = langid.classify(text)
+              return {
+                  'language': lang,
+                  'confidence': confidence,
+                  'alternatives': []
+              }
+          except:
+              return {
+                  'language': 'unknown',
+                  'confidence': 0.0
+              }
+
+      # Example
+      text = "This is an English document about machine learning."
+      result = detect_language(text)
+      # Returns: {'language': 'en', 'confidence': 0.99}
+
+  contract_analysis:
+    description: "Analyze contracts and legal documents"
+    content: |
+      Analyze this contract and extract key legal information.
+
+      Contract text:
+      ```
+      {{document_text}}
+      ```
+
+      Extract:
+      1. Parties (all parties involved)
+      2. Effective Date and Term
+      3. Key Obligations (for each party)
+      4. Payment Terms
+      5. Termination Clauses
+      6. Liability Limitations
+      7. Governing Law
+      8. Risk Factors
+
+      Return as structured JSON.
+    expected_output: |
+      {
+        "parties": [
+          {"name": "Acme Corp", "role": "service provider"},
+          {"name": "XYZ Inc", "role": "client"}
+        ],
+        "effective_date": "2024-01-01",
+        "term": "12 months, auto-renewal",
+        "obligations": {
+          "acme_corp": ["Provide services", "Maintain uptime > 99.9%"],
+          "xyz_inc": ["Pay monthly fee", "Provide access to systems"]
+        },
+        "payment_terms": {
+          "amount": "$10,000/month",
+          "due": "1st of each month",
+          "late_fee": "1.5% per month"
+        },
+        "termination": "30 days written notice",
+        "liability_limit": "$100,000 per incident",
+        "governing_law": "State of New York",
+        "risk_factors": [
+          "No penalty for missed SLA",
+          "Broad indemnification clause"
+        ]
+      }
+
+  invoice_analysis:
+    description: "Extract information from invoices"
+    content: |
+      Extract all relevant information from this invoice.
+
+      Invoice text:
+      ```
+      {{document_text}}
+      ```
+
+      Extract:
+      1. Invoice Number
+      2. Invoice Date and Due Date
+      3. Vendor Information
+      4. Customer Information
+      5. Line Items (description, quantity, price)
+      6. Subtotal, Tax, Total
+      7. Payment Terms
+      8. Payment Methods Accepted
+
+      Return as structured JSON.
+    expected_output: |
+      {
+        "invoice_number": "INV-2024-0042",
+        "invoice_date": "2024-01-15",
+        "due_date": "2024-02-14",
+        "vendor": {
+          "name": "Acme Services",
+          "address": "123 Main St, NY 10001",
+          "tax_id": "12-3456789"
+        },
+        "customer": {
+          "name": "XYZ Corp",
+          "address": "456 Oak Ave, CA 90001"
+        },
+        "line_items": [
+          {
+            "description": "Professional Services - January",
+            "quantity": 40,
+            "unit": "hours",
+            "rate": 150,
+            "amount": 6000
+          }
+        ],
+        "subtotal": 6000,
+        "tax": 480,
+        "total": 6480,
+        "currency": "USD",
+        "payment_terms": "Net 30",
+        "payment_methods": ["Check", "Wire Transfer", "Credit Card"]
+      }
+
+  document_comparison:
+    description: "Compare two documents for similarity and differences"
+    content: |
+      Compare these two documents and identify similarities and differences.
+
+      Document 1:
+      ```
+      {{document1_text}}
+      ```
+
+      Document 2:
+      ```
+      {{document2_text}}
+      ```
+
+      Provide:
+      1. Similarity Score (0-1)
+      2. Key Similarities
+      3. Key Differences
+      4. Content Added in Document 2
+      5. Content Removed from Document 1
+      6. Modified Sections
+
+      Return as JSON.
+    expected_output: |
+      {
+        "similarity_score": 0.78,
+        "similarities": [
+          "Both documents discuss Q4 results",
+          "Same revenue figures reported",
+          "Identical executive summary"
+        ],
+        "differences": [
+          "Document 2 includes European expansion details",
+          "Document 1 has more detailed financial tables",
+          "Different recommendations section"
+        ],
+        "added_content": [
+          "Section 5: European Market Analysis",
+          "Appendix B: Regulatory Compliance"
+        ],
+        "removed_content": [
+          "Section 7: Historical Performance"
+        ],
+        "modified_sections": [
+          "Executive Summary: Updated revenue forecast"
+        ]
+      }
+
+  document_quality_assessment:
+    description: "Assess document quality and completeness"
+    content: |
+      Assess the quality and completeness of this document.
+
+      Document text:
+      ```
+      {{document_text}}
+      ```
+
+      Evaluate:
+      1. Completeness (are expected sections present?)
+      2. Clarity (is it easy to understand?)
+      3. Structure (is it well-organized?)
+      4. Professional Quality
+      5. Missing Information
+      6. Potential Issues
+
+      Provide a quality score (0-100) and detailed feedback.
+    expected_output: |
+      {
+        "overall_score": 85,
+        "completeness": {
+          "score": 80,
+          "feedback": "Missing executive summary and appendices"
+        },
+        "clarity": {
+          "score": 90,
+          "feedback": "Well-written and easy to understand"
+        },
+        "structure": {
+          "score": 85,
+          "feedback": "Good organization, clear section headers"
+        },
+        "professionalism": {
+          "score": 90,
+          "feedback": "Professional tone and formatting"
+        },
+        "missing_information": [
+          "Executive summary",
+          "Contact information",
+          "References or citations"
+        ],
+        "potential_issues": [
+          "Table 3 referenced but not included",
+          "Some figures lack sources"
+        ]
+      }
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Classify annual report"
+    input: "Annual Report 2024\n\nExecutive Summary\nWe achieved record revenue..."
+    analysis_type: "classification"
+    output: |
+      {
+        "document_type": "annual_report",
+        "topics": ["financial", "business", "corporate"],
+        "industry": "technology",
+        "confidence": 0.96
+      }
+
+  - name: "Extract entities from contract"
+    input: "This Agreement is entered into on January 1, 2024 between Acme Corp..."
+    analysis_type: "entities"
+    output: |
+      {
+        "people": [],
+        "organizations": [
+          {"name": "Acme Corp", "type": "company"}
+        ],
+        "dates": [
+          {"date": "2024-01-01", "context": "agreement effective date"}
+        ]
+      }
+
+  - name: "Summarize document"
+    input: "Long document text about quarterly results..."
+    analysis_type: "summary"
+    output: |
+      {
+        "headline": "Strong Q4 results with 25% revenue growth",
+        "summary": "The company reported excellent Q4 results with revenue of $10M...",
+        "key_takeaways": ["Revenue up 25%", "New product launches", "Market expansion"]
+      }
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Document Analysis Best Practices
+
+  ### 1. Pre-process Text
+  - Remove headers/footers that repeat
+  - Clean up formatting artifacts
+  - Normalize whitespace
+  - Handle multi-column layouts
+
+  ### 2. Use Appropriate Models
+  - LLMs for complex analysis (classification, extraction, summarization)
+  - Rule-based for structured documents (invoices, forms)
+  - NER models for entity extraction (spaCy, Hugging Face)
+  - Hybrid approaches for best results
+
+  ### 3. Validate Extracted Data
+  - Check date formats are valid
+  - Verify monetary amounts are numbers
+  - Validate email/phone formats
+  - Cross-reference entities for consistency
+
+  ### 4. Handle Document Types Differently
+  - Contracts: Focus on clauses, obligations, dates
+  - Invoices: Extract structured financial data
+  - Reports: Summarize and extract metrics
+  - Emails: Extract action items and sentiment
+
+  ### 5. Provide Confidence Scores
+  - Include confidence for all extractions
+  - Flag low-confidence items for review
+  - Use multiple models and ensemble results
+
+  ### 6. Structure Output
+  - Use consistent JSON schema
+  - Include metadata (analysis date, model used)
+  - Provide raw text alongside structured data
+  - Include source references (page numbers, sections)
+
+  ### 7. Performance Optimization
+  - Cache analysis results
+  - Batch process multiple documents
+  - Use async processing for large documents
+  - Consider streaming for very long documents
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Poor entity extraction results"
+    cause: "Text contains OCR errors or formatting issues"
+    solution: "Pre-process text to fix common OCR errors. Use fuzzy matching for entity recognition."
+
+  - error: "Incorrect date extraction"
+    cause: "Multiple date formats or ambiguous dates (MM/DD vs DD/MM)"
+    solution: "Use dateparser library. Consider document context/language for format. Validate extracted dates are reasonable."
+
+  - error: "Language detection fails on short text"
+    cause: "Not enough text to reliably detect language"
+    solution: "Require minimum 50-100 characters for detection. Use document metadata (filename, source) as hints."
+
+  - error: "Summary misses key information"
+    cause: "LLM focusing on wrong sections or extractive summarization issues"
+    solution: "Provide explicit instructions about what to prioritize. Use structured prompts with section weights."
+
+  - error: "Contract analysis misses important clauses"
+    cause: "Legal language complex or clauses buried in dense text"
+    solution: "Use specialized legal NLP models. Break document into sections first. Highlight potential issues for human review."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - document/file_parser  # Parse documents first
+  - text/summarization  # Advanced summarization techniques
+  - text/sentiment_analysis  # Detailed sentiment analysis
+  - nlp/named_entity_recognition  # Entity extraction
+  - vision/ocr  # OCR for scanned documents
+# === RELATED_PATTERNS END ===

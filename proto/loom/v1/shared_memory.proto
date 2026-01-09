@@ -1,0 +1,240 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// SharedMemoryNamespace defines isolated namespaces for shared memory.
+// Namespaces provide logical isolation and access control boundaries.
+enum SharedMemoryNamespace {
+  SHARED_MEMORY_NAMESPACE_UNSPECIFIED = 0;
+  // Global namespace accessible to all agents
+  SHARED_MEMORY_NAMESPACE_GLOBAL = 1;
+  // Workflow-scoped namespace (isolated per workflow instance)
+  SHARED_MEMORY_NAMESPACE_WORKFLOW = 2;
+  // Swarm-scoped namespace (isolated per agent swarm)
+  SHARED_MEMORY_NAMESPACE_SWARM = 3;
+  // Debate-scoped namespace (isolated per debate session)
+  SHARED_MEMORY_NAMESPACE_DEBATE = 4;
+  // Session-scoped namespace (isolated per user session)
+  SHARED_MEMORY_NAMESPACE_SESSION = 5;
+  // Agent-private namespace (isolated per agent instance)
+  // Keys are automatically scoped to the agent ID that writes them.
+  // This provides strict isolation - agents cannot read each other's private data.
+  SHARED_MEMORY_NAMESPACE_AGENT = 6;
+}
+
+// SharedMemoryPermission defines access levels for shared memory operations.
+enum SharedMemoryPermission {
+  SHARED_MEMORY_PERMISSION_UNSPECIFIED = 0;
+  // Read-only access (Get, Watch operations only)
+  SHARED_MEMORY_PERMISSION_READ_ONLY = 1;
+  // Read-write access (Get, Put, Delete, Watch operations)
+  SHARED_MEMORY_PERMISSION_READ_WRITE = 2;
+  // Admin access (all operations including namespace management)
+  SHARED_MEMORY_PERMISSION_ADMIN = 3;
+}
+
+// SharedMemoryValue represents a versioned value in shared memory.
+// Supports optimistic concurrency control via version field.
+message SharedMemoryValue {
+  // Key identifying this value within the namespace
+  string key = 1;
+
+  // Actual value bytes (may be compressed)
+  bytes value = 2;
+
+  // Version number for optimistic concurrency (incremented on each write)
+  int64 version = 3;
+
+  // True if value is compressed (zstd compression)
+  bool compressed = 4;
+
+  // Checksum for integrity verification (SHA-256)
+  string checksum = 5;
+
+  // Arbitrary metadata (content type, encoding, custom fields)
+  map<string, string> metadata = 6;
+
+  // Agent ID that created this value
+  string created_by = 7;
+
+  // Creation timestamp (Unix milliseconds)
+  int64 created_at = 8;
+
+  // Agent ID that last updated this value
+  string updated_by = 9;
+
+  // Last update timestamp (Unix milliseconds)
+  int64 updated_at = 10;
+
+  // Namespace this value belongs to
+  SharedMemoryNamespace namespace = 11;
+}
+
+// SharedMemoryStats provides statistics for a namespace.
+message SharedMemoryStats {
+  // Namespace these stats apply to
+  SharedMemoryNamespace namespace = 1;
+
+  // Total number of keys in this namespace
+  int64 key_count = 2;
+
+  // Total bytes stored in this namespace
+  int64 total_bytes = 3;
+
+  // Total read operations performed
+  int64 read_count = 4;
+
+  // Total write operations performed
+  int64 write_count = 5;
+
+  // Total version conflict count (failed optimistic concurrency checks)
+  int64 conflict_count = 6;
+
+  // Number of active watchers for this namespace
+  int32 watcher_count = 7;
+
+  // Last access timestamp (Unix milliseconds)
+  int64 last_access_at = 8;
+}
+
+// PutSharedMemoryRequest writes or updates a value in shared memory.
+message PutSharedMemoryRequest {
+  // Namespace to write to
+  SharedMemoryNamespace namespace = 1;
+
+  // Key to write (creates if doesn't exist, updates if exists)
+  string key = 2;
+
+  // Value bytes to store
+  bytes value = 3;
+
+  // Expected version for optimistic concurrency (0 = ignore version check)
+  int64 expected_version = 4;
+
+  // Agent ID performing this write
+  string agent_id = 5;
+
+  // Optional metadata
+  map<string, string> metadata = 6;
+
+  // Enable compression for large values (auto-enabled for >1KB)
+  bool compress = 7;
+}
+
+// PutSharedMemoryResponse confirms the write operation.
+message PutSharedMemoryResponse {
+  // New version number after write
+  int64 version = 1;
+
+  // Checksum of stored value
+  string checksum = 2;
+
+  // True if value was created (false if updated)
+  bool created = 3;
+
+  // Size of stored value in bytes (after compression if enabled)
+  int64 size_bytes = 4;
+}
+
+// GetSharedMemoryRequest reads a value from shared memory.
+message GetSharedMemoryRequest {
+  // Namespace to read from
+  SharedMemoryNamespace namespace = 1;
+
+  // Key to read
+  string key = 2;
+
+  // Agent ID performing this read
+  string agent_id = 3;
+}
+
+// GetSharedMemoryResponse returns the requested value.
+message GetSharedMemoryResponse {
+  // Value (decompressed if it was compressed)
+  SharedMemoryValue value = 1;
+
+  // True if key was found
+  bool found = 2;
+}
+
+// DeleteSharedMemoryRequest removes a value from shared memory.
+message DeleteSharedMemoryRequest {
+  // Namespace to delete from
+  SharedMemoryNamespace namespace = 1;
+
+  // Key to delete
+  string key = 2;
+
+  // Expected version for optimistic concurrency (0 = ignore version check)
+  int64 expected_version = 3;
+
+  // Agent ID performing this delete
+  string agent_id = 4;
+}
+
+// DeleteSharedMemoryResponse confirms the delete operation.
+message DeleteSharedMemoryResponse {
+  // True if key was found and deleted
+  bool deleted = 1;
+
+  // Version of deleted value (0 if not found)
+  int64 deleted_version = 2;
+}
+
+// WatchSharedMemoryRequest watches for changes to keys in a namespace.
+// Returns a stream of SharedMemoryValue as keys are created/updated/deleted.
+message WatchSharedMemoryRequest {
+  // Namespace to watch
+  SharedMemoryNamespace namespace = 1;
+
+  // Key pattern to watch (supports wildcards: "config.*", "session.user.*")
+  string key_pattern = 2;
+
+  // Agent ID watching
+  string agent_id = 3;
+
+  // Include initial values (send current values immediately, then watch for changes)
+  bool include_initial = 4;
+}
+
+// ListSharedMemoryKeysRequest lists all keys in a namespace.
+message ListSharedMemoryKeysRequest {
+  // Namespace to list
+  SharedMemoryNamespace namespace = 1;
+
+  // Optional key pattern filter (supports wildcards)
+  string key_pattern = 2;
+
+  // Agent ID performing this list
+  string agent_id = 3;
+}
+
+// ListSharedMemoryKeysResponse returns matching keys.
+message ListSharedMemoryKeysResponse {
+  // Matching keys
+  repeated string keys = 1;
+
+  // Total count (before any pagination, if implemented later)
+  int32 total_count = 2;
+}
+
+// GetSharedMemoryStatsRequest retrieves statistics for a namespace.
+message GetSharedMemoryStatsRequest {
+  // Namespace to get stats for
+  SharedMemoryNamespace namespace = 1;
+}

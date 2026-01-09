@@ -1,0 +1,631 @@
+# === METADATA START ===
+name: npath
+title: "nPath Sequence Analysis"
+description: |
+  Analyze sequences of events to find patterns over ordered data partitions. The NPATH function is used
+  for sequential pattern analysis in clickstream data, user journeys, system logs, and any time-series
+  events where you need to identify specific sequences and transitions.
+
+  **CRITICAL: Always use teradata_explain_sql BEFORE teradata_execute_sql for nPath queries.**
+  nPath syntax is complex with many quirks. EXPLAIN validation catches errors without impacting
+  the circuit breaker. Execute errors DO count toward circuit breaker and can block all queries.
+
+  nPath is particularly powerful for:
+  - User journey analysis (login → browse → purchase)
+  - Funnel analysis and conversion tracking
+  - Churn prediction based on behavioral sequences
+  - Session analysis and user flow patterns
+  - System event sequence detection
+
+  This pattern works by partitioning data (e.g., by user_id), ordering it (e.g., by timestamp), defining
+  symbolic event mappings, and specifying a pattern to match using regular expression-like syntax.
+
+  **TABLE TYPE REQUIREMENTS:**
+  nPath requires SELECT access to the source table. All table types (Tables, Views, Join Indexes, etc.)
+  support SELECT operations, so nPath works on any readable object. However, if you need to modify event
+  data based on nPath findings, you'll need write access to the underlying base table. Call get_tables()
+  first to verify table capabilities.
+
+category: analytics
+difficulty: intermediate
+teradata_function: NPATH
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: E-commerce Funnel ---
+  - E-commerce conversion funnel analysis
+
+  # --- Use Case 2: User Journey Mapping ---
+  - User journey mapping from acquisition to conversion
+
+  # --- Use Case 3: Cart Abandonment ---
+  - Abandoned cart detection and recovery
+
+  # --- Use Case 4: Cross-sell Patterns ---
+  - Cross-sell and upsell pattern identification
+
+  # --- Use Case 5: Clickstream Analysis ---
+  - Clickstream behavioral analysis
+
+  # --- Use Case 6: Session Paths ---
+  - Session path discovery
+
+  # --- Use Case 7: Churn Prediction ---
+  - Churn prediction based on event sequences
+
+  # --- Use Case 8: Lifecycle Transitions ---
+  - Customer lifecycle stage transitions
+
+  # --- Use Case 9: Attribution ---
+  - Multi-touch attribution analysis
+
+  # --- Use Case 10: User Flow ---
+  - Application user flow optimization
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the events table"
+    example: "web_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Must contain sequential event data with timestamps; call get_tables() to verify
+    required: true
+    description: "Table with sequential event data"
+    example: "clickstream_events"
+
+  # --- Parameter 3: Partition Columns ---
+  - name: partition_columns
+    type: array[string]
+    # LLM-HINT: Groups events per entity; tracks sequences independently per partition
+    required: true
+    description: "Columns to partition by (typically user_id, session_id, or customer_id)"
+    example: '["user_id"]'
+
+  # --- Parameter 4: Order Columns ---
+  - name: order_columns
+    type: array[string]
+    # LLM-HINT: Defines event sequence order; critical for temporal pattern matching
+    required: true
+    description: "Columns to order events by (typically timestamp or sequence number)"
+    example: '["event_timestamp"]'
+
+  # --- Parameter 5: Event Column ---
+  - name: event_column
+    type: string
+    # LLM-HINT: Contains event type values that map to symbols; use discovery template first
+    required: true
+    description: "Column containing event types or names"
+    example: "event_type"
+
+  # --- Parameter 6: Symbols ---
+  - name: symbols
+    type: map[string, array[string]]
+    # LLM-HINT: Maps letters to event values; A-Z only, avoid reserved words (Exit/Count)
+    required: true
+    description: "Map of symbol letters (A-Z) to event values. Each symbol represents one or more event types"
+    example: |
+      {
+        "A": ["LOGIN", "SIGNIN"],
+        "B": ["BROWSE", "VIEW_PRODUCT"],
+        "C": ["PURCHASE", "CHECKOUT"]
+      }
+
+  # --- Parameter 7: Pattern ---
+  - name: pattern
+    type: string
+    # LLM-HINT: Regex-like syntax; NO SPACES allowed; use discovery template to validate symbols
+    required: true
+    description: |
+      Pattern string using regular expression-like syntax over declared symbols.
+      Operators: . (then), * (zero or more), + (one or more), ? (optional), | (or), ^ (not), {n,m} (repetition)
+    example: "A.B+.C"
+
+  # --- Parameter 8: Mode ---
+  - name: mode
+    type: enum[OVERLAPPING, NONOVERLAPPING]
+    # LLM-HINT: NONOVERLAPPING (default) for most cases; each event used once per match
+    required: false
+    default: "NONOVERLAPPING"
+    description: |
+      NONOVERLAPPING: Each row can only appear in one match (most common).
+      OVERLAPPING: Rows can appear in multiple matches.
+
+  # --- Parameter 9: Result Clause ---
+  - name: result_clause
+    type: string
+    # LLM-HINT: Advanced customization; omit to use default ACCUMULATE pattern
+    required: false
+    description: |
+      Optional custom RESULT clause for nPath. If omitted, uses default ACCUMULATE pattern.
+      Advanced users can customize the output columns here.
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === DISCOVERY TEMPLATE ===
+  # LLM-HINT: Run this FIRST to identify actual event values before defining symbols
+  discovery:
+    description: "Step 1: Discover what event values exist in your table"
+    sql: |
+      -- Discover distinct event values and their frequencies
+      -- Run this FIRST to understand what events are available
+      SELECT
+        {{event_column}} as event_value,
+        COUNT(*) as event_count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as pct_of_total
+      FROM {{database}}.{{table}}
+      GROUP BY 1
+      ORDER BY event_count DESC
+      LIMIT 100;
+    required_parameters:
+      - database
+      - table
+      - event_column
+
+  # === SYMBOL_VALIDATION TEMPLATE ===
+  # LLM-HINT: Use after discovery to verify symbol mappings return data before full nPath
+  symbol_validation:
+    description: "Step 2: Validate that your symbol predicates match actual data"
+    sql: |
+      -- Test that your proposed symbol values exist in the data
+      -- Replace the IN clause values with your planned symbols
+      SELECT
+        {{event_column}},
+        COUNT(*) as match_count
+      FROM {{database}}.{{table}}
+      WHERE {{event_column}} IN ('LOGIN', 'SIGNIN', 'BROWSE', 'PURCHASE')
+      GROUP BY 1
+      ORDER BY 2 DESC;
+    required_parameters:
+      - database
+      - table
+      - event_column
+
+  # === BASIC_PATTERN TEMPLATE ===
+  # LLM-HINT: Main template; counts matching sequences with ACCUMULATE result clause
+  basic_pattern:
+    description: "Step 3: Basic nPath query for counting path frequencies"
+    sql: |
+      -- Basic nPath: Find sequences matching the pattern and count occurrences
+      SELECT
+        path,
+        COUNT(*) as path_count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as pct_of_total
+      FROM NPATH (
+        ON {{database}}.{{table}}
+        PARTITION BY {{partition_columns}}
+        ORDER BY {{order_columns}}
+        USING
+          SYMBOLS (
+            {{#each symbols}}
+            {{../event_column}} IN ({{#each this}}'{{this}}'{{#unless @last}}, {{/unless}}{{/each}}) AS {{@key}}{{#unless @last}},{{/unless}}
+            {{/each}}
+          )
+          PATTERN ('{{pattern}}')
+          MODE ({{mode}})
+          RESULT (
+            ACCUMULATE ({{event_column}} OF ANY ({{symbols_list}}) DELIMITER '|') AS path
+          )
+      )
+      GROUP BY path
+      ORDER BY path_count DESC
+      LIMIT 50;
+    required_parameters:
+      - database
+      - table
+      - partition_columns
+      - order_columns
+      - event_column
+      - symbols
+      - pattern
+      - mode
+
+  # === WITH_TRANSITIONS TEMPLATE ===
+  # LLM-HINT: Advanced template; includes timing data for analyzing transition durations
+  with_transitions:
+    description: "Advanced: nPath with additional partition and timestamp capture for transition analysis"
+    sql: |
+      -- nPath with detailed information for building transition graphs
+      SELECT
+        path,
+        COUNT(*) as match_count,
+        MIN(first_ts) as earliest_occurrence,
+        MAX(last_ts) as latest_occurrence,
+        AVG(CAST(last_ts AS DATE) - CAST(first_ts AS DATE)) as avg_duration_days
+      FROM NPATH (
+        ON {{database}}.{{table}}
+        PARTITION BY {{partition_columns}}
+        ORDER BY {{order_columns}}
+        USING
+          SYMBOLS (
+            {{#each symbols}}
+            {{../event_column}} IN ({{#each this}}'{{this}}'{{#unless @last}}, {{/unless}}{{/each}}) AS {{@key}}{{#unless @last}},{{/unless}}
+            {{/each}}
+          )
+          PATTERN ('{{pattern}}')
+          MODE ({{mode}})
+          RESULT (
+            ACCUMULATE ({{event_column}} OF ANY ({{symbols_list}}) DELIMITER '|') AS path,
+            FIRST ({{order_columns.0}} OF ANY({{symbols_list}})) AS first_ts,
+            LAST ({{order_columns.0}} OF ANY({{symbols_list}})) AS last_ts,
+            FIRST ({{partition_columns.0}} OF ANY({{symbols_list}})) AS partition_key
+          )
+      )
+      GROUP BY path
+      ORDER BY match_count DESC
+      LIMIT 100;
+    required_parameters:
+      - database
+      - table
+      - partition_columns
+      - order_columns
+      - event_column
+      - symbols
+      - pattern
+      - mode
+
+  sample_matches:
+    description: "Get sample actual paths for inspection (useful for validation)"
+    sql: |
+      -- Retrieve sample matches to see actual event sequences
+      SELECT
+        path,
+        partition_key,
+        first_ts,
+        last_ts
+      FROM NPATH (
+        ON {{database}}.{{table}}
+        PARTITION BY {{partition_columns}}
+        ORDER BY {{order_columns}}
+        USING
+          SYMBOLS (
+            {{#each symbols}}
+            {{../event_column}} IN ({{#each this}}'{{this}}'{{#unless @last}}, {{/unless}}{{/each}}) AS {{@key}}{{#unless @last}},{{/unless}}
+            {{/each}}
+          )
+          PATTERN ('{{pattern}}')
+          MODE ({{mode}})
+          RESULT (
+            ACCUMULATE ({{event_column}} OF ANY ({{symbols_list}}) DELIMITER '|') AS path,
+            FIRST ({{partition_columns.0}} OF ANY({{symbols_list}})) AS partition_key,
+            FIRST ({{order_columns.0}} OF ANY({{symbols_list}})) AS first_ts,
+            LAST ({{order_columns.0}} OF ANY({{symbols_list}})) AS last_ts
+          )
+      )
+      SAMPLE 20;
+    required_parameters:
+      - database
+      - table
+      - partition_columns
+      - order_columns
+      - event_column
+      - symbols
+      - pattern
+      - mode
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: E-commerce Purchase Funnel ---
+  - name: "E-commerce Purchase Funnel"
+    description: "Track users who view products, add to cart, and complete purchase"
+    parameters:
+      database: "ecommerce"
+      table: "clickstream"
+      partition_columns: ["user_id"]
+      order_columns: ["event_timestamp"]
+      event_column: "event_type"
+      symbols:
+        A: ["product_view", "item_view"]
+        B: ["add_to_cart"]
+        C: ["purchase", "checkout_complete"]
+      pattern: "A+.B.C"
+      mode: "NONOVERLAPPING"
+    expected_result: |
+      Returns paths like:
+      - product_view|add_to_cart|purchase (count: 1234, 45%)
+      - item_view|item_view|add_to_cart|checkout_complete (count: 876, 32%)
+      This shows successful conversion paths from browsing to purchase.
+
+  # --- Example 2: Cart Abandonment Detection ---
+  - name: "Cart Abandonment Detection"
+    description: "Find users who added items to cart but did NOT purchase"
+    parameters:
+      database: "ecommerce"
+      table: "clickstream"
+      partition_columns: ["session_id"]
+      order_columns: ["timestamp"]
+      event_column: "action"
+      symbols:
+        A: ["add_to_cart"]
+        B: ["view_cart", "update_quantity"]
+        P: ["checkout", "purchase"]
+      pattern: "A.B*.^P"
+      mode: "NONOVERLAPPING"
+    expected_result: |
+      Returns patterns where cart was populated but NO purchase occurred.
+      Useful for triggering cart abandonment recovery campaigns.
+      Pattern "A.B*.^P" means: Add to cart, followed by zero or more cart views, NOT followed by purchase.
+
+  # --- Example 3: User Onboarding Flow ---
+  - name: "User Onboarding Flow"
+    description: "Analyze new user activation paths"
+    parameters:
+      database: "product_analytics"
+      table: "user_events"
+      partition_columns: ["user_id"]
+      order_columns: ["event_time"]
+      event_column: "event_name"
+      symbols:
+        S: ["signup", "register"]
+        V: ["verify_email", "confirm_account"]
+        P: ["complete_profile", "add_profile_info"]
+        A: ["first_action", "first_use"]
+      pattern: "S.V?.P?.A"
+      mode: "NONOVERLAPPING"
+    expected_result: |
+      Shows different onboarding paths:
+      - signup|verify_email|complete_profile|first_action (ideal path)
+      - signup|first_action (skipped verification and profile)
+      - signup|verify_email|first_action (skipped profile)
+      Pattern uses ? for optional steps to capture all variations.
+
+  # --- Example 4: Cross-sell Sequence ---
+  - name: "Cross-sell Sequence"
+    description: "Identify patterns where customers buy complementary products"
+    parameters:
+      database: "sales"
+      table: "purchase_events"
+      partition_columns: ["customer_id"]
+      order_columns: ["purchase_date"]
+      event_column: "product_category"
+      symbols:
+        L: ["laptop", "computer"]
+        A: ["accessory", "cable", "mouse", "keyboard"]
+        S: ["software", "app", "subscription"]
+      pattern: "L.A+.S?"
+      mode: "NONOVERLAPPING"
+    expected_result: |
+      Reveals cross-sell patterns:
+      - laptop|mouse|keyboard|software (count: 456)
+      - computer|cable|accessory (count: 234)
+      Useful for product bundling and recommendation systems.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Cannot Modify Events ---
+  - error: "Cannot modify events after nPath analysis"
+    cause: "Attempting to UPDATE/DELETE events in Views, Join Indexes, or other read-only objects after discovering patterns"
+    solution: "Call get_tables() to check table type and capabilities. nPath works on all readable objects for analysis (SELECT), but data modifications require write access to base tables. Views and Join Indexes are read-only - modify the underlying source tables instead."
+
+  # --- Error 2: Symbol Not Found ---
+  - error: "Symbol 'X' is not found in the data"
+    cause: "The event values specified in your symbol mapping don't match actual data in the table"
+    solution: "Run the 'discovery' template first to see actual event values. Ensure event_column values exactly match (case-sensitive). Use the 'symbol_validation' template to test."
+
+  # --- Error 3: Undeclared Symbol ---
+  - error: "Pattern references undeclared symbol 'Y'"
+    cause: "Your pattern string uses a symbol letter that wasn't defined in the SYMBOLS clause"
+    solution: "Ensure all letters in your pattern (A, B, C, etc.) are declared in the symbols map. Check for typos."
+
+  # --- Error 4: Column Not Found ---
+  - error: "Column 'event_column' does not exist"
+    cause: "Wrong column name specified for event_column, partition_columns, or order_columns"
+    solution: "Verify table schema with 'SHOW TABLE database.table' or 'HELP TABLE database.table'. Column names are case-insensitive in Teradata but must exist."
+
+  # --- Error 5: Missing GROUP BY ---
+  - error: "Expression must be grouped or aggregated"
+    cause: "Missing GROUP BY when using aggregation functions like COUNT(*)"
+    solution: "The basic_pattern template includes 'GROUP BY path'. Ensure you're using the full query structure."
+
+  # --- Error 6: Pattern Syntax Error ---
+  - error: "Pattern syntax error"
+    cause: "Invalid pattern syntax (e.g., unmatched parentheses, invalid operators)"
+    solution: "Review pattern syntax operators below. Test with simple patterns first (e.g., 'A.B.C') before adding complexity."
+
+  # --- Error 7: No Matches Found ---
+  - error: "No matches found / Empty result set"
+    cause: "Pattern is too specific or symbol predicates don't match data"
+    solution: "Simplify pattern temporarily (e.g., just 'A' or 'A.B'). Check that events exist in order specified. Use sample_matches template to inspect."
+
+  # --- Error 8: Undeclared Symbol in ACCUMULATE ---
+  - error: "Undeclared symbol in ACCUMULATE clause"
+    cause: "ACCUMULATE references a symbol that's not used in the PATTERN"
+    solution: "Only include symbols in ACCUMULATE that appear in your PATTERN. Example: if PATTERN('A.B.C'), then ACCUMULATE(...OF ANY (A,B,C)). Do NOT include symbols D, E, etc. that aren't in the pattern."
+
+  # --- Error 9: Reserved Keyword ---
+  - error: "Syntax error: expected name between 'AS' and keyword"
+    cause: "Using reserved keyword as symbol name (e.g., AS Exit, AS Count, AS User)"
+    solution: "Avoid reserved words: Exit → Exited, Count → Counted, User → UserAction. Safe symbol names: A, B, C, Browse, Chat, Inquiry, etc."
+
+  # --- Error 10: Spaces in Pattern ---
+  - error: "Invalid pattern: spaces not allowed"
+    cause: "Pattern string contains spaces like 'A B C' or 'A.W* B'"
+    solution: "Remove ALL spaces from pattern string. Use: 'A.B.C' not 'A B C', 'A.W*.B' not 'A W* B'. Pattern must be continuous string without spaces."
+
+  # --- Error 11: Invalid Operator Use ---
+  - error: "Invalid use of operator in pattern"
+    cause: "Using invalid operator combinations like '.*' or incorrect wildcard syntax"
+    solution: "Use correct operators: '.' for then, '*' for zero-or-more, '+' for one-or-more. Define wildcard with 'TRUE AS W' in SYMBOLS, then use 'A.W*.B' in pattern."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## nPath Best Practices
+
+  ### 0. ALWAYS Use EXPLAIN Before Execute (MANDATORY)
+  **nPath syntax is complex. ALWAYS validate queries before execution:**
+
+  ```
+  1. Build your nPath query
+  2. Call teradata_explain_sql(sql=<your_query>) FIRST
+  3. If EXPLAIN succeeds → safe to call teradata_execute_sql()
+  4. If EXPLAIN fails → fix syntax errors and repeat step 2
+  ```
+
+  **Why this matters:**
+  - nPath has many syntax quirks (no spaces in PATTERN, reserved keywords, etc.)
+  - EXPLAIN validates syntax WITHOUT executing the query
+  - EXPLAIN errors don't count toward circuit breaker threshold (expected during development)
+  - Execute errors DO count toward circuit breaker and can block all queries
+
+  **NEVER skip EXPLAIN validation.** Even experienced users make nPath syntax mistakes.
+  The EXPLAIN-first workflow catches errors cheaply before they impact execution.
+
+  ### 0.5. Check Table Type and Capabilities First
+  **Before running nPath analysis:**
+  - Call `get_tables(database)` to verify table type and capabilities
+  - nPath requires SELECT access - all table types support this
+  - If you plan to modify events based on findings:
+    - **Regular Tables**: Support UPDATE/DELETE for data corrections
+    - **Views/Join Indexes**: Read-only - modify underlying base tables
+    - **Queue Tables**: Support INSERT/DELETE but NOT UPDATE
+  - Knowing table capabilities helps plan follow-up actions after pattern discovery
+
+  ### 1. Teradata nPath Syntax Quick Reference
+
+  **Correct Structure:**
+  ```sql
+  SELECT * FROM NPATH (
+      ON database.table
+      PARTITION BY user_id
+      ORDER BY timestamp
+      USING
+          SYMBOLS (
+              event_col IN ('value1', 'value2') AS A,
+              event_col IN ('value3') AS B,
+              TRUE AS W
+          )
+          PATTERN ('A.B')           -- NO spaces in pattern!
+          MODE (NONOVERLAPPING)
+          RESULT (
+              ACCUMULATE (event_col OF ANY (A, B) DELIMITER ' -> ') AS path
+          )
+  )
+  ```
+
+  **Critical Rules:**
+  - ✅ SYMBOLS uses `column IN (values)` syntax
+  - ✅ PATTERN wrapped in quotes: `PATTERN ('A.B')`
+  - ✅ NO spaces in pattern string: `'A.B.C'` not `'A B C'`
+  - ✅ Only ACCUMULATE symbols used in PATTERN
+  - ✅ Avoid reserved words: Use `Exited` not `Exit`, `Counted` not `Count`
+  - ✅ Wildcards: Define `TRUE AS W` then use `'A.W*.B'`
+
+  **Common Mistakes:**
+  - ❌ `PATTERN ('A B C')` → spaces not allowed
+  - ❌ `AS Exit` → reserved keyword, use `AS Exited`
+  - ❌ `ACCUMULATE (... OF ANY (A, B, C, D))` when PATTERN only has A, B, C
+  - ❌ `PATTERN ('A.*.B')` → define wildcard first: `TRUE AS W`, then `'A.W*.B'`
+
+  ### 2. Always Start with Discovery
+  Run the `discovery` template first to understand what event values exist in your data.
+  Don't assume event names - inspect them first to avoid "symbol not found" errors.
+
+  ### 3. Validate Symbols Before Full Analysis
+  Use the `symbol_validation` template to test that your symbol predicates return data.
+  This catches typos and case sensitivity issues early.
+
+  ### 4. Start Simple, Then Expand
+  Begin with a basic pattern like `A.B.C`, verify it works, then add:
+  - Quantifiers (`+`, `*`, `?`)
+  - Alternation (`|`)
+  - Negation (`^`)
+  - Complex groupings
+
+  ### 5. Choose the Right Mode
+  - **NONOVERLAPPING** (default): Use for most analyses. Each event row used once per match.
+  - **OVERLAPPING**: Use when events can belong to multiple patterns (rare, computationally expensive).
+
+  ### 6. Limit Partitions During Testing
+  Add a WHERE clause to limit data during initial testing:
+  ```sql
+  FROM {{database}}.{{table}}
+  WHERE {{partition_columns.0}} IN ('test_user_1', 'test_user_2')
+  ```
+
+  ### 7. Order Results by Count
+  Always include `ORDER BY path_count DESC` to see most frequent patterns first.
+  Use `LIMIT` to avoid overwhelming output.
+
+  ### 8. Use Sample Matches for Validation
+  The `sample_matches` template lets you inspect actual sequences to verify logic.
+
+  ### 9. Consider Temporal Constraints
+  If events must occur within a timeframe, add WHERE clauses or use window functions
+  in preprocessing to filter data before nPath analysis.
+
+  ### 10. Pattern Complexity vs Performance
+  More complex patterns (many quantifiers, alternations) increase compute time.
+  Start specific, measure performance, then optimize.
+
+  ### 11. Document Your Symbol Mappings
+  Keep a reference of what each symbol represents for future analysis and team collaboration.
+
+  ### 12. Leverage Memory Layers for Analysis Context
+  - **Kernel Layer**: Cache table schemas and column metadata from get_tables() for quick reference
+  - **L1 Cache**: Keep recent nPath query results (last 5-10 queries) for comparison
+  - **L2 Compressed**: Archive pattern analysis summaries from earlier in the conversation
+  - **Swap Layer**: Store complete historical analysis for multi-day sessions; use recall_conversation tool to retrieve earlier pattern findings when user references previous work
+  This reduces redundant schema lookups and enables pattern comparison across long-running analysis sessions.
+# === BEST_PRACTICES END ===
+
+pattern_syntax:
+  description: "nPath pattern syntax uses regular expression-like operators to match event sequences"
+  operators:
+    - symbol: "."
+      meaning: "Concatenation (then/followed by)"
+      example: "A.B means event A followed by event B"
+
+    - symbol: "*"
+      meaning: "Zero or more occurrences"
+      example: "A* means zero or more A events"
+
+    - symbol: "+"
+      meaning: "One or more occurrences"
+      example: "B+ means one or more B events"
+
+    - symbol: "?"
+      meaning: "Zero or one occurrence (optional)"
+      example: "C? means optional C event"
+
+    - symbol: "|"
+      meaning: "Alternation (OR)"
+      example: "(A|B) means either A or B"
+
+    - symbol: "^"
+      meaning: "Negation (NOT)"
+      example: "^A means NOT followed by A"
+
+    - symbol: "{n,m}"
+      meaning: "Between n and m occurrences (inclusive)"
+      example: "A{2,5} means 2 to 5 A events"
+
+    - symbol: "()"
+      meaning: "Grouping for operator precedence"
+      example: "(A.B)+ means one or more occurrences of the sequence A then B"
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Sessionize ---
+  - sessionize
+
+  # --- Pattern 2: Attribution ---
+  - attribution
+
+  # --- Pattern 3: Moving Average ---
+  - moving_average
+
+  # --- Pattern 4: Funnel Analysis ---
+  - funnel_analysis
+# === RELATED_PATTERNS END ===

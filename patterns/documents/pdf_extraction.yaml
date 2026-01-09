@@ -1,0 +1,332 @@
+# === METADATA START ===
+name: pdf_extraction
+title: "PDF Text Extraction and Analysis"
+description: |
+  Extract and analyze text content from PDF documents with metadata and page selection.
+  Summarize content, identify key sections, and provide structured analysis with page references.
+category: document-extraction
+difficulty: beginner
+backend_type: documents
+version: 1.0.0
+author: Loom Framework
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Extract text from PDF documents
+  - Summarize document content
+  - Identify key sections and topics
+  - Extract metadata (page count, creation date)
+  - Analyze contract terms and clauses
+  - Process reports with page-specific extraction
+  - Identify action items from documents
+  - Extract specific page ranges
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: pdf_file
+    type: string
+    required: true
+    description: "Path to the PDF file"
+    example: "contract.pdf"
+
+  - name: page_selection
+    type: string
+    required: false
+    default: "all"
+    description: "Pages to extract (all, first, last, range like 1-5, or specific pages)"
+    example: "all"
+
+  - name: task
+    type: enum[extract, summarize, analyze, find_actions]
+    required: false
+    default: "summarize"
+    description: "Task to perform on the PDF"
+    example: "summarize"
+
+  - name: page_limit
+    type: integer
+    required: false
+    default: 100
+    description: "Maximum number of pages to process"
+    example: "100"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  extract_and_summarize:
+    description: "Extract text and provide comprehensive summary"
+    content: |
+      Extract and analyze: {{pdf_file}}
+      Pages: {{page_selection}}
+
+      Parse using parse_document tool with format="pdf" and:
+
+      1. Document Overview:
+         - Total page count
+         - Document type/purpose
+         - Creation date and author (if available)
+         - Structure (sections, chapters, etc.)
+
+      2. Content Summary:
+         - Executive summary of key points
+         - Main sections and their content
+         - Key findings or conclusions
+         - Important data or metrics
+
+      3. Page-by-Page Analysis:
+         For each major section:
+         - Section title (Page X)
+         - Summary of content
+         - Key points or data
+         - Important quotes
+
+      4. Action Items (if any):
+         - Items requiring attention
+         - Deadlines mentioned
+         - Follow-up tasks
+
+      Always cite page numbers for all information extracted.
+    required_parameters:
+      - pdf_file
+
+  analyze_contract:
+    description: "Analyze contract or legal document"
+    content: |
+      Analyze the contract: {{pdf_file}}
+
+      Parse the PDF and provide:
+
+      1. Document Information:
+         - Contract type and title
+         - Parties involved
+         - Effective date
+         - Page count
+
+      2. Key Terms Summary:
+         Section by section:
+         - Section title and page number
+         - Summary of key terms
+         - Important obligations
+         - Financial terms
+         - Dates and deadlines
+
+      3. Critical Clauses:
+         - Payment terms (page numbers)
+         - Term and termination (page numbers)
+         - Warranties and limitations (page numbers)
+         - Confidentiality (page numbers)
+         - Indemnification (page numbers)
+
+      4. Action Items:
+         - Items requiring review
+         - Important dates to calendar
+         - Obligations to fulfill
+
+      Quote specific text and always cite page numbers.
+    required_parameters:
+      - pdf_file
+
+  extract_page_range:
+    description: "Extract and analyze specific page range"
+    content: |
+      Extract pages {{page_selection}} from: {{pdf_file}}
+
+      Parse the specified pages and:
+
+      1. Document Context:
+         - Pages analyzed: {{page_selection}}
+         - Total pages in document
+         - Document type
+
+      2. Content Analysis:
+         For each page or section:
+         - Page number and heading
+         - Content summary
+         - Key information
+         - Data or metrics
+
+      3. Action Items:
+         Extract any:
+         - Tasks to complete
+         - Deadlines mentioned
+         - Items requiring attention
+         - Follow-up needed
+
+      4. Next Steps:
+         - Should remaining pages be analyzed?
+         - Specific sections need deeper review?
+
+      Provide clear page references for all extracted information.
+    required_parameters:
+      - pdf_file
+      - page_selection
+
+  find_action_items:
+    description: "Extract action items and tasks from document"
+    content: |
+      Extract action items from: {{pdf_file}}
+      Pages: {{page_selection}}
+
+      Parse the PDF and identify:
+
+      1. Action Items:
+         For each item found:
+         - Page number and location
+         - Action description
+         - Responsible party (if mentioned)
+         - Deadline (if specified)
+         - Priority/urgency indicators
+
+      2. Deadlines and Dates:
+         - All dates mentioned with context
+         - Deliverable due dates
+         - Meeting dates
+         - Review periods
+
+      3. Categorization:
+         Group by:
+         - Immediate actions (this week)
+         - Short-term (this month)
+         - Long-term (later)
+         - Ongoing responsibilities
+
+      4. Summary:
+         - Total action items found
+         - Critical deadlines
+         - High-priority items
+         - Recommended next steps
+
+      Always cite specific page numbers for each action item.
+    required_parameters:
+      - pdf_file
+# === TEMPLATES END ===
+
+# System prompt for PDF extraction and analysis
+system: |
+  PDF Document Analysis: Extract text from PDF documents, summarize content, and identify key sections with page references.
+
+  Extraction responsibilities:
+  1. Extract text from PDF documents using the parse_document tool
+  2. Summarize document content clearly and concisely
+  3. Identify key sections, topics, and themes
+  4. Extract metadata (page count, creation date, author when available)
+  5. Provide structured summaries with page references
+
+  When working with PDF files:
+  - Use parse_document tool with format="pdf"
+  - Extract all pages by default, or specific pages/ranges as requested
+  - Include page numbers in citations and references
+  - Handle multi-page documents efficiently
+  - Respect page limits (default 100 pages)
+
+  Page selection options:
+  - "all": Extract all pages
+  - "first": Extract first page only
+  - "last": Extract last page only
+  - "1-5": Extract page range
+  - [1,3,5]: Extract specific pages
+
+  Best practices:
+  - Cite page numbers for all extracted information
+  - Summarize before providing detailed analysis
+  - Identify document structure (headings, sections)
+  - Note any extraction limitations (scanned PDFs, images)
+
+  Communication style:
+  - Be concise but thorough
+  - Use page references for all claims
+  - Organize information logically
+  - Highlight key findings upfront
+
+# Example interactions
+examples:
+  - input: "Extract text from contract.pdf and summarize key terms"
+    output: |
+      I've extracted and analyzed contract.pdf.
+
+      Document Overview:
+      - 12 pages
+      - Contract Type: Software License Agreement
+      - Parties: TechCorp Inc. and Client Corporation
+
+      Key Terms Summary:
+      1. License Grant (Page 2):
+         - Perpetual, non-exclusive license
+         - Limited to 500 concurrent users
+         - Covers software version 2.x only
+
+      2. Payment Terms (Page 4):
+         - Initial license fee: $150,000
+         - Annual maintenance: $30,000 (20%)
+         - Payment due within 30 days
+
+      3. Term and Termination (Page 6):
+         - Effective date: January 1, 2024
+         - Automatic renewal unless terminated with 90 days notice
+         - Termination for material breach with 30 days cure period
+
+      4. Warranties and Disclaimers (Page 8-9):
+         - 90-day warranty period for defects
+         - NO IMPLIED WARRANTIES beyond stated terms
+         - Limitation of liability: Direct damages only
+
+      5. Confidentiality (Page 10):
+         - 5-year confidentiality obligation
+         - Excludes publicly available information
+
+      Action Items:
+      - Review liability limitations (Page 9)
+      - Verify user count restrictions (Page 2)
+      - Note renewal date and termination notice period
+
+  - input: "Read pages 1-5 of report.pdf and identify action items"
+    output: |
+      I've extracted pages 1-5 from report.pdf.
+
+      Document: Q4 2024 Performance Report
+      Pages Analyzed: 1-5 of 24
+
+      Action Items Identified:
+
+      Page 2 - Executive Summary:
+      - Conduct customer satisfaction survey by January 15th
+      - Hire 3 additional support engineers in Q1
+
+      Page 3 - Sales Performance:
+      - Schedule sales training for new product line
+      - Review pricing strategy for enterprise segment
+
+      Page 4 - Operations:
+      - Implement new inventory management system
+      - Reduce order processing time by 20%
+
+      Page 5 - Financial Highlights:
+      - Finalize budget for Q1 2025 by December 31st
+      - Present cost reduction initiatives to board
+
+      Next Steps:
+      - Would you like me to extract remaining pages (6-24)?
+      - Should I provide detailed analysis for any specific section?
+
+# Tools configuration
+tools:
+  - parse_document
+
+# Guardrails
+guardrails:
+  - "PDF extraction is text-only (no OCR for scanned documents)"
+  - "Images and complex layouts may not extract correctly"
+  - "Always cite page numbers for extracted information"
+  - "Respect page limits (default 100 pages for performance)"
+  - "Note when documents appear to be scanned (no text extracted)"
+  - "Never fabricate content not present in the PDF"
+
+# Tags for discoverability
+tags:
+  - pdf
+  - document-extraction
+  - text-analysis
+  - document-summarization
+  - content-analysis

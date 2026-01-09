@@ -1,0 +1,68 @@
+name: errors
+namespace: loom.validation
+prompts:
+  - id: mcp_server_name_required
+    content: |
+      MCP server name is required
+    tags:
+      - error
+      - mcp
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "MCP server name validation error"
+
+  - id: mcp_client_required
+    content: |
+      MCP client is required
+    tags:
+      - error
+      - mcp
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "MCP client validation error"
+
+  - id: mcp_client_not_initialized
+    content: |
+      MCP client must be initialized before registering tools (call client.Initialize first)
+    tags:
+      - error
+      - mcp
+      - initialization
+    metadata:
+      version: "v1.0"
+      description: "MCP client initialization error"
+
+  - id: llm_provider_required
+    content: |
+      LLM provider is required
+    tags:
+      - error
+      - llm
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "LLM provider validation error"
+
+  - id: llm_model_required
+    content: |
+      LLM model is required
+    tags:
+      - error
+      - llm
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "LLM model validation error"
+
+  - id: llm_config_required
+    content: |
+      LLM configuration is required
+    tags:
+      - error
+      - llm
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "LLM configuration validation error"

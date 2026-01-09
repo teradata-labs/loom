@@ -1,0 +1,71 @@
+# Weekly System Backup Workflow
+# Executes every Sunday at midnight
+# Performs full backup of critical systems and databases
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: weekly-system-backup
+  description: Full backup of all production systems
+
+spec:
+  type: pipeline
+  pipeline:
+    initial_prompt: "Execute weekly full backup of all production systems"
+    stages:
+      - agent_id: backup-coordinator
+        prompt: |
+          Initialize backup process for all registered systems.
+          Verify all systems are in backup-ready state.
+
+      - agent_id: database-backup
+        prompt: |
+          Execute full database backups:
+          - PostgreSQL production database
+          - MongoDB customer data
+          - Redis cache state
+          Create backup manifests with checksums.
+
+      - agent_id: storage-backup
+        prompt: |
+          Backup file storage systems:
+          - Document storage (S3)
+          - Image assets
+          - Configuration files
+          Verify integrity of all backups.
+
+      - agent_id: backup-validator
+        prompt: |
+          Validate all backups:
+          - Verify checksums
+          - Test restore capability (sample)
+          - Generate backup report
+
+      - agent_id: notification
+        prompt: |
+          Send backup completion report to operations team.
+          Include backup size, duration, and validation results.
+
+# Schedule Configuration
+schedule:
+  # Execute every Sunday at midnight
+  # Cron: minute hour day-of-month month day-of-week
+  # "0 0 * * 0" = Sunday at 00:00
+  cron: "0 0 * * 0"
+
+  timezone: "UTC"
+
+  enabled: true
+
+  # Backups should never overlap
+  skip_if_running: true
+
+  # Allow up to 6 hours for full backup
+  max_execution_seconds: 21600
+
+  variables:
+    backup_type: "full"
+    retention_days: "90"
+    compression: "true"
+    encryption: "enabled"
+    backup_destination: "s3://backups/weekly"

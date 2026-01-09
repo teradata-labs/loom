@@ -1,0 +1,115 @@
+name: tools
+namespace: loom.communication
+prompts:
+  - id: send_message
+    content: |
+      Sends a message to another agent in the workflow. Use this for agent-to-agent communication.
+
+      Use this tool to:
+      - Send questions to other agents (e.g., ask Stage 10 for specific data)
+      - Pass results or updates between workflow stages
+      - Request clarifications from previous stages
+      - Coordinate work between parallel agents
+
+      The receiving agent can use receive_message to get your message.
+    tags:
+      - tool
+      - communication
+      - inter_agent
+    metadata:
+      version: "v1.0"
+      description: "Agent-to-agent messaging tool"
+
+  - id: receive_message
+    content: |
+      Receives messages sent to this agent by other agents in the workflow.
+
+      Use this tool to:
+      - Check for incoming questions from other agents
+      - Receive data requests from downstream stages
+      - Get coordination messages from parallel agents
+      - Poll for updates from upstream stages
+
+      Returns the next pending message in the queue, or null if no messages are available.
+      Messages should be acknowledged after processing.
+    tags:
+      - tool
+      - communication
+      - inter_agent
+    metadata:
+      version: "v1.0"
+      description: "Message queue polling tool"
+
+  - id: shared_memory_write
+    content: |
+      Writes data to shared memory accessible by all agents in the workflow.
+
+      Use this tool to:
+      - Store comprehensive results for other agents to query
+      - Share large datasets between workflow stages
+      - Cache frequently accessed data
+      - Maintain workflow state accessible to all agents
+
+      Data is organized in namespaces:
+      - GLOBAL: Accessible to all agents
+      - WORKFLOW: Scoped to current workflow
+      - SWARM: Scoped to agent swarm
+
+      Use shared_memory_read to retrieve stored data.
+    tags:
+      - tool
+      - communication
+      - shared_memory
+    metadata:
+      version: "v1.0"
+      description: "Shared memory write tool"
+
+  - id: shared_memory_read
+    content: |
+      Reads data from shared memory written by other agents in the workflow.
+
+      Use this tool to:
+      - Access comprehensive results from previous stages
+      - Read large datasets stored by other agents
+      - Query workflow state
+      - Retrieve cached data
+
+      Data is organized in namespaces:
+      - GLOBAL: Accessible to all agents
+      - WORKFLOW: Scoped to current workflow
+      - AGENT: Private to specific agents
+
+      Use shared_memory_write to store data for others to read.
+    tags:
+      - tool
+      - communication
+      - shared_memory
+    metadata:
+      version: "v1.0"
+      description: "Shared memory read tool"
+
+  - id: publish_restart_request
+    content: |
+      Requests a restart of an earlier workflow stage. Use this when you need a previous stage to re-execute with different parameters.
+
+      Use this tool when:
+      - You hit processing limits and need a different data subset (e.g., "Ask Stage 2 to find a table with fewer rows")
+      - You discover data quality issues that require earlier stage correction
+      - You need to negotiate parameters with a previous stage
+      - You need to trigger self-correction in an iterative workflow
+
+      Important:
+      - You can only restart EARLIER stages (no forward jumps)
+      - The workflow must have restart_policy.enabled: true
+      - There may be cooldown periods between restarts
+      - Provide a clear reason to explain why restart is needed
+
+      The orchestrator will validate your request and send a response indicating success or failure.
+    tags:
+      - tool
+      - communication
+      - workflow
+      - restart
+    metadata:
+      version: "v1.0"
+      description: "Workflow restart request tool"

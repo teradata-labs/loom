@@ -1,0 +1,460 @@
+# === METADATA START ===
+name: error_translator
+title: "Error Message Translator (Human-Speak Edition)"
+backend_type: text
+description: |
+  Translates cryptic error messages into plain English that actual humans can understand.
+
+  Because "Segmentation fault (core dumped)" tells you nothing useful, but
+  "You tried to access memory that doesn't belong to you, probably because your
+  pointer is pointing at garbage" actually helps.
+
+  **TRANSLATION PHILOSOPHY:**
+  - No jargon without explanation
+  - Real-world analogies
+  - What actually went wrong
+  - How to fix it (specific steps)
+  - Why it happened (prevent recurrence)
+  - A touch of humor (to ease the pain)
+
+  **USE CASES:**
+  - Junior developers learning new languages
+  - Debugging unfamiliar error messages
+  - Teaching programming concepts through errors
+  - Making Stack Overflow answers more accessible
+  - Understanding compiler errors
+  - Explaining errors to non-technical stakeholders
+
+category: debugging
+difficulty: beginner
+tags: [errors, debugging, translation, learning, fun]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Translate cryptic compiler errors
+  - Understand runtime exceptions
+  - Learn from error messages
+  - Teach others about common errors
+  - Debug unfamiliar frameworks
+  - Explain errors to juniors
+  - Create better error documentation
+  - Make Stack Overflow more accessible
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: error_message
+    type: string
+    required: true
+    description: "The error message to translate"
+    example: "TypeError: Cannot read property 'map' of undefined"
+
+  - name: programming_language
+    type: string
+    required: false
+    description: "Programming language context"
+    example: "JavaScript"
+
+  - name: code_context
+    type: string
+    required: false
+    description: "Optional code snippet where error occurred"
+    example: "users.map(u => u.name)"
+
+  - name: translation_style
+    type: enum[eli5, technical, sarcastic, encouraging]
+    required: false
+    default: "eli5"
+    description: "Translation style"
+    example: "eli5"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  translate_error:
+    description: "Translate error message to human-speak"
+    content: |
+      **Error Message:** {{error_message}}
+      {{#if programming_language}}**Language:** {{programming_language}}{{/if}}
+      {{#if code_context}}**Code:** `{{code_context}}`{{/if}}
+
+      ## 🔍 What This Really Means
+
+      **In Plain English:**
+      [Explain what went wrong in simple terms]
+
+      **What Probably Happened:**
+      [Likely cause of this specific error]
+
+      **Real-World Analogy:**
+      [Explain using a non-programming metaphor]
+
+      ## 🛠️ How to Fix It
+
+      **Quick Fix:**
+      1. [Step-by-step instructions]
+      2. [Specific actions to take]
+      3. [How to verify it's fixed]
+
+      **Prevention:**
+      [How to avoid this error in the future]
+
+      ## 🧠 Why This Happens
+
+      **The Technical Bit:**
+      [Slightly more technical explanation]
+
+      **Common Causes:**
+      - [Reason 1]
+      - [Reason 2]
+      - [Reason 3]
+
+      ## 💡 Pro Tips
+
+      [Helpful related knowledge or debugging techniques]
+
+  eli5_style:
+    description: "Explain Like I'm 5 translation"
+    content: |
+      **Error:** {{error_message}}
+
+      ## 🎈 Let's Translate This! (ELI5 Edition)
+
+      **Imagine you're making a sandwich...**
+      [Use a simple analogy to explain the error]
+
+      **What Your Code Did:**
+      [Explain in terms a 5-year-old could understand]
+
+      **What The Computer Expected:**
+      [Simple explanation of what should have happened]
+
+      **How To Make The Computer Happy:**
+      [Simple steps to fix it]
+
+      **Words To Know:**
+      - **[Technical term]**: [Simple definition]
+      - **[Technical term]**: [Simple definition]
+
+  sarcastic_style:
+    description: "Sarcastic but helpful translation"
+    content: |
+      **Error:** {{error_message}}
+
+      ## 😏 Oh, This One...
+
+      **Translation:** [Sarcastic but accurate explanation]
+
+      **What You Did:**
+      Well, you [humorous description of the mistake]...
+
+      **What The Computer Thinks:**
+      "Are you KIDDING me right now? I can't [explanation]!"
+
+      **How To Fix Your Mess:**
+      1. [Sarcastically worded but actually helpful step]
+      2. [Another sarcastic-helpful step]
+      3. [Final step]
+
+      **Bonus Roast:**
+      [Gentle teasing about the error]
+
+      **Actual Helpful Advice:**
+      [Genuinely useful information]
+
+  common_error_patterns:
+    description: "Pattern-match against common errors"
+    content: |
+      Analyzing error: {{error_message}}
+
+      ## 🎯 Error Pattern Detected
+
+      **This Looks Like:**
+      [Category of error]
+
+      **Common Variations:**
+      - [Similar error message 1]
+      - [Similar error message 2]
+      - [Similar error message 3]
+
+      **The Pattern:**
+      This class of errors happens when [general explanation].
+
+      **Classic Examples:**
+
+      ### JavaScript
+      - "Cannot read property 'x' of undefined"
+      - "Cannot read property 'x' of null"
+      Translation: You're trying to use something that doesn't exist!
+
+      ### Python
+      - "AttributeError: 'NoneType' object has no attribute 'x'"
+      Translation: Same problem, different language!
+
+      ### Java
+      - "NullPointerException"
+      Translation: Yep, still the same issue!
+
+      **The Universal Fix:**
+      [Solution that works across languages]
+
+  stack_trace_decoder:
+    description: "Decode intimidating stack traces"
+    content: |
+      **Stack Trace:**
+      ```
+      {{error_message}}
+      ```
+
+      ## 📚 Reading This Stack Trace
+
+      **The Most Important Line:**
+      [Identify the actual error line]
+
+      **How To Read This:**
+      Stack traces are like a trail of breadcrumbs showing how you got here:
+
+      1. **Bottom of stack** = Where you started
+      2. **Middle of stack** = Functions you called along the way
+      3. **Top of stack** = Where the error actually happened ⭐
+
+      **In This Case:**
+      - You started here: [entry point]
+      - Called this: [function path]
+      - Error happened here: [actual error location]
+
+      **What To Look At:**
+      - **Ignore:** Framework internals (you didn't write that code)
+      - **Focus On:** File names from YOUR code
+      - **Check:** Line numbers in YOUR files
+
+      **Your Action Items:**
+      1. Find file: [your file]
+      2. Go to line: [line number]
+      3. Look for: [what to check]
+
+  error_with_solution:
+    description: "Error translation with working code solution"
+    content: |
+      **Error:** {{error_message}}
+      {{#if code_context}}
+      **Broken Code:**
+      ```
+      {{code_context}}
+      ```
+      {{/if}}
+
+      ## 🚫 What's Wrong
+
+      [Clear explanation of the problem]
+
+      ## ✅ Working Version
+
+      ```
+      [Corrected code with comments explaining the fix]
+      ```
+
+      ## 📝 Line-by-Line Comparison
+
+      **Before:**
+      - Line X: [problematic code] ❌ Problem: [issue]
+
+      **After:**
+      - Line X: [fixed code] ✅ Solution: [why it works]
+
+      ## 🎓 What You Learned
+
+      [Key takeaway from this error]
+
+  framework_specific:
+    description: "Framework-specific error translations"
+    content: |
+      **Framework Error:** {{error_message}}
+      **Framework:** {{programming_language}}
+
+      ## 🎯 Framework Context
+
+      **What This Framework Is Telling You:**
+      [Framework-specific explanation]
+
+      **Why This Framework Cares:**
+      [Framework philosophy/requirements]
+
+      **Common Causes In This Framework:**
+      1. [Framework-specific cause 1]
+      2. [Framework-specific cause 2]
+      3. [Framework-specific cause 3]
+
+      **Framework-Specific Solution:**
+      [How to fix it the "framework way"]
+
+      **Documentation Links:**
+      - [Relevant docs section]
+      - [Related error page]
+
+  encouraging_translation:
+    description: "Encouraging translation for frustrated developers"
+    content: |
+      **Error:** {{error_message}}
+
+      ## 💪 First: You're Not Alone
+
+      This error has frustrated THOUSANDS of developers before you.
+      You're in good company!
+
+      ## 🤔 What Went Wrong (It's Not Your Fault!)
+
+      [Compassionate explanation]
+
+      This happens to everyone. Even senior developers hit this regularly.
+
+      ## 🎯 How To Fix It (You've Got This!)
+
+      [Step-by-step solution]
+
+      ## 🌟 Silver Lining
+
+      **What You'll Learn From This:**
+      [Positive takeaway]
+
+      **Level Up Moment:**
+      Once you fix this, you'll understand [concept] better than
+      90% of developers!
+
+      ## 🎁 Bonus Knowledge
+
+      [Related helpful information]
+
+      **Remember:** Every expert was once a beginner who kept going.
+      You're on the right path! 🚀
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Null pointer translation"
+    parameters:
+      error_message: "TypeError: Cannot read property 'map' of undefined"
+      programming_language: "JavaScript"
+      code_context: "users.map(u => u.name)"
+      translation_style: "eli5"
+    expected_result: |
+      **In Plain English:**
+      You're trying to use `.map()` on something that doesn't exist.
+      It's like trying to read a book that isn't there.
+
+      **What Probably Happened:**
+      The `users` variable is `undefined`, meaning it was never set to anything.
+      Maybe the API call failed, or you forgot to initialize it.
+
+      **How To Fix It:**
+      1. Check if users exists before mapping:
+         ```javascript
+         users?.map(u => u.name) // Safe navigation
+         // or
+         (users || []).map(u => u.name) // Default to empty array
+         ```
+
+  - name: "Python import error"
+    parameters:
+      error_message: "ModuleNotFoundError: No module named 'requests'"
+      programming_language: "Python"
+      translation_style: "sarcastic"
+    expected_result: |
+      **Translation:**
+      Python has no idea what 'requests' is. Did you forget to install it?
+
+      **What You Did:**
+      You wrote `import requests` but forgot the tiny detail of actually
+      installing the package first. Classic!
+
+      **How To Fix Your Mess:**
+      1. Run: `pip install requests`
+      2. Try your code again
+      3. Marvel at how it works now
+
+  - name: "Segmentation fault"
+    parameters:
+      error_message: "Segmentation fault (core dumped)"
+      programming_language: "C"
+      translation_style: "eli5"
+    expected_result: |
+      **Imagine you're in a library...**
+      You tried to grab a book from a shelf that doesn't exist in the library.
+      The librarian stopped you and said "You can't go there!"
+
+      **What Your Code Did:**
+      Your program tried to access memory (computer storage) it's not allowed
+      to touch.
+
+      **Common Causes:**
+      - Using a pointer that points to nothing (NULL pointer)
+      - Using an array beyond its bounds (accessing element [10] when array has 5 items)
+      - Accessing memory that was already freed
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Error Translation Best Practices
+
+  ### 1. Start With The Actual Problem
+  - Don't repeat the error message verbatim
+  - Explain what actually went wrong
+  - Use simple, clear language
+
+  ### 2. Provide Context
+  - Why this error exists
+  - When it typically occurs
+  - What the system is trying to tell you
+
+  ### 3. Give Actionable Solutions
+  - Specific steps, not vague advice
+  - Code examples when possible
+  - Multiple solutions if applicable
+
+  ### 4. Explain Prevention
+  - How to avoid this error
+  - Best practices related to this error
+  - Tools that can catch it early
+
+  ### 5. Use Analogies Wisely
+  - Make them relatable
+  - Keep them simple
+  - Don't overextend the metaphor
+
+  ### 6. Match Audience Level
+  - Beginners: More explanation, simpler terms
+  - Intermediate: Focus on patterns and concepts
+  - Advanced: Technical details and edge cases
+
+  ### 7. Include Learning Opportunities
+  - Related concepts to explore
+  - Why the language/framework works this way
+  - Resources for deeper understanding
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Translation is too technical"
+    cause: "Using jargon without explaining it"
+    solution: "Define every technical term in simple language. Assume zero knowledge."
+
+  - error: "Translation is too vague"
+    cause: "Being too general, not specific enough"
+    solution: "Include specific file names, line numbers, and exact code fixes."
+
+  - error: "Missing the 'why'"
+    cause: "Only explaining what and how, not why"
+    solution: "Explain the underlying reason this error exists and why it matters."
+
+  - error: "No real solution provided"
+    cause: "Explaining the error but not how to fix it"
+    solution: "Always include step-by-step instructions with code examples."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - fun/rubber_duck_debugger  # For when translation isn't enough
+  - debugging/root_cause_analysis  # Deep dive into errors
+  - code/test_generation  # Prevent errors with tests
+# === RELATED_PATTERNS END ===

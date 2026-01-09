@@ -1,0 +1,81 @@
+# SQL Analyst Agent Template (PostgreSQL-Specific)
+#
+# This template creates an agent specialized in PostgreSQL database analysis,
+# query optimization, and performance monitoring using PostgreSQL-specific features.
+
+agent:
+  name: "{{agent_name}}"
+  description: "{{description}}"
+
+  llm:
+    provider: "{{llm_provider}}"
+    model: "{{llm_model}}"
+    temperature: 0.7
+    max_tokens: 4096
+    top_p: 0.9
+
+  system_prompt: |
+    Analyze PostgreSQL database performance and optimize queries.
+
+    Tasks:
+    1. Identify slow queries using EXPLAIN ANALYZE and pg_stat_statements
+    2. Suggest appropriate PostgreSQL indexes (B-tree, GiST, GIN, BRIN) based on query patterns
+    3. Validate PostgreSQL syntax and dialect-specific features
+    4. Detect performance bottlenecks (sequential scans, index bloat, vacuum issues)
+    5. Recommend PostgreSQL query rewrites for better performance
+    6. Check table and index statistics (ANALYZE command)
+    7. Analyze query plans and cost estimates
+
+    PostgreSQL Focus Areas:
+    - EXPLAIN plan interpretation (cost estimates, row counts, execution time)
+    - Index selection and usage (B-tree, GiST, GIN, BRIN, partial indexes)
+    - Query planner behavior and statistics
+    - Join strategies (nested loop, hash join, merge join)
+    - Vacuum and autovacuum tuning
+    - Connection pooling and prepared statements
+    - PostgreSQL-specific optimizations (parallel query, JIT compilation)
+    - JSONB and array query optimization
+
+    Output format:
+    - Analysis findings with PostgreSQL-specific metrics (bullet points)
+    - Specific recommendations with PostgreSQL examples
+    - Expected performance improvements (execution time, I/O reduction)
+    - EXPLAIN plan insights when available
+
+    Always explain the reasoning behind each recommendation.
+
+  tools:
+    builtin: []
+    mcp:
+      - server: "{{mcp_server}}"
+        tools: ["*"]
+    custom: []
+
+  memory:
+    type: "{{memory_type}}"
+    path: "{{memory_path}}"
+    max_history: 100
+
+  behavior:
+    max_iterations: 15
+    timeout_seconds: 300
+    allow_code_execution: false
+    allowed_domains: []
+
+  metadata:
+    domain: "postgres"
+    template: "sql_postgres_analyst"
+    version: "1.0"
+    capabilities:
+      - postgres_performance_analysis
+      - postgres_index_optimization
+      - postgres_query_validation
+      - explain_plan_analysis
+      - vacuum_analysis
+      - statistics_validation
+      - connection_pooling
+      - jsonb_optimization
+    patterns:
+      - postgres_best_practices
+      - data_profiling
+      - query_optimization

@@ -1,0 +1,53 @@
+name: tools
+namespace: loom.sql
+prompts:
+  - id: execute_query
+    content: |
+      Execute a SQL query against the {{.backend_type}} database. Returns rows and columns for SELECT queries, or affected row counts for DML operations.
+    variables:
+      backend_type:
+        name: backend_type
+        type: 1  # STRING
+        required: false
+        default_value: "SQL"
+        description: "Database type (e.g., PostgreSQL, SQLite, Teradata)"
+    tags:
+      - tool
+      - sql
+      - query
+    metadata:
+      version: "v1.0"
+      description: "SQL query execution tool"
+
+  - id: get_schema
+    content: |
+      Get the schema (columns, types, nullability) for a table. Use this to discover available columns before writing queries.
+    tags:
+      - tool
+      - sql
+      - schema
+    metadata:
+      version: "v1.0"
+      description: "Table schema inspection tool"
+
+  - id: list_tables
+    content: |
+      List all tables and views in the database. Use this to discover what data is available.
+    tags:
+      - tool
+      - sql
+      - discovery
+    metadata:
+      version: "v1.0"
+      description: "Database object listing tool"
+
+  - id: explain_query
+    content: |
+      Get the execution plan for a SQL query using EXPLAIN. Use this to understand query performance and identify optimization opportunities.
+    tags:
+      - tool
+      - sql
+      - performance
+    metadata:
+      version: "v1.0"
+      description: "Query execution plan analysis tool"

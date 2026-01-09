@@ -1,0 +1,65 @@
+name: tools
+namespace: loom.rest_api
+prompts:
+  - id: http_request
+    content: |
+      Makes HTTP requests to APIs and websites. Supports GET, POST, PUT, DELETE, PATCH methods.
+      Returns response body, status code, and headers. Automatically handles JSON content.
+
+      Use this tool to:
+      - Fetch data from REST APIs
+      - Call web services
+      - Download content from URLs
+      - Send data to HTTP endpoints
+    tags:
+      - tool
+      - http
+      - rest
+      - api
+    metadata:
+      version: "v1.0"
+      description: "HTTP client tool"
+
+  - id: make_request
+    content: |
+      Make an HTTP request to a REST API endpoint. Supports GET, POST, PUT, DELETE methods with custom headers and body.
+    tags:
+      - tool
+      - rest
+      - http
+    metadata:
+      version: "v1.0"
+      description: "HTTP request execution tool"
+
+  - id: list_endpoints
+    content: |
+      Lists available API endpoints and their descriptions. Use this to discover what operations are available.
+    tags:
+      - tool
+      - rest
+      - discovery
+    metadata:
+      version: "v1.0"
+      description: "API endpoint discovery tool"
+
+  - id: check_rate_limit
+    content: |
+      Checks the current API rate limit status (requests remaining, reset time). Use this to avoid hitting rate limits.
+    tags:
+      - tool
+      - rest
+      - rate_limit
+    metadata:
+      version: "v1.0"
+      description: "Rate limit monitoring tool"
+
+  - id: ping_api
+    content: |
+      Checks if the API is accessible and responding. Use this to verify connectivity before making requests.
+    tags:
+      - tool
+      - rest
+      - health
+    metadata:
+      version: "v1.0"
+      description: "API health check tool"

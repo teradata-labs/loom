@@ -1,0 +1,339 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// SwarmPattern orchestrates multiple agents to vote on decisions.
+// Agents independently evaluate a question and vote, with configurable
+// consensus thresholds for decision-making.
+message SwarmPattern {
+  // Question or decision to evaluate
+  string question = 1;
+
+  // Agent IDs participating in the swarm
+  repeated string agent_ids = 2;
+
+  // Voting strategy
+  VotingStrategy strategy = 3;
+
+  // Confidence threshold (0.0-1.0) for accepting decision
+  float confidence_threshold = 4;
+
+  // Whether to share votes between agents during evaluation
+  bool share_votes = 5;
+
+  // Optional: Judge agent to break ties
+  string judge_agent_id = 6;
+}
+
+// VotingStrategy defines how swarm votes are aggregated.
+enum VotingStrategy {
+  VOTING_STRATEGY_UNSPECIFIED = 0;
+
+  // Simple majority (>50%)
+  MAJORITY = 1;
+
+  // Supermajority (>=2/3)
+  SUPERMAJORITY = 2;
+
+  // Unanimous agreement (100%)
+  UNANIMOUS = 3;
+
+  // Weighted by agent confidence scores
+  WEIGHTED = 4;
+
+  // Ranked choice voting
+  RANKED_CHOICE = 5;
+}
+
+// PairProgrammingPattern orchestrates driver/navigator collaboration.
+// One agent writes code while another reviews in real-time.
+message PairProgrammingPattern {
+  // Task description
+  string task = 1;
+
+  // Driver agent ID (writes code)
+  string driver_agent_id = 2;
+
+  // Navigator agent ID (reviews)
+  string navigator_agent_id = 3;
+
+  // Number of review cycles
+  int32 review_cycles = 4;
+
+  // Whether to swap roles between cycles
+  bool swap_roles = 5;
+
+  // Programming language context
+  string language = 6;
+
+  // Optional: Code quality criteria for navigator
+  repeated string quality_criteria = 7;
+}
+
+// TeacherStudentPattern orchestrates expert-to-novice knowledge transfer.
+// Expert agent teaches concepts while student learns and asks questions.
+message TeacherStudentPattern {
+  // Learning objective
+  string objective = 1;
+
+  // Teacher agent ID (expert)
+  string teacher_agent_id = 2;
+
+  // Student agent ID (novice)
+  string student_agent_id = 3;
+
+  // Curriculum steps to cover
+  repeated CurriculumStep steps = 4;
+
+  // Number of teaching iterations per step
+  int32 iterations_per_step = 5;
+
+  // Assessment strategy
+  AssessmentStrategy assessment = 6;
+}
+
+// CurriculumStep represents a single learning unit.
+message CurriculumStep {
+  // Step name
+  string name = 1;
+
+  // Concepts to teach
+  repeated string concepts = 2;
+
+  // Example problems
+  repeated string examples = 3;
+
+  // Success criteria
+  string success_criteria = 4;
+}
+
+// AssessmentStrategy defines how student learning is evaluated.
+enum AssessmentStrategy {
+  ASSESSMENT_STRATEGY_UNSPECIFIED = 0;
+
+  // Quiz-based assessment
+  QUIZ = 1;
+
+  // Practical exercises
+  PRACTICAL = 2;
+
+  // Teacher evaluation
+  TEACHER_REVIEW = 3;
+
+  // Self-assessment by student
+  SELF_ASSESSMENT = 4;
+}
+
+// DebateRound captures one round of debate discussion.
+message DebateRound {
+  // Round number (1-indexed)
+  int32 round_number = 1;
+
+  // Agent positions in this round
+  repeated AgentPosition positions = 2;
+
+  // Round summary/synthesis
+  string synthesis = 3;
+
+  // Whether consensus was reached in this round
+  bool consensus_reached = 4;
+}
+
+// AgentPosition represents an agent's argument in a debate.
+message AgentPosition {
+  // Agent ID
+  string agent_id = 1;
+
+  // Position taken
+  string position = 2;
+
+  // Supporting arguments
+  repeated string arguments = 3;
+
+  // Confidence score (0.0-1.0)
+  float confidence = 4;
+
+  // Responses to other agents' positions
+  map<string, string> responses = 5;
+
+  // Agent's internal reasoning process (extended thinking)
+  string thinking = 6;
+
+  // Tools used during position generation
+  repeated string tools_used = 7;
+
+  // Total number of tool calls made
+  int32 tool_call_count = 8;
+
+  // Model name used by this agent
+  string model = 9;
+
+  // Provider name (e.g., "anthropic", "bedrock", "ollama")
+  string provider = 10;
+}
+
+// SwarmVote represents a single agent's vote in swarm intelligence.
+message SwarmVote {
+  // Agent ID
+  string agent_id = 1;
+
+  // Vote choice
+  string choice = 2;
+
+  // Confidence score (0.0-1.0)
+  float confidence = 3;
+
+  // Reasoning for vote
+  string reasoning = 4;
+
+  // Alternative choices considered (ranked)
+  repeated string alternatives = 5;
+}
+
+// SwarmResult contains the aggregated swarm voting results.
+message SwarmResult {
+  // Winning choice
+  string decision = 1;
+
+  // All votes cast
+  repeated SwarmVote votes = 2;
+
+  // Vote distribution (choice -> count)
+  map<string, int32> vote_distribution = 3;
+
+  // Average confidence across all votes
+  float average_confidence = 4;
+
+  // Whether threshold was met
+  bool threshold_met = 5;
+
+  // Consensus analysis
+  string consensus_analysis = 6;
+}
+
+// PairProgrammingResult captures the collaborative coding output.
+message PairProgrammingResult {
+  // Final code output
+  string code = 1;
+
+  // Review cycles performed
+  repeated ReviewCycle cycles = 2;
+
+  // Code quality score (0.0-1.0)
+  float quality_score = 3;
+
+  // Issues identified and resolved
+  repeated string resolved_issues = 4;
+
+  // Remaining suggestions
+  repeated string remaining_suggestions = 5;
+}
+
+// ReviewCycle represents one iteration of driver/navigator collaboration.
+message ReviewCycle {
+  // Cycle number (1-indexed)
+  int32 cycle_number = 1;
+
+  // Driver agent ID for this cycle
+  string driver_agent_id = 2;
+
+  // Navigator agent ID for this cycle
+  string navigator_agent_id = 3;
+
+  // Code produced by driver
+  string code_diff = 4;
+
+  // Navigator's review comments
+  repeated ReviewComment comments = 5;
+
+  // Improvements made
+  repeated string improvements = 6;
+}
+
+// ReviewComment represents a single code review comment.
+message ReviewComment {
+  // Comment type: "issue", "suggestion", "praise"
+  string type = 1;
+
+  // Line number or range
+  string location = 2;
+
+  // Comment text
+  string comment = 3;
+
+  // Severity: "critical", "major", "minor", "info"
+  string severity = 4;
+
+  // Whether addressed in this cycle
+  bool resolved = 5;
+}
+
+// TeacherStudentResult captures the learning progress.
+message TeacherStudentResult {
+  // Learning objective achievement (0.0-1.0)
+  float achievement_score = 1;
+
+  // Steps completed
+  repeated StepResult steps = 2;
+
+  // Key concepts learned
+  repeated string concepts_mastered = 3;
+
+  // Areas needing improvement
+  repeated string improvement_areas = 4;
+
+  // Teacher's final assessment
+  string teacher_assessment = 5;
+
+  // Student's self-reflection
+  string student_reflection = 6;
+}
+
+// StepResult represents learning progress for one curriculum step.
+message StepResult {
+  // Step name
+  string step_name = 1;
+
+  // Iterations completed
+  int32 iterations = 2;
+
+  // Mastery score (0.0-1.0)
+  float mastery_score = 3;
+
+  // Questions asked by student
+  repeated string questions = 4;
+
+  // Answers provided by teacher
+  repeated string answers = 5;
+
+  // Assessment results
+  string assessment_result = 6;
+}
+
+// CollaborationMetrics tracks collaboration quality metrics.
+message CollaborationMetrics {
+  // Diversity of perspectives (0.0-1.0)
+  float perspective_diversity = 1;
+
+  // Agreement level (0.0-1.0)
+  float agreement_level = 2;
+
+  // Average response length
+  int32 avg_response_length = 3;
+
+  // Number of interactions
+  int32 interaction_count = 4;
+
+  // Time to consensus (milliseconds)
+  int64 time_to_consensus_ms = 5;
+
+  // Confidence variance across agents
+  float confidence_variance = 6;
+}

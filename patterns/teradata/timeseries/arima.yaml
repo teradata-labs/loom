@@ -1,0 +1,282 @@
+# === METADATA START ===
+name: arima
+title: "ARIMA Time Series Forecasting"
+description: |
+  Autoregressive Integrated Moving Average (ARIMA) model for time series forecasting.
+  ARIMA captures temporal dependencies and trends to predict future values based on
+  past observations. It's one of the most popular classical forecasting methods.
+
+  ARIMA components:
+  - AR (p): Autoregressive - uses past values
+  - I (d): Integrated - differences to make stationary
+  - MA (q): Moving Average - uses past forecast errors
+
+category: timeseries
+difficulty: advanced
+teradata_function: ARIMA
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Sales forecasting
+  - Demand planning
+  - Stock price prediction
+  - Website traffic forecasting
+  - Revenue projections
+  - Inventory optimization
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in SQL templates
+    required: true
+    description: "Database containing time series data"
+    example: "sales_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table with temporal data"
+    example: "daily_sales"
+
+  # --- Parameter 3: Value Column ---
+  - name: value_column
+    type: string
+    # LLM-HINT: Maps to {{value_column}} in SQL; must be numeric for ARIMA
+    required: true
+    description: "Column to forecast"
+    example: "revenue"
+
+  # --- Parameter 4: Time Column ---
+  - name: time_column
+    type: string
+    # LLM-HINT: Maps to {{time_column}}; must be DATE or TIMESTAMP type
+    required: true
+    description: "Date/timestamp column"
+    example: "sale_date"
+
+  # --- Parameter 5: AR Order (p) ---
+  - name: p_order
+    type: integer
+    # LLM-HINT: Autoregressive terms; start with p=1 for simple models
+    required: true
+    description: "AR order (autoregressive terms)"
+    example: "1"
+
+  # --- Parameter 6: Differencing Order (d) ---
+  - name: d_order
+    type: integer
+    # LLM-HINT: Differencing for stationarity; d=1 removes linear trend
+    required: true
+    description: "I order (differencing)"
+    example: "1"
+
+  # --- Parameter 7: MA Order (q) ---
+  - name: q_order
+    type: integer
+    # LLM-HINT: Moving average terms; start with q=1 for simple models
+    required: true
+    description: "MA order (moving average terms)"
+    example: "1"
+
+  # --- Parameter 8: Forecast Horizon ---
+  - name: forecast_periods
+    type: integer
+    required: true
+    description: "Number of periods to forecast ahead"
+    example: "30"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === STATIONARITY_CHECK TEMPLATE ===
+  # LLM-HINT: Run this first to verify data is stationary before ARIMA modeling
+  stationarity_check:
+    description: "Check if series is stationary (required for ARIMA)"
+    sql: |
+      -- Check for trend and seasonality
+      WITH stats AS (
+        SELECT
+          DATE_TRUNC('month', {{time_column}}) as month,
+          AVG({{value_column}}) as monthly_avg,
+          STDDEV({{value_column}}) as monthly_stddev
+        FROM {{database}}.{{table}}
+        GROUP BY DATE_TRUNC('month', {{time_column}})
+        ORDER BY month
+      )
+      SELECT
+        month,
+        monthly_avg,
+        monthly_stddev,
+        monthly_avg - LAG(monthly_avg) OVER (ORDER BY month) as month_over_month_change,
+        CASE
+          WHEN monthly_avg > LAG(monthly_avg) OVER (ORDER BY month) THEN 'Increasing'
+          WHEN monthly_avg < LAG(monthly_avg) OVER (ORDER BY month) THEN 'Decreasing'
+          ELSE 'Stable'
+        END as trend
+      FROM stats;
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+
+  # === BASIC_FORECAST TEMPLATE ===
+  # LLM-HINT: Main ARIMA forecasting; requires p_order, d_order, q_order parameters
+  basic_forecast:
+    description: "Train ARIMA model and generate forecasts"
+    sql: |
+      -- Train ARIMA({{p_order}},{{d_order}},{{q_order}}) model
+      SELECT
+        forecast_period,
+        forecasted_value,
+        lower_confidence_bound,
+        upper_confidence_bound
+      FROM ARIMA (
+        ON {{database}}.{{table}}
+        USING
+          TimeColumn ('{{time_column}}')
+          TargetColumn ('{{value_column}}')
+          Orders ({{p_order}}, {{d_order}}, {{q_order}})
+          ForecastPeriods ({{forecast_periods}})
+          IncludeHistory ('false')
+          ConfidenceLevel (0.95)
+      ) AS dt
+      ORDER BY forecast_period;
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+      - p_order
+      - d_order
+      - q_order
+      - forecast_periods
+
+  # === WITH_HISTORY TEMPLATE ===
+  # LLM-HINT: Use for model validation; includes fitted values and residuals
+  with_history:
+    description: "Forecast with historical fitted values for validation"
+    sql: |
+      -- Get fitted values + forecasts
+      SELECT
+        period_date,
+        actual_value,
+        fitted_value,
+        CASE WHEN fitted_value IS NOT NULL THEN actual_value - fitted_value END as residual,
+        forecasted_value
+      FROM ARIMA (
+        ON {{database}}.{{table}}
+        USING
+          TimeColumn ('{{time_column}}')
+          TargetColumn ('{{value_column}}')
+          Orders ({{p_order}}, {{d_order}}, {{q_order}})
+          ForecastPeriods ({{forecast_periods}})
+          IncludeHistory ('true')
+      ) AS dt
+      ORDER BY period_date;
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+      - p_order
+      - d_order
+      - q_order
+      - forecast_periods
+
+  # === FORECAST_ACCURACY TEMPLATE ===
+  # LLM-HINT: Evaluates ARIMA model; requires forecast_results table from prior run
+  forecast_accuracy:
+    description: "Calculate forecast error metrics on test set"
+    sql: |
+      -- Evaluate forecast accuracy
+      WITH errors AS (
+        SELECT
+          actual_value,
+          forecasted_value,
+          actual_value - forecasted_value as error,
+          ABS(actual_value - forecasted_value) as abs_error,
+          ABS((actual_value - forecasted_value) / NULLIF(actual_value, 0)) * 100 as pct_error
+        FROM {{database}}.{{forecast_results}}
+        WHERE actual_value IS NOT NULL
+      )
+      SELECT
+        COUNT(*) as n_periods,
+        AVG(error) as mean_error,
+        AVG(abs_error) as mae,
+        SQRT(AVG(error * error)) as rmse,
+        AVG(pct_error) as mape,
+        STDDEV(error) as error_stddev
+      FROM errors;
+    required_parameters:
+      - database
+      - forecast_results
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Daily Sales Forecasting"
+    description: "Forecast next 30 days of revenue"
+    parameters:
+      database: "retail"
+      table: "daily_revenue"
+      value_column: "total_revenue"
+      time_column: "sale_date"
+      p_order: 1
+      d_order: 1
+      q_order: 1
+      forecast_periods: 30
+    expected_result: |
+      ARIMA(1,1,1) forecast for next 30 days:
+      - Day 1: $45,200 ± $3,100 (95% CI)
+      - Day 7: $47,800 ± $4,200
+      - Day 30: $52,100 ± $6,800
+
+      Model captures weekly seasonality and upward trend.
+      Use for inventory planning and staffing.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Series is not stationary"
+    cause: "Trend or seasonality present"
+    solution: "Increase d_order to difference more. Remove trend/seasonality first."
+
+  - error: "Model doesn't converge"
+    cause: "Orders too high or data insufficient"
+    solution: "Start with ARIMA(1,1,1). Reduce p, d, q if issues persist."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## ARIMA Best Practices
+
+  ### 1. Check Stationarity
+  - Plot time series
+  - Check for trend and seasonality
+  - Use differencing (d_order) to achieve stationarity
+
+  ### 2. Order Selection
+  **Start with ARIMA(1,1,1):**
+  - p=1, d=1, q=1 is often good default
+  - Use AIC/BIC to compare models
+  - Don't over-parameterize
+
+  ### 3. Validate Forecasts
+  - Hold out test set
+  - Calculate MAE, RMSE, MAPE
+  - Check if forecasts make business sense
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - moving_average
+  - exponential_smoothing
+  - seasonal_decomposition
+# === RELATED_PATTERNS END ===

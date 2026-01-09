@@ -1,0 +1,526 @@
+# === METADATA START ===
+name: schema_graph_query
+title: "Schema Graph Query (Materialized Map Views)"
+description: |
+  Query the materialized schema graph views (STRUCTURE, FOREIGN_KEY, SET_RELATIONSHIP, FUNCTIONAL_DEPENDENCY)
+  for fast access to semantic mapping results.
+
+  **GRAPH VIEW TYPES:**
+
+  **STRUCTURE**: Table-level metadata
+  - Columns grouped by table
+  - Data types, nullability, keyness
+  - Domain associations
+
+  **FOREIGN_KEY**: FK relationships
+  - Source table.column → Target table.column
+  - Containment strength (P_XAGXB, P_XBGXA)
+  - Relationship cardinality (1:1, N:1, N:M)
+
+  **SET_RELATIONSHIP**: Similar columns
+  - Columns sharing value distributions
+  - Similarity scores (Cosine, Pearson)
+  - Domain membership
+
+  **FUNCTIONAL_DEPENDENCY**: Intra-table dependencies
+  - Column determines another column
+  - Dependency strength
+  - Candidate key detection
+
+  **USE CASES:**
+  - Fast queries without recomputing from signatures
+  - Export schema metadata for documentation
+  - Support data catalog integration
+  - Enable semantic search APIs
+
+  **REQUIREMENTS:**
+  Requires Map_to_Rules.sql views created from semantic-mapping project.
+  Views materialize signature analysis results.
+
+category: data_discovery
+difficulty: beginner
+teradata_function: Materialized Views
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Query table structure and metadata
+  - Find FK relationships quickly
+  - Discover similar columns across tables
+  - Export schema graph for visualization
+  - Support data catalog APIs
+  - Enable semantic search without signature recomputation
+  - Generate data dictionary
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database containing map views"
+    example: "semantic_data"
+
+  - name: table
+    type: string
+    required: false
+    description: "Specific table to query (optional)"
+    example: "customers"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  query_table_structure:
+    description: "Query STRUCTURE view for table metadata"
+    sql: |
+      -- Table Structure Query
+      SELECT
+        ID,
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        ROW_COUNT,
+        NULLABLE,
+        KEYNESS,
+        DOMAIN
+      FROM {{database}}.STRUCTURE_V
+      WHERE TABLE_NAME = '{{table}}'
+      ORDER BY COLUMN_NAME;
+
+      -- Summary statistics
+      SELECT
+        TABLE_NAME,
+        COUNT(*) AS total_columns,
+        COUNT(CASE WHEN NULLABLE = 'NOT_NULL' THEN 1 END) AS not_null_columns,
+        AVG(CAST(KEYNESS AS FLOAT)) AS avg_keyness,
+        COUNT(DISTINCT DOMAIN) AS domain_count
+      FROM {{database}}.STRUCTURE_V
+      WHERE TABLE_NAME = '{{table}}'
+      GROUP BY TABLE_NAME;
+
+  query_foreign_keys:
+    description: "Query FOREIGN_KEY view for relationships"
+    sql: |
+      -- Foreign Key Relationships
+      SELECT
+        KEY_TABLE,
+        KEY_COL,
+        DEP_TABLE,
+        DEP_COL,
+        PXBGXA,
+        PXAGXB,
+        CASE
+          WHEN PXAGXB >= 0.99 AND PXBGXA >= 0.99 THEN '1:1'
+          WHEN PXAGXB >= 0.99 AND PXBGXA < 0.99 THEN 'N:1'
+          WHEN PXAGXB < 0.99 AND PXBGXA >= 0.99 THEN '1:N'
+          ELSE 'N:M'
+        END AS cardinality,
+        KEY_TABLE || '.' || KEY_COL || ' → ' ||
+          DEP_TABLE || '.' || DEP_COL AS relationship
+      FROM {{database}}.PK_FKS_V
+      WHERE KEY_TABLE = '{{table}}'
+         OR DEP_TABLE = '{{table}}'
+      ORDER BY PXAGXB DESC;
+
+  query_set_relationships:
+    description: "Query SET_RELATIONSHIP view for similar columns"
+    sql: |
+      -- Set Relationships (Similar Columns)
+      SELECT
+        TABLE1,
+        COLUMN1,
+        TABLE2,
+        COLUMN2,
+        SIMILARITY,
+        OVERLAP_SCORE,
+        TABLE1 || '.' || COLUMN1 || ' ≈ ' ||
+          TABLE2 || '.' || COLUMN2 AS similarity_pair
+      FROM {{database}}.SET_RELATIONSHIP_V
+      WHERE (TABLE1 = '{{table}}' OR TABLE2 = '{{table}}')
+        AND SIMILARITY >= 0.90
+      ORDER BY SIMILARITY DESC;
+
+  query_functional_dependencies:
+    description: "Query FUNCTIONAL_DEPENDENCY view for intra-table FDs"
+    sql: |
+      -- Functional Dependencies
+      SELECT
+        TABLE_NAME,
+        DETERMINANT_COL,
+        DEPENDENT_COL,
+        STRENGTH,
+        DETERMINANT_COL || ' → ' || DEPENDENT_COL AS fd_notation
+      FROM {{database}}.FUNCTIONAL_DEPENDENCY_V
+      WHERE TABLE_NAME = '{{table}}'
+        AND STRENGTH >= 0.95
+      ORDER BY STRENGTH DESC;
+
+      -- Candidate Keys (columns that determine all others)
+      SELECT
+        DETERMINANT_COL,
+        COUNT(*) AS determines_count,
+        AVG(STRENGTH) AS avg_strength
+      FROM {{database}}.FUNCTIONAL_DEPENDENCY_V
+      WHERE TABLE_NAME = '{{table}}'
+        AND STRENGTH >= 0.95
+      GROUP BY DETERMINANT_COL
+      ORDER BY determines_count DESC;
+
+  export_schema_graph:
+    description: "Export complete schema graph as CSV"
+    sql: |
+      -- Export STRUCTURE
+      SELECT 'STRUCTURE' AS record_type,
+             TABLE_NAME,
+             COLUMN_NAME,
+             COLUMN_TYPE,
+             CAST(ROW_COUNT AS VARCHAR(20)),
+             NULLABLE,
+             CAST(KEYNESS AS VARCHAR(10)),
+             COALESCE(DOMAIN, '?')
+      FROM {{database}}.STRUCTURE_V
+      WHERE ROW_COUNT > 10000  -- Filter small tables
+
+      UNION ALL
+
+      -- Export FOREIGN_KEYS
+      SELECT 'FOREIGN_KEY',
+             KEY_TABLE,
+             KEY_COL,
+             DEP_TABLE,
+             DEP_COL,
+             CAST(PXBGXA AS VARCHAR(10)),
+             CAST(PXAGXB AS VARCHAR(10)),
+             ''
+      FROM {{database}}.PK_FKS_V
+      WHERE PXAGXB > 0.95
+
+      UNION ALL
+
+      -- Export SET_RELATIONSHIPS
+      SELECT 'SET_RELATIONSHIP',
+             TABLE1,
+             COLUMN1,
+             TABLE2,
+             COLUMN2,
+             CAST(SIMILARITY AS VARCHAR(10)),
+             CAST(OVERLAP_SCORE AS VARCHAR(10)),
+             ''
+      FROM {{database}}.SET_RELATIONSHIP_V
+      WHERE SIMILARITY >= 0.90
+
+      ORDER BY record_type, TABLE_NAME;
+
+  search_by_column_name:
+    description: "Search corpus for columns by name pattern"
+    sql: |
+      -- Search by Column Name
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        ROW_COUNT,
+        KEYNESS,
+        DOMAIN,
+        TABLE_NAME || '.' || COLUMN_NAME AS full_name
+      FROM {{database}}.STRUCTURE_V
+      WHERE COLUMN_NAME LIKE '%{{search_pattern}}%'
+         OR DOMAIN LIKE '%{{search_pattern}}%'
+      ORDER BY KEYNESS DESC;
+
+  find_tables_by_domain:
+    description: "Find all tables containing specific domain"
+    sql: |
+      -- Tables with Domain
+      SELECT
+        TABLE_NAME,
+        COUNT(*) AS columns_in_domain,
+        STRING_AGG(COLUMN_NAME, ', ') AS domain_columns
+      FROM {{database}}.STRUCTURE_V
+      WHERE DOMAIN = '{{domain_name}}'
+      GROUP BY TABLE_NAME
+      ORDER BY columns_in_domain DESC;
+
+  relationship_summary:
+    description: "Summary statistics for relationship types"
+    sql: |
+      -- Relationship Summary
+      SELECT
+        'FK Relationships' AS metric,
+        COUNT(*) AS count
+      FROM {{database}}.PK_FKS_V
+      WHERE PXAGXB >= 0.95
+
+      UNION ALL
+
+      SELECT
+        'Set Relationships',
+        COUNT(*)
+      FROM {{database}}.SET_RELATIONSHIP_V
+      WHERE SIMILARITY >= 0.90
+
+      UNION ALL
+
+      SELECT
+        'Functional Dependencies',
+        COUNT(*)
+      FROM {{database}}.FUNCTIONAL_DEPENDENCY_V
+      WHERE STRENGTH >= 0.95
+
+      UNION ALL
+
+      SELECT
+        'Tables Analyzed',
+        COUNT(DISTINCT TABLE_NAME)
+      FROM {{database}}.STRUCTURE_V
+
+      UNION ALL
+
+      SELECT
+        'Columns Analyzed',
+        COUNT(*)
+      FROM {{database}}.STRUCTURE_V;
+
+  catalog_api_query:
+    description: "Generate data catalog API response format"
+    sql: |
+      -- Data Catalog API Format
+      SELECT
+        JSON_OBJECT(
+          'table_name' VALUE TABLE_NAME,
+          'columns' VALUE JSON_ARRAY(
+            SELECT JSON_OBJECT(
+              'name' VALUE COLUMN_NAME,
+              'type' VALUE COLUMN_TYPE,
+              'nullable' VALUE (NULLABLE = 'NULL'),
+              'keyness' VALUE KEYNESS,
+              'domain' VALUE DOMAIN
+            )
+            FROM {{database}}.STRUCTURE_V s2
+            WHERE s2.TABLE_NAME = s1.TABLE_NAME
+          ),
+          'relationships' VALUE JSON_OBJECT(
+            'outbound_fks' VALUE JSON_ARRAY(
+              SELECT JSON_OBJECT(
+                'column' VALUE KEY_COL,
+                'references' VALUE DEP_TABLE || '.' || DEP_COL,
+                'containment' VALUE PXAGXB
+              )
+              FROM {{database}}.PK_FKS_V fk
+              WHERE fk.KEY_TABLE = s1.TABLE_NAME
+            ),
+            'inbound_fks' VALUE JSON_ARRAY(
+              SELECT JSON_OBJECT(
+                'column' VALUE DEP_COL,
+                'referenced_by' VALUE KEY_TABLE || '.' || KEY_COL,
+                'containment' VALUE PXAGXB
+              )
+              FROM {{database}}.PK_FKS_V fk
+              WHERE fk.DEP_TABLE = s1.TABLE_NAME
+            )
+          )
+        ) AS catalog_json
+      FROM {{database}}.STRUCTURE_V s1
+      WHERE TABLE_NAME = '{{table}}'
+      GROUP BY TABLE_NAME;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Query table structure"
+    parameters:
+      database: "semantic_data"
+      table: "customers"
+    expected_result: |
+      Table Structure: customers
+
+      | COLUMN       | TYPE | ROW_COUNT | NULLABLE | KEYNESS | DOMAIN   |
+      |--------------|------|-----------|----------|---------|----------|
+      | customer_id  | I    | 50000     | NOT_NULL | 100     | ?        |
+      | email        | CV   | 50000     | NOT_NULL | 99      | ?        |
+      | first_name   | CV   | 50000     | NULL     | 2       | name     |
+      | state        | CV   | 50000     | NULL     | 0       | us_state |
+      | signup_date  | DA   | 50000     | NOT_NULL | 3       | ?        |
+
+      Summary:
+      - Total columns: 5
+      - Not null columns: 3
+      - Average keyness: 40.8
+      - Domains: 2 (name, us_state)
+
+  - name: "Query foreign keys"
+    parameters:
+      database: "semantic_data"
+      table: "orders"
+    expected_result: |
+      Foreign Key Relationships: orders
+
+      Outbound (orders references):
+      | FK_COL      | REFERENCES             | CARDINALITY | CONTAINMENT |
+      |-------------|------------------------|-------------|-------------|
+      | customer_id | customers.customer_id  | N:1         | 1.00        |
+      | product_id  | products.product_id    | N:1         | 0.98        |
+
+      Inbound (tables reference orders):
+      | TABLE       | FK_COL   | CARDINALITY | CONTAINMENT |
+      |-------------|----------|-------------|-------------|
+      | order_items | order_id | N:1         | 1.00        |
+      | shipments   | order_id | 1:1         | 0.99        |
+      | payments    | order_id | 1:1         | 0.98        |
+
+  - name: "Search by column name"
+    parameters:
+      database: "semantic_data"
+      search_pattern: "customer"
+    expected_result: |
+      Columns matching '%customer%':
+
+      | TABLE        | COLUMN       | TYPE | KEYNESS | DOMAIN    |
+      |--------------|--------------|------|---------|-----------|
+      | customers    | customer_id  | I    | 100     | ?         |
+      | orders       | customer_id  | I    | 65      | ?         |
+      | transactions | customer_id  | I    | 45      | ?         |
+      | addresses    | customer_id  | I    | 55      | ?         |
+
+      All likely FK references to customers.customer_id.
+
+  - name: "Export schema graph"
+    parameters:
+      database: "semantic_data"
+    expected_result: |
+      Schema Graph Export (CSV format):
+
+      STRUCTURE,customers,customer_id,I,50000,NOT_NULL,100,?
+      STRUCTURE,customers,email,CV,50000,NOT_NULL,99,?
+      STRUCTURE,customers,state,CV,50000,NULL,0,us_state
+      FOREIGN_KEY,orders,customer_id,customers,customer_id,0.65,1.00
+      FOREIGN_KEY,orders,product_id,products,product_id,0.87,0.98
+      SET_RELATIONSHIP,customers,state,orders,ship_state,0.99,0.95
+
+      This can be imported into data catalog tools or graph databases.
+
+  - name: "Generate data catalog API response"
+    parameters:
+      database: "semantic_data"
+      table: "customers"
+    expected_result: |
+      Data Catalog JSON:
+
+      ```json
+      {
+        "table_name": "customers",
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "I",
+            "nullable": false,
+            "keyness": 100,
+            "domain": null
+          },
+          {
+            "name": "state",
+            "type": "CV",
+            "nullable": true,
+            "keyness": 0,
+            "domain": "us_state"
+          }
+        ],
+        "relationships": {
+          "outbound_fks": [],
+          "inbound_fks": [
+            {
+              "column": "customer_id",
+              "referenced_by": "orders.customer_id",
+              "containment": 1.00
+            }
+          ]
+        }
+      }
+      ```
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Schema Graph Query Best Practices
+
+  ### 1. Create Views from Map_to_Rules.sql
+  Materialize semantic map results:
+  ```sql
+  -- Run from semantic-mapping project
+  .RUN FILE = SQL_src/Map_to_Rules.sql
+  ```
+  Creates: STRUCTURE_V, PK_FKS_V, SET_RELATIONSHIP_V, FUNCTIONAL_DEPENDENCY_V
+
+  ### 2. Use Views for Fast Queries
+  Views are pre-computed, avoid recomputing from signatures:
+  ```sql
+  -- Fast: Query view
+  SELECT * FROM STRUCTURE_V WHERE table_name = 'customers';
+
+  -- Slow: Recompute from signatures
+  SELECT ... FROM SIGNATURES JOIN SIGNATURE_PAIRS ...
+  ```
+
+  ### 3. Filter by Strength/Quality
+  Focus on high-quality relationships:
+  ```sql
+  WHERE PXAGXB >= 0.95  -- Strong FKs
+  WHERE SIMILARITY >= 0.90  -- Similar columns
+  WHERE STRENGTH >= 0.95  -- Strong FDs
+  ```
+
+  ### 4. Export for External Tools
+  Schema graph integrates with:
+  - Data catalogs (Alation, Collibra)
+  - Graph databases (Neo4j)
+  - Visualization tools (GraphViz, Mermaid)
+  - Documentation generators
+
+  ### 5. Refresh Views Periodically
+  When corpus changes, regenerate:
+  ```sql
+  -- Re-run signature generation
+  -- Re-run Map_to_Rules.sql
+  ```
+
+  ### 6. Use JSON for API Responses
+  Teradata JSON functions enable REST APIs:
+  ```sql
+  SELECT JSON_OBJECT(...) AS catalog_json
+  ```
+
+  ### 7. Memory Layers for Graph Queries
+  - **Kernel Layer**: Cache view schemas and common query patterns
+  - **L1 Cache**: Keep recent graph query results (last 5-8 tables) for instant replay
+  - **L2 Compressed**: Archive exported schema graphs showing evolution
+  - **Swap Layer**: Store complete query history; use recall_conversation to reference graph queries from earlier catalog builds
+  This enables fast repeated queries and tracking schema evolution over time.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "View does not exist"
+    cause: "Map_to_Rules.sql not run to create views"
+    solution: "Run SQL_src/Map_to_Rules.sql from semantic-mapping project"
+
+  - error: "Empty results from views"
+    cause: "Signatures not generated or SIGNATURE_PAIRS not populated"
+    solution: "Run signature_generation and foreign_key_detection patterns first"
+
+  - error: "JSON_OBJECT function not found"
+    cause: "Teradata version < 16.20 (JSON support)"
+    solution: "Use string concatenation for JSON output, or upgrade Teradata"
+
+  - error: "View query very slow"
+    cause: "Views not materialized, recalculating from signatures"
+    solution: "Check if views are actual views or just query templates. Materialize with CREATE TABLE AS"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - signature_generation  # Must run to populate base data
+  - foreign_key_detection  # Populates FK relationships
+  - column_similarity  # Populates set relationships
+  - corpus_navigation  # Uses graph views for navigation
+  - domain_discovery  # Uses structure view for domains
+# === RELATED_PATTERNS END ===

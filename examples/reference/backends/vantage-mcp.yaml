@@ -1,0 +1,37 @@
+# Vantage MCP Backend Configuration
+# Teradata Vantage access via Model Context Protocol
+# Usage: Reference this file in your looms.yaml agent configuration or use with weaver
+
+apiVersion: loom/v1
+kind: Backend
+name: vantage-mcp-backend
+type: mcp
+description: Teradata Vantage backend via MCP - query execution, schema discovery, and analytics
+
+# MCP configuration for Vantage MCP server
+mcp:
+  # Command to execute (vantage-mcp binary installed by batteries-included installer)
+  command: vantage-mcp
+
+  # Transport type: stdio (JSON-RPC over stdin/stdout)
+  transport: stdio
+
+  # Environment variables (TD credentials injected from looms config)
+  # These are set via: looms config set mcp.servers.vantage.env.TD_*
+  # and: looms config set-key td_password
+  env: {}
+
+# MCP backends automatically support these capabilities
+capabilities:
+  query_execution: true       # Execute Teradata SQL queries
+  schema_discovery: true      # Discover databases, tables, columns
+  metadata: true              # Access table/column metadata
+  resource_listing: true      # List available resources
+  custom_operations: true     # Teradata-specific operations
+
+# Notes:
+# - vantage-mcp must be in PATH or configured in looms.yaml
+# - Credentials are managed via looms config (TD_USER, TD_DEFAULT_HOST, td_password)
+# - This backend provides full Teradata Vantage capabilities via MCP
+# - Tools are discovered automatically via MCP's tools/list endpoint
+# - Preferred backend for all Teradata/SQL threads in batteries-included installation

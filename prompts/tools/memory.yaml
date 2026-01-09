@@ -1,0 +1,71 @@
+name: memory_tools
+namespace: loom
+prompts:
+  - id: recall_conversation_description
+    content: |
+      Retrieve older conversation history from long-term storage when you need context from earlier in this conversation. Use this when the user references something from a previous discussion that is no longer in recent context.
+    variables: {}
+    tags:
+      - tools
+      - memory
+      - recall
+    metadata:
+      version: "v1.0"
+      description: "Description for the recall_conversation tool"
+
+  - id: clear_recalled_context_description
+    content: |
+      Remove previously recalled conversation history from context to free up token budget. Use this when you no longer need the older context that was loaded with recall_conversation.
+    variables: {}
+    tags:
+      - tools
+      - memory
+      - clear
+    metadata:
+      version: "v1.0"
+      description: "Description for the clear_recalled_context tool"
+
+  - id: search_conversation_description
+    content: |
+      Search conversation history using natural language queries.
+
+      Use this when you need to find relevant context from earlier in the conversation, but don't know the exact offset.
+
+      Examples:
+      - "What did we discuss about database optimization?"
+      - "Find mentions of API errors"
+      - "Search for decisions about authentication"
+
+      The tool uses semantic search to find messages that are conceptually relevant, even if they use different terminology.
+    variables: {}
+    tags:
+      - tools
+      - memory
+      - search
+    metadata:
+      version: "v1.0"
+      description: "Description for the search_conversation tool"
+
+  - id: recall_conversation_parameter_offset
+    content: |
+      Number of messages to skip from the beginning (0 = oldest messages)
+    variables: {}
+    tags:
+      - tools
+      - memory
+      - parameter
+    metadata:
+      version: "v1.0"
+      description: "Description for offset parameter"
+
+  - id: recall_conversation_parameter_limit
+    content: |
+      Maximum number of messages to retrieve (default: 10, max: 50)
+    variables: {}
+    tags:
+      - tools
+      - memory
+      - parameter
+    metadata:
+      version: "v1.0"
+      description: "Description for limit parameter"

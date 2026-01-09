@@ -1,0 +1,433 @@
+# === METADATA START ===
+name: foreign_key_detection
+title: "Foreign Key Detection Using Conditional Probabilities"
+description: |
+  Automatically detect foreign key relationships between columns using statistical conditional probabilities
+  from column signatures.
+
+  **CONDITIONAL PROBABILITY FUNCTIONS:**
+  - **P_XAGXB(S1, S2)**: Probability that value X appears in S1 GIVEN it appears in S2
+  - **P_XBGXA(S1, S2)**: Probability that value X appears in S2 GIVEN it appears in S1
+
+  **FOREIGN KEY DETECTION LOGIC:**
+  If P_XAGXB(FK_Column, PK_Column) ≈ 1.0:
+  - Every value in FK_Column exists in PK_Column
+  - FK_Column → PK_Column is a foreign key relationship
+
+  **RELATIONSHIP TYPES:**
+  - **1:1** (One-to-One): P_XAGXB ≈ 1.0 AND P_XBGXA ≈ 1.0 (both directions)
+  - **N:1** (Many-to-One): P_XAGXB ≈ 1.0 AND P_XBGXA < 0.5 (FK → PK)
+  - **N:M** (Many-to-Many): Both < 0.9 (junction table needed)
+  - **Subset**: 0.5 < P_XAGXB < 0.99 (partial foreign key)
+
+  **REQUIREMENTS:**
+  Requires SIGNATURES table and SIGNATURE_PAIRS table.
+  Uses UDFS.P_XAGXB(), UDFS.P_XBGXA(), UDFS.Overlaps() functions.
+
+  **CRITICAL: Verification**
+  Statistical FK detection finds *probable* relationships.
+  Always verify with actual JOIN queries before declaring constraints.
+
+category: data_discovery
+difficulty: advanced
+teradata_function: P_XAGXB, P_XBGXA, Overlaps
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Automatically discover foreign key relationships
+  - Reverse-engineer undocumented schema relationships
+  - Validate existing foreign key constraints
+  - Support data lineage and impact analysis
+  - Enable automated ERD generation
+  - Find orphaned records (FK values without PK match)
+  - Detect data integration opportunities
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database containing signatures to analyze"
+    example: "semantic_data"
+
+  - name: pk_threshold
+    type: number
+    required: false
+    default: 0.95
+    description: "Minimum P_XAGXB for FK detection (0.95 = 95% containment)"
+    example: "0.95"
+
+  - name: fk_table
+    type: string
+    required: false
+    description: "Specific table to analyze as FK source (optional)"
+    example: "orders"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  create_signature_pairs:
+    description: "Create table to store pairwise signature comparisons"
+    sql: |
+      -- Create SIGNATURE_PAIRS table for FK analysis
+      CREATE TABLE {{database}}.Signature_Pairs (
+        S1_ID INTEGER NOT NULL,
+        S2_ID INTEGER NOT NULL,
+
+        S1_POP BIGINT NOT NULL,
+        S1_VALUE_CNT BIGINT NOT NULL,
+        S1_DISTINCT_CNT BIGINT NOT NULL,
+
+        S2_POP BIGINT NOT NULL,
+        S2_VALUE_CNT BIGINT NOT NULL,
+        S2_DISTINCT_CNT BIGINT NOT NULL,
+
+        COLUMN_TYPE VARCHAR(8) NOT NULL,
+
+        -- Conditional probabilities (FK detection)
+        PXBGXA FLOAT,  -- P(X in S2 | X in S1)
+        PXAGXB FLOAT,  -- P(X in S1 | X in S2)
+
+        -- Distance metrics (similarity)
+        PEARSON FLOAT,
+        COSINE FLOAT,
+        CHISQUARE FLOAT,
+        L0_DIST FLOAT,
+        L1_DIST FLOAT,
+        L2_DIST FLOAT,
+
+        FOREIGN KEY (S1_ID) REFERENCES {{database}}.Signatures(ID),
+        FOREIGN KEY (S2_ID) REFERENCES {{database}}.Signatures(ID)
+      )
+      PRIMARY INDEX (S1_ID, S2_ID);
+
+  generate_signature_pairs:
+    description: "Generate pairwise comparisons for FK detection"
+    sql: |
+      -- Populate SIGNATURE_PAIRS (only for overlapping columns)
+      INSERT INTO {{database}}.Signature_Pairs
+      SELECT
+        S1.ID AS S1_ID,
+        S2.ID AS S2_ID,
+
+        S1.ROW_COUNT AS S1_POP,
+        S1.VALUE_COUNT AS S1_VALUE_CNT,
+        UDFS.Count_Estimate(S1.SIG_DATA) AS S1_DISTINCT_CNT,
+
+        S2.ROW_COUNT AS S2_POP,
+        S2.VALUE_COUNT AS S2_VALUE_CNT,
+        UDFS.Count_Estimate(S2.SIG_DATA) AS S2_DISTINCT_CNT,
+
+        S1.COLUMN_TYPE AS COLUMN_TYPE,
+
+        -- Conditional probabilities for FK detection
+        UDFS.P_XBGXA(S1.SIG_DATA, S2.SIG_DATA) AS PXBGXA,
+        UDFS.P_XAGXB(S1.SIG_DATA, S2.SIG_DATA) AS PXAGXB,
+
+        -- Similarity metrics
+        UDFS.Pearson(S1.SIG_DATA, S2.SIG_DATA) AS PEARSON,
+        UDFS.Cosine(S1.SIG_DATA, S2.SIG_DATA) AS COSINE,
+        UDFS.ChiSquare(S1.SIG_DATA, S2.SIG_DATA) AS CHISQUARE,
+        UDFS.L0Dist(S1.SIG_DATA, S2.SIG_DATA) AS L0_DIST,
+        UDFS.L1Dist(S1.SIG_DATA, S2.SIG_DATA) AS L1_DIST,
+        UDFS.L2Dist(S1.SIG_DATA, S2.SIG_DATA) AS L2_DIST
+
+      FROM {{database}}.Signatures AS S1
+      CROSS JOIN {{database}}.Signatures AS S2
+      WHERE S1.ID < S2.ID  -- Avoid duplicates and self-comparisons
+        AND S1.COLUMN_TYPE = S2.COLUMN_TYPE  -- Same type only
+        AND S1.TABLE_NAME <> S2.TABLE_NAME  -- Different tables
+        AND UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) > 0  -- Value ranges overlap
+        {{if .fk_table}}AND S1.TABLE_NAME = '{{fk_table}}'{{end}};
+
+  detect_foreign_keys:
+    description: "Detect FK relationships using P_XAGXB threshold"
+    sql: |
+      -- Foreign Key Detection (N:1 relationships)
+      WITH FK_ANALYSIS AS (
+        SELECT
+          S1.TABLE_NAME AS fk_table,
+          S1.COLUMN_NAME AS fk_column,
+          S2.TABLE_NAME AS pk_table,
+          S2.COLUMN_NAME AS pk_column,
+          SP.PXAGXB AS containment_fk_to_pk,
+          SP.PXBGXA AS containment_pk_to_fk,
+          SP.S1_DISTINCT_CNT AS fk_distinct_values,
+          SP.S2_DISTINCT_CNT AS pk_distinct_values,
+          CASE
+            WHEN SP.PXAGXB >= 0.99 AND SP.PXBGXA >= 0.99 THEN '1:1'
+            WHEN SP.PXAGXB >= 0.99 AND SP.PXBGXA < 0.99 THEN 'N:1'
+            WHEN SP.PXAGXB < 0.99 AND SP.PXBGXA >= 0.99 THEN '1:N'
+            WHEN SP.PXAGXB >= 0.50 AND SP.PXBGXA >= 0.50 THEN 'N:M'
+            WHEN SP.PXAGXB >= {{pk_threshold}} THEN 'SUBSET_FK'
+            ELSE 'NO_RELATIONSHIP'
+          END AS relationship_type
+        FROM {{database}}.Signature_Pairs AS SP
+        JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+        WHERE SP.PXAGXB >= {{pk_threshold}}  -- FK values contained in PK
+          {{if .fk_table}}AND S1.TABLE_NAME = '{{fk_table}}'{{end}}
+      )
+      SELECT
+        fk_table,
+        fk_column,
+        pk_table,
+        pk_column,
+        relationship_type,
+        containment_fk_to_pk,
+        containment_pk_to_fk,
+        fk_distinct_values,
+        pk_distinct_values,
+        fk_table || '.' || fk_column || ' → ' ||
+          pk_table || '.' || pk_column AS fk_relationship
+      FROM FK_ANALYSIS
+      WHERE relationship_type IN ('1:1', 'N:1', 'SUBSET_FK')
+      ORDER BY containment_fk_to_pk DESC, fk_table, fk_column;
+
+  verify_foreign_key:
+    description: "Verify FK relationship with actual JOIN query"
+    sql: |
+      -- Verify FK: orders.customer_id → customers.customer_id
+      SELECT
+        'FK Verification' AS check_type,
+        COUNT(*) AS total_fk_rows,
+        COUNT(DISTINCT fk.{{fk_column}}) AS distinct_fk_values,
+        COUNT(pk.{{pk_column}}) AS matching_pk_values,
+        COUNT(*) - COUNT(pk.{{pk_column}}) AS orphaned_rows,
+        CAST(COUNT(pk.{{pk_column}}) AS DOUBLE PRECISION) /
+          NULLIFZERO(COUNT(*)) AS match_rate
+      FROM {{database}}.{{fk_table}} AS fk
+      LEFT JOIN {{database}}.{{pk_table}} AS pk
+        ON fk.{{fk_column}} = pk.{{pk_column}};
+
+      -- Find orphaned FK values (no matching PK)
+      SELECT fk.{{fk_column}} AS orphaned_value, COUNT(*) AS occurrence_count
+      FROM {{database}}.{{fk_table}} AS fk
+      LEFT JOIN {{database}}.{{pk_table}} AS pk
+        ON fk.{{fk_column}} = pk.{{pk_column}}
+      WHERE pk.{{pk_column}} IS NULL
+      GROUP BY fk.{{fk_column}}
+      ORDER BY occurrence_count DESC
+      SAMPLE 100;
+
+  fk_summary_by_table:
+    description: "Summary of FK relationships per table"
+    sql: |
+      -- FK relationship summary
+      SELECT
+        S1.TABLE_NAME AS fk_table,
+        COUNT(*) AS total_fk_candidates,
+        COUNT(CASE WHEN SP.PXAGXB >= 0.99 THEN 1 END) AS strong_fks,
+        COUNT(CASE WHEN SP.PXAGXB BETWEEN 0.95 AND 0.99 THEN 1 END) AS weak_fks,
+        COUNT(DISTINCT S2.TABLE_NAME) AS referenced_tables
+      FROM {{database}}.Signature_Pairs AS SP
+      JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+      WHERE SP.PXAGXB >= {{pk_threshold}}
+        {{if .fk_table}}AND S1.TABLE_NAME = '{{fk_table}}'{{end}}
+      GROUP BY S1.TABLE_NAME
+      ORDER BY strong_fks DESC, total_fk_candidates DESC;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Detect all FK relationships in database"
+    parameters:
+      database: "semantic_data"
+      pk_threshold: 0.95
+    expected_result: |
+      Foreign Key Relationships Detected:
+
+      | FK_TABLE  | FK_COLUMN    | PK_TABLE  | PK_COLUMN   | TYPE | P_XAGXB | P_XBGXA |
+      |-----------|--------------|-----------|-------------|------|---------|---------|
+      | orders    | customer_id  | customers | customer_id | N:1  | 1.00    | 0.65    |
+      | orders    | product_id   | products  | product_id  | N:1  | 0.98    | 0.87    |
+      | order_itm | order_id     | orders    | order_id    | N:1  | 1.00    | 1.00    |
+      | payments  | order_id     | orders    | order_id    | 1:1  | 0.99    | 0.99    |
+
+      Interpretation:
+      - orders.customer_id → customers.customer_id: Classic FK (many orders per customer)
+      - orders.product_id → products.product_id: Strong FK (98% match, 2% orphans)
+      - order_items.order_id → orders.order_id: Perfect FK (every order_item has order)
+      - payments.order_id → orders.order_id: Near 1:1 (most orders have payment)
+
+  - name: "Verify detected FK relationship"
+    parameters:
+      database: "sales"
+      fk_table: "orders"
+      fk_column: "customer_id"
+      pk_table: "customers"
+      pk_column: "customer_id"
+    expected_result: |
+      FK Verification: orders.customer_id → customers.customer_id
+
+      - Total FK rows: 125,000 (orders)
+      - Distinct FK values: 45,000 (unique customers)
+      - Matching PK values: 124,876 (99.9%)
+      - Orphaned rows: 124 (0.1%)
+      - Match rate: 0.999
+
+      Orphaned FK Values (no matching customer):
+      | orphaned_value | occurrence_count |
+      |----------------|------------------|
+      | 999999         | 52               |
+      | 888888         | 38               |
+      | 777777         | 34               |
+
+      Analysis:
+      - Strong FK relationship (99.9% containment)
+      - 124 orders reference non-existent customers (data quality issue)
+      - Orphaned values appear to be test/placeholder IDs
+      - Recommend: Clean up orphaned records before adding FK constraint
+
+  - name: "Find FK relationships for specific table"
+    parameters:
+      database: "semantic_data"
+      fk_table: "transactions"
+      pk_threshold: 0.95
+    expected_result: |
+      FK Relationships from transactions table:
+
+      | FK_COLUMN     | PK_TABLE   | PK_COLUMN     | TYPE | CONTAINMENT |
+      |---------------|------------|---------------|------|-------------|
+      | account_id    | accounts   | account_id    | N:1  | 1.00        |
+      | customer_id   | customers  | customer_id   | N:1  | 0.98        |
+      | product_code  | products   | product_code  | N:1  | 0.96        |
+      | branch_id     | branches   | branch_id     | N:1  | 1.00        |
+
+      ERD Fragment:
+      ```
+      accounts ──┐
+                 ├──< transactions >──┤
+      customers ─┘                    │
+                                      │
+      products ───────────────────────┘
+      branches ───────────────────────┘
+      ```
+
+  - name: "Detect 1:1 relationships"
+    parameters:
+      database: "semantic_data"
+      pk_threshold: 0.95
+    expected_result: |
+      1:1 Relationships Detected:
+
+      | TABLE1      | COLUMN1      | TABLE2        | COLUMN2      | P_XAGXB | P_XBGXA |
+      |-------------|--------------|---------------|--------------|---------|---------|
+      | employees   | employee_id  | emp_details   | employee_id  | 0.99    | 0.99    |
+      | orders      | order_id     | shipments     | order_id     | 1.00    | 0.98    |
+      | customers   | customer_id  | cust_prefs    | customer_id  | 0.99    | 1.00    |
+
+      Analysis:
+      - employees ←→ emp_details: Optional 1:1 (some employees no details)
+      - orders → shipments: Near 1:1 (most orders shipped)
+      - customers ←→ cust_prefs: Optional 1:1 (preferences table)
+
+      These suggest table denormalization opportunities or optional relationships.
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Foreign Key Detection Best Practices
+
+  ### 1. Generate Signatures and Pairs First
+  FK detection requires two tables:
+  ```sql
+  -- Step 1: Populate SIGNATURES
+  RUN signature_generation pattern
+
+  -- Step 2: Create and populate SIGNATURE_PAIRS
+  CREATE TABLE Signature_Pairs (...);
+  INSERT INTO Signature_Pairs SELECT ... UDFS.P_XAGXB(...) ...
+  ```
+
+  ### 2. Understand Conditional Probabilities
+  **P_XAGXB(FK_Col, PK_Col)**: "Given value X in PK, how often is it in FK?"
+  - 1.0: Every FK value exists in PK (perfect FK)
+  - 0.95-0.99: Strong FK (some orphans)
+  - 0.5-0.95: Weak FK (many orphans)
+
+  **P_XBGXA(FK_Col, PK_Col)**: "Given value X in FK, how often is it in PK?"
+  - Symmetric measure, helps detect 1:1 vs N:1
+
+  ### 3. Set Appropriate P_XAGXB Threshold
+  **Thresholds:**
+  - 0.99: Perfect or near-perfect FK (< 1% orphans)
+  - 0.95: Strong FK (< 5% orphans) - recommended default
+  - 0.80: Weak FK (< 20% orphans)
+
+  ### 4. Filter by Overlaps First
+  Only compare columns with overlapping value ranges:
+  ```sql
+  WHERE UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) > 0
+  ```
+  This dramatically reduces comparison space.
+
+  ### 5. Classify Relationship Types
+  ```sql
+  CASE
+    WHEN PXAGXB >= 0.99 AND PXBGXA >= 0.99 THEN '1:1'
+    WHEN PXAGXB >= 0.99 AND PXBGXA < 0.99 THEN 'N:1'  -- Classic FK
+    WHEN PXAGXB < 0.99 AND PXBGXA >= 0.99 THEN '1:N'
+    WHEN PXAGXB >= 0.50 AND PXBGXA >= 0.50 THEN 'N:M'
+    ELSE 'NO_RELATIONSHIP'
+  END
+  ```
+
+  ### 6. Always Verify with Actual JOINs
+  Statistical detection finds probable FKs:
+  ```sql
+  -- Verify FK candidate
+  SELECT COUNT(*) AS total,
+         COUNT(pk.id) AS matches,
+         COUNT(*) - COUNT(pk.id) AS orphans
+  FROM fk_table fk
+  LEFT JOIN pk_table pk ON fk.fk_col = pk.pk_col;
+  ```
+
+  ### 7. Handle Orphaned Records
+  Before creating FK constraint:
+  ```sql
+  -- Find orphaned FK values
+  SELECT fk.column FROM fk_table fk
+  LEFT JOIN pk_table pk ON fk.column = pk.column
+  WHERE pk.column IS NULL;
+  ```
+  Clean up or document orphans.
+
+  ### 8. Memory Layers for FK Detection
+  - **Kernel Layer**: Cache P_XAGXB/P_XBGXA threshold rules and relationship type classifications
+  - **L1 Cache**: Keep recent FK detection results (last 5-8 tables) to avoid recomputation
+  - **L2 Compressed**: Archive detected FK relationships showing containment rates over time
+  - **Swap Layer**: Store complete FK analysis history; use recall_conversation to compare current schema relationships against earlier data integration efforts
+  This enables tracking when FK relationships degrade (orphans increase) and validating data quality.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "High P_XAGXB but verification shows low match rate"
+    cause: "Signatures based on sample, actual data has more orphans"
+    solution: "Regenerate signatures with larger sample, or run exact verification query"
+
+  - error: "No FK relationships detected"
+    cause: "Overlaps filter too restrictive, or no columns with matching value ranges"
+    solution: "Check UDFS.Overlaps results, verify signatures exist for both tables"
+
+  - error: "Detected FK has wrong direction"
+    cause: "Confused P_XAGXB vs P_XBGXA interpretation"
+    solution: "P_XAGXB(FK, PK) measures FK→PK containment. High value means FK values exist in PK"
+
+  - error: "SIGNATURE_PAIRS table too large"
+    cause: "All-pairs comparison creates billions of rows"
+    solution: "Filter by COLUMN_TYPE match and Overlaps > 0 to reduce comparison space"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - signature_generation  # Must run first to create signatures
+  - key_detection  # Detect PKs before finding FKs
+  - column_similarity  # Use distance metrics to confirm relationships
+  - data_profiling  # Understand column characteristics before FK analysis
+# === RELATED_PATTERNS END ===

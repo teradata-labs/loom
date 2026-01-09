@@ -1,0 +1,133 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// Project represents a complete loom project configuration
+message Project {
+  // Metadata
+  ProjectMetadata metadata = 1;
+
+  // Specification
+  ProjectSpec spec = 2;
+}
+
+message ProjectMetadata {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+  map<string, string> labels = 4;
+}
+
+message ProjectSpec {
+  // Observability configuration
+  ObservabilityConfig observability = 1;
+
+  // Prompt management configuration
+  PromptsConfig prompts = 2;
+
+  // MCP servers (can reference external file)
+  oneof mcp_config {
+    string mcp_config_file = 3; // Path to mcp-servers.yaml
+    MCPServersConfig mcp_inline = 4; // Inline configuration
+  }
+
+  // Backend configurations
+  repeated BackendReference backends = 5;
+
+  // Agent configurations
+  repeated AgentReference agents = 6;
+
+  // Workflow configurations
+  repeated WorkflowReference workflows = 7;
+
+  // Evaluation suites
+  repeated EvalReference evals = 8;
+
+  // Pattern libraries
+  repeated PatternReference patterns = 9;
+
+  // Global settings
+  GlobalSettings settings = 10;
+}
+
+message ObservabilityConfig {
+  bool enabled = 1;
+  string hawk_endpoint = 2;
+  bool export_traces = 3;
+  bool export_metrics = 4;
+  map<string, string> tags = 5;
+}
+
+message PromptsConfig {
+  string provider = 1; // "promptio" or "local"
+  string endpoint = 2;
+  bool cache_enabled = 3;
+  int32 cache_ttl_seconds = 4;
+}
+
+message BackendReference {
+  oneof ref {
+    string config_file = 1; // Path to backend YAML
+    string inline_name = 2; // For inline backend configs (stored in spec)
+  }
+}
+
+message AgentReference {
+  string config_file = 1; // Path to agent YAML
+}
+
+message WorkflowReference {
+  string config_file = 1; // Path to workflow YAML
+}
+
+message EvalReference {
+  string config_file = 1; // Path to eval YAML
+}
+
+message PatternReference {
+  string config_file = 1; // Path to pattern library YAML
+}
+
+message GlobalSettings {
+  int32 default_timeout_seconds = 1;
+  int32 max_concurrent_agents = 2;
+  bool debug_mode = 3;
+  string log_level = 4; // "debug", "info", "warn", "error"
+}
+
+message MCPServersConfig {
+  map<string, MCPServerConfig> servers = 1;
+}
+
+message MCPServerConfig {
+  bool enabled = 1;
+  string transport = 2; // "stdio", "sse"
+  string command = 3;
+  repeated string args = 4;
+  int32 timeout_seconds = 5;
+  MCPToolSelection tools = 6;
+  map<string, string> env = 7;
+}
+
+message MCPToolSelection {
+  oneof selection {
+    bool all = 1;
+    MCPToolInclude include = 2;
+    MCPToolExclude exclude = 3;
+  }
+}
+
+message MCPToolInclude {
+  repeated string tools = 1;
+}
+
+message MCPToolExclude {
+  repeated string tools = 1;
+}

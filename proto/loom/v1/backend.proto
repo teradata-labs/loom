@@ -1,0 +1,117 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// BackendConfig represents a pluggable execution backend
+message BackendConfig {
+  // Metadata
+  string name = 1;
+  string description = 2;
+
+  // Backend type: "postgres", "mysql", "sqlite", "rest", "graphql", "grpc"
+  string type = 3;
+
+  // Connection configuration (type-specific)
+  oneof connection {
+    DatabaseConnection database = 4;
+    RestConnection rest = 5;
+    GraphQLConnection graphql = 6;
+    GRPCConnection grpc = 7;
+    MCPConnection mcp = 11;
+  }
+
+  // Schema discovery (for SQL backends)
+  SchemaDiscoveryConfig schema_discovery = 8;
+
+  // Tool generation
+  ToolGenerationConfig tool_generation = 9;
+
+  // Health check
+  HealthCheckConfig health_check = 10;
+}
+
+message DatabaseConnection {
+  string dsn = 1; // Connection string (supports env vars)
+  int32 max_connections = 2;
+  int32 max_idle_connections = 3;
+  int32 connection_timeout_seconds = 4;
+  bool enable_ssl = 5;
+  string ssl_cert_path = 6;
+}
+
+message RestConnection {
+  string base_url = 1;
+  AuthConfig auth = 2;
+  map<string, string> headers = 3;
+  int32 timeout_seconds = 4;
+  int32 max_retries = 5;
+}
+
+message GraphQLConnection {
+  string endpoint = 1;
+  AuthConfig auth = 2;
+  map<string, string> headers = 3;
+  int32 timeout_seconds = 4;
+}
+
+message GRPCConnection {
+  string address = 1;
+  bool use_tls = 2;
+  string cert_path = 3;
+  map<string, string> metadata = 4;
+  int32 timeout_seconds = 5;
+}
+
+message MCPConnection {
+  // Command to execute (e.g., "python3", "node")
+  string command = 1;
+
+  // Command arguments (e.g., ["-m", "mcp_server.main"])
+  repeated string args = 2;
+
+  // Environment variables
+  map<string, string> env = 3;
+
+  // Transport type: "stdio", "http", "sse"
+  string transport = 4;
+
+  // URL for HTTP/SSE transport (required if transport is http/sse)
+  string url = 5;
+
+  // Working directory for subprocess (optional)
+  string working_dir = 6;
+}
+
+message AuthConfig {
+  string type = 1; // "bearer", "basic", "apikey", "oauth2"
+  string token = 2; // For bearer/apikey (supports env vars)
+  string username = 3; // For basic
+  string password = 4; // For basic (supports env vars)
+  string header_name = 5; // For custom header
+}
+
+message SchemaDiscoveryConfig {
+  bool enabled = 1;
+  int32 cache_ttl_seconds = 2;
+  repeated string include_tables = 3;
+  repeated string exclude_tables = 4;
+}
+
+message ToolGenerationConfig {
+  repeated string tools = 1; // Auto-generated tool names
+  bool enable_all = 2;
+}
+
+message HealthCheckConfig {
+  bool enabled = 1;
+  int32 interval_seconds = 2;
+  int32 timeout_seconds = 3;
+  string query = 4; // For SQL backends: "SELECT 1"
+}

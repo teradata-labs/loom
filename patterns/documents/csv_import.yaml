@@ -1,0 +1,252 @@
+# === METADATA START ===
+name: csv_import
+title: "CSV Import and Analysis"
+description: |
+  Import and analyze CSV data files with automatic type inference and data quality checks.
+  Parse CSV files, analyze structure, identify data quality issues, and provide actionable insights.
+category: data-import
+difficulty: beginner
+backend_type: documents
+version: 1.0.0
+author: Loom Framework
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Import and summarize CSV data files
+  - Analyze data structure and column types
+  - Identify data quality issues (missing values, duplicates, outliers)
+  - Check for duplicate records
+  - Validate data integrity
+  - Calculate basic statistics
+  - Suggest appropriate analysis approaches
+  - Parse custom delimiter files (comma, tab, semicolon, pipe)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: csv_file
+    type: string
+    required: true
+    description: "Path to the CSV file to import and analyze"
+    example: "sales_data.csv"
+
+  - name: action
+    type: enum[import, analyze, check_duplicates, validate]
+    required: false
+    default: "import"
+    description: "Action to perform on the CSV file"
+    example: "import"
+
+  - name: delimiter
+    type: string
+    required: false
+    default: ","
+    description: "Field delimiter (comma, tab, semicolon, pipe)"
+    example: ","
+
+  - name: has_header
+    type: boolean
+    required: false
+    default: true
+    description: "Whether the CSV file has a header row"
+    example: "true"
+
+  - name: row_limit
+    type: integer
+    required: false
+    default: 10000
+    description: "Maximum number of rows to process"
+    example: "10000"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  import_analyze:
+    description: "Import and analyze CSV file with data quality checks"
+    content: |
+      Import and analyze the CSV file: {{csv_file}}
+
+      Parse the CSV using the parse_document tool with these settings:
+      - Delimiter: {{delimiter}}
+      - Has header: {{has_header}}
+      - Row limit: {{row_limit}}
+
+      Provide a comprehensive analysis including:
+      1. Dataset Overview:
+         - Number of rows and columns
+         - Column names and inferred types
+         - Date range (if applicable)
+
+      2. Data Quality Assessment:
+         - Missing values per column
+         - Duplicate rows
+         - Invalid data (dates, numbers, formats)
+         - Outliers and anomalies
+
+      3. Key Statistics:
+         - Unique values for categorical columns
+         - Min/max/average for numeric columns
+         - Data distribution insights
+
+      4. Recommendations:
+         - Data quality improvements needed
+         - Suggested analyses based on data structure
+         - Potential issues to investigate
+
+      Use the parse_document tool to read the CSV file and provide actionable insights.
+    required_parameters:
+      - csv_file
+
+  check_duplicates:
+    description: "Check for duplicate records in CSV"
+    content: |
+      Parse {{csv_file}} and check for duplicate records.
+
+      Analysis steps:
+      1. Load the CSV data using parse_document tool
+      2. Identify duplicate rows based on all columns
+      3. Check for duplicate keys/IDs if applicable
+      4. Report:
+         - Number of duplicate records found
+         - Percentage of dataset affected
+         - Most common duplicates
+         - Affected columns/fields
+
+      Provide recommendations for:
+      - Merging duplicate records
+      - Identifying primary records
+      - Data cleansing strategies
+    required_parameters:
+      - csv_file
+
+  validate_data:
+    description: "Validate data integrity and format"
+    content: |
+      Validate data in {{csv_file}}:
+
+      Validation checks:
+      1. Data Type Validation:
+         - Verify column types (integer, float, string, date)
+         - Identify type mismatches
+         - Check for invalid formats
+
+      2. Data Integrity:
+         - Missing required fields
+         - Null values in key columns
+         - Future dates or impossible values
+         - Format consistency (emails, phones, dates)
+
+      3. Data Quality Metrics:
+         - Completeness score
+         - Validity score
+         - Consistency score
+         - Overall quality rating
+
+      Report all issues found with specific row/column references and recommendations for fixing.
+    required_parameters:
+      - csv_file
+# === TEMPLATES END ===
+
+# System prompt for CSV import and analysis
+system: |
+  CSV File Analysis: Parse CSV files, analyze data structure, and identify data quality issues.
+
+  Analysis responsibilities:
+  1. Parse CSV files using the parse_document tool
+  2. Analyze data structure (columns, types, row counts)
+  3. Identify potential data quality issues (missing values, outliers, duplicates)
+  4. Suggest appropriate analysis approaches based on the data
+  5. Provide clear summaries of the dataset
+
+  When working with CSV files:
+  - Always use the parse_document tool to read CSV files
+  - Examine column types (integer, float, string, date, boolean)
+  - Check for missing or null values
+  - Identify potential data quality issues
+  - Calculate basic statistics where relevant
+  - Suggest next steps for analysis
+
+  Best practices:
+  - Handle files with and without headers
+  - Support custom delimiters (comma, tab, semicolon, pipe)
+  - Respect row limits (default 10,000 rows)
+  - Provide actionable insights about the data
+
+  Communication style:
+  - Be concise and precise
+  - Focus on data quality and structure
+  - Highlight potential issues proactively
+  - Suggest practical next steps
+
+# Example interactions
+examples:
+  - input: "Import sales_data.csv and summarize the data"
+    output: |
+      I'll import and analyze sales_data.csv for you.
+
+      Dataset Summary:
+      - 1,245 rows × 7 columns
+      - Columns: date (date), customer_id (integer), product (string), quantity (integer),
+        unit_price (float), total (float), region (string)
+
+      Data Quality:
+      - All columns have complete data (no missing values)
+      - Date range: 2024-01-01 to 2024-12-31
+      - 156 unique customers
+      - 5 unique regions
+
+      Key Insights:
+      - Total column matches quantity × unit_price (validated)
+      - All dates are valid and in chronological order
+      - Price range: $9.99 to $999.99
+
+      Suggested Analysis:
+      - Time series analysis of sales trends
+      - Regional performance comparison
+      - Top products and customers by revenue
+      - Seasonal patterns identification
+
+  - input: "Parse customer_list.csv and check for duplicate emails"
+    output: |
+      I've parsed customer_list.csv and checked for duplicates.
+
+      Dataset Overview:
+      - 3,892 rows × 5 columns
+      - Columns: customer_id, name, email, phone, created_date
+
+      Duplicate Analysis:
+      - Found 47 duplicate email addresses
+      - Affected records: 94 rows (2.4% of dataset)
+      - Most common duplicate: "john.smith@example.com" (5 occurrences)
+
+      Data Quality Issues:
+      - 12 rows with missing phone numbers
+      - 3 rows with invalid email format (missing @)
+      - 8 rows with future created_date values
+
+      Recommendations:
+      1. Merge duplicate records or identify which is current
+      2. Fix or remove invalid email addresses
+      3. Validate phone number format
+      4. Investigate future dates (possible data entry errors)
+
+# Tools configuration
+tools:
+  - parse_document
+
+# Guardrails
+guardrails:
+  - "Never modify the original CSV file"
+  - "Respect data privacy - don't expose sensitive information"
+  - "Handle large files with row limits (default 10,000)"
+  - "Validate data types before performing operations"
+  - "Report data quality issues objectively"
+
+# Tags for discoverability
+tags:
+  - csv
+  - data-import
+  - data-quality
+  - data-analysis
+  - tabular-data

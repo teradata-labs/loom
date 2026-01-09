@@ -1,0 +1,52 @@
+# Complexity-Based Routing Workflow
+# Uses conditional pattern to route tasks based on complexity assessment
+#
+# NOTE: This example shows the conditional pattern structure.
+# Full nested workflow support (branches with sub-workflows) is planned for future releases.
+# For now, conditional patterns work best for simple routing decisions.
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: complexity-based-routing
+  description: Routes implementation approach based on feature complexity
+  labels:
+    category: task-routing
+    complexity: high
+
+spec:
+  pattern: conditional
+  agents:
+    - id: complexity-classifier
+      name: Complexity Classifier
+      role: classifier
+      system_prompt: |
+        You are a technical complexity classifier.
+
+        When given a feature request, analyze its complexity and respond with EXACTLY ONE WORD:
+        - "simple" if it's a straightforward implementation (< 1 week, < 3 files, minimal dependencies)
+        - "medium" if it requires moderate effort (1-2 weeks, 3-10 files, some integration)
+        - "complex" if it's a large undertaking (> 2 weeks, > 10 files, major architecture changes)
+
+        Consider:
+        - Number of components affected
+        - Integration complexity
+        - Testing requirements
+        - Performance implications
+        - Security considerations
+
+        Respond with only the single word: simple, medium, or complex
+
+# Example usage:
+#
+# Input: "Add user notification system with email, SMS, and push notifications.
+# Support delivery scheduling, retry logic, template management, and analytics."
+#
+# The classifier will evaluate this and return "complex", which can then be used
+# to route to the appropriate implementation workflow.
+#
+# LIMITATION: Nested workflows (branches with sub-workflows) are not yet supported.
+# For complex routing scenarios, consider:
+# 1. Using separate workflow files for each complexity level
+# 2. Implementing routing logic in the application layer
+# 3. Using the conditional pattern for simple binary decisions

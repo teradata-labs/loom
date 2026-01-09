@@ -1,0 +1,435 @@
+# === METADATA START ===
+name: temporal_table_design
+title: "Temporal Table Design"
+description: |
+  Design and implement Teradata temporal tables with VALIDTIME and TRANSACTIONTIME support
+  for tracking historical data changes over time dimensions.
+
+  **TEMPORAL TABLE TYPES:**
+  - **VALIDTIME**: Business time dimension - when the fact was true in the real world
+    Example: Employee salary from 2023-01-01 to 2023-12-31
+  - **TRANSACTIONTIME**: System time dimension - when the row was inserted/updated in the database
+    Example: Database recorded the salary change on 2023-01-15 at 10:30 AM
+  - **BITEMPORAL**: Both VALIDTIME and TRANSACTIONTIME - complete audit trail
+
+  **USE CASES:**
+  - Slowly Changing Dimensions (SCD Type 2)
+  - Point-in-time queries (what did data look like on specific date?)
+  - Compliance and audit trails
+  - Historical analysis and trend tracking
+  - Contract management (effective dates)
+
+  **CRITICAL: AS VALIDTIME Syntax**
+  Teradata extends standard SQL with temporal query syntax:
+  ```sql
+  SELECT * FROM temporal_table
+  FOR VALIDTIME AS OF DATE '2023-01-01';  -- Point-in-time query
+  ```
+
+  **REQUIREMENTS:**
+  Temporal tables require PERIOD data type and temporal constraints.
+  Call get_tables() to verify table has temporal attributes before temporal queries.
+
+category: data_modeling
+difficulty: advanced
+teradata_function: VALIDTIME, TRANSACTIONTIME
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Design slowly changing dimension (SCD) tables
+  - Track employee history (salary, position, department)
+  - Manage contract effective dates
+  - Audit trail for financial transactions
+  - Point-in-time reporting (month-end snapshots)
+  - Historical price tracking
+  - Compliance and regulatory reporting
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: table_name
+    type: string
+    required: true
+    description: "Name for the temporal table"
+    example: "employee_history"
+
+  - name: temporal_type
+    type: string
+    required: false
+    default: "validtime"
+    description: "Type of temporal table: validtime, transactiontime, or bitemporal"
+    example: "validtime"
+
+  - name: valid_from_column
+    type: string
+    required: false
+    default: "valid_from"
+    description: "Column name for validity start date"
+    example: "effective_date"
+
+  - name: valid_to_column
+    type: string
+    required: false
+    default: "valid_to"
+    description: "Column name for validity end date"
+    example: "end_date"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  create_validtime_table:
+    description: "Create table with VALIDTIME support"
+    sql: |
+      -- VALIDTIME Temporal Table
+      CREATE TABLE {{table_name}} (
+        employee_id INTEGER,
+        employee_name VARCHAR(100),
+        salary DECIMAL(10,2),
+        department VARCHAR(50),
+
+        -- Temporal period column
+        valid_period PERIOD(DATE) AS ({{valid_from_column}}, {{valid_to_column}}),
+
+        PRIMARY INDEX (employee_id, {{valid_from_column}})
+      )
+      PRIMARY TIME INDEX (valid_period);
+
+      -- Explanation:
+      -- PERIOD(DATE): Defines temporal dimension
+      -- PRIMARY TIME INDEX: Enables efficient temporal queries
+
+  create_bitemporal_table:
+    description: "Create table with both VALIDTIME and TRANSACTIONTIME"
+    sql: |
+      -- Bitemporal Table (both business time and system time)
+      CREATE TABLE {{table_name}} (
+        employee_id INTEGER,
+        employee_name VARCHAR(100),
+        salary DECIMAL(10,2),
+        department VARCHAR(50),
+
+        -- Business time (VALIDTIME)
+        valid_period PERIOD(DATE) AS ({{valid_from_column}}, {{valid_to_column}}),
+
+        -- System time (TRANSACTIONTIME)
+        transaction_period PERIOD(TIMESTAMP(6)) AS (transaction_start, transaction_end),
+
+        PRIMARY INDEX (employee_id, {{valid_from_column}})
+      )
+      PRIMARY TIME INDEX (valid_period)
+      AS VALIDTIME
+      AND TRANSACTIONTIME;
+
+  insert_temporal_data:
+    description: "Insert data with temporal periods"
+    sql: |
+      -- Insert temporal data (valid from 2023-01-01 to 2023-12-31)
+      INSERT INTO {{table_name}} (
+        employee_id,
+        employee_name,
+        salary,
+        department,
+        {{valid_from_column}},
+        {{valid_to_column}}
+      ) VALUES (
+        1001,
+        'John Smith',
+        75000.00,
+        'Engineering',
+        DATE '2023-01-01',
+        DATE '2023-12-31'
+      );
+
+      -- Insert current record (valid from today, no end date)
+      INSERT INTO {{table_name}} (
+        employee_id,
+        employee_name,
+        salary,
+        department,
+        {{valid_from_column}},
+        {{valid_to_column}}
+      ) VALUES (
+        1001,
+        'John Smith',
+        85000.00,  -- Salary increase
+        'Engineering',
+        DATE '2024-01-01',
+        DATE '9999-12-31'  -- Open-ended (current)
+      );
+
+  point_in_time_query:
+    description: "Query data as of specific date (AS VALIDTIME)"
+    sql: |
+      -- What was employee's salary on 2023-06-15?
+      SELECT
+        employee_id,
+        employee_name,
+        salary,
+        department
+      FROM {{table_name}}
+      FOR VALIDTIME AS OF DATE '2023-06-15'
+      WHERE employee_id = 1001;
+
+      -- Current snapshot (as of today)
+      SELECT
+        employee_id,
+        employee_name,
+        salary,
+        department
+      FROM {{table_name}}
+      FOR VALIDTIME AS OF CURRENT_DATE
+      WHERE department = 'Engineering';
+
+  temporal_range_query:
+    description: "Query data over time range"
+    sql: |
+      -- All salary changes between two dates
+      SELECT
+        employee_id,
+        employee_name,
+        salary,
+        {{valid_from_column}},
+        {{valid_to_column}}
+      FROM {{table_name}}
+      WHERE employee_id = 1001
+        AND valid_period OVERLAPS PERIOD(DATE '2023-01-01', DATE '2023-12-31');
+
+      -- Alternative: AS VALIDTIME BETWEEN
+      SELECT
+        employee_id,
+        employee_name,
+        salary,
+        {{valid_from_column}},
+        {{valid_to_column}}
+      FROM {{table_name}}
+      FOR VALIDTIME BETWEEN DATE '2023-01-01' AND DATE '2023-12-31'
+      WHERE employee_id = 1001;
+
+  update_temporal_data:
+    description: "Update temporal records (creates new period)"
+    sql: |
+      -- Traditional update (closes current period, opens new one)
+      UPDATE {{table_name}}
+      SET salary = 90000.00,
+          {{valid_from_column}} = DATE '2024-07-01',
+          {{valid_to_column}} = DATE '9999-12-31'
+      WHERE employee_id = 1001
+        AND {{valid_to_column}} = DATE '9999-12-31';  -- Current record
+
+      -- Also close the previous period
+      UPDATE {{table_name}}
+      SET {{valid_to_column}} = DATE '2024-06-30'
+      WHERE employee_id = 1001
+        AND {{valid_to_column}} = DATE '9999-12-31'
+        AND {{valid_from_column}} < DATE '2024-07-01';
+
+  temporal_joins:
+    description: "Join temporal tables with temporal alignment"
+    sql: |
+      -- Join employees with departments as of specific date
+      SELECT
+        e.employee_id,
+        e.employee_name,
+        e.salary,
+        d.department_name,
+        d.budget
+      FROM {{table_name}} e
+      FOR VALIDTIME AS OF DATE '2023-06-15'
+      JOIN department_history d
+      FOR VALIDTIME AS OF DATE '2023-06-15'
+        ON e.department = d.department_id
+      WHERE e.employee_id = 1001;
+
+      -- Temporal overlap join (find all overlapping periods)
+      SELECT
+        e.employee_id,
+        e.salary,
+        d.budget,
+        e.{{valid_from_column}} AS emp_start,
+        e.{{valid_to_column}} AS emp_end,
+        d.valid_from AS dept_start,
+        d.valid_to AS dept_end
+      FROM {{table_name}} e
+      JOIN department_history d
+        ON e.department = d.department_id
+        AND e.valid_period OVERLAPS d.valid_period;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Employee salary history (SCD Type 2)"
+    parameters:
+      table_name: "employee_history"
+      temporal_type: "validtime"
+      valid_from_column: "effective_date"
+      valid_to_column: "end_date"
+    expected_result: |
+      Created temporal table:
+
+      CREATE TABLE employee_history (
+        employee_id INTEGER,
+        employee_name VARCHAR(100),
+        salary DECIMAL(10,2),
+        department VARCHAR(50),
+        valid_period PERIOD(DATE) AS (effective_date, end_date),
+        PRIMARY INDEX (employee_id, effective_date)
+      ) PRIMARY TIME INDEX (valid_period);
+
+      Sample Data:
+      | employee_id | salary   | effective_date | end_date   |
+      |-------------|----------|----------------|------------|
+      | 1001        | 75000.00 | 2023-01-01     | 2023-12-31 |
+      | 1001        | 85000.00 | 2024-01-01     | 9999-12-31 |
+
+      Point-in-Time Query (as of 2023-06-15):
+      SELECT * FROM employee_history
+      FOR VALIDTIME AS OF DATE '2023-06-15'
+      WHERE employee_id = 1001;
+
+      Result: salary = 75000.00 (2023 rate)
+
+  - name: "Contract management with temporal queries"
+    parameters:
+      table_name: "contract_history"
+      valid_from_column: "contract_start"
+      valid_to_column: "contract_end"
+    expected_result: |
+      Use Case: Track customer contracts over time
+
+      Query: Which contracts were active on 2023-07-01?
+      SELECT * FROM contract_history
+      FOR VALIDTIME AS OF DATE '2023-07-01';
+
+      Result:
+      | contract_id | customer | value     | contract_start | contract_end |
+      |-------------|----------|-----------|----------------|--------------|
+      | C001        | ACME Inc | 100000.00 | 2023-01-01     | 2023-12-31   |
+      | C002        | XYZ Corp | 250000.00 | 2023-06-01     | 2024-05-31   |
+
+      Query: All contracts that overlapped Q2 2023?
+      SELECT * FROM contract_history
+      FOR VALIDTIME BETWEEN DATE '2023-04-01' AND DATE '2023-06-30';
+
+  - name: "Bitemporal audit trail"
+    parameters:
+      table_name: "financial_transactions"
+      temporal_type: "bitemporal"
+    expected_result: |
+      Bitemporal table tracks:
+      - VALIDTIME: When transaction occurred in real world
+      - TRANSACTIONTIME: When database recorded it
+
+      Example: Backdated transaction
+      - Transaction date: 2023-05-15 (VALIDTIME)
+      - Recorded in database: 2023-06-01 (TRANSACTIONTIME)
+
+      Query: What did we THINK the data looked like on 2023-05-20?
+      SELECT * FROM financial_transactions
+      FOR VALIDTIME AS OF DATE '2023-05-20'
+      AND TRANSACTIONTIME AS OF TIMESTAMP '2023-05-20 23:59:59';
+
+      Query: What ACTUALLY happened on 2023-05-15?
+      SELECT * FROM financial_transactions
+      FOR VALIDTIME AS OF DATE '2023-05-15'
+      AND TRANSACTIONTIME AS OF CURRENT_TIMESTAMP;
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Temporal Table Design Best Practices
+
+  ### 1. Choose Appropriate Temporal Type
+  **VALIDTIME**: Business time (when fact was true)
+  - Use for: SCD Type 2, historical tracking, contracts
+
+  **TRANSACTIONTIME**: System time (when recorded)
+  - Use for: Audit trails, compliance
+
+  **BITEMPORAL**: Both dimensions
+  - Use for: Financial systems, regulatory compliance
+
+  ### 2. Use Open-Ended Periods for Current Data
+  ```sql
+  -- Current record: end_date = 9999-12-31
+  INSERT INTO employee_history VALUES (
+    1001, 'John Smith', 85000.00,
+    DATE '2024-01-01', DATE '9999-12-31'
+  );
+  ```
+
+  ### 3. Index Design for Temporal Tables
+  ```sql
+  -- Primary index includes temporal column
+  PRIMARY INDEX (entity_id, valid_from)
+
+  -- Temporal index for efficient temporal queries
+  PRIMARY TIME INDEX (valid_period)
+  ```
+
+  ### 4. Temporal Query Syntax
+  ```sql
+  -- Point-in-time
+  FOR VALIDTIME AS OF DATE '2023-06-15'
+
+  -- Range query
+  FOR VALIDTIME BETWEEN DATE '2023-01-01' AND DATE '2023-12-31'
+
+  -- Current snapshot
+  FOR VALIDTIME AS OF CURRENT_DATE
+  ```
+
+  ### 5. Handle Temporal Overlaps Carefully
+  Avoid creating overlapping periods for same entity:
+  ```sql
+  -- Bad: Overlapping periods
+  (1001, '2023-01-01', '2023-12-31')
+  (1001, '2023-06-01', '2024-05-31')  -- OVERLAP!
+
+  -- Good: Non-overlapping periods
+  (1001, '2023-01-01', '2023-05-31')
+  (1001, '2023-06-01', '2024-05-31')
+  ```
+
+  ### 6. Temporal Updates Create New Records
+  Don't UPDATE in place - INSERT new period:
+  ```sql
+  -- Close current period
+  UPDATE table SET end_date = DATE '2024-06-30'
+  WHERE id = 1001 AND end_date = DATE '9999-12-31';
+
+  -- Insert new period
+  INSERT INTO table VALUES (
+    1001, new_values, DATE '2024-07-01', DATE '9999-12-31'
+  );
+  ```
+
+  ### 7. Memory Layers for Temporal Analysis
+  - **Kernel Layer**: Cache temporal table schemas and PERIOD definitions
+  - **L1 Cache**: Keep recent point-in-time queries (last 5-8 snapshots) for performance
+  - **L2 Compressed**: Archive temporal query patterns and historical snapshots
+  - **Swap Layer**: Store complete temporal history; use recall_conversation to reference similar SCD implementations from earlier projects
+  This enables efficient temporal queries and consistent historical data management patterns.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Invalid PERIOD syntax"
+    cause: "PERIOD column not properly defined with AS clause"
+    solution: "Use: valid_period PERIOD(DATE) AS (start_col, end_col)"
+
+  - error: "Temporal query fails on non-temporal table"
+    cause: "Table missing PRIMARY TIME INDEX or PERIOD column"
+    solution: "Verify table has PRIMARY TIME INDEX (period_column)"
+
+  - error: "Overlapping temporal periods"
+    cause: "Inserted records with overlapping valid_from/valid_to"
+    solution: "Add constraint or application logic to prevent overlaps"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - slowly_changing_dimension  # SCD Type 2 implementation
+  - audit_trail_design  # Compliance and audit tracking
+  - historical_analysis  # Point-in-time reporting
+# === RELATED_PATTERNS END ===

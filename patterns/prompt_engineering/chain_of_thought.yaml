@@ -1,0 +1,548 @@
+# === METADATA START ===
+name: chain_of_thought
+title: "Chain of Thought Reasoning"
+description: |
+  Enable step-by-step reasoning by explicitly asking Claude to think through problems.
+  This pattern significantly improves accuracy on complex analytical, mathematical, and
+  logical tasks by breaking them into smaller, manageable steps.
+
+  Chain of Thought (CoT) is particularly powerful for:
+  - Complex SQL query planning before execution
+  - Multi-step data transformations
+  - Root cause analysis and debugging
+  - Mathematical problem solving
+  - Logical inference and decision-making
+
+  This pattern works across ALL backend types - it's a universal technique that improves
+  reasoning quality regardless of the underlying data source or API.
+
+  **UNIVERSAL COMPATIBILITY:**
+  Chain of Thought works with SQL, REST APIs, document processing, MCP tools, and any
+  other backend type. It's a meta-pattern that enhances the agent's reasoning process.
+
+category: reasoning
+difficulty: beginner
+backend_type: prompt_engineering
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: SQL Query Planning ---
+  - Complex SQL query planning before execution
+
+  # --- Use Case 2: Data Transformation ---
+  - Multi-step data transformation logic
+
+  # --- Use Case 3: Debugging ---
+  - Root cause analysis for errors
+
+  # --- Use Case 4: Mathematical ---
+  - Mathematical calculations and formulas
+
+  # --- Use Case 5: Decision Making ---
+  - Complex decision making with multiple factors
+
+  # --- Use Case 6: API Design ---
+  - API integration planning
+
+  # --- Use Case 7: Architecture ---
+  - System architecture decisions
+
+  # --- Use Case 8: Optimization ---
+  - Performance optimization strategies
+
+  # --- Use Case 9: Validation ---
+  - Data validation rule design
+
+  # --- Use Case 10: Troubleshooting ---
+  - Systematic troubleshooting workflows
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Task Description ---
+  - name: task_description
+    type: string
+    required: true
+    description: "The complex task or question requiring step-by-step reasoning"
+    example: "Analyze why this SQL query is slow and suggest optimizations"
+
+  # --- Parameter 2: Output Format ---
+  - name: output_format
+    type: enum[json, markdown, text]
+    required: false
+    default: "text"
+    description: "Format for the reasoning output"
+    example: "json"
+
+  # --- Parameter 3: Number of Steps ---
+  - name: num_steps
+    type: integer
+    required: false
+    default: 3
+    description: "Suggested number of reasoning steps (flexible guideline)"
+    example: "5"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC TEMPLATE ===
+  basic:
+    description: "Simple numbered step-by-step reasoning"
+    content: |
+      {{task_description}}
+
+      Think through this step-by-step:
+      1. First, analyze:
+      2. Then, consider:
+      3. Finally, conclude:
+
+      After working through these steps, provide your final answer.
+    required_parameters:
+      - task_description
+
+  # === EXPLICIT_THINKING TEMPLATE ===
+  explicit_thinking:
+    description: "XML-tagged thinking for structured reasoning (Claude's native format)"
+    content: |
+      {{task_description}}
+
+      Before answering, work through your reasoning inside <thinking> tags.
+      Show your step-by-step analysis, considering multiple angles:
+
+      <thinking>
+      [Your detailed step-by-step reasoning here]
+      - Consider what we know
+      - Identify what we need to find out
+      - Work through the logic
+      - Check for edge cases or errors
+      </thinking>
+
+      Then provide your final answer based on this reasoning.
+    required_parameters:
+      - task_description
+
+  # === GUIDED_STEPS TEMPLATE ===
+  guided_steps:
+    description: "Guided reasoning with specific step prompts"
+    content: |
+      {{task_description}}
+
+      Work through this systematically:
+
+      Step 1 - Understanding:
+      - What is being asked?
+      - What information do we have?
+      - What constraints or requirements exist?
+
+      Step 2 - Analysis:
+      - What approaches could we take?
+      - What are the pros and cons of each?
+      - What potential issues might arise?
+
+      Step 3 - Solution:
+      - What is the best approach and why?
+      - What are the specific steps to implement it?
+      - How can we verify it works correctly?
+
+      Step 4 - Conclusion:
+      - Summarize the final answer
+      - Note any assumptions or caveats
+    required_parameters:
+      - task_description
+
+  # === HYPOTHESIS_TESTING TEMPLATE ===
+  hypothesis_testing:
+    description: "Scientific method approach for troubleshooting"
+    content: |
+      Problem: {{task_description}}
+
+      Use the scientific method to solve this:
+
+      1. Observation:
+         - What exactly is the problem?
+         - What symptoms are we seeing?
+
+      2. Hypothesis Formation:
+         - What could be causing this? (List 3-5 possibilities)
+         - Rank them by likelihood
+
+      3. Prediction:
+         - For each hypothesis, what would we expect to see if it's correct?
+
+      4. Testing:
+         - What tests or checks can we run?
+         - What tools or commands should we use?
+
+      5. Analysis:
+         - What do the results tell us?
+         - Which hypothesis is most likely?
+
+      6. Conclusion:
+         - What is the root cause?
+         - What is the recommended fix?
+    required_parameters:
+      - task_description
+
+  # === MATHEMATICAL TEMPLATE ===
+  mathematical:
+    description: "Step-by-step mathematical problem solving"
+    content: |
+      Problem: {{task_description}}
+
+      Solve this mathematically:
+
+      1. Given Information:
+         - List all known values
+         - Identify the unknown(s) we need to find
+
+      2. Formula/Method:
+         - What formula or method applies?
+         - Why is this the correct approach?
+
+      3. Substitution:
+         - Plug in the known values
+         - Show each step of the calculation
+
+      4. Simplification:
+         - Simplify the expression step-by-step
+         - Show your work at each stage
+
+      5. Verification:
+         - Check the answer makes sense
+         - Verify units and magnitude
+
+      Final Answer: [Clear, concise result with units]
+    required_parameters:
+      - task_description
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: SQL Query Optimization ---
+  - name: "SQL Query Optimization"
+    description: "Use CoT to analyze a slow query"
+    parameters:
+      task_description: |
+        This query is taking 45 seconds to run:
+
+        SELECT * FROM users
+        WHERE created_at > '2024-01-01'
+        AND status = 'active'
+        ORDER BY last_login DESC
+        LIMIT 100;
+
+        Why is it slow and how can we fix it?
+    expected_result: |
+      <thinking>
+      Step 1 - Identify the problem:
+      - SELECT * retrieves all columns (wasteful if only few needed)
+      - WHERE clause filters on two conditions
+      - ORDER BY on last_login requires sorting
+      - No obvious index mentioned
+
+      Step 2 - Analyze each component:
+      - SELECT *: If table has many columns, this fetches unnecessary data
+      - created_at > '2024-01-01': Date range filter, likely many rows
+      - status = 'active': Categorical filter, selectivity depends on distribution
+      - ORDER BY last_login DESC: Requires sort unless indexed
+      - LIMIT 100: At least we're limiting results
+
+      Step 3 - Likely causes:
+      1. Missing index on (created_at, status, last_login)
+      2. Full table scan due to no index
+      3. Sorting large result set in memory
+
+      Step 4 - Recommended fixes:
+      1. Add composite index: CREATE INDEX idx_users_active ON users(status, created_at, last_login DESC)
+      2. Select only needed columns: SELECT id, name, email, last_login FROM...
+      3. Consider if status='active' is selective enough (if 99% are active, filter may not help)
+      </thinking>
+
+      The query is slow because:
+      1. No index exists for the WHERE + ORDER BY combination, causing a full table scan
+      2. SELECT * fetches all columns unnecessarily
+      3. Sorting happens in memory on potentially large result set
+
+      Fixes:
+      - Add index: CREATE INDEX idx_users_active ON users(status, created_at, last_login DESC)
+      - Specify columns: SELECT id, name, last_login FROM...
+      - Estimated improvement: 45s → <1s
+
+  # --- Example 2: Data Transformation Logic ---
+  - name: "Data Transformation Pipeline"
+    description: "Plan a complex ETL transformation"
+    parameters:
+      task_description: |
+        Design a transformation to:
+        1. Extract user events from logs
+        2. Deduplicate by user_id + timestamp
+        3. Aggregate to hourly metrics
+        4. Join with user metadata
+        5. Output to warehouse table
+    expected_result: |
+      Step 1 - Understanding Requirements:
+      - Input: Raw event logs (likely large volume)
+      - Output: Aggregated hourly metrics with user metadata
+      - Key operations: Extract, dedupe, aggregate, join, load
+
+      Step 2 - Break Down the Pipeline:
+
+      Stage 1: Extraction
+      - Read from log files or streaming source
+      - Parse log format (JSON/CSV/custom)
+      - Validate required fields exist (user_id, timestamp, event_type)
+
+      Stage 2: Deduplication
+      - Method: Use (user_id, timestamp) as composite key
+      - Consideration: Define timestamp precision (second? millisecond?)
+      - Handle: What if duplicates have different event data? (first? last? merge?)
+
+      Stage 3: Aggregation
+      - Group by: user_id, date_trunc('hour', timestamp)
+      - Metrics: COUNT(*) as events, COUNT(DISTINCT event_type) as unique_events
+      - Window: Hourly buckets
+
+      Stage 4: Join with Metadata
+      - LEFT JOIN users ON events.user_id = users.id
+      - Bring in: user_name, user_tier, signup_date
+      - Handle: Users who were deleted (keep event data or filter?)
+
+      Stage 5: Load
+      - Target table: user_hourly_metrics
+      - Strategy: UPSERT to handle late-arriving data
+      - Validation: Check row counts, null values, data ranges
+
+      Step 3 - Recommended Implementation:
+      [SQL or pseudocode for each stage]
+
+  # --- Example 3: Root Cause Analysis ---
+  - name: "API Error Investigation"
+    description: "Debug a 500 error in production API"
+    parameters:
+      task_description: |
+        Production API endpoint /api/v1/orders is returning 500 errors
+        for 15% of requests since 2 hours ago. Logs show:
+        "Error: Connection timeout to database"
+    expected_result: |
+      <thinking>
+      Observation:
+      - Started 2 hours ago (sudden onset)
+      - Affects 15% of requests (not all)
+      - Error message: "Connection timeout to database"
+      - Symptom: 500 errors
+
+      Hypothesis Formation:
+      1. Database connection pool exhausted (high likelihood - explains timeout)
+      2. Network issue between API and database (medium - would affect more than 15%)
+      3. Slow queries holding connections (high - could cause pool exhaustion)
+      4. Sudden traffic spike (medium - would need to verify metrics)
+      5. Recent deployment introduced connection leak (medium - time-based correlation)
+
+      Testing Plan:
+      1. Check database connection pool metrics: current/max connections
+      2. Check API traffic volume: compare to baseline
+      3. Review recent deployments: any changes in last 3 hours?
+      4. Check slow query log: queries taking >5s
+      5. Check database server metrics: CPU, memory, disk I/O
+
+      Expected Results:
+      - If H1 (pool exhausted): See connection count at max limit
+      - If H3 (slow queries): See queries holding connections for long time
+      - If H4 (traffic spike): See 6-7x normal traffic
+      </thinking>
+
+      Root cause likely: Database connection pool exhaustion due to slow queries
+
+      Recommended investigation order:
+      1. Run: Check connection pool stats (quickest to verify)
+      2. Run: Check slow query log for queries from last 3 hours
+      3. Run: Check for recent deployments
+
+      Immediate mitigation:
+      - Increase connection pool size temporarily
+      - Add query timeout (if not present)
+      - Kill long-running queries if safe
+
+      Long-term fix:
+      - Optimize slow queries identified
+      - Add connection pool monitoring alerts
+      - Implement circuit breaker pattern
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Skipping CoT ---
+  - error: "Agent gives answer without showing reasoning"
+    cause: "Prompt doesn't explicitly request step-by-step thinking"
+    solution: "Use explicit_thinking template with <thinking> tags. Claude responds better to explicit structure."
+
+  # --- Error 2: Too Vague ---
+  - error: "Steps are too high-level or vague"
+    cause: "Task description doesn't specify level of detail needed"
+    solution: "Use guided_steps template which prompts for specific details at each stage. Or add 'Show your work in detail' to prompt."
+
+  # --- Error 3: Incomplete Reasoning ---
+  - error: "Agent stops reasoning partway through"
+    cause: "Steps aren't clearly numbered or structured"
+    solution: "Use numbered steps (1, 2, 3) or XML tags. Clear structure helps agent complete all steps."
+
+  # --- Error 4: Wrong Template ---
+  - error: "Reasoning doesn't match problem type"
+    cause: "Using basic template for complex problems, or mathematical template for non-math problems"
+    solution: "Match template to problem domain: mathematical for calculations, hypothesis_testing for debugging, guided_steps for planning."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Chain of Thought Best Practices
+
+  ### 1. When to Use Chain of Thought
+  Use CoT for tasks requiring:
+  - **Multiple logical steps** (>2 steps)
+  - **Complex reasoning** (not just simple lookups)
+  - **Math or calculations** (step-by-step verification)
+  - **Debugging or troubleshooting** (systematic investigation)
+  - **Planning or design** (consider multiple factors)
+
+  Don't use CoT for:
+  - Simple factual lookups
+  - Single-step operations
+  - Tasks where speed is critical and accuracy is less important
+
+  ### 2. Choose the Right Template
+
+  **basic**: Quick 3-step reasoning for straightforward problems
+  - Good for: Initial analysis, simple planning
+  - Example: "Should we add an index here?"
+
+  **explicit_thinking**: Claude's native <thinking> tags for complex analysis
+  - Good for: Complex decisions, thorough analysis
+  - Example: "Design an optimal database schema"
+
+  **guided_steps**: Structured prompts for systematic work
+  - Good for: Planning, design, architecture decisions
+  - Example: "Plan a data migration strategy"
+
+  **hypothesis_testing**: Scientific method for debugging
+  - Good for: Root cause analysis, troubleshooting
+  - Example: "Why is this endpoint failing?"
+
+  **mathematical**: Step-by-step calculations with verification
+  - Good for: Formulas, metrics calculations, cost estimation
+  - Example: "Calculate query cost based on table sizes"
+
+  ### 3. Combine with Other Patterns
+
+  CoT works well with:
+  - **Few-shot learning**: Show examples of good reasoning
+  - **Structured output**: Request reasoning + answer in JSON
+  - **Hallucination prevention**: Require citations at each step
+
+  Example combining CoT + Structured Output:
+  ```
+  Think through this step-by-step:
+  1. [reasoning]
+  2. [reasoning]
+  3. [conclusion]
+
+  Then return JSON:
+  {
+    "reasoning_steps": ["step1", "step2", "step3"],
+    "final_answer": "...",
+    "confidence": 0.95
+  }
+  ```
+
+  ### 4. Verify Reasoning Quality
+
+  Good CoT reasoning shows:
+  - ✅ Clear logical progression
+  - ✅ Consideration of alternatives
+  - ✅ Explicit assumptions stated
+  - ✅ Edge cases identified
+  - ✅ Verification or sanity checks
+
+  Poor CoT reasoning has:
+  - ❌ Jumping to conclusions
+  - ❌ Circular logic
+  - ❌ Unstated assumptions
+  - ❌ Missing edge cases
+  - ❌ No verification
+
+  ### 5. Debugging CoT Prompts
+
+  If reasoning is incomplete:
+  - Add "Show your work in detail"
+  - Use explicit_thinking template with <thinking> tags
+  - Increase num_steps parameter
+
+  If reasoning is too verbose:
+  - Use basic template
+  - Add "Be concise but thorough"
+  - Specify max number of steps
+
+  If reasoning goes off-track:
+  - Use guided_steps template with specific prompts
+  - Add constraints: "Focus only on X, Y, Z"
+  - Provide examples of good reasoning
+
+  ### 6. Performance Considerations
+
+  Chain of Thought increases:
+  - **Input tokens**: Longer prompts with reasoning instructions
+  - **Output tokens**: Agent generates reasoning before answer
+  - **Latency**: More tokens = longer generation time
+
+  Typical overhead:
+  - basic template: +50-100 tokens
+  - explicit_thinking: +200-500 tokens (reasoning can be long)
+  - guided_steps: +300-800 tokens
+
+  Cost-benefit analysis:
+  - For simple tasks: Overhead not worth it, skip CoT
+  - For complex tasks: Small token cost for significantly better accuracy
+  - For critical decisions: Always use CoT, quality > cost
+
+  ### 7. Testing and Validation
+
+  Test CoT patterns by:
+  1. Compare answers with/without CoT
+  2. Check reasoning for logical errors
+  3. Verify final answer is correct
+  4. Measure accuracy improvement
+
+  Expected improvements with CoT:
+  - Math problems: 60% → 90%+ accuracy
+  - Multi-step reasoning: 50% → 85%+ accuracy
+  - Debugging tasks: 40% → 75%+ accuracy
+
+  ### 8. Common Pitfalls
+
+  **Pitfall 1**: Assuming agent will always show reasoning
+  - Solution: Explicitly request it with templates
+
+  **Pitfall 2**: Not validating the reasoning itself
+  - Solution: Check reasoning for errors, not just final answer
+
+  **Pitfall 3**: Using CoT for every task
+  - Solution: Reserve for complex tasks where quality matters
+
+  **Pitfall 4**: Vague reasoning prompts
+  - Solution: Use structured templates with specific step prompts
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Few-shot Learning ---
+  - few_shot_learning
+
+  # --- Pattern 2: Structured Output ---
+  - structured_output
+
+  # --- Pattern 3: Hallucination Prevention ---
+  - hallucination_prevention
+
+  # --- Pattern 4: Root Cause Analysis ---
+  - root_cause_analysis
+# === RELATED_PATTERNS END ===

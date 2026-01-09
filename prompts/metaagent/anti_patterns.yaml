@@ -1,0 +1,46 @@
+name: metaagent_anti_patterns
+namespace: loom
+prompts:
+  # Anti-patterns for prompt validation - stored as data, loaded as list
+  - id: role_prompting_patterns
+    content: |
+      you are a|role-prompting with 'you are a'
+      as a |role-prompting with 'as a'
+      act as|role-prompting with 'act as'
+      pretend to be|role-prompting with 'pretend to be'
+      imagine you are|role-prompting with 'imagine you are'
+      i want you to be|role-prompting with 'i want you to be'
+      you're a|role-prompting with 'you're a'
+      behave like|role-prompting with 'behave like'
+    variables: {}
+    tags:
+      - metaagent
+      - validation
+      - anti-patterns
+    metadata:
+      version: "v1.0"
+      description: "Role-prompting anti-patterns (pipe-delimited: pattern|description)"
+      format: "pipe-delimited lines: pattern|description"
+
+  # Common role-prompting fixes
+  - id: role_prompting_replacements
+    content: |
+      You are a SQL expert. |
+      You are an expert |
+      As a database analyst, |
+      As a SQL expert, |
+      Act as a data analyst. |
+      Pretend to be an expert. |
+      Imagine you are a developer. |
+      I want you to be a specialist. |
+      You're a helpful assistant. |
+      Behave like an expert analyst. |
+    variables: {}
+    tags:
+      - metaagent
+      - validation
+      - replacements
+    metadata:
+      version: "v1.0"
+      description: "Role-prompting patterns to remove (pipe-delimited: pattern|replacement)"
+      format: "pipe-delimited lines: pattern|replacement (empty replacement = delete)"

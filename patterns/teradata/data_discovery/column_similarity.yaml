@@ -1,0 +1,423 @@
+# === METADATA START ===
+name: column_similarity
+title: "Column Similarity Analysis Using Distance Metrics"
+description: |
+  Compare columns using statistical distance metrics and correlation measures from column signatures.
+  Find similar columns across tables to support:
+  - Schema matching and data integration
+  - Domain discovery (columns containing same type of data)
+  - Duplicate detection (same data in different tables)
+  - Data lineage analysis
+
+  **DISTANCE METRICS AVAILABLE:**
+
+  **Correlation Measures** (higher = more similar):
+  - **Pearson**: Linear correlation (-1 to 1, measures linear relationship)
+  - **Cosine**: Angular similarity (0 to 1, measures direction)
+
+  **Distance Measures** (lower = more similar):
+  - **L0 Distance**: Hamming distance (# of different bins)
+  - **L1 Distance**: Manhattan distance (sum of absolute differences)
+  - **L2 Distance**: Euclidean distance (geometric distance)
+  - **ChiSquare**: Chi-square statistic (distribution difference)
+
+  **Information-Theoretic Measures**:
+  - **Kullback-Leibler**: Divergence between distributions
+  - **Jensen-Shannon**: Symmetric smoothed divergence
+
+  **USE CASES:**
+  - Find columns containing same domain (all "state" columns)
+  - Detect duplicate tables (same data, different names)
+  - Schema matching for data integration
+  - Validate ETL transformations (source vs target similarity)
+
+  **REQUIREMENTS:**
+  Requires SIGNATURE_PAIRS table populated with distance metrics.
+  Uses all UDFS comparison functions.
+
+category: data_discovery
+difficulty: intermediate
+teradata_function: Pearson, Cosine, L1Dist, L2Dist, ChiSquare
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Find columns containing same domain across tables
+  - Detect duplicate or near-duplicate columns
+  - Schema matching for data integration
+  - Validate ETL source→target transformations
+  - Discover related columns for joins
+  - Identify column renaming across schema versions
+  - Support automated data catalog tagging
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database containing signatures"
+    example: "semantic_data"
+
+  - name: similarity_metric
+    type: string
+    required: false
+    default: "cosine"
+    description: "Metric to use: cosine, pearson, l1, l2, chisquare"
+    example: "cosine"
+
+  - name: similarity_threshold
+    type: number
+    required: false
+    default: 0.90
+    description: "Minimum similarity score (metric-dependent)"
+    example: "0.90"
+
+  - name: table
+    type: string
+    required: false
+    description: "Focus on specific table (optional)"
+    example: "customers"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  cosine_similarity:
+    description: "Find similar columns using Cosine similarity"
+    sql: |
+      -- Cosine Similarity (0 to 1, higher = more similar)
+      SELECT
+        S1.TABLE_NAME AS table1,
+        S1.COLUMN_NAME AS column1,
+        S2.TABLE_NAME AS table2,
+        S2.COLUMN_NAME AS column2,
+        SP.COSINE AS cosine_similarity,
+        SP.S1_DISTINCT_CNT AS col1_distinct,
+        SP.S2_DISTINCT_CNT AS col2_distinct,
+        CASE
+          WHEN SP.COSINE >= 0.99 THEN 'IDENTICAL'
+          WHEN SP.COSINE >= 0.95 THEN 'VERY_SIMILAR'
+          WHEN SP.COSINE >= 0.90 THEN 'SIMILAR'
+          WHEN SP.COSINE >= 0.80 THEN 'SOMEWHAT_SIMILAR'
+          ELSE 'DIFFERENT'
+        END AS similarity_class
+      FROM {{database}}.Signature_Pairs AS SP
+      JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+      WHERE SP.COSINE >= {{similarity_threshold}}
+        {{if .table}}AND S1.TABLE_NAME = '{{table}}'{{end}}
+        AND S1.TABLE_NAME <> S2.TABLE_NAME  -- Different tables
+      ORDER BY SP.COSINE DESC;
+
+  pearson_correlation:
+    description: "Find correlated columns using Pearson coefficient"
+    sql: |
+      -- Pearson Correlation (-1 to 1, higher = more correlated)
+      SELECT
+        S1.TABLE_NAME AS table1,
+        S1.COLUMN_NAME AS column1,
+        S2.TABLE_NAME AS table2,
+        S2.COLUMN_NAME AS column2,
+        SP.PEARSON AS pearson_correlation,
+        CASE
+          WHEN SP.PEARSON >= 0.95 THEN 'STRONG_POSITIVE'
+          WHEN SP.PEARSON >= 0.70 THEN 'MODERATE_POSITIVE'
+          WHEN SP.PEARSON >= -0.70 THEN 'WEAK_OR_NONE'
+          WHEN SP.PEARSON >= -0.95 THEN 'MODERATE_NEGATIVE'
+          ELSE 'STRONG_NEGATIVE'
+        END AS correlation_class
+      FROM {{database}}.Signature_Pairs AS SP
+      JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+      WHERE ABS(SP.PEARSON) >= {{similarity_threshold}}
+        {{if .table}}AND S1.TABLE_NAME = '{{table}}'{{end}}
+      ORDER BY ABS(SP.PEARSON) DESC;
+
+  distance_metrics:
+    description: "Compare all distance metrics for column pair"
+    sql: |
+      -- All distance metrics for column comparison
+      SELECT
+        S1.TABLE_NAME || '.' || S1.COLUMN_NAME AS column1,
+        S2.TABLE_NAME || '.' || S2.COLUMN_NAME AS column2,
+
+        -- Correlation (higher = more similar)
+        SP.COSINE AS cosine_sim,
+        SP.PEARSON AS pearson_corr,
+
+        -- Distances (lower = more similar)
+        SP.L0_DIST AS l0_distance,
+        SP.L1_DIST AS l1_distance,
+        SP.L2_DIST AS l2_distance,
+        SP.CHISQUARE AS chisquare_dist,
+
+        -- Context
+        SP.S1_DISTINCT_CNT AS col1_distinct,
+        SP.S2_DISTINCT_CNT AS col2_distinct
+      FROM {{database}}.Signature_Pairs AS SP
+      JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+      WHERE (S1.TABLE_NAME = '{{table1}}' AND S1.COLUMN_NAME = '{{column1}}'
+         AND S2.TABLE_NAME = '{{table2}}' AND S2.COLUMN_NAME = '{{column2}}')
+         OR
+            (S1.TABLE_NAME = '{{table2}}' AND S1.COLUMN_NAME = '{{column2}}'
+         AND S2.TABLE_NAME = '{{table1}}' AND S2.COLUMN_NAME = '{{column1}}');
+
+  find_domain_columns:
+    description: "Find all columns belonging to same domain"
+    sql: |
+      -- Domain Discovery: Find columns with same value domain
+      WITH DOMAIN_MEMBERS AS (
+        SELECT
+          S1.TABLE_NAME,
+          S1.COLUMN_NAME,
+          S2.TABLE_NAME AS ref_table,
+          S2.COLUMN_NAME AS ref_column,
+          SP.COSINE
+        FROM {{database}}.Signature_Pairs AS SP
+        JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+        WHERE SP.COSINE >= 0.95  -- Very high similarity
+          AND S1.TABLE_NAME <> S2.TABLE_NAME
+          AND SP.S1_DISTINCT_CNT BETWEEN 2 AND 1000  -- Domain-like cardinality
+      )
+      SELECT
+        ref_table || '.' || ref_column AS domain_column,
+        COUNT(*) AS related_columns,
+        STRING_AGG(TABLE_NAME || '.' || COLUMN_NAME, ', ') AS related_column_list
+      FROM DOMAIN_MEMBERS
+      GROUP BY ref_table, ref_column
+      HAVING COUNT(*) >= 3  -- At least 3 related columns
+      ORDER BY related_columns DESC;
+
+  chisquare_distance:
+    description: "Find similar columns using Chi-Square distance"
+    sql: |
+      -- Chi-Square Distance (lower = more similar distributions)
+      SELECT
+        S1.TABLE_NAME AS table1,
+        S1.COLUMN_NAME AS column1,
+        S2.TABLE_NAME AS table2,
+        S2.COLUMN_NAME AS column2,
+        SP.CHISQUARE AS chisquare_distance,
+        CASE
+          WHEN SP.CHISQUARE <= 0.05 THEN 'IDENTICAL_DISTRIBUTION'
+          WHEN SP.CHISQUARE <= 0.10 THEN 'VERY_SIMILAR_DISTRIBUTION'
+          WHEN SP.CHISQUARE <= 0.20 THEN 'SIMILAR_DISTRIBUTION'
+          ELSE 'DIFFERENT_DISTRIBUTION'
+        END AS distribution_class
+      FROM {{database}}.Signature_Pairs AS SP
+      JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+      WHERE SP.CHISQUARE <= 0.20  -- Low chi-square = similar
+        {{if .table}}AND S1.TABLE_NAME = '{{table}}'{{end}}
+      ORDER BY SP.CHISQUARE ASC;
+
+  similarity_matrix:
+    description: "Create similarity matrix for group of columns"
+    sql: |
+      -- Similarity matrix for columns matching pattern
+      SELECT
+        S1.TABLE_NAME || '.' || S1.COLUMN_NAME AS column1,
+        S2.TABLE_NAME || '.' || S2.COLUMN_NAME AS column2,
+        CAST(SP.COSINE AS DECIMAL(5,3)) AS cosine,
+        CAST(SP.PEARSON AS DECIMAL(5,3)) AS pearson,
+        CAST(SP.L2_DIST AS DECIMAL(5,3)) AS l2_dist
+      FROM {{database}}.Signature_Pairs AS SP
+      JOIN {{database}}.Signatures AS S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.Signatures AS S2 ON SP.S2_ID = S2.ID
+      WHERE S1.COLUMN_NAME LIKE '%{{pattern}}%'
+        AND S2.COLUMN_NAME LIKE '%{{pattern}}%'
+      ORDER BY S1.TABLE_NAME, S1.COLUMN_NAME, S2.TABLE_NAME, S2.COLUMN_NAME;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Find similar columns using Cosine similarity"
+    parameters:
+      database: "semantic_data"
+      similarity_threshold: 0.90
+    expected_result: |
+      Similar Columns (Cosine ≥ 0.90):
+
+      | TABLE1     | COLUMN1  | TABLE2     | COLUMN2  | COSINE | SIMILARITY    |
+      |------------|----------|------------|----------|--------|---------------|
+      | customers  | state    | orders     | state    | 0.99   | IDENTICAL     |
+      | products   | category | inventory  | category | 0.98   | VERY_SIMILAR  |
+      | employees  | dept     | dept_table | dept_id  | 0.92   | SIMILAR       |
+
+      Interpretation:
+      - customers.state ≈ orders.state: Same domain (US states)
+      - products.category ≈ inventory.category: Same domain (product categories)
+      - employees.dept ≈ dept_table.dept_id: Related but different (name vs ID)
+
+  - name: "Discover domain columns"
+    parameters:
+      database: "semantic_data"
+    expected_result: |
+      Domain Discovery Results:
+
+      **Domain: US States**
+      - customers.state
+      - orders.ship_state
+      - suppliers.location_state
+      - warehouses.state_code
+      Cosine similarity: 0.95-0.99
+
+      **Domain: Product Categories**
+      - products.category
+      - inventory.product_category
+      - sales.category_name
+      Cosine similarity: 0.96-0.98
+
+      **Domain: Gender**
+      - customers.gender
+      - employees.gender
+      - survey_responses.respondent_gender
+      Cosine similarity: 0.99 (all have M/F/Other values)
+
+  - name: "Compare all metrics for column pair"
+    parameters:
+      database: "sales"
+      table1: "customers"
+      column1: "state"
+      table2: "orders"
+      column2: "ship_state"
+    expected_result: |
+      Distance Metrics: customers.state vs orders.ship_state
+
+      Correlation Metrics (higher = more similar):
+      - Cosine: 0.97 (very similar direction)
+      - Pearson: 0.94 (strong linear correlation)
+
+      Distance Metrics (lower = more similar):
+      - L0: 2 (differ in 2 bins/values)
+      - L1: 0.08 (small Manhattan distance)
+      - L2: 0.05 (small Euclidean distance)
+      - ChiSquare: 0.03 (distributions very similar)
+
+      Context:
+      - customers.state: 50 distinct values
+      - orders.ship_state: 52 distinct values (includes DC, PR)
+
+      Conclusion: Nearly identical domains, likely same US state codes
+
+  - name: "Find columns renamed across schema versions"
+    parameters:
+      database: "semantic_data"
+      similarity_threshold: 0.95
+    expected_result: |
+      Likely Column Renamings (High Similarity):
+
+      | OLD_TABLE  | OLD_COLUMN | NEW_TABLE  | NEW_COLUMN   | COSINE |
+      |------------|------------|------------|--------------|--------|
+      | customers  | cust_id    | customers2 | customer_id  | 0.999  |
+      | products   | prod_name  | products2  | product_name | 0.998  |
+      | orders     | order_dt   | orders_v2  | order_date   | 0.997  |
+
+      These are likely schema evolution cases:
+      - Abbreviations expanded (cust_id → customer_id)
+      - Naming conventions standardized (prod_name → product_name)
+      - Type naming clarified (order_dt → order_date)
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Column Similarity Best Practices
+
+  ### 1. Choose Appropriate Metric
+  **Cosine Similarity**: Best for general similarity
+  - Range: 0 to 1 (higher = more similar)
+  - Use for: Domain discovery, duplicate detection
+  - Threshold: 0.95+ for very similar, 0.90+ for similar
+
+  **Pearson Correlation**: Best for linear relationships
+  - Range: -1 to 1 (|r| close to 1 = strong correlation)
+  - Use for: Finding correlated columns
+  - Threshold: 0.90+ for strong correlation
+
+  **Chi-Square**: Best for distribution comparison
+  - Range: 0+ (lower = more similar)
+  - Use for: Statistical significance testing
+  - Threshold: < 0.05 for very similar
+
+  **L2 (Euclidean) Distance**: Best for geometric similarity
+  - Range: 0+ (lower = more similar)
+  - Use for: Precise numerical comparison
+  - Threshold: < 0.10 for very similar
+
+  ### 2. Filter by Column Characteristics
+  ```sql
+  -- Low cardinality domains (states, categories, etc.)
+  WHERE S1_DISTINCT_CNT BETWEEN 2 AND 1000
+
+  -- High cardinality (IDs, names, etc.)
+  WHERE S1_DISTINCT_CNT > 1000
+  ```
+
+  ### 3. Use Multiple Metrics for Validation
+  High similarity in multiple metrics = high confidence:
+  ```sql
+  WHERE COSINE >= 0.95
+    AND PEARSON >= 0.90
+    AND L2_DIST <= 0.10
+    AND CHISQUARE <= 0.05
+  ```
+
+  ### 4. Domain Discovery Strategy
+  1. Start with Cosine ≥ 0.95 (very similar)
+  2. Filter to low-medium cardinality (2-1000 distinct)
+  3. Group by similarity to find domain clusters
+  4. Verify with sample values
+
+  ### 5. Similarity Matrix Visualization
+  Create matrix for related columns:
+  ```
+             col1   col2   col3
+      col1   1.00   0.95   0.82
+      col2   0.95   1.00   0.88
+      col3   0.82   0.88   1.00
+  ```
+
+  ### 6. Handle Symmetric Comparisons
+  Signature_Pairs stores S1_ID < S2_ID:
+  ```sql
+  -- Find either direction
+  WHERE (S1.column = 'foo' AND S2.column = 'bar')
+     OR (S1.column = 'bar' AND S2.column = 'foo')
+  ```
+
+  ### 7. Memory Layers for Similarity Analysis
+  - **Kernel Layer**: Cache similarity metric thresholds and domain classification rules
+  - **L1 Cache**: Keep recent similarity queries (last 5-8 column comparisons) for quick re-analysis
+  - **L2 Compressed**: Archive discovered domains and similarity clusters
+  - **Swap Layer**: Store complete similarity history; use recall_conversation to reference domain discoveries from earlier schema matching projects
+  This enables consistent domain tagging and tracking schema evolution over time.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "High Cosine but different data"
+    cause: "Columns have similar distributions but different semantics"
+    solution: "Validate with sample values, check column names and metadata"
+
+  - error: "All metrics show low similarity for known related columns"
+    cause: "One column normalized/transformed differently"
+    solution: "Check data transformations, use signature of UPPER() or TRIM() versions"
+
+  - error: "Pearson negative but columns are similar"
+    cause: "Inverse relationship (e.g., temperature in C vs F)"
+    solution: "Use ABS(PEARSON) for magnitude, or investigate transformation"
+
+  - error: "Query returns no results"
+    cause: "Threshold too high or SIGNATURE_PAIRS not populated"
+    solution: "Lower threshold, verify SIGNATURE_PAIRS has data"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - signature_generation  # Must create signatures first
+  - foreign_key_detection  # Similarity supports FK detection
+  - data_profiling  # Profile columns before similarity analysis
+  - key_detection  # Similar columns may be keys in different tables
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,35 @@
+apiVersion: loom/v1
+kind: AgentTemplate
+metadata:
+  name: base-expert
+  description: Base template for expert agents
+  version: "1.0"
+  labels:
+    category: foundation
+    author: loom-team
+
+spec:
+  system_prompt: |
+    You are a helpful expert assistant.
+    Always be clear, concise, and accurate in your responses.
+    When you don't know something, admit it rather than guessing.
+
+  llm:
+    temperature: 0.7
+    max_tokens: 4096
+
+  config:
+    max_turns: 10
+    max_tool_executions: 30
+    timeout_seconds: 600
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+
+  metadata:
+    created_by: loom-template-system
+    framework: loom-v1

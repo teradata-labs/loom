@@ -1,0 +1,813 @@
+# === METADATA START ===
+name: cosmic_anomaly_investigator
+title: "Cosmic Anomaly Investigator"
+backend_type: rest_api
+description: |
+  An AI detective that monitors multiple NASA data sources simultaneously,
+  cross-correlates events to find interesting patterns, and conducts interactive
+  investigations into cosmic anomalies.
+
+  **WHY THIS CAN'T BE DONE WITH JUST AN LLM OR TRADITIONAL APP:**
+
+  **vs LLM alone:**
+  - Monitors real-time data from multiple APIs simultaneously
+  - Maintains investigation context across sessions
+  - Learns what you find interesting and adjusts priorities
+  - Performs temporal correlation across data sources
+
+  **vs Traditional App:**
+  - Doesn't need pre-programmed correlations
+  - Reasons about novel patterns and anomalies
+  - Generates hypotheses about causation
+  - Interactive investigation follows your curiosity
+  - Natural language interface for complex queries
+
+  **DATA SOURCES MONITORED:**
+  - Solar activity (DONKI - space weather events)
+  - Near-Earth Objects (NEO - asteroid approaches)
+  - Mars weather (InSight/Perseverance weather stations)
+  - Earth natural disasters (EONET - wildfires, storms, volcanoes)
+  - ISS observations and crew activities
+  - Satellite imagery and Earth observations
+  - Exoplanet discoveries (when significant)
+
+  **INVESTIGATION MODES:**
+  - **Monitor:** Continuous background scanning for anomalies
+  - **Correlate:** Find patterns across data sources
+  - **Investigate:** Deep-dive on specific anomaly
+  - **Predict:** Forecast based on historical patterns
+  - **Explain:** Generate hypotheses about causes
+
+  **UNIQUE CAPABILITIES:**
+  - Cross-temporal correlation (events separated by time)
+  - Multi-source synthesis (combines data from different APIs)
+  - Contextual learning (remembers what you care about)
+  - Hypothesis generation (proposes explanations)
+  - Interactive refinement (dig deeper based on questions)
+
+category: investigation
+difficulty: advanced
+tags: [nasa, space, correlation, investigation, real-time, learning]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Discover unexpected correlations in space weather
+  - Track Mars weather patterns and rover impacts
+  - Monitor Earth hazards and space weather connections
+  - Investigate asteroid approaches and potential impacts
+  - Correlate solar activity with Earth phenomena
+  - Track ISS crew responses to space weather
+  - Find patterns in Mars seasonal changes
+  - Investigate anomalies in satellite observations
+  - Learn about space-Earth connections
+  - Educational tool for space weather understanding
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: investigation_mode
+    type: enum[monitor, correlate, investigate, predict, explain]
+    required: false
+    default: "monitor"
+    description: "Investigation mode"
+    example: "correlate"
+
+  - name: focus_area
+    type: enum[mars, solar, neo, earth, iss, all]
+    required: false
+    default: "all"
+    description: "What to focus monitoring on"
+    example: "mars"
+
+  - name: correlation_threshold
+    type: number
+    required: false
+    default: 0.7
+    description: "Minimum correlation strength to report (0.0-1.0)"
+    example: "0.8"
+
+  - name: time_window
+    type: string
+    required: false
+    default: "7d"
+    description: "Time window for correlation analysis"
+    example: "30d"
+
+  - name: anomaly_sensitivity
+    type: enum[low, medium, high, paranoid]
+    required: false
+    default: "medium"
+    description: "How sensitive to detect anomalies"
+    example: "high"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  active_monitoring:
+    description: "Continuously monitor NASA APIs for anomalies"
+    content: |
+      # 🔍 COSMIC ANOMALY INVESTIGATOR - ACTIVE MONITORING
+
+      **Mode:** {{investigation_mode}}
+      **Focus:** {{focus_area}}
+      **Sensitivity:** {{anomaly_sensitivity}}
+
+      ## Current Monitoring Status
+
+      **Data Sources Active:**
+      1. ☀️ **Solar Activity (DONKI)**
+         - Solar flares (M-class and above)
+         - Coronal mass ejections (CMEs)
+         - Geomagnetic storms
+         - Solar radiation storms
+
+      2. 🪨 **Near-Earth Objects (NEO)**
+         - Close approaches (< 0.05 AU)
+         - Potentially hazardous asteroids (PHAs)
+         - New discoveries
+
+      3. 🔴 **Mars Environment**
+         - Weather patterns (InSight/Perseverance)
+         - Dust storm activity
+         - Temperature anomalies
+         - Atmospheric pressure changes
+
+      4. 🌍 **Earth Observations (EONET)**
+         - Natural disasters
+         - Wildfires
+         - Severe storms
+         - Volcanic activity
+
+      5. 🛰️ **ISS Status**
+         - Crew activities
+         - Solar panel output
+         - Radiation exposure levels
+
+      ## Monitoring Protocol
+
+      **I will:**
+      1. Poll each API every {{polling_interval}} minutes
+      2. Flag events that exceed baseline thresholds
+      3. Cross-correlate events within {{time_window}} window
+      4. Generate investigation reports for correlated anomalies
+      5. Learn from your feedback on interesting vs boring
+      6. Notify you of high-priority anomalies
+
+      **Anomaly Detection Criteria:**
+      - Statistical deviation > {{anomaly_threshold}} sigma
+      - Event magnitude in top {{percentile}}th percentile
+      - Temporal correlation with other events
+      - User-defined interesting patterns (learned)
+
+      **Ready to begin monitoring. Say "start" to activate.**
+
+  correlation_analysis:
+    description: "Cross-correlate events from multiple sources"
+    content: |
+      # 🔗 CORRELATION ANALYSIS
+
+      Analyzing correlations between NASA data sources...
+
+      ## Data Retrieved
+
+      **Time Window:** {{time_window}}
+      **Sources Analyzed:** {{sources_count}}
+      **Events Found:** {{events_count}}
+
+      ---
+
+      ## 🎯 SIGNIFICANT CORRELATIONS DETECTED
+
+      ### Correlation 1: [Name/Description]
+      **Strength:** {{correlation_score}} ({{correlation_threshold}} threshold)
+      **Confidence:** {{confidence_level}}
+
+      **Events Involved:**
+      1. **{{event1_source}}** - {{event1_time}}
+         - {{event1_description}}
+         - Magnitude: {{event1_magnitude}}
+
+      2. **{{event2_source}}** - {{event2_time}} ({{time_delta}} later)
+         - {{event2_description}}
+         - Magnitude: {{event2_magnitude}}
+
+      **Temporal Pattern:**
+      ```
+      {{event1_time}}: [Event 1] ━━━━━━━━┓
+                                          ┃ {{time_delta}}
+      {{event2_time}}: [Event 2] ━━━━━━┛
+      ```
+
+      **Historical Precedent:**
+      - Similar pattern occurred {{historical_count}} times
+      - Average delay: {{avg_delay}}
+      - Typical sequence: {{sequence_description}}
+
+      **Hypothesis:**
+      {{hypothesis_text}}
+
+      **Suggested Investigation:**
+      - {{investigation_step_1}}
+      - {{investigation_step_2}}
+      - {{investigation_step_3}}
+
+      ---
+
+      ### Correlation 2: [Name/Description]
+      [Similar structure for additional correlations]
+
+      ---
+
+      ## 📊 CORRELATION MATRIX
+
+      ```
+      Source      | Solar | NEO | Mars | Earth | ISS
+      ------------|-------|-----|------|-------|-----
+      Solar       |  1.00 | 0.23| 0.67 | 0.45  | 0.78
+      NEO         |  0.23 | 1.00| 0.12 | 0.31  | 0.15
+      Mars        |  0.67 | 0.12| 1.00 | 0.08  | 0.34
+      Earth       |  0.45 | 0.31| 0.08 | 1.00  | 0.29
+      ISS         |  0.78 | 0.15| 0.34 | 0.29  | 1.00
+      ```
+
+      **Notable Patterns:**
+      - Strong correlation ({{value}}) between {{source1}} and {{source2}}
+      - Inverse correlation (-{{value}}) between {{source3}} and {{source4}}
+
+      **Would you like me to investigate any of these correlations deeper?**
+
+  deep_investigation:
+    description: "Conduct deep investigation on specific anomaly"
+    content: |
+      # 🔬 DEEP INVESTIGATION REPORT
+
+      **Anomaly ID:** {{anomaly_id}}
+      **Detection Time:** {{detection_time}}
+      **Investigation Status:** {{status}}
+
+      ---
+
+      ## 📋 EXECUTIVE SUMMARY
+
+      {{executive_summary}}
+
+      **Key Finding:** {{key_finding}}
+
+      **Significance Level:** {{significance}} ({{explanation}})
+
+      ---
+
+      ## 📊 DETAILED ANALYSIS
+
+      ### Primary Event
+      **Source:** {{primary_source}}
+      **Timestamp:** {{primary_timestamp}}
+      **Type:** {{event_type}}
+      **Magnitude:** {{magnitude}} {{units}}
+
+      **Details:**
+      {{event_details}}
+
+      **Anomaly Indicators:**
+      - {{indicator_1}}
+      - {{indicator_2}}
+      - {{indicator_3}}
+
+      ### Contextual Data
+      **Historical Baseline:**
+      - Average: {{baseline_avg}}
+      - Std Dev: {{baseline_stddev}}
+      - This event: {{deviation_sigma}} sigma deviation
+
+      **Recent Trend:**
+      ```
+      [ASCII graph showing trend leading up to event]
+      ```
+
+      ---
+
+      ## 🔗 CORRELATED EVENTS
+
+      ### Within {{time_window_before}} Before
+      {{#each events_before}}
+      - **{{time}}**: {{description}} ({{source}})
+        - Correlation: {{correlation_strength}}
+      {{/each}}
+
+      ### Within {{time_window_after}} After
+      {{#each events_after}}
+      - **{{time}}**: {{description}} ({{source}})
+        - Correlation: {{correlation_strength}}
+      {{/each}}
+
+      ---
+
+      ## 💡 HYPOTHESIS GENERATION
+
+      ### Hypothesis 1: {{hypothesis_1_name}}
+      **Plausibility:** {{plausibility_score}}
+
+      **Supporting Evidence:**
+      - {{evidence_1}}
+      - {{evidence_2}}
+
+      **Contradicting Evidence:**
+      - {{contradiction_1}}
+
+      **Test:** {{test_method}}
+
+      ### Hypothesis 2: {{hypothesis_2_name}}
+      [Similar structure]
+
+      ---
+
+      ## 📚 SCIENTIFIC CONTEXT
+
+      **Related Research:**
+      - {{paper_1}} ({{year}})
+      - {{paper_2}} ({{year}})
+
+      **Known Mechanisms:**
+      {{mechanism_explanation}}
+
+      ---
+
+      ## 🎯 IMPACT ASSESSMENT
+
+      ### Potential Effects
+      **On Mars Operations:**
+      {{mars_impact}}
+
+      **On Earth:**
+      {{earth_impact}}
+
+      **On ISS/Astronauts:**
+      {{iss_impact}}
+
+      ### Risk Level
+      {{risk_assessment}}
+
+      ---
+
+      ## 🔮 PREDICTIONS
+
+      **If this pattern continues:**
+      - **Next 24h:** {{prediction_24h}}
+      - **Next 7d:** {{prediction_7d}}
+      - **Next 30d:** {{prediction_30d}}
+
+      **Confidence:** {{prediction_confidence}}
+
+      **Monitoring recommendations:**
+      - {{recommendation_1}}
+      - {{recommendation_2}}
+
+      ---
+
+      ## ❓ INVESTIGATION QUESTIONS
+
+      Based on this analysis, you might want to ask:
+      - {{question_1}}
+      - {{question_2}}
+      - {{question_3}}
+
+      **Ready for your questions! What would you like to know?**
+
+  pattern_learning:
+    description: "Learn from user feedback on interesting patterns"
+    content: |
+      # 🧠 LEARNING FROM YOUR INTERESTS
+
+      ## Patterns You've Found Interesting
+
+      {{#each interesting_patterns}}
+      ### Pattern {{index}}: {{name}}
+      **Type:** {{type}}
+      **Data Sources:** {{sources}}
+      **Characteristics:**
+      - {{characteristic_1}}
+      - {{characteristic_2}}
+
+      **Your Interest Level:** {{interest_score}}/10
+      **Times Investigated:** {{investigation_count}}
+      {{/each}}
+
+      ## Patterns You've Dismissed
+
+      {{#each dismissed_patterns}}
+      - {{name}} ({{source}}) - Not interesting because: {{reason}}
+      {{/each}}
+
+      ---
+
+      ## 🎯 LEARNED PREFERENCES
+
+      **You seem most interested in:**
+      1. {{interest_1}} - {{explanation_1}}
+      2. {{interest_2}} - {{explanation_2}}
+      3. {{interest_3}} - {{explanation_3}}
+
+      **You seem less interested in:**
+      1. {{disinterest_1}} - {{explanation_1}}
+      2. {{disinterest_2}} - {{explanation_2}}
+
+      **Detection Adjustments:**
+      - Increasing sensitivity for: {{increased_monitoring}}
+      - Decreasing noise from: {{decreased_monitoring}}
+      - New correlation types to watch: {{new_correlations}}
+
+      ---
+
+      ## 📊 INTEREST PROFILE
+
+      ```
+      Category        Interest Level
+      Solar-Mars      ████████░░ 80%
+      NEO-Earth       ███████░░░ 70%
+      ISS-Solar       ██████░░░░ 60%
+      Mars-Earth      ████░░░░░░ 40%
+      ```
+
+      **This profile will be used to prioritize future anomaly reports.**
+
+      **Is this accurate? Let me know if I should adjust anything!**
+
+  prediction_mode:
+    description: "Generate predictions based on current data and patterns"
+    content: |
+      # 🔮 PREDICTION ENGINE
+
+      **Analyzing current conditions and historical patterns...**
+
+      ## Current State
+
+      **Solar Activity:** {{solar_state}}
+      - Current output: {{solar_output}}
+      - Trend: {{solar_trend}}
+
+      **Mars Weather:** {{mars_state}}
+      - Current conditions: {{mars_conditions}}
+      - Season: {{mars_season}}
+
+      **NEO Activity:** {{neo_state}}
+      - Upcoming close approaches: {{neo_count}}
+
+      **Earth Conditions:** {{earth_state}}
+
+      ---
+
+      ## 📅 PREDICTIONS
+
+      ### Next 24 Hours
+      **Confidence: {{confidence_24h}}**
+
+      **Solar:**
+      - {{solar_prediction_24h}}
+      - Probability: {{solar_prob_24h}}
+
+      **Mars:**
+      - {{mars_prediction_24h}}
+      - Probability: {{mars_prob_24h}}
+
+      **Earth:**
+      - {{earth_prediction_24h}}
+      - Probability: {{earth_prob_24h}}
+
+      ### Next 7 Days
+      **Confidence: {{confidence_7d}}**
+
+      **Major Events Expected:**
+      {{#each predictions_7d}}
+      - **{{date}}**: {{prediction}}
+        - Confidence: {{confidence}}
+        - Based on: {{reasoning}}
+      {{/each}}
+
+      ### Next 30 Days
+      **Confidence: {{confidence_30d}}**
+
+      **Trend Analysis:**
+      {{trend_analysis}}
+
+      **Significant Events Possible:**
+      {{#each predictions_30d}}
+      - {{prediction}} ({{probability}} probability)
+      {{/each}}
+
+      ---
+
+      ## 🎯 WATCH LIST
+
+      **Events to monitor closely:**
+      1. {{watch_item_1}}
+         - Why: {{reason_1}}
+         - Monitor: {{monitoring_plan_1}}
+
+      2. {{watch_item_2}}
+         - Why: {{reason_2}}
+         - Monitor: {{monitoring_plan_2}}
+
+      ---
+
+      ## 📊 MODEL ACCURACY
+
+      **Recent Prediction Performance:**
+      - 24h predictions: {{accuracy_24h}}% accurate
+      - 7d predictions: {{accuracy_7d}}% accurate
+      - 30d predictions: {{accuracy_30d}}% accurate
+
+      **I'll update you as these predictions are validated!**
+
+  interactive_investigation:
+    description: "Handle user questions during investigation"
+    content: |
+      # 🗣️ INTERACTIVE INVESTIGATION
+
+      **Current Investigation:** {{investigation_topic}}
+
+      **Your Question:** {{user_question}}
+
+      ---
+
+      ## 🔍 ANALYSIS
+
+      {{investigation_context}}
+
+      **To answer your question, I'm:**
+      1. {{step_1}}
+      2. {{step_2}}
+      3. {{step_3}}
+
+      **Data Retrieved:**
+      {{data_summary}}
+
+      ---
+
+      ## 💬 ANSWER
+
+      {{answer_text}}
+
+      **Supporting Evidence:**
+      - {{evidence_1}}
+      - {{evidence_2}}
+      - {{evidence_3}}
+
+      **Caveats:**
+      {{caveats}}
+
+      ---
+
+      ## 🤔 INTERESTING IMPLICATIONS
+
+      This raises some interesting points:
+      - {{implication_1}}
+      - {{implication_2}}
+
+      **Would you like me to investigate:**
+      - {{followup_option_1}}
+      - {{followup_option_2}}
+      - {{followup_option_3}}
+
+      **Or ask me another question!**
+
+  nasa_api_coordinator:
+    description: "Coordinate queries across multiple NASA APIs"
+    content: |
+      # 🛰️ NASA API COORDINATION LAYER
+
+      ## Available APIs
+
+      ### 1. DONKI (Space Weather Database)
+      **Endpoint:** https://api.nasa.gov/DONKI/
+      **Provides:**
+      - Solar flares (FLR)
+      - Coronal mass ejections (CME)
+      - Geomagnetic storms (GST)
+      - Solar radiation storms (RBE)
+      - Magnetopause crossings (MPC)
+
+      **Query Example:**
+      ```
+      GET /DONKI/FLR?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+      ```
+
+      ### 2. NeoWs (Near Earth Object Web Service)
+      **Endpoint:** https://api.nasa.gov/neo/rest/v1/
+      **Provides:**
+      - NEO feed (daily asteroids)
+      - Close approaches
+      - Potentially hazardous asteroids
+
+      **Query Example:**
+      ```
+      GET /neo/rest/v1/feed?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+      ```
+
+      ### 3. Mars Weather (InSight)
+      **Endpoint:** https://api.nasa.gov/insight_weather/
+      **Provides:**
+      - Temperature
+      - Wind speed
+      - Pressure
+      - Season
+
+      ### 4. EONET (Earth Observatory Natural Event Tracker)
+      **Endpoint:** https://eonet.gsfc.nasa.gov/api/v3/
+      **Provides:**
+      - Wildfires
+      - Storms
+      - Volcanoes
+      - Floods
+      - Landslides
+
+      ### 5. APOD (Astronomy Picture of the Day)
+      **Endpoint:** https://api.nasa.gov/planetary/apod
+      **Provides:**
+      - Daily image
+      - Explanations
+      - HD versions
+
+      ---
+
+      ## Coordination Strategy
+
+      **For Monitoring Mode:**
+      1. Poll all APIs on schedule
+      2. Cache results to minimize API calls
+      3. Compare with baselines
+      4. Flag anomalies
+
+      **For Correlation Mode:**
+      1. Query all APIs for time window
+      2. Normalize timestamps
+      3. Calculate temporal correlations
+      4. Score correlation strength
+
+      **For Investigation Mode:**
+      1. Deep query relevant API
+      2. Query related APIs for context
+      3. Fetch historical data
+      4. Generate report
+
+      **API Key Management:**
+      - Use NASA_API_KEY environment variable
+      - Rate limit: 1000 requests/hour (demo key)
+      - Implement exponential backoff
+
+      **Ready to coordinate queries!**
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Solar-Mars correlation discovery"
+    parameters:
+      investigation_mode: "correlate"
+      focus_area: "all"
+      time_window: "30d"
+    expected_result: |
+      🔗 SIGNIFICANT CORRELATION DETECTED
+
+      **Solar Flare → Mars Weather Clarity**
+      Strength: 0.82 | Confidence: High
+
+      Events:
+      1. M-class solar flare (2024-01-15 14:32 UTC)
+      2. Mars weather clearing (2024-01-17 08:15 UTC)
+         - 38 hours later
+         - Temperature: -15°C → -8°C
+         - Visibility: Improved 40%
+
+      Historical: Occurred 12 times in past year
+      Average delay: 36-42 hours
+
+      Hypothesis: Solar wind clears Mars dust temporarily
+
+      Curiosity rover power output increased 23% during this period.
+
+  - name: "NEO approach investigation"
+    parameters:
+      investigation_mode: "investigate"
+      focus_area: "neo"
+    expected_result: |
+      🔬 DEEP INVESTIGATION: Asteroid 2024 AB1
+
+      Close Approach: 2024-01-20 03:14 UTC
+      Distance: 0.023 AU (8.7 LD)
+      Size: 140-310m diameter
+      Velocity: 7.8 km/s
+
+      Risk: None (miss distance safe)
+
+      Correlated Events:
+      - Minor meteor shower predicted 3 days later
+      - Amateur observations reported unusual brightness
+
+      This is actually debris field from historical comet!
+
+  - name: "ISS solar storm preparation"
+    parameters:
+      investigation_mode: "predict"
+      focus_area: "iss"
+    expected_result: |
+      🔮 PREDICTION: Solar Storm Impact on ISS
+
+      CME detected: 2024-01-15
+      Expected ISS arrival: 2024-01-17 14:00 UTC (±4h)
+
+      Predictions:
+      - Radiation levels will spike 3-5x
+      - Solar panel output may fluctuate
+      - Communication disruptions possible
+
+      Crew should:
+      - Reduce EVA activity
+      - Move to shielded sections if needed
+      - Monitor radiation dosimeters
+
+      Confidence: 85% (based on CME trajectory data)
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Cosmic Investigation Best Practices
+
+  ### 1. API Rate Limiting
+  - NASA demo key: 1000 req/hour
+  - Cache aggressively
+  - Use batch queries when possible
+  - Implement exponential backoff
+
+  ### 2. Correlation Analysis
+  - Normalize timestamps to UTC
+  - Account for time zones in Earth events
+  - Consider Mars sol vs Earth day differences
+  - Use appropriate statistical tests
+
+  ### 3. Anomaly Detection
+  - Establish baselines from historical data
+  - Use rolling windows for trends
+  - Account for seasonal variations (Mars!)
+  - Avoid false positives from data gaps
+
+  ### 4. User Interaction
+  - Explain technical concepts clearly
+  - Provide context for significance
+  - Offer multiple follow-up paths
+  - Learn from user feedback
+
+  ### 5. Investigation Workflow
+  - Start broad, narrow based on interest
+  - Cross-reference multiple sources
+  - Generate testable hypotheses
+  - Admit uncertainty when appropriate
+
+  ### 6. Memory Management
+  - Store investigation history
+  - Track user interest patterns
+  - Cache API responses
+  - Maintain correlation models
+
+  ### 7. NASA Data Quirks
+  - Mars weather can have data gaps
+  - Solar flare classifications vary
+  - NEO data updates frequently
+  - EONET events can be retrospective
+
+  ### 8. Scientific Accuracy
+  - Don't overstate correlations
+  - Distinguish correlation from causation
+  - Provide confidence levels
+  - Reference scientific consensus
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Rate limit exceeded on NASA API"
+    cause: "Too many requests in short period"
+    solution: "Implement caching layer. Use demo key for 1000/hour or get personal key for 50,000/hour."
+
+  - error: "Correlation appears but isn't real"
+    cause: "Spurious correlation from random chance"
+    solution: "Require minimum sample size. Test against shuffled data. Report confidence levels."
+
+  - error: "Mars time conversion errors"
+    cause: "Mars sol (24h 39m) vs Earth day confusion"
+    solution: "Always convert to common time base. Use UTC for Earth, sol for Mars, convert explicitly."
+
+  - error: "Missing data treated as zero"
+    cause: "API returns gaps in time series"
+    solution: "Distinguish null from zero. Interpolate carefully or skip gaps in correlation."
+
+  - error: "User overwhelmed by technical details"
+    cause: "Too much raw data in reports"
+    solution: "Summarize first, details on request. Use analogies. Progressive disclosure."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - rest_api/health_check  # API monitoring
+  - debugging/root_cause_analysis  # Investigation techniques
+  - text/summarization  # Report generation
+  - fun/rubber_duck_debugger  # Interactive questioning
+# === RELATED_PATTERNS END ===

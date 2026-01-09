@@ -1,0 +1,90 @@
+name: metaagent_pattern_matching
+namespace: loom
+prompts:
+  - id: select_patterns
+    content: |
+      You are selecting patterns for a LOOM FRAMEWORK AGENT.
+
+      LOOM FRAMEWORK CONTEXT:
+      - Loom patterns are YAML files containing domain expertise
+      - Patterns include: best practices, example prompts, common pitfalls
+      - Patterns are organized by domain (sql, rest, file, etc.) and category
+      - Your job: Select which patterns the agent needs, NOT write pattern implementation
+
+      OUTPUT CONSTRAINT: Select patterns for a Loom agent configuration, NOT write custom patterns!
+
+      Requirements:
+      - Primary Intent: {{.primary_intent}}
+      - Domain: {{.domain}}
+      - Capabilities: {{.capabilities}}
+      - Complexity: {{.complexity}}
+
+      {{.available_patterns_section}}
+
+      {{.similar_examples_section}}
+
+      Each pattern has:
+      - use_cases: Specific scenarios
+      - examples: Real-world usage
+      - related_patterns: Alternatives and complements
+      - best_practices: When to use
+
+      {{if .similar_examples_section}}
+      Learn from similar examples:
+      - What patterns they used successfully
+      - Why those patterns were chosen
+      - What combinations worked well
+      {{end}}
+
+      Select patterns that:
+      1. Match the domain and capabilities
+      2. Address the complexity level
+      3. Work well together (check related_patterns)
+      4. Have proven use cases for this type of agent
+
+      Output JSON:
+      {
+        "selected_patterns": ["pattern1", "pattern2", "pattern3"],
+        "reasoning": "why each pattern was selected and how they complement each other",
+        "pattern_dependencies": ["additional patterns needed by selected patterns"],
+        "learned_from_examples": ["which examples influenced this decision"]
+      }
+    variables:
+      primary_intent:
+        name: primary_intent
+        type: 1  # STRING
+        required: true
+        description: "Primary goal of the agent"
+      domain:
+        name: domain
+        type: 1  # STRING
+        required: true
+        description: "Agent domain (sql, rest, file, etc.)"
+      capabilities:
+        name: capabilities
+        type: 1  # STRING
+        required: true
+        description: "List of required capabilities"
+      complexity:
+        name: complexity
+        type: 1  # STRING
+        required: true
+        description: "Complexity level (low, medium, high)"
+      available_patterns_section:
+        name: available_patterns_section
+        type: 1  # STRING
+        required: true
+        description: "Formatted available patterns with metadata"
+      similar_examples_section:
+        name: similar_examples_section
+        type: 1  # STRING
+        required: false
+        default_value: ""
+        description: "Similar example agents for few-shot learning"
+    tags:
+      - metaagent
+      - pattern-matching
+      - weaver
+    metadata:
+      version: "v1.0"
+      description: "Pattern selection prompt for PatternMatcher sub-agent"

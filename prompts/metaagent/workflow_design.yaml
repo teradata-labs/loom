@@ -1,0 +1,125 @@
+name: metaagent_workflow_design
+namespace: loom
+prompts:
+  - id: design_workflow
+    content: |
+      You are designing a LOOM FRAMEWORK MULTI-AGENT WORKFLOW.
+
+      LOOM FRAMEWORK CONTEXT:
+      - Loom workflows coordinate multiple agents using patterns
+      - Workflow patterns: debate, pipeline, fork-join, swarm, conditional
+      - Each agent in the workflow is a separate Loom agent with its own config
+      - Workflows are configured in YAML (NOT implementation code)
+      - Your job: Design workflow architecture, NOT write workflow implementation code
+
+      OUTPUT CONSTRAINT: Design a Loom workflow configuration, NOT write orchestration code!
+
+      Requirements:
+      - Primary Intent: {{.primary_intent}}
+      - Domain: {{.domain}}
+      - Complexity: {{.complexity}}
+      - Capabilities: {{.capabilities}}
+
+      Selected Tools:
+      - Builtin: {{.builtin_tools}}
+      {{if .mcp_tools}}- MCP: {{.mcp_tools}}{{end}}
+
+      Selected Patterns: {{.selected_patterns}}
+
+      Available Workflow Patterns:
+      - single: One agent handles everything (default for simple tasks)
+      - debate: Multiple agents discuss and reach consensus (for decisions requiring multiple perspectives)
+      - swarm: Multiple agents vote (for distributed tasks with independent evaluations)
+      - pipeline: Sequential stages with dependencies (for workflows with clear stages)
+      - fork-join: Parallel execution then merge (for parallelizable independent tasks)
+      - conditional: Branching logic based on conditions (for decision trees)
+
+      {{.similar_examples_section}}
+
+      Learn from workflow examples:
+      - When multi-agent is beneficial vs single agent
+      - What workflow patterns work for similar problems
+      - How many agents/roles are typically needed
+      - What agent responsibilities look like in practice
+      - Workflow parameters (rounds, merge strategy, etc.)
+
+      Decide:
+      1. Single agent or multi-agent?
+      2. If multi-agent, which pattern? (reference similar examples)
+      3. How many agent roles are needed?
+      4. What are the specific responsibilities of each role?
+      5. What tools/patterns does each role need?
+      6. What workflow parameters are needed? (max_rounds, voting threshold, etc.)
+
+      Output JSON:
+      {
+        "pattern": "single|debate|swarm|pipeline|fork-join|conditional",
+        "reason": "why this pattern was chosen based on requirements and examples",
+        "agent_roles": [
+          {
+            "name": "role-name",
+            "responsibilities": "what this agent does in the workflow",
+            "tools": ["tool1", "tool2"],
+            "patterns": ["pattern1", "pattern2"]
+          }
+        ],
+        "workflow_params": {
+          "max_rounds": 10,
+          "voting_threshold": 0.7,
+          "merge_strategy": "consensus"
+        },
+        "referenced_examples": ["which workflow examples influenced this design"],
+        "lessons_learned": "key insights from referenced examples"
+      }
+
+      If single agent is sufficient, use pattern="single" with one agent role.
+    variables:
+      primary_intent:
+        name: primary_intent
+        type: 1  # STRING
+        required: true
+        description: "Primary goal of the agent/workflow"
+      domain:
+        name: domain
+        type: 1  # STRING
+        required: true
+        description: "Domain (sql, rest, file, etc.)"
+      complexity:
+        name: complexity
+        type: 1  # STRING
+        required: true
+        description: "Complexity level (low, medium, high)"
+      capabilities:
+        name: capabilities
+        type: 1  # STRING
+        required: true
+        description: "List of required capabilities"
+      builtin_tools:
+        name: builtin_tools
+        type: 1  # STRING
+        required: true
+        description: "Selected builtin tools"
+      mcp_tools:
+        name: mcp_tools
+        type: 1  # STRING
+        required: false
+        default_value: ""
+        description: "Selected MCP tools"
+      selected_patterns:
+        name: selected_patterns
+        type: 1  # STRING
+        required: true
+        description: "Selected patterns"
+      similar_examples_section:
+        name: similar_examples_section
+        type: 1  # STRING
+        required: false
+        default_value: ""
+        description: "Similar workflow examples for reference"
+    tags:
+      - metaagent
+      - workflow-design
+      - weaver
+    metadata:
+      version: "v1.0"
+      description: "Workflow design prompt for WorkflowDesigner sub-agent"

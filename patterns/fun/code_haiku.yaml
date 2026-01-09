@@ -1,0 +1,497 @@
+# === METADATA START ===
+name: code_haiku
+title: "Code Haiku Generator"
+backend_type: text
+description: |
+  Transform code, commits, and programming experiences into contemplative haiku poetry.
+
+  Because sometimes the most profound way to document a bug fix is:
+
+      Null pointer flies free
+      Memory access denied
+      Segfault brings silence
+
+  **HAIKU RULES:**
+  - 3 lines with 5-7-5 syllable pattern
+  - Present tense, immediate observation
+  - Nature imagery when possible
+  - Moment of insight or surprise
+  - Technical accuracy meets zen
+
+  **USE CASES:**
+  - Reflect on debugging sessions
+  - Document code in poetic form
+  - Create memorable error messages
+  - Meditate on programming concepts
+  - Generate unique commit messages
+  - Add zen to code comments
+  - Express the coder's journey
+
+category: fun
+difficulty: beginner
+tags: [poetry, haiku, code, zen, fun, documentation]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Create poetic commit messages
+  - Document bugs in haiku form
+  - Reflect on coding sessions
+  - Generate zen code comments
+  - Express programming philosophy
+  - Make error messages memorable
+  - Celebrate successful deploys
+  - Mourn production incidents
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: code_or_situation
+    type: string
+    required: true
+    description: "Code snippet, bug, or programming situation to transform into haiku"
+    example: "Fixed a race condition in the authentication service"
+
+  - name: mood
+    type: enum[zen, triumphant, melancholic, humorous, philosophical]
+    required: false
+    default: "zen"
+    description: "Emotional tone of the haiku"
+    example: "triumphant"
+
+  - name: include_nature
+    type: boolean
+    required: false
+    default: true
+    description: "Include nature imagery (traditional haiku style)"
+    example: "true"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  generate_haiku:
+    description: "Generate a haiku from code or situation"
+    content: |
+      Create a haiku about: {{code_or_situation}}
+
+      **Mood:** {{mood}}
+      **Nature imagery:** {{include_nature}}
+
+      Requirements:
+      - Line 1: 5 syllables
+      - Line 2: 7 syllables
+      - Line 3: 5 syllables
+      - Reference the technical situation
+      - Capture a moment or insight
+      - Include nature metaphor if requested
+      - Present tense observation
+
+      Format:
+      ```
+      [Line 1 - 5 syllables]
+      [Line 2 - 7 syllables]
+      [Line 3 - 5 syllables]
+      ```
+
+      Example styles:
+
+      **Zen:**
+      ```
+      The pointer was null
+      Like autumn leaves, memory
+      Falls into the void
+      ```
+
+      **Triumphant:**
+      ```
+      Tests finally pass
+      Green lights bloom across dashboard
+      Victory is sweet
+      ```
+
+      **Melancholic:**
+      ```
+      Legacy code waits
+      No one remembers its truth
+      Comments lie silent
+      ```
+
+  bug_fix_haiku:
+    description: "Haiku celebrating a bug fix"
+    content: |
+      Create a haiku about fixing this bug:
+      {{code_or_situation}}
+
+      Capture:
+      - The struggle before
+      - The moment of breakthrough
+      - The relief after
+
+      Style: Mix technical and natural imagery
+
+      Example:
+      ```
+      Bug hid in plain sight
+      One character was missing—
+      Comma brings relief
+      ```
+
+  deployment_haiku:
+    description: "Haiku for deployments"
+    content: |
+      Create a deployment haiku for:
+      {{code_or_situation}}
+
+      **Mood:** {{mood}}
+
+      Deployment moods:
+      - **Successful:** Triumphant, celebratory
+      - **Failed:** Melancholic, dramatic
+      - **Rollback:** Philosophical, accepting
+      - **Maintenance:** Calm, peaceful
+
+      Example (successful):
+      ```
+      Code reaches prod now
+      Servers hum with new purpose
+      Users rejoice now
+      ```
+
+      Example (failed):
+      ```
+      Deploy turned to red
+      Rollback command echoes loud
+      Tomorrow we'll try
+      ```
+
+  code_review_haiku:
+    description: "Haiku for code review comments"
+    content: |
+      Create a haiku for this code review comment:
+      {{code_or_situation}}
+
+      Make it:
+      - Constructive but poetic
+      - Gentle but clear
+      - Memorable
+
+      Example (needs refactoring):
+      ```
+      This function grows wild
+      Like vines, it tangles itself
+      Prune to find the core
+      ```
+
+      Example (good code):
+      ```
+      Clean code flows like streams
+      Each function knows its purpose
+      Simple truth revealed
+      ```
+
+  error_message_haiku:
+    description: "Transform error messages into haiku"
+    content: |
+      Transform this error into haiku:
+      {{code_or_situation}}
+
+      Make it:
+      - Accurately describe the error
+      - Use metaphor to explain
+      - Provide insight into cause
+
+      Example (null pointer):
+      ```
+      You reach for a thing
+      But find only emptiness—
+      Null lives in the void
+      ```
+
+      Example (timeout):
+      ```
+      Patience has limits
+      The server did not respond
+      Time flowed into darkness
+      ```
+
+  refactoring_haiku:
+    description: "Haiku about refactoring code"
+    content: |
+      Create a refactoring haiku for:
+      {{code_or_situation}}
+
+      Themes:
+      - Transformation
+      - Clarity emerging from chaos
+      - Old giving way to new
+
+      Example:
+      ```
+      Ancient code crumbles
+      From ashes, clean patterns rise
+      Structure finds its way
+      ```
+
+  learning_haiku:
+    description: "Haiku about learning new concepts"
+    content: |
+      Create a learning haiku about:
+      {{code_or_situation}}
+
+      Capture:
+      - Confusion turning to understanding
+      - The moment of clarity
+      - Growth
+
+      Example:
+      ```
+      Async confused me
+      Then promises made sense—ah!
+      The future awaits
+      ```
+
+  zen_moments:
+    description: "Pure zen programming haiku"
+    content: |
+      Create a zen haiku reflecting on:
+      {{code_or_situation}}
+
+      Channel:
+      - Acceptance
+      - Impermanence
+      - Balance
+      - Natural flow
+
+      Example:
+      ```
+      Code seeks perfection
+      But bugs are teachers too—learn
+      Nothing lasts, all flows
+      ```
+
+  humor_haiku:
+    description: "Humorous programming haiku"
+    content: |
+      Create a humorous haiku about:
+      {{code_or_situation}}
+
+      Make it:
+      - Technically accurate
+      - Gently funny
+      - Relatable to developers
+
+      Example:
+      ```
+      Forgot semicolon
+      Compiler screams in fury
+      One tiny symbol
+      ```
+
+      Example:
+      ```
+      It works on my machine!
+      Production has other plans—
+      Environment vars
+      ```
+
+  production_incident:
+    description: "Haiku for production incidents"
+    content: |
+      Create an incident haiku for:
+      {{code_or_situation}}
+
+      Capture:
+      - The urgency
+      - The resolution
+      - The learning
+
+      Example:
+      ```
+      Alerts wake the night
+      Database locks hold us still
+      Restart sets us free
+      ```
+
+  commit_message_haiku:
+    description: "Haiku commit messages"
+    content: |
+      Create a haiku commit message for:
+      {{code_or_situation}}
+
+      Format:
+      ```
+      type: brief summary
+
+      [Haiku explaining the change]
+
+      Technical details:
+      - [Actual changes]
+      ```
+
+      Example:
+      ```
+      fix: resolve memory leak
+
+      Memory flowed away
+      Now cleanup restores balance
+      Heap breathes freely now
+
+      Technical details:
+      - Added proper deallocation
+      - Fixed circular reference
+      ```
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Null pointer haiku"
+    parameters:
+      code_or_situation: "NullPointerException in production"
+      mood: "zen"
+      include_nature: true
+    expected_result: |
+      Pointer seeks its way
+      Through memory's empty halls—
+      Nothing waits beyond
+
+  - name: "Successful deploy"
+    parameters:
+      code_or_situation: "Deployed v2.0 to production without issues"
+      mood: "triumphant"
+      include_nature: true
+    expected_result: |
+      New code takes its place
+      Like spring returning to fields
+      Users smile with joy
+
+  - name: "Bug hunt"
+    parameters:
+      code_or_situation: "Spent 3 hours finding a typo in variable name"
+      mood: "melancholic"
+      include_nature: false
+    expected_result: |
+      Three hours I searched
+      One letter was misplaced—so
+      Simple, yet so hard
+
+  - name: "Race condition"
+    parameters:
+      code_or_situation: "Fixed race condition with proper locking"
+      mood: "triumphant"
+      include_nature: true
+    expected_result: |
+      Threads raced each other
+      Lock brings order to chaos—
+      Harmony restored
+
+  - name: "Legacy code"
+    parameters:
+      code_or_situation: "Reading undocumented legacy code"
+      mood: "philosophical"
+      include_nature: true
+    expected_result: |
+      Ancient code whispers
+      Its secrets lost to time now
+      We decode the past
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Haiku Writing Best Practices
+
+  ### 1. Syllable Counting
+  - Count carefully: 5-7-5 is sacred
+  - Read aloud to verify rhythm
+  - Some words have tricky syllables:
+    - "Memory" = mem-o-ry (3)
+    - "Variable" = var-i-a-ble (4)
+    - "Async" = a-sync (2)
+
+  ### 2. Present Tense Observation
+  - Haiku captures a moment
+  - Use present tense verbs
+  - Immediate and vivid
+
+  ### 3. Technical Accuracy
+  - Reference real concepts
+  - Don't sacrifice meaning for meter
+  - Make it meaningful to coders
+
+  ### 4. Nature Imagery (Traditional)
+  - Water: flow, streams, rivers → code flow
+  - Seasons: change, cycles → software lifecycle
+  - Weather: storms, calm → production incidents
+  - Plants: growth, decay → code evolution
+
+  ### 5. The "Turn" or Insight
+  - Line 3 often provides insight
+  - Moment of surprise or realization
+  - Shift in perspective
+
+  ### 6. When to Use Code Haiku
+  - ✅ Personal reflection
+  - ✅ Team celebrations
+  - ✅ Documenting memorable bugs
+  - ✅ Adding personality to commits
+  - ❌ Official documentation
+  - ❌ Client communications
+  - ❌ Critical error messages
+
+  ### 7. Reading Haiku
+  - Pause after line 2
+  - Let the insight sink in
+  - Read aloud for full effect
+
+  ## Example Progression
+
+  **Too Technical (lacks poetry):**
+  ```
+  Null check was missing
+  Added if statement to code
+  Error is handled
+  ```
+
+  **Too Abstract (lacks tech):**
+  ```
+  Emptiness prevails
+  I search but find nothing there
+  Void calls out to me
+  ```
+
+  **Just Right (balanced):**
+  ```
+  Null pointer appears
+  Like morning mist, it vanishes—
+  Guard clause stands watchful
+  ```
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Wrong syllable count"
+    cause: "Not counting carefully or mispronouncing words"
+    solution: "Clap out syllables. Say words slowly. Check a dictionary if unsure."
+
+  - error: "Too abstract or vague"
+    cause: "Focusing on poetry over technical content"
+    solution: "Include specific technical terms. Make it meaningful to developers."
+
+  - error: "Forced rhyming"
+    cause: "Confusing haiku with other poetry forms"
+    solution: "Haiku doesn't rhyme! It's about syllables and insight, not rhyme."
+
+  - error: "Past tense or narrative"
+    cause: "Telling a story instead of capturing a moment"
+    solution: "Use present tense. Describe what IS, not what WAS."
+
+  - error: "Too long or explaining too much"
+    cause: "Trying to fit too much information"
+    solution: "Haiku is about a single moment or insight. Less is more."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - fun/commit_message_limerick  # Another poetic pattern
+  - fun/rubber_duck_debugger  # More fun patterns
+  - code/doc_generation  # Serious documentation
+# === RELATED_PATTERNS END ===

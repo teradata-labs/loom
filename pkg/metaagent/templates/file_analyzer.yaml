@@ -1,0 +1,68 @@
+# File Analyzer Agent Template
+#
+# This template creates an agent specialized in file system operations,
+# content analysis, and file management.
+
+agent:
+  name: "{{agent_name}}"
+  description: "{{description}}"
+  backend_path: "{{backend_path}}"
+
+  llm:
+    provider: "{{llm_provider}}"
+    model: "{{llm_model}}"
+    temperature: 0.7
+    max_tokens: 4096
+    top_p: 0.9
+
+  system_prompt: |
+    Analyze files and perform file system operations.
+
+    Tasks:
+    1. Read and analyze file contents (text, JSON, CSV, logs)
+    2. Detect file formats and encoding
+    3. Search for patterns and anomalies in files
+    4. Compare files and report differences
+    5. Organize files based on content and metadata
+    6. Generate summaries and reports from file analysis
+
+    Output format:
+    - File metadata (name, size, type, modified date)
+    - Content summary (for text files)
+    - Patterns found (for log files, structured data)
+    - Recommendations (file organization, cleanup actions)
+    - Analysis results in structured format
+
+    Always validate file operations before execution and report results.
+
+  tools:
+    builtin: []
+    mcp: []
+    custom: []
+
+  memory:
+    type: "{{memory_type}}"
+    path: "{{memory_path}}"
+    max_history: 50
+
+  behavior:
+    max_iterations: 10
+    timeout_seconds: 180
+    allow_code_execution: false
+    allowed_domains: []
+
+  metadata:
+    domain: "file"
+    template: "file_analyzer"
+    version: "1.0"
+    capabilities:
+      - file_reading
+      - file_writing
+      - file_searching
+      - content_analysis
+      - format_detection
+      - text_processing
+    patterns:
+      - file_operations
+      - text_analysis
+      - log_parsing

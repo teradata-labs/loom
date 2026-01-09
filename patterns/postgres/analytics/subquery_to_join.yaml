@@ -1,0 +1,534 @@
+# === METADATA START ===
+name: subquery_to_join
+title: "Subquery to JOIN Conversion"
+description: "Converts correlated subqueries to JOINs for dramatically better performance by eliminating repeated subquery execution"
+category: analytics
+difficulty: intermediate
+backend_type: postgres
+priority: 80
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - "Eliminate correlated subqueries"
+  - "Speed up existence checks (EXISTS/IN)"
+  - "Optimize nested SELECT statements"
+  - "Convert scalar subqueries to aggregated JOINs"
+  - "Improve queries with multiple subqueries"
+  - "Replace WHERE subqueries with JOINS"
+  - "Achieve 10-100x performance improvement"
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: main_table
+    type: string
+    required: true
+    description: "Main table in query"
+    example: "users"
+
+  - name: subquery_table
+    type: string
+    required: true
+    description: "Table in subquery"
+    example: "orders"
+
+  - name: join_column
+    type: string
+    required: true
+    description: "Column to join on"
+    example: "user_id"
+
+  - name: schema_name
+    type: string
+    required: false
+    description: "Schema name (defaults to public)"
+    default: "public"
+    example: "public"
+
+  - name: original_query
+    type: string
+    required: false
+    description: "Complete query with subqueries"
+    example: "SELECT u.*, (SELECT COUNT(*) FROM orders WHERE user_id = u.id) FROM users u"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  scalar_subquery_to_join: |
+    -- Convert scalar subqueries in SELECT to JOIN with GROUP BY
+
+    -- PROBLEM: Subquery runs once per row (N times!)
+    SELECT
+      u.id,
+      u.name,
+      (SELECT COUNT(*) FROM {{.subquery_table}} WHERE {{.join_column}} = u.id) AS order_count,
+      (SELECT SUM(total) FROM {{.subquery_table}} WHERE {{.join_column}} = u.id) AS total_spent
+    FROM {{.schema_name}}.{{.main_table}} u;
+
+    -- SOLUTION: JOIN once with GROUP BY
+    SELECT
+      u.id,
+      u.name,
+      COUNT(o.id) AS order_count,
+      COALESCE(SUM(o.total), 0) AS total_spent
+    FROM {{.schema_name}}.{{.main_table}} u
+    LEFT JOIN {{.schema_name}}.{{.subquery_table}} o ON o.{{.join_column}} = u.id
+    GROUP BY u.id, u.name;
+
+    -- Performance:
+    -- Before: N subquery executions (100K users = 200K subqueries!)
+    -- After:  Single JOIN + GROUP BY
+    -- Speedup: 10-100x depending on table size
+
+  exists_subquery_to_join: |
+    -- Convert EXISTS subquery to INNER JOIN or semi-join
+
+    -- PROBLEM: EXISTS may execute subquery per row
+    SELECT *
+    FROM {{.schema_name}}.{{.main_table}} m
+    WHERE EXISTS (
+      SELECT 1
+      FROM {{.schema_name}}.{{.subquery_table}} s
+      WHERE s.{{.join_column}} = m.id
+        AND s.status = 'active'
+    );
+
+    -- SOLUTION 1: INNER JOIN (simpler, usually faster)
+    SELECT DISTINCT m.*
+    FROM {{.schema_name}}.{{.main_table}} m
+    INNER JOIN {{.schema_name}}.{{.subquery_table}} s
+      ON s.{{.join_column}} = m.id
+    WHERE s.status = 'active';
+
+    -- SOLUTION 2: Semi-join using IN (Postgres optimizes this well)
+    SELECT m.*
+    FROM {{.schema_name}}.{{.main_table}} m
+    WHERE m.id IN (
+      SELECT {{.join_column}}
+      FROM {{.schema_name}}.{{.subquery_table}}
+      WHERE status = 'active'
+    );
+
+    -- Note: Postgres often optimizes EXISTS well, but explicit JOIN
+    -- gives you more control and is clearer for complex conditions
+
+  not_exists_to_left_join: |
+    -- Convert NOT EXISTS to LEFT JOIN with NULL check
+
+    -- PROBLEM: NOT EXISTS subquery for anti-join
+    SELECT *
+    FROM {{.schema_name}}.{{.main_table}} m
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM {{.schema_name}}.{{.subquery_table}} s
+      WHERE s.{{.join_column}} = m.id
+    );
+
+    -- SOLUTION: LEFT JOIN with NULL check (anti-join)
+    SELECT m.*
+    FROM {{.schema_name}}.{{.main_table}} m
+    LEFT JOIN {{.schema_name}}.{{.subquery_table}} s
+      ON s.{{.join_column}} = m.id
+    WHERE s.id IS NULL;
+
+    -- This is often faster and more explicit than NOT EXISTS
+
+  aggregate_subquery_to_join: |
+    -- Convert subqueries with aggregates in WHERE to JOIN
+
+    -- PROBLEM: Aggregate subquery in WHERE
+    SELECT *
+    FROM {{.schema_name}}.{{.main_table}} m
+    WHERE (
+      SELECT COUNT(*)
+      FROM {{.schema_name}}.{{.subquery_table}} s
+      WHERE s.{{.join_column}} = m.id
+    ) > 5;
+
+    -- SOLUTION: JOIN with HAVING
+    SELECT m.*
+    FROM {{.schema_name}}.{{.main_table}} m
+    INNER JOIN {{.schema_name}}.{{.subquery_table}} s
+      ON s.{{.join_column}} = m.id
+    GROUP BY m.id, m.name  -- Include all m.* columns needed
+    HAVING COUNT(s.id) > 5;
+
+    -- Or use window function approach:
+    WITH counts AS (
+      SELECT
+        m.*,
+        COUNT(s.id) OVER (PARTITION BY m.id) AS order_count
+      FROM {{.schema_name}}.{{.main_table}} m
+      LEFT JOIN {{.schema_name}}.{{.subquery_table}} s ON s.{{.join_column}} = m.id
+    )
+    SELECT DISTINCT *
+    FROM counts
+    WHERE order_count > 5;
+
+  multiple_subqueries_to_joins: |
+    -- Convert multiple subqueries to multiple JOINs
+
+    -- PROBLEM: Multiple scalar subqueries (expensive!)
+    SELECT
+      u.id,
+      u.name,
+      (SELECT COUNT(*) FROM orders WHERE user_id = u.id) AS order_count,
+      (SELECT COUNT(*) FROM reviews WHERE user_id = u.id) AS review_count,
+      (SELECT MAX(created_at) FROM orders WHERE user_id = u.id) AS last_order_date
+    FROM {{.schema_name}}.{{.main_table}} u;
+
+    -- SOLUTION: Multiple LEFT JOINs with GROUP BY
+    SELECT
+      u.id,
+      u.name,
+      COUNT(DISTINCT o.id) AS order_count,
+      COUNT(DISTINCT r.id) AS review_count,
+      MAX(o.created_at) AS last_order_date
+    FROM {{.schema_name}}.{{.main_table}} u
+    LEFT JOIN orders o ON o.user_id = u.id
+    LEFT JOIN reviews r ON r.user_id = u.id
+    GROUP BY u.id, u.name;
+
+    -- Critical: Use COUNT(DISTINCT) when joining multiple tables
+    -- Otherwise, cartesian product inflates counts
+
+  analysis: |
+    -- Analyze query with subqueries
+    -- Original: {{.original_query}}
+
+    -- Step 1: Identify subquery types
+    -- Run EXPLAIN to see SubPlan nodes
+
+    EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
+    {{.original_query}};
+
+    -- Look for:
+    -- - "SubPlan" nodes (correlated subqueries - BAD!)
+    -- - "InitPlan" nodes (uncorrelated subqueries - better but can improve)
+    -- - High execution time on SubPlan nodes
+    -- - "rows=1 loops=N" where N is large (subquery runs N times)
+
+    -- Step 2: Check table sizes
+    SELECT
+      '{{.main_table}}' AS table_name,
+      n_live_tup AS row_count,
+      pg_size_pretty(pg_total_relation_size('{{.schema_name}}.{{.main_table}}')) AS size
+    FROM pg_stat_user_tables
+    WHERE tablename = '{{.main_table}}'
+    UNION ALL
+    SELECT
+      '{{.subquery_table}}' AS table_name,
+      n_live_tup AS row_count,
+      pg_size_pretty(pg_total_relation_size('{{.schema_name}}.{{.subquery_table}}')) AS size
+    FROM pg_stat_user_tables
+    WHERE tablename = '{{.subquery_table}}';
+
+    -- Large main table + subquery = major performance problem
+
+  verification: |
+    -- Verify JOIN conversion produces same results
+
+    -- Step 1: Compare row counts
+    WITH original AS (
+      {{.original_query}}
+    ),
+    rewritten AS (
+      {{.rewritten_query}}
+    )
+    SELECT
+      (SELECT COUNT(*) FROM original) AS original_count,
+      (SELECT COUNT(*) FROM rewritten) AS rewritten_count;
+
+    -- Must match exactly!
+
+    -- Step 2: Check for differences
+    -- Original EXCEPT Rewritten (should be empty)
+    ({{.original_query}})
+    EXCEPT
+    ({{.rewritten_query}});
+
+    -- Rewritten EXCEPT Original (should be empty)
+    ({{.rewritten_query}})
+    EXCEPT
+    ({{.original_query}});
+
+    -- Step 3: Compare performance
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{.original_query}};
+
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{.rewritten_query}};
+
+    -- Expected improvements:
+    -- - No SubPlan nodes in rewritten query
+    -- - Execution time reduced 10-100x
+    -- - Buffer usage reduced
+    -- - Simpler query plan
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Scalar subquery in SELECT (COUNT)"
+    parameters:
+      main_table: "users"
+      subquery_table: "orders"
+      join_column: "user_id"
+      schema_name: "public"
+      original_query: "SELECT u.id, u.name, (SELECT COUNT(*) FROM orders WHERE user_id = u.id) AS order_count FROM users u"
+    expected_result: |
+      Original query:
+      - Subquery runs 100,000 times (once per user)
+      - Execution time: 8,500ms
+
+      Rewritten with JOIN:
+      SELECT u.id, u.name, COUNT(o.id) AS order_count
+      FROM users u
+      LEFT JOIN orders o ON o.user_id = u.id
+      GROUP BY u.id, u.name;
+
+      Performance improvement:
+      - Execution time: 250ms (34x faster)
+      - Single JOIN + GROUP BY operation
+      - No SubPlan nodes
+
+  - name: "Multiple scalar subqueries"
+    parameters:
+      main_table: "products"
+      subquery_table: "reviews"
+      join_column: "product_id"
+      original_query: "SELECT p.*, (SELECT AVG(rating) FROM reviews WHERE product_id = p.id) AS avg_rating, (SELECT COUNT(*) FROM reviews WHERE product_id = p.id) AS review_count FROM products p"
+    expected_result: |
+      Original query:
+      - Two subqueries per product (50,000 × 2 = 100,000 subqueries)
+      - Execution time: 12,000ms
+
+      Rewritten with single JOIN:
+      SELECT
+        p.*,
+        AVG(r.rating) AS avg_rating,
+        COUNT(r.id) AS review_count
+      FROM products p
+      LEFT JOIN reviews r ON r.product_id = p.id
+      GROUP BY p.id;
+
+      Performance improvement:
+      - Execution time: 450ms (27x faster)
+      - Single JOIN handles both aggregates
+      - Much simpler query plan
+
+  - name: "EXISTS subquery"
+    parameters:
+      main_table: "users"
+      subquery_table: "orders"
+      join_column: "user_id"
+      original_query: "SELECT * FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.status = 'completed')"
+    expected_result: |
+      Original query with EXISTS:
+      - May execute subquery per user
+      - Execution time: 850ms
+
+      Rewritten with INNER JOIN:
+      SELECT DISTINCT u.*
+      FROM users u
+      INNER JOIN orders o ON o.user_id = u.id
+      WHERE o.status = 'completed';
+
+      Performance improvement:
+      - Execution time: 180ms (4.7x faster)
+      - More explicit semi-join
+      - Better for complex WHERE conditions
+
+  - name: "NOT EXISTS to LEFT JOIN"
+    parameters:
+      main_table: "users"
+      subquery_table: "orders"
+      join_column: "user_id"
+      original_query: "SELECT * FROM users u WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)"
+    expected_result: |
+      Original query (find users without orders):
+      - NOT EXISTS anti-join
+      - Execution time: 1,200ms
+
+      Rewritten with LEFT JOIN:
+      SELECT u.*
+      FROM users u
+      LEFT JOIN orders o ON o.user_id = u.id
+      WHERE o.id IS NULL;
+
+      Performance improvement:
+      - Execution time: 320ms (3.75x faster)
+      - More explicit anti-join pattern
+      - Easier to understand and maintain
+
+  - name: "Aggregate subquery in WHERE"
+    parameters:
+      main_table: "customers"
+      subquery_table: "orders"
+      join_column: "customer_id"
+      original_query: "SELECT * FROM customers c WHERE (SELECT SUM(total) FROM orders WHERE customer_id = c.id) > 10000"
+    expected_result: |
+      Original query (high-value customers):
+      - Aggregate subquery per customer
+      - Execution time: 5,500ms
+
+      Rewritten with JOIN + HAVING:
+      SELECT c.*
+      FROM customers c
+      INNER JOIN orders o ON o.customer_id = c.id
+      GROUP BY c.id
+      HAVING SUM(o.total) > 10000;
+
+      Performance improvement:
+      - Execution time: 650ms (8.5x faster)
+      - Single aggregation pass
+      - Can add more aggregates easily
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Subquery to JOIN Conversion Best Practices
+
+  ### 1. Identify Correlated Subqueries
+  Correlated subqueries reference outer query columns:
+  ```sql
+  -- Correlated (BAD for large tables)
+  SELECT u.name,
+    (SELECT COUNT(*) FROM orders WHERE user_id = u.id)
+  FROM users u;
+  ```
+
+  Check EXPLAIN for "SubPlan" nodes with high loop counts.
+
+  ### 2. Scalar Subqueries → LEFT JOIN + GROUP BY
+  ```sql
+  -- Bad: N subquery executions
+  SELECT u.*, (SELECT COUNT(*) FROM orders WHERE user_id = u.id)
+  FROM users u;
+
+  -- Good: Single JOIN
+  SELECT u.*, COUNT(o.id) AS order_count
+  FROM users u
+  LEFT JOIN orders o ON o.user_id = u.id
+  GROUP BY u.id;
+  ```
+
+  Use LEFT JOIN to preserve users with no orders (COUNT = 0).
+
+  ### 3. EXISTS → INNER JOIN
+  ```sql
+  -- Exists
+  WHERE EXISTS (SELECT 1 FROM orders WHERE user_id = users.id)
+
+  -- Convert to
+  INNER JOIN orders ON orders.user_id = users.id
+  -- Add DISTINCT if one-to-many relationship creates duplicates
+  ```
+
+  ### 4. NOT EXISTS → LEFT JOIN with NULL Check
+  ```sql
+  -- Not exists
+  WHERE NOT EXISTS (SELECT 1 FROM orders WHERE user_id = users.id)
+
+  -- Convert to
+  LEFT JOIN orders ON orders.user_id = users.id
+  WHERE orders.id IS NULL
+  ```
+
+  This is the standard anti-join pattern.
+
+  ### 5. IN Subquery → INNER JOIN or Semi-Join
+  ```sql
+  -- IN subquery
+  WHERE user_id IN (SELECT id FROM active_users)
+
+  -- Option 1: Keep as-is (Postgres optimizes IN well)
+  -- Option 2: Convert to EXISTS
+  WHERE EXISTS (SELECT 1 FROM active_users WHERE id = users.user_id)
+
+  -- Option 3: Explicit INNER JOIN
+  INNER JOIN active_users ON active_users.id = users.user_id
+  ```
+
+  ### 6. Multiple Subqueries → Multiple JOINs
+  When converting multiple subqueries, use COUNT(DISTINCT):
+  ```sql
+  SELECT
+    u.*,
+    COUNT(DISTINCT o.id) AS order_count,  -- DISTINCT prevents inflation
+    COUNT(DISTINCT r.id) AS review_count
+  FROM users u
+  LEFT JOIN orders o ON o.user_id = u.id
+  LEFT JOIN reviews r ON r.user_id = u.id
+  GROUP BY u.id;
+  ```
+
+  Without DISTINCT, cartesian product inflates counts.
+
+  ### 7. Aggregate Subqueries in WHERE → HAVING
+  ```sql
+  -- Bad
+  WHERE (SELECT COUNT(*) FROM orders WHERE user_id = users.id) > 5
+
+  -- Good
+  INNER JOIN orders ON orders.user_id = users.id
+  GROUP BY users.id
+  HAVING COUNT(orders.id) > 5
+  ```
+
+  ### 8. When to Keep Subqueries
+  Keep subqueries when:
+  - Query is simple and rarely run
+  - Table is small (< 1,000 rows)
+  - Subquery is uncorrelated (doesn't reference outer query)
+  - Using EXISTS with good index support
+
+  ### 9. Verify Results Match
+  Always test conversion:
+  ```sql
+  -- Check counts match
+  SELECT COUNT(*) FROM (original_query);
+  SELECT COUNT(*) FROM (rewritten_query);
+
+  -- Find differences
+  (original_query) EXCEPT (rewritten_query);
+  ```
+
+  ### 10. Watch for One-to-Many Joins
+  When converting to JOIN, beware of duplicates:
+  ```sql
+  -- If user has 3 orders, INNER JOIN creates 3 rows
+  SELECT u.name
+  FROM users u
+  INNER JOIN orders o ON o.user_id = u.id;
+
+  -- Need DISTINCT to match original EXISTS behavior
+  SELECT DISTINCT u.name
+  FROM users u
+  INNER JOIN orders o ON o.user_id = u.id;
+  ```
+
+  ### 11. Memory Layers for Subquery Optimization
+  - **Kernel Layer**: Cache table schemas, foreign keys, and index definitions for join planning
+  - **L1 Cache**: Keep recent query plans (last 8-10) showing SubPlan execution costs and JOIN alternatives
+  - **L2 Compressed**: Archive successful subquery-to-join conversions and performance metrics
+  - **Swap Layer**: Store complete optimization history across sessions; use recall_conversation to reference similar conversion patterns from earlier projects
+  This enables quickly identifying subquery patterns and applying proven conversion strategies.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - query_rewrite
+  - join_optimization
+  - distinct_elimination
+  - missing_index_analysis
+# === RELATED_PATTERNS END ===
+
+validation:
+  rules:
+    - "Verify JOIN produces same results (use EXCEPT)"
+    - "Check for foreign key or index on join column"
+    - "Measure query time improvement (aim for 5x+)"
+    - "Ensure no SubPlan nodes in rewritten query"
+    - "Test with production data volumes"
+    - "Watch for duplicate rows from one-to-many joins"

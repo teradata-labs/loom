@@ -1,0 +1,116 @@
+# === METADATA START ===
+name: chart_interpretation
+title: "Extract Data from Charts and Graphs"
+description: |
+  Parse dashboard screenshots, charts, and graphs to extract underlying data and insights.
+  Requires Claude 3+ with vision capabilities. Useful for analyzing reports, dashboards,
+  and visualizations when source data is not available.
+
+  **REQUIRES**: Claude 3 Opus, Sonnet, or Haiku with vision API access
+
+category: analysis
+difficulty: intermediate
+backend_type: vision
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Dashboard screenshot analysis
+  - Extract metrics from charts
+  - Analyze trend visualizations
+  - Compare multiple charts
+  - Report data extraction
+  - QA dashboard testing
+  - Competitive analysis from screenshots
+  - Historical chart analysis
+  - Performance metric extraction
+  - Visual data validation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: image_url_or_base64
+    type: string
+    required: true
+    description: "URL or base64-encoded image of chart"
+    example: "https://example.com/chart.png"
+
+  - name: analysis_type
+    type: enum[extract_data, identify_trends, compare_values, describe]
+    required: false
+    default: "describe"
+    description: "Type of analysis to perform"
+    example: "extract_data"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  extract_data:
+    description: "Extract data points from chart"
+    content: |
+      Analyze this chart and extract the underlying data:
+      [Image: {{image_url_or_base64}}]
+
+      Return JSON:
+      {
+        "chart_type": "bar|line|pie|scatter",
+        "title": "chart title",
+        "axes": {"x": "label", "y": "label"},
+        "data_points": [
+          {"label": "...", "value": number}
+        ],
+        "insights": "key observations"
+      }
+    required_parameters:
+      - image_url_or_base64
+
+  identify_trends:
+    description: "Identify trends and patterns"
+    content: |
+      Analyze this chart for trends:
+      [Image: {{image_url_or_base64}}]
+
+      Identify:
+      - Overall trend (increasing, decreasing, stable)
+      - Significant changes or inflection points
+      - Outliers or anomalies
+      - Seasonal patterns (if visible)
+      - Confidence level in observations
+    required_parameters:
+      - image_url_or_base64
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Sales Dashboard Analysis"
+    parameters:
+      image_url_or_base64: "[base64_encoded_dashboard]"
+      analysis_type: "extract_data"
+    expected_result: |
+      {
+        "chart_type": "line",
+        "title": "Monthly Sales 2024",
+        "axes": {"x": "Month", "y": "Revenue ($)"},
+        "data_points": [
+          {"label": "Jan", "value": 45000},
+          {"label": "Feb", "value": 52000},
+          {"label": "Mar", "value": 48000}
+        ],
+        "insights": "Revenue trending upward with 15% growth Feb-Mar"
+      }
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Chart Interpretation Best Practices
+
+  1. **Image Quality**: Higher resolution = better accuracy
+  2. **Chart Type**: Simple charts (bar, line) work best
+  3. **Validation**: Cross-check extracted values
+  4. **Confidence**: Note when values are approximate
+  5. **Context**: Provide chart context for better interpretation
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - form_extraction
+  - document_analysis

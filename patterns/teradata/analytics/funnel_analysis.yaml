@@ -1,0 +1,478 @@
+# === METADATA START ===
+name: funnel_analysis
+title: "Funnel Analysis"
+description: |
+  Analyze conversion funnels to understand drop-off rates between sequential steps.
+  Funnel analysis tracks how users progress through defined stages and identifies
+  where users abandon the process, enabling optimization of conversion rates.
+
+  Common funnels:
+  - E-commerce: Visit → View Product → Add to Cart → Purchase
+  - SaaS: Visit → Signup → Activate → Subscribe
+  - Content: Land → Read → Subscribe → Share
+
+category: analytics
+difficulty: beginner
+teradata_function: SQL_WINDOW_FUNCTIONS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: E-commerce Checkout ---
+  - E-commerce checkout optimization
+
+  # --- Use Case 2: User Onboarding ---
+  - User onboarding flow analysis
+
+  # --- Use Case 3: Lead Qualification ---
+  - Lead qualification funnel
+
+  # --- Use Case 4: Content Engagement ---
+  - Content engagement funnel
+
+  # --- Use Case 5: App Feature Adoption ---
+  - App feature adoption funnel
+
+  # --- Use Case 6: Sales Pipeline ---
+  - Sales pipeline progression
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing event data"
+    example: "product_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Must contain event tracking data with user IDs and timestamps
+    required: true
+    description: "Table with user events"
+    example: "user_events"
+
+  # --- Parameter 3: User Column ---
+  - name: user_column
+    type: string
+    # LLM-HINT: Unique identifier for tracking user progression through funnel steps
+    required: true
+    description: "Column identifying unique users"
+    example: "user_id"
+
+  # --- Parameter 4: Event Column ---
+  - name: event_column
+    type: string
+    # LLM-HINT: Contains event type values matching funnel_steps array values
+    required: true
+    description: "Column containing event names/types"
+    example: "event_name"
+
+  # --- Parameter 5: Timestamp Column ---
+  - name: timestamp_column
+    type: string
+    # LLM-HINT: Used for ordering events chronologically and calculating time windows
+    required: true
+    description: "Timestamp column for event ordering"
+    example: "event_timestamp"
+
+  # --- Parameter 6: Funnel Steps ---
+  - name: funnel_steps
+    type: array[string]
+    # LLM-HINT: Sequential event names defining funnel stages (e.g., view → cart → purchase)
+    required: true
+    description: "Ordered list of funnel steps (event names in sequence)"
+    example: '["page_view", "add_to_cart", "checkout", "purchase"]'
+
+  # --- Parameter 7: Time Window Hours ---
+  - name: time_window_hours
+    type: integer
+    # LLM-HINT: Maximum time between first and last step; shorter for e-commerce (24h), longer for B2B (30-90 days)
+    required: false
+    default: "24"
+    description: "Maximum time allowed between funnel steps (in hours)"
+    example: "24"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_FUNNEL TEMPLATE ===
+  # LLM-HINT: Start with this template; calculates conversion rates at each funnel step
+  basic_funnel:
+    description: "Calculate conversion rates between funnel steps"
+    sql: |
+      -- Basic funnel analysis with step-by-step conversion rates
+      WITH step_users AS (
+        -- Step 1: {{funnel_steps.0}}
+        SELECT DISTINCT {{user_column}} as user_id, 1 as step_number, '{{funnel_steps.0}}' as step_name
+        FROM {{database}}.{{table}}
+        WHERE {{event_column}} = '{{funnel_steps.0}}'
+          AND {{timestamp_column}} >= CURRENT_DATE - 30
+
+        UNION ALL
+
+        -- Step 2: {{funnel_steps.1}}
+        SELECT DISTINCT {{user_column}}, 2, '{{funnel_steps.1}}'
+        FROM {{database}}.{{table}}
+        WHERE {{event_column}} = '{{funnel_steps.1}}'
+          AND {{timestamp_column}} >= CURRENT_DATE - 30
+
+        UNION ALL
+
+        -- Step 3: {{funnel_steps.2}}
+        SELECT DISTINCT {{user_column}}, 3, '{{funnel_steps.2}}'
+        FROM {{database}}.{{table}}
+        WHERE {{event_column}} = '{{funnel_steps.2}}'
+          AND {{timestamp_column}} >= CURRENT_DATE - 30
+
+        -- Add more steps as needed
+      )
+      SELECT
+        step_number,
+        step_name,
+        COUNT(DISTINCT user_id) as users_at_step,
+        CAST(COUNT(DISTINCT user_id) * 100.0 /
+          FIRST_VALUE(COUNT(DISTINCT user_id)) OVER (ORDER BY step_number) AS DECIMAL(5,2))
+          as pct_of_initial,
+        LAG(COUNT(DISTINCT user_id)) OVER (ORDER BY step_number) as previous_step_users,
+        CAST(COUNT(DISTINCT user_id) * 100.0 /
+          LAG(COUNT(DISTINCT user_id)) OVER (ORDER BY step_number) AS DECIMAL(5,2))
+          as step_conversion_rate
+      FROM step_users
+      GROUP BY step_number, step_name
+      ORDER BY step_number;
+    required_parameters:
+      - database
+      - table
+      - user_column
+      - event_column
+      - timestamp_column
+      - funnel_steps
+
+  # === TIME_CONSTRAINED_FUNNEL TEMPLATE ===
+  # LLM-HINT: Use when time windows matter; enforces completion within time_window_hours
+  time_constrained_funnel:
+    description: "Funnel with time constraints between steps"
+    sql: |
+      -- Funnel analysis with time window constraint
+      -- Users must complete all steps within time_window_hours
+      WITH user_events AS (
+        SELECT
+          {{user_column}},
+          {{event_column}},
+          {{timestamp_column}},
+          MIN(CASE WHEN {{event_column}} = '{{funnel_steps.0}}' THEN {{timestamp_column}} END)
+            OVER (PARTITION BY {{user_column}}) as step1_time
+        FROM {{database}}.{{table}}
+        WHERE {{timestamp_column}} >= CURRENT_DATE - 30
+      ),
+      completed_steps AS (
+        SELECT
+          {{user_column}},
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.0}}' THEN 1 ELSE 0 END) as completed_step1,
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.1}}'
+                    AND {{timestamp_column}} <= step1_time + INTERVAL '{{time_window_hours}}' HOUR
+               THEN 1 ELSE 0 END) as completed_step2,
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.2}}'
+                    AND {{timestamp_column}} <= step1_time + INTERVAL '{{time_window_hours}}' HOUR
+               THEN 1 ELSE 0 END) as completed_step3
+        FROM user_events
+        WHERE step1_time IS NOT NULL
+        GROUP BY {{user_column}}
+      )
+      SELECT
+        'Step 1: {{funnel_steps.0}}' as step,
+        SUM(completed_step1) as users,
+        CAST(100.0 AS DECIMAL(5,2)) as pct_of_initial
+      FROM completed_steps
+      UNION ALL
+      SELECT
+        'Step 2: {{funnel_steps.1}}',
+        SUM(completed_step2),
+        CAST(SUM(completed_step2) * 100.0 / SUM(completed_step1) AS DECIMAL(5,2))
+      FROM completed_steps
+      UNION ALL
+      SELECT
+        'Step 3: {{funnel_steps.2}}',
+        SUM(completed_step3),
+        CAST(SUM(completed_step3) * 100.0 / SUM(completed_step1) AS DECIMAL(5,2))
+      FROM completed_steps;
+    required_parameters:
+      - database
+      - table
+      - user_column
+      - event_column
+      - timestamp_column
+      - funnel_steps
+      - time_window_hours
+
+  # === DROP_OFF_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Identifies user segments by where they abandoned the funnel
+  drop_off_analysis:
+    description: "Identify where users drop off and why"
+    sql: |
+      -- Detailed drop-off analysis between funnel steps
+      WITH user_progression AS (
+        SELECT
+          {{user_column}},
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.0}}' THEN 1 ELSE 0 END) as reached_step1,
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.1}}' THEN 1 ELSE 0 END) as reached_step2,
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.2}}' THEN 1 ELSE 0 END) as reached_step3,
+          MAX(CASE WHEN {{event_column}} = '{{funnel_steps.3}}' THEN 1 ELSE 0 END) as reached_step4
+        FROM {{database}}.{{table}}
+        WHERE {{timestamp_column}} >= CURRENT_DATE - 30
+        GROUP BY {{user_column}}
+      )
+      SELECT
+        CASE
+          WHEN reached_step4 = 1 THEN 'Completed All Steps'
+          WHEN reached_step3 = 1 THEN 'Dropped at Step 4'
+          WHEN reached_step2 = 1 THEN 'Dropped at Step 3'
+          WHEN reached_step1 = 1 THEN 'Dropped at Step 2'
+          ELSE 'Never Entered Funnel'
+        END as user_segment,
+        COUNT(*) as user_count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as pct_of_total
+      FROM user_progression
+      GROUP BY
+        CASE
+          WHEN reached_step4 = 1 THEN 'Completed All Steps'
+          WHEN reached_step3 = 1 THEN 'Dropped at Step 4'
+          WHEN reached_step2 = 1 THEN 'Dropped at Step 3'
+          WHEN reached_step1 = 1 THEN 'Dropped at Step 2'
+          ELSE 'Never Entered Funnel'
+        END
+      ORDER BY user_count DESC;
+    required_parameters:
+      - database
+      - table
+      - user_column
+      - event_column
+      - timestamp_column
+      - funnel_steps
+
+  # === COHORT_FUNNEL TEMPLATE ===
+  # LLM-HINT: Compares funnels across cohorts (e.g., signup week, traffic source); reveals segment differences
+  cohort_funnel:
+    description: "Compare funnel performance across cohorts (e.g., by signup date or traffic source)"
+    sql: |
+      -- Funnel analysis segmented by cohort
+      WITH user_cohorts AS (
+        SELECT
+          {{user_column}},
+          {{cohort_column}},
+          DATE_TRUNC('week', MIN({{timestamp_column}})) as cohort_week
+        FROM {{database}}.{{table}}
+        GROUP BY {{user_column}}, {{cohort_column}}
+      ),
+      funnel_progression AS (
+        SELECT
+          c.cohort_week,
+          c.{{cohort_column}},
+          SUM(CASE WHEN e.{{event_column}} = '{{funnel_steps.0}}' THEN 1 ELSE 0 END) as step1_users,
+          SUM(CASE WHEN e.{{event_column}} = '{{funnel_steps.1}}' THEN 1 ELSE 0 END) as step2_users,
+          SUM(CASE WHEN e.{{event_column}} = '{{funnel_steps.2}}' THEN 1 ELSE 0 END) as step3_users
+        FROM user_cohorts c
+        LEFT JOIN {{database}}.{{table}} e ON c.{{user_column}} = e.{{user_column}}
+        GROUP BY c.cohort_week, c.{{cohort_column}}
+      )
+      SELECT
+        cohort_week,
+        {{cohort_column}} as cohort,
+        step1_users,
+        step2_users,
+        CAST(step2_users * 100.0 / NULLIF(step1_users, 0) AS DECIMAL(5,2)) as step1_to_step2_pct,
+        step3_users,
+        CAST(step3_users * 100.0 / NULLIF(step2_users, 0) AS DECIMAL(5,2)) as step2_to_step3_pct,
+        CAST(step3_users * 100.0 / NULLIF(step1_users, 0) AS DECIMAL(5,2)) as overall_conversion_pct
+      FROM funnel_progression
+      ORDER BY cohort_week DESC, overall_conversion_pct DESC;
+    required_parameters:
+      - database
+      - table
+      - user_column
+      - event_column
+      - timestamp_column
+      - funnel_steps
+      - cohort_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: E-commerce Checkout Funnel ---
+  - name: "E-commerce Checkout Funnel"
+    description: "Analyze drop-off from product view to purchase"
+    parameters:
+      database: "ecommerce"
+      table: "user_events"
+      user_column: "user_id"
+      event_column: "event_name"
+      timestamp_column: "event_time"
+      funnel_steps: ["product_view", "add_to_cart", "checkout", "purchase"]
+      time_window_hours: 24
+    expected_result: |
+      Funnel Results (24-hour window):
+      Step 1 - Product View: 10,000 users (100%)
+      Step 2 - Add to Cart: 3,000 users (30%) - 70% drop-off
+      Step 3 - Checkout: 1,500 users (15%) - 50% drop-off
+      Step 4 - Purchase: 1,200 users (12%) - 20% drop-off
+
+      Key insights:
+      - Biggest drop-off at add-to-cart (70%)
+      - Once in checkout, high completion rate (80%)
+      - Overall conversion: 12%
+
+      Action: Focus on improving add-to-cart rate
+
+  # --- Example 2: SaaS Onboarding Funnel ---
+  - name: "SaaS Onboarding Funnel"
+    description: "Track new user activation"
+    parameters:
+      database: "saas_analytics"
+      table: "user_activity"
+      user_column: "user_id"
+      event_column: "action"
+      timestamp_column: "action_timestamp"
+      funnel_steps: ["signup", "email_verified", "first_login", "setup_complete", "first_project"]
+      time_window_hours: 168
+    expected_result: |
+      Onboarding Funnel (7-day window):
+      Step 1 - Signup: 1,000 users (100%)
+      Step 2 - Email Verified: 850 users (85%)
+      Step 3 - First Login: 700 users (70%)
+      Step 4 - Setup Complete: 420 users (42%)
+      Step 5 - First Project: 350 users (35%)
+
+      Critical drop-off points:
+      - Email verification: 15% loss
+      - First login: 15% loss
+      - Setup: 28% loss (biggest drop)
+
+      Action: Simplify setup process, add guidance
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Steps Counted Out of Order ---
+  - error: "Steps counted out of order"
+    cause: "Not enforcing temporal ordering of events"
+    solution: "Add timestamp constraints to ensure Step 2 happens after Step 1, etc."
+
+  # --- Error 2: Users Counted Multiple Times ---
+  - error: "Users counted multiple times"
+    cause: "Not using DISTINCT when counting users"
+    solution: "Always use COUNT(DISTINCT user_id) to avoid counting repeat attempts"
+
+  # --- Error 3: Funnel Shows >100% Conversion ---
+  - error: "Funnel shows >100% conversion"
+    cause: "Users can trigger events in any order, not just sequential"
+    solution: "Use time-constrained funnel to enforce step ordering and time windows"
+
+  # --- Error 4: Incomplete Funnels ---
+  - error: "Incomplete funnels"
+    cause: "Missing events for some users"
+    solution: "Check data completeness. Some users may not have all events logged."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Funnel Analysis Best Practices
+
+  ### 1. Define Clear Funnel Steps
+  **Steps should be:**
+  - Sequential (each step follows logically)
+  - Mutually exclusive (user in one step at a time)
+  - Measurable (clearly defined events)
+  - Actionable (can optimize each step)
+
+  **Example good funnel:**
+  Visit → Signup → Activate → Subscribe
+
+  **Example bad funnel:**
+  Visit → Click → Do Something → Success (too vague)
+
+  ### 2. Set Appropriate Time Windows
+  **Short funnels (e-commerce checkout):** 1-24 hours
+  **Medium funnels (SaaS trial):** 7-14 days
+  **Long funnels (B2B sales):** 30-90 days
+
+  Match time window to typical customer behavior.
+
+  ### 3. Segment Your Funnels
+  **Segment by:**
+  - Traffic source (organic, paid, referral)
+  - Device type (mobile, desktop)
+  - User type (new, returning)
+  - Geography
+  - Product category
+
+  Different segments have different conversion patterns.
+
+  ### 4. Focus on Biggest Drop-Offs
+  **Prioritize optimization:**
+  1. Identify step with largest absolute drop-off
+  2. Calculate improvement potential (users × conversion lift)
+  3. Start with highest-impact, lowest-effort improvements
+
+  **Example:**
+  - Step 1→2: 70% drop (7,000 users) ← Start here!
+  - Step 2→3: 20% drop (600 users)
+  - Step 3→4: 10% drop (60 users)
+
+  ### 5. Understand "Why" Behind Drop-Offs
+  **Combine funnel data with:**
+  - User surveys
+  - Session recordings
+  - Heatmaps
+  - A/B test results
+  - Support tickets
+
+  Quantify the drop-off, then investigate causes.
+
+  ### 6. Track Funnel Over Time
+  **Monitor weekly/monthly:**
+  - Overall conversion rate trend
+  - Step-by-step conversion changes
+  - Impact of product changes
+  - Seasonal patterns
+
+  Set up alerts for unusual drops.
+
+  ### 7. Test Improvements
+  **A/B test changes:**
+  - Change one step at a time
+  - Measure impact on that step AND downstream steps
+  - Consider overall funnel conversion, not just one step
+
+  **Example:**
+  Improving Step 2 might bring lower-quality users,
+  hurting Step 3 conversion.
+
+  ### 8. Common Optimization Tactics
+  **To reduce drop-off:**
+  - Simplify forms (fewer fields)
+  - Add progress indicators
+  - Provide social proof
+  - Reduce friction (guest checkout)
+  - Add urgency/scarcity
+  - Improve page load speed
+  - Clarify value proposition
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: nPath ---
+  - npath
+
+  # --- Pattern 2: Attribution ---
+  - attribution
+
+  # --- Pattern 3: Cohort Analysis ---
+  - cohort_analysis
+
+  # --- Pattern 4: Retention Analysis ---
+  - retention_analysis
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,429 @@
+# === METADATA START ===
+name: macro_to_procedure
+title: "MACRO to Stored Procedure Conversion"
+description: |
+  Convert Teradata MACROs to Stored Procedures for enhanced functionality and maintainability.
+
+  **MACRO vs PROCEDURE:**
+
+  **MACRO (Legacy approach):**
+  - Simple parameterized SQL statements
+  - No flow control (no IF/WHILE/FOR)
+  - No local variables
+  - Pre-compiled and optimized
+  - Limited error handling
+  - Best for: Simple, repetitive queries
+
+  **PROCEDURE (Modern approach):**
+  - Full programming logic (IF, WHILE, FOR, CASE)
+  - Local variables and cursors
+  - Dynamic SQL support
+  - Comprehensive error handling (HANDLERS)
+  - Transaction control
+  - Best for: Complex business logic
+
+  **WHEN TO CONVERT:**
+  - Need conditional logic or loops
+  - Require error handling beyond basic SQL errors
+  - Need to build dynamic SQL
+  - Want to declare local variables
+  - Complex multi-step operations
+
+  **REQUIREMENTS:**
+  Call get_tables() to verify MACRO exists in DBC.MacrosV before conversion.
+  Use teradata_explain_sql to validate converted PROCEDURE logic.
+
+category: code_migration
+difficulty: intermediate
+teradata_function: CREATE PROCEDURE, CREATE MACRO
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Migrate legacy MACROs to modern Stored Procedures
+  - Add error handling to simple MACROs
+  - Convert parameterized queries to procedures
+  - Enable conditional logic in repetitive operations
+  - Add transaction control to multi-step operations
+  - Implement dynamic SQL generation
+  - Modernize legacy Teradata codebases
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: macro_name
+    type: string
+    required: true
+    description: "Name of MACRO to convert"
+    example: "get_customer_orders"
+
+  - name: database
+    type: string
+    required: true
+    description: "Database containing the MACRO"
+    example: "sales_db"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  analyze_existing_macro:
+    description: "Retrieve MACRO definition for analysis"
+    sql: |
+      -- Get MACRO definition
+      SELECT
+        DatabaseName,
+        MacroName,
+        CreatorName,
+        CreateTimeStamp,
+        MacroKind,
+        ParameterDataTypes,
+        RequestText
+      FROM DBC.MacrosV
+      WHERE DatabaseName = '{{database}}'
+        AND MacroName = '{{macro_name}}';
+
+      -- Show MACRO source code
+      SHOW MACRO {{database}}.{{macro_name}};
+
+  simple_macro_to_procedure:
+    description: "Convert simple parameterized MACRO to PROCEDURE"
+    sql: |
+      -- Original MACRO:
+      -- CREATE MACRO get_customer_orders (customer_id INTEGER) AS (
+      --   SELECT order_id, order_date, amount
+      --   FROM orders
+      --   WHERE customer_id = :customer_id;
+      -- );
+
+      -- Converted PROCEDURE:
+      REPLACE PROCEDURE {{database}}.{{macro_name}} (
+        IN p_customer_id INTEGER
+      )
+      BEGIN
+        -- Procedure body
+        SELECT
+          order_id,
+          order_date,
+          amount
+        FROM orders
+        WHERE customer_id = p_customer_id;
+      END;
+
+      -- Key Changes:
+      -- 1. CREATE MACRO → REPLACE PROCEDURE
+      -- 2. Parameter syntax: (param TYPE) → (IN param TYPE)
+      -- 3. BEGIN/END block required
+      -- 4. :param → param (no colon in procedure)
+
+  macro_with_error_handling:
+    description: "Add error handling during conversion"
+    sql: |
+      -- Original MACRO (no error handling):
+      -- CREATE MACRO update_customer_status (customer_id INTEGER, new_status VARCHAR(20)) AS (
+      --   UPDATE customers SET status = :new_status WHERE id = :customer_id;
+      -- );
+
+      -- Converted PROCEDURE with error handling:
+      REPLACE PROCEDURE {{database}}.{{macro_name}} (
+        IN p_customer_id INTEGER,
+        IN p_new_status VARCHAR(20),
+        OUT p_rows_affected INTEGER,
+        OUT p_error_message VARCHAR(200)
+      )
+      BEGIN
+        -- Error handler
+        DECLARE EXIT HANDLER FOR SQLEXCEPTION
+        BEGIN
+          SET p_error_message = 'Update failed: ' || SQLSTATE;
+          SET p_rows_affected = 0;
+        END;
+
+        -- Initialize outputs
+        SET p_error_message = NULL;
+
+        -- Perform update
+        UPDATE customers
+        SET status = p_new_status
+        WHERE id = p_customer_id;
+
+        -- Capture row count
+        GET DIAGNOSTICS p_rows_affected = ROW_COUNT;
+
+      END;
+
+      -- Usage:
+      CALL {{database}}.{{macro_name}}(1001, 'ACTIVE', rows_affected, error_msg);
+
+  macro_with_conditional_logic:
+    description: "Add IF/ELSE logic not possible in MACROs"
+    sql: |
+      -- Original MACRO (cannot do conditional logic):
+      -- CREATE MACRO get_orders (customer_id INTEGER) AS (
+      --   SELECT * FROM orders WHERE customer_id = :customer_id;
+      -- );
+
+      -- Converted PROCEDURE with conditional logic:
+      REPLACE PROCEDURE {{database}}.{{macro_name}} (
+        IN p_customer_id INTEGER,
+        IN p_include_inactive CHAR(1) DEFAULT 'N'
+      )
+      BEGIN
+        -- Conditional query based on parameter
+        IF p_include_inactive = 'Y' THEN
+          -- Include all orders
+          SELECT order_id, order_date, status, amount
+          FROM orders
+          WHERE customer_id = p_customer_id;
+        ELSE
+          -- Only active orders
+          SELECT order_id, order_date, status, amount
+          FROM orders
+          WHERE customer_id = p_customer_id
+            AND status = 'ACTIVE';
+        END IF;
+      END;
+
+  macro_to_procedure_with_cursor:
+    description: "Convert MACRO to PROCEDURE using cursor for row-by-row processing"
+    sql: |
+      -- Original MACRO (returns all rows):
+      -- CREATE MACRO get_high_value_customers (min_total DECIMAL(10,2)) AS (
+      --   SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id HAVING SUM(amount) > :min_total;
+      -- );
+
+      -- Converted PROCEDURE with cursor and loop:
+      REPLACE PROCEDURE {{database}}.{{macro_name}} (
+        IN p_min_total DECIMAL(10,2)
+      )
+      BEGIN
+        DECLARE v_customer_id INTEGER;
+        DECLARE v_total DECIMAL(10,2);
+        DECLARE v_done INTEGER DEFAULT 0;
+
+        -- Cursor declaration
+        DECLARE cur_customers CURSOR FOR
+          SELECT customer_id, SUM(amount) AS total
+          FROM orders
+          GROUP BY customer_id
+          HAVING SUM(amount) > p_min_total;
+
+        -- Handler for end of cursor
+        DECLARE CONTINUE HANDLER FOR NOT FOUND
+          SET v_done = 1;
+
+        -- Open cursor
+        OPEN cur_customers;
+
+        -- Loop through results
+        read_loop: LOOP
+          FETCH cur_customers INTO v_customer_id, v_total;
+
+          IF v_done = 1 THEN
+            LEAVE read_loop;
+          END IF;
+
+          -- Process each customer (example: log or update)
+          INSERT INTO high_value_customers_log VALUES (v_customer_id, v_total, CURRENT_TIMESTAMP);
+        END LOOP;
+
+        CLOSE cur_customers;
+      END;
+
+  macro_with_dynamic_sql:
+    description: "Convert to PROCEDURE with dynamic SQL generation"
+    sql: |
+      -- PROCEDUREs support dynamic SQL; MACROs do not
+      REPLACE PROCEDURE {{database}}.{{macro_name}} (
+        IN p_table_name VARCHAR(100),
+        IN p_column_name VARCHAR(100),
+        IN p_filter_value VARCHAR(100)
+      )
+      BEGIN
+        DECLARE v_sql VARCHAR(1000);
+
+        -- Build dynamic SQL
+        SET v_sql = 'SELECT * FROM ' || p_table_name ||
+                    ' WHERE ' || p_column_name || ' = ''' || p_filter_value || '''';
+
+        -- Execute dynamic SQL
+        PREPARE stmt FROM v_sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+      END;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Simple MACRO conversion"
+    parameters:
+      macro_name: "get_customer_orders"
+      database: "sales_db"
+    expected_result: |
+      Original MACRO:
+      ```sql
+      CREATE MACRO get_customer_orders (customer_id INTEGER) AS (
+        SELECT order_id, order_date, amount
+        FROM orders
+        WHERE customer_id = :customer_id
+      );
+      ```
+
+      Converted PROCEDURE:
+      ```sql
+      REPLACE PROCEDURE get_customer_orders (
+        IN p_customer_id INTEGER
+      )
+      BEGIN
+        SELECT order_id, order_date, amount
+        FROM orders
+        WHERE customer_id = p_customer_id;
+      END;
+      ```
+
+      Usage:
+      - MACRO: EXEC get_customer_orders(1001);
+      - PROCEDURE: CALL get_customer_orders(1001);
+
+  - name: "MACRO with error handling"
+    parameters:
+      macro_name: "update_order_status"
+      database: "sales_db"
+    expected_result: |
+      Before Conversion:
+      - MACRO has no error handling
+      - Errors propagate to caller
+      - No way to check if update succeeded
+
+      After Conversion:
+      - PROCEDURE captures errors with HANDLER
+      - Returns row count and error message
+      - Caller can check success/failure
+
+      Usage:
+      ```sql
+      DECLARE rows_affected INTEGER;
+      DECLARE error_msg VARCHAR(200);
+
+      CALL update_order_status(1001, 'SHIPPED', rows_affected, error_msg);
+
+      IF error_msg IS NULL THEN
+        -- Success
+        CALL log_message('Updated ' || rows_affected || ' rows');
+      ELSE
+        -- Error occurred
+        CALL log_error(error_msg);
+      END IF;
+      ```
+
+  - name: "MACRO to PROCEDURE with conditional logic"
+    parameters:
+      macro_name: "get_orders_by_status"
+      database: "sales_db"
+    expected_result: |
+      Problem with MACRO:
+      - Cannot implement IF/ELSE logic
+      - Would need separate MACROs for each condition
+
+      PROCEDURE Solution:
+      ```sql
+      CALL get_orders_by_status(1001, 'ACTIVE');  -- Only active
+      CALL get_orders_by_status(1001, 'ALL');     -- All orders
+      ```
+
+      Procedure checks parameter and executes appropriate query.
+      One procedure replaces multiple MACROs.
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## MACRO to PROCEDURE Conversion Best Practices
+
+  ### 1. When to Keep as MACRO
+  Keep as MACRO if:
+  - Simple parameterized query (no logic)
+  - Performance-critical (MACROs are pre-compiled)
+  - No need for error handling
+  - No conditional logic required
+
+  ### 2. When to Convert to PROCEDURE
+  Convert to PROCEDURE if:
+  - Need IF/WHILE/FOR loops
+  - Require error handling (HANDLERS)
+  - Want to use local variables
+  - Need dynamic SQL
+  - Multi-step operations with transaction control
+
+  ### 3. Parameter Naming Convention
+  ```sql
+  -- PROCEDURE parameters: prefix with p_
+  IN p_customer_id INTEGER,
+  OUT p_result_count INTEGER
+
+  -- Local variables: prefix with v_
+  DECLARE v_total DECIMAL(10,2);
+  ```
+
+  ### 4. Error Handling Pattern
+  ```sql
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    -- Log error
+    SET p_error_message = SQLSTATE;
+    -- Optional: ROLLBACK
+  END;
+  ```
+
+  ### 5. Always Use REPLACE PROCEDURE
+  ```sql
+  REPLACE PROCEDURE name (...)  -- Not CREATE PROCEDURE
+  ```
+  REPLACE drops and recreates, avoiding "already exists" errors.
+
+  ### 6. Test Converted PROCEDUREs Thoroughly
+  ```sql
+  -- Test with EXPLAIN
+  EXPLAIN CALL procedure_name(params);
+
+  -- Test error handling
+  CALL procedure_name(invalid_params);
+  ```
+
+  ### 7. Document Parameter Changes
+  ```sql
+  -- MACRO: :param (colon prefix)
+  -- PROCEDURE: param (no colon)
+  ```
+
+  ### 8. Memory Layers for Migration Tracking
+  - **Kernel Layer**: Cache MACRO definitions and conversion patterns
+  - **L1 Cache**: Keep recent conversions (last 5-8 MACROs) to reuse patterns
+  - **L2 Compressed**: Archive conversion history and testing results
+  - **Swap Layer**: Store complete migration documentation; use recall_conversation to reference similar MACRO migrations from earlier modernization projects
+  This enables consistent conversion patterns and tracking migration progress across legacy codebase modernization.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Parameter syntax error after conversion"
+    cause: "Forgot to remove colon prefix (:param → param)"
+    solution: "In PROCEDUREs, parameters have no colon: WHERE id = param (not :param)"
+
+  - error: "Missing BEGIN/END block"
+    cause: "PROCEDUREs require explicit BEGIN/END"
+    solution: "Wrap entire procedure body in BEGIN ... END"
+
+  - error: "Handler not catching errors"
+    cause: "Wrong handler type (EXIT vs CONTINUE)"
+    solution: "Use EXIT HANDLER to stop execution, CONTINUE HANDLER to continue"
+
+  - error: "Dynamic SQL fails"
+    cause: "SQL injection or improper string concatenation"
+    solution: "Validate inputs, use proper quoting in dynamic SQL"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - stored_procedure_optimization  # Optimize converted procedures
+  - error_handling_patterns  # Comprehensive error handling
+  - code_modernization  # Legacy code migration
+# === RELATED_PATTERNS END ===

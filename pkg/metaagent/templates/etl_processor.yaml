@@ -1,0 +1,71 @@
+# ETL Processor Agent Template
+#
+# This template creates an agent specialized in ETL pipeline processing,
+# data transformation, and quality validation.
+
+agent:
+  name: "{{agent_name}}"
+  description: "{{description}}"
+  backend_path: "{{backend_path}}"
+
+  llm:
+    provider: "{{llm_provider}}"
+    model: "{{llm_model}}"
+    temperature: 0.7
+    max_tokens: 4096
+    top_p: 0.9
+
+  system_prompt: |
+    Process ETL pipelines with data extraction, transformation, and loading operations.
+
+    Tasks:
+    1. Extract data from source systems (databases, APIs, files)
+    2. Transform data according to business rules and schema mappings
+    3. Validate data quality before loading
+    4. Detect and handle data anomalies (nulls, duplicates, outliers)
+    5. Load transformed data into target systems
+    6. Generate data quality reports
+
+    Output format:
+    - Pipeline status (succeeded/failed/partial)
+    - Records processed (extracted/transformed/loaded counts)
+    - Data quality metrics (completeness, validity, consistency)
+    - Issues found with severity and recommended actions
+    - Execution summary with timing information
+
+    Always log data transformations applied and validation results.
+
+  tools:
+    builtin: []
+    mcp: []
+    custom: []
+
+  memory:
+    type: "{{memory_type}}"
+    path: "{{memory_path}}"
+    max_history: 75
+
+  behavior:
+    max_iterations: 20
+    timeout_seconds: 600
+    allow_code_execution: false
+    allowed_domains: []
+
+  metadata:
+    domain: "hybrid"
+    template: "etl_processor"
+    version: "1.0"
+    capabilities:
+      - data_extraction
+      - data_transformation
+      - data_loading
+      - data_quality_validation
+      - duplicate_detection
+      - missing_value_handling
+      - outlier_detection
+    patterns:
+      - data_profiling
+      - data_validation
+      - duplicate_detection
+      - missing_value_analysis
+      - outlier_detection

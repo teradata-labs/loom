@@ -1,0 +1,337 @@
+# === METADATA START ===
+name: excel_analysis
+title: "Excel Spreadsheet Analysis"
+description: |
+  Parse and analyze Excel spreadsheets (.xlsx) with multi-sheet support and formula extraction.
+  Analyze data across multiple sheets, identify relationships, and provide structured summaries.
+category: spreadsheet-analysis
+difficulty: intermediate
+backend_type: documents
+version: 1.0.0
+author: Loom Framework
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Analyze Excel workbooks with multiple sheets
+  - Summarize financial data from spreadsheets
+  - Extract and interpret formulas
+  - Identify relationships between sheets
+  - Parse inventory and operational data
+  - Analyze budget and expense reports
+  - Process multi-sheet datasets
+  - Validate data across linked sheets
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: excel_file
+    type: string
+    required: true
+    description: "Path to the Excel file (.xlsx)"
+    example: "Q4_financials.xlsx"
+
+  - name: sheet_selection
+    type: string
+    required: false
+    default: "all"
+    description: "Which sheets to analyze (all, first, sheet name, or list)"
+    example: "all"
+
+  - name: include_formulas
+    type: boolean
+    required: false
+    default: false
+    description: "Extract and show formulas"
+    example: "false"
+
+  - name: row_limit
+    type: integer
+    required: false
+    default: 10000
+    description: "Maximum rows per sheet to process"
+    example: "10000"
+
+  - name: analysis_type
+    type: enum[summary, detailed, formulas, relationships]
+    required: false
+    default: "summary"
+    description: "Type of analysis to perform"
+    example: "summary"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  analyze_workbook:
+    description: "Analyze Excel workbook and summarize key metrics"
+    content: |
+      Analyze the Excel workbook: {{excel_file}}
+
+      Parse using parse_document tool with:
+      - Format: xlsx
+      - Sheets: {{sheet_selection}}
+      - Include formulas: {{include_formulas}}
+      - Row limit per sheet: {{row_limit}}
+
+      Provide comprehensive analysis:
+
+      1. Workbook Structure:
+         - Number of sheets and their names
+         - Data period/date range if applicable
+         - Overall organization
+
+      2. Per-Sheet Analysis:
+         For each sheet:
+         - Sheet name and purpose
+         - Dimensions (rows × columns)
+         - Column names and types
+         - Key metrics and totals
+         - Data quality notes
+
+      3. Cross-Sheet Relationships:
+         - Formula dependencies between sheets
+         - Linked data and calculations
+         - Summary vs. detail sheets
+
+      4. Key Insights:
+         - Important findings and trends
+         - Data quality issues
+         - Recommendations for analysis
+
+      Use clear formatting with sheet references for all findings.
+    required_parameters:
+      - excel_file
+
+  analyze_financial_data:
+    description: "Analyze financial Excel data with metrics calculation"
+    content: |
+      Analyze financial data in: {{excel_file}}
+
+      Parse the workbook and provide:
+
+      1. Financial Summary:
+         - Revenue totals by sheet/category
+         - Expense breakdowns
+         - Net profit/loss calculations
+         - Key financial ratios
+
+      2. Detailed Analysis by Sheet:
+         - Revenue sheet: totals, top categories, trends
+         - Expenses sheet: breakdowns, averages, outliers
+         - Summary sheet: formula validation, key metrics
+
+      3. Data Validation:
+         - Verify formulas are correct
+         - Check for calculation errors
+         - Validate cross-sheet references
+         - Note any inconsistencies
+
+      4. Insights and Recommendations:
+         - Performance highlights
+         - Areas of concern
+         - Suggested analyses or visualizations
+
+      Format with clear sections and cite specific cells/sheets for all numbers.
+    required_parameters:
+      - excel_file
+
+  extract_inventory_data:
+    description: "Extract and analyze inventory/operational data"
+    content: |
+      Extract inventory data from: {{excel_file}}
+      Sheet: {{sheet_selection}}
+
+      Parse and analyze:
+
+      1. Inventory Overview:
+         - Total SKUs tracked
+         - Column structure
+         - Data completeness
+
+      2. Stock Analysis:
+         - Out of stock items
+         - Low stock warnings (below reorder level)
+         - Critical items requiring attention
+         - Stock value calculations
+
+      3. Data Quality:
+         - Missing data in key columns
+         - Invalid values or formats
+         - Stale data (old restock dates)
+
+      4. Recommendations:
+         - Items requiring immediate action
+         - Reorder suggestions
+         - Process improvements
+         - Data quality fixes needed
+
+      Prioritize by urgency and financial impact.
+    required_parameters:
+      - excel_file
+
+  analyze_formulas:
+    description: "Analyze Excel formulas and dependencies"
+    content: |
+      Analyze formulas in: {{excel_file}}
+
+      Parse with include_formulas=true and:
+
+      1. Formula Inventory:
+         - Count of cells with formulas
+         - Types of formulas used
+         - Sheets with formula dependencies
+
+      2. Cross-Sheet Dependencies:
+         - Which sheets reference others
+         - Formula dependency chain
+         - Potential circular references
+
+      3. Calculation Analysis:
+         - Verify formula logic
+         - Check for errors (#REF!, #DIV/0!, etc.)
+         - Validate calculations against expected results
+
+      4. Optimization Suggestions:
+         - Complex formulas that could be simplified
+         - Performance improvements
+         - Better organization of calculations
+
+      Provide clear mapping of dependencies and cite specific cells.
+    required_parameters:
+      - excel_file
+# === TEMPLATES END ===
+
+# System prompt for Excel analysis
+system: |
+  Excel Workbook Analysis: Parse Excel files, analyze data across multiple sheets, and identify relationships between sheets.
+
+  Analysis responsibilities:
+  1. Parse Excel files (.xlsx) using the parse_document tool
+  2. Analyze data across multiple sheets
+  3. Identify relationships between sheets
+  4. Extract and interpret formulas when requested
+  5. Provide structured summaries of workbook content
+
+  When working with Excel files:
+  - Use parse_document tool with format="xlsx"
+  - Process all sheets by default, or specific sheets as requested
+  - Identify data types (numbers, strings, dates, formulas)
+  - Respect row limits per sheet (default 10,000 rows)
+  - Note formula relationships when include_formulas=true
+
+  Sheet selection options:
+  - "all": Parse all sheets
+  - "first": Parse first sheet only
+  - "Sheet1": Parse specific sheet by name
+  - ["Sheet1", "Sheet2"]: Parse multiple named sheets
+
+  Best practices:
+  - Summarize workbook structure first (sheets, columns, rows)
+  - Identify primary data sheets vs. summary/calculation sheets
+  - Note formula dependencies between sheets
+  - Highlight data quality issues (empty cells, inconsistent types)
+  - Suggest appropriate visualizations or analyses
+
+  Communication style:
+  - Be structured and organized
+  - Reference sheet names clearly
+  - Provide actionable insights
+  - Highlight relationships between sheets
+
+# Example interactions
+examples:
+  - input: "Analyze Q4_financials.xlsx and summarize key metrics"
+    output: |
+      I've analyzed Q4_financials.xlsx.
+
+      Workbook Structure:
+      - 3 sheets: Revenue, Expenses, Summary
+      - Data period: October 1 - December 31, 2024
+
+      Sheet: Revenue (250 rows × 6 columns)
+      - Columns: Date, Region, Product, Units, Unit_Price, Total
+      - Total Revenue: $2,847,932
+      - Top Region: West Coast ($892,450)
+      - Top Product: Enterprise Software ($1,234,890)
+
+      Sheet: Expenses (180 rows × 5 columns)
+      - Columns: Date, Category, Description, Amount, Approved_By
+      - Total Expenses: $1,456,721
+      - Largest Category: Payroll ($892,100)
+      - Average expense: $8,093
+
+      Sheet: Summary (10 rows × 3 columns)
+      - Contains formulas referencing Revenue and Expenses sheets
+      - Net Profit: $1,391,211 (48.9% margin)
+      - YoY Growth: +18.5%
+      - Key Metrics:
+        * Gross Margin: 65.2%
+        * Operating Margin: 48.9%
+        * Revenue per Employee: $142,397
+
+      Key Insights:
+      - Strong Q4 performance with near 50% net margin
+      - West Coast driving revenue growth
+      - Expense control effective (payroll 31% of revenue)
+
+      Recommendations:
+      - Investigate East Coast underperformance
+      - Consider expanding Enterprise Software offering
+      - Review efficiency metrics vs. industry benchmarks
+
+  - input: "Parse Sheet1 of inventory.xlsx and identify low stock items"
+    output: |
+      I've analyzed Sheet1 (Inventory) from inventory.xlsx.
+
+      Inventory Summary:
+      - 487 SKUs tracked
+      - Columns: SKU, Product_Name, Category, Quantity_On_Hand, Reorder_Level,
+        Unit_Cost, Last_Restock_Date
+
+      Low Stock Alert (Below Reorder Level):
+      ⚠️ 23 items require immediate attention
+
+      Critical (Out of Stock):
+      1. SKU-1234: Industrial Pump Model X (0 units, reorder: 5)
+      2. SKU-4567: Safety Valve Type B (0 units, reorder: 10)
+      3. SKU-7890: Pressure Gauge 200PSI (0 units, reorder: 8)
+
+      Warning (Below 50% of Reorder Level):
+      1. SKU-2345: Filter Cartridge (3 units, reorder: 15)
+      2. SKU-3456: Bearing Assembly (2 units, reorder: 12)
+      3. SKU-5678: Control Panel Display (1 unit, reorder: 6)
+      ... (17 more items)
+
+      Financial Impact:
+      - Total value of low-stock items: $34,890
+      - Estimated reorder cost: $12,450
+      - Average days since last restock for critical items: 47 days
+
+      Recommendations:
+      1. Immediate purchase orders for out-of-stock items
+      2. Review reorder levels for high-turnover items
+      3. Investigate slow restocking (>30 days)
+      4. Consider safety stock adjustments
+
+# Tools configuration
+tools:
+  - parse_document
+
+# Guardrails
+guardrails:
+  - "Only .xlsx format supported (not legacy .xls)"
+  - "Formula extraction optional (may impact performance)"
+  - "Respect row limits per sheet (default 10,000)"
+  - "Empty cells handled as null values"
+  - "Sheet names are case-insensitive for selection"
+  - "Never modify the original Excel file"
+  - "Complex formulas may not display as expected"
+
+# Tags for discoverability
+tags:
+  - excel
+  - spreadsheet
+  - financial-analysis
+  - data-analysis
+  - multi-sheet
+  - formulas

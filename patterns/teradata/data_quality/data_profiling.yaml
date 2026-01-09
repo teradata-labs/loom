@@ -1,0 +1,573 @@
+# === METADATA START ===
+name: data_profiling
+title: "Data Profiling and Quality Assessment"
+description: |
+  Comprehensive data profiling to understand data quality, distributions, and characteristics.
+  Data profiling examines structure, content, and relationships to identify quality issues,
+  anomalies, and opportunities for improvement.
+
+  Profiling aspects:
+  - Column-level statistics (min, max, avg, stddev)
+  - Data type validation and inference
+  - Null/missing value analysis
+  - Uniqueness and cardinality
+  - Value distributions and patterns
+  - Outlier detection
+  - Correlation analysis
+
+  **TABLE TYPE AWARENESS:**
+  Before profiling, call get_tables() to check table types and capabilities. Data quality
+  issues found in read-only objects (Views, Join Indexes, Foreign Tables, Error Tables)
+  CANNOT be fixed directly - you must modify the underlying base table(s) instead. Regular
+  Tables support all profiling operations and can be directly updated to fix quality issues.
+
+  **COLUMN ALIAS RESTRICTIONS:**
+  Teradata restricts certain reserved words as column aliases. Avoid using "Value", "Type",
+  "User", "Date", "Count", etc. as aliases. Instead use descriptive names like "MetricValue",
+  "CustomerType", "TotalCount". If queries fail with syntax errors about aliases between
+  keywords, use prefixes/suffixes: "Metric_" or "_Value".
+
+category: data_quality
+difficulty: beginner
+teradata_function: SQL_AGGREGATE_FUNCTIONS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Initial data exploration and understanding
+  - Data quality assessment before ML modeling
+  - ETL validation and testing
+  - Schema documentation generation
+  - Data governance and compliance
+  - Migration validation (source vs target)
+  - Anomaly and outlier detection
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing table to profile"
+    example: "customer_data"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table to profile"
+    example: "customers"
+
+  # --- Parameter 3: Column Selection ---
+  - name: columns
+    type: array[string]
+    # LLM-HINT: If empty, profile all columns (used in column_statistics template)
+    required: false
+    description: "Specific columns to profile (if empty, profile all)"
+    example: '["age", "income", "city"]'
+
+  # --- Parameter 4: Sampling ---
+  - name: sample_size
+    type: integer
+    required: false
+    default: "0"
+    # LLM-HINT: 0 means full table, >0 uses SAMPLE clause for faster profiling
+    description: "Sample size for profiling (0 = all rows)"
+    example: "10000"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_OVERVIEW TEMPLATE ===
+  # LLM-HINT: Start with this template for high-level table statistics
+  basic_overview:
+    description: "High-level table overview - row count, column count, size"
+    sql: |
+      -- Basic table overview
+      -- NOTE: For large tables, uncomment SAMPLE clause to analyze subset (e.g., SAMPLE 10000)
+      SELECT
+        '{{database}}.{{table}}' as table_name,
+        COUNT(*) as total_rows,
+        COUNT(DISTINCT *) as distinct_rows,
+        COUNT(*) - COUNT(DISTINCT *) as duplicate_rows
+      FROM {{database}}.{{table}}
+      -- SAMPLE {{sample_size}}  -- Uncomment for faster profiling on large tables
+      ;
+
+    required_parameters:
+      - database
+      - table
+
+  # === COLUMN_STATISTICS TEMPLATE ===
+  # LLM-HINT: Use per-column to get detailed statistics; MIN/MAX/AVG only work on numeric columns
+  column_statistics:
+    description: "Detailed statistics for each column - completeness, uniqueness, distribution"
+    sql: |
+      -- Column-level profiling
+      SELECT
+        '{{column}}' as column_name,
+        -- Completeness
+        COUNT(*) as total_values,
+        COUNT({{column}}) as non_null_values,
+        COUNT(*) - COUNT({{column}}) as null_count,
+        CAST((COUNT(*) - COUNT({{column}})) * 100.0 / COUNT(*) AS DECIMAL(5,2)) as null_pct,
+        -- Uniqueness
+        COUNT(DISTINCT {{column}}) as distinct_values,
+        CAST(COUNT(DISTINCT {{column}}) * 100.0 / COUNT({{column}}) AS DECIMAL(5,2)) as distinct_pct,
+        -- Numeric statistics (if numeric column)
+        MIN({{column}}) as min_value,
+        MAX({{column}}) as max_value,
+        AVG({{column}}) as avg_value,
+        STDDEV_POP({{column}}) as stddev_value,
+        MEDIAN({{column}}) as median_value
+      FROM {{database}}.{{table}}
+      -- SAMPLE {{sample_size}}  -- Uncomment for faster profiling on large tables
+      ;
+
+    required_parameters:
+      - database
+      - table
+      - column
+
+  # === ALL_COLUMNS_PROFILE TEMPLATE ===
+  # LLM-HINT: Profiles ALL columns automatically by querying DBC.ColumnsV metadata
+  all_columns_profile:
+    description: "Profile all columns in table automatically"
+    sql: |
+      -- Comprehensive multi-column profiling
+      WITH column_list AS (
+        SELECT ColumnName, ColumnType
+        FROM DBC.ColumnsV
+        WHERE DatabaseName = '{{database}}'
+          AND TableName = '{{table}}'
+      )
+      SELECT
+        c.ColumnName,
+        c.ColumnType,
+        -- Basic counts from information schema
+        (SELECT COUNT(*) FROM {{database}}.{{table}}) as total_rows,
+        -- Cardinality estimate
+        (SELECT COUNT(DISTINCT ColumnName)
+         FROM {{database}}.{{table}}) as distinct_values
+      FROM column_list c;
+
+    required_parameters:
+      - database
+      - table
+
+  # === VALUE_FREQUENCY TEMPLATE ===
+  # LLM-HINT: Shows distribution of values; limit to top 100 for performance
+  value_frequency:
+    description: "Top N most common values for a column"
+    sql: |
+      -- Value frequency distribution
+      SELECT
+        {{column}} as value,
+        COUNT(*) as frequency,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as percentage,
+        SUM(COUNT(*)) OVER (ORDER BY COUNT(*) DESC ROWS UNBOUNDED PRECEDING) as cumulative_count,
+        CAST(SUM(COUNT(*)) OVER (ORDER BY COUNT(*) DESC ROWS UNBOUNDED PRECEDING) * 100.0 /
+             SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as cumulative_pct
+      FROM {{database}}.{{table}}
+      WHERE {{column}} IS NOT NULL
+      -- SAMPLE {{sample_size}}  -- Uncomment for faster profiling on large tables
+      GROUP BY {{column}}
+      ORDER BY frequency DESC
+      LIMIT 100;
+
+    required_parameters:
+      - database
+      - table
+      - column
+
+  # === DATA_TYPE_VALIDATION TEMPLATE ===
+  # LLM-HINT: Uses REGEXP_SIMILAR to detect patterns (integer, decimal, date, email formats)
+  data_type_validation:
+    description: "Check if column values match expected data types"
+    sql: |
+      -- Data type validation and pattern analysis
+      SELECT
+        '{{column}}' as column_name,
+        -- Type checks
+        COUNT(*) as total_values,
+        SUM(CASE WHEN {{column}} IS NULL THEN 1 ELSE 0 END) as null_count,
+        -- Numeric validation
+        SUM(CASE WHEN REGEXP_SIMILAR(CAST({{column}} AS VARCHAR(100)), '^[0-9]+$', 'i') = 1
+                 THEN 1 ELSE 0 END) as integer_pattern_count,
+        SUM(CASE WHEN REGEXP_SIMILAR(CAST({{column}} AS VARCHAR(100)), '^[0-9]+\.[0-9]+$', 'i') = 1
+                 THEN 1 ELSE 0 END) as decimal_pattern_count,
+        -- Date validation
+        SUM(CASE WHEN REGEXP_SIMILAR(CAST({{column}} AS VARCHAR(100)),
+                 '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', 'i') = 1
+                 THEN 1 ELSE 0 END) as date_pattern_count,
+        -- Email validation
+        SUM(CASE WHEN REGEXP_SIMILAR(CAST({{column}} AS VARCHAR(100)),
+                 '^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$', 'i') = 1
+                 THEN 1 ELSE 0 END) as email_pattern_count,
+        -- String length statistics
+        MIN(CHARACTER_LENGTH(CAST({{column}} AS VARCHAR(10000)))) as min_length,
+        MAX(CHARACTER_LENGTH(CAST({{column}} AS VARCHAR(10000)))) as max_length,
+        AVG(CHARACTER_LENGTH(CAST({{column}} AS VARCHAR(10000)))) as avg_length
+      FROM {{database}}.{{table}}
+      -- SAMPLE {{sample_size}}  -- Uncomment for faster profiling on large tables
+      ;
+
+    required_parameters:
+      - database
+      - table
+      - column
+
+  # === CORRELATION_MATRIX TEMPLATE ===
+  # LLM-HINT: Requires TWO numeric columns; CORR() calculates Pearson correlation coefficient
+  correlation_matrix:
+    description: "Calculate correlation between numeric columns"
+    sql: |
+      -- Correlation analysis between columns
+      SELECT
+        '{{column1}}' as column1,
+        '{{column2}}' as column2,
+        CORR({{column1}}, {{column2}}) as correlation_coefficient,
+        COUNT(*) as sample_size,
+        CASE
+          WHEN ABS(CORR({{column1}}, {{column2}})) > 0.8 THEN 'Strong'
+          WHEN ABS(CORR({{column1}}, {{column2}})) > 0.5 THEN 'Moderate'
+          WHEN ABS(CORR({{column1}}, {{column2}})) > 0.3 THEN 'Weak'
+          ELSE 'Very Weak'
+        END as correlation_strength
+      FROM {{database}}.{{table}}
+      WHERE {{column1}} IS NOT NULL
+        AND {{column2}} IS NOT NULL
+      -- SAMPLE {{sample_size}}  -- Uncomment for faster profiling on large tables
+      ;
+
+    required_parameters:
+      - database
+      - table
+      - column1
+      - column2
+
+  # === DATA_QUALITY_SCORE TEMPLATE ===
+  # LLM-HINT: Aggregates completeness and uniqueness into overall quality score (0-100)
+  data_quality_score:
+    description: "Overall data quality scorecard for table"
+    sql: |
+      -- Comprehensive data quality scorecard
+      WITH row_stats AS (
+        SELECT
+          COUNT(*) as total_rows,
+          COUNT(DISTINCT *) as unique_rows
+        FROM {{database}}.{{table}}
+      ),
+      null_analysis AS (
+        SELECT
+          SUM(null_count) as total_nulls,
+          SUM(total_cells) as total_cells
+        FROM (
+          SELECT
+            COUNT(*) - COUNT({{column}}) as null_count,
+            COUNT(*) as total_cells
+          FROM {{database}}.{{table}}
+        ) AS t
+      )
+      SELECT
+        -- Completeness Score (100% - null percentage)
+        CAST(100.0 - (n.total_nulls * 100.0 / n.total_cells) AS DECIMAL(5,2)) as completeness_score,
+        -- Uniqueness Score (percentage of unique rows)
+        CAST(r.unique_rows * 100.0 / r.total_rows AS DECIMAL(5,2)) as uniqueness_score,
+        -- Overall Quality Score (average of completeness and uniqueness)
+        CAST(((100.0 - (n.total_nulls * 100.0 / n.total_cells)) +
+              (r.unique_rows * 100.0 / r.total_rows)) / 2.0 AS DECIMAL(5,2)) as overall_quality_score,
+        -- Raw metrics
+        r.total_rows,
+        r.unique_rows,
+        n.total_nulls,
+        n.total_cells
+      FROM row_stats r, null_analysis n;
+
+    required_parameters:
+      - database
+      - table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Table Profiling ---
+  - name: "Customer Table Profiling"
+    description: "Profile customer data for quality assessment"
+    parameters:
+      database: "crm"
+      table: "customers"
+      sample_size: 10000
+    expected_result: |
+      Table: crm.customers
+      - Total rows: 1,000,000
+      - Distinct rows: 998,500 (99.85%)
+      - Duplicate rows: 1,500 (0.15%)
+
+      Column: customer_id
+      - Completeness: 100% (0 nulls)
+      - Uniqueness: 100% (1M distinct values)
+      - Type: Integer
+
+      Column: email
+      - Completeness: 95% (50K nulls)
+      - Uniqueness: 94% (940K distinct)
+      - Pattern: 99.8% match email format
+
+      Column: age
+      - Completeness: 98%
+      - Range: 18 to 95
+      - Mean: 42.3, Median: 41, StdDev: 15.2
+      - Outliers: 150 values > 90
+
+      Quality Score: 94/100
+      - Completeness: 97.7%
+      - Uniqueness: 99.85%
+      - Data Type Conformance: 99.8%
+
+      Actions needed:
+      - Investigate 50K missing emails
+      - Review 150 customers with age > 90
+      - Clean up 1,500 duplicate rows
+
+  # --- Example 2: Transaction Data Validation ---
+  - name: "Transaction Data Validation"
+    description: "Validate transaction table before ML model training"
+    parameters:
+      database: "sales"
+      table: "transactions"
+      columns: ["amount", "customer_id", "product_id", "transaction_date"]
+    expected_result: |
+      Column: amount
+      - Completeness: 100%
+      - Range: $0.01 to $9,999.99
+      - Mean: $87.50, Median: $45.20
+      - Negatives: 0 (good!)
+      - Zeros: 125 (0.01% - investigate)
+
+      Column: customer_id
+      - Completeness: 100%
+      - Distinct: 45,230
+      - All values exist in customers table: YES
+
+      Column: transaction_date
+      - Completeness: 100%
+      - Range: 2023-01-01 to 2024-12-31
+      - Future dates: 0 (good!)
+      - Invalid formats: 0
+
+      Data Quality: PASS ✓
+      Ready for ML model training.
+
+  # --- Example 3: ETL Validation ---
+  - name: "ETL Validation - Source vs Target"
+    description: "Compare source and target tables after migration"
+    parameters:
+      database: "prod"
+      table: "migrated_data"
+    expected_result: |
+      Source Table:
+      - Rows: 5,000,000
+      - Columns: 25
+      - Nulls: 2.3%
+
+      Target Table:
+      - Rows: 5,000,000 ✓
+      - Columns: 25 ✓
+      - Nulls: 2.3% ✓
+
+      Row-by-row comparison: 100% match ✓
+
+      Migration Status: SUCCESS
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Reserved Word Alias ---
+  - error: "Syntax error, expected something like a name between 'AS' keyword and the word"
+    cause: "Using reserved word as column alias (e.g., AS Value, AS Type, AS User, AS Date)"
+    solution: "Teradata restricts certain words as column aliases. Use descriptive alternatives: 'MetricValue' instead of 'Value', 'CustomerType' instead of 'Type', 'RecordCount' instead of 'Count'. Add prefixes like 'Metric_' or suffixes like '_Value' to avoid conflicts."
+
+  # --- Error 2: Read-Only Object Fix Attempt ---
+  - error: "Cannot fix data quality issues in profiled object"
+    cause: "Attempting to UPDATE/INSERT/DELETE on Views, Join Indexes, Foreign Tables, or other read-only objects"
+    solution: "Call get_tables() FIRST to check table type and capabilities. Read-only objects require fixing data in the underlying base table(s). Only regular Tables support direct data modification (INSERT/UPDATE/DELETE). Views show aggregated data from base tables - modify those base tables instead."
+
+  # --- Error 3: Sampling Inconsistency ---
+  - error: "Sampling returns inconsistent results"
+    cause: "Random sampling varies between runs"
+    solution: "Use deterministic sampling or profile full dataset for consistent results"
+
+  # --- Error 4: Memory Issues ---
+  - error: "Out of memory on large tables"
+    cause: "Profiling all columns on billion-row tables"
+    solution: "Use SAMPLE clause, profile columns individually, or aggregate before profiling"
+
+  # --- Error 5: NULL Numeric Stats ---
+  - error: "Column statistics show NULL for numeric fields"
+    cause: "MIN/MAX/AVG don't work on non-numeric columns"
+    solution: "Check column data type first. Cast to numeric if needed or skip numeric stats"
+
+  # --- Error 6: Slow Distinct Counts ---
+  - error: "Distinct count very slow"
+    cause: "COUNT(DISTINCT) on high-cardinality columns"
+    solution: "Use HyperLogLog approximation or sample-based estimation for speed"
+
+  # --- Error 7: Pattern Matching Issues ---
+  - error: "Pattern matching returns unexpected results"
+    cause: "REGEXP_SIMILAR case sensitivity or incorrect pattern"
+    solution: "Test regex patterns on small sample first. Use 'i' flag for case-insensitive"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Data Profiling Best Practices
+
+  ### 0. Check Table Type and Permissions FIRST (Critical for Data Quality)
+  **Before profiling, understand what you're working with:**
+  - Call `get_tables(database)` to discover table types, capabilities, AND permissions
+  - Check the `Permissions` field to verify you have SELECT access (must include 'R')
+  - If permissions show 'NONE' or table isn't listed, you lack access - request from DBA
+  - Check the `capabilities` field to see what operations are supported
+  - **Read-only objects** (Views, Join Indexes, Foreign Tables, Hash Indexes, Error Tables):
+    - CAN profile and analyze (SELECT operations work)
+    - CANNOT fix data quality issues directly (no INSERT/UPDATE/DELETE)
+    - Must modify underlying base table(s) to fix data
+  - **Regular Tables**: Support all operations including data fixes
+  - **Queue Tables**: Support INSERT/DELETE but NOT UPDATE
+  - **Global Temporary Tables**: Support full DML but data is session-specific
+
+  **Permission checking prevents:**
+  - Wasted tokens on access-denied errors (3523)
+  - Failed queries after expensive analysis
+  - Retry loops when permission issues aren't recognized
+
+  This verification step ensures you can actually access the data AND directs you to
+  the correct base tables for fixing quality issues.
+
+  ### 1. Start with High-Level Overview
+  **Before diving into details:**
+  - Row count and table size
+  - Column count and types
+  - Primary key analysis
+  - Duplicate row detection
+
+  This gives you context for detailed profiling.
+
+  ### 2. Profile Systematically
+  **For each column, check:**
+  1. **Completeness:** What % is NULL?
+  2. **Validity:** Does data match expected type/format?
+  3. **Uniqueness:** How many distinct values?
+  4. **Consistency:** Any contradictions?
+  5. **Distribution:** What's the value spread?
+
+  ### 3. Use Sampling for Large Tables
+  **When to sample:**
+  - Tables > 10M rows
+  - Initial exploration
+  - Approximate statistics acceptable
+
+  **When NOT to sample:**
+  - Exact row counts needed
+  - Null detection critical
+  - Small tables (< 1M rows)
+  - Compliance reporting
+
+  **Sampling strategy:**
+  ```sql
+  -- Random sample
+  FROM table SAMPLE 10000
+
+  -- Percentage sample
+  FROM table SAMPLE 0.1 PERCENT
+  ```
+
+  ### 4. Identify Data Quality Issues
+  **Look for:**
+  - **High null %** (> 10%): Missing data problem
+  - **Low distinct %** (< 1%): Possible constant column
+  - **Outliers:** Values far from mean/median
+  - **Invalid formats:** Email without @, negative ages
+  - **Duplicates:** Same row appearing multiple times
+  - **Referential integrity:** Foreign keys without matches
+
+  ### 5. Create Data Quality Metrics
+  **Define measurable targets:**
+  - Completeness: > 95% non-null
+  - Uniqueness: Primary key 100% unique
+  - Validity: > 99% match expected format
+  - Consistency: 0 contradictions
+  - Timeliness: Data < 24 hours old
+
+  ### 6. Automate Profiling
+  **Build reusable profiling queries:**
+  ```sql
+  -- Store profiling results
+  CREATE TABLE data_quality_metrics AS
+  SELECT
+    CURRENT_TIMESTAMP as profile_date,
+    table_name,
+    column_name,
+    completeness_pct,
+    uniqueness_pct,
+    -- ... other metrics
+  FROM profiling_results;
+
+  -- Track over time
+  SELECT * FROM data_quality_metrics
+  WHERE profile_date >= CURRENT_DATE - 30
+  ORDER BY profile_date;
+  ```
+
+  ### 7. Profile Before and After ETL
+  **Migration validation:**
+  - Profile source before extraction
+  - Profile staging after load
+  - Profile target after transformation
+  - Compare metrics at each stage
+
+  **Red flags:**
+  - Row count mismatch
+  - Null % increase
+  - Data type changes
+  - Value range shifts
+
+  ### 8. Document Findings
+  **Create data quality report:**
+  - Executive summary (overall score)
+  - Issue prioritization (critical/medium/low)
+  - Column-by-column details
+  - Recommended actions
+  - Ownership assignment
+
+  ### 9. Correlation Analysis
+  **Check for relationships:**
+  - Highly correlated features (> 0.8): Redundancy
+  - Expected correlations missing: Data quality issue
+  - Unexpected correlations: Hidden patterns
+
+  **Use for:**
+  - Feature selection in ML
+  - Data validation
+  - Business insight
+
+  ### 10. Performance Optimization
+  **Make profiling fast:**
+  - Add indexes on frequently profiled columns
+  - Use column-oriented storage if available
+  - Profile during off-peak hours
+  - Cache profiling results
+  - Incremental profiling for append-only tables
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - outlier_detection
+  - missing_value_analysis
+  - duplicate_detection
+  - data_validation
+# === RELATED_PATTERNS END ===

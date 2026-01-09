@@ -1,0 +1,6 @@
+employee_id,name,salary,hire_date,is_active,department_code
+100001,John Doe,125000.50,2020-01-15,true,ENG
+100002,Jane Smith,95000.00,2021-03-22,true,HR
+100003,Bob Wilson,87500.25,2019-07-10,false,MKT
+100004,Alice Brown,105000.00,2022-02-01,true,ENG
+100005,Charlie Davis,92000.75,2021-11-30,true,FIN

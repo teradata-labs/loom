@@ -1,0 +1,84 @@
+name: tools
+namespace: loom.file
+prompts:
+  - id: file_read
+    content: |
+      Reads content from files on the local filesystem.
+      Use this tool to ground your responses in actual data rather than guessing.
+
+      Use this tool to:
+      - Read data files saved by previous workflow stages
+      - Verify file contents before summarizing
+      - Load configuration or results files
+      - Read markdown, JSON, XML, or other text files
+
+      Safety: Won't read sensitive system files. Max file size: 10MB.
+    tags:
+      - tool
+      - file
+      - read
+    metadata:
+      version: "v1.0"
+      description: "File reading tool"
+
+  - id: file_write
+    content: |
+      Writes content to files on the local filesystem. Creates parent directories automatically.
+      Safe by default - won't overwrite system files.
+
+      Use this tool to:
+      - Save API responses to files
+      - Create data files from agent operations
+      - Store results for later processing
+      - Generate output files
+    tags:
+      - tool
+      - file
+      - write
+    metadata:
+      version: "v1.0"
+      description: "File writing tool"
+
+  - id: list_files
+    content: |
+      List all files in the workspace. Use this when the user asks what files are available.
+    tags:
+      - tool
+      - file
+      - list
+    metadata:
+      version: "v1.0"
+      description: "File listing tool"
+
+  - id: delete_file
+    content: |
+      Delete a file from the workspace. Use this with caution and confirm with the user before deleting.
+    tags:
+      - tool
+      - file
+      - delete
+    metadata:
+      version: "v1.0"
+      description: "File deletion tool"
+
+  - id: search_files
+    content: |
+      Search for text across all files in the workspace. Returns files containing the search term with snippets.
+    tags:
+      - tool
+      - file
+      - search
+    metadata:
+      version: "v1.0"
+      description: "File content search tool"
+
+  - id: get_metadata
+    content: |
+      Get metadata about a file (size, modified date, permissions). Use this when the user asks about file properties.
+    tags:
+      - tool
+      - file
+      - metadata
+    metadata:
+      version: "v1.0"
+      description: "File metadata inspection tool"

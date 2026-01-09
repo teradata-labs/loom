@@ -1,0 +1,91 @@
+name: tools
+namespace: loom.presentation
+prompts:
+  - id: top_n_query
+    content: |
+      Queries shared memory data and returns the top N items sorted by a column.
+
+      This implements the TOP-N presentation strategy:
+      - Reduces large datasets to the most important items
+      - Sorts by frequency, score, importance, or any numeric column
+      - Returns structured results ready for analysis or visualization
+
+      Example: Get top 50 nPath patterns sorted by frequency
+      Example: Get top 20 customers by churn risk score
+
+      Use this when you need:
+      - The highest/lowest N items from a dataset
+      - Most frequent patterns or categories
+      - Top performers or outliers
+
+      This tool queries data stored in shared_memory by other agents (e.g., Stage 9).
+    tags:
+      - tool
+      - presentation
+      - query
+      - shared_memory
+    metadata:
+      version: "v1.0"
+      description: "Top-N query tool for presentation strategy"
+
+  - id: group_by_query
+    content: |
+      Queries shared memory data and aggregates by one or more dimensions.
+
+      This implements the GROUP BY presentation strategy:
+      - Groups data by categorical columns (e.g., customer_segment, region, product)
+      - Computes aggregates: COUNT(*), SUM(measure), AVG(measure)
+      - Returns summary statistics per group
+
+      Example: Group nPath patterns by path length, count frequency
+      Example: Group customers by segment, average churn score
+
+      Use this when you need:
+      - Aggregate statistics by category
+      - Distribution across dimensions
+      - Summary reports by grouping
+
+      This tool queries data stored in shared_memory by other agents (e.g., Stage 9).
+    tags:
+      - tool
+      - presentation
+      - query
+      - aggregation
+    metadata:
+      version: "v1.0"
+      description: "Group-by aggregation tool for presentation strategy"
+
+  - id: generate_workflow_visualization
+    content: |
+      Generates an interactive HTML visualization of a Loom workflow YAML file.
+
+      This tool converts workflow definitions (pipeline stages, agents, connections) into
+      visual diagrams using ECharts. The output is an interactive HTML file that shows:
+      - All stages in the workflow with their titles and agents
+      - Sequential flow connections between stages
+      - Shared memory connections (dashed orange lines)
+      - Agent categories with color coding
+      - Critical markers (TOKEN_BUDGET, MERGED, FULL_HISTORY)
+      - Hover tooltips with stage details and instructions
+
+      Use this when you need:
+      - Visual documentation of workflow structure
+      - Analysis of workflow complexity and dependencies
+      - Presentation of workflow architecture to stakeholders
+      - Debugging workflow connections and data flow
+
+      The generated HTML file is standalone and can be opened in any browser.
+      It includes interactive features: zoom, pan, drag nodes, and click for details.
+
+      Example workflow paths:
+      - ~/.loom/agents/workflow-npath-autonomous-v3.6-streamlined.yaml
+      - ./workflows/my-workflow.yaml
+      - /absolute/path/to/workflow.yaml
+    tags:
+      - tool
+      - presentation
+      - visualization
+      - workflow
+    metadata:
+      version: "v1.0"
+      description: "Workflow visualization generator"

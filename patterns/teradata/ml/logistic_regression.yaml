@@ -1,0 +1,495 @@
+# === METADATA START ===
+name: logistic_regression
+title: "Logistic Regression"
+description: |
+  Binary classification model that predicts the probability of an event occurring (Yes/No, True/False, 1/0).
+  Logistic regression estimates probabilities using the logistic function and is widely used for
+  classification problems where you need interpretable results and probability estimates.
+
+  Perfect for:
+  - Customer churn prediction (will churn: yes/no)
+  - Email click prediction (will click: yes/no)
+  - Loan default prediction (will default: yes/no)
+  - Disease diagnosis (has disease: yes/no)
+
+category: ml
+difficulty: intermediate
+teradata_function: TD_LogReg
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Churn Prediction ---
+  - Customer churn prediction
+
+  # --- Use Case 2: Credit Risk ---
+  - Credit risk assessment (default/no default)
+
+  # --- Use Case 3: Email Response ---
+  - Email response prediction
+
+  # --- Use Case 4: Fraud Detection ---
+  - Fraud detection (fraud/legitimate)
+
+  # --- Use Case 5: Lead Scoring ---
+  - Lead scoring (will convert/won't convert)
+
+  # --- Use Case 6: Medical Diagnosis ---
+  - Medical diagnosis (positive/negative)
+
+  # --- Use Case 7: Click-Through Rate ---
+  - Click-through rate prediction
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing training data"
+    example: "customer_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain features and binary target
+    required: true
+    description: "Table with features and binary target variable"
+    example: "customer_features"
+
+  # --- Parameter 3: Target Column ---
+  - name: target_column
+    type: string
+    # LLM-HINT: Binary outcome variable (0/1, Yes/No, True/False); check class balance first
+    required: true
+    description: "Binary target column (0/1, Yes/No, True/False)"
+    example: "churned"
+
+  # --- Parameter 4: Feature Columns ---
+  - name: feature_columns
+    type: array[string]
+    # LLM-HINT: Predictor variables for classification; can be numeric or categorical
+    required: true
+    description: "Predictor columns (numeric or categorical)"
+    example: '["tenure_months", "monthly_charges", "contract_type", "support_calls"]'
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used for tracking predictions per row (customer_id, user_id, etc.)
+    required: true
+    description: "Unique identifier column"
+    example: "customer_id"
+
+  # --- Parameter 6: Regularization ---
+  - name: regularization
+    type: string
+    # LLM-HINT: L1 for feature selection, L2 for overfitting prevention (default: L2)
+    required: false
+    default: "L2"
+    description: "Regularization type: L1 (Lasso), L2 (Ridge), or NONE"
+    example: "L2"
+
+  # --- Parameter 7: Max Iterations ---
+  - name: max_iterations
+    type: integer
+    # LLM-HINT: Convergence limit; increase if model doesn't converge (default: 100)
+    required: false
+    default: "100"
+    description: "Maximum iterations for convergence"
+    example: "100"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CLASS_BALANCE_CHECK TEMPLATE ===
+  # LLM-HINT: Run this first to detect class imbalance (e.g., 99% no-churn, 1% churn)
+  class_balance_check:
+    description: "Check target variable class distribution before training"
+    sql: |
+      -- Check for class imbalance
+      SELECT
+        {{target_column}} as target_class,
+        COUNT(*) as count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as percentage
+      FROM {{database}}.{{table}}
+      GROUP BY {{target_column}}
+      ORDER BY count DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+
+  # === TRAIN_MODEL TEMPLATE ===
+  # LLM-HINT: Trains binary classifier using TD_LogReg; outputs model to logistic_model table
+  train_model:
+    description: "Train logistic regression model"
+    sql: |
+      -- Train logistic regression classifier
+      SELECT *
+      FROM TD_LogReg (
+        ON {{database}}.{{table}} AS InputTable
+        OUT TABLE OutputTable (logistic_model)
+        USING
+          ResponseColumn ('{{target_column}}')
+          InputColumns ({{feature_columns_quoted}})
+          IDColumn ('{{id_column}}')
+          Regularization ('{{regularization}}')
+          MaxIterNum ({{max_iterations}})
+          Intercept ('true')
+      ) AS dt;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - feature_columns_quoted
+      - id_column
+
+  # === PREDICT_WITH_PROBABILITY TEMPLATE ===
+  # LLM-HINT: Apply trained model to test data; returns class + probability for scoring
+  predict_with_probability:
+    description: "Make predictions with probability scores"
+    sql: |
+      -- Predict class and probability for test data
+      SELECT
+        test.{{id_column}},
+        test.{{target_column}} as actual_class,
+        pred.prediction as predicted_class,
+        pred.logit as logit_score,
+        1.0 / (1.0 + EXP(-pred.logit)) as probability
+      FROM {{database}}.{{test_table}} test
+      JOIN TD_LogRegPredict (
+        ON test AS InputTable
+        ON logistic_model AS Model
+        USING
+          IDColumn ('{{id_column}}')
+          Accumulate ('{{id_column}}', '{{target_column}}')
+          Detailed ('true')
+      ) AS pred
+      ORDER BY probability DESC;
+    required_parameters:
+      - database
+      - test_table
+      - id_column
+      - target_column
+
+  # === MODEL_EVALUATION TEMPLATE ===
+  # LLM-HINT: Calculate performance metrics; requires predictions table from prior step
+  model_evaluation:
+    description: "Calculate accuracy, precision, recall, AUC-ROC"
+    sql: |
+      -- Comprehensive model evaluation metrics
+      WITH predictions AS (
+        SELECT
+          actual_class,
+          predicted_class,
+          probability,
+          CASE
+            WHEN actual_class = 1 AND predicted_class = 1 THEN 'TP'
+            WHEN actual_class = 0 AND predicted_class = 0 THEN 'TN'
+            WHEN actual_class = 1 AND predicted_class = 0 THEN 'FN'
+            WHEN actual_class = 0 AND predicted_class = 1 THEN 'FP'
+          END as classification
+        FROM {{database}}.{{predictions_table}}
+      ),
+      confusion_matrix AS (
+        SELECT
+          SUM(CASE WHEN classification = 'TP' THEN 1 ELSE 0 END) as tp,
+          SUM(CASE WHEN classification = 'TN' THEN 1 ELSE 0 END) as tn,
+          SUM(CASE WHEN classification = 'FP' THEN 1 ELSE 0 END) as fp,
+          SUM(CASE WHEN classification = 'FN' THEN 1 ELSE 0 END) as fn
+        FROM predictions
+      )
+      SELECT
+        -- Accuracy
+        CAST((tp + tn) * 100.0 / (tp + tn + fp + fn) AS DECIMAL(5,2)) as accuracy_pct,
+        -- Precision
+        CAST(tp * 100.0 / NULLIF(tp + fp, 0) AS DECIMAL(5,2)) as precision_pct,
+        -- Recall (Sensitivity)
+        CAST(tp * 100.0 / NULLIF(tp + fn, 0) AS DECIMAL(5,2)) as recall_pct,
+        -- Specificity
+        CAST(tn * 100.0 / NULLIF(tn + fp, 0) AS DECIMAL(5,2)) as specificity_pct,
+        -- F1 Score
+        CAST(2.0 * tp / NULLIF(2.0 * tp + fp + fn, 0) AS DECIMAL(5,2)) as f1_score,
+        -- Confusion matrix components
+        tp, tn, fp, fn
+      FROM confusion_matrix;
+    required_parameters:
+      - database
+      - predictions_table
+
+  # === PROBABILITY_CALIBRATION TEMPLATE ===
+  # LLM-HINT: Validates probability calibration; checks if predicted probs match actual rates
+  probability_calibration:
+    description: "Check if predicted probabilities are well-calibrated"
+    sql: |
+      -- Calibration analysis: compare predicted probabilities to actual rates
+      WITH binned_predictions AS (
+        SELECT
+          CASE
+            WHEN probability < 0.1 THEN '0.0-0.1'
+            WHEN probability < 0.2 THEN '0.1-0.2'
+            WHEN probability < 0.3 THEN '0.2-0.3'
+            WHEN probability < 0.4 THEN '0.3-0.4'
+            WHEN probability < 0.5 THEN '0.4-0.5'
+            WHEN probability < 0.6 THEN '0.5-0.6'
+            WHEN probability < 0.7 THEN '0.6-0.7'
+            WHEN probability < 0.8 THEN '0.7-0.8'
+            WHEN probability < 0.9 THEN '0.8-0.9'
+            ELSE '0.9-1.0'
+          END as probability_bin,
+          AVG(probability) as avg_predicted_prob,
+          AVG(CAST(actual_class AS FLOAT)) as actual_rate,
+          COUNT(*) as count
+        FROM {{database}}.{{predictions_table}}
+        GROUP BY probability_bin
+      )
+      SELECT
+        probability_bin,
+        avg_predicted_prob,
+        actual_rate,
+        ABS(avg_predicted_prob - actual_rate) as calibration_error,
+        count
+      FROM binned_predictions
+      ORDER BY probability_bin;
+    required_parameters:
+      - database
+      - predictions_table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Churn Prediction ---
+  - name: "Customer Churn Prediction"
+    description: "Predict which customers will churn in next 30 days"
+    parameters:
+      database: "telecom"
+      table: "customer_features"
+      target_column: "churned_next_30_days"
+      feature_columns: ["tenure_months", "monthly_charges", "total_charges", "contract_type", "support_calls", "data_usage_gb"]
+      id_column: "customer_id"
+      regularization: "L2"
+      max_iterations: 100
+    expected_result: |
+      Model Performance:
+      - Accuracy: 84%
+      - Precision: 72% (of predicted churners, 72% actually churned)
+      - Recall: 65% (caught 65% of actual churners)
+      - F1 Score: 0.68
+
+      Top Predictive Features:
+      1. support_calls (coefficient: +0.45) - More calls = higher churn risk
+      2. contract_type (Month-to-month: +0.38) - Short contracts = higher risk
+      3. tenure_months (coefficient: -0.22) - Longer tenure = lower risk
+
+      Can identify high-risk customers for retention campaigns.
+
+  # --- Example 2: Email Click Prediction ---
+  - name: "Email Click Prediction"
+    description: "Predict probability of email link click"
+    parameters:
+      database: "marketing"
+      table: "email_features"
+      target_column: "clicked"
+      feature_columns: ["subject_line_length", "sent_hour", "has_personalization", "previous_opens", "user_segment"]
+      id_column: "email_id"
+      regularization: "L1"
+      max_iterations: 50
+    expected_result: |
+      Model Insights:
+      - Overall click rate: 2.5%
+      - Model accuracy: 91% (mostly predicting "no click" correctly)
+      - Precision for clicks: 15% (of predicted clickers, 15% actually clicked)
+      - Recall for clicks: 45% (caught 45% of actual clickers)
+
+      Probability bins:
+      - 0-5% probability: 1.2% actual rate (well calibrated)
+      - 5-10%: 7.8% actual rate
+      - 10-20%: 18% actual rate
+      - >20%: 35% actual rate (good discrimination)
+
+      Use probabilities to prioritize email campaigns.
+
+  # --- Example 3: Credit Default Prediction ---
+  - name: "Credit Default Prediction"
+    description: "Predict loan default risk"
+    parameters:
+      database: "lending"
+      table: "loan_applications"
+      target_column: "defaulted"
+      feature_columns: ["credit_score", "annual_income", "debt_to_income_ratio", "employment_length", "loan_amount", "loan_purpose"]
+      id_column: "loan_id"
+      regularization: "L2"
+      max_iterations: 100
+    expected_result: |
+      Model Performance (test set):
+      - AUC-ROC: 0.82 (good discrimination)
+      - At 10% false positive rate: 65% true positive rate
+
+      Risk Scoring:
+      - Low risk (<5% default probability): 85% of portfolio
+      - Medium risk (5-15%): 12% of portfolio
+      - High risk (>15%): 3% of portfolio
+
+      Coefficients:
+      - credit_score: -0.008 (higher score = lower risk)
+      - debt_to_income: +1.2 (higher ratio = higher risk)
+      - employment_length: -0.05 (longer employment = lower risk)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Class Imbalance ---
+  - error: "Class imbalance causes model to predict only majority class"
+    cause: "One class significantly outweighs the other (e.g., 99% no-churn, 1% churn)"
+    solution: "Use stratified sampling, adjust class weights, or oversample minority class. Consider using precision-recall curve instead of accuracy."
+
+  # --- Error 2: Perfect Separation ---
+  - error: "Perfect separation warning"
+    cause: "A feature perfectly predicts the outcome (separability)"
+    solution: "Check for data leakage - features that include information from after the target event. Remove leaking features."
+
+  # --- Error 3: Convergence Issues ---
+  - error: "Model doesn't converge"
+    cause: "MaxIterNum too low or features not scaled properly"
+    solution: "Increase max_iterations to 200-500. Standardize features if they have vastly different scales."
+
+  # --- Error 4: Weak Features ---
+  - error: "Probabilities all near 0.5"
+    cause: "Features have weak predictive power"
+    solution: "Engineer better features, collect more data, or try different model. Check feature correlation with target."
+
+  # --- Error 5: Misleading Accuracy ---
+  - error: "High accuracy but poor precision/recall"
+    cause: "Imbalanced classes - model just predicts majority class"
+    solution: "Look at precision, recall, F1, not just accuracy. Use confusion matrix. Consider cost-sensitive learning."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Logistic Regression Best Practices
+
+  ### 1. Handle Class Imbalance
+  **Check balance:**
+  ```sql
+  SELECT target, COUNT(*) FROM training_data GROUP BY target;
+  ```
+
+  **If imbalanced (e.g., 95%/5%):**
+  - Oversample minority class (duplicate rows)
+  - Undersample majority class
+  - Use stratified sampling for train/test split
+  - Focus on precision/recall, not accuracy
+  - Consider cost-sensitive learning
+
+  ### 2. Feature Preparation
+  **Logistic regression assumes:**
+  - Linear relationship between log-odds and features
+  - Features are independent (no multicollinearity)
+  - No perfect separation
+
+  **Feature engineering:**
+  - One-hot encode categorical variables
+  - Consider polynomial features for non-linear relationships
+  - Interaction terms (feature1 × feature2)
+  - Bin continuous variables if relationship is step-wise
+
+  ### 3. Choose Right Metrics
+  **For balanced classes:** Accuracy, F1 score
+  **For imbalanced classes:** Precision, Recall, AUC-ROC, AUC-PR
+  **For business decisions:** Consider cost of false positives vs false negatives
+
+  **Example cost matrix:**
+  - False Positive (predict churn, actually stays): $10 retention offer wasted
+  - False Negative (predict stay, actually churns): $500 customer lifetime value lost
+  → Optimize for recall (catch all churners), accept lower precision
+
+  ### 4. Probability Calibration
+  **Well-calibrated model:** If model says 70% probability, ~70% of those should be positive class
+
+  **Check calibration:**
+  - Bin predictions by probability
+  - Compare average predicted probability to actual rate per bin
+  - Large differences = poorly calibrated
+
+  **Improve calibration:**
+  - Platt scaling
+  - Isotonic regression
+  - More training data
+
+  ### 5. Interpret Coefficients
+  **Coefficient interpretation:**
+  - Positive coefficient = feature increases log-odds of positive class
+  - Negative coefficient = feature decreases log-odds
+  - Magnitude = strength of effect
+
+  **Convert to odds ratios:**
+  - Odds ratio = EXP(coefficient)
+  - OR > 1: feature increases odds
+  - OR < 1: feature decreases odds
+  - OR = 1: no effect
+
+  **Example:**
+  - support_calls coefficient = 0.45
+  - Odds ratio = EXP(0.45) = 1.57
+  - Interpretation: Each additional support call increases odds of churn by 57%
+
+  ### 6. Regularization
+  **L1 (Lasso):**
+  - Drives some coefficients to exactly zero
+  - Performs feature selection
+  - Use when you have many features, some irrelevant
+
+  **L2 (Ridge):**
+  - Shrinks coefficients but doesn't zero them out
+  - Reduces overfitting
+  - Use when most features are relevant
+
+  **Elastic Net:**
+  - Combination of L1 and L2
+  - Good default choice
+
+  ### 7. Threshold Selection
+  **Default threshold: 0.5**
+  - Classify as positive if probability > 0.5
+
+  **Adjust threshold based on business needs:**
+  - Need high precision? Increase threshold (e.g., 0.7)
+  - Need high recall? Decrease threshold (e.g., 0.3)
+
+  **Find optimal threshold:**
+  - Plot precision-recall curve
+  - Choose based on business costs
+
+  ### 8. Model Validation
+  **Train/test split:**
+  - 70-80% train, 20-30% test
+  - Stratified split to maintain class balance
+  - Time-based split for time series
+
+  **Cross-validation:**
+  - K-fold cross-validation
+  - Especially important for small datasets
+
+  **Monitor in production:**
+  - Track accuracy/precision/recall over time
+  - Alert on degradation
+  - Retrain periodically with fresh data
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Linear Regression ---
+  - linear_regression
+
+  # --- Pattern 2: Decision Tree ---
+  - decision_tree
+
+  # --- Pattern 3: Random Forest ---
+  - random_forest
+
+  # --- Pattern 4: Naive Bayes ---
+  - naive_bayes
+# === RELATED_PATTERNS END ===

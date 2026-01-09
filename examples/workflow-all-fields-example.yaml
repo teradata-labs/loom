@@ -1,0 +1,368 @@
+# ============================================================================
+# COMPREHENSIVE WORKFLOW YAML - ALL POSSIBLE FIELDS
+# This example shows ALL available fields across ALL workflow formats
+#
+# LOOM SUPPORTS TWO WORKFLOW TYPES:
+# 1. Multi-Agent Coordination (spec.entrypoint) - free-form agent collaboration
+# 2. Orchestration Patterns (spec.type) - predefined patterns
+# ============================================================================
+
+# ============================================================================
+# FORMAT 1: MULTI-AGENT COORDINATION WORKFLOW
+# Free-form workflow where agents communicate via message passing, pub-sub,
+# and shared memory. Used for complex multi-agent systems.
+# ============================================================================
+
+apiVersion: loom/v1    # REQUIRED: Must be "loom/v1"
+kind: Workflow          # REQUIRED: Must be "Workflow"
+
+metadata:
+  name: multi-agent-coordination-example
+  version: "1.0.0"
+  description: "Example multi-agent coordination workflow with all possible fields"
+  labels:
+    domain: example
+    category: coordination
+    environment: development
+
+spec:
+  # Entrypoint agent (required for coordination workflows)
+  entrypoint: coordinator                # REQUIRED: Agent that users interact with first
+
+  # Agent definitions (required)
+  agents:                               # REQUIRED: List of participating agents
+    # Agent with inline configuration
+    - name: coordinator                  # REQUIRED: Agent instance name
+      agent: coordinator-agent           # REQUIRED: Agent config name/reference
+      description: "User-facing coordinator that manages the workflow"  # OPTIONAL
+
+    # Agent loaded from external file
+    - name: specialist-1
+      agent: specialist-agent
+      description: "Domain specialist agent"
+      path: /path/to/agent.yaml          # OPTIONAL: Load from file
+
+    # Agent with path override
+    - name: specialist-2
+      agent: specialist-agent-2
+      path: ../agents/specialist.yaml
+      # Path-loaded agents can have workflow-specific overrides:
+      system_prompt: |                   # OPTIONAL: Override system prompt
+        Custom prompt for this workflow context
+      role: analyzer                     # OPTIONAL: Workflow-specific role
+      prompt_template: |                 # OPTIONAL: For pipeline stages
+        Analyze: {{previous}}
+
+  # Communication pattern documentation (advisory only - not enforced)
+  communication:                         # OPTIONAL: Documents communication topology
+    pattern: "hub-and-spoke"             # OPTIONAL: hub-and-spoke | peer-to-peer-pub-sub
+    hub: coordinator                     # OPTIONAL: Hub agent (for hub-and-spoke)
+    topic: "party-chat"                  # OPTIONAL: Topic name (for peer-to-peer)
+    entrypoint: coordinator              # OPTIONAL: Clarify entrypoint in peer-to-peer
+    # Note: This field is documentation only - the actual pattern emerges from
+    # agent system prompts and tool usage (send_message, publish, subscribe)
+
+  # Workflow-level configuration
+  config:                                # OPTIONAL: Workflow behavior settings
+    timeout_seconds: 1800                # OPTIONAL: Max workflow duration (30 min)
+    max_workflow_turns: 200              # OPTIONAL: Max conversation turns across all agents
+
+  # Observability configuration
+  observability:                         # OPTIONAL: Tracing and metrics
+    export_traces: true                  # OPTIONAL: Export to Hawk/OTLP
+    export_metrics: true                 # OPTIONAL: Export metrics
+    tags:                                # OPTIONAL: Custom tags
+      workflow: multi-agent-example
+      version: "1.0.0"
+      domain: example
+
+# ============================================================================
+# SCHEDULE (optional - for both workflow types)
+# ============================================================================
+schedule:
+  cron: "0 8 * * *"                      # REQUIRED if schedule present
+  timezone: "America/New_York"           # OPTIONAL: Default UTC
+  enabled: true                          # OPTIONAL: Default true
+  skip_if_running: true                  # OPTIONAL: Skip if previous run active
+  max_execution_seconds: 1800            # OPTIONAL: Timeout (default: 3600)
+  variables:                             # OPTIONAL: Variables passed to workflow
+    environment: "production"
+    report_type: "daily"
+
+---
+# ============================================================================
+# FORMAT 2: ORCHESTRATION PATTERN WORKFLOWS
+# Predefined coordination patterns with specific semantics
+# Valid types: debate, fork-join, pipeline, parallel, conditional,
+#              iterative, swarm
+# ============================================================================
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: orchestration-pattern-example
+  version: "1.0.0"
+  description: "Example orchestration pattern workflow"
+  labels:
+    domain: example
+    category: orchestration
+
+spec:
+  type: iterative  # REQUIRED: Pattern type (see all patterns below)
+
+  # Pattern-specific fields (example: iterative)
+  max_iterations: 5
+  restart_topic: "workflow.restart"
+  restart_policy:
+    enabled: true
+    restartable_stages:
+      - stage-discovery
+    cooldown_seconds: 10
+    reset_shared_memory: false
+    preserve_outputs: true
+    max_validation_retries: 2
+  restart_triggers:
+    - stage-execution
+  pipeline:
+    initial_prompt: "Start iterative workflow"
+    stages:
+      - agent_id: stage-discovery
+        prompt_template: "Discover resources"
+        validation_prompt: "Validate results"
+      - agent_id: stage-execution
+        prompt_template: "Execute on {{previous}}"
+    pass_full_history: true
+
+# Optional: Schedule (same as above)
+schedule:
+  cron: "0 8 * * *"
+  timezone: "UTC"
+  enabled: true
+
+# ============================================================================
+# ALL ORCHESTRATION PATTERN TYPES
+# ============================================================================
+
+---
+# --- DEBATE PATTERN ---
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: debate-example
+spec:
+  type: debate
+  topic: "Should we use microservices?"    # REQUIRED
+  agent_ids:                               # REQUIRED
+    - architect
+    - pragmatist
+  rounds: 3                                # OPTIONAL: default 1
+  merge_strategy: consensus                # OPTIONAL: consensus|voting|concatenate|first|best|summary
+  moderator_agent_id: senior-architect     # OPTIONAL
+
+---
+# --- FORK-JOIN PATTERN ---
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: fork-join-example
+spec:
+  type: fork-join
+  prompt: "Analyze this code"             # REQUIRED: Same prompt to all agents
+  agent_ids:                              # REQUIRED
+    - bug-detector
+    - perf-analyzer
+  merge_strategy: concatenate             # OPTIONAL: default concatenate
+  timeout_seconds: 300                    # OPTIONAL
+
+---
+# --- PIPELINE PATTERN ---
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: pipeline-example
+spec:
+  type: pipeline
+  initial_prompt: "Design auth system"    # REQUIRED
+  stages:                                 # REQUIRED
+    - agent_id: spec-writer
+      prompt_template: "Write spec: {{previous}}"
+      validation_prompt: "Check completeness"  # OPTIONAL
+    - agent_id: implementer
+      prompt_template: "Implement: {{previous}}"
+  pass_full_history: true                 # OPTIONAL: default false
+
+---
+# --- PARALLEL PATTERN ---
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: parallel-example
+spec:
+  type: parallel
+  tasks:                                  # REQUIRED
+    - agent_id: error-handler
+      prompt: "Design error handling"
+      metadata:                           # OPTIONAL
+        priority: "high"
+    - agent_id: doc-writer
+      prompt: "Write docs"
+  merge_strategy: concatenate             # OPTIONAL
+  timeout_seconds: 600                    # OPTIONAL
+
+---
+# --- CONDITIONAL PATTERN ---
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: conditional-example
+spec:
+  type: conditional
+  condition_agent_id: classifier          # REQUIRED
+  condition_prompt: "Is this simple or complex?"  # REQUIRED
+  branches:                               # REQUIRED: Map of branch -> nested workflow
+    simple:
+      type: fork-join
+      prompt: "Quick implementation"
+      agent_ids: [junior-dev]
+      merge_strategy: first
+    complex:
+      type: pipeline
+      initial_prompt: "Detailed design"
+      stages:
+        - agent_id: architect
+          prompt_template: "Design"
+  default_branch:                         # OPTIONAL: Fallback
+    type: fork-join
+    prompt: "Handle unknown"
+    agent_ids: [team-lead]
+    merge_strategy: first
+
+---
+# --- ITERATIVE PATTERN ---
+# (Shown above as main example)
+
+---
+# --- SWARM PATTERN ---
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: swarm-example
+spec:
+  type: swarm
+  question: "Should we proceed?"          # REQUIRED
+  agent_ids:                              # REQUIRED
+    - senior-dev-1
+    - senior-dev-2
+    - architect
+  strategy: majority                      # OPTIONAL: majority|supermajority|unanimous|weighted|ranked_choice
+  confidence_threshold: 0.7               # OPTIONAL: 0.0-1.0 (default: 0.5)
+  share_votes: false                      # OPTIONAL: Show votes to agents (default: false)
+  judge_agent_id: principal-engineer      # OPTIONAL: Tie-breaker
+
+---
+# ============================================================================
+# AGENT DEFINITION OPTIONS (for orchestration patterns)
+# ============================================================================
+#
+# Agents in orchestration patterns can be defined:
+#
+# 1. By ID (agent must exist in registry):
+#    agent_ids: [agent-1, agent-2]
+#
+# 2. By inline configuration:
+#    agents:
+#      - id: agent-1
+#        name: Custom Agent
+#        system_prompt: |
+#          Agent instructions...
+#        tools: [tool1, tool2]
+#
+# 3. By path reference (load from file):
+#    agents:
+#      - id: agent-1
+#        path: ../agents/agent.yaml
+#        role: analyzer  # Optional override
+#
+# 4. Mixed (some inline, some referenced):
+#    agents:
+#      - id: agent-1
+#        path: ../agents/specialist.yaml
+#      - id: agent-2
+#        name: Inline Agent
+#        system_prompt: "Instructions..."
+
+# ============================================================================
+# COMMUNICATION PATTERNS (for multi-agent coordination)
+# ============================================================================
+#
+# Hub-and-Spoke:
+#   - Central coordinator agent
+#   - Specialists communicate only with coordinator
+#   - Uses: send_message/receive_message
+#   - Example: vacation-planner, customer-health
+#
+# Peer-to-Peer Pub-Sub:
+#   - All agents subscribe to shared topic
+#   - Any agent can publish to all others
+#   - Uses: publish/subscribe/receive_broadcast
+#   - Example: dungeon-crawl (party-chat)
+#
+# Hybrid:
+#   - Combination of direct messages and pub-sub
+#   - Uses: all communication tools
+#   - Example: Complex multi-agent systems
+
+# ============================================================================
+# FIELD REFERENCE SUMMARY
+# ============================================================================
+#
+# MULTI-AGENT COORDINATION (spec.entrypoint):
+#   Required:
+#     - entrypoint: string (agent name)
+#     - agents: list (agent definitions)
+#   Optional:
+#     - communication: object (pattern documentation)
+#     - config: object (timeout_seconds, max_workflow_turns)
+#     - observability: object (export_traces, export_metrics, tags)
+#
+# ORCHESTRATION PATTERNS (spec.type):
+#   Required:
+#     - type: string (debate|fork-join|pipeline|parallel|conditional|iterative|swarm)
+#     - Pattern-specific fields (see each pattern above)
+#   Optional:
+#     - schedule: object (for scheduled execution)
+#
+# BOTH FORMATS:
+#   Top-level:
+#     - apiVersion: "loom/v1" (required)
+#     - kind: "Workflow" (required)
+#     - metadata: object (name, version, description, labels)
+#     - spec: object (format-specific fields)
+#     - schedule: object (optional, for scheduled execution)
+#
+# MERGE STRATEGIES (debate, fork-join, parallel):
+#   - consensus: LLM synthesizes agreement
+#   - voting: Agents vote on best result
+#   - concatenate: Join all outputs
+#   - first: Use first result
+#   - best: LLM selects best
+#   - summary: LLM summarizes all
+#
+# VOTING STRATEGIES (swarm):
+#   - majority: >50% agreement
+#   - supermajority: >66% agreement
+#   - unanimous: 100% agreement
+#   - weighted: By agent confidence
+#   - ranked_choice: Ranked voting
+#
+# AGENT DEFINITION FIELDS:
+#   name: string (required)
+#   agent: string (required - config name/reference)
+#   description: string (optional)
+#   path: string (optional - load from file)
+#   system_prompt: string (optional - override)
+#   role: string (optional - workflow-specific)
+#   prompt_template: string (optional - for pipeline stages)
+#   tools: list (optional - override tools)
+#
+# ============================================================================

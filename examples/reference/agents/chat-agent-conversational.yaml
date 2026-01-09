@@ -1,0 +1,29 @@
+# Chat Agent with Conversational Compression Profile
+#
+# This configuration is optimized for chatbots and Q&A assistants that require
+# larger recent context windows to maintain conversational coherence.
+# The conversational profile preserves more messages in L1 and compresses later.
+#
+# Use cases:
+# - Customer support chatbots
+# - Educational tutoring agents
+# - General-purpose Q&A assistants
+# - Multi-turn dialogue systems
+
+agent:
+  name: chat-agent-conversational
+  description: Chat agent optimized for multi-turn conversations with context preservation
+
+  # No LLM specification - inherits from server defaults
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: conversational
+
+
+# Example Hawk Metrics for Conversational Profile:
+# memory.compression.events{profile="conversational",batch_size="normal"} ~5/conversation
+# memory.compression.tokens_saved{profile="conversational"} ~30-50% per compression
+# memory.compression.budget_pct{profile="conversational"} 70-85% at compression time

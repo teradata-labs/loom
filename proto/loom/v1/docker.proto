@@ -1,0 +1,325 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/protobuf/timestamp.proto";
+import "loom/v1/project.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// RuntimeType defines the container runtime environment
+enum RuntimeType {
+  RUNTIME_TYPE_UNSPECIFIED = 0;
+  RUNTIME_TYPE_PYTHON = 1;
+  RUNTIME_TYPE_NODE = 2;
+  RUNTIME_TYPE_RUBY = 3;
+  RUNTIME_TYPE_RUST = 4;
+  RUNTIME_TYPE_GO = 5;
+  RUNTIME_TYPE_CUSTOM = 100;
+}
+
+// DockerBackendConfig configures a Docker-based execution backend
+message DockerBackendConfig {
+  // Metadata
+  string name = 1;
+  string description = 2;
+
+  // Runtime selection
+  RuntimeType runtime_type = 3;
+
+  // Container image
+  oneof image_source {
+    string base_image = 4; // e.g., "python:3.11-slim"
+    string dockerfile_path = 5; // Path to custom Dockerfile
+    ImageBuildConfig build_config = 6; // Inline Dockerfile generation
+  }
+
+  // Resource limits
+  ResourceLimits resource_limits = 7;
+
+  // Volume mounts
+  repeated VolumeMount volume_mounts = 8;
+
+  // Environment variables
+  map<string, string> environment = 9;
+
+  // Working directory
+  string working_dir = 10;
+
+  // Runtime-specific config
+  oneof runtime_config {
+    PythonRuntimeConfig python = 20;
+    NodeRuntimeConfig node = 21;
+    CustomRuntimeConfig custom = 22;
+  }
+
+  // MCP server config (optional)
+  MCPServerConfig mcp_server = 30;
+
+  // Container lifecycle settings
+  ContainerLifecycleConfig lifecycle = 40;
+
+  // Trace context (for observability - future use)
+  TraceContext trace_context = 50;
+}
+
+// ResourceLimits defines resource constraints for containers
+message ResourceLimits {
+  double cpu_cores = 1; // e.g., 1.0, 2.0
+  int64 memory_mb = 2; // Memory in MB
+  int64 storage_mb = 3; // Ephemeral storage in MB
+  int32 pids_limit = 4; // Max number of processes
+  int32 execution_timeout_seconds = 5; // Max execution time
+}
+
+// VolumeMount defines a volume mount for the container
+message VolumeMount {
+  string source = 1; // Host path or volume name
+  string target = 2; // Container path
+  bool read_only = 3; // Mount as read-only
+}
+
+// ImageBuildConfig defines inline Dockerfile generation
+message ImageBuildConfig {
+  string from_image = 1; // Base image
+  repeated string run_commands = 2; // RUN commands
+  repeated string copy_files = 3; // COPY commands
+  map<string, string> env = 4; // ENV variables
+  string workdir = 5; // WORKDIR
+}
+
+// PythonRuntimeConfig configures Python runtime
+message PythonRuntimeConfig {
+  string python_version = 1; // "3.11", "3.10", "3.9"
+  repeated string preinstall_packages = 2; // ["numpy", "pandas"]
+  string requirements_file = 3; // Path to requirements.txt
+  bool use_pip_cache = 4; // Use Docker volume for pip cache
+  string virtual_env = 5; // Optional virtualenv name
+}
+
+// NodeRuntimeConfig configures Node.js runtime
+message NodeRuntimeConfig {
+  string node_version = 1; // "20", "18", "16"
+  repeated string preinstall_packages = 2; // ["express", "axios"]
+  string package_json_file = 3; // Path to package.json
+  bool use_npm_cache = 4; // Use Docker volume for npm cache
+}
+
+// CustomRuntimeConfig configures custom runtime
+message CustomRuntimeConfig {
+  repeated string entrypoint_cmd = 1; // ["./my-binary", "--flag"]
+  map<string, string> labels = 2; // Container labels
+}
+
+// Note: MCPServerConfig is defined in project.proto and reused here
+
+// ContainerLifecycleConfig defines container lifecycle settings
+message ContainerLifecycleConfig {
+  int32 rotation_interval_hours = 1; // Rotate container every N hours (default: 4)
+  int32 max_executions = 2; // Rotate after N executions (default: 1000)
+  int32 health_check_interval_seconds = 3; // Health check frequency
+  bool auto_cleanup = 4; // Auto-remove stopped containers
+}
+
+// TraceContext defines trace propagation context (placeholder for Phase 3)
+message TraceContext {
+  string trace_id = 1; // Distributed trace ID
+  string span_id = 2; // Parent span ID
+  string parent_id = 3; // Grandparent span ID (optional)
+  map<string, string> baggage = 4; // W3C baggage (tenant_id, org_id, etc.)
+}
+
+// ExecuteRequest requests execution in a Docker container
+message ExecuteRequest {
+  // Container to execute in (if empty, create new)
+  string container_id = 1;
+
+  // Runtime type (if creating new container)
+  RuntimeType runtime_type = 2;
+
+  // Configuration (if creating new container)
+  DockerBackendConfig config = 3;
+
+  // Command to execute
+  repeated string command = 4;
+
+  // Standard input (optional)
+  bytes stdin = 5;
+
+  // Timeout (overrides config.resource_limits.execution_timeout_seconds)
+  int32 timeout_seconds = 6;
+
+  // Working directory (overrides config.working_dir)
+  string working_dir = 7;
+
+  // Additional environment variables
+  map<string, string> env = 8;
+}
+
+// ExecuteResponse contains execution results
+message ExecuteResponse {
+  // Container ID where execution happened
+  string container_id = 1;
+
+  // Exit code
+  int32 exit_code = 2;
+
+  // Standard output
+  bytes stdout = 3;
+
+  // Standard error
+  bytes stderr = 4;
+
+  // Execution duration
+  int64 duration_ms = 5;
+
+  // Error message (if failed)
+  string error = 6;
+
+  // Container was created (vs reused)
+  bool container_created = 7;
+}
+
+// ContainerRequest requests container creation or retrieval
+message ContainerRequest {
+  // Tenant ID (for multi-tenancy - future use)
+  string tenant_id = 1;
+
+  // Organization ID (for multi-tenancy - future use)
+  string org_id = 2;
+
+  // Runtime type
+  RuntimeType runtime_type = 3;
+
+  // Configuration
+  DockerBackendConfig config = 4;
+
+  // Resource requirements
+  ResourceRequest resources = 5;
+
+  // Scheduling hints (for distributed scheduler - future use)
+  AffinityPolicy affinity = 6;
+
+  // Labels
+  map<string, string> labels = 10;
+}
+
+// ResourceRequest defines resource requirements
+message ResourceRequest {
+  double cpu_cores = 1; // Requested CPU cores
+  int64 memory_mb = 2; // Requested memory in MB
+  int64 storage_mb = 3; // Requested ephemeral storage
+  string priority = 4; // "low", "normal", "high"
+}
+
+// AffinityPolicy defines container placement preferences (future use)
+message AffinityPolicy {
+  AffinityStrategy strategy = 1;
+  string affinity_container_id = 2; // For SAME_NODE strategy
+}
+
+// AffinityStrategy defines placement strategy (future use for distributed)
+enum AffinityStrategy {
+  AFFINITY_STRATEGY_UNSPECIFIED = 0;
+  AFFINITY_STRATEGY_NONE = 1; // No preference
+  AFFINITY_STRATEGY_SAME_NODE = 2; // Data locality
+  AFFINITY_STRATEGY_SPREAD = 3; // Fault tolerance
+}
+
+// Container represents a running container
+message Container {
+  // Container ID
+  string id = 1;
+
+  // Tenant ID (for multi-tenancy - future use)
+  string tenant_id = 2;
+
+  // Node ID (for distributed scheduler - future use, currently "localhost")
+  string node_id = 3;
+
+  // Runtime type
+  RuntimeType runtime_type = 4;
+
+  // Container status
+  ContainerStatus status = 5;
+
+  // Creation timestamp
+  google.protobuf.Timestamp created_at = 6;
+
+  // Last used timestamp
+  google.protobuf.Timestamp last_used_at = 7;
+
+  // Execution count
+  int32 execution_count = 8;
+
+  // Resource usage
+  ResourceUsage resource_usage = 9;
+
+  // Labels
+  map<string, string> labels = 10;
+}
+
+// ContainerStatus defines container state
+enum ContainerStatus {
+  CONTAINER_STATUS_UNSPECIFIED = 0;
+  CONTAINER_STATUS_CREATING = 1;
+  CONTAINER_STATUS_RUNNING = 2;
+  CONTAINER_STATUS_STOPPED = 3;
+  CONTAINER_STATUS_FAILED = 4;
+  CONTAINER_STATUS_REMOVING = 5;
+}
+
+// ResourceUsage tracks container resource consumption
+message ResourceUsage {
+  double cpu_seconds_used = 1; // Total CPU seconds consumed
+  double memory_gb_hours = 2; // Total memory GB-hours
+  int64 execution_count = 3; // Number of executions
+}
+
+// ScheduleRequest requests container scheduling (future use for distributed)
+message ScheduleRequest {
+  string tenant_id = 1;
+  RuntimeType runtime_type = 2;
+  DockerBackendConfig config = 3;
+  ResourceRequest resources = 4;
+  AffinityPolicy affinity = 5;
+}
+
+// ScheduleDecision contains scheduling decision (future use for distributed)
+message ScheduleDecision {
+  string node_id = 1; // "localhost" or "node-us-west-1a"
+  string reason = 2; // "lowest load", "affinity", etc.
+  double estimated_cost_usd = 3; // For cost-aware scheduling
+  NodeInfo node_info = 4; // Node details
+}
+
+// NodeInfo contains node metadata (future use for distributed)
+message NodeInfo {
+  string node_id = 1;
+  string region = 2; // "us-west-1", "eu-central-1"
+  string availability_zone = 3; // "us-west-1a"
+  ResourceCapacity capacity = 4;
+  ResourceCapacity available = 5;
+  int32 container_count = 6;
+  NodeStatus status = 7;
+}
+
+// ResourceCapacity defines node capacity (future use for distributed)
+message ResourceCapacity {
+  double cpu_cores = 1;
+  int64 memory_mb = 2;
+  int64 storage_gb = 3;
+}
+
+// NodeStatus defines node health (future use for distributed)
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_HEALTHY = 1;
+  NODE_STATUS_DEGRADED = 2;
+  NODE_STATUS_OFFLINE = 3;
+}

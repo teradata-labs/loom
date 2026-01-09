@@ -1,0 +1,57 @@
+# Daily Sales Report Workflow
+# Executes every day at 8 AM Eastern Time
+# Generates a comprehensive sales report and sends it to stakeholders
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: daily-sales-report
+  description: Generate and distribute daily sales report
+
+spec:
+  type: pipeline
+  pipeline:
+    initial_prompt: "Generate comprehensive daily sales report for yesterday"
+    stages:
+      - agent_id: data-analyst
+        prompt: |
+          Query the sales database for yesterday's data and generate a summary report.
+          Include:
+          - Total sales revenue
+          - Top performing products
+          - Regional breakdown
+          - Year-over-year comparison
+
+      - agent_id: report-formatter
+        prompt: |
+          Format the sales data into a professional HTML report with charts and tables.
+          Ensure the report is visually appealing and easy to read.
+
+      - agent_id: email-sender
+        prompt: |
+          Send the formatted report to the stakeholders distribution list.
+          Subject: Daily Sales Report - {{date}}
+
+# Schedule Configuration
+schedule:
+  # Cron expression: minute hour day-of-month month day-of-week
+  # "0 8 * * *" = Every day at 8:00 AM
+  cron: "0 8 * * *"
+
+  # Timezone for cron evaluation (default: UTC)
+  timezone: "America/New_York"
+
+  # Enable/disable the schedule (default: true)
+  enabled: true
+
+  # Skip execution if previous run is still in progress (default: true)
+  skip_if_running: true
+
+  # Maximum execution time in seconds (default: 3600 = 1 hour)
+  max_execution_seconds: 1800  # 30 minutes
+
+  # Variables passed to the workflow
+  variables:
+    report_type: "daily"
+    environment: "production"
+    notification_channel: "slack-sales"

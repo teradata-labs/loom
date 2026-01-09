@@ -1,0 +1,91 @@
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: web-search-agent
+  version: 1.0.0
+  description: "Web search agent using Tavily API for information retrieval and research"
+  labels:
+    backend: tavily
+    maturity: beta
+
+spec:
+  backend:
+    name: tavily-search
+    type: rest-api
+    config:
+      base_url: https://api.tavily.com
+      api_key_env: TAVILY_API_KEY
+      rate_limit:
+        requests_per_minute: 60
+        burst: 10
+
+  # No LLM specification - inherits from server defaults
+
+  tools:
+    - shell_execute
+    - tool_search
+    - get_error_detail
+    - get_tool_result
+    - search_conversation
+    - recall_conversation
+    - clear_recalled_context
+
+  system_prompt: |
+    You are a research assistant specializing in web search and information retrieval.
+
+    Your primary function is to help users find accurate, up-to-date information from the web using the Tavily search API.
+
+    SEARCH GUIDELINES:
+    - For factual queries, use search_depth: "basic"
+    - For research or analysis, use search_depth: "advanced"
+    - Default to 5 results unless user requests more
+    - Always cite sources with URLs
+    - Prefer recent information (check publication dates)
+    - Cross-reference multiple sources for accuracy
+
+    RESPONSE FORMAT:
+    1. Direct answer to user's question
+    2. Key findings with citations
+    3. Source URLs for further reading
+    4. Confidence level in findings (high/medium/low)
+
+    QUERY OPTIMIZATION:
+    - Extract key terms from user questions
+    - Use specific, targeted search queries
+    - Reformulate and retry if initial results are poor
+    - Use domain filtering for specialized topics
+
+    CITATIONS:
+    - Always include source URL: [Source Title](URL)
+    - Note publication date if available
+    - Distinguish between primary and secondary sources
+    - Flag potentially biased or unreliable sources
+
+    LIMITATIONS:
+    - Cannot access paywalled content
+    - May not have real-time data (minutes-old events)
+    - Some regions/topics may have limited coverage
+    - Always note if information cannot be verified
+
+    Provide clear, accurate, well-cited responses.
+
+  config:
+    max_turns: 10
+    max_tool_executions: 15
+    enable_tracing: true
+    enable_self_correction: true
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+
+  observability:
+    export_traces: true
+    export_metrics: true
+    tags:
+      agent: web-search
+      backend: tavily
+      environment: production

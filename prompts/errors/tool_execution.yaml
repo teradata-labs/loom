@@ -1,0 +1,96 @@
+name: errors
+namespace: loom.tool_execution
+prompts:
+  - id: timeout
+    content: |
+      The tool execution timed out after {{.timeout_seconds}}s. This usually indicates:
+      - Large data processing
+      - Network issues
+      - Database query performance problems
+
+      Let me try with a smaller dataset or optimized query.
+    variables:
+      timeout_seconds:
+        name: timeout_seconds
+        type: 2  # INT
+        required: true
+        description: "Timeout duration in seconds"
+    tags:
+      - error
+      - tool
+      - timeout
+    metadata:
+      version: "v1.0"
+      description: "Tool execution timeout error"
+
+  - id: invalid_input
+    content: |
+      Invalid input provided to tool: {{.error_details}}
+
+      Expected format: {{.expected_format}}
+    variables:
+      error_details:
+        name: error_details
+        type: 1  # STRING
+        required: true
+        description: "Error details describing what was invalid"
+      expected_format:
+        name: expected_format
+        type: 1  # STRING
+        required: true
+        description: "Expected input format"
+    tags:
+      - error
+      - tool
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "Tool input validation error"
+
+  - id: execution_failed
+    content: |
+      Tool execution failed: {{.error_message}}
+
+      {{if .retry_suggested}}I'll try a different approach.{{end}}
+    variables:
+      error_message:
+        name: error_message
+        type: 1  # STRING
+        required: true
+        description: "Error message from tool execution"
+      retry_suggested:
+        name: retry_suggested
+        type: 4  # BOOL
+        required: false
+        description: "Whether retry is suggested"
+    tags:
+      - error
+      - tool
+      - execution
+    metadata:
+      version: "v1.0"
+      description: "Generic tool execution failure"
+
+  - id: backend_unavailable
+    content: |
+      The backend system is currently unavailable: {{.backend_name}}
+
+      This may be due to:
+      - Network connectivity issues
+      - Backend service downtime
+      - Authentication/authorization problems
+
+      Please check the backend status and try again.
+    variables:
+      backend_name:
+        name: backend_name
+        type: 1  # STRING
+        required: true
+        description: "Name of the unavailable backend"
+    tags:
+      - error
+      - backend
+      - availability
+    metadata:
+      version: "v1.0"
+      description: "Backend unavailability error"

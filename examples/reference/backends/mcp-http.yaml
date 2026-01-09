@@ -1,0 +1,34 @@
+# Example backend configuration for HTTP-based MCP server
+# This demonstrates connecting to a remote MCP server via HTTP/SSE
+# Usage: Reference this file in your looms.yaml agent configuration
+
+apiVersion: loom/v1
+kind: Backend
+name: mcp-http-backend
+type: mcp
+description: MCP backend for remote HTTP-based tools
+
+# MCP configuration for HTTP/SSE transport
+mcp:
+  # Transport type: "http" or "sse" for server-sent events
+  transport: http
+
+  # URL endpoint for the MCP server
+  url: http://localhost:8080/mcp
+
+  # Note: command, args, env, and working_dir are not used for HTTP transport
+
+# MCP backends automatically support these capabilities
+capabilities:
+  query_execution: false
+  schema_discovery: false
+  metadata: true
+  resource_listing: true
+  custom_operations: true
+
+# Notes:
+# - HTTP/SSE transport connects to an already-running MCP server
+# - The MCP server must implement the Model Context Protocol specification
+# - Tools are discovered automatically via MCP's tools/list endpoint
+# - Each tool becomes available as a backend operation
+# - Consider using stdio transport for better process isolation

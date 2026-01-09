@@ -1,0 +1,97 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: code-generation
+  version: 1.0.0
+  domain: code
+  description: "Code generation patterns for tests, documentation, and debugging. Improves developer productivity and code quality."
+  labels:
+    vendor: anthropic
+    category: development
+    maturity: production
+
+spec:
+  entries:
+    - name: test_generation
+      description: "Generate comprehensive test cases - unit tests, table-driven tests, SQL test data, API test cases"
+      trigger_conditions:
+        - "user asks to generate tests"
+        - "create test cases for function"
+        - "need edge case tests"
+        - "improve test coverage"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/code/test-generation.yaml
+
+        Key use cases:
+        - Unit test creation (Go, Python, JS)
+        - SQL query test data
+        - API endpoint test cases
+        - Edge case identification
+
+        Templates:
+        - go_unit_tests: Table-driven Go tests with testify
+        - sql_test_data: Test data and expected results
+        - api_test_cases: HTTP test scenarios
+      priority: 90
+      tags:
+        - testing
+        - quality
+        - tdd
+        - coverage
+
+    - name: doc_generation
+      description: "Generate documentation from code - godoc, README, API docs, inline comments"
+      trigger_conditions:
+        - "user asks to document code"
+        - "create README"
+        - "generate API documentation"
+        - "add code comments"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/code/doc-generation.yaml
+
+        Key use cases:
+        - Godoc function documentation
+        - README.md generation
+        - API documentation
+        - Inline code comments
+
+        Templates:
+        - godoc: Go documentation comments
+        - readme: Comprehensive README.md
+        - inline_comments: Explain complex code
+      priority: 82
+      tags:
+        - documentation
+        - godoc
+        - readme
+        - comments
+
+    - name: root_cause_analysis
+      description: "Systematic debugging - 5 Whys, hypothesis testing, timeline analysis for production incidents"
+      trigger_conditions:
+        - "user reports error or failure"
+        - "performance problem"
+        - "debugging production incident"
+        - "root cause needed"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/debugging/root-cause-analysis.yaml
+
+        Key use cases:
+        - Production incident investigation
+        - SQL performance issues
+        - API failures
+        - System crashes
+
+        Templates:
+        - five_whys: 5 Whys technique
+        - hypothesis_testing: Scientific method
+        - timeline_analysis: What changed?
+      priority: 93
+      tags:
+        - debugging
+        - troubleshooting
+        - incidents
+        - rca

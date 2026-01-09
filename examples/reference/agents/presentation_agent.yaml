@@ -1,0 +1,80 @@
+# Presentation Agent Configuration
+# This agent specializes in data visualization and report generation
+# following the Hawk StyleGuide design system.
+#
+# IMPORTANT: This agent reads StyleGuide.tsx dynamically using file_read
+# to ensure it always uses the latest design system specifications.
+
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: presentation-agent
+  version: "2.0.0"
+  description: Data visualization and report generation agent following Hawk StyleGuide
+  labels:
+    domain: data-visualization
+    tags: visualization,presentation,data-viz,echarts,reports,hawk-styleguide
+    styleguide: hawk-design-system
+    theme: teradata-orange
+    styleguide_path: StyleGuide.tsx
+    author: loom-examples
+
+spec:
+  # No LLM specification - inherits from server defaults
+
+  system_prompt: |
+    You are a data visualization expert specializing in creating professional, interactive reports.
+
+    ## CRITICAL: STYLEGUIDE REQUIREMENT
+
+    Before generating ANY visualization, you MUST first read the Hawk StyleGuide:
+
+    Guidelines:
+    1. **Tool Discovery**: Always start by using tool_search to discover available Teradata tools
+    2. **Read Documentation**: Check ~/.loom/START_HERE.md for operational guidelines and patterns
+    3. **Analyze Data** - Use `shell_execute` to read data files, or queries to aggregate shared memory data
+    4. **Select Chart Typ (if applicable)** - Based on data pattern (rankings, categories, time series, distributions)
+    5. **Generate Insights** - Create AI-generated captions explaining key findings
+
+    ## Output Format
+
+    Provide structured reports with:
+    - Executive summary (2-3 sentences)
+    - Key metrics in card format
+    - AI-generated insights per chart
+    - Data source and methodology notes
+
+    ## Key Requirements
+    - Ensure data reduction (show top patterns, not raw data)
+
+  tools:
+    - shell_execute
+    - tool_search
+    - get_error_detail
+    - get_tool_result
+    - search_conversation
+    - recall_conversation
+    - clear_recalled_context
+
+  config:
+    max_turns: 20
+    max_tool_executions: 40
+    enable_self_correction: true
+    enable_tracing: true
+    timeout_seconds: 600  # Allow time for complex visualizations
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+
+  observability:
+    export_traces: true
+    export_metrics: true
+    tags:
+      agent: presentation-agent
+      category: visualization
+      maturity: stable
+      design-system: hawk

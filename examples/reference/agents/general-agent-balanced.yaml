@@ -1,0 +1,39 @@
+# General Purpose Agent with Balanced Compression Profile
+#
+# This configuration uses the balanced profile, which provides reasonable defaults
+# for most use cases. It's a good starting point for new agents before profiling
+# your specific workload pattern.
+#
+# Use cases:
+# - Multi-purpose agents with mixed workloads
+# - Unknown/variable workload patterns
+# - Development and prototyping
+# - Default configuration (backwards compatible)
+
+agent:
+  name: general-agent-balanced
+  description: General purpose agent with balanced compression
+
+  # No LLM specification - inherits from server defaults
+
+  memory:
+    type: sqlite
+    max_history: 1000
+
+
+# Note: If you omit memory_compression entirely, the balanced profile is used automatically:
+#
+# memory:
+#   type: memory
+#
+# Is equivalent to:
+#
+# memory:
+#   type: memory
+#   memory_compression:
+#     workload_profile: balanced
+
+# Example Hawk Metrics for Balanced Profile:
+# memory.compression.events{profile="balanced",batch_size="normal"} ~8/conversation
+# memory.compression.tokens_saved{profile="balanced"} ~40-60% per compression
+# memory.compression.budget_pct{profile="balanced"} 60-75% at compression time

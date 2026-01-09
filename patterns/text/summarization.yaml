@@ -1,0 +1,129 @@
+# === METADATA START ===
+name: summarization
+title: "Text Summarization Techniques"
+description: |
+  Condense long texts into concise summaries. Supports extractive (key sentences),
+  abstractive (paraphrase), and hierarchical (multi-level) summarization. Essential for
+  document processing, meeting notes, log analysis, and report generation.
+
+category: summarization
+difficulty: beginner
+backend_type: text
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Long document summarization
+  - Meeting notes condensation
+  - Executive summaries for reports
+  - Log file analysis
+  - Research paper summaries
+  - News article digests
+  - Email thread summaries
+  - Chat conversation summaries
+  - Legal document abstracts
+  - Technical documentation tl;dr
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: input_text
+    type: string
+    required: true
+    description: "Text to summarize"
+    example: "Long document content..."
+
+  - name: summary_type
+    type: enum[extractive, abstractive, hierarchical]
+    required: false
+    default: "abstractive"
+    description: "Type of summary"
+    example: "hierarchical"
+
+  - name: max_words
+    type: integer
+    required: false
+    default: 100
+    description: "Maximum words in summary"
+    example: "50"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  extractive:
+    description: "Extract key sentences preserving original wording"
+    content: |
+      Extract the 3-5 most important sentences from:
+
+      {{input_text}}
+
+      Return as bullet points, preserving exact wording.
+    required_parameters:
+      - input_text
+
+  abstractive:
+    description: "Paraphrase and condense"
+    content: |
+      Summarize this in {{max_words}} words or less:
+
+      {{input_text}}
+
+      Use your own words while preserving key information.
+    required_parameters:
+      - input_text
+      - max_words
+
+  hierarchical:
+    description: "Multi-level summary (one-liner, paragraph, detailed)"
+    content: |
+      Create a 3-level summary:
+
+      1. One-sentence summary (tweet length, <280 chars)
+      2. One-paragraph summary (3-5 sentences)
+      3. Detailed summary with key points (bullet list)
+
+      Text: {{input_text}}
+    required_parameters:
+      - input_text
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Meeting Notes Summary"
+    parameters:
+      input_text: "[Long meeting transcript...]"
+      summary_type: "hierarchical"
+    expected_result: |
+      1. Team decided to prioritize feature X for Q4 release.
+      2. The team discussed three features. Feature X was prioritized due to customer demand. Timeline is Q4 with beta in October. Bob will lead development, Alice handles design.
+      3. Key Decisions:
+         - Feature X: Q4 release (beta Oct)
+         - Team: Bob (dev lead), Alice (design)
+         - Budget: $50K approved
+         Action Items:
+         - Bob: Create technical spec by Friday
+         - Alice: Design mockups by next week
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Summarization Best Practices
+
+  1. **Choose Right Type**:
+     - Extractive: Legal, compliance (exact wording matters)
+     - Abstractive: General content (readability matters)
+     - Hierarchical: Executives (multiple detail levels)
+
+  2. **Length Guidelines**:
+     - Executive: 50-100 words
+     - Standard: 100-200 words
+     - Detailed: 200-500 words
+
+  3. **Preserve Critical Info**: Names, dates, numbers, decisions
+  4. **Multiple Summaries**: For very long docs (10K+ words), summarize sections first
+  5. **Bullet Points**: More scannable than paragraphs
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - text_processing
+  - document_analysis

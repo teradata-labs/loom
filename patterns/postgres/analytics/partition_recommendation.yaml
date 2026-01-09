@@ -1,0 +1,82 @@
+name: partition_recommendation
+title: "Table Partitioning Recommendation"
+description: "Recommends table partitioning for very large tables to improve query performance"
+category: analytics
+difficulty: advanced
+backend_type: postgres
+priority: 60
+
+parameters:
+  - name: table_name
+    type: string
+    required: true
+    description: "Large table to partition"
+
+  - name: partition_column
+    type: string
+    required: true
+    description: "Column to partition by (usually date/time)"
+
+  - name: partition_strategy
+    type: string
+    required: false
+    description: "Partitioning strategy: range, list, hash"
+    default: "range"
+
+templates:
+  analysis: |
+    -- Check table size and query patterns
+    SELECT
+      pg_size_pretty(pg_total_relation_size('{{.table_name}}'::regclass)) AS size,
+      (SELECT reltuples FROM pg_class WHERE relname = '{{.table_name}}') AS row_estimate
+
+  range_partitioning: |
+    -- Create range-partitioned table (e.g., by date)
+    CREATE TABLE {{.table_name}}_partitioned (LIKE {{.table_name}} INCLUDING ALL)
+    PARTITION BY RANGE ({{.partition_column}});
+
+    -- Create partitions (example: monthly)
+    CREATE TABLE {{.table_name}}_2024_01 PARTITION OF {{.table_name}}_partitioned
+    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+
+  list_partitioning: |
+    -- Create list-partitioned table (e.g., by category/region)
+    CREATE TABLE {{.table_name}}_partitioned (LIKE {{.table_name}} INCLUDING ALL)
+    PARTITION BY LIST ({{.partition_column}});
+
+    CREATE TABLE {{.table_name}}_part1 PARTITION OF {{.table_name}}_partitioned
+    FOR VALUES IN ('value1', 'value2');
+
+  hash_partitioning: |
+    -- Create hash-partitioned table (for even distribution)
+    CREATE TABLE {{.table_name}}_partitioned (LIKE {{.table_name}} INCLUDING ALL)
+    PARTITION BY HASH ({{.partition_column}});
+
+    CREATE TABLE {{.table_name}}_part0 PARTITION OF {{.table_name}}_partitioned
+    FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+
+examples:
+  - name: "Partition by date"
+    parameters:
+      table_name: orders
+      partition_column: order_date
+      partition_strategy: range
+    expected_result: "Monthly range partitions recommended"
+
+  - name: "Partition by region"
+    parameters:
+      table_name: users
+      partition_column: region
+      partition_strategy: list
+    expected_result: "List partition by region"
+
+use_cases:
+  - "Speed up queries on large tables (>10M rows)"
+  - "Improve data archival"
+  - "Enable partition pruning"
+
+validation:
+  rules:
+    - "Table size > 10GB recommended"
+    - "Queries frequently filter on partition column"
+    - "Partition column has good cardinality"

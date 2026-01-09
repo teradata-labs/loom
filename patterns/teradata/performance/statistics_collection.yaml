@@ -1,0 +1,479 @@
+# === METADATA START ===
+name: statistics_collection
+title: "Statistics Collection Recommendations"
+description: |
+  Recommend and generate COLLECT STATISTICS commands to improve Teradata query optimizer performance.
+  Statistics are critical for the Teradata optimizer to make accurate cardinality estimates, choose
+  optimal join strategies, and select efficient access paths.
+
+  **CRITICAL: Statistics are the #1 factor in Teradata query performance.**
+  Missing or stale statistics cause:
+  - Inaccurate row count estimates → poor join strategies
+  - Full table scans instead of index usage
+  - Excessive spool space consumption
+  - Skewed workload distribution across AMPs
+
+  **TABLE TYPE REQUIREMENTS:**
+  COLLECT STATISTICS requires ALTER TABLE privilege on base tables. It does NOT work on:
+  - Views (collect stats on base tables instead)
+  - Derived tables or CTEs
+  - Join indexes (automatically inherit base table stats)
+  Call get_tables() first to verify table type before attempting stats collection.
+
+  **WHEN TO COLLECT:**
+  - After initial data load
+  - After significant data changes (>10% row modification)
+  - Before complex queries or reports
+  - Weekly/monthly for slowly-changing dimensions
+  - Daily for high-velocity fact tables
+
+category: performance
+difficulty: intermediate
+teradata_function: COLLECT STATISTICS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: New Table Stats ---
+  - Initial statistics collection for newly loaded tables
+
+  # --- Use Case 2: Stale Stats Refresh ---
+  - Refresh statistics after significant data changes
+
+  # --- Use Case 3: Query Optimization ---
+  - Improve slow query performance through better optimizer estimates
+
+  # --- Use Case 4: Join Optimization ---
+  - Collect stats on join columns to improve join strategy selection
+
+  # --- Use Case 5: Skew Detection ---
+  - Collect stats to identify data skew on PI columns
+
+  # --- Use Case 6: Index Usage ---
+  - Enable index usage by collecting stats on secondary index columns
+
+  # --- Use Case 7: Partition Stats ---
+  - Partition-level statistics for partitioned primary indexes
+
+  # --- Use Case 8: Multi-column Stats ---
+  - Multi-column statistics for correlated predicates
+
+  # --- Use Case 9: Production Optimization ---
+  - Scheduled statistics maintenance for production tables
+
+  # --- Use Case 10: ETL Process ---
+  - Post-ETL statistics collection as part of data pipeline
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates
+    required: true
+    description: "Database containing the table"
+    example: "sales_db"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Must be a base table; verify with get_tables() before collecting stats
+    required: true
+    description: "Table name for statistics collection"
+    example: "orders"
+
+  # --- Parameter 3: Columns (optional) ---
+  - name: columns
+    type: array[string]
+    # LLM-HINT: Specific columns to collect stats on; if omitted, recommendations will suggest columns
+    required: false
+    description: "Specific columns to collect statistics on"
+    example: '["order_date", "customer_id", "status"]'
+
+  # --- Parameter 4: Analysis Type ---
+  - name: analysis_type
+    type: string
+    # LLM-HINT: 'recommend' = analyze and suggest, 'collect' = generate COLLECT commands
+    required: false
+    default: "recommend"
+    description: "Type of analysis: 'recommend' or 'collect'"
+    example: "recommend"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === ANALYSIS TEMPLATE ===
+  # LLM-HINT: Use this to identify which columns need statistics
+  statistics_analysis:
+    description: "Analyze table to recommend statistics collection"
+    sql: |
+      -- Step 1: Check current statistics status
+      SELECT
+        DatabaseName,
+        TableName,
+        ColumnName,
+        StatisticsType,
+        CollectTimeStamp,
+        CURRENT_TIMESTAMP - CollectTimeStamp AS days_old,
+        CASE
+          WHEN CollectTimeStamp IS NULL THEN 'MISSING'
+          WHEN CURRENT_TIMESTAMP - CollectTimeStamp > INTERVAL '7' DAY THEN 'STALE'
+          ELSE 'CURRENT'
+        END AS status
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      ORDER BY ColumnName;
+
+      -- Step 2: Identify columns without statistics
+      SELECT
+        c.ColumnName,
+        c.ColumnType,
+        c.ColumnLength,
+        CASE
+          WHEN c.ColumnName IN (SELECT ColumnName FROM DBC.IndicesV WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}' AND IndexType = 'P') THEN 'PRIMARY_INDEX'
+          WHEN c.ColumnName IN (SELECT ColumnName FROM DBC.IndicesV WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}' AND IndexType IN ('S', 'J')) THEN 'SECONDARY_INDEX'
+          ELSE 'REGULAR'
+        END AS column_role,
+        CASE
+          WHEN s.ColumnName IS NULL THEN 'MISSING_STATS'
+          ELSE 'HAS_STATS'
+        END AS stats_status
+      FROM DBC.ColumnsV c
+      LEFT JOIN DBC.StatsV s ON c.DatabaseName = s.DatabaseName
+        AND c.TableName = s.TableName
+        AND c.ColumnName = s.ColumnName
+      WHERE c.DatabaseName = '{{database}}'
+        AND c.TableName = '{{table}}'
+      ORDER BY column_role, c.ColumnName;
+
+      -- Step 3: Check table size and row count
+      SELECT
+        DatabaseName,
+        TableName,
+        SUM(CurrentPerm) / 1024 / 1024 AS size_mb,
+        MAX(TableCount) AS row_count_estimate
+      FROM DBC.TableSizeV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      GROUP BY DatabaseName, TableName;
+
+  # === RECOMMENDATION TEMPLATE ===
+  # LLM-HINT: Generates prioritized list of statistics to collect
+  statistics_recommendations:
+    description: "Generate prioritized statistics collection recommendations"
+    sql: |
+      -- Priority 1: Primary Index columns (CRITICAL)
+      SELECT
+        'HIGH' AS priority,
+        'PRIMARY_INDEX' AS reason,
+        'COLLECT STATISTICS ON {{database}}.{{table}} COLUMN(' || TRIM(ColumnName) || ');' AS recommendation
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND IndexType = 'P'
+        AND ColumnName NOT IN (
+          SELECT ColumnName FROM DBC.StatsV
+          WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}'
+        );
+
+      -- Priority 2: Secondary Index columns
+      SELECT
+        'HIGH' AS priority,
+        'SECONDARY_INDEX' AS reason,
+        'COLLECT STATISTICS ON {{database}}.{{table}} COLUMN(' || TRIM(ColumnName) || ');' AS recommendation
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND IndexType IN ('S', 'J')
+        AND ColumnName NOT IN (
+          SELECT ColumnName FROM DBC.StatsV
+          WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}'
+        );
+
+      -- Priority 3: Frequently accessed columns (check query log)
+      -- Note: This requires DBQL enabled
+      SELECT
+        'MEDIUM' AS priority,
+        'FREQUENTLY_FILTERED' AS reason,
+        'COLLECT STATISTICS ON {{database}}.{{table}} COLUMN(' || TRIM(ColumnName) || ');' AS recommendation
+      FROM (
+        -- Placeholder: Parse WHERE clauses from DBQL
+        SELECT DISTINCT '{{database}}' AS DatabaseName, '{{table}}' AS TableName, 'column_name' AS ColumnName
+        FROM (SELECT 1 AS dummy) dummy_table
+        WHERE 1=0  -- Disabled: requires DBQL query log parsing
+      ) freq_cols
+      WHERE ColumnName NOT IN (
+        SELECT ColumnName FROM DBC.StatsV
+        WHERE DatabaseName = '{{database}}' AND TableName = '{{table}}'
+      );
+
+      -- Priority 4: Multi-column statistics for correlated columns
+      -- Recommend only for known join pairs or filter combinations
+      SELECT
+        'LOW' AS priority,
+        'MULTI_COLUMN_JOIN' AS reason,
+        'COLLECT STATISTICS ON {{database}}.{{table}} COLUMN(' || TRIM(col1.ColumnName) || ', ' || TRIM(col2.ColumnName) || ');' AS recommendation
+      FROM DBC.IndicesV col1
+      JOIN DBC.IndicesV col2 ON col1.DatabaseName = col2.DatabaseName
+        AND col1.TableName = col2.TableName
+        AND col1.ColumnName < col2.ColumnName
+      WHERE col1.DatabaseName = '{{database}}'
+        AND col1.TableName = '{{table}}'
+        AND col1.IndexType = 'P'
+        AND col2.IndexType = 'P';
+
+  # === COLLECTION TEMPLATE ===
+  # LLM-HINT: Generate COLLECT STATISTICS commands for execution
+  statistics_collection:
+    description: "Generate COLLECT STATISTICS commands"
+    sql: |
+      -- COLLECT STATISTICS for {{database}}.{{table}}
+      -- Generated: {{current_timestamp}}
+
+      -- Single column statistics
+      {{range $i, $col := .columns}}
+      COLLECT STATISTICS
+        COLUMN({{$col}})
+      ON {{$.database}}.{{$.table}};
+      {{end}}
+
+      -- Primary Index statistics (always collect)
+      COLLECT STATISTICS
+        ON {{database}}.{{table}};
+
+      -- Alternative: Collect all single-column stats at once
+      COLLECT STATISTICS
+        {{range $i, $col := .columns}}
+        {{if $i}},{{end}}
+        COLUMN({{$col}})
+        {{end}}
+      ON {{database}}.{{table}};
+
+  # === VERIFICATION TEMPLATE ===
+  # LLM-HINT: Verify statistics were collected successfully
+  statistics_verification:
+    description: "Verify statistics collection completed successfully"
+    sql: |
+      -- Check statistics collection status
+      SELECT
+        DatabaseName,
+        TableName,
+        ColumnName,
+        StatisticsType,
+        CollectTimeStamp,
+        CURRENT_TIMESTAMP - CollectTimeStamp AS minutes_old,
+        UniqueValueCount,
+        StatsSource
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND CollectTimeStamp >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR
+      ORDER BY CollectTimeStamp DESC;
+
+      -- Verify row counts match
+      SELECT
+        'DBC.TablesV' AS source,
+        TableCount AS estimated_rows
+      FROM DBC.TablesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      UNION ALL
+      SELECT
+        'ACTUAL_COUNT' AS source,
+        COUNT(*) AS actual_rows
+      FROM {{database}}.{{table}};
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Initial Stats Collection ---
+  - name: "Initial statistics for new table"
+    description: "Collect statistics on newly loaded orders table"
+    parameters:
+      database: "sales"
+      table: "orders"
+      analysis_type: "recommend"
+    expected_result: |
+      Recommendations generated:
+      1. HIGH: COLLECT STATISTICS ON sales.orders COLUMN(order_id);  -- Primary Index
+      2. HIGH: COLLECT STATISTICS ON sales.orders COLUMN(customer_id);  -- Secondary Index
+      3. HIGH: COLLECT STATISTICS ON sales.orders COLUMN(order_date);  -- Partition column
+      4. MEDIUM: COLLECT STATISTICS ON sales.orders COLUMN(status);  -- Frequently filtered
+      5. LOW: COLLECT STATISTICS ON sales.orders COLUMN(customer_id, order_date);  -- Multi-column
+
+      Execute these in priority order. Primary index stats are most critical.
+
+  # --- Example 2: Stale Stats Refresh ---
+  - name: "Refresh stale statistics"
+    description: "Refresh statistics on table with >30 day old stats"
+    parameters:
+      database: "warehouse"
+      table: "fact_sales"
+      columns: ["sale_date", "product_id", "store_id"]
+      analysis_type: "collect"
+    expected_result: |
+      Generated COLLECT STATISTICS commands:
+
+      COLLECT STATISTICS
+        COLUMN(sale_date),
+        COLUMN(product_id),
+        COLUMN(store_id)
+      ON warehouse.fact_sales;
+
+      Verification shows:
+      - sale_date: Collected 2 minutes ago, 365 unique values
+      - product_id: Collected 2 minutes ago, 5,432 unique values
+      - store_id: Collected 2 minutes ago, 150 unique values
+
+  # --- Example 3: Join Column Stats ---
+  - name: "Optimize join performance"
+    description: "Collect stats on foreign key columns for join optimization"
+    parameters:
+      database: "crm"
+      table: "orders"
+      columns: ["customer_id"]
+      analysis_type: "collect"
+    expected_result: |
+      COLLECT STATISTICS COLUMN(customer_id) ON crm.orders;
+
+      Impact on query: SELECT * FROM orders o JOIN customers c ON o.customer_id = c.customer_id
+
+      Before stats:
+      - Estimated rows: 1,000,000 (table average)
+      - Join strategy: Product join (inefficient)
+      - Execution time: 45 seconds
+
+      After stats:
+      - Estimated rows: 15,432 (actual distinct customers)
+      - Join strategy: Hash join
+      - Execution time: 3 seconds (93% improvement)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: View Statistics ---
+  - error: "Cannot collect statistics on view"
+    cause: "Attempted COLLECT STATISTICS on a view instead of base table"
+    solution: "Collect statistics on underlying base tables. Views inherit stats from base tables automatically."
+
+  # --- Error 2: Insufficient Privileges ---
+  - error: "User lacks ALTER TABLE privilege"
+    cause: "COLLECT STATISTICS requires ALTER privilege on the table"
+    solution: "Request ALTER privilege from DBA, or have DBA collect statistics."
+
+  # --- Error 3: Column Not Found ---
+  - error: "Column does not exist in table"
+    cause: "Typo in column name or column was dropped"
+    solution: "Verify column names with: SELECT * FROM DBC.ColumnsV WHERE DatabaseName='db' AND TableName='table'"
+
+  # --- Error 4: Large Table Timeout ---
+  - error: "Statistics collection timeout on billion-row table"
+    cause: "COLLECT STATISTICS can take hours on very large tables"
+    solution: "Use USING SAMPLE clause: COLLECT STATISTICS COLUMN(col) USING SAMPLE ON table"
+
+  # --- Error 5: Stale After Collection ---
+  - error: "Statistics still show as stale after collection"
+    cause: "Data continued to change during/after collection"
+    solution: "Collect statistics during maintenance window when data is stable"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Statistics Collection Best Practices
+
+  ### 1. Always Collect on Primary Index
+  **CRITICAL**: Primary index statistics are most important for optimizer.
+  ```sql
+  COLLECT STATISTICS ON database.table;  -- Entire PI
+  COLLECT STATISTICS COLUMN(pi_column) ON database.table;  -- Individual PI columns
+  ```
+
+  ### 2. Collect on Join Columns
+  Foreign key columns used in joins need statistics:
+  ```sql
+  COLLECT STATISTICS COLUMN(customer_id) ON orders;  -- FK to customers
+  COLLECT STATISTICS COLUMN(product_id) ON orders;   -- FK to products
+  ```
+
+  ### 3. Collect on WHERE Clause Columns
+  Columns frequently used in WHERE predicates:
+  ```sql
+  COLLECT STATISTICS COLUMN(status) ON orders;      -- WHERE status = 'PENDING'
+  COLLECT STATISTICS COLUMN(order_date) ON orders;  -- WHERE order_date > DATE
+  ```
+
+  ### 4. Multi-Column Statistics for Correlated Columns
+  When columns are correlated (e.g., city + state):
+  ```sql
+  COLLECT STATISTICS COLUMN(city, state) ON customers;
+  ```
+  This helps optimizer understand correlation (not independent probabilities).
+
+  ### 5. Partition Column Statistics
+  For PPI tables, collect stats on partition columns:
+  ```sql
+  COLLECT STATISTICS COLUMN(order_date) ON sales_ppi;
+  ```
+
+  ### 6. Use USING SAMPLE for Very Large Tables
+  Sample-based statistics for billion-row tables:
+  ```sql
+  COLLECT STATISTICS COLUMN(customer_id) USING SAMPLE ON huge_table;
+  ```
+  Trade-off: Faster collection vs slightly less accurate estimates.
+
+  ### 7. Schedule Regular Statistics Maintenance
+  **High-velocity tables**: Daily statistics collection
+  ```sql
+  -- Daily ETL process
+  LOAD DATA INTO fact_sales;
+  COLLECT STATISTICS ON fact_sales;
+  ```
+
+  **Slowly-changing dimensions**: Weekly/monthly
+  ```sql
+  -- Weekly maintenance
+  COLLECT STATISTICS ON dim_customers;
+  ```
+
+  ### 8. Monitor Statistics Age
+  Query DBC.StatsV to find stale statistics:
+  ```sql
+  SELECT DatabaseName, TableName, ColumnName,
+         CURRENT_TIMESTAMP - CollectTimeStamp AS days_old
+  FROM DBC.StatsV
+  WHERE CURRENT_TIMESTAMP - CollectTimeStamp > INTERVAL '7' DAY
+  ORDER BY days_old DESC;
+  ```
+
+  ### 9. Drop Unused Statistics
+  Remove statistics on columns no longer queried:
+  ```sql
+  DROP STATISTICS ON database.table COLUMN(unused_column);
+  ```
+  Reduces statistics maintenance overhead.
+
+  ### 10. Verify After Collection
+  Always verify statistics were collected:
+  ```sql
+  SELECT * FROM DBC.StatsV
+  WHERE DatabaseName = 'db' AND TableName = 'table'
+  ORDER BY CollectTimeStamp DESC;
+  ```
+
+  ### 11. Memory Layers for Statistics Management
+  - **Kernel Layer**: Cache current statistics metadata (CollectTimeStamp, UniqueValueCount) from DBC.StatsV
+  - **L1 Cache**: Keep recent statistics recommendations (last 5-8 tables analyzed) to avoid redundant analysis
+  - **L2 Compressed**: Archive statistics collection history showing before/after query performance improvements
+  - **Swap Layer**: Store complete statistics management history across optimization cycles; use recall_conversation to reference baseline cardinality estimates from weeks ago when comparing optimizer behavior
+  This enables tracking statistics impact on query performance and identifying patterns in stale statistics.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - skew_detection  # Statistics reveal PI skew
+  - spool_space_analysis  # Poor stats → excessive spool
+  - query_optimization  # Stats enable better query plans
+# === RELATED_PATTERNS END ===

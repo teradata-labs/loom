@@ -1,0 +1,61 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// PatternLibrary represents domain-specific knowledge patterns
+message PatternLibrary {
+  // Metadata
+  PatternMetadata metadata = 1;
+
+  // Specification
+  PatternSpec spec = 2;
+}
+
+message PatternMetadata {
+  string name = 1;
+  string version = 2;
+  string domain = 3; // "sql", "teradata", "code-review", etc.
+  string description = 4;
+  map<string, string> labels = 5;
+}
+
+message PatternSpec {
+  // Pattern entries
+  repeated PatternEntry entries = 1;
+}
+
+// PatternEntry represents a single pattern in a library
+// This is different from loom.v1.Pattern which is for runtime pattern definitions
+message PatternEntry {
+  string name = 1;
+  string description = 2;
+
+  // Trigger conditions (when to apply this pattern)
+  repeated string trigger_conditions = 3;
+
+  // Pattern content
+  oneof content {
+    string template = 4; // Text template
+    string example = 5; // Example code/query
+    PatternEntryRule rule = 6; // Structured rule
+  }
+
+  // Priority (higher = more important)
+  int32 priority = 7;
+
+  // Tags for categorization
+  repeated string tags = 8;
+}
+
+message PatternEntryRule {
+  string condition = 1; // Expression to evaluate
+  string action = 2; // What to do
+  string rationale = 3; // Why this pattern exists
+}

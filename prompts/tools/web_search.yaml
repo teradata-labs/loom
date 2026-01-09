@@ -1,0 +1,65 @@
+name: tools
+namespace: loom.web
+prompts:
+  - id: web_search
+    content: |
+      Search the web for current information, news, articles, and documentation.
+      Returns search results with titles, URLs, snippets, and optional content.
+      AI-optimized search results using Tavily by default!
+
+      Supports multiple providers:
+      - Tavily (default, AI-optimized results, FREE API key, 1000/month)
+      - Brave Search (excellent results, FREE API key, 2000/month)
+      - SerpAPI (Google results, requires API key, 100/month free)
+      - DuckDuckGo (no API key required, instant answers only, limited results)
+
+      Use this tool to:
+      - Find current information beyond training data cutoff
+      - Research recent news and events (e.g., "latest Go 1.23 features 2025")
+      - Look up documentation and guides
+      - Verify facts and claims with sources
+      - Find authoritative sources for citations
+      - Check current prices, availability, or status
+      - Research technical topics with latest updates
+
+      When to use web search:
+      - User asks about recent events or current information
+      - Need to verify claims with external sources
+      - Looking for documentation or guides published recently
+      - Checking current status of projects, services, or APIs
+      - Finding examples or code snippets from the community
+
+      Best practices:
+      - Use specific, targeted queries (not broad topics)
+      - Include year in query when looking for recent info (e.g., "Go concurrency 2025")
+      - Check multiple results before drawing conclusions
+      - Cite sources with URLs in your response
+      - Tavily provides AI-optimized results by default (requires API key)
+      - For alternative providers, configure Brave or use DuckDuckGo (no key needed)
+
+      Getting better results:
+      To use Tavily or other premium providers, configure API keys via:
+        1. CLI (recommended): looms config set-key tavily_api_key
+        2. Environment: Set TAVILY_API_KEY, BRAVE_API_KEY, or SERPAPI_KEY
+        3. Direct parameter: api_key="your-key" in tool call
+
+      The tool will automatically use configured keys when you specify the provider.
+
+      Safety:
+      - Results are filtered by safe search settings
+      - Tavily, Brave, and SerpAPI require API keys for access
+      - DuckDuckGo works without API key (limited to instant answers)
+      - Rate limits apply based on provider
+    tags:
+      - tool
+      - web
+      - search
+      - internet
+    metadata:
+      version: "v1.0"
+      description: "Web search tool with multi-provider support"
+      providers:
+        - brave
+        - tavily
+        - serpapi
+        - duckduckgo

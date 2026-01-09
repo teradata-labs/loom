@@ -1,0 +1,97 @@
+# === METADATA START ===
+name: form_extraction
+title: "OCR and Form Field Extraction"
+description: |
+  Extract structured data from form images - invoices, receipts, documents, IDs.
+  Performs OCR and field extraction in one step. Requires Claude 3+ with vision.
+
+  **REQUIRES**: Claude 3 Opus, Sonnet, or Haiku with vision API access
+
+category: extraction
+difficulty: advanced
+backend_type: vision
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Invoice processing
+  - Receipt parsing
+  - ID card extraction
+  - Form digitization
+  - Document data entry automation
+  - Insurance claim processing
+  - Tax document parsing
+  - Medical record extraction
+  - Contract field extraction
+  - Shipping label parsing
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: image_url_or_base64
+    type: string
+    required: true
+    description: "Form image to extract"
+    example: "https://example.com/invoice.jpg"
+
+  - name: form_type
+    type: enum[invoice, receipt, id_card, generic]
+    required: false
+    default: "generic"
+    description: "Type of form for better extraction"
+    example: "invoice"
+
+  - name: required_fields
+    type: array[string]
+    required: false
+    description: "Specific fields to extract"
+    example: '["invoice_number", "total", "date"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  invoice:
+    description: "Extract invoice fields"
+    content: |
+      Extract data from this invoice:
+      [Image: {{image_url_or_base64}}]
+
+      Return JSON:
+      {
+        "invoice_number": "string",
+        "date": "YYYY-MM-DD",
+        "vendor_name": "string",
+        "total": number,
+        "tax": number,
+        "line_items": [
+          {"description": "...", "quantity": number, "price": number}
+        ]
+      }
+    required_parameters:
+      - image_url_or_base64
+
+  generic:
+    description: "Extract all readable fields"
+    content: |
+      Extract all text and field values from:
+      [Image: {{image_url_or_base64}}]
+
+      Return all fields found as key-value pairs.
+    required_parameters:
+      - image_url_or_base64
+# === TEMPLATES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Form Extraction Best Practices
+
+  1. **Image Quality**: Scan at 300+ DPI for best OCR
+  2. **Alignment**: Straight, well-lit photos work best
+  3. **Validation**: Verify critical fields (amounts, dates)
+  4. **Error Handling**: Check for missing or illegible fields
+  5. **PII Security**: Mask sensitive data in logs
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - chart_interpretation
+  - document_analysis

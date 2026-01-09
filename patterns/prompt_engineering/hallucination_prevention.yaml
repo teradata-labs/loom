@@ -1,0 +1,708 @@
+# === METADATA START ===
+name: hallucination_prevention
+title: "Citation and Grounding Techniques"
+description: |
+  Prevent hallucinations by requiring citations, grounding responses in provided context,
+  and enforcing verification through tool use. This pattern is critical for production
+  systems where accuracy is non-negotiable - compliance, auditing, financial decisions,
+  medical advice, legal analysis, etc.
+
+  Hallucinations occur when LLMs generate plausible-sounding but incorrect information.
+  This pattern provides techniques to:
+  - Require citations for every factual claim
+  - Ground responses in verified sources (database schema, API docs, retrieved documents)
+  - Force tool use for verification rather than guessing
+  - Explicitly mark uncertain information
+  - Provide audit trails for decisions
+
+  **CRITICAL FOR:**
+  - SQL query generation (verify table/column names exist)
+  - Data quality reports (cite source data)
+  - Compliance and regulatory reporting
+  - Financial analysis and recommendations
+  - Any domain where errors have serious consequences
+
+  **UNIVERSAL COMPATIBILITY:**
+  Works across all backends. Every agent can benefit from grounding and citation.
+
+category: reliability
+difficulty: intermediate
+backend_type: prompt_engineering
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: SQL Query Generation ---
+  - Verify table and column names before generating queries
+
+  # --- Use Case 2: Data Quality ---
+  - Cite source data for quality metrics
+
+  # --- Use Case 3: Compliance ---
+  - Provide audit trail for regulatory compliance
+
+  # --- Use Case 4: API Integration ---
+  - Verify endpoint existence before calling
+
+  # --- Use Case 5: Documentation ---
+  - Ground documentation in actual code
+
+  # --- Use Case 6: Recommendations ---
+  - Cite evidence for recommendations
+
+  # --- Use Case 7: Error Analysis ---
+  - Reference logs and metrics in root cause analysis
+
+  # --- Use Case 8: Schema Discovery ---
+  - Verify schema information exists
+
+  # --- Use Case 9: Cost Estimation ---
+  - Ground estimates in actual metrics
+
+  # --- Use Case 10: Security Audits ---
+  - Cite security policies and configurations
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Task Description ---
+  - name: task_description
+    type: string
+    required: true
+    description: "The task to perform with hallucination prevention"
+    example: "Generate a SQL query to find active users"
+
+  # --- Parameter 2: Available Context ---
+  - name: context
+    type: string
+    required: false
+    description: "Verified context to ground responses in (schema, docs, etc.)"
+    example: "Available tables: users (columns: id, name, email, status, created_at)"
+
+  # --- Parameter 3: Required Tools ---
+  - name: required_tools
+    type: array[string]
+    required: false
+    description: "List of tools that MUST be used for verification"
+    example: '["get_table_schema", "validate_query"]'
+
+  # --- Parameter 4: Confidence Threshold ---
+  - name: confidence_threshold
+    type: number
+    required: false
+    default: 0.8
+    description: "Minimum confidence required (0.0-1.0). Below threshold, must use tools."
+    example: "0.9"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CITATION_REQUIRED TEMPLATE ===
+  citation_required:
+    description: "Require source citation for every claim"
+    content: |
+      {{task_description}}
+
+      RULES FOR HALLUCINATION PREVENTION:
+      1. Every factual claim MUST include a citation to its source
+      2. If you're uncertain about anything, explicitly state "UNCERTAIN: [reasoning]"
+      3. Never guess - use available tools to verify information
+      4. If information is not available, respond: "Cannot answer: [reason]"
+
+      Format each claim as:
+      - Claim: [statement]
+      - Source: [tool_name or context reference]
+      - Confidence: [HIGH/MEDIUM/LOW]
+
+      {{#if context}}
+      Available verified context:
+      {{context}}
+      {{/if}}
+
+      Response with citations:
+    required_parameters:
+      - task_description
+
+  # === GROUNDED_GENERATION TEMPLATE ===
+  grounded_generation:
+    description: "Generate ONLY from provided context, no external knowledge"
+    content: |
+      Context: {{context}}
+
+      Task: {{task_description}}
+
+      STRICT RULES:
+      - Answer ONLY using information from the Context above
+      - Do NOT use your general knowledge
+      - If the Context doesn't contain the answer, respond: "Information not available in provided context"
+      - Quote relevant parts of Context to support your answer
+      - Format: [Answer] (Source: Context section X)
+
+      Response grounded in context:
+    required_parameters:
+      - task_description
+      - context
+
+  # === TOOL_USE_REQUIRED TEMPLATE ===
+  tool_use_required:
+    description: "Force tool use for verification instead of guessing"
+    content: |
+      {{task_description}}
+
+      VERIFICATION REQUIREMENT:
+      You MUST use these tools to verify information before responding:
+      {{#each required_tools}}
+      - {{this}}
+      {{/each}}
+
+      Do NOT generate output based on assumptions or general knowledge.
+
+      Steps:
+      1. Use required tools to gather verified information
+      2. Base your response ONLY on tool results
+      3. Cite which tool provided each piece of information
+
+      If tools don't provide sufficient information, respond:
+      "Cannot complete task: Missing information from tools"
+
+      Begin by calling the required tools:
+    required_parameters:
+      - task_description
+      - required_tools
+
+  # === UNCERTAINTY_EXPLICIT TEMPLATE ===
+  uncertainty_explicit:
+    description: "Force explicit uncertainty marking"
+    content: |
+      {{task_description}}
+
+      Confidence Threshold: {{confidence_threshold}}
+
+      UNCERTAINTY PROTOCOL:
+      - For each statement, assess your confidence (0.0-1.0)
+      - If confidence < {{confidence_threshold}}, mark as UNCERTAIN
+      - If confidence >= {{confidence_threshold}}, mark as VERIFIED
+      - Never present uncertain information as fact
+
+      Format:
+      Statement: [your statement]
+      Confidence: [0.0-1.0]
+      Status: [VERIFIED | UNCERTAIN]
+      Justification: [why this confidence level]
+
+      Response with confidence scores:
+    required_parameters:
+      - task_description
+
+  # === RETRIEVAL_AUGMENTED TEMPLATE ===
+  retrieval_augmented:
+    description: "RAG pattern - retrieve before generating"
+    content: |
+      Task: {{task_description}}
+
+      Step 1: RETRIEVE relevant information
+      Use these retrieval tools to find relevant context:
+      {{#each retrieval_tools}}
+      - {{this}}
+      {{/each}}
+
+      Step 2: VERIFY retrieved information
+      Check that retrieved documents are relevant and accurate
+
+      Step 3: GENERATE response
+      Base your response ONLY on retrieved information
+      Cite source document IDs for each claim
+
+      Step 4: ACKNOWLEDGE gaps
+      If retrieved information is insufficient, state what's missing
+
+      Begin with retrieval:
+    required_parameters:
+      - task_description
+      - retrieval_tools
+
+  # === SQL_SCHEMA_GROUNDED TEMPLATE ===
+  sql_schema_grounded:
+    description: "SQL query generation grounded in verified schema"
+    content: |
+      Task: {{task_description}}
+
+      SCHEMA-GROUNDED QUERY GENERATION:
+
+      Step 1: Call get_table_schema() for relevant tables
+      - Verify tables exist
+      - Get column names and types
+      - Check constraints and indexes
+
+      Step 2: Generate query using ONLY verified schema
+      - Use only columns that exist in schema
+      - Use only tables that exist in schema
+      - Match exact column names (case-sensitive)
+
+      Step 3: Cite schema source
+      Format:
+      ```sql
+      SELECT verified_column_name  -- FROM: schema of table_name
+      FROM verified_table_name     -- VERIFIED: get_table_schema()
+      WHERE verified_column = 'value'  -- FROM: schema of table_name
+      ```
+
+      Step 4: If schema unavailable
+      Response: "Cannot generate query: Schema not available for table X"
+
+      Begin by retrieving schema:
+    required_parameters:
+      - task_description
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: SQL Query with Citations ---
+  - name: "SQL Query with Schema Citations"
+    description: "Generate query with source verification"
+    parameters:
+      task_description: "Write a query to find active users who signed up in the last month"
+      context: |
+        Table: users
+        Columns: id (INTEGER), name (VARCHAR), email (VARCHAR), status (VARCHAR), created_at (TIMESTAMP)
+        Index: idx_status ON (status)
+        Index: idx_created_at ON (created_at)
+    expected_result: |
+      ```sql
+      SELECT
+        id,              -- FROM: users table schema
+        name,            -- FROM: users table schema
+        email            -- FROM: users table schema
+      FROM users         -- VERIFIED: table exists in schema
+      WHERE
+        status = 'active'          -- FROM: users.status column (VARCHAR)
+        AND created_at >= CURRENT_DATE - INTERVAL '1 month'  -- FROM: users.created_at column (TIMESTAMP)
+      ```
+
+      Citations:
+      - Table 'users': Verified from provided schema
+      - Column 'status': Exists in users table (VARCHAR type)
+      - Column 'created_at': Exists in users table (TIMESTAMP type)
+      - Indexes available: idx_status, idx_created_at (query will use both)
+
+      Confidence: HIGH (all elements verified against schema)
+
+  # --- Example 2: Explicit Uncertainty ---
+  - name: "Data Quality Analysis with Uncertainty"
+    description: "Report with confidence scores"
+    parameters:
+      task_description: "Analyze data quality for the orders table"
+      confidence_threshold: 0.8
+    expected_result: |
+      Data Quality Analysis:
+
+      1. NULL Values in 'email' Column
+         Statement: 15,000 rows (1.5%) have NULL email values
+         Confidence: 0.95
+         Status: VERIFIED
+         Justification: Counted from actual table data using COUNT(*) WHERE email IS NULL
+
+      2. Duplicate Orders
+         Statement: Approximately 2% of orders appear to be duplicates
+         Confidence: 0.65
+         Status: UNCERTAIN
+         Justification: Heuristic based on matching (customer_id, total, timestamp within 1 second).
+                       Need business rules to confirm true duplicates vs. legitimate repeat purchases.
+
+      3. Invalid Phone Numbers
+         Statement: Phone format validation not possible without regex pattern
+         Confidence: 0.0
+         Status: UNCERTAIN
+         Justification: No phone format specification provided. Cannot determine validity without business rules.
+
+      Recommendation: Increase confidence by:
+      - Defining duplicate detection business rules
+      - Providing phone format regex
+      - Running comprehensive duplicate analysis with domain expert
+
+  # --- Example 3: Grounded in Context ---
+  - name: "API Endpoint Documentation"
+    description: "Generate docs only from provided API schema"
+    parameters:
+      task_description: "Document the /api/users endpoint"
+      context: |
+        Endpoint: GET /api/users
+        Parameters: limit (integer, default 100), offset (integer, default 0)
+        Response: { "users": [...], "total": integer }
+        Authentication: Bearer token required
+    expected_result: |
+      # GET /api/users
+
+      **Description**: Retrieves a paginated list of users.
+      (Source: Endpoint definition in provided schema)
+
+      **Authentication**: Bearer token required
+      (Source: Authentication section in provided schema)
+
+      **Parameters**:
+      - `limit` (integer, optional): Number of results to return. Default: 100
+        (Source: Parameters section in provided schema)
+      - `offset` (integer, optional): Number of results to skip. Default: 0
+        (Source: Parameters section in provided schema)
+
+      **Response**:
+      ```json
+      {
+        "users": [...],
+        "total": integer
+      }
+      ```
+      (Source: Response section in provided schema)
+
+      **Rate Limiting**: Information not available in provided context
+      **Error Codes**: Information not available in provided context
+
+  # --- Example 4: Tool Use Required ---
+  - name: "Schema Verification Before Query"
+    description: "Force schema tool use"
+    parameters:
+      task_description: "Generate a query to get user orders"
+      required_tools: ["get_table_schema"]
+    expected_result: |
+      Step 1: Calling get_table_schema("users")
+      Result: users table exists with columns: id, name, email, created_at
+
+      Step 2: Calling get_table_schema("orders")
+      Result: orders table exists with columns: id, user_id, total, created_at
+
+      Step 3: Verified foreign key relationship
+      orders.user_id references users.id
+
+      Step 4: Generated query using verified schema:
+      ```sql
+      SELECT
+        u.id AS user_id,
+        u.name AS user_name,
+        o.id AS order_id,
+        o.total AS order_total,
+        o.created_at AS order_date
+      FROM users u
+      JOIN orders o ON u.id = o.user_id  -- Verified FK relationship
+      ORDER BY o.created_at DESC
+      ```
+
+      All table and column names verified via get_table_schema() tool.
+
+  # --- Example 5: Cannot Answer ---
+  - name: "Missing Information Acknowledgment"
+    description: "Explicit rejection when information unavailable"
+    parameters:
+      task_description: "What is the current database size?"
+      context: ""
+    expected_result: |
+      Cannot answer: Required information not available
+
+      Reason: Database size requires system catalog queries or admin tools.
+      No such tools are available, and no context was provided.
+
+      To answer this question, I would need:
+      1. Access to get_database_size() tool, OR
+      2. System catalog query permissions, OR
+      3. Provided context with current size metrics
+
+      I will not guess or estimate database size as this would be a hallucination.
+
+  # --- Example 6: Audit Trail ---
+  - name: "Compliance Report with Full Citations"
+    description: "Regulatory report with complete audit trail"
+    parameters:
+      task_description: "Report on data retention compliance for GDPR"
+      required_tools: ["get_table_schema", "execute_sql"]
+    expected_result: |
+      GDPR Data Retention Compliance Report
+
+      1. User Data Retention
+         Finding: 1,250 user records older than 7 years
+         Source: execute_sql("SELECT COUNT(*) FROM users WHERE created_at < CURRENT_DATE - INTERVAL '7 years'")
+         Timestamp: 2024-11-20 14:32:15 UTC
+         Policy Requirement: Delete after 7 years (Source: GDPR Article 5(1)(e))
+         Compliance Status: NON-COMPLIANT
+
+      2. Audit Log Retention
+         Finding: Audit logs retained for 3 years
+         Source: execute_sql("SELECT MIN(created_at) FROM audit_logs")
+         Result: 2021-11-15 (3.01 years ago)
+         Policy Requirement: Retain for 5 years minimum (Source: Internal Policy Doc v2.3)
+         Compliance Status: COMPLIANT
+
+      3. Deleted User Anonymization
+         Finding: Deleted users have NULL email but name still present
+         Source: execute_sql("SELECT COUNT(*) FROM users WHERE status = 'deleted' AND name IS NOT NULL")
+         Result: 450 records
+         Policy Requirement: Full anonymization required (Source: GDPR Article 17)
+         Compliance Status: NON-COMPLIANT
+
+      Audit Trail:
+      - All SQL queries logged
+      - Tool invocations timestamped
+      - Policy documents cited with versions
+      - Manual verification recommended before remediation
+
+      Confidence: HIGH (all findings based on actual database queries)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Skips Tool Use ---
+  - error: "Agent guesses instead of using required tools"
+    cause: "Tool use not enforced strongly enough"
+    solution: "Use tool_use_required template. Add: 'Do NOT respond without calling these tools first' at end of prompt."
+
+  # --- Error 2: Vague Citations ---
+  - error: "Citations like 'from the data' or 'based on analysis'"
+    cause: "Citation format not specified"
+    solution: "Use citation_required template with explicit format: 'Source: [tool_name(params)] OR [context line X]'"
+
+  # --- Error 3: Overconfidence ---
+  - error: "Agent marks uncertain statements as verified"
+    cause: "No confidence scoring required"
+    solution: "Use uncertainty_explicit template with confidence threshold. Force scoring 0.0-1.0 for each claim."
+
+  # --- Error 4: Ignores Context Boundaries ---
+  - error: "Agent uses general knowledge despite grounded_generation template"
+    cause: "Template not strict enough"
+    solution: "Add: 'Pretend you have no knowledge except what's in the Context section. If information is not there, you cannot know it.'"
+
+  # --- Error 5: No Acknowledgment of Gaps ---
+  - error: "Agent proceeds with partial information without noting gaps"
+    cause: "No explicit requirement to acknowledge missing info"
+    solution: "Add step: 'List what information is missing and how it affects confidence'"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Hallucination Prevention Best Practices
+
+  ### 1. Template Selection by Risk Level
+
+  **High Risk** (compliance, financial, medical):
+  - Use: `tool_use_required` + `citation_required`
+  - Confidence threshold: 0.9 or higher
+  - Require multiple verification sources
+
+  **Medium Risk** (data analysis, reporting):
+  - Use: `grounded_generation` + `uncertainty_explicit`
+  - Confidence threshold: 0.8
+  - Cite sources but less strict
+
+  **Low Risk** (exploratory, brainstorming):
+  - Use: Basic patterns
+  - Hallucination less critical
+  - Speed over verification
+
+  ### 2. Layer Multiple Techniques
+
+  **Best practice**: Combine techniques for maximum protection
+  ```
+  1. Grounded generation (limit to context)
+  2. Tool use required (verify with tools)
+  3. Citation required (audit trail)
+  4. Uncertainty explicit (confidence scoring)
+  ```
+
+  **Example**:
+  ```
+  Context: [verified schema]
+
+  Required tools: get_table_schema, validate_query
+
+  For each claim:
+  - Citation: [source]
+  - Confidence: [0.0-1.0]
+  - If confidence < 0.9, mark UNCERTAIN
+
+  Begin by calling required tools...
+  ```
+
+  ### 3. Schema-Grounded SQL is Critical
+
+  **Why SQL needs special attention**:
+  - Table/column names: Easy to hallucinate
+  - Consequences: Runtime errors, wrong results
+  - Frequency: Very common hallucination type
+
+  **Always**:
+  1. Call `get_table_schema()` before generating SQL
+  2. Verify every table and column name
+  3. Cite schema source in query comments
+  4. Test query before returning
+
+  ### 4. Confidence Threshold Guidelines
+
+  **0.95-1.0**: Verified with tools, multiple sources
+  - Example: "Column exists (verified via get_table_schema())"
+
+  **0.8-0.95**: Single reliable source, no verification
+  - Example: "Schema provided in context, not independently verified"
+
+  **0.6-0.8**: Inference or heuristic, not direct verification
+  - Example: "Likely a foreign key based on column name pattern"
+
+  **0.0-0.6**: Guess or assumption, mark UNCERTAIN
+  - Example: "Assuming status column exists (not verified)"
+
+  ### 5. Retrieval-Augmented Generation (RAG)
+
+  **Pattern**:
+  1. Retrieve: Fetch relevant documents/data
+  2. Verify: Check relevance and accuracy
+  3. Generate: Use ONLY retrieved information
+  4. Cite: Reference source document IDs
+
+  **Best for**:
+  - Large knowledge bases
+  - Frequently updated information
+  - Documentation generation
+  - Question answering systems
+
+  ### 6. Tool Use Best Practices
+
+  **Make tools required, not optional**:
+  ```
+  ❌ "You may use get_schema() if needed"
+  ✅ "You MUST use get_schema() before generating queries"
+  ```
+
+  **Validate tool outputs**:
+  ```
+  After tool use:
+  - Verify tool returned valid data
+  - Check for errors in tool output
+  - Cite tool name and timestamp
+  ```
+
+  **Chain tools for verification**:
+  ```
+  1. get_table_schema("users") → get column names
+  2. validate_query(query) → verify query syntax
+  3. estimate_cost(query) → check performance
+  All must pass before returning query
+  ```
+
+  ### 7. Testing for Hallucinations
+
+  **Hallucination test suite**:
+  1. **Non-existent entities**: Ask about fake tables/columns
+     - Expected: "Table X does not exist"
+     - Fail: Returns query using table X
+
+  2. **Ambiguous requests**: Ask vague questions
+     - Expected: "Need more information: ..."
+     - Fail: Returns specific answer without verification
+
+  3. **Missing context**: Omit critical information
+     - Expected: "Cannot answer without ..."
+     - Fail: Guesses or assumes information
+
+  4. **Conflicting information**: Provide contradictory context
+     - Expected: Identifies conflict, asks for clarification
+     - Fail: Picks one arbitrarily without noting conflict
+
+  ### 8. Citation Formats
+
+  **Good citations** are specific:
+  ```
+  ✅ "Column 'status' exists (Source: get_table_schema('users'), line 3)"
+  ✅ "User count is 1,250,000 (Source: execute_sql('SELECT COUNT(*) FROM users') executed at 2024-11-20 14:30:00)"
+  ✅ "Based on schema documentation section 2.3, page 15"
+  ```
+
+  **Bad citations** are vague:
+  ```
+  ❌ "From the database"
+  ❌ "Based on analysis"
+  ❌ "According to the data"
+  ```
+
+  ### 9. Performance Tradeoffs
+
+  **Hallucination prevention costs**:
+  - **Tool calls**: +1-3 seconds latency
+  - **Tokens**: +200-500 tokens for verification instructions
+  - **Complexity**: More complex prompts, harder to debug
+
+  **When to optimize**:
+  - Low-risk tasks: Skip verification
+  - Cached schemas: Reuse instead of re-fetching
+  - Batching: Verify multiple items in one tool call
+
+  **When NOT to optimize**:
+  - High-risk domains (never skip verification)
+  - Production systems (reliability > speed)
+  - Compliance requirements (audit trail mandatory)
+
+  ### 10. Debugging Hallucinations
+
+  **If hallucinations persist**:
+
+  1. **Check tools are actually called**
+     - Log tool invocations
+     - Verify tools returned before response
+
+  2. **Strengthen language**
+     - "You MUST NOT guess" → "NEVER guess under any circumstances"
+     - "Prefer tool use" → "ONLY use tool results, zero guessing"
+
+  3. **Add negative examples**
+     - Show what NOT to do
+     - "❌ Wrong: Assuming column exists"
+     - "✅ Right: Calling get_schema() to verify"
+
+  4. **Reduce context window**
+     - Less room for hallucination if less general knowledge
+     - Focus only on task-specific information
+
+  5. **Use grounded_generation exclusively**
+     - Completely isolate from general knowledge
+     - Treat as "answering only from a document"
+
+  ### 11. Audit Trail Best Practices
+
+  **What to log**:
+  - All tool invocations (name, parameters, timestamp)
+  - Tool outputs (or hashes for large outputs)
+  - Confidence scores for each claim
+  - Sources cited in response
+  - Any uncertainty acknowledgments
+
+  **Why**:
+  - Compliance (GDPR, HIPAA, SOX)
+  - Debugging (trace decisions)
+  - Quality assurance (validate agent logic)
+  - Legal protection (prove due diligence)
+
+  **Example log entry**:
+  ```json
+  {
+    "timestamp": "2024-11-20T14:30:00Z",
+    "task": "Generate SQL query for active users",
+    "tools_used": [
+      {"name": "get_table_schema", "params": {"table": "users"}, "duration_ms": 45},
+      {"name": "validate_query", "params": {"query": "..."}, "duration_ms": 23}
+    ],
+    "citations": [
+      {"claim": "status column exists", "source": "get_table_schema result line 4"}
+    ],
+    "confidence": 0.95,
+    "response": "SELECT ...",
+    "user_id": "user_123"
+  }
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Chain of Thought ---
+  - chain_of_thought
+
+  # --- Pattern 2: Structured Output ---
+  - structured_output
+
+  # --- Pattern 3: Few-shot Learning ---
+  - few_shot_learning
+# === RELATED_PATTERNS END ===

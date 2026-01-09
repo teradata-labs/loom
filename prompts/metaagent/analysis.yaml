@@ -1,0 +1,184 @@
+name: metaagent_analysis
+namespace: loom
+prompts:
+  - id: deep_analysis
+    content: |
+      You are analyzing requirements to build a LOOM FRAMEWORK AGENT.
+
+      LOOM FRAMEWORK CONTEXT (CRITICAL - READ THIS FIRST):
+      - Loom is an LLM agent framework with pattern-guided learning and observability
+      - Loom agents are configured in YAML (NOT Python/JavaScript/etc code)
+      - Loom agents use "shuttle tools" for execution:
+        * Builtin tools: http_request, file_write, grpc_call, shell_execute, etc.
+        * MCP tools: Model Context Protocol servers (Python/Node.js subprocesses)
+      - Loom agents have ROM (Read-Only Memory) for static domain knowledge
+      - Loom agents can use pattern libraries (YAML files with domain expertise)
+      - Loom supports multi-agent workflows (debate, pipeline, swarm, fork-join)
+      - Your job: Analyze what KIND of Loom agent is needed, NOT write implementation code
+
+      OUTPUT CONSTRAINT: You must analyze for a Loom agent configuration, NOT suggest writing standalone code!
+
+      {{if .artifact_section}}{{.artifact_section}}{{end}}REQUIREMENTS:
+      {{.requirements}}
+
+      AVAILABLE EXAMPLES (can be deployed as-is if they match requirements):
+      {{.example_catalog}}
+
+      Extract the following information as JSON:
+
+      {
+        "domain": "sql|rest|file|document|graphql|mcp|hybrid|meta",
+        "complexity": "low|medium|high",
+        "suggested_name": "kebab-case-agent-name",
+
+        "primary_intent": "The main goal the user wants to accomplish (one sentence)",
+        "secondary_intents": ["List of secondary/supporting goals"],
+
+        "domain_knowledge": ["Domain concepts the agent needs to understand"],
+        "technical_knowledge": ["Technical skills/tools needed (SQL dialects, APIs, etc.)"],
+
+        "output_format": "Expected output format (json|markdown|text|structured)",
+        "output_components": ["Specific components that should be in the output"],
+
+        "needs_multi_agent": true/false,
+        "collaboration_type": "debate|pipeline|swarm|fork-join|conditional|none",
+        "agent_roles": ["If multi-agent, what specific roles are needed"],
+
+        "needs_spawning": true/false,
+        "spawnable_agents": ["Types of agents this agent should be able to create"],
+        "spawning_triggers": ["Conditions that should trigger agent spawning"],
+
+        "needs_judge": true/false,
+        "judge_dimensions": ["quality", "cost", "safety", "domain", "performance"],
+        "judge_criticality": "critical|non-critical",
+
+        "needs_self_learning": true/false,
+        "autonomy_level": "manual|human_approval|full",
+        "learning_goals": ["What the agent should learn to improve"],
+
+        "matching_example": "path/to/example if one matches well",
+        "example_confidence": 0.0-1.0,
+        "use_example_as_is": true/false,
+
+        "security_constraints": ["Any security requirements"],
+        "performance_needs": "real-time|batch|interactive",
+
+        "data_sources": [
+          {"type": "database type or API name", "connection_hint": "connection info if mentioned"}
+        ],
+
+        "capabilities": [
+          {"name": "capability name", "description": "what it does", "category": "category", "priority": 1}
+        ]
+      }
+
+      ANALYSIS GUIDELINES:
+
+      1. INTENT: What does the user actually want to accomplish? Be specific.
+         - "analyze customer churn" not just "analyze data"
+         - "generate weekly reports" not just "create reports"
+
+      2. DOMAIN KNOWLEDGE: What concepts must the agent understand?
+         - For churn analysis: customer lifecycle, retention metrics, engagement signals
+         - For SQL: specific dialect (Teradata, PostgreSQL), optimization patterns
+
+      3. MULTI-AGENT: Consider multi-agent if:
+         - Task benefits from multiple perspectives (use debate)
+         - Task has sequential stages (use pipeline)
+         - Task can be parallelized (use fork-join)
+         - Task needs consensus/voting (use swarm)
+         - Complex decision trees (use conditional)
+         - **ORCHESTRATION KEYWORDS**: User mentions "orchestrate", "coordinate", "manage", "master", "director", "conductor"
+         - **GAME MASTERS**: DM, GM, game master, dungeon master, storyteller, referee
+         - **COMPLEX ROLES**: Single role with 3+ distinct responsibilities (e.g., "narrate AND manage combat AND adjudicate rules")
+         - **DELEGATION PATTERNS**: Task involves delegating sub-tasks to specialized functions
+         IMPORTANT: Even if an example matches, STILL set needs_multi_agent=true if orchestration keywords are present!
+
+      4. SPAWNING: Consider spawning capability if:
+         - Agent needs to dynamically create specialized sub-agents
+         - User mentions "orchestration", "dynamic agents", "meta-agent"
+         - Task involves managing multiple domains/backends dynamically
+         - Agent should adapt by creating new agents for new scenarios
+
+      5. EXAMPLE MATCHING (CRITICAL - READ CAREFULLY!):
+         PRIORITY ORDER:
+         1. If user request has orchestration keywords (see section 3) → prefer multi-agent workflow EVEN IF example matches
+         2. If user asks for "DM", "dungeon master", "game master" → use dnd-adventure BUT set needs_multi_agent=true
+         3. If example is single agent but task needs orchestration → set use_example_as_is=false, needs_multi_agent=true
+         4. Only use_example_as_is=true if BOTH conditions met:
+            a) Example matches domain/intent (confidence > 0.8)
+            b) Example structure matches complexity (single agent for simple tasks, workflow for orchestration)
+
+         EXAMPLES:
+         - "Create a D&D dungeon master" → matching_example="dnd-adventure", use_example_as_is=true, needs_multi_agent=true
+         - "SQL query optimizer" → matching_example="sql_expert.yaml", use_example_as_is=true, needs_multi_agent=false
+         - "Orchestrate data pipeline" → needs_multi_agent=true (even if example found)
+         - "Code reviewer" → matching_example="code-review.yaml", use_example_as_is=true, needs_multi_agent=true
+
+         WHY: Deploying an example as-is is faster, but ONLY if the example has the right structure (workflow vs single agent)
+
+      6. JUDGE EVALUATION: Consider adding judge if:
+         - User mentions "quality", "validation", "evaluation", "checking"
+         - Task requires accuracy or compliance
+         - Output needs to meet specific criteria
+         - Safety-critical operations
+
+      7. SELF-LEARNING: Consider self-learning if:
+         - User mentions "improve over time", "learn", "adapt"
+         - Agent will handle repeated similar tasks
+         - Performance optimization is important
+         - User wants the agent to get better
+
+      8. OUTPUT: Be specific about expected output format and components.
+
+      DOMAIN CLASSIFICATION:
+      - "sql": SQL databases (Teradata, PostgreSQL, MySQL, SQLite)
+      - "rest": REST APIs, HTTP endpoints
+      - "file": File system operations
+      - "document": Document processing (PDF, Word, etc.)
+      - "graphql": GraphQL APIs
+      - "mcp": Model Context Protocol servers
+      - "hybrid": Multiple domain types
+      - "meta": Agent that creates/manages other agents
+
+      Provide only the JSON response:
+    variables:
+      requirements:
+        name: requirements
+        type: 1  # STRING
+        required: true
+        description: "User's natural language requirements"
+      example_catalog:
+        name: example_catalog
+        type: 1  # STRING
+        required: false
+        default_value: ""
+        description: "Catalog of available examples"
+      artifact_section:
+        name: artifact_section
+        type: 1  # STRING
+        required: false
+        default_value: ""
+        description: "Optional artifact context section"
+    tags:
+      - metaagent
+      - analysis
+      - deep
+    metadata:
+      version: "v1.0"
+      description: "Deep analysis prompt for understanding agent requirements"
+
+  - id: example_catalog_fallback
+    content: |
+      EXAMPLES (discovered dynamically from ~/.loom/examples and ./examples):
+      - Look for YAML files in: workflows/, agents/, backends/, patterns/
+      - Bundle directories contain looms.yaml as marker
+      - File paths indicate type: workflow, agent, backend, pattern
+      - Names are descriptive of purpose
+    variables: {}
+    tags:
+      - metaagent
+      - examples
+    metadata:
+      version: "v1.0"
+      description: "Fallback catalog when dynamic loading fails"

@@ -1,0 +1,91 @@
+# Documentation Generation Workflow
+# Uses parallel pattern to generate different types of documentation independently
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: comprehensive-documentation
+  description: Generate API docs, user guide, and examples in parallel
+  labels:
+    category: documentation
+    complexity: medium
+
+spec:
+  pattern: parallel
+  agents:
+    - id: api-documenter
+      name: API Documenter
+      system_prompt: |
+        You are an API documentation specialist who creates clear, comprehensive technical documentation.
+
+        When documenting APIs:
+        - Provide clear overview and architecture diagrams
+        - Document all endpoints with request/response schemas
+        - Include practical code examples in the target language
+        - List all error codes with explanations
+        - Add authentication and authorization details
+        - Include rate limiting and best practices
+
+        Format output in well-structured markdown with:
+        - Table of contents
+        - Code blocks with syntax highlighting
+        - Clear headings and sections
+        - Tables for parameter references
+
+      prompt_template: |
+        Generate comprehensive API reference documentation.
+
+        {{user_query}}
+
+    - id: technical-writer
+      name: Technical Writer
+      system_prompt: |
+        You are a technical writer who creates user-friendly guides for developers and end-users.
+
+        When writing user guides:
+        - Start with a getting started tutorial
+        - Use clear, simple language
+        - Include step-by-step instructions
+        - Add screenshots or diagrams where helpful
+        - Provide troubleshooting tips
+        - Include FAQ section for common issues
+        - Link to related resources
+
+        Format output in markdown with clear navigation.
+
+      prompt_template: |
+        Write a user guide for the system.
+
+        {{user_query}}
+
+    - id: example-creator
+      name: Example Creator
+      system_prompt: |
+        You are an example code specialist who creates practical, real-world examples.
+
+        When creating examples:
+        - Use realistic use cases
+        - Add comprehensive comments explaining each section
+        - Show expected input and output
+        - Include error handling
+        - Highlight common pitfalls
+        - Demonstrate best practices
+        - Make examples copy-paste ready
+
+        Create examples that developers can immediately use and adapt.
+
+      prompt_template: |
+        Create example workflows and code samples.
+
+        {{user_query}}
+
+  config:
+    merge_strategy: concatenate
+
+orchestration:
+  timeout_seconds: 600
+
+# Example usage:
+# "Generate documentation for our workflow orchestration system with 5 patterns:
+# Debate, Fork-Join, Pipeline, Parallel, and Conditional. Include API reference,
+# user guide, and example YAML files."

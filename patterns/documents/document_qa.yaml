@@ -1,0 +1,340 @@
+# === METADATA START ===
+name: document_qa
+title: "Document Question Answering"
+description: |
+  Answer specific questions about documents (PDF, Excel, CSV) with source citation.
+  Extract relevant information, cite specific sources, and provide accurate, verifiable answers.
+category: question-answering
+difficulty: intermediate
+backend_type: documents
+version: 1.0.0
+author: Loom Framework
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Answer specific questions about document content
+  - Extract financial data from reports
+  - Find specific information with source citations
+  - Summarize document sections
+  - Search across multiple documents
+  - Locate contract clauses and terms
+  - Identify key information with page/row references
+  - Handle multi-document queries
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: document_file
+    type: string
+    required: true
+    description: "Path to the document file (PDF, Excel, CSV)"
+    example: "Q4_report.pdf"
+
+  - name: question
+    type: string
+    required: true
+    description: "Question to answer about the document"
+    example: "What is the total revenue in Q4?"
+
+  - name: document_type
+    type: enum[pdf, excel, csv, auto]
+    required: false
+    default: "auto"
+    description: "Type of document (auto-detected by default)"
+    example: "pdf"
+
+  - name: page_range
+    type: string
+    required: false
+    description: "Specific pages to search (for PDF/Excel)"
+    example: "1-5"
+
+  - name: sheet_name
+    type: string
+    required: false
+    description: "Sheet name to search (for Excel)"
+    example: "Sheet2"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  answer_question:
+    description: "Answer a question about document content with citations"
+    content: |
+      Answer the following question about {{document_file}}:
+
+      Question: {{question}}
+
+      Parse the document using the parse_document tool and:
+      1. Extract relevant information that answers the question
+      2. Cite specific sources (page numbers, sheet names, row numbers)
+      3. Quote relevant text directly when appropriate
+      4. Provide supporting context and details
+      5. Acknowledge if information is not found
+
+      Format your answer as:
+      **Answer:** [Direct answer]
+
+      **Source:** [Location in document]
+
+      **Details:** [Supporting information with quotes]
+
+      **Related Information:** [Any additional relevant findings]
+
+      Always cite specific locations and provide verifiable evidence.
+    required_parameters:
+      - document_file
+      - question
+
+  extract_financial_data:
+    description: "Extract financial data from reports with citations"
+    content: |
+      Extract financial data from {{document_file}} to answer: {{question}}
+
+      Parse the document and provide:
+      1. The requested financial metric with exact value
+      2. Source location (page number, section name)
+      3. Direct quote from the document
+      4. Breakdown by category if available
+      5. Comparison to previous periods if mentioned
+      6. Context and related metrics
+
+      Validate that:
+      - All numbers are accurately extracted
+      - Currency and units are correct
+      - Calculations are verified
+      - Sources are properly cited
+    required_parameters:
+      - document_file
+      - question
+
+  find_clause:
+    description: "Find specific clauses or sections in contracts/documents"
+    content: |
+      Find information about: {{question}} in {{document_file}}
+
+      Parse the document and:
+      1. Locate the relevant section/clause
+      2. Provide the section number and title
+      3. Quote the full text of the clause
+      4. Cite page numbers
+      5. Explain key terms and obligations
+      6. Note any related clauses or exclusions
+
+      Format:
+      **Section:** [Section number and title]
+      **Location:** [Page numbers]
+      **Full Text:** [Quoted clause]
+      **Key Terms:** [Explanation of important terms]
+      **Related:** [Cross-references to related sections]
+    required_parameters:
+      - document_file
+      - question
+
+  search_data:
+    description: "Search and filter data in CSV/Excel files"
+    content: |
+      Search {{document_file}} for: {{question}}
+
+      Parse the document and:
+      1. Filter/search data based on the criteria
+      2. Report matching records with row numbers
+      3. Provide summary statistics
+      4. Calculate totals/averages if applicable
+      5. Cite specific rows for examples
+      6. Offer to export full results if many records found
+
+      Format results clearly with:
+      - Count of matching records
+      - Top examples with row references
+      - Summary statistics
+      - Key findings
+    required_parameters:
+      - document_file
+      - question
+# === TEMPLATES END ===
+
+# System prompt for document Q&A
+system: |
+  Document Question Answering: Parse documents, extract relevant information, and answer questions with cited sources.
+
+  Q&A responsibilities:
+  1. Parse documents (PDF, Excel, CSV) using the parse_document tool
+  2. Extract relevant information to answer user questions
+  3. Cite specific sources (page numbers, sheet names, row numbers)
+  4. Handle multi-document queries when needed
+  5. Provide accurate, verifiable answers with evidence
+
+  When answering questions:
+  - Always parse the document first using parse_document
+  - Cite specific locations (page X, Sheet Y, row Z)
+  - Quote relevant text directly when appropriate
+  - Acknowledge when information is not found
+  - Handle follow-up questions with context
+
+  Document type strategies:
+  - PDF: Extract specific pages, cite page numbers
+  - Excel: Focus on relevant sheets, cite sheet and row
+  - CSV: Filter/search data, cite row numbers
+
+  Best practices:
+  - Parse only what's needed (specific pages/sheets)
+  - Provide direct answers with evidence
+  - Use structured format for complex answers
+  - Handle ambiguity by asking clarifying questions
+  - Acknowledge limitations (OCR, scanned docs)
+
+  Communication style:
+  - Be direct and concise
+  - Always cite sources
+  - Use quotes for exact text
+  - Acknowledge uncertainty when appropriate
+
+# Example interactions
+examples:
+  - input: "What is the total revenue in Q4_report.pdf?"
+    output: |
+      Let me extract the financial data from Q4_report.pdf.
+
+      **Total Revenue: $2,847,932**
+
+      Source: Page 3, Financial Summary section
+      Quote: "Total Q4 revenue across all regions and product lines: $2,847,932"
+
+      Breakdown by Region (Page 4):
+      - West Coast: $892,450 (31.3%)
+      - East Coast: $645,890 (22.7%)
+      - Midwest: $721,234 (25.3%)
+      - South: $588,358 (20.7%)
+
+      Comparison to Q3: +12.4% growth (Page 5)
+
+  - input: "Find all customers with purchases over $1000 in sales.csv"
+    output: |
+      I've analyzed sales.csv and identified customers with purchases over $1,000.
+
+      **Found 47 customers with purchases >$1,000**
+
+      Top 10 High-Value Customers:
+
+      1. Acme Corporation
+         - Total: $45,890.50 (Row 234)
+         - Transactions: 12
+         - Average: $3,824.21
+
+      2. TechStart Inc.
+         - Total: $38,450.00 (Row 567)
+         - Transactions: 8
+         - Average: $4,806.25
+
+      3. Global Solutions LLC
+         - Total: $32,120.75 (Row 892)
+         - Transactions: 15
+         - Average: $2,141.38
+
+      [... continues for top 10 ...]
+
+      Summary Statistics:
+      - Total value from these 47 customers: $312,890
+      - Average purchase value: $6,657
+      - Represents 68% of total sales
+
+      Export available: Would you like the complete list of all 47 customers?
+
+  - input: "What departments are listed in Sheet2 of org_structure.xlsx and how many employees in each?"
+    output: |
+      I've analyzed Sheet2 (Departments) from org_structure.xlsx.
+
+      **Department Breakdown (sorted by size):**
+
+      1. Engineering
+         - Employees: 245
+         - Headcount %: 42.1%
+         - Location: Multiple (Sheet2, Row 5)
+
+      2. Sales
+         - Employees: 156
+         - Headcount %: 26.8%
+         - Location: Multiple (Sheet2, Row 8)
+
+      3. Operations
+         - Employees: 89
+         - Headcount %: 15.3%
+         - Location: Denver, Houston (Sheet2, Row 11)
+
+      4. Marketing
+         - Employees: 47
+         - Headcount %: 8.1%
+         - Location: New York (Sheet2, Row 14)
+
+      5. Finance
+         - Employees: 28
+         - Headcount %: 4.8%
+         - Location: Boston (Sheet2, Row 17)
+
+      6. HR
+         - Employees: 17
+         - Headcount %: 2.9%
+         - Location: Boston (Sheet2, Row 20)
+
+      **Total Employees: 582**
+
+      Note: Sheet2 also contains budget allocation data (Column E) and
+      vacancy information (Column F) if you need those details.
+
+  - input: "Find the confidentiality clause in contract.pdf"
+    output: |
+      I've located the confidentiality clause in contract.pdf.
+
+      **Section 8: Confidentiality and Non-Disclosure**
+      Location: Page 10, Sections 8.1-8.3
+
+      Key Terms:
+
+      **8.1 Confidential Information** (Page 10)
+      "Confidential Information means any non-public information disclosed by either
+      party to the other, including but not limited to technical data, trade secrets,
+      business plans, customer lists, and financial information."
+
+      **8.2 Obligations** (Page 10-11)
+      - Duration: 5 years from effective date
+      - Use restriction: Only for purposes of this Agreement
+      - Disclosure limited to: Employees and contractors with need-to-know
+      - Standard of care: Same as party's own confidential information
+
+      **8.3 Exclusions** (Page 11)
+      Information excluded from confidentiality:
+      - Publicly available information
+      - Already known to receiving party
+      - Independently developed
+      - Required by law to disclose
+
+      **8.4 Breach Remedies** (Page 11)
+      - Injunctive relief available
+      - No limitation on other remedies
+      - No waiver by delay in enforcement
+
+      Would you like me to extract the full text of this section?
+
+# Tools configuration
+tools:
+  - parse_document
+
+# Guardrails
+guardrails:
+  - "Always cite specific sources (page, sheet, row numbers)"
+  - "Quote directly when providing verbatim text"
+  - "Acknowledge when information is not found in documents"
+  - "Don't infer beyond what's explicitly stated"
+  - "Note document format limitations (OCR, scanned PDFs)"
+  - "Respect privacy - don't expose sensitive data unnecessarily"
+  - "Handle multiple documents by processing each separately"
+
+# Tags for discoverability
+tags:
+  - document-qa
+  - question-answering
+  - information-extraction
+  - source-citation
+  - multi-format

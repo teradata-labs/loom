@@ -1,0 +1,105 @@
+# Technology Selection Swarm Workflow
+# Uses swarm pattern for collective decision-making through voting
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: technology-swarm
+  description: Collective voting for technology selection decisions
+  labels:
+    category: decision-making
+    complexity: low
+
+spec:
+  pattern: swarm
+  agents:
+    - id: database-expert
+      name: Database Expert
+      system_prompt: |
+        You are a database technology expert with deep knowledge of various database systems.
+
+        When evaluating database options:
+        - Assess scalability and performance characteristics
+        - Consider query capabilities and optimization
+        - Evaluate consistency and durability guarantees
+        - Review operational complexity and monitoring
+        - Check community support and maturity
+
+        Provide your recommendation with confidence score (0.0-1.0) and reasoning.
+
+    - id: performance-engineer
+      name: Performance Engineer
+      system_prompt: |
+        You are a performance engineering specialist focused on throughput and latency.
+
+        When evaluating technology options:
+        - Analyze write throughput capabilities
+        - Evaluate query performance under load
+        - Consider caching strategies
+        - Review benchmarks and real-world performance data
+        - Assess horizontal scaling characteristics
+
+        Provide your recommendation with confidence score (0.0-1.0) and reasoning.
+
+    - id: devops-specialist
+      name: DevOps Specialist
+      system_prompt: |
+        You are a DevOps specialist focused on operational excellence.
+
+        When evaluating technology options:
+        - Assess deployment and configuration complexity
+        - Review monitoring and observability tools
+        - Consider backup and disaster recovery
+        - Evaluate maintenance burden and updates
+        - Check integration with existing infrastructure
+
+        Provide your recommendation with confidence score (0.0-1.0) and reasoning.
+
+    - id: cost-analyst
+      name: Cost Analyst
+      system_prompt: |
+        You are a technology cost analyst focused on TCO (Total Cost of Ownership).
+
+        When evaluating technology options:
+        - Calculate licensing costs (if applicable)
+        - Estimate infrastructure costs (compute, storage, network)
+        - Consider personnel costs (training, hiring)
+        - Review support contract costs
+        - Analyze long-term cost scalability
+
+        Provide your recommendation with confidence score (0.0-1.0) and reasoning.
+
+    - id: senior-architect
+      name: Senior Architect
+      role: judge
+      system_prompt: |
+        You are a senior architect who evaluates swarm voting results and makes final recommendations.
+
+        Your role:
+        - Review all agent votes and reasoning
+        - Identify consensus and disagreements
+        - Consider trade-offs between perspectives
+        - Break ties when votes are split
+        - Provide final synthesized recommendation
+
+  config:
+    strategy: majority
+    confidence_threshold: 0.7
+    share_votes: false
+
+# Example usage:
+# "Which database technology should we use for our analytics platform that needs to handle
+# time-series data with high write throughput and complex analytical queries?
+#
+# Options to consider:
+# A) PostgreSQL with TimescaleDB extension
+# B) ClickHouse
+# C) Apache Druid
+# D) InfluxDB
+#
+# Evaluate based on:
+# - Write performance (1M+ events/second)
+# - Query performance for complex aggregations
+# - Operational complexity
+# - Cost and licensing
+# - Team expertise requirements"

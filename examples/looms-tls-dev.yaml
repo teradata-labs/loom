@@ -1,0 +1,53 @@
+# Loom Server Configuration with Self-Signed TLS (Development Mode)
+# This demonstrates TLS configuration with self-signed certificates for local development
+
+server:
+  port: 9443
+  host: 0.0.0.0
+  enable_reflection: true
+  tls:
+    enabled: true
+    mode: self-signed
+    self_signed:
+      hostnames:
+        - localhost
+        - looms.local
+      ip_addresses:
+        - 127.0.0.1
+        - ::1
+      validity_days: 365
+      organization: "Loom Development"
+
+llm:
+  provider: bedrock
+  bedrock_region: us-west-2
+  bedrock_profile: bedrock
+  bedrock_model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+database:
+  path: ./loom-tls-dev.db
+  driver: sqlite
+
+shared_memory:
+  enabled: true
+  max_memory_bytes: 1073741824  # 1GB
+  threshold_bytes: 102400       # 100KB
+  compression_threshold: 1048576 # 1MB
+  ttl_seconds: 3600              # 1 hour
+  disk_overflow_enabled: false
+
+observability:
+  enabled: false
+  provider: hawk
+  hawk_endpoint: ""
+
+logging:
+  level: info
+  format: text
+
+# No agents configured - will use default mock backend for TLS testing
+agents:
+  agents: {}

@@ -1,0 +1,600 @@
+# === METADATA START ===
+name: few_shot_learning
+title: "Few-Shot Learning from Examples"
+description: |
+  Teach Claude how to perform tasks by providing 2-5 high-quality examples. Few-shot
+  learning is one of the most powerful techniques for improving agent performance without
+  fine-tuning or extensive prompt engineering.
+
+  The pattern works by showing the model input-output pairs that demonstrate the desired
+  behavior. Claude learns from these examples and applies the pattern to new inputs.
+
+  Few-shot learning is particularly effective for:
+  - Teaching query generation from natural language
+  - Establishing consistent formatting or style
+  - Demonstrating complex transformations
+  - Showing edge case handling
+  - Setting quality standards
+
+  **UNIVERSAL COMPATIBILITY:**
+  Works across all backend types - SQL, REST APIs, documents, code generation, and more.
+  Any task that can be demonstrated through examples can use few-shot learning.
+
+category: learning
+difficulty: beginner
+backend_type: prompt_engineering
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Query Generation ---
+  - Natural language to SQL query generation
+
+  # --- Use Case 2: Data Transformation ---
+  - Data format conversion (CSV → JSON, etc.)
+
+  # --- Use Case 3: Code Style ---
+  - Consistent code style and patterns
+
+  # --- Use Case 4: Classification ---
+  - Text classification with examples of each category
+
+  # --- Use Case 5: Error Fix Patterns ---
+  - Demonstrating how to fix common errors
+
+  # --- Use Case 6: API Requests ---
+  - Showing how to format API requests
+
+  # --- Use Case 7: Documentation ---
+  - Teaching documentation style
+
+  # --- Use Case 8: Test Cases ---
+  - Generating test cases following examples
+
+  # --- Use Case 9: Parsing ---
+  - Extracting structured data from unstructured text
+
+  # --- Use Case 10: Refactoring ---
+  - Code refactoring patterns
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Task Description ---
+  - name: task_description
+    type: string
+    required: true
+    description: "High-level description of what the task is"
+    example: "Convert natural language to SQL queries"
+
+  # --- Parameter 2: Examples ---
+  - name: examples
+    type: array[object]
+    required: true
+    description: "Array of input-output example pairs (2-5 recommended)"
+    example: |
+      [
+        {
+          "input": "Show me all active users",
+          "output": "SELECT * FROM users WHERE status = 'active'"
+        },
+        {
+          "input": "Count orders from last month",
+          "output": "SELECT COUNT(*) FROM orders WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')"
+        }
+      ]
+
+  # --- Parameter 3: New Input ---
+  - name: new_input
+    type: string
+    required: true
+    description: "The new input to apply the learned pattern to"
+    example: "Find users who signed up this week"
+
+  # --- Parameter 4: Instructions ---
+  - name: additional_instructions
+    type: string
+    required: false
+    description: "Optional additional guidelines or constraints"
+    example: "Use lowercase for SQL keywords"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC TEMPLATE ===
+  basic:
+    description: "Simple 3-example few-shot learning"
+    content: |
+      Task: {{task_description}}
+
+      Here are examples:
+
+      Example 1:
+      Input: {{examples.0.input}}
+      Output: {{examples.0.output}}
+
+      Example 2:
+      Input: {{examples.1.input}}
+      Output: {{examples.1.output}}
+
+      Example 3:
+      Input: {{examples.2.input}}
+      Output: {{examples.2.output}}
+
+      Now apply the same pattern to this input:
+      Input: {{new_input}}
+      Output:
+    required_parameters:
+      - task_description
+      - examples
+      - new_input
+
+  # === DETAILED TEMPLATE ===
+  detailed:
+    description: "Few-shot with explanation of patterns"
+    content: |
+      Task: {{task_description}}
+
+      {{#if additional_instructions}}
+      Guidelines: {{additional_instructions}}
+      {{/if}}
+
+      Study these examples carefully:
+
+      {{#each examples}}
+      Example {{@index_plus_1}}:
+      Input: {{this.input}}
+      Output: {{this.output}}
+      {{#if this.explanation}}
+      Why: {{this.explanation}}
+      {{/if}}
+
+      {{/each}}
+
+      Pattern Analysis:
+      - What do all examples have in common?
+      - What varies between examples?
+      - What edge cases are demonstrated?
+
+      Now apply this pattern to the new input:
+      Input: {{new_input}}
+      Output:
+    required_parameters:
+      - task_description
+      - examples
+      - new_input
+
+  # === CLASSIFICATION TEMPLATE ===
+  classification:
+    description: "Few-shot for classification tasks (show examples per category)"
+    content: |
+      Task: Classify the following into categories based on these examples.
+
+      {{#each categories}}
+      Category: {{this.name}}
+      Examples:
+      {{#each this.examples}}
+      - "{{this}}"
+      {{/each}}
+
+      {{/each}}
+
+      Now classify this:
+      Input: {{new_input}}
+      Category:
+      Confidence (0.0-1.0):
+      Reasoning:
+    required_parameters:
+      - categories
+      - new_input
+
+  # === CHAIN_OF_THOUGHT_FEWSHOT TEMPLATE ===
+  with_reasoning:
+    description: "Combine few-shot learning with chain-of-thought reasoning"
+    content: |
+      Task: {{task_description}}
+
+      Examples showing both reasoning and output:
+
+      {{#each examples}}
+      Example {{@index_plus_1}}:
+      Input: {{this.input}}
+      Reasoning: {{this.reasoning}}
+      Output: {{this.output}}
+
+      {{/each}}
+
+      Now apply the same approach:
+      Input: {{new_input}}
+      Reasoning: [Think step-by-step]
+      Output:
+    required_parameters:
+      - task_description
+      - examples
+      - new_input
+
+  # === ERROR_CORRECTION TEMPLATE ===
+  error_correction:
+    description: "Few-shot learning for fixing errors"
+    content: |
+      Learn from these examples of common errors and their fixes:
+
+      {{#each examples}}
+      Example {{@index_plus_1}}:
+      Incorrect: {{this.incorrect}}
+      Error: {{this.error}}
+      Correct: {{this.correct}}
+      Explanation: {{this.explanation}}
+
+      {{/each}}
+
+      Now fix this:
+      Input: {{new_input}}
+      Error: {{error_message}}
+      Fixed version:
+      Explanation:
+    required_parameters:
+      - examples
+      - new_input
+      - error_message
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: SQL Query Generation ---
+  - name: "Natural Language to SQL"
+    description: "Teach agent to generate SQL from English"
+    parameters:
+      task_description: "Convert natural language questions to SQL queries"
+      examples:
+        - input: "Show me all active users"
+          output: "SELECT * FROM users WHERE status = 'active';"
+        - input: "Count orders from last month"
+          output: "SELECT COUNT(*) FROM orders WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month');"
+        - input: "Find top 10 products by revenue"
+          output: "SELECT product_id, SUM(price * quantity) as revenue FROM order_items GROUP BY product_id ORDER BY revenue DESC LIMIT 10;"
+      new_input: "Get average order value per customer"
+    expected_result: |
+      SELECT customer_id, AVG(total_amount) as avg_order_value
+      FROM orders
+      GROUP BY customer_id;
+
+  # --- Example 2: Data Format Conversion ---
+  - name: "CSV to JSON Conversion"
+    description: "Learn data transformation pattern"
+    parameters:
+      task_description: "Convert CSV rows to JSON objects"
+      examples:
+        - input: "user_id,name,email\n1,Alice,alice@example.com"
+          output: |
+            {
+              "user_id": 1,
+              "name": "Alice",
+              "email": "alice@example.com"
+            }
+        - input: "product_id,name,price\n101,Widget,29.99"
+          output: |
+            {
+              "product_id": 101,
+              "name": "Widget",
+              "price": 29.99
+            }
+      new_input: "order_id,customer,total\n5001,Bob,149.50"
+    expected_result: |
+      {
+        "order_id": 5001,
+        "customer": "Bob",
+        "total": 149.50
+      }
+
+  # --- Example 3: Classification ---
+  - name: "Sentiment Classification"
+    description: "Classify text using example-based learning"
+    parameters:
+      categories:
+        - name: "Positive"
+          examples:
+            - "This product is amazing!"
+            - "Best purchase ever"
+            - "Highly recommended"
+        - name: "Negative"
+          examples:
+            - "Terrible quality"
+            - "Waste of money"
+            - "Very disappointed"
+        - name: "Neutral"
+          examples:
+            - "It's okay"
+            - "Works as expected"
+            - "Standard product"
+      new_input: "Exceeded my expectations, will buy again"
+    expected_result: |
+      Category: Positive
+      Confidence: 0.95
+      Reasoning: Strong positive language ("exceeded expectations", "will buy again") matches positive example patterns
+
+  # --- Example 4: Code Style Consistency ---
+  - name: "Go Error Handling Style"
+    description: "Learn consistent error handling pattern"
+    parameters:
+      task_description: "Add proper error handling to Go code"
+      examples:
+        - input: |
+            func getUser(id int) *User {
+              user := db.Query("SELECT * FROM users WHERE id = ?", id)
+              return user
+            }
+          output: |
+            func getUser(id int) (*User, error) {
+              user := &User{}
+              err := db.QueryRow("SELECT * FROM users WHERE id = ?", id).Scan(&user.ID, &user.Name)
+              if err != nil {
+                return nil, fmt.Errorf("failed to get user %d: %w", id, err)
+              }
+              return user, nil
+            }
+        - input: |
+            func saveOrder(order Order) {
+              db.Insert(order)
+            }
+          output: |
+            func saveOrder(order Order) error {
+              _, err := db.Exec("INSERT INTO orders (customer_id, total) VALUES (?, ?)", order.CustomerID, order.Total)
+              if err != nil {
+                return fmt.Errorf("failed to save order: %w", err)
+              }
+              return nil
+            }
+      new_input: |
+        func deleteProduct(id int) {
+          db.Delete("products", id)
+        }
+    expected_result: |
+      func deleteProduct(id int) error {
+        _, err := db.Exec("DELETE FROM products WHERE id = ?", id)
+        if err != nil {
+          return fmt.Errorf("failed to delete product %d: %w", id, err)
+        }
+        return nil
+      }
+
+  # --- Example 5: Error Fixing ---
+  - name: "SQL Error Correction"
+    description: "Learn from error examples"
+    parameters:
+      examples:
+        - incorrect: "SELECT * FROM users WHERE id = 1 AND"
+          error: "Syntax error: incomplete WHERE clause"
+          correct: "SELECT * FROM users WHERE id = 1"
+          explanation: "Removed dangling AND operator with no following condition"
+        - incorrect: "SELECT name, COUNT(*) FROM users"
+          error: "Column 'name' not in GROUP BY"
+          correct: "SELECT name, COUNT(*) FROM users GROUP BY name"
+          explanation: "Added GROUP BY clause for non-aggregated column"
+        - incorrect: "SELECT * FROM orders JOIN customers"
+          error: "No JOIN condition specified"
+          correct: "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+          explanation: "Added JOIN condition using foreign key relationship"
+      new_input: "SELECT product_name, SUM(quantity) FROM order_items"
+      error_message: "Column 'product_name' not in GROUP BY"
+    expected_result: |
+      Fixed version: SELECT product_name, SUM(quantity) FROM order_items GROUP BY product_name
+      Explanation: Added GROUP BY clause for the non-aggregated column product_name, following the pattern from example 2
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Too Few Examples ---
+  - error: "Agent doesn't learn the pattern correctly"
+    cause: "Only 1 example provided, or examples don't cover variation"
+    solution: "Provide 3-5 diverse examples that cover different aspects of the task. Show edge cases."
+
+  # --- Error 2: Inconsistent Examples ---
+  - error: "Agent produces inconsistent outputs"
+    cause: "Examples show different patterns or conflicting approaches"
+    solution: "Ensure all examples follow the same pattern. Review examples for consistency in style, format, and approach."
+
+  # --- Error 3: Examples Too Similar ---
+  - error: "Agent overfits to specific examples"
+    cause: "All examples too similar, agent memorizes instead of learning pattern"
+    solution: "Vary the examples significantly. Show different inputs, edge cases, and scenarios while maintaining the core pattern."
+
+  # --- Error 4: Missing Context ---
+  - error: "Agent doesn't understand what to learn"
+    cause: "Task description unclear or examples not labeled"
+    solution: "Add clear task description and optionally explain the pattern being demonstrated."
+
+  # --- Error 5: No Explanation ---
+  - error: "Agent applies pattern incorrectly"
+    cause: "Examples don't show why a certain approach was chosen"
+    solution: "Use detailed or with_reasoning templates that include explanations with examples."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Few-Shot Learning Best Practices
+
+  ### 1. How Many Examples?
+
+  **2-3 examples**: Sufficient for simple, consistent patterns
+  - Data format conversions
+  - Simple classifications
+  - Straightforward transformations
+
+  **4-5 examples**: Better for complex or variable patterns
+  - Query generation with edge cases
+  - Style consistency with nuances
+  - Multi-step transformations
+
+  **6+ examples**: Rarely needed, may hurt performance
+  - Can confuse the model
+  - Increases token cost significantly
+  - Usually indicates problem needs fine-tuning, not prompting
+
+  **Research shows**: 3-5 examples optimal for most tasks (diminishing returns after 5)
+
+  ### 2. Example Quality Matters More Than Quantity
+
+  Good examples:
+  - ✅ Show diverse scenarios
+  - ✅ Include edge cases
+  - ✅ Demonstrate best practices
+  - ✅ Are correct and verified
+  - ✅ Cover variation in inputs
+
+  Bad examples:
+  - ❌ All too similar
+  - ❌ Contain errors
+  - ❌ Don't cover edge cases
+  - ❌ Show outdated patterns
+  - ❌ Inconsistent style
+
+  ### 3. Order Your Examples Strategically
+
+  **Simple to complex**: Start with basic example, progress to complex
+  ```
+  Example 1: SELECT * FROM users
+  Example 2: SELECT * FROM users WHERE status = 'active'
+  Example 3: SELECT * FROM users WHERE status = 'active' AND created_at > '2024-01-01'
+  ```
+
+  **Common to rare**: Show typical cases first, edge cases last
+  ```
+  Example 1: Valid input → success
+  Example 2: Valid input → success (different format)
+  Example 3: Invalid input → error handling
+  ```
+
+  ### 4. Combine Few-Shot with Other Patterns
+
+  **Few-Shot + Chain of Thought**:
+  Show reasoning alongside outputs
+  ```
+  Input: [task]
+  Reasoning: [step-by-step thinking]
+  Output: [result]
+  ```
+
+  **Few-Shot + Structured Output**:
+  Teach format through examples
+  ```
+  Input: "sentiment analysis"
+  Output: {"sentiment": "positive", "confidence": 0.92}
+  ```
+
+  **Few-Shot + Hallucination Prevention**:
+  Show citation pattern in examples
+  ```
+  Output: "Based on schema [users.status], we can filter WHERE status = 'active'"
+  ```
+
+  ### 5. When Few-Shot Isn't Enough
+
+  If performance is still poor after 5 good examples:
+  - **Add reasoning**: Use with_reasoning template
+  - **Add instructions**: Clarify the pattern explicitly
+  - **Check examples**: Verify they're correct and consistent
+  - **Consider fine-tuning**: For highly specialized tasks
+
+  ### 6. Domain-Specific Tips
+
+  **SQL Generation**:
+  - Show table schema in context
+  - Include JOIN examples
+  - Demonstrate aggregation patterns
+  - Cover NULL handling
+
+  **Code Generation**:
+  - Show complete, runnable code
+  - Include imports/dependencies
+  - Demonstrate error handling
+  - Follow language conventions
+
+  **Classification**:
+  - Balance examples across categories
+  - Show borderline cases
+  - Include confidence scoring
+  - Demonstrate reasoning
+
+  **Data Transformation**:
+  - Show null/empty value handling
+  - Include type conversions
+  - Demonstrate edge cases
+  - Validate outputs
+
+  ### 7. Testing Your Few-Shot Prompts
+
+  Evaluation checklist:
+  1. ✅ Test on inputs similar to examples (should work well)
+  2. ✅ Test on different inputs (check generalization)
+  3. ✅ Test edge cases not in examples (robustness)
+  4. ✅ Test with wrong/malformed inputs (error handling)
+
+  Success metrics:
+  - **Accuracy**: >90% correct outputs
+  - **Consistency**: Same input → same output
+  - **Generalization**: Works on unseen inputs
+  - **Robustness**: Handles edge cases gracefully
+
+  ### 8. Token Cost Optimization
+
+  Each example adds tokens:
+  - Small example (50 tokens input + 50 output): 100 tokens
+  - Medium example (200 + 200): 400 tokens
+  - Large example (500 + 500): 1000 tokens
+
+  3 medium examples = 1200 tokens (~$0.003 per request at Claude 3.5 Sonnet pricing)
+
+  Optimization strategies:
+  - Use shorter examples when possible
+  - Remove redundant words
+  - Cache few-shot examples (with prompt caching)
+  - Store examples in agent ROM memory (not evicted)
+
+  ### 9. Debugging Few-Shot Prompts
+
+  **Problem**: Agent ignores examples
+  - **Fix**: Add "Study these examples carefully" before examples
+
+  **Problem**: Agent copies examples verbatim
+  - **Fix**: Make examples more diverse, add "Apply the pattern, not the exact words"
+
+  **Problem**: Inconsistent quality
+  - **Fix**: Review examples for conflicts, ensure consistent style
+
+  **Problem**: Doesn't generalize
+  - **Fix**: Add more diverse examples or use with_reasoning template
+
+  ### 10. Advanced Techniques
+
+  **Dynamic Few-Shot**: Select examples based on input
+  - Semantic similarity search
+  - Retrieval-augmented generation (RAG)
+  - Example: Given user query, fetch 3 most similar historical queries + solutions
+
+  **Hierarchical Few-Shot**: Layer examples
+  ```
+  Level 1: Basic pattern (2 examples)
+  Level 2: Advanced pattern (2 examples)
+  Level 3: Edge cases (1 example)
+  ```
+
+  **Negative Examples**: Show what NOT to do
+  ```
+  ❌ Bad: SELECT * FROM users
+  ✅ Good: SELECT id, name, email FROM users
+  Why: SELECT * fetches unnecessary columns
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Chain of Thought ---
+  - chain_of_thought
+
+  # --- Pattern 2: Structured Output ---
+  - structured_output
+
+  # --- Pattern 3: Hallucination Prevention ---
+  - hallucination_prevention
+# === RELATED_PATTERNS END ===

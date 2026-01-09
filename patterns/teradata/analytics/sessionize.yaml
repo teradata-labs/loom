@@ -1,0 +1,278 @@
+# === METADATA START ===
+name: sessionize
+title: "Sessionize - Group Events into Sessions"
+description: |
+  Group time-ordered events into sessions based on timeout periods. The Sessionize function assigns
+  a unique session ID to groups of events that occur within a specified time window. When the gap
+  between consecutive events exceeds the timeout threshold, a new session begins.
+
+  Sessionize is essential for:
+  - Web analytics session tracking
+  - User activity segmentation
+  - Conversion funnel analysis by session
+  - Engagement metrics calculation
+  - Time-on-site analysis
+  - Session-based attribution
+
+category: analytics
+difficulty: beginner
+teradata_function: Sessionize
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Web Analytics ---
+  - Web analytics session identification
+
+  # --- Use Case 2: Mobile Apps ---
+  - Mobile app session tracking
+
+  # --- Use Case 3: Call Centers ---
+  - Call center interaction grouping
+
+  # --- Use Case 4: IoT Devices ---
+  - IoT device activity sessions
+
+  # --- Use Case 5: Customer Journeys ---
+  - Customer journey session segmentation
+
+  # --- Use Case 6: Gaming ---
+  - Gaming session analysis
+
+  # --- Use Case 7: Video Streaming ---
+  - Video streaming session metrics
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the events table"
+    example: "web_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Must contain time-ordered event data with timestamps
+    required: true
+    description: "Table with time-ordered event data"
+    example: "clickstream"
+
+  # --- Parameter 3: Partition Column ---
+  - name: partition_column
+    type: string
+    # LLM-HINT: Groups events per user/device; sessions tracked independently per partition
+    required: true
+    description: "Column to partition by (typically user_id or device_id)"
+    example: "user_id"
+
+  # --- Parameter 4: Timestamp Column ---
+  - name: timestamp_column
+    type: string
+    # LLM-HINT: Used for event ordering and calculating gaps between events for timeouts
+    required: true
+    description: "Timestamp column for ordering and timeout calculation"
+    example: "event_timestamp"
+
+  # --- Parameter 5: Timeout Seconds ---
+  - name: timeout_seconds
+    type: integer
+    # LLM-HINT: Gap threshold for new session; common: 1800 (30 min web), 900 (15 min mobile)
+    required: true
+    description: "Session timeout in seconds. New session starts if gap exceeds this value"
+    example: "1800"
+    default: "1800"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC TEMPLATE ===
+  # LLM-HINT: Start with this template; assigns session_id to each event based on timeout
+  basic:
+    description: "Basic sessionization with session ID assignment"
+    sql: |
+      -- Assign session IDs based on timeout periods
+      SELECT
+        {{partition_column}},
+        {{timestamp_column}},
+        session_id,
+        COUNT(*) OVER (PARTITION BY session_id) as events_in_session
+      FROM Sessionize (
+        ON {{database}}.{{table}}
+        PARTITION BY {{partition_column}}
+        ORDER BY {{timestamp_column}}
+        USING
+          TimeColumn ('{{timestamp_column}}')
+          Timeout ({{timeout_seconds}})
+      )
+      ORDER BY {{partition_column}}, {{timestamp_column}};
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - timeout_seconds
+
+  # === SESSION_METRICS TEMPLATE ===
+  # LLM-HINT: Aggregates per-session stats (duration, event count, unique pages); use for session quality analysis
+  session_metrics:
+    description: "Calculate session-level metrics (duration, event count, etc.)"
+    sql: |
+      -- Aggregate metrics per session
+      SELECT
+        session_id,
+        {{partition_column}},
+        MIN({{timestamp_column}}) as session_start,
+        MAX({{timestamp_column}}) as session_end,
+        COUNT(*) as event_count,
+        COUNT(DISTINCT page_url) as unique_pages,
+        CAST((MAX({{timestamp_column}}) - MIN({{timestamp_column}})) SECOND AS INTEGER) as duration_seconds
+      FROM Sessionize (
+        ON {{database}}.{{table}}
+        PARTITION BY {{partition_column}}
+        ORDER BY {{timestamp_column}}
+        USING
+          TimeColumn ('{{timestamp_column}}')
+          Timeout ({{timeout_seconds}})
+      )
+      GROUP BY session_id, {{partition_column}}
+      ORDER BY session_start DESC;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - timeout_seconds
+
+  # === BOUNCE_DETECTION TEMPLATE ===
+  # LLM-HINT: Identifies single-event sessions (bounces); use to calculate bounce rate
+  bounce_detection:
+    description: "Identify single-event sessions (bounces)"
+    sql: |
+      -- Find bounce sessions (only 1 event)
+      WITH sessions AS (
+        SELECT
+          session_id,
+          {{partition_column}},
+          {{timestamp_column}},
+          COUNT(*) OVER (PARTITION BY session_id) as events_in_session
+        FROM Sessionize (
+          ON {{database}}.{{table}}
+          PARTITION BY {{partition_column}}
+          ORDER BY {{timestamp_column}}
+          USING
+            TimeColumn ('{{timestamp_column}}')
+            Timeout ({{timeout_seconds}})
+        )
+      )
+      SELECT
+        session_id,
+        {{partition_column}},
+        {{timestamp_column}} as bounce_time
+      FROM sessions
+      WHERE events_in_session = 1
+      ORDER BY bounce_time DESC;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - timeout_seconds
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Web Session Tracking ---
+  - name: "Web Session Tracking"
+    description: "Identify user sessions with 30-minute timeout"
+    parameters:
+      database: "web_analytics"
+      table: "page_views"
+      partition_column: "user_id"
+      timestamp_column: "view_timestamp"
+      timeout_seconds: 1800
+    expected_result: |
+      Each row gets a session_id. When gaps between page views exceed 30 minutes,
+      a new session starts. Useful for calculating sessions per user, session duration,
+      and pages per session.
+
+  # --- Example 2: App Engagement Sessions ---
+  - name: "App Engagement Sessions"
+    description: "Group mobile app interactions into sessions with 15-minute timeout"
+    parameters:
+      database: "mobile_analytics"
+      table: "app_events"
+      partition_column: "device_id"
+      timestamp_column: "event_time"
+      timeout_seconds: 900
+    expected_result: |
+      Creates session boundaries for app usage. Sessions ending indicate user has
+      left the app. Useful for daily active sessions metrics and engagement analysis.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Invalid TimeColumn ---
+  - error: "TimeColumn parameter value must be a column name"
+    cause: "The timestamp_column parameter is incorrect or column doesn't exist"
+    solution: "Verify the column name exists in the table. Column names are case-insensitive in Teradata."
+
+  # --- Error 2: Invalid Timeout ---
+  - error: "Timeout value must be positive"
+    cause: "Timeout parameter is negative or zero"
+    solution: "Use a positive integer for timeout_seconds. Common values: 1800 (30 min), 3600 (1 hour)."
+
+  # --- Error 3: Unordered Data ---
+  - error: "Data must be time-ordered"
+    cause: "Events are not properly ordered by timestamp within partitions"
+    solution: "Ensure ORDER BY clause uses the timestamp column. Sessionize requires temporal ordering."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Sessionize Best Practices
+
+  ### 1. Choose Appropriate Timeout
+  - **30 minutes (1800s)**: Standard for web analytics (Google Analytics default)
+  - **15 minutes (900s)**: Mobile apps with shorter engagement
+  - **1 hour (3600s)**: B2B applications with longer workflows
+  - **5 minutes (300s)**: Real-time monitoring or high-frequency events
+
+  ### 2. Partition by User/Device ID
+  Sessions are user-specific, so always partition by user_id, device_id, or session_cookie.
+
+  ### 3. Combine with Additional Filters
+  Pre-filter data before sessionization if analyzing specific user segments:
+  ```sql
+  FROM (
+    SELECT * FROM {{database}}.{{table}}
+    WHERE user_segment = 'premium'
+  )
+  ```
+
+  ### 4. Calculate Session Metrics
+  After sessionizing, aggregate to calculate:
+  - Session duration
+  - Events per session
+  - Bounce rate (1-event sessions)
+  - Pages per session
+  - Conversion rate by session
+
+  ### 5. Use for Funnel Analysis
+  Sessionize before running funnel or nPath analysis to ensure events belong to same session.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: nPath ---
+  - npath
+
+  # --- Pattern 2: Attribution ---
+  - attribution
+
+  # --- Pattern 3: Funnel Analysis ---
+  - funnel_analysis
+# === RELATED_PATTERNS END ===

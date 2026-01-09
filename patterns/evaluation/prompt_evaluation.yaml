@@ -1,0 +1,147 @@
+# === METADATA START ===
+name: prompt_evaluation
+title: "A/B Testing and Quality Scoring"
+description: |
+  Compare prompts, measure quality, and run A/B tests. Integrates with Hawk for
+  production prompt evaluation. Essential for optimizing agent performance and
+  validating pattern improvements.
+
+category: quality_assurance
+difficulty: advanced
+backend_type: evaluation
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - A/B test prompt variations
+  - Regression test prompt changes
+  - Compare pattern effectiveness
+  - Version quality comparison
+  - Golden set validation
+  - Production prompt monitoring
+  - Cost vs quality tradeoff analysis
+  - Accuracy measurement
+  - Consistency scoring
+  - Hallucination detection
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: prompt_a
+    type: string
+    required: true
+    description: "First prompt to evaluate"
+    example: "Generate SQL query: {{user_input}}"
+
+  - name: prompt_b
+    type: string
+    required: true
+    description: "Second prompt to compare"
+    example: "Generate SQL with schema verification: {{user_input}}"
+
+  - name: test_inputs
+    type: array[string]
+    required: true
+    description: "Test inputs to run both prompts on"
+    example: '["Find active users", "Count orders"]'
+
+  - name: evaluation_criteria
+    type: array[string]
+    required: false
+    default: '["accuracy", "clarity", "completeness"]'
+    description: "Criteria to score prompts on"
+    example: '["accuracy", "speed", "token_efficiency"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  ab_test:
+    description: "Compare two prompts systematically"
+    content: |
+      A/B Test Setup:
+
+      Prompt A: {{prompt_a}}
+      Prompt B: {{prompt_b}}
+
+      Test Inputs:
+      {{#each test_inputs}}
+      - {{this}}
+      {{/each}}
+
+      For each input, run both prompts and score on:
+      {{#each evaluation_criteria}}
+      - {{this}} (0-10 scale)
+      {{/each}}
+
+      Return comparison:
+      {
+        "prompt_a_avg_score": number,
+        "prompt_b_avg_score": number,
+        "winner": "A|B|TIE",
+        "detailed_results": [
+          {
+            "input": "...",
+            "prompt_a_score": {...},
+            "prompt_b_score": {...}
+          }
+        ],
+        "recommendation": "which prompt to use and why"
+      }
+    required_parameters:
+      - prompt_a
+      - prompt_b
+      - test_inputs
+
+  quality_score:
+    description: "Score single prompt quality"
+    content: |
+      Evaluate this prompt: {{prompt_a}}
+
+      Test on: {{test_inputs}}
+
+      Score (0-10) on:
+      - Accuracy: Correct outputs
+      - Clarity: Clear instructions
+      - Completeness: Handles edge cases
+      - Efficiency: Token usage
+      - Consistency: Same input → same output
+
+      Return scores with justification.
+    required_parameters:
+      - prompt_a
+      - test_inputs
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "SQL Generation A/B Test"
+    parameters:
+      prompt_a: "Generate SQL: {{input}}"
+      prompt_b: "Generate SQL with schema verification: {{input}}"
+      test_inputs: ["Find active users", "Count orders by month"]
+      evaluation_criteria: ["accuracy", "uses_correct_tables", "handles_edge_cases"]
+    expected_result: |
+      {
+        "prompt_a_avg_score": 6.5,
+        "prompt_b_avg_score": 9.2,
+        "winner": "B",
+        "detailed_results": [...],
+        "recommendation": "Use Prompt B. Schema verification prevents hallucinated table/column names, improving accuracy by 42%."
+      }
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Prompt Evaluation Best Practices
+
+  1. **Diverse Test Set**: Cover common cases, edge cases, errors
+  2. **Quantitative Metrics**: Use scores, not just qualitative
+  3. **Statistical Significance**: Run enough tests (20+ inputs minimum)
+  4. **Hawk Integration**: Export results to Hawk for tracking
+  5. **Regression Suite**: Maintain golden set for ongoing validation
+  6. **Cost Awareness**: Track token usage alongside quality
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - hallucination_prevention
+  - chain_of_thought

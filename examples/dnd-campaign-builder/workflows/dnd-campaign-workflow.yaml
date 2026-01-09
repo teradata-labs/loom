@@ -1,0 +1,72 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: dnd-campaign-workflow
+  version: "2.0.0"
+  description: "Multi-agent workflow for creating complete D&D campaigns with event-driven coordination"
+  labels:
+    domain: gaming
+    category: campaign-creation
+
+spec:
+  entrypoint: coordinator
+
+  agents:
+    - name: coordinator
+      agent: dnd-coordinator
+      description: "User-facing coordinator that manages the campaign creation process (event-driven)"
+
+    - name: world-builder
+      agent: dnd-world-builder
+      description: "Creates fantasy world settings, geography, cultures, and history"
+
+    - name: storyline-designer
+      agent: dnd-storyline-designer
+      description: "Designs compelling narrative arcs, story hooks, and campaign plots"
+
+    - name: encounter-designer
+      agent: dnd-encounter-designer
+      description: "Creates combat encounters, challenges, and tactical scenarios"
+
+    - name: npc-creator
+      agent: dnd-npc-creator
+      description: "Generates non-player characters with personalities, motivations, and stats"
+
+    - name: session-planner
+      agent: dnd-session-planner
+      description: "Plans session-by-session breakdown with scenes, encounters, and pacing"
+
+    - name: campaign-publisher
+      agent: dnd-campaign-publisher
+      description: "Compiles all content into final formatted campaign document"
+
+  # Communication pattern documentation (advisory only - not enforced by runtime)
+  #
+  # The "hub-and-spoke" pattern emerges naturally through Loom's tri-modal communication:
+  # - Message Queue: send_message/receive_message for direct agent-to-agent communication
+  # - Broadcast Bus: publish/subscribe for topic-based messaging (not used in this workflow)
+  # - Shared Memory: shared_memory_write/read for shared state (not used in this workflow)
+  #
+  # The coordinator acts as a hub because:
+  # 1. It's the entrypoint (users interact with it first)
+  # 2. Its system prompt instructs it to coordinate with specialist agents
+  # 3. Specialist agents' prompts instruct them to respond to the coordinator
+  # 4. Coordinator is EVENT-DRIVEN - responses automatically injected (no polling)
+  #
+  # This field documents the intended communication topology but is not parsed
+  # or enforced by the runtime - the pattern emerges from agent configuration.
+  communication:
+    pattern: "hub-and-spoke"
+    hub: coordinator
+
+  config:
+    timeout_seconds: 3600  # 60 minutes for complete campaign creation
+    max_workflow_turns: 300
+
+  observability:
+    export_traces: true
+    export_metrics: true
+    tags:
+      workflow: dnd-campaign-workflow
+      version: "2.0.0"
+      domain: gaming

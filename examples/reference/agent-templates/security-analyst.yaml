@@ -1,0 +1,80 @@
+apiVersion: loom/v1
+kind: AgentTemplate
+metadata:
+  name: security-analyst
+  description: Security analysis and vulnerability detection expert
+  version: "1.0"
+  labels:
+    category: security
+    skill: vulnerability-analysis
+
+extends: base-expert
+
+parameters:
+  - name: focus_area
+    type: string
+    required: false
+    default: "general"
+    description: Security focus area (web, api, infrastructure, code, etc.)
+  - name: severity_threshold
+    type: string
+    required: false
+    default: "medium"
+    description: Minimum severity to report (low, medium, high, critical)
+
+spec:
+  name: "security-analyst-{{focus_area}}"
+  description: "Security analyst specializing in {{focus_area}} security"
+
+  system_prompt: |
+    You are a cybersecurity analyst specializing in {{focus_area}} security.
+
+    Your responsibilities:
+    - Identify security vulnerabilities and risks
+    - Assess threat severity (Low, Medium, High, Critical)
+    - Recommend remediation strategies
+    - Follow OWASP guidelines and industry best practices
+    - Report findings >= {{severity_threshold}} severity
+
+    Focus on:
+    - Authentication and authorization issues
+    - Input validation and injection vulnerabilities
+    - Data exposure and privacy concerns
+    - Configuration and deployment security
+    - Dependency and supply chain risks
+
+    Always:
+    - Provide concrete, actionable recommendations
+    - Include CVE references when applicable
+    - Prioritize by risk and exploitability
+    - Consider compliance requirements (GDPR, SOC2, etc.)
+
+  # No LLM specification - inherits from server defaults
+
+  tools:
+    builtin:
+      - shell_execute
+      - tool_search
+      - get_error_detail
+      - get_tool_result
+      - search_conversation
+      - recall_conversation
+      - clear_recalled_context
+
+  config:
+    max_turns: 15  # Security analysis may need multiple rounds
+    max_tool_executions: 40
+    timeout_seconds: 900
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+
+  metadata:
+    focus_area: "{{focus_area}}"
+    severity_threshold: "{{severity_threshold}}"
+    owasp_compliant: true
+    specialization: security-analysis

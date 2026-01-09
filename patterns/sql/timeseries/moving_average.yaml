@@ -1,0 +1,416 @@
+# === METADATA START ===
+name: moving_average
+title: "Moving Average"
+description: |
+  Calculate moving averages to smooth time series data and identify trends. Moving averages
+  reduce noise by averaging values over a sliding window, making it easier to spot patterns
+  and trends in temporal data.
+
+  Moving averages are essential for:
+  - Trend identification
+  - Noise reduction in time series
+  - Forecasting baselines
+  - Anomaly detection
+  - Seasonal pattern analysis
+
+category: timeseries
+difficulty: beginner
+teradata_function: MovingAverage
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Stock price trend analysis
+  - Sales forecasting and smoothing
+  - Website traffic trend identification
+  - Temperature and weather pattern analysis
+  - Network performance monitoring
+  - Customer metrics trending (active users, revenue)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing time series data"
+    example: "sales_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table with temporal data"
+    example: "daily_sales"
+
+  # --- Parameter 3: Value Column ---
+  - name: value_column
+    type: string
+    # LLM-HINT: Numeric column to smooth using moving average (revenue, price, count, etc.)
+    required: true
+    description: "Numeric column to calculate moving average on"
+    example: "revenue"
+
+  # --- Parameter 4: Time Column ---
+  - name: time_column
+    type: string
+    # LLM-HINT: DATE or TIMESTAMP column for chronological ordering (critical for window calculation)
+    required: true
+    description: "Timestamp or date column for ordering"
+    example: "sale_date"
+
+  # --- Parameter 5: Window Size ---
+  - name: window_size
+    type: integer
+    # LLM-HINT: Number of rows to include in average (7=weekly, 30=monthly, 90=quarterly)
+    required: true
+    description: "Number of periods to average over (e.g., 7 for weekly, 30 for monthly)"
+    example: "7"
+
+  # --- Parameter 6: Partition Column ---
+  - name: partition_column
+    type: string
+    # LLM-HINT: Optional grouping column for separate MAs per category (store_id, product_id, region)
+    required: false
+    description: "Optional: partition by this column for separate moving averages"
+    example: "store_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === SIMPLE_MOVING_AVERAGE TEMPLATE ===
+  # LLM-HINT: Use this for basic trend smoothing with equal weighting of all values in window
+  simple_moving_average:
+    description: "Basic moving average calculation"
+    sql: |
+      -- Calculate simple moving average (SMA)
+      -- NOTE: To partition by a column (e.g., per store), uncomment the PARTITION BY line and add partition_column to ORDER BY
+      SELECT
+        {{time_column}},
+        {{value_column}} as actual_value,
+        AVG({{value_column}}) OVER (
+          -- PARTITION BY {{partition_column}}  -- Uncomment for separate moving averages per group
+          ORDER BY {{time_column}}
+          ROWS BETWEEN {{window_size_minus_1}} PRECEDING AND CURRENT ROW
+        ) as moving_avg_{{window_size}}
+      FROM {{database}}.{{table}}
+      ORDER BY {{time_column}};  -- Add {{partition_column}}, before {{time_column}} if partitioning
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+      - window_size
+
+  # === MULTIPLE_WINDOWS TEMPLATE ===
+  # LLM-HINT: Compare short-term vs long-term trends using multiple window sizes (7/30/90 days)
+  multiple_windows:
+    description: "Calculate multiple moving averages with different window sizes"
+    sql: |
+      -- Compare short-term vs long-term trends
+      -- NOTE: To partition by a column, uncomment all PARTITION BY lines and add partition_column to ORDER BY
+      SELECT
+        {{time_column}},
+        {{value_column}} as actual_value,
+        -- Short-term MA (e.g., 7 days)
+        AVG({{value_column}}) OVER (
+          -- PARTITION BY {{partition_column}}  -- Uncomment for separate MAs per group
+          ORDER BY {{time_column}}
+          ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+        ) as ma_7,
+        -- Medium-term MA (e.g., 30 days)
+        AVG({{value_column}}) OVER (
+          -- PARTITION BY {{partition_column}}  -- Uncomment for separate MAs per group
+          ORDER BY {{time_column}}
+          ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+        ) as ma_30,
+        -- Long-term MA (e.g., 90 days)
+        AVG({{value_column}}) OVER (
+          -- PARTITION BY {{partition_column}}  -- Uncomment for separate MAs per group
+          ORDER BY {{time_column}}
+          ROWS BETWEEN 89 PRECEDING AND CURRENT ROW
+        ) as ma_90
+      FROM {{database}}.{{table}}
+      ORDER BY {{time_column}};  -- Add {{partition_column}}, before {{time_column}} if partitioning
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+
+  # === EXPONENTIAL_MOVING_AVERAGE TEMPLATE ===
+  # LLM-HINT: More responsive than SMA; weights recent values higher using alpha = 2/(N+1)
+  exponential_moving_average:
+    description: "Exponential moving average (EMA) - gives more weight to recent values"
+    sql: |
+      -- Exponential moving average with smoothing factor
+      -- Alpha = 2 / (window_size + 1)
+      WITH RECURSIVE ema AS (
+        -- Initialize: first value = first actual value
+        SELECT
+          {{time_column}},
+          {{value_column}},
+          CAST({{value_column}} AS DECIMAL(18,2)) as ema_value,
+          ROW_NUMBER() OVER (ORDER BY {{time_column}}) as rn
+        FROM {{database}}.{{table}}
+        WHERE {{time_column}} = (SELECT MIN({{time_column}}) FROM {{database}}.{{table}})
+
+        UNION ALL
+
+        -- Recursive: EMA = alpha * current_value + (1 - alpha) * previous_ema
+        SELECT
+          curr.{{time_column}},
+          curr.{{value_column}},
+          CAST((2.0 / ({{window_size}} + 1)) * curr.{{value_column}} +
+               (1 - (2.0 / ({{window_size}} + 1))) * prev.ema_value AS DECIMAL(18,2)),
+          prev.rn + 1
+        FROM {{database}}.{{table}} curr
+        JOIN ema prev ON curr.{{time_column}} > prev.{{time_column}}
+        WHERE curr.rn = prev.rn + 1
+      )
+      SELECT
+        {{time_column}},
+        {{value_column}} as actual_value,
+        ema_value as exponential_ma
+      FROM ema
+      ORDER BY {{time_column}};
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+      - window_size
+
+  # === TREND_DETECTION TEMPLATE ===
+  # LLM-HINT: Identifies trend reversals via MA crossovers (golden cross = bullish, death cross = bearish)
+  trend_detection:
+    description: "Detect trend changes using moving average crossovers"
+    sql: |
+      -- Golden cross (short MA crosses above long MA) = bullish signal
+      -- Death cross (short MA crosses below long MA) = bearish signal
+      WITH ma_values AS (
+        SELECT
+          {{time_column}},
+          {{value_column}},
+          AVG({{value_column}}) OVER (
+            ORDER BY {{time_column}}
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+          ) as ma_short,
+          AVG({{value_column}}) OVER (
+            ORDER BY {{time_column}}
+            ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+          ) as ma_long,
+          LAG(AVG({{value_column}}) OVER (
+            ORDER BY {{time_column}}
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+          )) OVER (ORDER BY {{time_column}}) as prev_ma_short,
+          LAG(AVG({{value_column}}) OVER (
+            ORDER BY {{time_column}}
+            ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+          )) OVER (ORDER BY {{time_column}}) as prev_ma_long
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        {{time_column}},
+        {{value_column}},
+        ma_short,
+        ma_long,
+        CASE
+          WHEN ma_short > ma_long AND prev_ma_short <= prev_ma_long THEN 'Golden Cross (Bullish)'
+          WHEN ma_short < ma_long AND prev_ma_short >= prev_ma_long THEN 'Death Cross (Bearish)'
+          WHEN ma_short > ma_long THEN 'Uptrend'
+          WHEN ma_short < ma_long THEN 'Downtrend'
+          ELSE 'Neutral'
+        END as signal
+      FROM ma_values
+      WHERE prev_ma_short IS NOT NULL
+      ORDER BY {{time_column}};
+    required_parameters:
+      - database
+      - table
+      - value_column
+      - time_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Daily Sales Smoothing ---
+  - name: "Daily Sales Smoothing"
+    description: "Smooth daily sales data to identify weekly trends"
+    parameters:
+      database: "retail"
+      table: "daily_sales"
+      value_column: "total_sales"
+      time_column: "sale_date"
+      window_size: 7
+    expected_result: |
+      Raw daily sales are noisy (weekend spikes, weekday dips).
+      7-day moving average shows overall trend:
+      - Week 1: MA = $45,000 (baseline)
+      - Week 2: MA = $47,500 (growing)
+      - Week 3: MA = $46,000 (slight decline)
+
+      Helps identify genuine trends vs random fluctuation.
+
+  # --- Example 2: Stock Price Analysis ---
+  - name: "Stock Price Analysis"
+    description: "Identify trend changes using 50-day and 200-day moving averages"
+    parameters:
+      database: "finance"
+      table: "stock_prices"
+      value_column: "close_price"
+      time_column: "trade_date"
+      window_size: 50
+    expected_result: |
+      Classic technical analysis signals:
+      - When 50-day MA crosses above 200-day MA = Golden Cross (buy signal)
+      - When 50-day MA crosses below 200-day MA = Death Cross (sell signal)
+
+      Detected Golden Cross on March 15, 2024:
+      - 50-day MA: $152
+      - 200-day MA: $150
+      - Signal: Uptrend beginning
+
+  # --- Example 3: Website Traffic Monitoring ---
+  - name: "Website Traffic Monitoring"
+    description: "Track daily active users with 30-day moving average"
+    parameters:
+      database: "web_analytics"
+      table: "daily_metrics"
+      value_column: "daily_active_users"
+      time_column: "metric_date"
+      window_size: 30
+      partition_column: "platform"
+    expected_result: |
+      Separate moving averages for web, mobile, tablet:
+      - Web: MA trending up (+5% MoM)
+      - Mobile: MA flat
+      - Tablet: MA trending down (-3% MoM)
+
+      Smoothed data removes weekend/weekday patterns, shows true trends.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Insufficient Data ---
+  - error: "Not enough data for window size"
+    cause: "Less than window_size rows available (especially at start of series)"
+    solution: "First few rows will have partial averages or NULLs. Either accept this or start analysis after window_size periods"
+
+  # --- Error 2: Gaps in Time Series ---
+  - error: "Gaps in time series"
+    cause: "Missing dates (e.g., no sales on holidays)"
+    solution: "Fill gaps with 0 or interpolated values before calculating MA. Use calendar table to ensure continuous dates"
+
+  # --- Error 3: Incorrect Partitioning ---
+  - error: "Wrong partition causing incorrect averages"
+    cause: "Partition column has unexpected values or NULLs"
+    solution: "Verify partition column is correct. Check for NULL values that might create separate partition"
+
+  # --- Error 4: Lagging Indicator ---
+  - error: "Moving average lags actual data"
+    cause: "This is expected - MA is a lagging indicator"
+    solution: "Use exponential MA for faster response, or reduce window size. MA always trails the actual data"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Moving Average Best Practices
+
+  ### 1. Choosing Window Size
+  **Common window sizes:**
+  - 7 days = weekly patterns
+  - 14 days = bi-weekly
+  - 30 days = monthly trends
+  - 90 days = quarterly trends
+  - 365 days = yearly/seasonal
+
+  **Guidelines:**
+  - Larger window = smoother but more lagging
+  - Smaller window = more responsive but noisier
+  - Match window to your business cycle
+
+  ### 2. Simple vs Exponential MA
+  **Simple MA (SMA):**
+  - All values in window weighted equally
+  - Easier to understand and explain
+  - Good for general trend identification
+
+  **Exponential MA (EMA):**
+  - Recent values weighted more heavily
+  - More responsive to recent changes
+  - Better for trading signals, anomaly detection
+
+  ### 3. Handling Data Gaps
+  **Fill missing dates:**
+  ```sql
+  -- Generate calendar table
+  WITH calendar AS (
+    SELECT date_column
+    FROM sys_calendar.calendar
+    WHERE date_column BETWEEN '2024-01-01' AND '2024-12-31'
+  )
+  SELECT
+    c.date_column,
+    COALESCE(s.sales, 0) as sales
+  FROM calendar c
+  LEFT JOIN sales_table s ON c.date_column = s.sale_date
+  ```
+
+  ### 4. Multiple Time Horizons
+  **Use 2-3 different window sizes:**
+  - Short-term (7 days): Immediate trends
+  - Medium-term (30 days): Overall direction
+  - Long-term (90 days): Seasonal patterns
+
+  **Crossover strategy:**
+  - When short MA crosses above long MA = uptrend starting
+  - When short MA crosses below long MA = downtrend starting
+
+  ### 5. Seasonal Adjustment
+  **For seasonal data:**
+  - Use year-over-year moving average
+  - Or deseasonalize first, then apply MA
+  - Example: Compare this week vs same week last year
+
+  ### 6. Visualization
+  **Plot together:**
+  - Actual values (line chart)
+  - Moving average (smoothed line)
+  - Makes trends obvious visually
+
+  **Bollinger Bands:**
+  - MA ± 2 standard deviations
+  - Shows volatility and potential outliers
+
+  ### 7. Forecasting
+  **Simple forecast:**
+  - MA value = baseline forecast for next period
+  - Works for stable time series
+  - Add trend component for improving forecasts
+
+  **Limitations:**
+  - MA doesn't predict turning points
+  - Always lags actual data
+  - Use ARIMA or exponential smoothing for better forecasts
+
+  ### 8. Performance Optimization
+  **For large datasets:**
+  - Partition by logical groups (store, product, region)
+  - Use indexed time column
+  - Consider pre-aggregating to daily/weekly before MA
+
+  **Incremental updates:**
+  - For real-time dashboards, only calculate MA for new periods
+  - Store historical MA values
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - exponential_smoothing
+  - arima
+  - seasonal_decomposition
+# === RELATED_PATTERNS END ===

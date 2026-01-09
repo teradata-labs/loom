@@ -1,0 +1,50 @@
+# Hourly Data Synchronization Workflow
+# Executes every hour to sync data between systems
+# Uses skip_if_running to prevent concurrent executions
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: hourly-data-sync
+  description: Synchronize customer data across systems
+
+spec:
+  type: pipeline
+  pipeline:
+    initial_prompt: "Synchronize customer data from CRM to data warehouse"
+    stages:
+      - agent_id: data-extractor
+        prompt: |
+          Extract new and updated customer records from the CRM system
+          since the last sync timestamp.
+
+      - agent_id: data-transformer
+        prompt: |
+          Transform the extracted data to match the warehouse schema.
+          Apply data quality rules and validation.
+
+      - agent_id: data-loader
+        prompt: |
+          Load the transformed data into the data warehouse.
+          Update the last sync timestamp on success.
+
+# Schedule Configuration
+schedule:
+  # Execute every hour at minute 0
+  cron: "0 * * * *"
+
+  # Use UTC for consistency across regions
+  timezone: "UTC"
+
+  enabled: true
+
+  # Critical: Skip if previous sync is still running
+  # This prevents data conflicts and queue buildup
+  skip_if_running: true
+
+  # Allow up to 45 minutes for sync to complete
+  max_execution_seconds: 2700
+
+  variables:
+    sync_batch_size: "1000"
+    enable_monitoring: "true"

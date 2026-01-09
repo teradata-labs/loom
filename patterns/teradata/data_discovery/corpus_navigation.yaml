@@ -1,0 +1,553 @@
+# === METADATA START ===
+name: corpus_navigation
+title: "Corpus Navigation via Relationships"
+description: |
+  Navigate the semantically mapped corpus by following foreign key relationships and discovering
+  connected tables.
+
+  **NAVIGATION CONCEPTS:**
+  - **1-Hop Navigation**: Direct FK relationships (orders → customers)
+  - **N-Hop Navigation**: Multi-level paths (order_items → orders → customers)
+  - **Relationship Graph**: Network of tables connected by FKs
+  - **Reachability**: Which tables can be reached from starting point
+
+  **USE CASES:**
+  - "Show me all tables connected to customers"
+  - "What data can I access starting from orders?"
+  - "Find the path from transactions to products"
+  - "Discover related tables for data integration"
+
+  **NAVIGATION MODES:**
+  1. **Outbound**: Follow FK references (orders → customers via customer_id)
+  2. **Inbound**: Find tables referencing this one (customers ← orders)
+  3. **Bidirectional**: Explore all connections
+
+  **REQUIREMENTS:**
+  Requires SIGNATURE_PAIRS table with P_XAGXB/P_XBGXA populated.
+  FK relationships detected by foreign_key_detection pattern.
+
+category: data_discovery
+difficulty: intermediate
+teradata_function: P_XAGXB, P_XBGXA
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Navigate from table to related tables
+  - Discover all tables in relationship cluster
+  - Find join paths between two tables
+  - Map data integration requirements
+  - Understand table dependencies
+  - Support impact analysis for schema changes
+  - Generate ERD from relationships
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database containing semantic map"
+    example: "semantic_data"
+
+  - name: start_table
+    type: string
+    required: true
+    description: "Starting table for navigation"
+    example: "customers"
+
+  - name: max_hops
+    type: number
+    required: false
+    default: 2
+    description: "Maximum relationship hops to traverse"
+    example: "2"
+
+  - name: fk_threshold
+    type: number
+    required: false
+    default: 0.95
+    description: "Minimum P_XAGXB for FK relationships"
+    example: "0.95"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  direct_relationships:
+    description: "Find all tables directly connected to start table"
+    sql: |
+      -- Direct FK Relationships (1-hop)
+      WITH OUTBOUND_FKS AS (
+        -- Tables this table references (FK → PK)
+        SELECT
+          S1.TABLE_NAME AS from_table,
+          S1.COLUMN_NAME AS fk_column,
+          S2.TABLE_NAME AS to_table,
+          S2.COLUMN_NAME AS pk_column,
+          SP.PXAGXB AS containment,
+          'OUTBOUND' AS direction,
+          S1.TABLE_NAME || '.' || S1.COLUMN_NAME || ' → ' ||
+            S2.TABLE_NAME || '.' || S2.COLUMN_NAME AS relationship
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+        WHERE S1.TABLE_NAME = '{{start_table}}'
+          AND SP.PXAGXB >= {{fk_threshold}}
+          AND S1.TABLE_NAME <> S2.TABLE_NAME
+      ),
+      INBOUND_FKS AS (
+        -- Tables that reference this table (PK ← FK)
+        SELECT
+          S2.TABLE_NAME AS from_table,
+          S2.COLUMN_NAME AS fk_column,
+          S1.TABLE_NAME AS to_table,
+          S1.COLUMN_NAME AS pk_column,
+          SP.PXAGXB AS containment,
+          'INBOUND' AS direction,
+          S2.TABLE_NAME || '.' || S2.COLUMN_NAME || ' → ' ||
+            S1.TABLE_NAME || '.' || S1.COLUMN_NAME AS relationship
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+        WHERE S1.TABLE_NAME = '{{start_table}}'
+          AND SP.PXAGXB >= {{fk_threshold}}
+          AND S1.TABLE_NAME <> S2.TABLE_NAME
+      )
+      SELECT * FROM OUTBOUND_FKS
+      UNION ALL
+      SELECT * FROM INBOUND_FKS
+      ORDER BY direction, containment DESC;
+
+  relationship_graph:
+    description: "Build full relationship graph from start table"
+    sql: |
+      -- Relationship Graph (up to max_hops)
+      WITH RECURSIVE RelationshipGraph (
+        hop_level,
+        from_table,
+        fk_column,
+        to_table,
+        pk_column,
+        path,
+        visited_tables
+      ) AS (
+        -- Base case: Direct relationships
+        SELECT
+          1 AS hop_level,
+          S1.TABLE_NAME AS from_table,
+          S1.COLUMN_NAME AS fk_column,
+          S2.TABLE_NAME AS to_table,
+          S2.COLUMN_NAME AS pk_column,
+          S1.TABLE_NAME || ' → ' || S2.TABLE_NAME AS path,
+          S1.TABLE_NAME || ',' || S2.TABLE_NAME AS visited_tables
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+        WHERE S1.TABLE_NAME = '{{start_table}}'
+          AND SP.PXAGXB >= {{fk_threshold}}
+          AND S1.TABLE_NAME <> S2.TABLE_NAME
+
+        UNION ALL
+
+        -- Recursive case: Follow relationships
+        SELECT
+          RG.hop_level + 1,
+          S1.TABLE_NAME,
+          S1.COLUMN_NAME,
+          S2.TABLE_NAME,
+          S2.COLUMN_NAME,
+          RG.path || ' → ' || S2.TABLE_NAME,
+          RG.visited_tables || ',' || S2.TABLE_NAME
+        FROM RelationshipGraph RG
+        JOIN {{database}}.SIGNATURES S1
+          ON RG.to_table = S1.TABLE_NAME
+        JOIN {{database}}.Signature_Pairs SP
+          ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2
+          ON SP.S2_ID = S2.ID
+        WHERE RG.hop_level < {{max_hops}}
+          AND SP.PXAGXB >= {{fk_threshold}}
+          AND S1.TABLE_NAME <> S2.TABLE_NAME
+          AND POSITION(S2.TABLE_NAME IN RG.visited_tables) = 0  -- Avoid cycles
+      )
+      SELECT
+        hop_level,
+        from_table,
+        fk_column,
+        to_table,
+        pk_column,
+        path
+      FROM RelationshipGraph
+      ORDER BY hop_level, from_table, to_table;
+
+  find_join_path:
+    description: "Find shortest path between two tables"
+    sql: |
+      -- Shortest Path Between Tables
+      WITH RECURSIVE PathSearch (
+        hop_count,
+        from_table,
+        to_table,
+        path,
+        join_conditions
+      ) AS (
+        -- Base: Direct connection
+        SELECT
+          1 AS hop_count,
+          S1.TABLE_NAME AS from_table,
+          S2.TABLE_NAME AS to_table,
+          S1.TABLE_NAME || ' → ' || S2.TABLE_NAME AS path,
+          S1.TABLE_NAME || '.' || S1.COLUMN_NAME || ' = ' ||
+            S2.TABLE_NAME || '.' || S2.COLUMN_NAME AS join_conditions
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+        WHERE S1.TABLE_NAME = '{{start_table}}'
+          AND S2.TABLE_NAME = '{{target_table}}'
+          AND SP.PXAGXB >= {{fk_threshold}}
+
+        UNION ALL
+
+        -- Recursive: Multi-hop path
+        SELECT
+          PS.hop_count + 1,
+          PS.from_table,
+          S2.TABLE_NAME,
+          PS.path || ' → ' || S2.TABLE_NAME,
+          PS.join_conditions || ' AND ' ||
+            S1.TABLE_NAME || '.' || S1.COLUMN_NAME || ' = ' ||
+            S2.TABLE_NAME || '.' || S2.COLUMN_NAME
+        FROM PathSearch PS
+        JOIN {{database}}.SIGNATURES S1
+          ON PS.to_table = S1.TABLE_NAME
+        JOIN {{database}}.Signature_Pairs SP
+          ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2
+          ON SP.S2_ID = S2.ID
+        WHERE PS.to_table <> '{{target_table}}'
+          AND S2.TABLE_NAME = '{{target_table}}'
+          AND SP.PXAGXB >= {{fk_threshold}}
+          AND PS.hop_count < 5  -- Limit search depth
+      )
+      SELECT
+        hop_count,
+        from_table,
+        to_table,
+        path,
+        join_conditions
+      FROM PathSearch
+      ORDER BY hop_count
+      FETCH FIRST 1 ROW ONLY;  -- Shortest path
+
+  connected_cluster:
+    description: "Find all tables in connected component"
+    sql: |
+      -- Connected Component (all reachable tables)
+      WITH RECURSIVE ConnectedTables (
+        table_name,
+        hop_from_start
+      ) AS (
+        -- Start node
+        SELECT
+          '{{start_table}}' AS table_name,
+          0 AS hop_from_start
+
+        UNION
+
+        -- Reachable via FK relationships
+        SELECT DISTINCT
+          S2.TABLE_NAME,
+          CT.hop_from_start + 1
+        FROM ConnectedTables CT
+        JOIN {{database}}.SIGNATURES S1
+          ON CT.table_name = S1.TABLE_NAME
+        JOIN {{database}}.Signature_Pairs SP
+          ON SP.S1_ID = S1.ID OR SP.S2_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2
+          ON (SP.S1_ID = S2.ID OR SP.S2_ID = S2.ID)
+        WHERE S2.TABLE_NAME <> CT.table_name
+          AND SP.PXAGXB >= {{fk_threshold}}
+          AND CT.hop_from_start < {{max_hops}}
+      )
+      SELECT
+        table_name,
+        MIN(hop_from_start) AS min_hops_from_start
+      FROM ConnectedTables
+      GROUP BY table_name
+      ORDER BY min_hops_from_start, table_name;
+
+  generate_erd:
+    description: "Generate ERD-style output for visualization"
+    sql: |
+      -- ERD Generation (Mermaid/GraphViz format)
+      SELECT
+        'graph TD' AS mermaid_line
+      UNION ALL
+      SELECT DISTINCT
+        '  ' || S1.TABLE_NAME || '[' || S1.TABLE_NAME || ']'
+      FROM {{database}}.Signature_Pairs SP
+      JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+      WHERE (S1.TABLE_NAME = '{{start_table}}' OR S2.TABLE_NAME = '{{start_table}}')
+        AND SP.PXAGXB >= {{fk_threshold}}
+      UNION ALL
+      SELECT
+        '  ' || S1.TABLE_NAME || ' -->|' || S1.COLUMN_NAME || '| ' || S2.TABLE_NAME
+      FROM {{database}}.Signature_Pairs SP
+      JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+      JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+      WHERE (S1.TABLE_NAME = '{{start_table}}' OR S2.TABLE_NAME = '{{start_table}}')
+        AND SP.PXAGXB >= {{fk_threshold}}
+      ORDER BY mermaid_line;
+
+  impact_analysis:
+    description: "Analyze impact of changes to start table"
+    sql: |
+      -- Impact Analysis (downstream dependencies)
+      WITH RECURSIVE DependencyTree (
+        level,
+        dependent_table,
+        dependent_column,
+        dependency_path
+      ) AS (
+        -- Direct dependencies
+        SELECT
+          1 AS level,
+          S2.TABLE_NAME AS dependent_table,
+          S2.COLUMN_NAME AS dependent_column,
+          '{{start_table}} ← ' || S2.TABLE_NAME AS dependency_path
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+        WHERE S1.TABLE_NAME = '{{start_table}}'
+          AND SP.PXAGXB >= {{fk_threshold}}
+
+        UNION ALL
+
+        -- Transitive dependencies
+        SELECT
+          DT.level + 1,
+          S2.TABLE_NAME,
+          S2.COLUMN_NAME,
+          DT.dependency_path || ' ← ' || S2.TABLE_NAME
+        FROM DependencyTree DT
+        JOIN {{database}}.SIGNATURES S1
+          ON DT.dependent_table = S1.TABLE_NAME
+        JOIN {{database}}.Signature_Pairs SP
+          ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2
+          ON SP.S2_ID = S2.ID
+        WHERE DT.level < {{max_hops}}
+          AND SP.PXAGXB >= {{fk_threshold}}
+      )
+      SELECT
+        level,
+        dependent_table,
+        dependent_column,
+        dependency_path,
+        CASE
+          WHEN level = 1 THEN 'DIRECT_IMPACT'
+          WHEN level = 2 THEN 'INDIRECT_IMPACT'
+          ELSE 'DISTANT_IMPACT'
+        END AS impact_severity
+      FROM DependencyTree
+      ORDER BY level, dependent_table;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Navigate from customers table"
+    parameters:
+      database: "semantic_data"
+      start_table: "customers"
+      max_hops: 2
+      fk_threshold: 0.95
+    expected_result: |
+      Direct Relationships from customers:
+
+      OUTBOUND (customers references):
+      - customers.state → us_states.state_code (0.99)
+      - customers.category → categories.category_id (0.97)
+
+      INBOUND (tables referencing customers):
+      - orders.customer_id → customers.customer_id (1.00)
+      - addresses.customer_id → customers.customer_id (0.99)
+      - preferences.customer_id → customers.customer_id (1.00)
+      - transactions.customer_id → customers.customer_id (0.98)
+
+      2-Hop Relationships:
+      - orders → order_items (via order_id)
+      - orders → shipments (via order_id)
+      - orders → payments (via order_id)
+
+      Total reachable tables: 9
+
+  - name: "Find join path between tables"
+    parameters:
+      database: "semantic_data"
+      start_table: "customers"
+      target_table: "products"
+      fk_threshold: 0.95
+    expected_result: |
+      Shortest Path: customers → products
+
+      Path: customers → orders → order_items → products
+      Hops: 3
+
+      Join Conditions:
+      customers.customer_id = orders.customer_id
+      AND orders.order_id = order_items.order_id
+      AND order_items.product_id = products.product_id
+
+      SQL Query Template:
+      SELECT *
+      FROM customers c
+      JOIN orders o ON c.customer_id = o.customer_id
+      JOIN order_items oi ON o.order_id = oi.order_id
+      JOIN products p ON oi.product_id = p.product_id
+
+  - name: "Connected cluster analysis"
+    parameters:
+      database: "semantic_data"
+      start_table: "orders"
+      max_hops: 3
+    expected_result: |
+      Connected Cluster (all tables reachable from orders):
+
+      | TABLE         | MIN_HOPS |
+      |---------------|----------|
+      | orders        | 0        |
+      | customers     | 1        |
+      | order_items   | 1        |
+      | shipments     | 1        |
+      | payments      | 1        |
+      | products      | 2        |
+      | addresses     | 2        |
+      | warehouses    | 2        |
+      | categories    | 3        |
+
+      This cluster represents the "order fulfillment" domain.
+
+  - name: "Generate ERD visualization"
+    parameters:
+      database: "semantic_data"
+      start_table: "orders"
+    expected_result: |
+      Mermaid ERD:
+
+      ```mermaid
+      graph TD
+        orders[orders]
+        customers[customers]
+        order_items[order_items]
+        products[products]
+
+        orders -->|customer_id| customers
+        order_items -->|order_id| orders
+        order_items -->|product_id| products
+      ```
+
+      This can be rendered in documentation or diagram tools.
+
+  - name: "Impact analysis for schema change"
+    parameters:
+      database: "semantic_data"
+      start_table: "customers"
+      max_hops: 2
+    expected_result: |
+      Impact Analysis: Changing customers table
+
+      DIRECT_IMPACT (level 1):
+      - orders.customer_id (125,000 rows affected)
+      - addresses.customer_id (75,000 rows affected)
+      - transactions.customer_id (500,000 rows affected)
+
+      INDIRECT_IMPACT (level 2):
+      - order_items (via orders)
+      - shipments (via orders)
+      - payments (via transactions)
+
+      Total tables impacted: 6
+      Recommended: Update cascading FK constraints
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Corpus Navigation Best Practices
+
+  ### 1. Start with Direct Relationships
+  Always explore 1-hop before multi-hop:
+  ```sql
+  -- Direct relationships first
+  WHERE hop_level = 1
+  ```
+
+  ### 2. Limit Search Depth
+  Prevent exponential explosion:
+  ```sql
+  WHERE hop_level < 3  -- Usually sufficient
+  ```
+
+  ### 3. Avoid Cycles
+  Track visited tables:
+  ```sql
+  WHERE POSITION(table_name IN visited_tables) = 0
+  ```
+
+  ### 4. Use Appropriate FK Threshold
+  - 0.99: Perfect FKs only
+  - 0.95: Strong FKs (recommended)
+  - 0.90: Include weak FKs
+
+  ### 5. Generate Visual ERDs
+  Output graph formats for tools:
+  - Mermaid (Markdown diagrams)
+  - GraphViz (DOT format)
+  - PlantUML
+
+  ### 6. Cache Relationship Graphs
+  For large corpora, materialize graph:
+  ```sql
+  CREATE TABLE relationship_graph AS
+  SELECT ... FROM relationship_graph_query;
+  ```
+
+  ### 7. Bidirectional Navigation
+  Consider both directions:
+  - Outbound: This table references...
+  - Inbound: Other tables reference this...
+
+  ### 8. Memory Layers for Navigation
+  - **Kernel Layer**: Cache relationship graph structure (adjacency list)
+  - **L1 Cache**: Keep recent navigation paths (last 5-8 queries) for quick re-traversal
+  - **L2 Compressed**: Archive discovered clusters and join paths
+  - **Swap Layer**: Store complete navigation history; use recall_conversation to reference relationship explorations from earlier analyses
+  This enables efficient graph traversal and reuse of discovered connection patterns.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Recursive query exceeds iteration limit"
+    cause: "Cycles in relationship graph or max_hops too high"
+    solution: "Add cycle detection (visited_tables check), reduce max_hops"
+
+  - error: "No path found between tables"
+    cause: "Tables in different connected components or FK threshold too high"
+    solution: "Lower fk_threshold to 0.90, verify FK relationships exist"
+
+  - error: "Too many results from relationship graph"
+    cause: "Highly connected corpus, exponential path explosion"
+    solution: "Limit max_hops to 2, add FETCH FIRST N ROWS"
+
+  - error: "Missing obvious relationships"
+    cause: "FK detection missed weak relationships"
+    solution: "Lower P_XAGXB threshold in foreign_key_detection pattern first"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - foreign_key_detection  # Must detect FKs before navigation
+  - domain_discovery  # Navigate within domains
+  - data_lineage  # Trace specific column lineage
+  - schema_graph_query  # Query materialized graph views
+# === RELATED_PATTERNS END ===

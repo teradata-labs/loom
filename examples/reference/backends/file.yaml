@@ -1,0 +1,20 @@
+# Example backend configuration for file system access
+# Usage: Reference this file in your looms.yaml agent configuration
+
+apiVersion: loom/v1
+kind: Backend
+name: file-backend
+type: file
+description: File system backend for reading and analyzing files
+
+database:
+  # For file backend, DSN is the root directory path
+  dsn: ./data
+
+# Capabilities configuration
+capabilities:
+  query_execution: false
+  schema_discovery: true
+  metadata: true
+  resource_listing: true
+  custom_operations: false

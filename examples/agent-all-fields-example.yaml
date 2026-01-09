@@ -1,0 +1,412 @@
+# ============================================================================
+# COMPREHENSIVE AGENT YAML - ALL POSSIBLE FIELDS
+# This example shows ALL available fields for Loom agent configuration
+# Supports both k8s-style (apiVersion/kind) and legacy (agent:) formats
+# ============================================================================
+
+apiVersion: loom/v1    # REQUIRED: Must be "loom/v1"
+kind: Agent            # REQUIRED: Must be "Agent"
+
+# ============================================================================
+# METADATA SECTION (k8s-style format)
+# ============================================================================
+metadata:
+  name: comprehensive-agent-example    # REQUIRED: Agent name (kebab-case)
+  version: "1.0.0"                     # OPTIONAL: Semantic version
+  description: "Example agent showing all possible YAML fields"  # OPTIONAL
+  labels:                              # OPTIONAL: Key-value labels
+    backend: example
+    category: documentation
+    environment: development
+    team: platform
+    maturity: alpha
+
+# ============================================================================
+# SPEC SECTION - Agent configuration
+# ============================================================================
+spec:
+  # ==========================================================================
+  # BACKEND CONFIGURATION (optional)
+  # Defines the execution backend (SQL, REST API, file system, etc.)
+  # ==========================================================================
+  backend:
+    name: example-backend              # OPTIONAL: Backend name
+    type: rest-api                     # OPTIONAL: sql|rest-api|file|mcp|graphql
+    config:                            # OPTIONAL: Backend-specific config
+      base_url: https://api.example.com
+      auth_type: bearer                # bearer|api_key|oauth|basic
+      auth_token_env: API_TOKEN        # Environment variable for auth
+      api_key_env: API_KEY             # Alternative for API key
+      rate_limit:                      # Rate limiting config
+        requests_per_minute: 60
+        requests_per_hour: 5000
+        burst: 10
+      timeout_seconds: 30
+      retry_policy:
+        max_retries: 3
+        backoff_multiplier: 2
+        max_backoff_seconds: 60
+
+  # ==========================================================================
+  # LLM CONFIGURATION (optional - inherits from server if not specified)
+  # ==========================================================================
+  llm:
+    provider: anthropic                # OPTIONAL: anthropic|bedrock|ollama|openai
+    model: claude-3-5-sonnet-20241022  # OPTIONAL: Model identifier
+    temperature: 0.7                   # OPTIONAL: 0.0-1.0 (default: 0.7)
+    max_tokens: 4096                   # OPTIONAL: Max response tokens
+    stop_sequences:                    # OPTIONAL: Stop generation sequences
+      - "\n\nHuman:"
+      - "\n\nAssistant:"
+    top_p: 0.9                         # OPTIONAL: Nucleus sampling (0.0-1.0)
+    top_k: 40                          # OPTIONAL: Top-k sampling
+    max_context_tokens: 200000         # OPTIONAL: Context window size
+                                       # Claude Sonnet 4.5: 200000
+                                       # Llama 3.1: 128000
+                                       # Mistral: 32000
+    reserved_output_tokens: 20000      # OPTIONAL: Tokens for output (10% of context)
+
+  # ==========================================================================
+  # SYSTEM PROMPT (optional but recommended)
+  # ==========================================================================
+  system_prompt: |
+    You are a helpful AI assistant designed to assist with various tasks.
+
+    CAPABILITIES:
+    - Answer questions based on available knowledge
+    - Use tools to retrieve information and perform actions
+    - Maintain context across conversation turns
+    - Provide clear, accurate, and helpful responses
+
+    GUIDELINES:
+    1. Always be helpful, harmless, and honest
+    2. Use tools when needed to access external information
+    3. Explain your reasoning when appropriate
+    4. Ask clarifying questions if the request is ambiguous
+    5. Provide sources and citations when available
+    6. Format responses clearly with proper structure
+
+    TOOL USAGE:
+    - Search for available tools using tool_search
+    - Read tool documentation before using unfamiliar tools
+    - Handle errors gracefully and provide useful feedback
+    - Use context management (search/recall conversation) for long interactions
+
+    BEST PRACTICES:
+    - Start complex tasks by breaking them into steps
+    - Validate assumptions before taking actions
+    - Provide progress updates for long-running operations
+    - Summarize key findings at the end of tasks
+
+    LIMITATIONS:
+    - Cannot access real-time information without tools
+    - Cannot modify external systems without appropriate permissions
+    - Always respect user privacy and data security
+
+    Provide helpful, accurate responses while following these guidelines.
+
+  # ==========================================================================
+  # TOOLS CONFIGURATION (optional)
+  # ==========================================================================
+  tools:
+    # --- MCP (Model Context Protocol) Tools ---
+    mcp:                               # OPTIONAL: MCP server tools
+      - server: filesystem             # MCP server name
+        tools:                         # OPTIONAL: Specific tools (empty = all)
+          - read_file
+          - write_file
+          - list_directory
+      - server: github                 # Another MCP server
+        tools: []                      # Empty list = all tools from server
+      - server: database               # Third MCP server
+        tools:
+          - execute_query
+          - get_schema
+
+    # --- Custom Tools ---
+    custom:                            # OPTIONAL: Custom tool implementations
+      - name: custom_analyzer
+        implementation: /path/to/tool.go
+      - name: special_validator
+        implementation: /path/to/validator.so
+
+    # --- Built-in Tools ---
+    builtin:                           # OPTIONAL: Built-in Loom tools
+      # Core builtin tools (pkg/shuttle/builtin/)
+      - http_request                   # HTTP client (GET/POST/PUT/DELETE/PATCH)
+      - web_search                     # Web search via Tavily API
+      - file_write                     # Write files to disk
+      - file_read                      # Read files from disk
+      - analyze_image                  # Vision/image analysis
+      - parse_document                 # Parse PDF, DOCX, etc.
+      - grpc_call                      # gRPC client
+      - shell_execute                  # Execute shell commands
+      - contact_human                  # Human-in-the-loop escalation
+
+      # Communication tools (multi-agent workflows)
+      - send_message                   # Send message to another agent
+      - receive_message                # Receive messages from agents
+      - publish                        # Publish to topic (pub-sub)
+      - subscribe                      # Subscribe to topic
+      - receive_broadcast              # Receive broadcast messages
+      - shared_memory_write            # Write to shared memory
+      - shared_memory_read             # Read from shared memory
+
+      # Discovery and introspection
+      - tool_search                    # Search available tools
+      - get_error_detail               # Get detailed error info
+      - get_tool_result                # Retrieve tool execution results
+
+      # Memory and context management
+      - search_conversation            # Search conversation history
+      - recall_conversation            # Recall specific conversation segments
+      - clear_recalled_context         # Clear recalled context
+
+      # Presentation and visualization (advanced)
+      - top_n_query                    # Query shared memory (top N results)
+      - group_by_query                 # Group shared memory results
+      - generate_workflow_visualization # Visualize workflow execution
+      - generate_visualization         # Generate data visualizations
+
+  # Alternative: Simple tool list (no categorization)
+  # tools:
+  #   - shell_execute
+  #   - tool_search
+  #   - web_search
+
+  # ==========================================================================
+  # MEMORY CONFIGURATION (optional - defaults to in-memory)
+  # ==========================================================================
+  memory:
+    type: sqlite                       # OPTIONAL: memory|sqlite|postgres
+    path: /path/to/agent.db            # OPTIONAL: For sqlite (file path)
+    dsn: "postgres://user:pass@host/db"  # OPTIONAL: For postgres (connection string)
+    max_history: 1000                  # OPTIONAL: Max conversation turns to retain
+
+    # Memory compression configuration
+    memory_compression:                # OPTIONAL: Compression settings
+      # Workload profiles (choose one or customize)
+      workload_profile: balanced       # OPTIONAL: balanced|data_intensive|conversational
+
+      # Profile Characteristics:
+      # - balanced: maxL1=8, warning=60%, critical=75% (general purpose)
+      # - data_intensive: maxL1=5, warning=50%, critical=70% (SQL, large files)
+      # - conversational: maxL1=12, warning=70%, critical=85% (chat-heavy)
+
+      # Custom settings (override profile defaults)
+      max_l1_messages: 8               # OPTIONAL: Messages in L1 before compression
+      min_l1_messages: 4               # OPTIONAL: Min messages after compression
+      warning_threshold_percent: 60    # OPTIONAL: Warning threshold (0-100)
+      critical_threshold_percent: 75   # OPTIONAL: Critical threshold (0-100)
+
+      # Compression batch sizes
+      batch_sizes:                     # OPTIONAL: Messages per compression batch
+        normal: 3                      # Normal conditions
+        warning: 5                     # Warning threshold
+        critical: 7                    # Critical threshold
+
+  # ==========================================================================
+  # ROM (Read-Only Memory) - Domain-specific knowledge (optional)
+  # ==========================================================================
+  # ROM provides embedded domain-specific documentation that augments the
+  # system prompt with specialized knowledge (e.g., SQL dialect syntax)
+  #
+  # Available options:
+  #   "TD" or "teradata": Teradata SQL syntax guide (31KB)
+  #     - TOP vs LIMIT syntax differences
+  #     - QUALIFY clause for window functions
+  #     - Teradata reserved words and SQL extensions
+  #     - Teradata-specific syntax rules
+  #   "auto": Auto-detect ROM from backend configuration
+  #     - Detects "teradata" or "vantage" in backend_path
+  #     - Falls back to no ROM if not detected
+  #   "": No ROM (uses only system_prompt)
+  #
+  # Examples:
+  #   rom: "TD"                        # Explicit Teradata ROM
+  #   rom: "auto"                      # Auto-detect from backend
+  #   rom: ""                          # No ROM
+  #
+  # When to use ROM:
+  #   - SQL agents targeting specific databases (Teradata, Oracle, etc.)
+  #   - Agents requiring specialized domain knowledge
+  #   - When system_prompt becomes too large with embedded docs
+  #
+  # rom: "auto"                        # Uncomment to enable
+
+  # ==========================================================================
+  # BEHAVIOR CONFIGURATION (optional)
+  # ==========================================================================
+  config:
+    max_iterations: 10                 # OPTIONAL: Max tool iterations per turn
+    timeout_seconds: 120               # OPTIONAL: Timeout per message
+    allow_code_execution: false        # OPTIONAL: Allow shell execution (security)
+    allowed_domains:                   # OPTIONAL: Whitelist for web access
+      - example.com
+      - api.example.com
+      - "*.trusted-domain.com"
+    max_turns: 25                      # OPTIONAL: Max conversation turns (default: 25)
+    max_tool_executions: 50            # OPTIONAL: Max tool calls (default: 50)
+    enable_tracing: true               # OPTIONAL: Enable observability tracing
+    enable_self_correction: true       # OPTIONAL: Allow self-correction loops
+
+  # ==========================================================================
+  # EPHEMERAL AGENTS (optional - dynamic agent spawning)
+  # ==========================================================================
+  ephemeral_agents:
+    # Judge agent spawned when consensus fails
+    - role: judge                      # Role name for spawned agent
+      trigger:                         # Spawn trigger condition
+        type: CONSENSUS_NOT_REACHED    # Trigger type (see types below)
+        threshold: 0.67                # Threshold value (type-specific)
+        condition: ""                  # OPTIONAL: Custom condition expression
+      template:                        # Agent template for spawned agent
+        name: ephemeral-judge
+        description: "Impartial judge for conflict resolution"
+        system_prompt: |
+          You are an impartial judge brought in to resolve disagreement.
+          Analyze all perspectives and make a fair, evidence-based decision.
+          Consider:
+          - Strength of reasoning from each side
+          - Quality of evidence presented
+          - Practical implications
+          - Potential biases
+
+          Provide a clear decision with concise justification.
+        config:
+          max_turns: 5
+          timeout_seconds: 60
+      max_spawns: 1                    # OPTIONAL: Max times this agent can spawn
+      cost_limit_usd: 0.50             # OPTIONAL: Budget limit in USD
+
+    # Domain expert for low-confidence situations
+    - role: domain_expert
+      trigger:
+        type: CONFIDENCE_BELOW          # Spawn if confidence too low
+        threshold: 0.5
+      template:
+        name: ephemeral-expert
+        system_prompt: |
+          You are a domain expert brought in to resolve uncertainty.
+          Provide deep analysis with supporting evidence and high confidence.
+      max_spawns: 1
+      cost_limit_usd: 2.00
+
+    # Moderator for tie situations
+    - role: moderator
+      trigger:
+        type: TIE_DETECTED              # Spawn on voting tie
+      template:
+        name: ephemeral-moderator
+        system_prompt: "Moderate the discussion and facilitate consensus."
+      max_spawns: 1
+      cost_limit_usd: 1.00
+
+    # Escalation handler
+    - role: escalation_handler
+      trigger:
+        type: ESCALATION_REQUESTED      # Spawn when agent requests help
+      template:
+        name: ephemeral-escalation
+        system_prompt: "Handle escalated issues requiring higher authority."
+      max_spawns: 3
+      cost_limit_usd: 5.00
+
+  # ==========================================================================
+  # OBSERVABILITY (optional - for monitoring and tracing)
+  # ==========================================================================
+  observability:
+    export_traces: true                # OPTIONAL: Export to Hawk/OTLP
+    export_metrics: true               # OPTIONAL: Export metrics
+    tags:                              # OPTIONAL: Custom tags for traces
+      agent: comprehensive-example
+      environment: development
+      version: "1.0.0"
+      team: platform
+
+# ============================================================================
+# SPAWN TRIGGER TYPES (for ephemeral_agents)
+# ============================================================================
+#
+# Available trigger types:
+#
+# 1. CONSENSUS_NOT_REACHED
+#    - Spawns when agents can't reach consensus in debate/swarm
+#    - threshold: minimum agreement percentage (0.0-1.0)
+#
+# 2. CONFIDENCE_BELOW
+#    - Spawns when average confidence falls below threshold
+#    - threshold: minimum confidence (0.0-1.0)
+#
+# 3. TIE_DETECTED
+#    - Spawns when voting results in a tie
+#    - threshold: not used
+#
+# 4. ESCALATION_REQUESTED
+#    - Spawns when agent explicitly requests escalation
+#    - threshold: not used
+#
+# 5. ALWAYS
+#    - Spawns unconditionally (for testing)
+#    - threshold: not used
+#
+# 6. CUSTOM
+#    - Custom condition evaluated at runtime
+#    - condition: expression string (implementation-specific)
+
+# ============================================================================
+# FIELD REFERENCE SUMMARY
+# ============================================================================
+#
+# TOP-LEVEL (k8s-style):
+#   apiVersion: "loom/v1" (required)
+#   kind: "Agent" (required)
+#   metadata: (required)
+#   spec: (required)
+#
+# METADATA FIELDS:
+#   name: (required)
+#   version: (optional)
+#   description: (optional)
+#   labels: (optional map)
+#
+# SPEC FIELDS:
+#   backend: (optional)
+#   llm: (optional - inherits from server)
+#   system_prompt: (optional but recommended)
+#   tools: (optional)
+#   memory: (optional - defaults to in-memory)
+#   rom: (optional - domain-specific knowledge)
+#   config: (optional - behavior settings)
+#   ephemeral_agents: (optional - dynamic spawning)
+#   observability: (optional - tracing/metrics)
+#
+# WORKLOAD PROFILES:
+#   balanced: General purpose (maxL1=8, warning=60%, critical=75%)
+#   data_intensive: SQL/files (maxL1=5, warning=50%, critical=70%)
+#   conversational: Chat (maxL1=12, warning=70%, critical=85%)
+#
+# PROVIDER OPTIONS:
+#   anthropic: Claude models
+#   bedrock: AWS Bedrock (Claude, Llama, etc.)
+#   ollama: Local models
+#   openai: OpenAI models (future)
+#
+# MEMORY TYPES:
+#   memory: In-memory (not persisted)
+#   sqlite: SQLite database file
+#   postgres: PostgreSQL database
+#
+# BACKEND TYPES:
+#   sql: SQL databases (Teradata, PostgreSQL, etc.)
+#   rest-api: REST API backends
+#   file: File system operations
+#   mcp: Model Context Protocol servers
+#   graphql: GraphQL APIs
+#
+# ROM (READ-ONLY MEMORY) OPTIONS:
+#   "TD" or "teradata": Teradata SQL syntax guide (31KB embedded docs)
+#   "auto": Auto-detect from backend configuration (checks backend_path)
+#   "": No ROM (empty string = disabled)
+#
+# ============================================================================

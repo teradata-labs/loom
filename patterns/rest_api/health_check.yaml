@@ -1,0 +1,662 @@
+# === METADATA START ===
+name: health_check
+title: "REST API Health Check Design"
+backend_type: rest_api
+description: |
+  Design and implement REST API health check endpoints following industry best practices.
+  Covers liveness probes, readiness probes, dependency health, and monitoring integration.
+
+  **HEALTH CHECK TYPES:**
+
+  **Liveness Probe**: Is the service alive?
+  - Lightweight check (< 100ms)
+  - No external dependencies
+  - Returns 200 if process is running
+
+  **Readiness Probe**: Can the service handle requests?
+  - Checks critical dependencies (DB, cache, external APIs)
+  - Returns 503 if not ready
+  - Used for load balancer routing
+
+  **Startup Probe**: Has the service finished initialization?
+  - Used during slow startup (migrations, cache warmup)
+  - Prevents premature traffic routing
+
+  **USE CASES:**
+  - Kubernetes liveness/readiness/startup probes
+  - Load balancer health checks
+  - Service mesh health monitoring
+  - Alerting and incident response
+  - Dependency mapping and observability
+
+  **BEST PRACTICES:**
+  - Keep liveness checks lightweight (no DB queries)
+  - Include dependency checks in readiness
+  - Return structured health data (JSON)
+  - Include version and build info
+  - Cache dependency health results
+  - Set appropriate timeouts
+
+category: rest_api
+difficulty: beginner
+tags: [health, monitoring, kubernetes, observability]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Kubernetes liveness and readiness probes
+  - Load balancer health checks (AWS ALB, nginx)
+  - Service mesh integration (Istio, Linkerd)
+  - Monitoring and alerting (Prometheus, Datadog)
+  - Circuit breaker integration
+  - Dependency health visualization
+  - Incident response and debugging
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: service_name
+    type: string
+    required: true
+    description: "Name of the service"
+    example: "user-service"
+
+  - name: dependencies
+    type: array
+    required: false
+    description: "List of dependencies to check (database, cache, api)"
+    example: '["postgres", "redis", "auth-api"]'
+
+  - name: timeout_ms
+    type: integer
+    required: false
+    description: "Health check timeout in milliseconds"
+    example: "5000"
+    default: "5000"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  basic_liveness:
+    description: "Lightweight liveness probe (no dependencies)"
+    content: |
+      GET /health/live
+      Returns 200 if alive, 500+ if dead
+
+      Must respond in < 100ms
+      No external dependency checks
+      Simple process health check
+
+      Response:
+      {
+        "status": "UP",
+        "timestamp": "2025-01-15T10:30:00Z"
+      }
+    http_method: GET
+    endpoint: "/health/live"
+    expected_status: 200
+    response_example: |
+      {
+        "status": "UP",
+        "timestamp": "2025-01-15T10:30:00Z"
+      }
+    implementation_notes: |
+      # Liveness Probe Implementation
+
+      Requirements:
+      - Must respond in < 100ms
+      - No external dependency checks
+      - Simple process health check
+      - Returns 200 if alive, 500+ if dead
+
+      Example (Go):
+      ```go
+      func LivenessHandler(w http.ResponseWriter, r *http.Request) {
+          w.Header().Set("Content-Type", "application/json")
+          w.WriteHeader(http.StatusOK)
+          json.NewEncoder(w).Encode(map[string]interface{}{
+              "status": "UP",
+              "timestamp": time.Now().Format(time.RFC3339),
+          })
+      }
+      ```
+
+  readiness_probe:
+    description: "Readiness probe with dependency checks"
+    content: |
+      GET /health/ready
+      Returns 200 if ready, 503 if not ready
+
+      Checks all critical dependencies
+      Return 503 if any dependency DOWN
+      Include response times for observability
+
+      Response (healthy):
+      {
+        "status": "UP",
+        "dependencies": {
+          "database": {"status": "UP", "response_time_ms": 12},
+          "cache": {"status": "UP", "response_time_ms": 3}
+        }
+      }
+    http_method: GET
+    endpoint: "/health/ready"
+    expected_status: 200
+    response_example: |
+      {
+        "status": "UP",
+        "timestamp": "2025-01-15T10:30:00Z",
+        "dependencies": {
+          "database": {
+            "status": "UP",
+            "response_time_ms": 12
+          },
+          "cache": {
+            "status": "UP",
+            "response_time_ms": 3
+          },
+          "auth_api": {
+            "status": "UP",
+            "response_time_ms": 45
+          }
+        }
+      }
+    implementation_notes: |
+      # Readiness Probe Implementation
+
+      Requirements:
+      - Check all critical dependencies
+      - Return 503 if any dependency DOWN
+      - Return 200 only if fully operational
+      - Include response times for observability
+
+      Example (Go):
+      ```go
+      func ReadinessHandler(deps *Dependencies) http.HandlerFunc {
+          return func(w http.ResponseWriter, r *http.Request) {
+              ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+              defer cancel()
+
+              result := checkDependencies(ctx, deps)
+
+              w.Header().Set("Content-Type", "application/json")
+              if result.Status == "UP" {
+                  w.WriteHeader(http.StatusOK)
+              } else {
+                  w.WriteHeader(http.StatusServiceUnavailable)
+              }
+              json.NewEncoder(w).Encode(result)
+          }
+      }
+      ```
+
+  detailed_health:
+    description: "Detailed health endpoint with version and metrics"
+    content: |
+      GET /health
+      Detailed health information with version and metrics
+
+      Use for monitoring dashboards, debugging, troubleshooting
+      NOT for Kubernetes probes (too heavy)
+
+      Includes:
+      - Service metadata (name, version, build, uptime)
+      - Dependency health with details
+      - Key metrics (request rate, errors)
+    http_method: GET
+    endpoint: "/health"
+    expected_status: 200
+    response_example: |
+      {
+        "status": "UP",
+        "timestamp": "2025-01-15T10:30:00Z",
+        "service": {
+          "name": "user-service",
+          "version": "1.2.3",
+          "build": "abc123",
+          "uptime_seconds": 86400
+        },
+        "dependencies": {
+          "postgres": {
+            "status": "UP",
+            "type": "database",
+            "response_time_ms": 12,
+            "version": "PostgreSQL 15.1"
+          },
+          "redis": {
+            "status": "UP",
+            "type": "cache",
+            "response_time_ms": 3
+          }
+        },
+        "metrics": {
+          "requests_total": 125000,
+          "requests_per_second": 150,
+          "error_rate": 0.02
+        }
+      }
+    implementation_notes: |
+      # Detailed Health Endpoint
+
+      Use for:
+      - Monitoring dashboards
+      - Debugging and troubleshooting
+      - Dependency mapping
+
+      Should include:
+      - Service metadata (name, version, build)
+      - Uptime and startup time
+      - Dependency health with details
+      - Key metrics (request rate, errors)
+
+      NOT for:
+      - Kubernetes probes (too heavy)
+      - High-frequency polling
+
+  startup_probe:
+    description: "Startup probe for slow initialization"
+    content: |
+      GET /health/startup
+      Returns 200 when ready, 503 during initialization
+
+      Use when application has slow startup (> 10s)
+      - Database migrations
+      - Cache warmup
+      - Large config file loading
+
+      Prevents premature traffic routing during initialization
+    http_method: GET
+    endpoint: "/health/startup"
+    expected_status: 200
+    response_example: |
+      {
+        "status": "READY",
+        "timestamp": "2025-01-15T10:30:00Z",
+        "initialization": {
+          "completed": true,
+          "duration_seconds": 45,
+          "stages": {
+            "database_migration": "COMPLETED",
+            "cache_warmup": "COMPLETED",
+            "config_load": "COMPLETED"
+          }
+        }
+      }
+    implementation_notes: |
+      # Startup Probe Implementation
+
+      Use when:
+      - Application has slow startup (> 10s)
+      - Running database migrations
+      - Cache warmup required
+      - Large config file loading
+
+      Example (Go):
+      ```go
+      type StartupState struct {
+          sync.RWMutex
+          Ready      bool
+          Stages     map[string]string
+          StartTime  time.Time
+      }
+
+      func StartupHandler(state *StartupState) http.HandlerFunc {
+          return func(w http.ResponseWriter, r *http.Request) {
+              state.RLock()
+              defer state.RUnlock()
+
+              w.Header().Set("Content-Type", "application/json")
+              if state.Ready {
+                  w.WriteHeader(http.StatusOK)
+              } else {
+                  w.WriteHeader(http.StatusServiceUnavailable)
+              }
+              // ... encode response
+          }
+      }
+      ```
+
+  kubernetes_probes:
+    description: "Kubernetes probe configuration"
+    content: |
+      Kubernetes Deployment Health Check Configuration
+
+      Three probe types:
+      - livenessProbe: Restart container if failing
+      - readinessProbe: Remove from load balancer if failing
+      - startupProbe: Wait for slow initialization
+
+      Configure with initialDelaySeconds, periodSeconds, timeoutSeconds, failureThreshold
+    configuration_example: |
+      # Kubernetes Deployment with Health Checks
+
+      apiVersion: apps/v1
+      kind: Deployment
+      spec:
+        template:
+          spec:
+            containers:
+            - name: {{service_name}}
+              image: {{image}}
+              ports:
+              - containerPort: 8080
+
+              # Liveness: Restart if failing
+              livenessProbe:
+                httpGet:
+                  path: /health/live
+                  port: 8080
+                initialDelaySeconds: 10
+                periodSeconds: 10
+                timeoutSeconds: 1
+                failureThreshold: 3
+
+              # Readiness: Remove from load balancer if failing
+              readinessProbe:
+                httpGet:
+                  path: /health/ready
+                  port: 8080
+                initialDelaySeconds: 5
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 2
+
+              # Startup: Wait for slow initialization
+              startupProbe:
+                httpGet:
+                  path: /health/startup
+                  port: 8080
+                initialDelaySeconds: 0
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 30  # 30 * 5s = 150s max startup time
+
+  dependency_health_check:
+    description: "Implementation pattern for checking dependencies"
+    content: |
+      Dependency Health Check Pattern
+
+      Implement HealthChecker interface for each dependency:
+      - Check(ctx context.Context) HealthStatus
+      - Return status (UP/DOWN/DEGRADED), response time, message
+
+      Create checkers for:
+      - Database (simple ping query)
+      - Cache (Redis PING command)
+      - External APIs (HTTP health endpoint)
+      - Message queues (connection test)
+    implementation_example: |
+      # Dependency Health Check Pattern (Go)
+
+      type HealthChecker interface {
+          Check(ctx context.Context) HealthStatus
+      }
+
+      type HealthStatus struct {
+          Status       string  `json:"status"`        // UP, DOWN, DEGRADED
+          ResponseTime int64   `json:"response_time_ms"`
+          Message      string  `json:"message,omitempty"`
+          Details      map[string]interface{} `json:"details,omitempty"`
+      }
+
+      // Database health check
+      type DatabaseHealthChecker struct {
+          db *sql.DB
+      }
+
+      func (d *DatabaseHealthChecker) Check(ctx context.Context) HealthStatus {
+          start := time.Now()
+
+          // Simple ping query
+          err := d.db.PingContext(ctx)
+          duration := time.Since(start).Milliseconds()
+
+          if err != nil {
+              return HealthStatus{
+                  Status:       "DOWN",
+                  ResponseTime: duration,
+                  Message:      err.Error(),
+              }
+          }
+
+          return HealthStatus{
+              Status:       "UP",
+              ResponseTime: duration,
+          }
+      }
+
+      // Cache health check
+      type CacheHealthChecker struct {
+          cache *redis.Client
+      }
+
+      func (c *CacheHealthChecker) Check(ctx context.Context) HealthStatus {
+          start := time.Now()
+
+          err := c.cache.Ping(ctx).Err()
+          duration := time.Since(start).Milliseconds()
+
+          if err != nil {
+              return HealthStatus{
+                  Status:       "DOWN",
+                  ResponseTime: duration,
+                  Message:      err.Error(),
+              }
+          }
+
+          return HealthStatus{
+              Status:       "UP",
+              ResponseTime: duration,
+          }
+      }
+
+  health_aggregator:
+    description: "Aggregate multiple dependency health checks"
+    content: |
+      Health Aggregator Pattern
+
+      Coordinates multiple health checkers:
+      - Register checkers for each dependency
+      - Check all dependencies in parallel (goroutines)
+      - Cache results to avoid overwhelming dependencies (5-10s TTL)
+      - Return aggregated health status
+
+      Use sync.Map for concurrent-safe caching
+      Use sync.WaitGroup for parallel execution
+    implementation_example: |
+      # Health Aggregator Pattern
+
+      type HealthAggregator struct {
+          checkers map[string]HealthChecker
+          cache    sync.Map  // Cache results to avoid overwhelming dependencies
+          cacheTTL time.Duration
+      }
+
+      func NewHealthAggregator(ttl time.Duration) *HealthAggregator {
+          return &HealthAggregator{
+              checkers: make(map[string]HealthChecker),
+              cacheTTL: ttl,
+          }
+      }
+
+      func (h *HealthAggregator) Register(name string, checker HealthChecker) {
+          h.checkers[name] = checker
+      }
+
+      func (h *HealthAggregator) CheckAll(ctx context.Context) map[string]HealthStatus {
+          results := make(map[string]HealthStatus)
+          var wg sync.WaitGroup
+          var mu sync.Mutex
+
+          for name, checker := range h.checkers {
+              wg.Add(1)
+              go func(name string, checker HealthChecker) {
+                  defer wg.Done()
+
+                  // Check cache first
+                  if cached, ok := h.cache.Load(name); ok {
+                      if entry, ok := cached.(cacheEntry); ok {
+                          if time.Since(entry.timestamp) < h.cacheTTL {
+                              mu.Lock()
+                              results[name] = entry.status
+                              mu.Unlock()
+                              return
+                          }
+                      }
+                  }
+
+                  // Perform health check
+                  status := checker.Check(ctx)
+
+                  // Update cache
+                  h.cache.Store(name, cacheEntry{
+                      status:    status,
+                      timestamp: time.Now(),
+                  })
+
+                  mu.Lock()
+                  results[name] = status
+                  mu.Unlock()
+              }(name, checker)
+          }
+
+          wg.Wait()
+          return results
+      }
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Basic liveness probe"
+    request: |
+      GET /health/live HTTP/1.1
+      Host: api.example.com
+    response: |
+      HTTP/1.1 200 OK
+      Content-Type: application/json
+
+      {
+        "status": "UP",
+        "timestamp": "2025-01-15T10:30:00Z"
+      }
+    notes: "Lightweight check, responds in ~1ms"
+
+  - name: "Readiness probe with dependencies"
+    request: |
+      GET /health/ready HTTP/1.1
+      Host: api.example.com
+    response: |
+      HTTP/1.1 200 OK
+      Content-Type: application/json
+
+      {
+        "status": "UP",
+        "timestamp": "2025-01-15T10:30:00Z",
+        "dependencies": {
+          "postgres": {"status": "UP", "response_time_ms": 12},
+          "redis": {"status": "UP", "response_time_ms": 3}
+        }
+      }
+    notes: "All dependencies healthy, service ready for traffic"
+
+  - name: "Readiness probe - service not ready"
+    request: |
+      GET /health/ready HTTP/1.1
+      Host: api.example.com
+    response: |
+      HTTP/1.1 503 Service Unavailable
+      Content-Type: application/json
+
+      {
+        "status": "DOWN",
+        "timestamp": "2025-01-15T10:30:00Z",
+        "dependencies": {
+          "postgres": {"status": "UP", "response_time_ms": 12},
+          "redis": {"status": "DOWN", "response_time_ms": 5001, "message": "connection timeout"}
+        }
+      }
+    notes: "Redis down, load balancer removes service from rotation"
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Health Check Best Practices
+
+  ### 1. Separate Liveness and Readiness
+  - **Liveness**: Only checks process health (no dependencies)
+  - **Readiness**: Checks if service can handle requests (includes dependencies)
+  - Never check dependencies in liveness probe (causes restart loops)
+
+  ### 2. Set Appropriate Timeouts
+  - Liveness: < 1 second
+  - Readiness: < 5 seconds
+  - Startup: < 30 seconds (or longer for slow initialization)
+
+  ### 3. Cache Dependency Results
+  - Don't overwhelm dependencies with health checks
+  - Cache results for 5-10 seconds
+  - Use separate goroutines/threads for checks
+
+  ### 4. Use Circuit Breakers
+  - If dependency consistently failing, cache DOWN status
+  - Avoid repeated health checks to failing dependencies
+  - Re-check after cooldown period
+
+  ### 5. Return Structured Data
+  - Use JSON format (not plain text)
+  - Include timestamps
+  - Include response times for observability
+  - Return appropriate HTTP status codes (200, 503)
+
+  ### 6. Version and Build Info
+  - Include in detailed health endpoint
+  - Helps with debugging and version verification
+  - Useful for blue-green deployments
+
+  ### 7. Security Considerations
+  - Don't expose sensitive data in health responses
+  - Consider authentication for detailed health endpoint
+  - Liveness/readiness can be unauthenticated (for load balancers)
+
+  ### 8. Kubernetes Configuration
+  - initialDelaySeconds: Time to wait before first probe
+  - periodSeconds: How often to check
+  - timeoutSeconds: When to consider check failed
+  - failureThreshold: How many failures before action
+
+  Typical values:
+  - Liveness: period=10s, timeout=1s, failures=3
+  - Readiness: period=5s, timeout=3s, failures=2
+  - Startup: period=5s, timeout=3s, failures=30
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "CrashLoopBackOff in Kubernetes"
+    cause: "Liveness probe failing, container restarting repeatedly"
+    solution: "Check liveness probe doesn't depend on external services. Increase initialDelaySeconds if app needs more startup time."
+
+  - error: "Service removed from load balancer prematurely"
+    cause: "Readiness probe too aggressive, failing during normal operations"
+    solution: "Increase timeoutSeconds and failureThreshold for readiness probe. Check if dependencies have intermittent issues."
+
+  - error: "Health endpoint overwhelming database"
+    cause: "High-frequency health checks without caching"
+    solution: "Implement health result caching (5-10s TTL). Use connection pooling. Consider read replicas for health checks."
+
+  - error: "Startup probe timing out"
+    cause: "Application initialization takes longer than failureThreshold * periodSeconds"
+    solution: "Increase failureThreshold or periodSeconds for startup probe. Optimize initialization (lazy load, background tasks)."
+
+  - error: "503 errors despite service being healthy"
+    cause: "Readiness probe endpoint misconfigured or returning wrong status code"
+    solution: "Verify readiness endpoint returns 200 for UP, 503 for DOWN. Check probe path and port in Kubernetes config."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - monitoring/prometheus_metrics  # Export health metrics
+  - observability/distributed_tracing  # Trace dependency calls
+  - rest_api/error_handling  # Handle health check errors
+  - rest_api/rate_limiting  # Protect health endpoints from abuse
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,331 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: transcend
+  version: 1.0.0
+  domain: transcend
+  description: "Transcend platform patterns for customer health monitoring, CSM reporting, and platform operations"
+  labels:
+    platform: transcend
+    category: customer-success
+    maturity: production
+
+spec:
+  entries:
+    - name: customer_health_root_cause_analysis
+      description: "Analyze root causes of declining customer health scores by examining performance, usage, adoption, and resource components"
+      trigger_conditions:
+        - "user asks why customer health is declining"
+        - "user asks about health score analysis"
+        - "user mentions declining health score"
+        - "user asks about customer health issues"
+        - "user asks to investigate health problems"
+        - "user mentions at-risk customer"
+      example: |
+        For detailed SQL templates, parameters, and step-by-step analysis, see:
+        patterns/transcend/analysis/customer_health_root_cause.yml
+
+        Key analysis steps:
+        1. Get current health score and component breakdown
+        2. Identify lowest component score (performance, usage, adoption, resource)
+        3. Drill into component details with specific queries
+        4. Generate actionable recommendations
+        5. Compare to historical trends
+
+        Common root causes:
+        - Performance: CPU >85%, high IO wait times
+        - Usage: Declining requests, high failure rates
+        - Adoption: Limited feature usage, single category focus
+        - Resource: Over/under-provisioning issues
+      priority: 95
+      tags:
+        - customer-health
+        - root-cause
+        - analysis
+        - transcend
+        - csm
+
+    - name: weekly_csm_report
+      description: "Generate comprehensive weekly Customer Success Manager report with at-risk customers, health score changes, and prioritized action items"
+      trigger_conditions:
+        - "user asks for weekly CSM report"
+        - "user asks for customer success report"
+        - "user mentions weekly report"
+        - "user asks about at-risk customers"
+        - "user asks for CSM priorities"
+        - "user asks for customer portfolio summary"
+      example: |
+        For detailed SQL templates and report structure, see:
+        patterns/transcend/reports/weekly_csm_report.yml
+
+        Report sections:
+        1. Executive Summary: Portfolio health distribution
+        2. Critical Customers: Score <40, executive attention required
+        3. At-Risk Customers: Score 40-59, intervention needed
+        4. Success Stories: Excellent/Good scores, expansion opportunities
+        5. Weekly Action Plan: Prioritized by urgency
+
+        Delivery format:
+        - Markdown for Slack notifications
+        - HTML for email distribution
+        - Weekly on Monday 8 AM
+        - Archive for tracking trends
+      priority: 90
+      tags:
+        - reporting
+        - csm
+        - weekly
+        - transcend
+        - customer-success
+
+    - name: health_score_validation
+      description: "Validate customer health score calculations and data quality through automated checks"
+      trigger_conditions:
+        - "user asks to validate health scores"
+        - "user asks about data quality"
+        - "user mentions health score validation"
+        - "user asks to check health score calculation"
+        - "user asks about score accuracy"
+      example: |
+        For detailed validation queries and quality checks, see:
+        patterns/transcend/quality/health_score_validation.yml
+
+        Validation checks:
+        1. Score Range Validity: Ensure 0-100 range
+        2. Component Consistency: Verify component sums
+        3. Customer Coverage: Check >95% of active customers scored
+        4. Freshness Check: Verify refresh within 4-hour SLA
+        5. Anomaly Detection: Identify sudden distribution changes
+
+        Quality score calculation:
+        - 100 = All checks pass
+        - <100 = Alert data team for investigation
+      priority: 85
+      tags:
+        - data-quality
+        - validation
+        - monitoring
+        - transcend
+        - csm
+
+    - name: customer_health_monitoring
+      description: "Real-time monitoring of customer health metrics and alerting for score changes"
+      trigger_conditions:
+        - "user asks to monitor customer health"
+        - "user asks about health score tracking"
+        - "user mentions health monitoring"
+        - "user asks about customer health alerts"
+      example: |
+        Monitor customer health with automated alerting:
+
+        Key monitoring metrics:
+        - Health score trends (daily/weekly)
+        - Component score changes
+        - Customer tier transitions
+        - Activity patterns
+
+        Alert thresholds:
+        - Score drops >15 points: Immediate alert
+        - Transition to Critical tier: Executive notification
+        - Zero activity >7 days: Engagement alert
+      priority: 80
+      tags:
+        - monitoring
+        - alerting
+        - customer-health
+        - transcend
+        - real-time
+
+    - name: transcend_platform_patterns
+      description: "Transcend platform-specific conventions, multi-tenancy patterns, and architectural best practices"
+      trigger_conditions:
+        - "user asks about Transcend architecture"
+        - "user asks about Transcend patterns"
+        - "user mentions Transcend platform"
+        - "user asks about multi-tenancy"
+        - "user asks about Transcend conventions"
+      example: |
+        Transcend platform conventions:
+
+        1. Multi-tenancy:
+           - Site-based isolation
+           - Customer data segregation
+           - Shared infrastructure patterns
+
+        2. Health scoring:
+           - 0-100 scale with 5 tiers
+           - 4 component scores (25 points each)
+           - Daily refresh with 4-hour SLA
+
+        3. Data organization:
+           - DataMart_CTO schema for analytics
+           - Customer-level aggregations
+           - Time-series metrics tables
+
+        4. Naming conventions:
+           - customer_health_* views
+           - sites_daily_* tables
+           - Standardized column names
+      priority: 75
+      tags:
+        - architecture
+        - conventions
+        - platform
+        - transcend
+        - multi-tenancy
+
+    - name: analytics_module_generation
+      description: "Generate complete analytics modules following Transcend's 3-tier development pattern (dev → update → refresh)"
+      trigger_conditions:
+        - "user asks to create analytics module"
+        - "user asks to create dimension table"
+        - "user asks to create fact table"
+        - "user asks to create aggregate table"
+        - "user mentions analytics module creation"
+        - "user asks about module generation"
+      example: |
+        For detailed templates and 3-tier workflow, see:
+        patterns/transcend/code_generation/analytics_module_generation.yaml
+
+        Module types:
+        1. Dimensions - Master data, low change frequency (vantage_sites, query_features)
+        2. Facts - Daily grain operational metrics (sites_daily_requests, sites_daily_cpu_utilization)
+        3. Aggregates - Business intelligence, complex logic (customer_health_score)
+
+        3-Tier workflow:
+        1. dev_{module}.sql - Development workspace (CTEs allowed, iterate here)
+        2. update_{module}.sql - Incremental updates (OPTIONAL for time-series)
+        3. refresh_{module}.sql - Full rebuild + view creation (REQUIRED)
+
+        Teradata constraints:
+        - NO CTEs in views (consumption views use SELECT * FROM {module}_tbl)
+        - NO reserved words as aliases (DATE, TIME, VALUE, USER, LEVEL)
+        - CRITICAL: Stored procedure declaration order (variables → cursors → handlers → logic)
+      priority: 70
+      tags:
+        - code-generation
+        - analytics
+        - teradata
+        - module-creation
+        - transcend
+
+    - name: foundation_documentation
+      description: "Generate comprehensive foundation table documentation using 6-phase profiling methodology"
+      trigger_conditions:
+        - "user asks to document table"
+        - "user asks to document ACC_TED table"
+        - "user asks to document source table"
+        - "user mentions table profiling"
+        - "user asks about foundation documentation"
+      example: |
+        For detailed 6-phase methodology and profile JSON schema, see:
+        patterns/transcend/documentation/foundation_documentation.yaml
+
+        6-Phase profiling methodology:
+        1. Performance Analysis - EXPLAIN to assess table size (FAST/MODERATE/SLOW)
+        2. Schema Discovery - DBC.TablesV, DBC.ColumnsV, SAMPLE 10
+        3. Categorical Analysis - Top 50 values for status/flag/type fields
+        4. Numeric Analysis - min/max/avg/stddev/quartiles
+        5. Correlation Analysis - SCD Type 2 detection, status correlations
+        6. Data Quality - Completeness, constant fields, duplicates
+
+        Profile JSON co-located with markdown:
+        - foundation/{category}/{table_name}.profile.json
+        - foundation/{category}/{table_name}.md
+
+        Agent coordination:
+        - teradata-object-profiler: Pure data collection
+        - transcend-foundation-documentor: Narrative generation
+      priority: 65
+      tags:
+        - documentation
+        - foundation
+        - profiling
+        - teradata
+        - transcend
+
+    - name: sql_validation
+      description: "Validate SQL code for Teradata 17.x+ compliance and identify common syntax errors"
+      trigger_conditions:
+        - "user asks to validate SQL"
+        - "user asks to check Teradata syntax"
+        - "user mentions SQL validation"
+        - "user asks about Teradata compliance"
+        - "user asks to review SQL"
+      example: |
+        For comprehensive validation rules and error patterns, see:
+        patterns/transcend/validation/sql_validation.yaml
+
+        Critical Teradata constraints:
+        - ❌ NO CTEs in view definitions (use in procedures/scripts only)
+        - ❌ NO LIMIT clause (use TOP N instead)
+        - ❌ NO reserved words as aliases (DATE, TIME, VALUE, USER, LEVEL)
+        - ❌ NO SIGNAL SQLSTATE (use SET var = 1/0 to force error)
+        - ✅ USE Teradata date functions (CURRENT_DATE, ADD_MONTHS, EXTRACT)
+        - ✅ USE QUALIFY for window function filtering
+        - ✅ USE PRIMARY INDEX for all tables
+        - ✅ USE TRIM() for CHAR field joins (right-padded)
+
+        Stored procedure declaration order (CRITICAL):
+        1. Variables first
+        2. Cursors second
+        3. Handlers third
+        4. Logic last
+
+        Validation phases:
+        1. Syntax validation (CTEs, reserved words, date functions)
+        2. Structure validation (procedures, views)
+        3. Performance validation (missing WHERE, Cartesian joins)
+        4. Standards validation (repository-specific)
+      priority: 60
+      tags:
+        - validation
+        - sql
+        - teradata
+        - quality
+        - transcend
+
+    - name: semantic_model_creation
+      description: "Create SML-compliant YAML semantic models for metrics and dimensions following Semantic Modeling Language specification"
+      trigger_conditions:
+        - "user asks to create semantic model"
+        - "user asks to create metric model"
+        - "user asks to create dimension model"
+        - "user mentions SML model"
+        - "user asks about semantic modeling"
+      example: |
+        For detailed SML structure and AI-friendliness guidelines, see:
+        patterns/transcend/semantic_modeling/semantic_model_creation.yaml
+
+        Model types:
+        1. semantic_model (Metrics) - Business calculations, KPIs
+           - Customer health scoring, value segmentation, operational metrics
+           - File: knowledge/models/metrics/{model}.yml
+
+        2. dimension_model (Dimensions) - Master data, hierarchies
+           - Customer hierarchy, product catalog, time dimension
+           - File: knowledge/models/dimensions/{model}.yml
+
+        Required fields:
+        - name, version, description, owner
+        - physical_sources (table, module_path, documentation)
+        - metrics/attributes with business_logic and interpretation
+        - relationships to other models
+        - data_quality expectations
+        - metadata with schema_version: "sml-1.0"
+
+        AI-friendliness requirements:
+        - Explicit ranges and thresholds (e.g., range: [0, 100])
+        - Query pattern examples for common use cases
+        - Business action recommendations
+        - Platform-specific guidance (Lake vs Enterprise)
+
+        After creating models, update catalog files:
+        - datasets.yml, glossary.yml, lineage.yml
+      priority: 55
+      tags:
+        - semantic-modeling
+        - sml
+        - yaml
+        - knowledge
+        - transcend

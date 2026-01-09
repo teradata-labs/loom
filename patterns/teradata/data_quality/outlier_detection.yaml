@@ -1,0 +1,612 @@
+# === METADATA START ===
+name: outlier_detection
+title: "Outlier Detection and Analysis"
+description: |
+  Identify outliers and anomalies in data using statistical methods. Outliers are
+  data points that significantly deviate from the expected pattern and may indicate
+  errors, fraud, or genuine anomalies requiring investigation.
+
+  Detection methods:
+  - Z-score (standard deviations from mean)
+  - IQR (Interquartile Range) method
+  - Modified Z-score (MAD - Median Absolute Deviation)
+  - Percentile-based detection
+  - Domain-specific rules
+
+category: data_quality
+difficulty: intermediate
+teradata_function: SQL_WINDOW_FUNCTIONS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Fraud detection (unusual transaction amounts)
+  - Data quality checks (invalid values)
+  - Sensor data validation (equipment malfunction)
+  - Price anomaly detection
+  - Performance monitoring (unusual latency spikes)
+  - Inventory anomalies (stock discrepancies)
+  - Customer behavior anomalies
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing data to analyze"
+    example: "transactions"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table with numeric data"
+    example: "sales_data"
+
+  # --- Parameter 3: Column ---
+  - name: column
+    type: string
+    # LLM-HINT: Numeric column to analyze for outliers
+    required: true
+    description: "Numeric column to check for outliers"
+    example: "transaction_amount"
+
+  # --- Parameter 4: Method ---
+  - name: method
+    type: enum
+    required: false
+    default: "IQR"
+    description: "Detection method: ZSCORE, IQR, PERCENTILE, MAD"
+    example: "IQR"
+
+  # --- Parameter 5: Threshold ---
+  - name: threshold
+    type: number
+    required: false
+    default: "1.5"
+    # LLM-HINT: For IQR use 1.5 (moderate) or 3.0 (extreme); for Z-score use 3.0
+    description: "Threshold multiplier (1.5 for IQR, 3 for Z-score)"
+    example: "1.5"
+
+  # --- Parameter 6: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used to identify specific outlier records in results
+    required: true
+    description: "Identifier column for flagging outliers"
+    example: "transaction_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === ZSCORE_METHOD TEMPLATE ===
+  # LLM-HINT: Fast but assumes normal distribution; sensitive to extreme outliers
+  zscore_method:
+    description: "Z-score method - flag values > N standard deviations from mean"
+    sql: |
+      -- Z-score outlier detection
+      WITH stats AS (
+        SELECT
+          AVG({{column}}) as mean_value,
+          STDDEV_POP({{column}}) as stddev_value
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      ),
+      scored_data AS (
+        SELECT
+          {{id_column}},
+          {{column}} as value,
+          ({{column}} - s.mean_value) / NULLIF(s.stddev_value, 0) as z_score
+        FROM {{database}}.{{table}} t, stats s
+        WHERE {{column}} IS NOT NULL
+      )
+      SELECT
+        {{id_column}},
+        value,
+        z_score,
+        CASE
+          WHEN ABS(z_score) > {{threshold}} THEN 'Outlier'
+          WHEN ABS(z_score) > {{threshold}} * 0.67 THEN 'Potential Outlier'
+          ELSE 'Normal'
+        END as outlier_flag,
+        CASE
+          WHEN z_score > {{threshold}} THEN 'High'
+          WHEN z_score < -{{threshold}} THEN 'Low'
+          ELSE 'Normal'
+        END as outlier_direction
+      FROM scored_data
+      ORDER BY ABS(z_score) DESC;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+      - threshold
+
+  # === IQR_METHOD TEMPLATE ===
+  # LLM-HINT: Most robust method; industry standard with 1.5×IQR threshold
+  iqr_method:
+    description: "IQR (Interquartile Range) method - robust to extreme values"
+    sql: |
+      -- IQR outlier detection (more robust than Z-score)
+      WITH quartiles AS (
+        SELECT
+          PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {{column}}) as q1,
+          PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {{column}}) as median,
+          PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {{column}}) as q3
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      ),
+      bounds AS (
+        SELECT
+          q1,
+          q3,
+          median,
+          (q3 - q1) as iqr,
+          q1 - ({{threshold}} * (q3 - q1)) as lower_bound,
+          q3 + ({{threshold}} * (q3 - q1)) as upper_bound
+        FROM quartiles
+      )
+      SELECT
+        t.{{id_column}},
+        t.{{column}} as value,
+        b.lower_bound,
+        b.upper_bound,
+        b.median,
+        b.iqr,
+        CASE
+          WHEN t.{{column}} < b.lower_bound OR t.{{column}} > b.upper_bound THEN 'Outlier'
+          ELSE 'Normal'
+        END as outlier_flag,
+        CASE
+          WHEN t.{{column}} < b.lower_bound THEN 'Low'
+          WHEN t.{{column}} > b.upper_bound THEN 'High'
+          ELSE 'Normal'
+        END as outlier_direction,
+        CASE
+          WHEN t.{{column}} < b.lower_bound THEN b.lower_bound - t.{{column}}
+          WHEN t.{{column}} > b.upper_bound THEN t.{{column}} - b.upper_bound
+          ELSE 0
+        END as deviation_amount
+      FROM {{database}}.{{table}} t, bounds b
+      WHERE t.{{column}} IS NOT NULL
+      ORDER BY deviation_amount DESC;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+      - threshold
+
+  # === MAD_METHOD TEMPLATE ===
+  # LLM-HINT: Most robust to extreme outliers; uses median instead of mean
+  mad_method:
+    description: "MAD (Median Absolute Deviation) - most robust method"
+    sql: |
+      -- MAD outlier detection (robust to extreme outliers)
+      WITH median_calc AS (
+        SELECT
+          MEDIAN({{column}}) as median_value
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      ),
+      deviations AS (
+        SELECT
+          {{id_column}},
+          {{column}} as value,
+          ABS({{column}} - m.median_value) as abs_deviation
+        FROM {{database}}.{{table}} t, median_calc m
+        WHERE {{column}} IS NOT NULL
+      ),
+      mad_calc AS (
+        SELECT
+          MEDIAN(abs_deviation) as mad_value
+        FROM deviations
+      ),
+      modified_z_scores AS (
+        SELECT
+          d.{{id_column}},
+          d.value,
+          0.6745 * (d.value - m.median_value) / NULLIF(mad.mad_value, 0) as modified_z_score
+        FROM deviations d, median_calc m, mad_calc mad
+      )
+      SELECT
+        {{id_column}},
+        value,
+        modified_z_score,
+        CASE
+          WHEN ABS(modified_z_score) > {{threshold}} THEN 'Outlier'
+          WHEN ABS(modified_z_score) > {{threshold}} * 0.67 THEN 'Potential Outlier'
+          ELSE 'Normal'
+        END as outlier_flag
+      FROM modified_z_scores
+      ORDER BY ABS(modified_z_score) DESC;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+      - threshold
+
+  # === PERCENTILE_METHOD TEMPLATE ===
+  # LLM-HINT: Easy to explain ("top 1%"); no assumptions about distribution
+  percentile_method:
+    description: "Percentile-based detection - flag top/bottom N%"
+    sql: |
+      -- Percentile-based outlier detection
+      WITH percentiles AS (
+        SELECT
+          PERCENTILE_CONT(0.01) WITHIN GROUP (ORDER BY {{column}}) as p1,
+          PERCENTILE_CONT(0.05) WITHIN GROUP (ORDER BY {{column}}) as p5,
+          PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {{column}}) as p95,
+          PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY {{column}}) as p99
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      )
+      SELECT
+        t.{{id_column}},
+        t.{{column}} as value,
+        p.p1,
+        p.p99,
+        CASE
+          WHEN t.{{column}} < p.p1 THEN 'Extreme Low (Bottom 1%)'
+          WHEN t.{{column}} < p.p5 THEN 'Low (Bottom 5%)'
+          WHEN t.{{column}} > p.p99 THEN 'Extreme High (Top 1%)'
+          WHEN t.{{column}} > p.p95 THEN 'High (Top 5%)'
+          ELSE 'Normal'
+        END as outlier_flag,
+        NTILE(100) OVER (ORDER BY t.{{column}}) as percentile_rank
+      FROM {{database}}.{{table}} t, percentiles p
+      WHERE t.{{column}} IS NOT NULL
+      ORDER BY t.{{column}} DESC;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+
+  # === MULTIVARIATE_OUTLIERS TEMPLATE ===
+  # LLM-HINT: Detects outliers in combination of columns (e.g., high income + low age)
+  multivariate_outliers:
+    description: "Detect outliers based on multiple columns simultaneously"
+    sql: |
+      -- Multivariate outlier detection using Mahalanobis distance approximation
+      WITH standardized AS (
+        SELECT
+          {{id_column}},
+          ({{column1}} - AVG({{column1}}) OVER ()) / STDDEV_POP({{column1}}) OVER () as z1,
+          ({{column2}} - AVG({{column2}}) OVER ()) / STDDEV_POP({{column2}}) OVER () as z2
+        FROM {{database}}.{{table}}
+        WHERE {{column1}} IS NOT NULL AND {{column2}} IS NOT NULL
+      ),
+      distances AS (
+        SELECT
+          {{id_column}},
+          SQRT(POWER(z1, 2) + POWER(z2, 2)) as euclidean_distance
+        FROM standardized
+      )
+      SELECT
+        {{id_column}},
+        euclidean_distance,
+        CASE
+          WHEN euclidean_distance > {{threshold}} THEN 'Multivariate Outlier'
+          ELSE 'Normal'
+        END as outlier_flag,
+        NTILE(100) OVER (ORDER BY euclidean_distance) as outlier_percentile
+      FROM distances
+      ORDER BY euclidean_distance DESC;
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column1
+      - column2
+      - threshold
+
+  # === OUTLIER_SUMMARY TEMPLATE ===
+  # LLM-HINT: Provides high-level statistics of outliers (counts by category)
+  outlier_summary:
+    description: "Summary statistics of outliers found"
+    sql: |
+      -- Outlier summary and impact analysis
+      WITH outliers AS (
+        SELECT
+          {{id_column}},
+          {{column}},
+          CASE
+            WHEN {{column}} < (SELECT PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {{column}}) FROM {{database}}.{{table}})
+                              - {{threshold}} * (SELECT PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {{column}}) -
+                                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {{column}}) FROM {{database}}.{{table}})
+            THEN 'Low Outlier'
+            WHEN {{column}} > (SELECT PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {{column}}) FROM {{database}}.{{table}})
+                              + {{threshold}} * (SELECT PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {{column}}) -
+                                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {{column}}) FROM {{database}}.{{table}})
+            THEN 'High Outlier'
+            ELSE 'Normal'
+          END as category
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      )
+      SELECT
+        category,
+        COUNT(*) as count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as percentage,
+        MIN({{column}}) as min_value,
+        MAX({{column}}) as max_value,
+        AVG({{column}}) as avg_value
+      FROM outliers
+      GROUP BY category
+      ORDER BY count DESC;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+      - threshold
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Credit Card Fraud Detection ---
+  - name: "Credit Card Fraud Detection"
+    description: "Flag unusual transaction amounts"
+    parameters:
+      database: "payments"
+      table: "transactions"
+      column: "amount"
+      id_column: "transaction_id"
+      method: "IQR"
+      threshold: 3.0
+    expected_result: |
+      Outliers detected using IQR method (threshold: 3.0):
+
+      High Outliers: 234 transactions (0.23%)
+      - Transaction #892341: $15,000 (6.2 IQRs above Q3)
+      - Transaction #445123: $12,500 (5.1 IQRs above Q3)
+      - Median amount: $87.50
+      - 95th percentile: $450
+      - Outlier threshold: $1,200
+
+      Low Outliers: 12 transactions (0.01%)
+      - Transaction #334221: $0.01 (unusual minimum)
+
+      Action: Flag for fraud review
+      Expected: 0.5-1% false positive rate
+
+  # --- Example 2: Sensor Data Validation ---
+  - name: "Sensor Data Validation"
+    description: "Detect malfunctioning temperature sensors"
+    parameters:
+      database: "iot"
+      table: "temperature_readings"
+      column: "temperature_celsius"
+      id_column: "reading_id"
+      method: "ZSCORE"
+      threshold: 3.0
+    expected_result: |
+      Z-score analysis (threshold: 3.0 standard deviations):
+
+      Mean temperature: 22.5°C
+      Std deviation: 2.1°C
+
+      Outliers (|z| > 3):
+      - Reading #45123: 45.2°C (z=10.8) - SENSOR FAULT
+      - Reading #67234: -15.3°C (z=-18.0) - SENSOR FAULT
+      - Reading #88991: 35.1°C (z=6.0) - Possible genuine heat spike
+
+      Normal range: 16°C to 29°C
+
+      Action:
+      - Replace sensors #45123, #67234
+      - Investigate reading #88991
+
+  # --- Example 3: Inventory Anomaly Detection ---
+  - name: "Inventory Anomaly Detection"
+    description: "Find unusual stock levels"
+    parameters:
+      database: "warehouse"
+      table: "inventory"
+      column: "quantity_on_hand"
+      id_column: "product_id"
+      method: "MAD"
+      threshold: 3.5
+    expected_result: |
+      MAD method results (most robust for inventory):
+
+      Median stock: 150 units
+      MAD: 45 units
+
+      Outliers:
+      - Product #SKU-8821: 2,500 units (MAD z=35.2) - OVERSTOCKED
+      - Product #SKU-1129: 0 units - OUT OF STOCK
+      - Product #SKU-5543: 1,800 units (MAD z=25.1) - OVERSTOCKED
+
+      Potential issues:
+      - 3 products overstocked (tie up $125K capital)
+      - 1 product out of stock (lost sales)
+
+      Action: Rebalance inventory
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Too Many False Positives ---
+  - error: "Too many false positives"
+    cause: "Threshold too sensitive (e.g., 1.5 for Z-score)"
+    solution: "Increase threshold. Use 3.0 for Z-score, 1.5-3.0 for IQR. Start conservative and adjust."
+
+  # --- Error 2: Outliers Not Detected ---
+  - error: "Outliers not detected"
+    cause: "Data has extreme skew or heavy tails"
+    solution: "Use MAD or IQR methods instead of Z-score. Z-score assumes normal distribution."
+
+  # --- Error 3: Seasonal Patterns Flagged ---
+  - error: "Seasonal patterns flagged as outliers"
+    cause: "Not accounting for expected variation (e.g., holiday sales spikes)"
+    solution: "Segment by time period or use moving window statistics. Compare Dec to Dec, not Dec to avg."
+
+  # --- Error 4: Valid Extremes Flagged ---
+  - error: "Legitimate edge cases flagged"
+    cause: "Domain-specific valid extremes (e.g., VIP transactions)"
+    solution: "Add business logic rules. Exclude known valid extremes before statistical detection."
+
+  # --- Error 5: Performance Issues ---
+  - error: "Performance issues on large tables"
+    cause: "PERCENTILE_CONT and window functions expensive"
+    solution: "Sample data for threshold calculation, then apply to full table. Or run during off-peak."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Outlier Detection Best Practices
+
+  ### 1. Choose the Right Method
+
+  **Z-Score (Standard Deviations):**
+  - ✅ Fast and simple
+  - ✅ Works well for normal distributions
+  - ❌ Sensitive to extreme outliers
+  - ❌ Assumes normality
+  - **Use when:** Data is approximately normal, performance matters
+
+  **IQR (Interquartile Range):**
+  - ✅ Robust to extreme values
+  - ✅ No distribution assumptions
+  - ✅ Industry standard (1.5 × IQR)
+  - ❌ Slightly more complex
+  - **Use when:** Distribution unknown, need robustness
+
+  **MAD (Median Absolute Deviation):**
+  - ✅ Most robust method
+  - ✅ Handles extreme skew
+  - ❌ Computationally expensive
+  - **Use when:** Data has extreme outliers, need maximum robustness
+
+  **Percentile:**
+  - ✅ Easy to explain ("top 1%")
+  - ✅ No assumptions
+  - ❌ Fixed proportion flagged
+  - **Use when:** Need specific % flagged, reporting to non-technical audience
+
+  ### 2. Set Appropriate Thresholds
+
+  **Common thresholds:**
+  - Z-score: 3.0 (99.7% coverage)
+  - IQR: 1.5 (moderate), 3.0 (extreme only)
+  - MAD: 3.5 (moderate), 4.5 (conservative)
+  - Percentile: 1% or 5%
+
+  **Tune based on:**
+  - False positive tolerance
+  - Business impact of missing outliers
+  - Historical validation
+
+  ### 3. Validate Results
+
+  **Check your outliers:**
+  - Do they make business sense?
+  - Are they errors or genuine extremes?
+  - What % of data is flagged? (typically 0.1-5%)
+
+  **Test against known cases:**
+  - Historical fraud cases
+  - Known sensor failures
+  - Documented anomalies
+
+  ### 4. Context Matters
+
+  **Don't detect globally, segment by:**
+  - Time period (compare Dec to Dec)
+  - Category (B2B vs B2C transactions)
+  - Geography (NYC prices vs rural)
+  - Product type (luxury vs budget)
+
+  ### 5. Handle Outliers Appropriately
+
+  **Don't automatically delete!**
+
+  **Instead:**
+  1. **Investigate:** Why is it an outlier?
+  2. **Categorize:**
+     - Error (typo, sensor fault) → Fix or remove
+     - Fraud → Flag for investigation
+     - Genuine extreme → Keep but possibly cap
+  3. **Document:** Log outliers and actions taken
+  4. **Review:** Periodic audit of flagged items
+
+  ### 6. Multivariate Detection
+
+  **For related columns:**
+  - Income + Age: High income + low age = unusual
+  - Temp + Pressure: Outlier in combination
+  - Location + Price: Geographic pricing anomalies
+
+  **Use distance-based methods:**
+  - Euclidean distance
+  - Mahalanobis distance
+  - Isolation Forest
+
+  ### 7. Time Series Outliers
+
+  **For temporal data:**
+  - Use moving statistics (30-day window)
+  - Account for trends and seasonality
+  - Compare to same period last year
+  - Use exponentially weighted moving average
+
+  ### 8. Automation and Monitoring
+
+  **Set up automated detection:**
+  ```sql
+  -- Daily outlier check
+  INSERT INTO outlier_log
+  SELECT CURRENT_DATE, * FROM outlier_detection_query;
+
+  -- Alert on new outliers
+  SELECT * FROM outlier_log
+  WHERE detection_date = CURRENT_DATE
+    AND outlier_flag = 'Outlier';
+  ```
+
+  **Monitor trends:**
+  - Are outliers increasing? (data quality degrading)
+  - Same outliers recurring? (systematic issue)
+  - Outlier rate changing? (adjust thresholds)
+
+  ### 9. Performance Optimization
+
+  **Make detection fast:**
+  - Sample for threshold calculation
+  - Use indexed columns
+  - Cache statistics (mean, median)
+  - Run during off-peak hours
+  - Incremental detection (new data only)
+
+  ### 10. Domain-Specific Rules
+
+  **Combine statistical + business rules:**
+  ```sql
+  WHERE (statistical_outlier = 'Yes'
+     OR amount < 0              -- Business rule: negatives invalid
+     OR amount > max_allowed)   -- Business rule: over limit
+    AND customer_type <> 'VIP'  -- Exclude known valid extremes
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - data_profiling
+  - data_validation
+  - anomaly_detection
+  - fraud_detection
+# === RELATED_PATTERNS END ===

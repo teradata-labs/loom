@@ -1,0 +1,11 @@
+id,name,value,date,active
+1,Alice,125.50,2024-01-15,true
+2,Bob,89.99,2024-02-20,false
+3,Charlie,210.00,2024-03-10,true
+4,Diana,45.75,2024-04-05,true
+5,Eve,156.30,2024-05-18,false
+6,Frank,99.99,2024-06-22,true
+7,Grace,178.50,2024-07-30,true
+8,Henry,234.00,2024-08-14,false
+9,Iris,67.25,2024-09-09,true
+10,Jack,189.90,2024-10-11,false

@@ -1,0 +1,173 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// MemoryLayerService manages agent memory layers and optimization.
+// This service provides primitives for DSPy/TextGrad-style learning
+// by separating immutable domain knowledge (ROM) from learned optimizations.
+service MemoryLayerService {
+  // GetROMContent retrieves immutable domain documentation
+  rpc GetROMContent(GetROMContentRequest) returns (GetROMContentResponse);
+
+  // GetLearnedLayer retrieves current optimized prompts and demonstrations
+  rpc GetLearnedLayer(GetLearnedLayerRequest) returns (GetLearnedLayerResponse);
+
+  // UpdateLearnedLayer applies optimization results (hot-reloadable)
+  rpc UpdateLearnedLayer(UpdateLearnedLayerRequest) returns (UpdateLearnedLayerResponse);
+
+  // GetMemoryStats returns token usage across all layers
+  rpc GetMemoryStats(GetMemoryStatsRequest) returns (GetMemoryStatsResponse);
+
+  // BootstrapDemonstrations adds successful execution traces to Learned Layer
+  rpc BootstrapDemonstrations(BootstrapDemonstrationsRequest) returns (BootstrapDemonstrationsResponse);
+}
+
+// ============================================================================
+// ROM Layer (Immutable Domain Knowledge)
+// ============================================================================
+
+message GetROMContentRequest {
+  string agent_id = 1;
+}
+
+message GetROMContentResponse {
+  string rom_content = 1; // Markdown-formatted domain documentation
+  string rom_version = 2; // Hash of ROM content
+  int64 rom_generated_at = 3; // Unix timestamp
+  int32 rom_token_count = 4; // Tokens consumed by ROM
+}
+
+// ============================================================================
+// Learned Layer (Hot-Reloadable Optimizations)
+// ============================================================================
+
+message GetLearnedLayerRequest {
+  string agent_id = 1;
+  string pattern_name = 2; // Optional: specific pattern
+}
+
+message GetLearnedLayerResponse {
+  map<string, string> optimized_prompts = 1; // pattern_name -> optimized_prompt
+  repeated Demonstration demonstrations = 2; // Few-shot examples
+  string learned_version = 3; // Version hash
+  int64 last_updated = 4; // Unix timestamp
+  int32 learned_token_count = 5; // Tokens consumed by learned content
+}
+
+message UpdateLearnedLayerRequest {
+  string agent_id = 1;
+  map<string, string> optimized_prompts = 2;
+  repeated Demonstration demonstrations = 3;
+  OptimizationSource source = 4; // How these optimizations were generated
+}
+
+message UpdateLearnedLayerResponse {
+  bool success = 1;
+  string learned_version = 2; // New version hash
+  int32 token_count_delta = 3; // Change in token usage
+  string message = 4;
+}
+
+// Demonstration represents a successful execution trace (DSPy-style)
+message Demonstration {
+  string pattern_name = 1;
+  string input = 2; // User query or task
+  string rationale = 3; // Chain-of-thought reasoning (optional)
+  string output = 4; // Successful result
+  double confidence = 5; // Quality score (0-1)
+  int64 timestamp = 6; // When this demo was captured
+  map<string, string> metadata = 7; // Domain, LLM provider, etc.
+}
+
+enum OptimizationSource {
+  OPTIMIZATION_SOURCE_UNSPECIFIED = 0;
+  SOURCE_BOOTSTRAP = 1; // DSPy BootstrapFewShot
+  SOURCE_TEXTGRAD = 2; // TextGrad backward pass
+  SOURCE_HUMAN_FEEDBACK = 3; // Manual curation
+  SOURCE_HYBRID = 4; // Combined approaches
+}
+
+// ============================================================================
+// Memory Statistics
+// ============================================================================
+
+message GetMemoryStatsRequest {
+  string agent_id = 1;
+}
+
+message GetMemoryStatsResponse {
+  MemoryLayerStats rom = 1;
+  MemoryLayerStats learned = 2;
+  MemoryLayerStats kernel = 3;
+  MemoryLayerStats l1 = 4;
+  MemoryLayerStats l2 = 5;
+
+  int32 total_tokens = 6;
+  int32 available_tokens = 7;
+  double usage_percentage = 8;
+
+  bool compression_active = 9;
+  int32 compressions_triggered = 10;
+}
+
+message MemoryLayerStats {
+  string layer_name = 1;
+  int32 token_count = 2;
+  int32 item_count = 3; // Messages, demos, schemas, etc.
+  double percentage_of_budget = 4;
+  bool is_mutable = 5;
+  int64 last_updated = 6;
+}
+
+// ============================================================================
+// Demonstration Bootstrapping (DSPy-style)
+// ============================================================================
+
+message BootstrapDemonstrationsRequest {
+  string agent_id = 1;
+  string pattern_name = 2;
+  repeated ExecutionTrace traces = 3; // Successful execution traces
+  BootstrapStrategy strategy = 4;
+  int32 max_demonstrations = 5; // Default: 5
+}
+
+message BootstrapDemonstrationsResponse {
+  repeated Demonstration selected_demonstrations = 1;
+  int32 total_candidates = 2;
+  int32 selected_count = 3;
+  string selection_criteria = 4;
+}
+
+message ExecutionTrace {
+  string trace_id = 1;
+  string input = 2;
+  string output = 3;
+  string rationale = 4; // Optional: CoT reasoning
+  bool success = 5;
+  double quality_score = 6; // From judge evaluation
+  int64 timestamp = 7;
+  map<string, string> metadata = 8;
+}
+
+enum BootstrapStrategy {
+  BOOTSTRAP_STRATEGY_UNSPECIFIED = 0;
+  BOOTSTRAP_TOP_K = 1; // Select top K by quality score
+  BOOTSTRAP_DIVERSE = 2; // Maximize diversity of examples
+  BOOTSTRAP_RECENT = 3; // Prefer recent examples
+  BOOTSTRAP_REPRESENTATIVE = 4; // Cover common query patterns
+}

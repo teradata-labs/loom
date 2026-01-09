@@ -1,0 +1,194 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// ServerConfig defines the configuration for the looms multi-agent server.
+message ServerConfig {
+  // Server name (for logging/metrics)
+  string name = 1;
+
+  // Network configuration
+  NetworkConfig network = 2;
+
+  // TLS configuration (optional, defaults to no TLS)
+  TLSConfig tls = 3;
+
+  // Server behavior settings
+  ServerBehavior behavior = 4;
+
+  // Metadata
+  map<string, string> metadata = 5;
+}
+
+// NetworkConfig defines network binding and ports.
+message NetworkConfig {
+  // gRPC server bind address (default: "0.0.0.0:50051")
+  string grpc_address = 1;
+
+  // HTTP gateway bind address (default: "0.0.0.0:8080")
+  string http_address = 2;
+
+  // Enable HTTP gateway (default: true)
+  bool http_enabled = 3;
+
+  // Enable gRPC reflection (default: true in dev mode)
+  bool reflection_enabled = 4;
+}
+
+// TLSConfig defines TLS/HTTPS configuration.
+// By default, TLS is disabled. Enable it for production deployments.
+message TLSConfig {
+  // Enable TLS (default: false)
+  bool enabled = 1;
+
+  // TLS mode: "manual", "letsencrypt", "self-signed"
+  string mode = 2;
+
+  // Manual certificate configuration
+  ManualTLSConfig manual = 3;
+
+  // Let's Encrypt automatic certificate configuration
+  LetsEncryptConfig letsencrypt = 4;
+
+  // Self-signed certificate configuration (dev mode)
+  SelfSignedConfig self_signed = 5;
+}
+
+// ManualTLSConfig for manually provided certificates.
+message ManualTLSConfig {
+  // Path to certificate file (PEM format)
+  string cert_file = 1;
+
+  // Path to private key file (PEM format)
+  string key_file = 2;
+
+  // Path to CA certificate for client verification (optional, for mTLS)
+  string ca_file = 3;
+
+  // Require client certificates (mTLS)
+  bool require_client_cert = 4;
+}
+
+// LetsEncryptConfig for automatic HTTPS with Let's Encrypt.
+message LetsEncryptConfig {
+  // Domain name(s) for certificate (required)
+  // Example: ["api.example.com"] or ["api.example.com", "www.example.com"]
+  repeated string domains = 1;
+
+  // Email address for Let's Encrypt notifications (required)
+  string email = 2;
+
+  // ACME directory URL (default: production Let's Encrypt)
+  // Use "https://acme-staging-v02.api.letsencrypt.org/directory" for testing
+  string acme_directory_url = 3;
+
+  // HTTP-01 challenge port (default: 80)
+  // Must be accessible from the internet for Let's Encrypt validation
+  int32 http_challenge_port = 4;
+
+  // Certificate cache directory (default: ~/.loom/certs)
+  string cache_dir = 5;
+
+  // Enable automatic certificate renewal (default: true)
+  bool auto_renew = 6;
+
+  // Renew certificates this many days before expiry (default: 30)
+  int32 renew_before_days = 7;
+
+  // Accept Let's Encrypt Terms of Service (required)
+  bool accept_tos = 8;
+}
+
+// SelfSignedConfig for development/testing with self-signed certificates.
+message SelfSignedConfig {
+  // Hostnames to include in certificate (default: ["localhost"])
+  repeated string hostnames = 1;
+
+  // IP addresses to include in certificate (default: ["127.0.0.1"])
+  repeated string ip_addresses = 2;
+
+  // Certificate validity duration in days (default: 365)
+  int32 validity_days = 3;
+
+  // Organization name for certificate (optional)
+  string organization = 4;
+}
+
+// ServerBehavior defines server behavior settings.
+message ServerBehavior {
+  // Maximum concurrent requests (default: 100)
+  int32 max_concurrent_requests = 1;
+
+  // Request timeout in seconds (default: 300)
+  int32 request_timeout_seconds = 2;
+
+  // Enable graceful shutdown (default: true)
+  bool graceful_shutdown = 3;
+
+  // Graceful shutdown timeout in seconds (default: 30)
+  int32 shutdown_timeout_seconds = 4;
+
+  // Enable CORS for HTTP gateway (default: false)
+  bool cors_enabled = 5;
+
+  // CORS allowed origins (empty = all)
+  repeated string cors_allowed_origins = 6;
+}
+
+// TLSStatus reports the current TLS status of the server.
+message TLSStatus {
+  // Whether TLS is enabled
+  bool enabled = 1;
+
+  // TLS mode: "manual", "letsencrypt", "self-signed", "none"
+  string mode = 2;
+
+  // Certificate information (if TLS enabled)
+  CertificateInfo certificate = 3;
+
+  // Auto-renewal status (for Let's Encrypt)
+  RenewalStatus renewal = 4;
+}
+
+// CertificateInfo provides information about the active certificate.
+message CertificateInfo {
+  // Domain names covered by certificate
+  repeated string domains = 1;
+
+  // Certificate issuer
+  string issuer = 2;
+
+  // Certificate expiration timestamp (Unix seconds)
+  int64 expires_at = 3;
+
+  // Days until expiration
+  int32 days_until_expiry = 4;
+
+  // Whether certificate is valid
+  bool valid = 5;
+}
+
+// RenewalStatus reports automatic renewal status.
+message RenewalStatus {
+  // Whether auto-renewal is enabled
+  bool enabled = 1;
+
+  // Last renewal attempt timestamp (Unix seconds)
+  int64 last_attempt_at = 2;
+
+  // Whether last renewal succeeded
+  bool last_attempt_success = 3;
+
+  // Next scheduled renewal timestamp (Unix seconds)
+  int64 next_renewal_at = 4;
+
+  // Error message from last renewal attempt (if failed)
+  string last_error = 5;
+}

@@ -1,0 +1,466 @@
+# === METADATA START ===
+name: domain_discovery
+title: "Domain Discovery and Clustering"
+description: |
+  Discover and identify domains (repeated value sets) across the semantically mapped corpus.
+  A domain is a set of tokens that appear repeatedly in different columns across tables.
+
+  **WHAT IS A DOMAIN?**
+  A domain is a cluster of columns sharing similar value sets:
+  - **Geographic domains**: US states, countries, cities, zip codes
+  - **Identifier domains**: SKUs, customer IDs, order IDs
+  - **Category domains**: Product categories, status codes, types
+  - **Demographic domains**: Gender, age ranges, education levels
+  - **Temporal domains**: Date ranges, time periods
+
+  **DOMAIN CHARACTERISTICS:**
+  - Low-to-medium cardinality (2-10,000 distinct values)
+  - High similarity (Cosine ≥ 0.90) between member columns
+  - Repeated across multiple tables (≥3 tables)
+  - Shared value sets (high overlap)
+
+  **USE CASES:**
+  - "Find all columns containing US states"
+  - "List all product category columns"
+  - "What columns share customer IDs?"
+  - "Identify geographic reference columns"
+  - "Catalog common code/lookup tables"
+
+  **REQUIREMENTS:**
+  Requires SIGNATURES and SIGNATURE_PAIRS tables populated.
+  Uses column_similarity metrics to cluster domains.
+
+category: data_discovery
+difficulty: intermediate
+teradata_function: Cosine, P_XAGXB, Count_Estimate
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Catalog all domains in the corpus
+  - Find columns belonging to specific domain (e.g., "states")
+  - Identify lookup/reference tables
+  - Support semantic search ("find customer columns")
+  - Guide data integration (match domains across systems)
+  - Document common code sets
+  - Enable domain-driven data governance
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database containing semantic map"
+    example: "semantic_data"
+
+  - name: min_members
+    type: number
+    required: false
+    default: 3
+    description: "Minimum columns to form a domain"
+    example: "3"
+
+  - name: similarity_threshold
+    type: number
+    required: false
+    default: 0.90
+    description: "Minimum cosine similarity for domain membership"
+    example: "0.90"
+
+  - name: max_cardinality
+    type: number
+    required: false
+    default: 10000
+    description: "Maximum distinct values for domain columns"
+    example: "10000"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  discover_all_domains:
+    description: "Discover all domains in corpus using similarity clustering"
+    sql: |
+      -- Domain Discovery via Similarity Clustering
+      WITH DOMAIN_CANDIDATES AS (
+        -- Find columns with domain-like characteristics
+        SELECT
+          ID,
+          TABLE_NAME,
+          COLUMN_NAME,
+          COLUMN_TYPE,
+          ROW_COUNT,
+          UDFS.Count_Estimate(SIG_DATA) AS distinct_count
+        FROM {{database}}.SIGNATURES
+        WHERE UDFS.Count_Estimate(SIG_DATA) BETWEEN 2 AND {{max_cardinality}}
+          AND VALUE_COUNT > 0
+      ),
+      SIMILAR_PAIRS AS (
+        -- Find highly similar column pairs
+        SELECT
+          S1.TABLE_NAME AS table1,
+          S1.COLUMN_NAME AS col1,
+          S2.TABLE_NAME AS table2,
+          S2.COLUMN_NAME AS col2,
+          SP.COSINE AS similarity,
+          S1.distinct_count AS col1_distinct,
+          S2.distinct_count AS col2_distinct
+        FROM {{database}}.Signature_Pairs SP
+        JOIN DOMAIN_CANDIDATES S1 ON SP.S1_ID = S1.ID
+        JOIN DOMAIN_CANDIDATES S2 ON SP.S2_ID = S2.ID
+        WHERE SP.COSINE >= {{similarity_threshold}}
+          AND S1.TABLE_NAME <> S2.TABLE_NAME  -- Different tables
+      ),
+      DOMAIN_CLUSTERS AS (
+        -- Cluster by similarity (simple approach: group by representative column)
+        SELECT
+          col1 AS domain_representative,
+          table1 || '.' || col1 AS representative_column,
+          COUNT(DISTINCT table2 || '.' || col2) AS member_count,
+          AVG(similarity) AS avg_similarity,
+          MIN(col1_distinct) AS min_distinct,
+          MAX(col2_distinct) AS max_distinct
+        FROM SIMILAR_PAIRS
+        GROUP BY col1, table1, col1_distinct
+        HAVING COUNT(DISTINCT table2) >= {{min_members}} - 1
+      )
+      SELECT
+        domain_representative AS domain_name,
+        representative_column,
+        member_count + 1 AS total_members,  -- +1 for representative
+        CAST(avg_similarity AS DECIMAL(5,3)) AS avg_similarity,
+        min_distinct AS cardinality,
+        CASE
+          WHEN min_distinct <= 10 THEN 'VERY_LOW_CARD'
+          WHEN min_distinct <= 100 THEN 'LOW_CARD'
+          WHEN min_distinct <= 1000 THEN 'MEDIUM_CARD'
+          ELSE 'HIGH_CARD'
+        END AS cardinality_class
+      FROM DOMAIN_CLUSTERS
+      ORDER BY total_members DESC, avg_similarity DESC;
+
+  list_domain_members:
+    description: "List all columns belonging to specific domain"
+    sql: |
+      -- Domain Membership Query
+      WITH DOMAIN_REP AS (
+        -- Find representative column for domain
+        SELECT ID, TABLE_NAME, COLUMN_NAME, SIG_DATA
+        FROM {{database}}.SIGNATURES
+        WHERE COLUMN_NAME = '{{domain_column}}'
+          AND TABLE_NAME = '{{domain_table}}'
+      )
+      SELECT
+        S.TABLE_NAME,
+        S.COLUMN_NAME,
+        S.ROW_COUNT,
+        UDFS.Count_Estimate(S.SIG_DATA) AS distinct_values,
+        SP.COSINE AS similarity_to_domain,
+        S.TABLE_NAME || '.' || S.COLUMN_NAME AS full_column_name
+      FROM {{database}}.Signature_Pairs SP
+      JOIN {{database}}.SIGNATURES S ON SP.S2_ID = S.ID
+      JOIN DOMAIN_REP DR ON SP.S1_ID = DR.ID
+      WHERE SP.COSINE >= {{similarity_threshold}}
+      UNION ALL
+      -- Include representative column itself
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        (SELECT ROW_COUNT FROM {{database}}.SIGNATURES WHERE COLUMN_NAME = '{{domain_column}}' AND TABLE_NAME = '{{domain_table}}'),
+        UDFS.Count_Estimate(SIG_DATA),
+        1.0,
+        TABLE_NAME || '.' || COLUMN_NAME
+      FROM DOMAIN_REP
+      ORDER BY similarity_to_domain DESC;
+
+  domain_value_sample:
+    description: "Sample values from domain to understand contents"
+    sql: |
+      -- Domain Value Sampling
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        UDFS.Signature_to_JSON(SIG_DATA) AS signature_json
+      FROM {{database}}.SIGNATURES
+      WHERE COLUMN_NAME = '{{domain_column}}'
+        AND TABLE_NAME = '{{domain_table}}';
+
+      -- Extract top values from representative column
+      SELECT TOP 20
+        "{{domain_column}}" AS domain_value,
+        COUNT(*) AS frequency
+      FROM {{database}}.{{domain_table}}
+      WHERE "{{domain_column}}" IS NOT NULL
+      GROUP BY "{{domain_column}}"
+      ORDER BY frequency DESC;
+
+  search_corpus_by_domain:
+    description: "Search corpus for specific domain values"
+    sql: |
+      -- Find tables containing specific domain value
+      WITH DOMAIN_MEMBERS AS (
+        -- Get all columns in this domain
+        SELECT
+          S.TABLE_NAME,
+          S.COLUMN_NAME
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S ON SP.S2_ID = S.ID
+        WHERE SP.S1_ID = (
+          SELECT ID FROM {{database}}.SIGNATURES
+          WHERE TABLE_NAME = '{{domain_table}}' AND COLUMN_NAME = '{{domain_column}}'
+        )
+        AND SP.COSINE >= {{similarity_threshold}}
+      )
+      -- Generate search queries for each table
+      SELECT
+        'SELECT ''' || TABLE_NAME || ''' AS table_name, COUNT(*) AS occurrence_count ' ||
+        'FROM {{database}}.' || TABLE_NAME || ' ' ||
+        'WHERE "' || COLUMN_NAME || '" = ''{{search_value}}''' AS search_query
+      FROM DOMAIN_MEMBERS;
+
+      -- Example: Find all records with state = 'CA'
+      -- SELECT 'customers' AS table_name, COUNT(*) FROM customers WHERE state = 'CA'
+      -- UNION ALL
+      -- SELECT 'orders', COUNT(*) FROM orders WHERE ship_state = 'CA'
+
+  domain_overlap_matrix:
+    description: "Show overlap between domain member columns"
+    sql: |
+      -- Domain Overlap Analysis
+      WITH DOMAIN_MEMBERS AS (
+        SELECT
+          S.TABLE_NAME || '.' || S.COLUMN_NAME AS column_name,
+          S.ID
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S ON SP.S2_ID = S.ID
+        WHERE SP.S1_ID = (
+          SELECT ID FROM {{database}}.SIGNATURES
+          WHERE TABLE_NAME = '{{domain_table}}' AND COLUMN_NAME = '{{domain_column}}'
+        )
+        AND SP.COSINE >= {{similarity_threshold}}
+      )
+      SELECT
+        M1.column_name AS column1,
+        M2.column_name AS column2,
+        SP.COSINE AS cosine_similarity,
+        SP.PXAGXB AS overlap_1to2,
+        SP.PXBGXA AS overlap_2to1,
+        CASE
+          WHEN SP.PXAGXB >= 0.99 AND SP.PXBGXA >= 0.99 THEN 'IDENTICAL'
+          WHEN SP.PXAGXB >= 0.90 OR SP.PXBGXA >= 0.90 THEN 'SUBSET'
+          ELSE 'PARTIAL'
+        END AS overlap_type
+      FROM DOMAIN_MEMBERS M1
+      CROSS JOIN DOMAIN_MEMBERS M2
+      LEFT JOIN {{database}}.Signature_Pairs SP
+        ON (SP.S1_ID = M1.ID AND SP.S2_ID = M2.ID)
+        OR (SP.S1_ID = M2.ID AND SP.S2_ID = M1.ID)
+      WHERE M1.column_name < M2.column_name
+      ORDER BY cosine_similarity DESC;
+
+  identify_lookup_tables:
+    description: "Find tables that serve as domain lookup/reference tables"
+    sql: |
+      -- Lookup Table Identification
+      WITH DOMAIN_COLUMNS AS (
+        -- Find columns with many FK references
+        SELECT
+          S2.TABLE_NAME AS lookup_table,
+          S2.COLUMN_NAME AS lookup_column,
+          COUNT(DISTINCT S1.TABLE_NAME) AS referencing_tables,
+          UDFS.Count_Estimate(S2.SIG_DATA) AS distinct_values,
+          AVG(SP.PXAGXB) AS avg_containment
+        FROM {{database}}.Signature_Pairs SP
+        JOIN {{database}}.SIGNATURES S1 ON SP.S1_ID = S1.ID
+        JOIN {{database}}.SIGNATURES S2 ON SP.S2_ID = S2.ID
+        WHERE SP.PXAGXB >= 0.95  -- High FK containment
+          AND UDFS.Count_Estimate(S2.SIG_DATA) BETWEEN 2 AND 1000
+        GROUP BY S2.TABLE_NAME, S2.COLUMN_NAME, S2.SIG_DATA
+        HAVING COUNT(DISTINCT S1.TABLE_NAME) >= 3
+      )
+      SELECT
+        lookup_table,
+        lookup_column,
+        referencing_tables,
+        distinct_values AS domain_size,
+        CAST(avg_containment AS DECIMAL(5,3)) AS avg_containment,
+        lookup_table || '.' || lookup_column AS domain_name
+      FROM DOMAIN_COLUMNS
+      ORDER BY referencing_tables DESC, distinct_values ASC;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Discover all domains in corpus"
+    parameters:
+      database: "semantic_data"
+      min_members: 3
+      similarity_threshold: 0.90
+    expected_result: |
+      Domains Discovered:
+
+      | DOMAIN_NAME | REPRESENTATIVE       | MEMBERS | AVG_SIM | CARDINALITY | CLASS      |
+      |-------------|----------------------|---------|---------|-------------|------------|
+      | state       | customers.state      | 5       | 0.97    | 50          | LOW_CARD   |
+      | category    | products.category    | 4       | 0.95    | 12          | VERY_LOW   |
+      | gender      | customers.gender     | 3       | 0.99    | 3           | VERY_LOW   |
+      | status      | orders.status        | 6       | 0.92    | 8           | VERY_LOW   |
+
+      Interpretation:
+      - **state domain**: 5 columns across tables containing US states
+      - **category domain**: 4 columns with product categories
+      - **gender domain**: 3 columns with gender values (M/F/Other)
+      - **status domain**: 6 columns with status codes
+
+  - name: "List all members of 'state' domain"
+    parameters:
+      database: "semantic_data"
+      domain_table: "customers"
+      domain_column: "state"
+      similarity_threshold: 0.90
+    expected_result: |
+      State Domain Members:
+
+      | TABLE      | COLUMN      | ROW_COUNT | DISTINCT | SIMILARITY |
+      |------------|-------------|-----------|----------|------------|
+      | customers  | state       | 50000     | 50       | 1.00       |
+      | orders     | ship_state  | 125000    | 50       | 0.99       |
+      | suppliers  | state_code  | 500       | 48       | 0.97       |
+      | warehouses | location_st | 25        | 12       | 0.92       |
+      | employees  | home_state  | 500       | 35       | 0.91       |
+
+      All 5 columns contain US state codes with high similarity.
+
+  - name: "Sample domain values"
+    parameters:
+      database: "semantic_data"
+      domain_table: "customers"
+      domain_column: "state"
+    expected_result: |
+      State Domain Sample Values:
+
+      | VALUE | FREQUENCY |
+      |-------|-----------|
+      | CA    | 8,543     |
+      | TX    | 5,234     |
+      | NY    | 4,876     |
+      | FL    | 4,123     |
+      | IL    | 3,456     |
+      | ...   | ...       |
+
+      Domain contains 50 distinct US state codes.
+
+  - name: "Search corpus for domain value"
+    parameters:
+      database: "semantic_data"
+      domain_table: "customers"
+      domain_column: "state"
+      search_value: "CA"
+    expected_result: |
+      Occurrences of 'CA' across corpus:
+
+      | TABLE      | COLUMN      | COUNT  |
+      |------------|-------------|--------|
+      | customers  | state       | 8,543  |
+      | orders     | ship_state  | 15,234 |
+      | suppliers  | state_code  | 45     |
+      | warehouses | location_st | 5      |
+      | employees  | home_state  | 87     |
+
+      Total: 23,914 records contain 'CA' across 5 tables.
+
+  - name: "Identify lookup tables"
+    parameters:
+      database: "semantic_data"
+    expected_result: |
+      Lookup/Reference Tables:
+
+      | LOOKUP_TABLE | LOOKUP_COLUMN | REF_TABLES | DOMAIN_SIZE | AVG_CONTAIN |
+      |--------------|---------------|------------|-------------|-------------|
+      | us_states    | state_code    | 5          | 50          | 0.98        |
+      | categories   | category_id   | 4          | 12          | 0.96        |
+      | status_codes | code          | 6          | 8           | 0.95        |
+
+      These are likely reference/dimension tables used for domain lookups.
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Domain Discovery Best Practices
+
+  ### 1. Set Appropriate Cardinality Limits
+  Domains typically have:
+  - Very Low: 2-10 (gender, boolean flags)
+  - Low: 11-100 (states, categories, types)
+  - Medium: 101-1000 (subcategories, regions)
+  - High: 1001-10000 (products, locations)
+
+  ### 2. Use Similarity Clustering
+  ```sql
+  -- Find columns similar to known domain
+  WHERE COSINE >= 0.90
+  ```
+  High cosine = similar value distributions = likely same domain.
+
+  ### 3. Require Multiple Tables
+  ```sql
+  HAVING COUNT(DISTINCT table_name) >= 3
+  ```
+  True domains repeat across ≥3 tables.
+
+  ### 4. Domain Naming Conventions
+  Use representative column as domain name:
+  - customers.state → "state domain"
+  - products.category → "category domain"
+
+  ### 5. Verify Domain Contents
+  Always sample values to confirm semantic meaning:
+  ```sql
+  SELECT TOP 20 column_value, COUNT(*)
+  FROM table
+  GROUP BY column_value
+  ORDER BY COUNT(*) DESC;
+  ```
+
+  ### 6. Document Domain Purpose
+  Create domain catalog:
+  - Domain name
+  - Member columns
+  - Cardinality
+  - Sample values
+  - Business meaning
+
+  ### 7. Memory Layers for Domain Management
+  - **Kernel Layer**: Cache discovered domains and their representative columns
+  - **L1 Cache**: Keep recent domain queries (last 5-8 domain lookups) for quick access
+  - **L2 Compressed**: Archive domain catalogs showing evolution over time
+  - **Swap Layer**: Store complete domain history; use recall_conversation to reference domain definitions from earlier corpus analyses
+  This enables consistent domain identification and tracking domain drift as data evolves.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Too many domains discovered"
+    cause: "Similarity threshold too low or cardinality limit too high"
+    solution: "Increase similarity_threshold to 0.95+, decrease max_cardinality to 1000"
+
+  - error: "No domains found"
+    cause: "Thresholds too restrictive or corpus too heterogeneous"
+    solution: "Lower similarity_threshold to 0.85, increase max_cardinality"
+
+  - error: "Domain has unrelated columns"
+    cause: "False positives from statistical similarity without semantic alignment"
+    solution: "Manually verify domain members, sample values to confirm meaning"
+
+  - error: "Missing obvious domains"
+    cause: "Columns renamed differently across tables (e.g., 'state' vs 'st')"
+    solution: "Use fuzzy matching or normalize column names before signature generation"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - signature_generation  # Must create signatures first
+  - column_similarity  # Domains discovered via similarity
+  - foreign_key_detection  # Domains often have FK relationships
+  - corpus_navigation  # Navigate corpus using domain knowledge
+# === RELATED_PATTERNS END ===

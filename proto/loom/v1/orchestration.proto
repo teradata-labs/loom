@@ -1,0 +1,488 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "loom/v1/collaboration.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// WorkflowPattern defines orchestration patterns for multi-agent coordination.
+// This message uses a oneof to represent different workflow patterns,
+// enabling type-safe pattern selection and composition.
+message WorkflowPattern {
+  oneof pattern {
+    DebatePattern debate = 1;
+    ForkJoinPattern fork_join = 2;
+    PipelinePattern pipeline = 3;
+    ParallelPattern parallel = 4;
+    ConditionalPattern conditional = 5;
+    SwarmPattern swarm = 6;
+    PairProgrammingPattern pair_programming = 7;
+    TeacherStudentPattern teacher_student = 8;
+    IterativeWorkflowPattern iterative = 9;
+  }
+}
+
+// DebatePattern orchestrates multiple agents to debate a topic and reach consensus.
+// Agents see each other's responses from previous rounds and build on them.
+message DebatePattern {
+  // Topic or question to debate
+  string topic = 1;
+
+  // Agent IDs participating in the debate
+  repeated string agent_ids = 2;
+
+  // Number of debate rounds
+  int32 rounds = 3;
+
+  // Strategy for merging final outputs
+  MergeStrategy merge_strategy = 4;
+
+  // Optional: Moderator agent ID to guide debate
+  string moderator_agent_id = 5;
+}
+
+// ForkJoinPattern executes multiple agents in parallel on the same prompt,
+// then merges their results according to the specified strategy.
+message ForkJoinPattern {
+  // Prompt sent to all agents
+  string prompt = 1;
+
+  // Agent IDs to execute in parallel
+  repeated string agent_ids = 2;
+
+  // Strategy for merging results
+  MergeStrategy merge_strategy = 3;
+
+  // Optional: Timeout for all parallel executions
+  int32 timeout_seconds = 4;
+}
+
+// PipelinePattern executes agents sequentially where each agent's output
+// becomes input for the next agent.
+message PipelinePattern {
+  // Initial prompt for the first stage
+  string initial_prompt = 1;
+
+  // Sequential stages
+  repeated PipelineStage stages = 2;
+
+  // Whether to pass full history to each stage (default: false, only previous)
+  bool pass_full_history = 3;
+}
+
+// PipelineStage represents a single stage in a pipeline.
+message PipelineStage {
+  // Agent ID for this stage
+  string agent_id = 1;
+
+  // Prompt template (can include {{previous}} or {{history}} placeholders)
+  string prompt_template = 2;
+
+  // Optional: Validation function to check output before proceeding
+  string validation_prompt = 3;
+}
+
+// IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
+// Stages can trigger restarts of earlier stages via pub/sub coordination, enabling
+// agents to negotiate and self-correct without human intervention.
+//
+// Example use case: Stage 6 hits processing limits and requests Stage 2 to find
+// a different table with fewer rows.
+message IterativeWorkflowPattern {
+  // Base pipeline configuration
+  PipelinePattern pipeline = 1;
+
+  // Maximum number of iterations before forcibly stopping
+  // (prevents infinite loops; default: 3)
+  int32 max_iterations = 2;
+
+  // Restart policy configuration
+  RestartPolicy restart_policy = 3;
+
+  // Which stage IDs are allowed to trigger restarts
+  // Empty = all stages can trigger restarts
+  repeated string restart_triggers = 4;
+
+  // Topic for restart coordination messages (default: "workflow.restart")
+  string restart_topic = 5;
+}
+
+// RestartPolicy defines rules for stage restart coordination.
+message RestartPolicy {
+  // Whether to allow restarts at all (safety switch)
+  bool enabled = 1;
+
+  // Which stages can be restarted (empty = all stages can be restarted)
+  repeated string restartable_stages = 2;
+
+  // Cooldown period between restarts (seconds; default: 0)
+  int32 cooldown_seconds = 3;
+
+  // Whether to reset shared memory on restart (default: false)
+  bool reset_shared_memory = 4;
+
+  // Whether to preserve stage outputs from previous iteration (default: true)
+  bool preserve_outputs = 5;
+
+  // Maximum validation retries per stage with fresh agent context (default: 2)
+  // Each retry gets a fresh sessionID to reset conversation history
+  int32 max_validation_retries = 6;
+}
+
+// RestartRequest message published by stages to trigger restarts.
+// Sent via MessageBus on the configured restart topic.
+message RestartRequest {
+  // Stage ID requesting the restart
+  string requester_stage_id = 1;
+
+  // Stage ID to restart
+  string target_stage_id = 2;
+
+  // Reason for restart (for logging/observability)
+  string reason = 3;
+
+  // Optional: Modified prompt or parameters for the restarted stage
+  map<string, string> parameters = 4;
+
+  // Current iteration number
+  int32 iteration = 5;
+
+  // Timestamp of request (Unix milliseconds)
+  int64 timestamp_ms = 6;
+}
+
+// RestartResponse message sent back to requester after restart completes.
+message RestartResponse {
+  // Target stage that was restarted
+  string target_stage_id = 1;
+
+  // Whether restart was successful
+  bool success = 2;
+
+  // Error message if restart failed
+  string error = 3;
+
+  // New output from restarted stage
+  string output = 4;
+
+  // Iteration number after restart
+  int32 iteration = 5;
+}
+
+// ParallelPattern executes multiple independent agent tasks in parallel.
+// Unlike fork-join, each task can have a different prompt.
+message ParallelPattern {
+  // Independent tasks to execute
+  repeated AgentTask tasks = 1;
+
+  // Optional: How to combine results (if merging desired)
+  MergeStrategy merge_strategy = 2;
+
+  // Optional: Timeout for all tasks
+  int32 timeout_seconds = 3;
+}
+
+// AgentTask represents a single agent task with its own prompt.
+message AgentTask {
+  // Agent ID to execute the task
+  string agent_id = 1;
+
+  // Task-specific prompt
+  string prompt = 2;
+
+  // Optional: Task metadata
+  map<string, string> metadata = 3;
+}
+
+// ConditionalPattern routes execution based on an agent's decision.
+// A classifier agent evaluates the condition and selects the workflow branch.
+message ConditionalPattern {
+  // Agent ID for condition evaluation
+  string condition_agent_id = 1;
+
+  // Prompt for condition agent
+  string condition_prompt = 2;
+
+  // Branches: condition value -> workflow pattern
+  map<string, WorkflowPattern> branches = 3;
+
+  // Optional: Default branch if condition doesn't match any branch
+  WorkflowPattern default_branch = 4;
+}
+
+// MergeStrategy defines how to combine multiple agent outputs.
+enum MergeStrategy {
+  MERGE_STRATEGY_UNSPECIFIED = 0;
+
+  // Find consensus among outputs using LLM synthesis
+  CONSENSUS = 1;
+
+  // Vote on best answer using LLM judge
+  VOTING = 2;
+
+  // Concatenate all outputs
+  CONCATENATE = 3;
+
+  // Use first result
+  FIRST = 4;
+
+  // Use highest-scored result
+  BEST = 5;
+
+  // Summarize all outputs into concise form
+  SUMMARY = 6;
+}
+
+// WorkflowResult contains the execution results from a workflow pattern.
+message WorkflowResult {
+  // Pattern type executed
+  string pattern_type = 1;
+
+  // Individual agent results
+  repeated AgentResult agent_results = 2;
+
+  // Merged output from all agents
+  string merged_output = 3;
+
+  // Execution metadata
+  map<string, string> metadata = 4;
+
+  // Total execution duration (milliseconds)
+  int64 duration_ms = 5;
+
+  // Trace ID for observability
+  string trace_id = 6;
+
+  // Cost information
+  WorkflowCost cost = 7;
+
+  // Collaboration-specific results (if applicable)
+  oneof collaboration_result {
+    DebateResult debate_result = 8;
+    SwarmResult swarm_result = 9;
+    PairProgrammingResult pair_programming_result = 10;
+    TeacherStudentResult teacher_student_result = 11;
+  }
+
+  // Collaboration quality metrics
+  CollaborationMetrics metrics = 12;
+
+  // Models used by each agent (agent_id -> model name)
+  map<string, string> models_used = 13;
+}
+
+// DebateResult contains detailed debate execution results.
+message DebateResult {
+  // All debate rounds
+  repeated DebateRound rounds = 1;
+
+  // Final consensus reached
+  string consensus = 2;
+
+  // Whether full consensus was achieved
+  bool consensus_achieved = 3;
+
+  // Moderator's synthesis (if moderator used)
+  string moderator_synthesis = 4;
+
+  // Winning position/argument
+  string winning_position = 5;
+}
+
+// AgentResult represents the output from a single agent in a workflow.
+message AgentResult {
+  // Agent ID
+  string agent_id = 1;
+
+  // Agent's output text
+  string output = 2;
+
+  // Agent-specific metadata (round number, stage, etc.)
+  map<string, string> metadata = 3;
+
+  // Confidence score (if applicable)
+  float confidence_score = 4;
+
+  // Execution duration for this agent (milliseconds)
+  int64 duration_ms = 5;
+
+  // Cost for this agent's execution
+  AgentExecutionCost cost = 6;
+}
+
+// AgentExecutionCost tracks LLM costs for an agent in a workflow.
+message AgentExecutionCost {
+  // Total tokens used
+  int32 total_tokens = 1;
+
+  // Input tokens
+  int32 input_tokens = 2;
+
+  // Output tokens
+  int32 output_tokens = 3;
+
+  // Cost in USD
+  double cost_usd = 4;
+
+  // Model used
+  string model = 5;
+
+  // Provider
+  string provider = 6;
+}
+
+// WorkflowCost tracks costs across all agents in a workflow.
+message WorkflowCost {
+  // Total cost across all agents (USD)
+  double total_cost_usd = 1;
+
+  // Per-agent cost breakdown
+  map<string, double> agent_costs_usd = 2;
+
+  // Total tokens used across all agents
+  int32 total_tokens = 3;
+
+  // Number of LLM calls made
+  int32 llm_calls = 4;
+}
+
+// WorkflowExecution tracks a workflow execution instance.
+message WorkflowExecution {
+  // Unique execution ID
+  string id = 1;
+
+  // Workflow pattern executed
+  WorkflowPattern pattern = 2;
+
+  // Execution status: "pending", "running", "completed", "failed"
+  string status = 3;
+
+  // Result (populated when completed)
+  WorkflowResult result = 4;
+
+  // Start timestamp (Unix seconds)
+  int64 started_at = 5;
+
+  // Completion timestamp (Unix seconds)
+  int64 completed_at = 6;
+
+  // Error message (if failed)
+  string error = 7;
+}
+
+// ExecuteWorkflowRequest initiates a workflow execution.
+message ExecuteWorkflowRequest {
+  // Workflow pattern to execute
+  WorkflowPattern pattern = 1;
+
+  // Agent registry to use for agent lookup
+  string registry_id = 2;
+
+  // Optional: Variables for prompt interpolation
+  map<string, string> variables = 3;
+
+  // Optional: Execution timeout (seconds)
+  int32 timeout_seconds = 4;
+
+  // Optional: Enable tracing
+  bool enable_trace = 5;
+}
+
+// ExecuteWorkflowResponse contains the workflow execution result.
+message ExecuteWorkflowResponse {
+  // Execution ID
+  string execution_id = 1;
+
+  // Workflow result
+  WorkflowResult result = 2;
+}
+
+// ScheduleConfig defines when a workflow should execute automatically.
+// Used in workflow YAML files under 'schedule:' section and in RPC calls.
+message ScheduleConfig {
+  // Cron expression (e.g., "0 */6 * * *" for every 6 hours)
+  // Uses standard cron syntax: minute hour day month weekday
+  string cron = 1;
+
+  // Timezone for cron evaluation (e.g., "America/New_York", "UTC")
+  // Default: "UTC"
+  string timezone = 2;
+
+  // Whether this schedule is enabled
+  bool enabled = 3;
+
+  // Skip execution if previous run is still active
+  // Default: true
+  bool skip_if_running = 4;
+
+  // Maximum execution time before considering workflow stuck (seconds)
+  // Default: 3600 (1 hour)
+  int32 max_execution_seconds = 5;
+
+  // Variables to pass to workflow execution
+  map<string, string> variables = 6;
+}
+
+// ScheduledWorkflow represents a workflow with automatic execution schedule.
+// Schedules can be created via YAML files or RPC calls.
+message ScheduledWorkflow {
+  // Unique schedule ID (generated from workflow name + hash)
+  string id = 1;
+
+  // Workflow name from metadata
+  string workflow_name = 2;
+
+  // Path to workflow YAML file (empty for RPC-created schedules)
+  string yaml_path = 3;
+
+  // Workflow pattern to execute
+  WorkflowPattern pattern = 4;
+
+  // Schedule configuration
+  ScheduleConfig schedule = 5;
+
+  // Last execution time (Unix seconds)
+  int64 last_execution_at = 6;
+
+  // Next scheduled execution time (Unix seconds)
+  int64 next_execution_at = 7;
+
+  // Current execution ID (if running)
+  string current_execution_id = 8;
+
+  // Execution statistics
+  ScheduleStats stats = 9;
+
+  // Created timestamp (Unix seconds)
+  int64 created_at = 10;
+
+  // Last updated timestamp (Unix seconds)
+  int64 updated_at = 11;
+}
+
+// ScheduleStats tracks execution statistics for a scheduled workflow.
+message ScheduleStats {
+  // Total number of executions
+  int32 total_executions = 1;
+
+  // Number of successful executions
+  int32 successful_executions = 2;
+
+  // Number of failed executions
+  int32 failed_executions = 3;
+
+  // Number of skipped executions (due to previous run still active)
+  int32 skipped_executions = 4;
+
+  // Last execution status: "success", "failed", "skipped"
+  string last_status = 5;
+
+  // Last error message (if failed)
+  string last_error = 6;
+}

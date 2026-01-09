@@ -1,0 +1,269 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: postgres-optimization
+  version: 1.0.0
+  domain: postgres
+  description: "PostgreSQL query optimization patterns for performance tuning, index recommendations, and query rewriting"
+  labels:
+    vendor: postgres
+    category: performance
+    maturity: production
+
+spec:
+  entries:
+    - name: sequential_scan_detection
+      description: "Detect slow sequential scans that should use indexes instead"
+      trigger_conditions:
+        - "user asks about slow queries in Postgres"
+        - "user mentions sequential scan"
+        - "user asks why query is slow"
+        - "user asks to optimize table scans"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/sequential_scan_detection.yaml
+
+        Identifies queries using Seq Scan when Index Scan would be faster
+      priority: 95
+      tags:
+        - postgres
+        - performance
+        - indexes
+        - optimization
+
+    - name: missing_index_analysis
+      description: "Analyze queries and recommend missing indexes to improve performance"
+      trigger_conditions:
+        - "user asks about adding indexes"
+        - "user asks which columns to index"
+        - "user mentions missing indexes"
+        - "user asks to speed up queries"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/missing_index_analysis.yaml
+
+        Recommends indexes based on:
+        - WHERE clause columns
+        - JOIN conditions
+        - ORDER BY columns
+        - Query frequency and cost
+      priority: 90
+      tags:
+        - postgres
+        - performance
+        - indexes
+        - recommendations
+
+    - name: join_optimization
+      description: "Optimize JOIN operations by reordering, choosing join types, and improving statistics"
+      trigger_conditions:
+        - "user asks about slow joins"
+        - "user asks to optimize JOIN"
+        - "user mentions join performance"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/join_optimization.yaml
+
+        Optimization techniques:
+        - Join order optimization
+        - Hash vs Nested Loop joins
+        - Index usage in joins
+        - Statistics updates
+      priority: 85
+      tags:
+        - postgres
+        - performance
+        - joins
+        - optimization
+
+    - name: query_rewrite
+      description: "Rewrite inefficient queries for better performance"
+      trigger_conditions:
+        - "user asks to rewrite query"
+        - "user asks to make query faster"
+        - "user mentions query optimization"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/query_rewrite.yaml
+
+        Rewrite patterns:
+        - Subquery to JOIN conversion
+        - OR to UNION conversion
+        - DISTINCT elimination
+        - Function optimization
+      priority: 80
+      tags:
+        - postgres
+        - performance
+        - query-rewrite
+        - optimization
+
+    - name: subquery_to_join
+      description: "Convert correlated subqueries to JOINs for better performance"
+      trigger_conditions:
+        - "user has slow subquery"
+        - "user asks about correlated subquery"
+        - "user asks to convert subquery to join"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/subquery_to_join.yaml
+
+        Converts:
+        - EXISTS subqueries → SEMI JOIN
+        - IN subqueries → INNER JOIN
+        - Correlated subqueries → JOIN + GROUP BY
+      priority: 75
+      tags:
+        - postgres
+        - performance
+        - subqueries
+        - optimization
+
+    - name: like_pattern_optimization
+      description: "Optimize LIKE pattern matching with indexes and alternative approaches"
+      trigger_conditions:
+        - "user has slow LIKE query"
+        - "user asks about text search performance"
+        - "user mentions pattern matching"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/like_pattern_optimization.yaml
+
+        Optimizations:
+        - Use text search indexes (GIN/GiST)
+        - Rewrite leading wildcard patterns
+        - Use pg_trgm for trigram matching
+      priority: 70
+      tags:
+        - postgres
+        - performance
+        - text-search
+        - optimization
+
+    - name: count_optimization
+      description: "Optimize COUNT(*) queries which can be expensive on large tables"
+      trigger_conditions:
+        - "user has slow COUNT query"
+        - "user asks about counting rows"
+        - "user mentions COUNT performance"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/count_optimization.yaml
+
+        Alternatives:
+        - Use pg_class.reltuples for estimates
+        - Maintain counter tables
+        - Use approximate counts
+        - Index-only scans
+      priority: 65
+      tags:
+        - postgres
+        - performance
+        - count
+        - optimization
+
+    - name: distinct_elimination
+      description: "Eliminate unnecessary DISTINCT operations that slow queries"
+      trigger_conditions:
+        - "user has slow DISTINCT query"
+        - "user asks to optimize DISTINCT"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/distinct_elimination.yaml
+
+        Techniques:
+        - Check if DISTINCT is redundant (PK/unique constraint)
+        - Use GROUP BY instead
+        - Use EXISTS instead of DISTINCT + JOIN
+      priority: 60
+      tags:
+        - postgres
+        - performance
+        - distinct
+        - optimization
+
+    - name: foreign_key_validation
+      description: "Validate foreign key relationships and detect orphaned records"
+      trigger_conditions:
+        - "user asks about referential integrity"
+        - "user asks to check foreign keys"
+        - "user mentions orphaned records"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/foreign_key_validation.yaml
+
+        Checks:
+        - Orphaned child records
+        - Missing FK indexes
+        - FK constraint violations
+      priority: 70
+      tags:
+        - postgres
+        - data-quality
+        - foreign-keys
+        - validation
+
+    - name: data_type_optimization
+      description: "Optimize column data types to reduce storage and improve performance"
+      trigger_conditions:
+        - "user asks about data types"
+        - "user asks to optimize storage"
+        - "user mentions table size"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/data_type_optimization.yaml
+
+        Recommendations:
+        - Use appropriate integer sizes (smallint vs int vs bigint)
+        - TEXT vs VARCHAR
+        - NUMERIC precision
+        - Enum vs text
+      priority: 55
+      tags:
+        - postgres
+        - performance
+        - data-types
+        - storage
+
+    - name: partition_recommendation
+      description: "Recommend table partitioning for large tables to improve query performance"
+      trigger_conditions:
+        - "user has large table"
+        - "user asks about partitioning"
+        - "user mentions slow queries on big tables"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/partition_recommendation.yaml
+
+        Partition strategies:
+        - Range partitioning (dates, IDs)
+        - List partitioning (categories)
+        - Hash partitioning (distribution)
+      priority: 75
+      tags:
+        - postgres
+        - performance
+        - partitioning
+        - scalability
+
+    - name: vacuum_recommendation
+      description: "Recommend VACUUM and ANALYZE operations to maintain query performance"
+      trigger_conditions:
+        - "user has performance degradation"
+        - "user asks about maintenance"
+        - "user mentions bloat"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/postgres/analytics/vacuum_recommendation.yaml
+
+        Maintenance recommendations:
+        - VACUUM to reclaim space
+        - ANALYZE to update statistics
+        - VACUUM FULL for heavy bloat
+        - Autovacuum tuning
+      priority: 80
+      tags:
+        - postgres
+        - maintenance
+        - vacuum
+        - performance

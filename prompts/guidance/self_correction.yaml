@@ -1,0 +1,55 @@
+name: guidance
+namespace: loom.self_correction
+prompts:
+  - id: suggest_alternatives
+    content: |
+      This approach is not working. Please try:
+      {{.suggestions}}
+    variables:
+      suggestions:
+        name: suggestions
+        type: 1  # STRING
+        required: true
+        description: "Alternative approaches to suggest"
+    tags:
+      - guidance
+      - self_correction
+    metadata:
+      version: "v1.0"
+      description: "Self-correction guidance prompt"
+
+  - id: max_turns_reached
+    content: |
+      I apologize, but I've reached my processing limit. Please try rephrasing your request or breaking it into smaller steps.
+    tags:
+      - guidance
+      - limits
+    metadata:
+      version: "v1.0"
+      description: "Maximum turns limit message"
+
+  - id: llm_call_failed
+    content: |
+      I encountered an error while processing your request. Please try again or rephrase your question.
+    tags:
+      - guidance
+      - error_recovery
+    metadata:
+      version: "v1.0"
+      description: "LLM call failure recovery message"
+
+  - id: tool_execution_failed
+    content: |
+      The tool execution failed: {{.error}}. Let me try a different approach.
+    variables:
+      error:
+        name: error
+        type: 1  # STRING
+        required: true
+        description: "Error message from tool execution"
+    tags:
+      - guidance
+      - tool_error
+    metadata:
+      version: "v1.0"
+      description: "Tool execution failure recovery"

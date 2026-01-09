@@ -1,0 +1,217 @@
+apiVersion: loom/v1
+kind: Tool
+metadata:
+  name: file_operations
+  description: Read, write, and manage files in the workspace
+  version: "1.0"
+  labels:
+    category: filesystem
+    risk: medium
+    maturity: stable
+
+spec:
+  input_schema:
+    type: object
+    properties:
+      operation:
+        type: string
+        description: File operation to perform
+        enum: ["read", "write", "append", "list", "search", "stat"]
+
+      path:
+        type: string
+        description: File or directory path (relative to workspace)
+
+      content:
+        type: string
+        description: Content to write (for write/append operations)
+
+      encoding:
+        type: string
+        description: File encoding
+        enum: ["utf-8", "ascii", "base64"]
+        default: "utf-8"
+
+      pattern:
+        type: string
+        description: Glob pattern for list operation (e.g., "*.py", "**/*.js")
+
+      search_term:
+        type: string
+        description: Search term for search operation
+
+      max_size_bytes:
+        type: integer
+        description: Maximum file size to read
+        default: 1048576  # 1MB
+        maximum: 10485760  # 10MB
+
+    required:
+      - operation
+      - path
+
+  output_schema:
+    type: object
+    properties:
+      success:
+        type: boolean
+      content:
+        type: string
+        description: File content (for read operation)
+      files:
+        type: array
+        description: List of files (for list operation)
+        items:
+          type: string
+      matches:
+        type: array
+        description: Search results (for search operation)
+        items:
+          type: object
+          properties:
+            file:
+              type: string
+            line_number:
+              type: integer
+            line:
+              type: string
+      stat:
+        type: object
+        description: File statistics (for stat operation)
+        properties:
+          size:
+            type: integer
+          modified:
+            type: string
+          permissions:
+            type: string
+      error:
+        type: string
+        description: Error message if operation failed
+
+  implementation:
+    type: builtin
+    handler: filesystem_operations
+    config:
+      # Security constraints
+      workspace_root: "./workspace"
+      allowed_paths:
+        - "./workspace/**"
+        - "./data/**"
+        - "./output/**"
+
+      blocked_paths:
+        - "/etc/**"
+        - "/sys/**"
+        - "/proc/**"
+        - "~/.ssh/**"
+        - "**/id_rsa*"
+        - "**/.env*"
+        - "**/secrets/**"
+
+      # File type restrictions
+      allowed_extensions:
+        - ".txt"
+        - ".md"
+        - ".json"
+        - ".yaml"
+        - ".csv"
+        - ".py"
+        - ".js"
+        - ".go"
+        - ".sql"
+
+      blocked_extensions:
+        - ".exe"
+        - ".dll"
+        - ".so"
+        - ".dylib"
+
+      # Size limits
+      max_file_size_bytes: 10485760  # 10MB
+      max_files_per_list: 1000
+      max_search_results: 500
+
+      # Performance
+      buffer_size: 4096
+      use_streaming: true  # For large files
+
+  examples:
+    - description: Read a text file
+      input:
+        operation: "read"
+        path: "data/config.json"
+        encoding: "utf-8"
+      output:
+        success: true
+        content: '{"key": "value"}'
+
+    - description: Write to a file
+      input:
+        operation: "write"
+        path: "output/result.txt"
+        content: "Hello, World!"
+        encoding: "utf-8"
+      output:
+        success: true
+
+    - description: List Python files
+      input:
+        operation: "list"
+        path: "src"
+        pattern: "**/*.py"
+      output:
+        success: true
+        files:
+          - "src/main.py"
+          - "src/utils.py"
+          - "src/models/user.py"
+
+    - description: Search for keyword
+      input:
+        operation: "search"
+        path: "src"
+        search_term: "TODO"
+      output:
+        success: true
+        matches:
+          - file: "src/main.py"
+            line_number: 42
+            line: "# TODO: Implement error handling"
+
+    - description: Get file statistics
+      input:
+        operation: "stat"
+        path: "data/large_file.csv"
+      output:
+        success: true
+        stat:
+          size: 1048576
+          modified: "2024-01-15T10:30:00Z"
+          permissions: "rw-r--r--"
+
+  safety:
+    requires_approval: false  # Most operations are safe
+    approval_required_for:
+      - operation: "write"
+        path: "**/*.py"  # Require approval for modifying code
+      - operation: "write"
+        path: "**/*.sh"  # Require approval for shell scripts
+
+    validation:
+      - type: path_traversal_check
+        enabled: true
+      - type: symlink_check
+        enabled: true
+      - type: size_check
+        enabled: true
+
+  metadata:
+    documentation: "https://docs.loom.dev/tools/file-operations"
+    security_level: medium
+    audit_logging: recommended
+    use_cases:
+      - "Read configuration files"
+      - "Write analysis results"
+      - "Search codebase"
+      - "List project files"

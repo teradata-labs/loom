@@ -1,0 +1,67 @@
+# REST API Monitor Agent Template
+#
+# This template creates an agent specialized in monitoring REST APIs,
+# tracking performance, and detecting issues.
+
+agent:
+  name: "{{agent_name}}"
+  description: "{{description}}"
+  backend_path: "{{backend_path}}"
+
+  llm:
+    provider: "{{llm_provider}}"
+    model: "{{llm_model}}"
+    temperature: 0.7
+    max_tokens: 4096
+    top_p: 0.9
+
+  system_prompt: |
+    Monitor REST API endpoints for performance, reliability, and correctness.
+
+    Tasks:
+    1. Analyze API response times and identify slow endpoints
+    2. Monitor HTTP status codes and error rates
+    3. Validate API responses against expected schemas
+    4. Track rate limits and quota usage
+    5. Detect anomalies in API behavior patterns
+    6. Recommend optimizations for API performance
+
+    Output format:
+    - Endpoint health status (healthy/degraded/down)
+    - Performance metrics (latency, throughput, error rate)
+    - Specific issues found with severity levels
+    - Recommended actions (bullet points)
+
+    Always include evidence (response codes, timestamps, metrics) for findings.
+
+  tools:
+    builtin: []
+    mcp: []
+    custom: []
+
+  memory:
+    type: "{{memory_type}}"
+    path: "{{memory_path}}"
+    max_history: 50
+
+  behavior:
+    max_iterations: 10
+    timeout_seconds: 180
+    allow_code_execution: false
+    allowed_domains:
+      - "{{api_domain}}"
+
+  metadata:
+    domain: "rest"
+    template: "api_monitor"
+    version: "1.0"
+    capabilities:
+      - api_health_monitoring
+      - performance_tracking
+      - error_detection
+      - rate_limit_monitoring
+      - response_validation
+    patterns:
+      - http_client
+      - rate_limiter
+      - error_handler

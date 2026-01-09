@@ -1,0 +1,745 @@
+# === METADATA START ===
+name: dnd_character_generator
+title: "D&D 5e Character Sheet Generator"
+backend_type: text
+description: |
+  Interactive D&D 5e character generator with back-and-forth refinement.
+
+  Create complete, rules-compliant D&D characters through conversation.
+  Start with a concept, refine through dialogue, and export a full character sheet.
+
+  **GENERATION MODES:**
+  - **Guided:** Step-by-step with recommendations
+  - **Quick:** Answer a few questions, get a complete character
+  - **Concept:** Describe your character idea, get optimization suggestions
+  - **Random:** Chaos mode - embrace the dice gods
+
+  **FEATURES:**
+  - Rules validation (D&D 5e SRD)
+  - Synergy suggestions (race/class/background combos)
+  - Equipment calculation with starting gold
+  - Spell selection for casters
+  - Personality generation (traits, ideals, bonds, flaws)
+  - Multiple export formats (markdown, D&D Beyond style, JSON)
+
+  **INTERACTIVE REFINEMENT:**
+  - Change any aspect at any time
+  - "Actually, can I be a dwarf instead?"
+  - "Make them more chaotic"
+  - "Give them a tragic backstory"
+  - Agent adapts and regenerates
+
+category: fun
+difficulty: beginner
+tags: [dnd, rpg, character-creation, interactive, gaming]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Create new D&D characters for campaigns
+  - Generate NPCs quickly
+  - Explore character concepts
+  - Learn D&D character creation
+  - Optimize character builds
+  - Generate backup characters
+  - Create characters for one-shots
+  - Teach new players character creation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: character_concept
+    type: string
+    required: false
+    description: "Optional character concept or description"
+    example: "A grumpy old wizard who hates adventuring"
+
+  - name: generation_mode
+    type: enum[guided, quick, concept, random]
+    required: false
+    default: "guided"
+    description: "Character generation approach"
+    example: "concept"
+
+  - name: optimization_level
+    type: enum[story_first, balanced, optimized, chaos]
+    required: false
+    default: "balanced"
+    description: "Optimization vs roleplay focus"
+    example: "story_first"
+
+  - name: level
+    type: integer
+    required: false
+    default: 1
+    description: "Starting character level (1-20)"
+    example: "1"
+
+  - name: allowed_sources
+    type: string
+    required: false
+    default: "PHB"
+    description: "Allowed D&D sourcebooks (PHB, XGE, TCE, etc.)"
+    example: "PHB,XGE,TCE"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  guided_creation:
+    description: "Step-by-step guided character creation"
+    content: |
+      Welcome to D&D Character Creation! Let's build your character together.
+
+      {{#if character_concept}}
+      **Your Concept:** {{character_concept}}
+
+      Great! I'll help you bring this to life.
+      {{/if}}
+
+      ## Step 1: Choose Your Race
+
+      **Popular Options:**
+      - **Human**: Versatile, +1 to all abilities or +1/+1/+1 to three
+      - **Elf**: Dexterous, darkvision, immune to sleep
+      - **Dwarf**: Tough, darkvision, poison resistance
+      - **Halfling**: Lucky, brave, small and nimble
+      - **Dragonborn**: Breath weapon, damage resistance
+      - **Half-Orc**: Strong, relentless endurance
+      - **Tiefling**: Charismatic, fire resistance, innate magic
+
+      {{#if character_concept}}
+      **For your concept, I'd suggest:** [Race recommendation based on concept]
+      Because: [Brief reasoning]
+      {{/if}}
+
+      **What race calls to you?**
+
+      (You can also say: "Surprise me", "Tell me more about...", or "What would work best for...")
+
+      ---
+
+      ## Step 2: Choose Your Class
+
+      (We'll get here once you pick a race!)
+
+      **Available Classes:**
+      - **Martial:** Fighter, Barbarian, Monk, Ranger, Rogue, Paladin
+      - **Spellcasters:** Wizard, Sorcerer, Warlock, Cleric, Druid, Bard
+      - **Hybrid:** Paladin, Ranger, Bard (martial + magic)
+
+      ---
+
+      ## Step 3: Ability Scores
+
+      Choose method:
+      - **Standard Array:** 15, 14, 13, 12, 10, 8 (safe, balanced)
+      - **Point Buy:** 27 points to distribute (customizable)
+      - **Roll 4d6 drop lowest:** Random (exciting, risky)
+
+      ---
+
+      ## Step 4: Background & Personality
+
+      Backgrounds provide:
+      - Skill proficiencies
+      - Tool proficiencies
+      - Starting equipment
+      - Roleplaying hooks
+
+      We'll also generate:
+      - Personality traits (2)
+      - Ideals (1)
+      - Bonds (1)
+      - Flaws (1)
+
+      ---
+
+      ## Step 5: Equipment & Finishing Touches
+
+      Based on your class and background, you'll get:
+      - Starting equipment
+      - Or starting gold to buy gear
+      - Spell selection (if caster)
+      - Proficiency choices
+
+      ---
+
+      **Ready to begin? Let's start with your race!**
+
+  concept_to_character:
+    description: "Generate character from concept description"
+    content: |
+      Analyzing your character concept: "{{character_concept}}"
+
+      ## 🎭 Character Interpretation
+
+      **I'm envisioning:**
+      [Interpret the concept into D&D terms]
+
+      **Suggested Build:**
+
+      ### Core Choices
+      - **Race:** [Recommended race]
+        - Why: [How it fits the concept]
+      - **Class:** [Recommended class]
+        - Why: [How it fits the concept]
+      - **Background:** [Recommended background]
+        - Why: [How it fits the concept]
+
+      ### Ability Score Priority
+      1. [Primary ability] - Your main stat
+      2. [Secondary ability] - Important for survivability/skills
+      3. [Tertiary ability] - Nice to have
+
+      ### Key Features
+      - [Feature 1]: [How it supports the concept]
+      - [Feature 2]: [How it supports the concept]
+      - [Feature 3]: [How it supports the concept]
+
+      ### Personality Hooks
+      - **Trait:** [Personality trait matching concept]
+      - **Ideal:** [Ideal matching concept]
+      - **Bond:** [Bond matching concept]
+      - **Flaw:** [Flaw matching concept]
+
+      ### Alternative Interpretations
+
+      **If you want more [aspect], consider:**
+      - [Alternative race/class/background]
+      - [Why it might fit better]
+
+      **Does this match your vision? Let's refine it together!**
+
+      You can say:
+      - "Perfect, let's build this!"
+      - "Change the race to..."
+      - "Make them more..."
+      - "What if they were also..."
+
+  quick_generation:
+    description: "Fast character generation with minimal input"
+    content: |
+      ## ⚡ Quick Character Generator
+
+      **Answer these 3 questions:**
+
+      1. **Combat Style?**
+         - Hit things (melee)
+         - Shoot things (ranged)
+         - Cast spells (magic)
+         - Sneak around (stealth)
+         - Support team (healing/buffing)
+
+      2. **Personality?**
+         - Brave hero
+         - Clever trickster
+         - Grumpy veteran
+         - Naive optimist
+         - Dark brooder
+         - Cheerful support
+
+      3. **Preferred Role?**
+         - Tank (front line, takes hits)
+         - Damage (kills enemies)
+         - Support (heals/buffs team)
+         - Control (debuffs enemies)
+         - Face (talks to NPCs)
+         - Scout (explores/detects)
+
+      **I'll generate a complete character sheet in 30 seconds!**
+
+  random_character:
+    description: "Embrace chaos - fully random character"
+    content: |
+      ## 🎲 CHAOS MODE ACTIVATED
+
+      Rolling dice for everything...
+
+      **Race:** [Random race]
+      **Class:** [Random class]
+      **Background:** [Random background]
+
+      **Ability Scores (4d6 drop lowest):**
+      - Strength: [Roll] ([Modifier])
+      - Dexterity: [Roll] ([Modifier])
+      - Constitution: [Roll] ([Modifier])
+      - Intelligence: [Roll] ([Modifier])
+      - Wisdom: [Roll] ([Modifier])
+      - Charisma: [Roll] ([Modifier])
+
+      **Personality (random tables):**
+      - Trait 1: [Random trait]
+      - Trait 2: [Random trait]
+      - Ideal: [Random ideal]
+      - Bond: [Random bond]
+      - Flaw: [Random flaw]
+
+      **Equipment:** [Random starting gear]
+
+      **Name:** [Random name appropriate to race]
+
+      **The Dice Gods Have Spoken!**
+
+      This character is: [Brief personality summary]
+
+      Love it? Hate it? Want to reroll just one thing?
+
+  full_character_sheet:
+    description: "Generate complete formatted character sheet"
+    content: |
+      # 📜 CHARACTER SHEET
+
+      ## Basic Information
+      **Name:** [Character name]
+      **Race:** [Race] | **Class:** [Class] **Level** [Level]
+      **Background:** [Background]
+      **Alignment:** [Alignment]
+
+      ---
+
+      ## Ability Scores
+      ```
+      STR: [Score] ([Modifier])  |  INT: [Score] ([Modifier])
+      DEX: [Score] ([Modifier])  |  WIS: [Score] ([Modifier])
+      CON: [Score] ([Modifier])  |  CHA: [Score] ([Modifier])
+      ```
+
+      **Proficiency Bonus:** +[Bonus]
+
+      ---
+
+      ## Combat Stats
+      - **Armor Class:** [AC] ([Armor/Dex calculation])
+      - **Hit Points:** [Max HP] (Hit Dice: [Dice])
+      - **Speed:** [Speed] ft.
+      - **Initiative:** +[Initiative]
+
+      ---
+
+      ## Proficiencies & Languages
+
+      **Saving Throws:** [List with bonuses]
+      **Skills:** [List with bonuses]
+      **Languages:** [List]
+      **Tool Proficiencies:** [List]
+      **Armor:** [List]
+      **Weapons:** [List]
+
+      ---
+
+      ## Features & Traits
+
+      ### Racial Traits
+      - **[Feature]:** [Description]
+      - **[Feature]:** [Description]
+
+      ### Class Features
+      - **[Feature]:** [Description]
+      - **[Feature]:** [Description]
+
+      ### Background Feature
+      - **[Feature]:** [Description]
+
+      ---
+
+      ## Equipment
+      **Weapons:**
+      - [Weapon]: +[Attack bonus] to hit, [Damage] [Type] damage
+
+      **Armor:**
+      - [Armor]: AC [Value]
+
+      **Gear:**
+      - [List of equipment]
+
+      **Gold:** [Amount] gp
+
+      ---
+
+      {{#if is_spellcaster}}
+      ## Spellcasting
+
+      **Spellcasting Ability:** [Ability] (Spell Save DC [DC], +[Bonus] to hit)
+
+      **Cantrips (At Will):**
+      - [Spell]: [Brief description]
+
+      **1st Level Spells ([Slots] slots):**
+      - [Spell]: [Brief description]
+      {{/if}}
+
+      ---
+
+      ## Personality
+
+      **Traits:**
+      - [Trait 1]
+      - [Trait 2]
+
+      **Ideals:**
+      - [Ideal]
+
+      **Bonds:**
+      - [Bond]
+
+      **Flaws:**
+      - [Flaw]
+
+      ---
+
+      ## Backstory
+
+      [2-3 paragraph backstory incorporating personality, background, and character concept]
+
+      ---
+
+      ## Notes & Roleplaying Tips
+
+      **How to Play This Character:**
+      - [Tip 1]
+      - [Tip 2]
+      - [Tip 3]
+
+      **Character Voice:**
+      [Suggestion for how they might talk/act]
+
+      ---
+
+      **Ready for adventure!**
+
+  optimization_suggestions:
+    description: "Suggest optimizations while respecting character concept"
+    content: |
+      ## 🎯 Character Optimization Analysis
+
+      **Current Build:** [Race] [Class] (Level [Level])
+      **Concept:** {{character_concept}}
+
+      ### ✅ What's Working Well
+      - [Strength 1]: [Why it's good]
+      - [Strength 2]: [Why it's good]
+      - [Strength 3]: [Why it's good]
+
+      ### 💡 Optimization Suggestions
+
+      **Without Changing Concept:**
+
+      1. **Ability Score Adjustment**
+         - Current: [Current allocation]
+         - Suggested: [Optimized allocation]
+         - Why: [Mechanical benefit while keeping concept]
+
+      2. **Skill Proficiency Optimization**
+         - Consider: [Skill suggestions]
+         - Because: [Synergy with class/concept]
+
+      3. **Equipment Tweaks**
+         - Swap: [Item] → [Better item]
+         - Why: [Benefit explanation]
+
+      4. **Spell Selection** (if applicable)
+         - Replace: [Spell] with [Spell]
+         - Why: [Better utility/synergy]
+
+      ### 🔄 Alternative Builds (Same Concept, Different Mechanics)
+
+      **Option A: [Variant]**
+      - [Key difference]
+      - Pros: [Benefits]
+      - Cons: [Tradeoffs]
+
+      **Option B: [Variant]**
+      - [Key difference]
+      - Pros: [Benefits]
+      - Cons: [Tradeoffs]
+
+      ### ⚠️ Potential Issues to Address
+
+      - [Weakness]: [How it might affect gameplay]
+        - Solution: [How to mitigate]
+
+      **Remember:** Optimization serves the story! These are suggestions, not requirements.
+
+  multiclass_planner:
+    description: "Plan multiclass progression"
+    content: |
+      ## 🎓 Multiclass Planning Guide
+
+      **Current:** [Current class and level]
+      **Considering:** [Multiclass option]
+
+      ### Multiclass Requirements
+      **Ability Score Prerequisites:**
+      - [Class 1]: Requires [Ability] [Score]+
+      - [Class 2]: Requires [Ability] [Score]+
+      - ✅/❌ You meet/don't meet these requirements
+
+      ### What You Gain
+      **At [Class] Level 1:**
+      - Hit Points: +[HP]
+      - Proficiencies: [New proficiencies]
+      - Features: [List]
+
+      **What You Lose:**
+      - Delayed [Primary class] progression
+      - Miss out on: [High-level feature you'd delay]
+
+      ### Synergy Analysis
+      **How These Classes Work Together:**
+      - [Synergy point 1]
+      - [Synergy point 2]
+      - [Potential conflict]
+
+      ### Recommended Split
+      **Levels 1-5:** [Progression plan]
+      **Levels 6-10:** [Progression plan]
+      **Levels 11-15:** [Progression plan]
+      **Levels 16-20:** [Progression plan]
+
+      **Key Breakpoints:**
+      - Level [X]: [Why important]
+      - Level [X]: [Why important]
+
+      ### Is It Worth It?
+      **Verdict:** [Yes/No/Depends]
+      **Reasoning:** [Analysis]
+
+  export_formats:
+    description: "Export character in various formats"
+    content: |
+      Choose your export format:
+
+      ## 1. Markdown (Pretty Print)
+      ```markdown
+      # Thorin Ironforge
+      ## Level 1 Mountain Dwarf Fighter
+
+      **STR** 16 (+3) | **DEX** 12 (+1) | **CON** 15 (+2)
+      **INT** 10 (+0) | **WIS** 13 (+1) | **CHA** 8 (-1)
+
+      **HP:** 12 | **AC:** 16 (Chain Mail) | **Speed:** 25 ft.
+      ...
+      ```
+
+      ## 2. D&D Beyond Style (Compact)
+      ```
+      Thorin Ironforge - Lvl 1 Mountain Dwarf Fighter (Soldier)
+      Lawful Good | HP 12/12 | AC 16 | Init +1 | Speed 25 ft.
+      STR 16 | DEX 12 | CON 15 | INT 10 | WIS 13 | CHA 8
+      Saves: STR +5, CON +4 | Skills: Athletics +5, Intimidation +1
+      ...
+      ```
+
+      ## 3. JSON (For Digital Tools)
+      ```json
+      {
+        "name": "Thorin Ironforge",
+        "race": "Mountain Dwarf",
+        "class": [{"name": "Fighter", "level": 1}],
+        "abilityScores": {
+          "strength": 16,
+          "dexterity": 12,
+          ...
+        }
+      }
+      ```
+
+      ## 4. Classic Sheet (ASCII Art)
+      ```
+      ╔══════════════════════════════════════════════╗
+      ║          THORIN IRONFORGE - LEVEL 1         ║
+      ║     Mountain Dwarf Fighter (Soldier)        ║
+      ╠══════════════════════════════════════════════╣
+      ║  STR  DEX  CON  INT  WIS  CHA               ║
+      ║   16   12   15   10   13   8                ║
+      ║  +3   +1   +2   +0   +1   -1                ║
+      ╠══════════════════════════════════════════════╣
+      ...
+      ```
+
+      ## 5. Roll20 Macro Format
+      ```
+      !character-create --name "Thorin Ironforge" --race "Dwarf" ...
+      ```
+
+  interactive_refinement:
+    description: "Handle user requests to modify character"
+    content: |
+      **Current Character:** [Summary]
+
+      I heard you want to change: {{user_request}}
+
+      Let me update that...
+
+      **Before:**
+      - [Relevant current details]
+
+      **After:**
+      - [Updated details]
+
+      **This affects:**
+      - [Cascading changes, if any]
+      - [Ability scores adjustments]
+      - [Feature changes]
+
+      **Character is now:**
+      [Updated character summary]
+
+      **Does this work? Want to change anything else?**
+
+      You can say:
+      - "Actually, make them [other change]"
+      - "Can you also [additional change]"
+      - "Go back to [previous version]"
+      - "Looks good, show me the full sheet!"
+      - "Let's start over with a new concept"
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Concept-based generation"
+    parameters:
+      character_concept: "A grumpy old wizard who hates adventuring"
+      generation_mode: "concept"
+      optimization_level: "story_first"
+      level: 1
+    expected_result: |
+      **Suggested Build:**
+
+      Race: Human (Variant) - fits "old" (no racial aging limits), flexible
+      Class: Wizard (Abjuration) - defensive magic for someone who doesn't want trouble
+      Background: Sage (Hermit flavor) - isolated scholar
+
+      Ability Scores: INT 15, CON 14, WIS 13, DEX 12, CHA 10, STR 8
+
+      Personality:
+      - Trait: "I grumble about everything, especially 'kids these days'"
+      - Ideal: "Knowledge is worth any risk... but I'd rather not take risks"
+      - Bond: "My old library that I was forced to leave"
+      - Flaw: "I complain constantly but secretly enjoy having people around"
+
+  - name: "Quick generation"
+    parameters:
+      generation_mode: "quick"
+      level: 1
+    expected_result: |
+      After user answers questions:
+
+      Combat: "Hit things (melee)"
+      Personality: "Brave hero"
+      Role: "Tank"
+
+      Generated: Human Fighter (Soldier background)
+      - STR 16, CON 15, DEX 13, others 12/10/8
+      - Chain mail, longsword, shield (AC 18)
+      - Athletics, Intimidation proficient
+      - Personality: Brave, protective, loyal
+
+  - name: "Interactive refinement"
+    parameters:
+      character_concept: "Elven ranger"
+      generation_mode: "guided"
+    expected_result: |
+      Initial: Wood Elf Ranger
+
+      User: "Actually, can they use magic more?"
+
+      Refined: High Elf Ranger with spell focus
+      - Added wizard cantrip
+      - Suggested Arcane Archer subclass
+      - Intelligence increased for spell utility
+
+      User: "Perfect, but make them chaotic neutral"
+
+      Final: Character updated with CN alignment and adjusted personality
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## D&D Character Generation Best Practices
+
+  ### 1. Start With Concept, Not Mechanics
+  - Ask "Who is this character?" before "What can they do?"
+  - Build mechanics to serve the story
+  - Optimization comes after personality
+
+  ### 2. Validate Against Rules
+  - D&D 5e SRD for free content
+  - PHB for standard options
+  - XGE/TCE/etc. only if explicitly allowed
+  - No homebrew unless specified
+
+  ### 3. Balance Optimization With Roleplay
+  - **Story First:** Cool concept > optimal stats
+  - **Balanced:** Effective AND interesting
+  - **Optimized:** Maximize mechanical power
+  - **Chaos:** Let the dice decide!
+
+  ### 4. Synergy Matters
+  - Race abilities complement class features
+  - Background provides needed skills
+  - Personality drives decision-making
+
+  ### 5. Consider Party Composition
+  - Fill gaps in the party
+  - But don't sacrifice character concept
+  - Overlapping roles are fine!
+
+  ### 6. Starting Equipment
+  - Default packages are balanced
+  - Rolling for gold is risky
+  - Essential: Weapon, armor, adventuring gear
+
+  ### 7. Spell Selection (For Casters)
+  - Balance damage, utility, defense
+  - At least one ritual spell
+  - Cantrips you'll actually use
+
+  ### 8. Interactive Refinement Flow
+  - Present options, not mandates
+  - Allow changes at any point
+  - Explain mechanical impact of changes
+  - Keep character concept intact through revisions
+
+  ### 9. Export Multiple Formats
+  - Markdown for reading
+  - JSON for digital tools
+  - Classic sheet for printing
+  - Let users choose their preference
+
+  ### 10. Common Newbie Mistakes
+  - Dumping Constitution (you need HP!)
+  - Ignoring Dexterity (AC and initiative!)
+  - Too many skills (focus is better)
+  - Over-complicated backstory (keep it playable)
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Character doesn't meet multiclass requirements"
+    cause: "Ability scores too low for both classes"
+    solution: "Adjust ability scores or choose different class combo. Need 13+ in key abilities."
+
+  - error: "Spell selection doesn't match level"
+    cause: "Choosing too many spells or wrong level spells"
+    solution: "Check spellcasting table. Level 1 casters know limited spells."
+
+  - error: "Equipment over weight limit"
+    cause: "Strength score too low for heavy armor/weapons"
+    solution: "Reduce equipment or increase Strength. Consider lighter alternatives."
+
+  - error: "Background skills overlap with class skills"
+    cause: "Inefficient skill selection"
+    solution: "Choose different background or work with DM to swap skills."
+
+  - error: "Race/class combination doesn't work mechanically"
+    cause: "Racial abilities don't benefit class at all"
+    solution: "This is okay for story reasons! But explain the tradeoff to user."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - fun/rubber_duck_debugger  # Interactive problem-solving
+  - fun/code_haiku  # Creative generation
+  - text/summarization  # For backstory generation
+# === RELATED_PATTERNS END ===

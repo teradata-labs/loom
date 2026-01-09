@@ -1,0 +1,120 @@
+# Example Loom Server Configuration
+# This demonstrates no-code agent deployment with YAML configuration
+
+server:
+  port: 9090
+  host: 0.0.0.0
+  enable_reflection: true
+
+llm:
+  provider: ollama
+  ollama_model: llama3.2
+  ollama_base_url: http://localhost:11434
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+database:
+  path: ./loom.db
+  driver: sqlite
+
+shared_memory:
+  enabled: true
+  max_memory_bytes: 1073741824  # 1GB
+  threshold_bytes: 102400       # 100KB
+  compression_threshold: 1048576 # 1MB
+  ttl_seconds: 3600              # 1 hour
+  disk_overflow_enabled: true
+  disk_cache_path: /tmp/loom/cache
+  max_disk_bytes: 10737418240    # 10GB
+
+observability:
+  enabled: false
+  provider: hawk
+  hawk_endpoint: ""
+
+logging:
+  level: info
+  format: text
+
+# Tool permissions configuration
+tools:
+  permissions:
+    # Require user approval before executing tools (default: false)
+    require_approval: false
+
+    # YOLO mode: bypass all permission prompts (default: true)
+    # Set to false to enable restrictive mode
+    # Can also be controlled via --yolo flag or LOOM_YOLO=true env var
+    yolo: true
+
+    # Tools that are always allowed without prompts (when require_approval is true)
+    allowed_tools:
+      - list_files
+      - read_file
+      - get_schema
+      - list_tables
+
+    # Tools that are never allowed
+    disabled_tools:
+      - delete_table
+      - drop_database
+
+    # Default action when user doesn't respond (allow, deny)
+    default_action: deny
+
+    # How long to wait for user response in seconds
+    timeout_seconds: 300
+
+# Multi-agent configuration (no-code agent deployment)
+agents:
+  agents:
+    # SQL agent for database queries
+    sql-agent:
+      name: SQL Query Agent
+      description: Executes SQL queries against PostgreSQL databases
+      backend_path: ./examples/reference/backends/postgres.yaml
+      system_prompt: |
+        You are a helpful SQL assistant. You help users write and execute SQL queries.
+        Always explain what the query does before executing it.
+      max_turns: 25
+      max_tool_executions: 50
+      enable_tracing: true
+
+    # File system agent
+    file-agent:
+      name: File System Agent
+      description: Reads and analyzes files from the file system
+      backend_path: ./examples/reference/backends/file.yaml
+      system_prompt: |
+        You are a helpful file system assistant. You can read, analyze, and summarize files.
+        Always provide clear insights about file contents.
+      max_turns: 15
+      max_tool_executions: 30
+      enable_tracing: true
+
+    # SQLite agent for local data
+    sqlite-agent:
+      name: SQLite Agent
+      description: Queries local SQLite databases
+      backend_path: ./examples/reference/backends/sqlite.yaml
+      system_prompt: |
+        You are a helpful SQLite assistant. You help users query and analyze local SQLite databases.
+        Provide clear explanations of query results.
+      max_turns: 20
+      max_tool_executions: 40
+      enable_tracing: true
+
+# MCP server configuration (optional - for Python tools)
+mcp:
+  servers:
+    # Example: Python-based data analysis tools
+    python-tools:
+      command: python3
+      args:
+        - -m
+        - mcp_server.main
+      env:
+        PYTHONPATH: ./mcp_servers/python
+      transport: stdio
+      working_dir: ./mcp_servers/python

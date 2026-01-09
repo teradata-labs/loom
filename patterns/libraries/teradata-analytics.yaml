@@ -1,0 +1,187 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-analytics
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata advanced analytics patterns for sequence analysis, sessionization, funnels, attribution, and customer insights"
+  labels:
+    vendor: teradata
+    category: analytics
+    maturity: production
+
+spec:
+  entries:
+    - name: npath
+      description: "Analyze sequences of events to find patterns over ordered data partitions (clickstream, user journeys, system logs)"
+      trigger_conditions:
+        - "user asks about sequence analysis"
+        - "user asks about user journey or path analysis"
+        - "user asks about funnel tracking"
+        - "user asks about clickstream patterns"
+        - "user asks about event sequences"
+        - "user mentions conversion paths"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/npath.yaml
+
+        Key use cases:
+        - E-commerce conversion funnel analysis
+        - User journey mapping from acquisition to conversion
+        - Abandoned cart detection and recovery
+        - Cross-sell and upsell pattern identification
+        - Clickstream behavioral analysis
+        - Churn prediction based on event sequences
+      priority: 90
+      tags:
+        - analytics
+        - sequence-analysis
+        - user-journey
+        - teradata
+        - advanced
+
+    - name: sessionize
+      description: "Group time-ordered events into sessions based on timeout periods for web analytics and user activity tracking"
+      trigger_conditions:
+        - "user asks about session tracking"
+        - "user asks about web analytics sessions"
+        - "user asks about grouping events by time"
+        - "user mentions session timeout"
+        - "user asks about user engagement metrics"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/sessionize.yaml
+
+        Key use cases:
+        - Web analytics session identification
+        - Mobile app session tracking
+        - Call center interaction grouping
+        - IoT device activity sessions
+        - Customer journey session segmentation
+      priority: 80
+      tags:
+        - analytics
+        - sessionization
+        - web-analytics
+        - teradata
+
+    - name: funnel_analysis
+      description: "Multi-step conversion funnel analysis with drop-off rates and step transitions"
+      trigger_conditions:
+        - "user asks about funnel analysis"
+        - "user asks about conversion rate"
+        - "user asks about drop-off analysis"
+        - "user mentions signup funnel"
+        - "user asks about multi-step process"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/funnel_analysis.yaml
+
+        Key use cases:
+        - Signup/registration funnel optimization
+        - Purchase funnel conversion tracking
+        - Onboarding flow analysis
+        - Multi-step form completion
+      priority: 85
+      tags:
+        - analytics
+        - funnel
+        - conversion
+        - teradata
+
+    - name: attribution
+      description: "Multi-touch attribution analysis to understand customer journey touchpoints and assign conversion credit"
+      trigger_conditions:
+        - "user asks about attribution"
+        - "user asks about touchpoint analysis"
+        - "user mentions conversion credit"
+        - "user asks about marketing attribution"
+        - "user asks about customer journey impact"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/attribution.yaml
+
+        Key attribution models:
+        - First-touch attribution
+        - Last-touch attribution
+        - Linear attribution
+        - Time-decay attribution
+        - Position-based attribution
+      priority: 75
+      tags:
+        - analytics
+        - attribution
+        - marketing
+        - teradata
+
+    - name: churn_analysis
+      description: "Customer churn prediction and analysis using behavioral patterns and engagement metrics"
+      trigger_conditions:
+        - "user asks about churn"
+        - "user asks about customer retention"
+        - "user asks about attrition analysis"
+        - "user mentions at-risk customers"
+        - "user asks about customer lifecycle"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/churn_analysis.yaml
+
+        Key use cases:
+        - Churn prediction modeling
+        - At-risk customer identification
+        - Retention campaign targeting
+        - Customer lifetime value analysis
+      priority: 80
+      tags:
+        - analytics
+        - churn
+        - retention
+        - teradata
+
+    - name: customer_health_scoring
+      description: "Calculate customer health scores based on engagement, usage, and satisfaction metrics"
+      trigger_conditions:
+        - "user asks about customer health"
+        - "user asks about engagement scoring"
+        - "user mentions customer success metrics"
+        - "user asks about account health"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/customer_health_scoring.yaml
+
+        Key metrics:
+        - Product adoption score
+        - Engagement frequency
+        - Feature usage depth
+        - Support ticket volume
+        - NPS/satisfaction scores
+      priority: 70
+      tags:
+        - analytics
+        - customer-success
+        - health-scoring
+        - teradata
+
+    - name: resource_utilization
+      description: "Analyze system resource utilization patterns (CPU, memory, storage) and capacity planning"
+      trigger_conditions:
+        - "user asks about resource utilization"
+        - "user asks about capacity planning"
+        - "user mentions system performance"
+        - "user asks about usage patterns"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/analytics/resource_utilization.yaml
+
+        Key use cases:
+        - CPU and memory usage analysis
+        - Storage capacity trending
+        - Query workload patterns
+        - Peak usage identification
+        - Capacity forecasting
+      priority: 60
+      tags:
+        - analytics
+        - performance
+        - capacity-planning
+        - teradata

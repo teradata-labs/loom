@@ -1,0 +1,344 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-data-quality
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata data quality patterns for profiling, validation, duplicate detection, and data cleansing"
+  labels:
+    vendor: teradata
+    category: data_quality
+    maturity: production
+
+spec:
+  entries:
+    - name: large_table_profiling
+      description: "Efficient data profiling for tables with millions/billions of rows using statistical sampling to avoid performance issues and truncation"
+      trigger_conditions:
+        - "user asks about profiling large tables"
+        - "user mentions million rows"
+        - "user mentions billion rows"
+        - "user asks for data quality on large dataset"
+        - "table has more than 100K rows"
+        - "user asks to analyze data on big table"
+        - "user asks about sampling strategy"
+        - "avoid scanning full table"
+      example: |
+        CRITICAL: For large tables (>100K rows), NEVER use SELECT * or full table scans.
+        Use Teradata SAMPLE clause for efficient statistical profiling.
+
+        === STEP 1: Check Table Size ===
+        -- Always check row count first to determine sampling strategy
+        SELECT COUNT(*) as total_rows
+        FROM database_name.table_name;
+
+        -- Get table statistics from DBC
+        SELECT
+          DatabaseName,
+          TableName,
+          SUM(CurrentPerm) / 1024 / 1024 / 1024 as size_gb,
+          MAX(RowCount) as approx_rows
+        FROM DBC.TableSizeV
+        WHERE DatabaseName = 'your_database'
+          AND TableName = 'your_table'
+        GROUP BY DatabaseName, TableName;
+
+        === STEP 2: Choose Sampling Method ===
+
+        **Option A: Fixed Row Sample (recommended for profiling)**
+        -- Get exactly 10,000 rows for analysis
+        SELECT *
+        FROM database_name.large_table
+        SAMPLE 10000 ROWS;
+
+        **Option B: Percentage Sample**
+        -- Get 0.1% of rows (useful for very large tables)
+        SELECT *
+        FROM database_name.large_table
+        SAMPLE 0.1 PERCENT;
+
+        **Option C: Randomized Allocation Sample (for distributed sampling)**
+        -- Get statistically representative sample across all AMPs
+        SELECT *
+        FROM database_name.large_table
+        SAMPLE RANDOMIZED ALLOCATION 5000 ROWS;
+
+        === STEP 3: Statistical Profiling on Sample ===
+
+        -- Comprehensive data quality profile on sampled data
+        SELECT
+          -- Sample metadata
+          10000 as sample_size,
+          (SELECT COUNT(*) FROM database_name.large_table) as total_rows,
+          CAST(10000.0 / (SELECT COUNT(*) FROM database_name.large_table) * 100 AS DECIMAL(5,2)) as sample_pct,
+
+          -- Column statistics (scale up from sample)
+          COUNT(*) as sampled_rows,
+          COUNT(DISTINCT customer_id) as distinct_customers,
+          CAST(COUNT(DISTINCT customer_id) * 100.0 / COUNT(*) AS DECIMAL(5,2)) as cardinality_pct,
+
+          -- NULL analysis
+          SUM(CASE WHEN customer_id IS NULL THEN 1 ELSE 0 END) as null_count,
+          CAST(SUM(CASE WHEN customer_id IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS DECIMAL(5,2)) as null_pct,
+
+          -- Numeric statistics
+          MIN(order_amount) as min_amount,
+          MAX(order_amount) as max_amount,
+          AVG(order_amount) as avg_amount,
+          STDDEV_POP(order_amount) as stddev_amount,
+
+          -- Percentiles for distribution
+          QUANTILE(0.25, order_amount) as p25_amount,
+          QUANTILE(0.50, order_amount) as median_amount,
+          QUANTILE(0.75, order_amount) as p75_amount,
+          QUANTILE(0.95, order_amount) as p95_amount
+
+        FROM (
+          SELECT *
+          FROM database_name.large_table
+          SAMPLE RANDOMIZED ALLOCATION 10000 ROWS
+        ) sampled_data;
+
+        === STEP 4: Confidence Intervals ===
+
+        -- Calculate 95% confidence interval for sample estimates
+        -- Margin of error = Z * SQRT(p * (1-p) / n)
+        -- For 95% confidence: Z = 1.96
+
+        WITH sample_stats AS (
+          SELECT
+            COUNT(*) as sample_n,
+            SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) as active_count
+          FROM (
+            SELECT * FROM database_name.large_table SAMPLE 10000 ROWS
+          ) s
+        )
+        SELECT
+          sample_n,
+          active_count,
+          CAST(active_count * 100.0 / sample_n AS DECIMAL(5,2)) as active_pct,
+          -- 95% confidence interval
+          CAST(
+            (active_count * 100.0 / sample_n) -
+            (1.96 * SQRT((active_count * 100.0 / sample_n) *
+             (100 - active_count * 100.0 / sample_n) / sample_n))
+            AS DECIMAL(5,2)
+          ) as ci_lower,
+          CAST(
+            (active_count * 100.0 / sample_n) +
+            (1.96 * SQRT((active_count * 100.0 / sample_n) *
+             (100 - active_count * 100.0 / sample_n) / sample_n))
+            AS DECIMAL(5,2)
+          ) as ci_upper
+        FROM sample_stats;
+
+        === BEST PRACTICES ===
+
+        1. **Sample Size Guidelines:**
+           - 1K-100K rows: Use full table scan
+           - 100K-1M rows: SAMPLE 10,000 ROWS
+           - 1M-10M rows: SAMPLE 50,000 ROWS or 1 PERCENT
+           - 10M-100M rows: SAMPLE 100,000 ROWS or 0.1 PERCENT
+           - 100M+ rows: SAMPLE 0.01 PERCENT or fixed 500K rows
+
+        2. **When to Use Each Sample Type:**
+           - Fixed ROWS: Consistent sample size, easier confidence intervals
+           - PERCENT: Scales with table growth automatically
+           - RANDOMIZED ALLOCATION: Most statistically representative
+
+        3. **Statistical Validity:**
+           - Minimum 1,000 rows for basic statistics
+           - Minimum 10,000 rows for percentile analysis
+           - Minimum 30,000 rows for distribution fitting
+
+        4. **Performance Tips:**
+           - SAMPLE executes BEFORE WHERE clause (super fast)
+           - Combine with WHERE for filtered samples
+           - Use RANDOMIZED ALLOCATION for multi-AMP parallelism
+
+        5. **Avoid These Mistakes:**
+           - ❌ SELECT * without SAMPLE on large tables
+           - ❌ Using LIMIT (applies AFTER full scan - slow!)
+           - ❌ TOP N (also scans full table)
+           - ✅ Use SAMPLE for true sampling
+
+        === EXAMPLE: Complete Profiling Workflow ===
+
+        -- 1. Check size
+        SELECT COUNT(*) as total_rows FROM telco_churn;
+        -- Result: 1,000,000 rows
+
+        -- 2. Profile with appropriate sample
+        SELECT
+          'telco_churn' as table_name,
+          50000 as sample_size,
+          1000000 as total_rows,
+
+          -- Customer demographics
+          COUNT(DISTINCT customer_id) as unique_customers,
+          AVG(tenure_months) as avg_tenure,
+          SUM(CASE WHEN churn = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as churn_rate_pct,
+
+          -- Service usage
+          AVG(monthly_charges) as avg_monthly_charges,
+          COUNT(CASE WHEN internet_service = 'Fiber optic' THEN 1 END) as fiber_customers,
+
+          -- Data quality
+          SUM(CASE WHEN phone_number IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as missing_phone_pct,
+          SUM(CASE WHEN email IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as missing_email_pct
+
+        FROM telco_churn
+        SAMPLE RANDOMIZED ALLOCATION 50000 ROWS;
+
+        -- 3. If patterns found, drill down with filtered samples
+        SELECT *
+        FROM telco_churn
+        SAMPLE 1000 ROWS
+        WHERE churn = 1  -- Only sample churned customers
+          AND tenure_months < 12;  -- Recent customers
+      priority: 95
+      tags:
+        - data-quality
+        - profiling
+        - sampling
+        - performance
+        - large-tables
+        - teradata
+
+    - name: data_profiling
+      description: "Comprehensive data profiling to understand column statistics, distributions, and data quality metrics"
+      trigger_conditions:
+        - "user asks about data profiling"
+        - "user asks to understand data quality"
+        - "user asks about column statistics"
+        - "user mentions data distribution"
+        - "user asks to analyze data completeness"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_quality/data_profiling.yaml
+
+        Key metrics:
+        - Row counts and distinct values
+        - NULL percentage and completeness
+        - Min/max/avg/median statistics
+        - Data type validation
+        - Cardinality analysis
+      priority: 85
+      tags:
+        - data-quality
+        - profiling
+        - statistics
+        - teradata
+
+    - name: data_validation
+      description: "Validate data against business rules, constraints, and expected formats"
+      trigger_conditions:
+        - "user asks about data validation"
+        - "user asks to check data quality rules"
+        - "user mentions constraint validation"
+        - "user asks about data consistency"
+        - "user asks to validate business rules"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_quality/data_validation.yaml
+
+        Validation types:
+        - Format validation (email, phone, ZIP)
+        - Range validation (dates, amounts)
+        - Referential integrity checks
+        - Business rule validation
+        - Cross-field validation
+      priority: 80
+      tags:
+        - data-quality
+        - validation
+        - rules
+        - teradata
+
+    - name: duplicate_detection
+      description: "Identify and handle duplicate records using exact, key-based, or fuzzy matching"
+      trigger_conditions:
+        - "user asks about duplicates"
+        - "user asks to find duplicate records"
+        - "user mentions deduplication"
+        - "user asks about record matching"
+        - "user asks to remove duplicates"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_quality/duplicate_detection.yaml
+
+        Detection methods:
+        - Exact duplicate detection (all columns)
+        - Key-based duplicates (business keys)
+        - Fuzzy matching (SOUNDEX, Levenshtein)
+        - Temporal duplicates
+
+        Deduplication strategies:
+        - Keep first/last occurrence
+        - Keep most complete record
+        - Merge duplicates
+      priority: 90
+      tags:
+        - data-quality
+        - duplicates
+        - deduplication
+        - teradata
+
+    - name: missing_value_analysis
+      description: "Analyze missing values (NULLs) and develop imputation strategies"
+      trigger_conditions:
+        - "user asks about missing values"
+        - "user asks about NULL analysis"
+        - "user mentions data completeness"
+        - "user asks to handle missing data"
+        - "user asks about imputation"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_quality/missing_value_analysis.yaml
+
+        Analysis types:
+        - NULL percentage by column
+        - Missing value patterns
+        - Correlation with other fields
+        - Impact on downstream analysis
+
+        Imputation strategies:
+        - Mean/median/mode imputation
+        - Forward/backward fill
+        - Predictive imputation
+      priority: 75
+      tags:
+        - data-quality
+        - missing-values
+        - imputation
+        - teradata
+
+    - name: outlier_detection
+      description: "Detect outliers and anomalies using statistical methods (Z-score, IQR, percentiles)"
+      trigger_conditions:
+        - "user asks about outliers"
+        - "user asks to detect anomalies"
+        - "user mentions extreme values"
+        - "user asks about data anomalies"
+        - "user asks to find unusual values"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/data_quality/outlier_detection.yaml
+
+        Detection methods:
+        - Z-score (standard deviations from mean)
+        - IQR (interquartile range)
+        - Percentile-based
+        - Modified Z-score (robust to outliers)
+
+        Use cases:
+        - Fraud detection
+        - Sensor data validation
+        - Price anomaly detection
+        - Transaction monitoring
+      priority: 70
+      tags:
+        - data-quality
+        - outliers
+        - anomaly-detection
+        - teradata

@@ -1,0 +1,467 @@
+# === METADATA START ===
+name: kmeans
+title: "K-Means Clustering"
+description: |
+  Segment data into K clusters based on similarity. K-Means is an unsupervised learning
+  algorithm that groups data points into clusters where each point belongs to the cluster
+  with the nearest centroid.
+
+  K-Means clustering is ideal for:
+  - Customer segmentation
+  - Market basket analysis grouping
+  - Anomaly detection
+  - Image compression
+  - Document clustering
+
+category: ml
+difficulty: intermediate
+teradata_function: KMeans
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Customer Segmentation ---
+  - Customer segmentation by behavior or demographics
+
+  # --- Use Case 2: Product Categorization ---
+  - Product categorization by attributes
+
+  # --- Use Case 3: Store Clustering ---
+  - Retail store clustering by performance
+
+  # --- Use Case 4: User Profiling ---
+  - User profiling for personalization
+
+  # --- Use Case 5: Geographic Segmentation ---
+  - Geographic market segmentation
+
+  # --- Use Case 6: Network Traffic ---
+  - Network traffic pattern grouping
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the data to cluster"
+    example: "customer_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain numeric features
+    required: true
+    description: "Table with features to cluster on"
+    example: "customer_features"
+
+  # --- Parameter 3: Feature Columns ---
+  - name: feature_columns
+    type: array[string]
+    # LLM-HINT: Numeric columns for clustering; will be normalized automatically
+    required: true
+    description: "Numeric columns to use for clustering (will be normalized)"
+    example: '["purchase_frequency", "avg_order_value", "recency_days", "tenure_months"]'
+
+  # --- Parameter 4: Num Clusters ---
+  - name: num_clusters
+    type: integer
+    # LLM-HINT: Number of clusters (K); start with 3-5 and use elbow method to optimize
+    required: true
+    description: "Number of clusters (K). Start with 3-5 and adjust based on business needs"
+    example: "4"
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used for tracking cluster assignments per row
+    required: true
+    description: "Unique identifier column"
+    example: "customer_id"
+
+  # --- Parameter 6: Max Iterations ---
+  - name: max_iterations
+    type: integer
+    # LLM-HINT: Convergence limit; most datasets converge within 5-15 iterations (default: 10)
+    required: false
+    default: "10"
+    description: "Maximum iterations for convergence"
+    example: "10"
+
+  # --- Parameter 7: Seed ---
+  - name: seed
+    type: integer
+    # LLM-HINT: Random seed for reproducibility; optional
+    required: false
+    description: "Random seed for reproducibility"
+    example: "42"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === ELBOW_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Use to determine optimal K; run for multiple K values (2-10) and plot WCSS
+  elbow_analysis:
+    description: "Determine optimal K by testing multiple values (elbow method)"
+    sql: |
+      -- Run K-Means for different K values to find elbow point
+      -- This helps determine optimal number of clusters
+
+      -- For K=2
+      -- NOTE: Seed is optional - only include for reproducible results
+      SELECT 2 as k_value, * FROM KMeans (
+        ON {{database}}.{{table}} AS InputTable
+        OUT TABLE OutputTable (clusters_k2)
+        USING
+          InputColumns ({{feature_columns_quoted}})
+          NumClusters (2)
+          MaxIterNum ({{max_iterations}})
+          -- Seed ({{seed}})  -- Uncomment for reproducible clustering
+      ) AS dt;
+
+      -- Repeat for K=3, 4, 5, etc.
+      -- Plot within-cluster sum of squares (WCSS) vs K
+      -- Elbow point = optimal K
+    required_parameters:
+      - database
+      - table
+      - feature_columns_quoted
+      - max_iterations
+
+  # === BASIC_CLUSTERING TEMPLATE ===
+  # LLM-HINT: Performs K-Means clustering; outputs cluster assignments and centroids
+  basic_clustering:
+    description: "Basic K-Means clustering with specified K"
+    sql: |
+      -- Perform K-Means clustering
+      -- NOTE: Seed is optional - only include for reproducible results
+      SELECT
+        {{id_column}},
+        cluster_id,
+        distance_to_centroid
+      FROM KMeans (
+        ON {{database}}.{{table}} AS InputTable
+        OUT TABLE OutputTable (cluster_assignments)
+        OUT TABLE CentroidTable (cluster_centroids)
+        USING
+          InputColumns ({{feature_columns_quoted}})
+          NumClusters ({{num_clusters}})
+          MaxIterNum ({{max_iterations}})
+          -- Seed ({{seed}})  -- Uncomment for reproducible clustering
+          IDColumn ('{{id_column}}')
+      ) AS dt
+      ORDER BY cluster_id, distance_to_centroid;
+    required_parameters:
+      - database
+      - table
+      - feature_columns_quoted
+      - num_clusters
+      - max_iterations
+      - id_column
+
+  # === CLUSTER_PROFILING TEMPLATE ===
+  # LLM-HINT: Analyzes cluster characteristics; requires cluster_assignments table from prior step
+  cluster_profiling:
+    description: "Profile clusters to understand their characteristics"
+    sql: |
+      -- Analyze cluster characteristics
+      SELECT
+        ca.cluster_id,
+        COUNT(*) as cluster_size,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as pct_of_total,
+        -- Feature averages per cluster
+        AVG(t.{{feature1}}) as avg_{{feature1}},
+        AVG(t.{{feature2}}) as avg_{{feature2}},
+        AVG(t.{{feature3}}) as avg_{{feature3}},
+        -- Feature ranges
+        MIN(t.{{feature1}}) as min_{{feature1}},
+        MAX(t.{{feature1}}) as max_{{feature1}},
+        -- Average distance to centroid (compactness)
+        AVG(ca.distance_to_centroid) as avg_distance_to_centroid
+      FROM {{database}}.cluster_assignments ca
+      JOIN {{database}}.{{table}} t
+        ON ca.{{id_column}} = t.{{id_column}}
+      GROUP BY ca.cluster_id
+      ORDER BY cluster_size DESC;
+    required_parameters:
+      - database
+      - table
+      - id_column
+
+  # === ASSIGN_NEW_DATA TEMPLATE ===
+  # LLM-HINT: Assigns new data to existing clusters using saved centroids
+  assign_new_data:
+    description: "Assign new/unseen data points to existing clusters"
+    sql: |
+      -- Score new data using trained centroids
+      SELECT
+        new_data.{{id_column}},
+        pred.cluster_id,
+        pred.distance_to_centroid
+      FROM {{database}}.{{new_table}} new_data
+      JOIN KMeansPredict (
+        ON new_data AS InputTable
+        ON cluster_centroids AS Centroids
+        USING
+          InputColumns ({{feature_columns_quoted}})
+          IDColumn ('{{id_column}}')
+          Accumulate ('{{id_column}}')
+      ) AS pred
+      ORDER BY pred.cluster_id;
+    required_parameters:
+      - database
+      - new_table
+      - id_column
+      - feature_columns_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Segmentation (RFM) ---
+  - name: "Customer Segmentation (RFM)"
+    description: "Segment customers based on Recency, Frequency, Monetary value"
+    parameters:
+      database: "ecommerce"
+      table: "customer_rfm"
+      feature_columns: ["recency_days", "purchase_frequency", "total_revenue"]
+      num_clusters: 4
+      id_column: "customer_id"
+      max_iterations: 10
+      seed: 42
+    expected_result: |
+      4 customer segments identified:
+
+      Cluster 0 (Champions - 15%): Low recency (recent buyers), high frequency, high revenue
+      Cluster 1 (Loyal - 25%): Medium recency, high frequency, medium revenue
+      Cluster 2 (At Risk - 30%): High recency (haven't bought recently), medium frequency, medium revenue
+      Cluster 3 (Lost - 30%): Very high recency, low frequency, low revenue
+
+      Use for:
+      - Targeted marketing campaigns per segment
+      - Retention strategies for "At Risk" customers
+      - VIP programs for "Champions"
+
+  # --- Example 2: Store Performance Clustering ---
+  - name: "Store Performance Clustering"
+    description: "Group retail stores by performance metrics"
+    parameters:
+      database: "retail"
+      table: "store_metrics"
+      feature_columns: ["sales_per_sqft", "traffic_count", "conversion_rate", "avg_transaction"]
+      num_clusters: 3
+      id_column: "store_id"
+      max_iterations: 10
+    expected_result: |
+      3 store clusters:
+
+      Cluster 0 (High Performers - 20 stores): High sales/sqft, high conversion
+      Cluster 1 (Average - 45 stores): Medium metrics across the board
+      Cluster 2 (Underperformers - 15 stores): Low conversion, below-average sales
+
+      Action: Analyze high performers for best practices to share with others
+
+  # --- Example 3: Product Categorization ---
+  - name: "Product Categorization"
+    description: "Auto-categorize products based on attributes"
+    parameters:
+      database: "inventory"
+      table: "product_attributes"
+      feature_columns: ["price", "weight", "dimensions", "margin_pct"]
+      num_clusters: 5
+      id_column: "product_id"
+      max_iterations: 15
+    expected_result: |
+      Products grouped into 5 natural categories:
+      - Budget items (low price, high volume)
+      - Premium products (high price, high margin)
+      - Bulky goods (high weight/dimensions)
+      - Impulse buys (low price, small size)
+      - Standard merchandise
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Feature Scaling ---
+  - error: "Features have different scales"
+    cause: "Columns have vastly different ranges (e.g., 0-1 vs 0-1000000)"
+    solution: "Normalize features before clustering. K-Means uses Euclidean distance, so scale matters. Use: (value - mean) / stddev"
+
+  # --- Error 2: Too Many Clusters ---
+  - error: "K is too large for dataset size"
+    cause: "More clusters than meaningful groupings in data"
+    solution: "Start with K=3-5. Use elbow method to find optimal K. Generally K should be much smaller than sqrt(n)"
+
+  # --- Error 3: Empty Clusters ---
+  - error: "Empty clusters"
+    cause: "K is too high or poor initialization"
+    solution: "Reduce K or change seed. If consistent, data may naturally have fewer clusters"
+
+  # --- Error 4: Convergence Issues ---
+  - error: "Clusters don't converge"
+    cause: "MaxIterNum too low or data has no clear structure"
+    solution: "Increase max_iterations to 20-50. If still doesn't converge, data may not be suitable for K-Means"
+
+  # --- Error 5: Non-Numeric Data ---
+  - error: "Non-numeric columns"
+    cause: "K-Means requires numeric features only"
+    solution: "Convert categorical variables to numeric (one-hot encoding, label encoding). Or filter to numeric columns only"
+
+  # --- Error 6: NULL Values ---
+  - error: "NULL values in features"
+    cause: "Missing data in feature columns"
+    solution: "Remove rows with NULLs or impute missing values (median, mean, or mode replacement)"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## K-Means Clustering Best Practices
+
+  ### 1. Feature Preparation
+  **Normalization is critical:**
+  ```sql
+  -- Standardize features before clustering
+  CREATE TABLE normalized_features AS
+  SELECT
+    customer_id,
+    (recency - avg_recency) / stddev_recency as recency_norm,
+    (frequency - avg_frequency) / stddev_frequency as frequency_norm,
+    (monetary - avg_monetary) / stddev_monetary as monetary_norm
+  FROM customer_rfm
+  CROSS JOIN (
+    SELECT
+      AVG(recency) as avg_recency, STDDEV_POP(recency) as stddev_recency,
+      AVG(frequency) as avg_frequency, STDDEV_POP(frequency) as stddev_frequency,
+      AVG(monetary) as avg_monetary, STDDEV_POP(monetary) as stddev_monetary
+    FROM customer_rfm
+  ) stats;
+  ```
+
+  **Handle outliers:**
+  - Extreme values heavily influence cluster centers
+  - Consider capping at 95th/99th percentile
+  - Or use robust scaling (median, IQR)
+
+  ### 2. Choosing K (Number of Clusters)
+  **Elbow Method:**
+  - Run K-Means for K = 2, 3, 4, ..., 10
+  - Plot within-cluster sum of squares (WCSS) vs K
+  - Look for "elbow" where WCSS stops decreasing rapidly
+  - That's your optimal K
+
+  **Business considerations:**
+  - Can you action on K segments? (Too many = overwhelming)
+  - Do segments make intuitive sense?
+  - 3-5 clusters often work well for business segmentation
+
+  **Silhouette analysis:**
+  - Measure how well points fit their assigned cluster
+  - Score from -1 to 1 (higher is better)
+  - Helps validate K choice
+
+  ### 3. Model Training
+  **Set a random seed:**
+  - K-Means initialization is random
+  - Use seed parameter for reproducibility
+  - Run multiple times with different seeds
+  - Choose solution with lowest WCSS
+
+  **Iteration limits:**
+  - Start with MaxIterNum = 10
+  - Increase if not converging
+  - Most datasets converge within 5-15 iterations
+
+  ### 4. Interpreting Clusters
+  **Profile each cluster:**
+  ```sql
+  -- Understand what makes each cluster unique
+  SELECT
+    cluster_id,
+    COUNT(*) as size,
+    AVG(feature1) as avg_feature1,
+    AVG(feature2) as avg_feature2,
+    STDDEV_POP(feature1) as stddev_feature1
+  FROM cluster_assignments a
+  JOIN original_data d ON a.id = d.id
+  GROUP BY cluster_id
+  ```
+
+  **Name clusters meaningfully:**
+  - Don't use "Cluster 0, 1, 2"
+  - Use business terms: "Champions", "At Risk", "Lost"
+  - Based on dominant characteristics
+
+  **Validate business relevance:**
+  - Do clusters align with business understanding?
+  - Can you explain why each cluster exists?
+  - Are they actionable?
+
+  ### 5. Cluster Validation
+  **Within-cluster compactness:**
+  - Check avg_distance_to_centroid per cluster
+  - Lower = more compact/homogeneous
+  - Very high distance = cluster may be too broad
+
+  **Between-cluster separation:**
+  - Clusters should be distinct from each other
+  - Check centroid distances
+  - Overlapping clusters = may need different K
+
+  **Stability check:**
+  - Re-run on subset of data
+  - Check if cluster assignments are stable
+  - Unstable = data may not have natural clusters
+
+  ### 6. Productionizing Clusters
+  **Save centroids:**
+  ```sql
+  -- Store centroids for scoring new data
+  CREATE TABLE production_centroids AS
+  SELECT * FROM cluster_centroids;
+  ```
+
+  **Score new customers:**
+  - Use KMeansPredict with saved centroids
+  - Apply same normalization as training data
+  - Assign to nearest cluster
+
+  **Refresh periodically:**
+  - Customer behavior changes over time
+  - Retrain monthly or quarterly
+  - Compare new vs old clusters for drift
+
+  ### 7. Common Use Cases
+  **Customer Segmentation:**
+  - Features: RFM (Recency, Frequency, Monetary)
+  - K = 4-5 segments
+  - Actions: Targeted campaigns, churn prevention
+
+  **Product Grouping:**
+  - Features: Price, margin, sales velocity
+  - K = 3-6 categories
+  - Actions: Inventory management, merchandising
+
+  **Geographic Clustering:**
+  - Features: Demographics, income, behavior
+  - K = Regional differences
+  - Actions: Store location, market strategy
+
+  ### 8. When NOT to Use K-Means
+  ❌ Non-spherical clusters (use DBSCAN instead)
+  ❌ Widely varying cluster sizes (use hierarchical clustering)
+  ❌ Mostly categorical data (use K-Modes)
+  ❌ Need hierarchical relationships (use dendrogram)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: DBSCAN ---
+  - dbscan
+
+  # --- Pattern 2: Hierarchical Clustering ---
+  - hierarchical_clustering
+
+  # --- Pattern 3: Gaussian Mixture Models ---
+  - gaussian_mixture_models
+# === RELATED_PATTERNS END ===

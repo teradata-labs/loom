@@ -1,0 +1,547 @@
+# === METADATA START ===
+name: count_optimization
+title: "COUNT Query Optimization"
+description: "Optimizes slow COUNT(*) queries using faster strategies including statistical estimates, index-only scans, and existence checks"
+category: analytics
+difficulty: intermediate
+backend_type: postgres
+priority: 75
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - "Speed up COUNT(*) on large tables (10+ million rows)"
+  - "Optimize existence checks (has any rows?)"
+  - "Use statistics for approximate counts"
+  - "Replace COUNT with faster alternatives"
+  - "Optimize pagination queries"
+  - "Speed up dashboard metrics"
+  - "Improve query performance by 10-1000x"
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: table_name
+    type: string
+    required: true
+    description: "Table to count"
+    example: "users"
+
+  - name: filter_condition
+    type: string
+    required: false
+    description: "WHERE condition for filtered counts"
+    example: "status = 'active'"
+
+  - name: schema_name
+    type: string
+    required: false
+    description: "Schema name (defaults to public)"
+    default: "public"
+    example: "public"
+
+  - name: count_type
+    type: string
+    required: false
+    description: "Type of count needed (exact, estimate, exists)"
+    default: "exact"
+    example: "estimate"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  slow_count: |
+    -- SLOW: Full table scan for exact COUNT
+    -- Problem: Scans entire table, no early termination
+
+    SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+
+    -- Why this is slow:
+    -- - Must scan all rows (or all index entries)
+    -- - No MVCC shortcut (Postgres must check visibility)
+    -- - For large tables (10M+ rows), can take seconds/minutes
+    -- - Each COUNT(*) query does full scan
+
+  fast_count_estimate: |
+    -- FAST: Use pg_class statistics for approximate count
+    -- Accuracy: Usually within 5-10% of actual count
+    -- Speed: Instant (reads from system catalog)
+
+    -- Method 1: Simple estimate (no WHERE clause)
+    SELECT reltuples::BIGINT AS estimated_count
+    FROM pg_class
+    WHERE relname = '{{.table_name}}'
+      AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{{.schema_name}}');
+
+    -- Method 2: More accurate estimate with table statistics
+    SELECT
+      schemaname,
+      relname AS table_name,
+      n_live_tup AS estimated_live_rows,
+      n_dead_tup AS estimated_dead_rows,
+      n_live_tup + n_dead_tup AS total_estimated_rows,
+      last_autovacuum,
+      last_vacuum,
+      last_analyze
+    FROM pg_stat_user_tables
+    WHERE schemaname = '{{.schema_name}}'
+      AND relname = '{{.table_name}}';
+
+    -- When to use estimates:
+    -- ✓ Dashboard displays ("~1.2M users")
+    -- ✓ Progress indicators
+    -- ✓ Approximate analytics
+    -- ✗ Financial reports (need exact counts)
+    -- ✗ Pagination (need exact counts for total pages)
+
+  fast_count_with_index: |
+    -- FASTER: Use index-only scan for filtered counts
+    -- Requires index on filtered column(s)
+
+    {{if .filter_condition}}
+    -- Original slow query
+    SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}
+    WHERE {{.filter_condition}};
+
+    -- Optimization 1: Create index on filtered column
+    CREATE INDEX IF NOT EXISTS idx_{{.table_name}}_filter
+      ON {{.schema_name}}.{{.table_name}}(filtered_column);
+
+    -- Optimization 2: For high-cardinality filters, use covering index
+    CREATE INDEX IF NOT EXISTS idx_{{.table_name}}_covering
+      ON {{.schema_name}}.{{.table_name}}(filtered_column)
+      WHERE filtered_column = 'specific_value';  -- Partial index
+
+    -- Optimization 3: For low-cardinality, use materialized view
+    CREATE MATERIALIZED VIEW status_counts AS
+    SELECT status, COUNT(*) AS count
+    FROM {{.schema_name}}.{{.table_name}}
+    GROUP BY status;
+
+    -- Then query the materialized view (instant):
+    SELECT count FROM status_counts WHERE status = '{{.filter_condition}}';
+
+    -- Refresh periodically:
+    REFRESH MATERIALIZED VIEW CONCURRENTLY status_counts;
+    {{end}}
+
+  fast_exists_check: |
+    -- FASTEST: Use EXISTS for "has any rows" check
+    -- Stops at first match (no full scan needed)
+
+    -- Bad: COUNT when you only need to know if rows exist
+    SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+    -- Returns 0 or N (but scans all matching rows)
+
+    -- Good: EXISTS stops at first match
+    SELECT EXISTS(
+      SELECT 1 FROM {{.schema_name}}.{{.table_name}}
+      {{if .filter_condition}}WHERE {{.filter_condition}}{{end}}
+      LIMIT 1
+    ) AS has_rows;
+    -- Returns true or false (stops at first match)
+
+    -- Performance difference:
+    -- COUNT on 10M row table: 3,000ms
+    -- EXISTS on 10M row table: 0.1ms (if match found early)
+
+    -- Use EXISTS when you need:
+    -- - "Are there any active users?"
+    -- - "Does this email exist?"
+    -- - "Has user placed any orders?"
+
+  pagination_optimization: |
+    -- Optimize pagination queries that need total count
+
+    -- Bad: COUNT(*) on every page load
+    SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+
+    -- Strategy 1: Cache the count (works if data changes slowly)
+    -- Store in Redis/Memcached with TTL
+    -- Refresh every N minutes
+
+    -- Strategy 2: Show approximate page count
+    SELECT reltuples::BIGINT FROM pg_class WHERE relname = '{{.table_name}}';
+    -- "Showing ~1,234 results" instead of exact count
+
+    -- Strategy 3: Cursor-based pagination (no count needed!)
+    SELECT * FROM {{.schema_name}}.{{.table_name}}
+    WHERE id > last_seen_id
+    {{if .filter_condition}}AND {{.filter_condition}}{{end}}
+    ORDER BY id
+    LIMIT 20;
+    -- No COUNT query needed at all!
+
+    -- Strategy 4: Limit pagination depth
+    -- Only show first 100 pages, beyond that show "100+"
+    SELECT COUNT(*) FROM (
+      SELECT 1 FROM {{.schema_name}}.{{.table_name}}
+      {{if .filter_condition}}WHERE {{.filter_condition}}{{end}}
+      LIMIT 2000  -- Stop counting at 100 pages × 20 per page
+    ) AS limited;
+
+  count_distinct_optimization: |
+    -- Optimize COUNT(DISTINCT column) queries
+
+    -- Slow: COUNT DISTINCT on large tables
+    SELECT COUNT(DISTINCT user_id) FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+
+    -- Fast alternative 1: Use HyperLogLog extension (approximate)
+    CREATE EXTENSION IF NOT EXISTS hll;
+
+    SELECT hll_cardinality(hll_add_agg(hll_hash_text(user_id::text)))
+    FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+    -- Approximate count, 1-2% error, much faster
+
+    -- Fast alternative 2: Precompute with materialized view
+    CREATE MATERIALIZED VIEW user_counts AS
+    SELECT
+      DATE_TRUNC('day', created_at) AS day,
+      COUNT(DISTINCT user_id) AS unique_users
+    FROM {{.schema_name}}.{{.table_name}}
+    GROUP BY DATE_TRUNC('day', created_at);
+
+    -- Fast alternative 3: Use GROUP BY instead
+    SELECT COUNT(*) FROM (
+      SELECT user_id FROM {{.schema_name}}.{{.table_name}}
+      {{if .filter_condition}}WHERE {{.filter_condition}}{{end}}
+      GROUP BY user_id
+    ) AS unique_users;
+    -- Sometimes faster with right indexes
+
+  analysis: |
+    -- Analyze COUNT query performance
+
+    -- Step 1: Check current performance
+    EXPLAIN (ANALYZE, BUFFERS)
+    SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+
+    -- Look for:
+    -- - Seq Scan (bad for large tables)
+    -- - Index Only Scan (good!)
+    -- - High execution time (> 100ms on modern hardware)
+
+    -- Step 2: Check table size
+    SELECT
+      schemaname,
+      relname,
+      n_live_tup AS estimated_rows,
+      pg_size_pretty(pg_total_relation_size(schemaname||'.'||relname)) AS total_size,
+      pg_size_pretty(pg_relation_size(schemaname||'.'||relname)) AS table_size,
+      pg_size_pretty(pg_indexes_size(schemaname||'.'||relname)) AS indexes_size
+    FROM pg_stat_user_tables
+    WHERE schemaname = '{{.schema_name}}'
+      AND relname = '{{.table_name}}';
+
+    -- If table > 1M rows, COUNT(*) will be slow
+
+    -- Step 3: Check statistics freshness
+    SELECT
+      schemaname,
+      relname,
+      last_vacuum,
+      last_autovacuum,
+      last_analyze,
+      last_autoanalyze
+    FROM pg_stat_user_tables
+    WHERE schemaname = '{{.schema_name}}'
+      AND relname = '{{.table_name}}';
+
+    -- If last_analyze is old, run ANALYZE:
+    ANALYZE {{.schema_name}}.{{.table_name}};
+
+  verification: |
+    -- Verify optimization effectiveness
+
+    -- Test 1: Compare execution times
+    \timing on
+
+    -- Original COUNT(*)
+    SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_condition}}WHERE {{.filter_condition}}{{end}};
+
+    -- Optimized approach (e.g., estimate)
+    SELECT reltuples::BIGINT FROM pg_class WHERE relname = '{{.table_name}}';
+
+    -- Test 2: Compare accuracy (estimate vs exact)
+    SELECT
+      (SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}) AS exact_count,
+      (SELECT reltuples::BIGINT FROM pg_class WHERE relname = '{{.table_name}}') AS estimated_count,
+      ABS(
+        (SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}) -
+        (SELECT reltuples::BIGINT FROM pg_class WHERE relname = '{{.table_name}}')
+      )::FLOAT /
+      NULLIF((SELECT COUNT(*) FROM {{.schema_name}}.{{.table_name}}), 0) * 100 AS percent_error;
+
+    -- Acceptable error: 5-10% for dashboards, 0% for financial reports
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Total table count (exact vs estimate)"
+    parameters:
+      table_name: "orders"
+      schema_name: "public"
+      count_type: "estimate"
+    expected_result: |
+      Slow exact count:
+      SELECT COUNT(*) FROM orders;
+      - Execution time: 3,500ms (full table scan, 10M rows)
+
+      Fast estimate:
+      SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'orders';
+      - Execution time: 0.5ms (700x faster!)
+      - Result: 10,234,567 (actual: 10,189,432, 0.4% error)
+
+      Use estimate for: dashboards, progress bars, approximations
+
+  - name: "Filtered count with index"
+    parameters:
+      table_name: "users"
+      filter_condition: "status = 'active'"
+      schema_name: "public"
+    expected_result: |
+      Without index:
+      SELECT COUNT(*) FROM users WHERE status = 'active';
+      - Execution time: 2,800ms (sequential scan)
+
+      With index:
+      CREATE INDEX idx_users_status ON users(status);
+      SELECT COUNT(*) FROM users WHERE status = 'active';
+      - Execution time: 450ms (6x faster, index scan)
+
+      With partial index (even better):
+      CREATE INDEX idx_users_active ON users(status) WHERE status = 'active';
+      - Execution time: 180ms (16x faster, smaller index)
+
+  - name: "Existence check optimization"
+    parameters:
+      table_name: "orders"
+      filter_condition: "user_id = 12345"
+      schema_name: "public"
+    expected_result: |
+      Bad (counts all matching rows):
+      SELECT COUNT(*) FROM orders WHERE user_id = 12345;
+      - Returns: 47 (but scanned all 47 orders)
+      - Execution time: 150ms
+
+      Good (stops at first match):
+      SELECT EXISTS(SELECT 1 FROM orders WHERE user_id = 12345 LIMIT 1);
+      - Returns: true
+      - Execution time: 0.3ms (500x faster!)
+      - Stopped after finding first order
+
+      Use when you only need true/false, not the actual count.
+
+  - name: "Pagination count optimization"
+    parameters:
+      table_name: "products"
+      filter_condition: "category = 'electronics'"
+      schema_name: "public"
+    expected_result: |
+      Traditional pagination (slow):
+      SELECT COUNT(*) FROM products WHERE category = 'electronics';
+      -- 1,200ms per page load
+
+      Optimization 1 - Cached count:
+      -- Cache count for 5 minutes in Redis
+      -- Query cache instead: 0.1ms
+
+      Optimization 2 - Approximate count:
+      -- Show "~45,000 results" using reltuples
+      -- 0.5ms
+
+      Optimization 3 - Cursor pagination:
+      SELECT * FROM products
+      WHERE category = 'electronics' AND id > last_id
+      ORDER BY id LIMIT 20;
+      -- No COUNT needed at all!
+
+      Optimization 4 - Limited pagination:
+      -- Only count up to 2000 rows (100 pages)
+      SELECT COUNT(*) FROM (
+        SELECT 1 FROM products WHERE category = 'electronics' LIMIT 2000
+      ) AS limited;
+      -- Show "Page 1 of 100+" if more exist
+
+  - name: "COUNT DISTINCT optimization"
+    parameters:
+      table_name: "page_views"
+      filter_condition: "page = '/home'"
+    expected_result: |
+      Slow (exact count):
+      SELECT COUNT(DISTINCT user_id) FROM page_views WHERE page = '/home';
+      - Execution time: 8,500ms (10M rows)
+
+      Fast (HyperLogLog approximate):
+      SELECT hll_cardinality(hll_add_agg(hll_hash_text(user_id::text)))
+      FROM page_views WHERE page = '/home';
+      - Execution time: 650ms (13x faster)
+      - Accuracy: 98.5% (1.5% error acceptable for analytics)
+
+      Alternative (materialized view):
+      CREATE MATERIALIZED VIEW daily_unique_visitors AS
+      SELECT page, DATE(timestamp), COUNT(DISTINCT user_id)
+      FROM page_views GROUP BY page, DATE(timestamp);
+      -- Query: 0.5ms (instant)
+      -- Refresh: every hour
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## COUNT Query Optimization Best Practices
+
+  ### 1. Do You Really Need Exact Count?
+  Before optimizing, ask:
+  - **Exact count needed?** Financial reports, billing → must be exact
+  - **Approximate OK?** Dashboards, analytics → use estimates (10-1000x faster)
+  - **Just existence?** Use EXISTS instead of COUNT → 100-1000x faster
+
+  ### 2. Use Statistical Estimates for Large Tables
+  ```sql
+  -- Instant approximate count (5-10% error)
+  SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'users';
+
+  -- More accurate estimate
+  SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'users';
+  ```
+
+  Good for:
+  - Dashboard metrics ("~1.2M users")
+  - Progress indicators
+  - Large reports where precision doesn't matter
+
+  ### 3. EXISTS Instead of COUNT for Boolean Checks
+  ```sql
+  -- Bad: Counts all rows
+  SELECT COUNT(*) FROM orders WHERE user_id = 123;  -- Returns 5 (scanned 5 rows)
+
+  -- Good: Stops at first match
+  SELECT EXISTS(SELECT 1 FROM orders WHERE user_id = 123 LIMIT 1);  -- Returns true (scanned 1 row)
+  ```
+
+  Use EXISTS when you only need:
+  - true/false result
+  - "Has any X?"
+  - Validation checks
+
+  ### 4. Index-Only Scans for Filtered Counts
+  ```sql
+  -- Create covering index for frequent counts
+  CREATE INDEX idx_orders_status ON orders(status);
+
+  -- Or partial index for specific values
+  CREATE INDEX idx_orders_pending ON orders(id) WHERE status = 'pending';
+  ```
+
+  Index-only scans are 5-10x faster than full table scans.
+
+  ### 5. Cache Counts for Slowly-Changing Data
+  ```sql
+  -- Update count every 5 minutes
+  CREATE TABLE cached_counts (
+    table_name TEXT PRIMARY KEY,
+    count_value BIGINT,
+    updated_at TIMESTAMP DEFAULT NOW()
+  );
+
+  -- Background job updates this periodically
+  INSERT INTO cached_counts VALUES ('users', (SELECT COUNT(*) FROM users), NOW())
+  ON CONFLICT (table_name) DO UPDATE SET count_value = EXCLUDED.count_value, updated_at = NOW();
+
+  -- Query cache (instant)
+  SELECT count_value FROM cached_counts WHERE table_name = 'users';
+  ```
+
+  ### 6. Materialized Views for Complex Counts
+  ```sql
+  -- Precompute counts by category
+  CREATE MATERIALIZED VIEW product_counts AS
+  SELECT category, COUNT(*) AS count
+  FROM products
+  GROUP BY category;
+
+  -- Refresh periodically (e.g., hourly)
+  REFRESH MATERIALIZED VIEW CONCURRENTLY product_counts;
+
+  -- Query: instant!
+  SELECT count FROM product_counts WHERE category = 'electronics';
+  ```
+
+  ### 7. Cursor Pagination Instead of OFFSET
+  ```sql
+  -- Bad: COUNT(*) + OFFSET
+  SELECT COUNT(*) FROM products;  -- Slow!
+  SELECT * FROM products ORDER BY id LIMIT 20 OFFSET 1000;  -- Slow!
+
+  -- Good: Cursor-based pagination (no COUNT needed)
+  SELECT * FROM products WHERE id > last_id ORDER BY id LIMIT 20;
+  -- Blazing fast, no COUNT query!
+  ```
+
+  ### 8. Limit Pagination Depth
+  ```sql
+  -- Don't count beyond page 100
+  SELECT COUNT(*) FROM (
+    SELECT 1 FROM products WHERE category = 'electronics'
+    LIMIT 2000  -- 100 pages × 20 per page
+  ) AS limited;
+
+  -- Show "Page 1 of 100+" instead of exact page count
+  ```
+
+  ### 9. HyperLogLog for COUNT DISTINCT
+  ```sql
+  -- Install extension
+  CREATE EXTENSION hll;
+
+  -- Approximate distinct count (1-2% error, 10x faster)
+  SELECT hll_cardinality(hll_add_agg(hll_hash_integer(user_id)))
+  FROM events
+  WHERE event_date >= '2024-01-01';
+  ```
+
+  Perfect for analytics where exact uniqueness isn't critical.
+
+  ### 10. Keep Statistics Updated
+  ```sql
+  -- Run ANALYZE regularly (or enable autovacuum)
+  ANALYZE users;
+
+  -- Check when last analyzed
+  SELECT schemaname, relname, last_analyze, last_autoanalyze
+  FROM pg_stat_user_tables
+  WHERE relname = 'users';
+  ```
+
+  Stale statistics → inaccurate estimates → poor query plans.
+
+  ### 11. Memory Layers for Count Optimization
+  - **Kernel Layer**: Cache table row estimates and statistics metadata for quick lookups during count analysis
+  - **L1 Cache**: Keep recent COUNT query plans (last 8-10) showing execution times and optimization strategies applied
+  - **L2 Compressed**: Archive count optimization patterns (estimate vs exact trade-offs) from earlier in conversation
+  - **Swap Layer**: Store complete count optimization history across sessions; use recall_conversation to reference similar table size and cardinality patterns from previous projects
+  This enables quickly recognizing when to use estimates vs exact counts based on historical performance data.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - sequential_scan_detection
+  - missing_index_analysis
+  - query_rewrite
+  - distinct_elimination
+# === RELATED_PATTERNS END ===
+
+validation:
+  rules:
+    - "Accuracy vs speed tradeoff is appropriate for use case"
+    - "Statistics are up to date (run ANALYZE if needed)"
+    - "Index-only scan possible with covering index"
+    - "EXISTS used when only boolean result needed"
+    - "Cached counts have acceptable staleness"

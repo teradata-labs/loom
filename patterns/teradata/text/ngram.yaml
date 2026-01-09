@@ -1,0 +1,205 @@
+# === METADATA START ===
+name: ngram
+title: "N-Gram Text Analysis"
+description: |
+  Extract and analyze n-grams (sequences of n words) from text data. N-grams are
+  fundamental building blocks for text analytics, revealing common phrases, patterns,
+  and associations in text corpora.
+
+  N-gram types:
+  - Unigrams (1-gram): Individual words
+  - Bigrams (2-gram): Two-word phrases
+  - Trigrams (3-gram): Three-word phrases
+  - Higher-order: 4+ word sequences
+
+category: text
+difficulty: beginner
+teradata_function: NGramSplitter
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Review Analysis ---
+  - Phrase extraction from reviews
+
+  # --- Use Case 2: Keyword Discovery ---
+  - Keyword discovery
+
+  # --- Use Case 3: Text Patterns ---
+  - Text pattern analysis
+
+  # --- Use Case 4: Content Categorization ---
+  - Content categorization
+
+  # --- Use Case 5: Query Analysis ---
+  - Search query analysis
+
+  # --- Use Case 6: Topic Modeling ---
+  - Topic modeling preparation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing text data"
+    example: "customer_feedback"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table with text column"
+    example: "product_reviews"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column with text to tokenize; NGramSplitter extracts phrases from this
+    required: true
+    description: "Column containing text to analyze"
+    example: "review_text"
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used for grouping and tracking n-grams per document
+    required: true
+    description: "Unique identifier column"
+    example: "review_id"
+
+  # --- Parameter 5: N-gram Size ---
+  - name: n_value
+    type: integer
+    # LLM-HINT: N-gram order (1=words, 2=phrases, 3=longer phrases); start with 2 for most use cases
+    required: true
+    description: "N-gram size (1=unigram, 2=bigram, 3=trigram)"
+    example: "2"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === EXTRACT_NGRAMS TEMPLATE ===
+  # LLM-HINT: Use for per-document n-gram extraction; returns all n-grams with frequencies
+  extract_ngrams:
+    description: "Extract n-grams from text"
+    sql: |
+      -- Extract {{n_value}}-grams from text
+      SELECT
+        {{id_column}},
+        ngram,
+        frequency
+      FROM NGramSplitter (
+        ON {{database}}.{{table}}
+        USING
+          TextColumn ('{{text_column}}')
+          Grams ({{n_value}})
+          ToLowerCase ('true')
+          Accumulate ('{{id_column}}')
+      ) AS dt
+      ORDER BY {{id_column}}, frequency DESC;
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - n_value
+
+  # === TOP_NGRAMS TEMPLATE ===
+  # LLM-HINT: Use for corpus-wide most frequent phrases; groups by n-gram across all documents
+  top_ngrams:
+    description: "Find most common n-grams across all documents"
+    sql: |
+      -- Top {{n_value}}-grams by frequency
+      WITH ngrams AS (
+        SELECT
+          ngram,
+          COUNT(*) as document_count,
+          SUM(frequency) as total_frequency
+        FROM NGramSplitter (
+          ON {{database}}.{{table}}
+          USING
+            TextColumn ('{{text_column}}')
+            Grams ({{n_value}})
+            ToLowerCase ('true')
+        ) AS dt
+        GROUP BY ngram
+      )
+      SELECT
+        ngram,
+        document_count,
+        total_frequency,
+        CAST(document_count * 100.0 /
+          (SELECT COUNT(DISTINCT {{id_column}}) FROM {{database}}.{{table}}) AS DECIMAL(5,2))
+          as pct_of_documents
+      FROM ngrams
+      ORDER BY total_frequency DESC
+      LIMIT 100;
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - n_value
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Product Review Analysis"
+    description: "Extract common bigrams from product reviews"
+    parameters:
+      database: "ecommerce"
+      table: "product_reviews"
+      text_column: "review_text"
+      id_column: "review_id"
+      n_value: 2
+    expected_result: |
+      Top bigrams:
+      - "great product" (5,432 occurrences)
+      - "highly recommend" (3,210)
+      - "easy use" (2,890)
+      - "fast shipping" (2,105)
+
+      Reveals customer satisfaction themes.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Memory issues with large text"
+    cause: "Processing very long documents"
+    solution: "Filter to shorter text or process in batches"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## N-Gram Best Practices
+
+  ### 1. Start with Bigrams
+  - Most informative for phrase discovery
+  - Unigrams too atomic, trigrams too sparse
+
+  ### 2. Preprocessing
+  - Convert to lowercase
+  - Remove stop words
+  - Handle punctuation
+
+  ### 3. Filter by Frequency
+  - Remove rare n-grams (appear <5 times)
+  - Focus on common patterns
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: TF-IDF ---
+  - tf_idf
+
+  # --- Pattern 2: Sentiment Analysis ---
+  - sentiment_analysis
+
+  # --- Pattern 3: Text Mining ---
+  - text_mining
+# === RELATED_PATTERNS END ===

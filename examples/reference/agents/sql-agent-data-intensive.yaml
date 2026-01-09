@@ -1,0 +1,33 @@
+# SQL Agent with Data Intensive Compression Profile
+#
+# This configuration is optimized for SQL agents that handle large query results.
+# The data_intensive profile aggressively compresses conversation history to
+# keep token usage low while preserving query context.
+#
+# Use cases:
+# - Teradata SQL agents with multi-MB result sets
+# - Data analysis agents processing tables/reports
+# - Agents handling large file uploads or documents
+
+agent:
+  name: sql-agent-data-intensive
+  description: SQL agent optimized for large result sets with aggressive compression
+
+  # No LLM specification - inherits from server defaults
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: data_intensive
+
+  # ROM (Read-Only Memory) - Database-specific SQL syntax guidance
+  # For Teradata agents, use "TD" to load 31KB of Teradata SQL documentation
+  # For auto-detection based on backend configuration, use "auto"
+  # Example for Teradata:
+  # rom: "TD"
+
+# Example Hawk Metrics for Data Intensive Profile:
+# memory.compression.events{profile="data_intensive",batch_size="warning"} ~15/conversation
+# memory.compression.tokens_saved{profile="data_intensive"} ~50-70% per compression
+# memory.compression.budget_pct{profile="data_intensive"} 50-75% at compression time

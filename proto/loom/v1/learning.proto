@@ -1,0 +1,545 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+import "loom/v1/judge.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// LearningAgentService provides autonomous self-improvement capabilities.
+// This service monitors runtime pattern performance across all agents,
+// generates improvement proposals, and applies changes with safety mechanisms.
+service LearningAgentService {
+  // AnalyzePatternEffectiveness analyzes runtime pattern performance across agents
+  rpc AnalyzePatternEffectiveness(AnalyzePatternEffectivenessRequest) returns (PatternAnalysisResponse);
+
+  // GenerateImprovements generates improvement proposals based on pattern analysis
+  rpc GenerateImprovements(GenerateImprovementsRequest) returns (ImprovementsResponse);
+
+  // ApplyImprovement applies an improvement proposal (respects autonomy level)
+  rpc ApplyImprovement(ApplyImprovementRequest) returns (ApplyImprovementResponse);
+
+  // RollbackImprovement rolls back a failed improvement
+  rpc RollbackImprovement(RollbackImprovementRequest) returns (RollbackImprovementResponse);
+
+  // GetImprovementHistory retrieves improvement history for an agent or domain
+  rpc GetImprovementHistory(GetImprovementHistoryRequest) returns (ImprovementHistoryResponse);
+
+  // StreamPatternMetrics streams real-time pattern effectiveness metrics
+  rpc StreamPatternMetrics(StreamPatternMetricsRequest) returns (stream PatternMetricEvent);
+
+  // TunePatterns automatically adjusts pattern parameters based on effectiveness analysis
+  rpc TunePatterns(TunePatternsRequest) returns (TunePatternsResponse);
+}
+
+// ============================================================================
+// Pattern Effectiveness Analysis
+// ============================================================================
+
+// AnalyzePatternEffectivenessRequest requests pattern performance analysis
+message AnalyzePatternEffectivenessRequest {
+  string domain = 1; // sql, rest, file, document, etc.
+  string agent_id = 2; // Optional: specific agent or empty for all
+  int64 window_hours = 3; // Time window for analysis (default: 24)
+}
+
+// PatternAnalysisResponse contains pattern performance analysis
+message PatternAnalysisResponse {
+  repeated PatternMetric patterns = 1;
+  PatternAnalysisSummary summary = 2;
+}
+
+// PatternMetric represents runtime performance metrics for a pattern
+message PatternMetric {
+  string pattern_name = 1;
+  string domain = 2;
+  int32 total_usages = 3;
+  int32 success_count = 4;
+  int32 failure_count = 5;
+  double success_rate = 6;
+  double avg_cost_usd = 7;
+  int64 avg_latency_ms = 8;
+  double confidence = 9;
+  PatternRecommendation recommendation = 10;
+  map<string, int32> error_types = 11;
+  string llm_provider = 12;
+  string llm_model = 13;
+  string variant = 14; // A/B testing variant (default, control, treatment, etc.)
+
+  // Judge evaluation metrics (from multi-judge evaluation)
+  double judge_pass_rate = 15; // Percentage that passed judges (0-1)
+  double judge_avg_score = 16; // Average score across evaluations (0-100)
+  map<string, double> judge_criterion_scores = 17; // "safety" -> 0.92, "cost" -> 0.85, etc.
+}
+
+// PatternRecommendation suggests action for a pattern
+enum PatternRecommendation {
+  PATTERN_RECOMMENDATION_UNSPECIFIED = 0;
+  PATTERN_KEEP = 1; // Pattern performing well
+  PATTERN_PROMOTE = 2; // High success rate, use more
+  PATTERN_DEMOTE = 3; // Moderate issues, use less
+  PATTERN_REMOVE = 4; // Low success rate, deprecate
+  PATTERN_INVESTIGATE = 5; // Insufficient data or inconsistent
+}
+
+// PatternAnalysisSummary provides aggregate statistics
+message PatternAnalysisSummary {
+  int32 total_patterns_analyzed = 1;
+  double overall_success_rate = 2;
+  double total_cost_usd = 3;
+  int32 patterns_to_promote = 4;
+  int32 patterns_to_deprecate = 5;
+  int64 analysis_window_hours = 6;
+}
+
+// ============================================================================
+// Improvement Generation
+// ============================================================================
+
+// GenerateImprovementsRequest requests improvement proposals
+message GenerateImprovementsRequest {
+  string domain = 1;
+  string agent_id = 2; // Optional: specific agent
+  OptimizationGoal optimization_goal = 3;
+  int32 max_proposals = 4; // Default: 10
+}
+
+// OptimizationGoal defines what to optimize for
+message OptimizationGoal {
+  // Legacy weights (for patterns without judge scores)
+  double cost_weight = 1; // 0.0-1.0
+  double quality_weight = 2; // 0.0-1.0
+  double latency_weight = 3; // 0.0-1.0 (calculated if not set)
+
+  // Judge dimension weights (preferred - uses multi-dimensional judge scores)
+  // Dimension names: "quality", "safety", "cost", "domain", "performance", "usability"
+  // If set, these override legacy weights for patterns with judge scores
+  map<string, double> dimension_weights = 4;
+}
+
+// ImprovementsResponse contains improvement proposals
+message ImprovementsResponse {
+  repeated Improvement improvements = 1;
+  int32 total_proposed = 2;
+}
+
+// Improvement represents a proposed change
+message Improvement {
+  string id = 1; // UUID
+  ImprovementType type = 2;
+  string description = 3;
+  double confidence = 4;
+  ImpactLevel impact = 5;
+  string target_agent_id = 6;
+  string target_pattern = 7;
+  string domain = 8;
+  ImprovementDetails details = 9;
+  ImprovementStatus status = 10;
+  int64 created_at = 11;
+  int64 applied_at = 12;
+  string applied_by = 13; // "learning-agent" or "human:{user_id}"
+}
+
+// ImprovementType defines the kind of improvement
+enum ImprovementType {
+  IMPROVEMENT_TYPE_UNSPECIFIED = 0;
+  IMPROVEMENT_PATTERN_ADD = 1; // Add new pattern usage
+  IMPROVEMENT_PATTERN_REMOVE = 2; // Deprecate failing pattern
+  IMPROVEMENT_PARAMETER_TUNE = 3; // Adjust LLM parameters
+  IMPROVEMENT_TEMPLATE_ADJUST = 4; // Modify prompt template
+  IMPROVEMENT_CONFIG_ADJUST = 5; // Update agent configuration
+}
+
+// ImpactLevel categorizes change significance
+enum ImpactLevel {
+  IMPACT_LEVEL_UNSPECIFIED = 0;
+  IMPACT_LOW = 1; // Minor optimization
+  IMPACT_MEDIUM = 2; // Moderate improvement
+  IMPACT_HIGH = 3; // Major enhancement
+  IMPACT_CRITICAL = 4; // Breaking change or major fix
+}
+
+// ImprovementDetails contains implementation specifics
+message ImprovementDetails {
+  repeated PatternChange pattern_changes = 1;
+  double expected_success_rate_delta = 2;
+  double expected_cost_delta_usd = 3;
+  int64 expected_latency_delta_ms = 4;
+  string rationale = 5;
+}
+
+// PatternChange describes a specific modification
+message PatternChange {
+  string field_path = 1; // YAML path: "templates.default.content"
+  string current_value = 2;
+  string proposed_value = 3;
+  string rationale = 4;
+}
+
+// ImprovementStatus tracks lifecycle
+enum ImprovementStatus {
+  IMPROVEMENT_STATUS_UNSPECIFIED = 0;
+  IMPROVEMENT_PENDING = 1; // Awaiting approval
+  IMPROVEMENT_APPROVED = 2; // Approved, not yet applied
+  IMPROVEMENT_APPLYING = 3; // Currently being applied
+  IMPROVEMENT_APPLIED = 4; // Successfully applied
+  IMPROVEMENT_CANARY_TESTING = 5; // Under canary test
+  IMPROVEMENT_ROLLED_BACK = 6; // Rolled back due to failure
+  IMPROVEMENT_REJECTED = 7; // Rejected by human or validation
+}
+
+// ============================================================================
+// Improvement Application
+// ============================================================================
+
+// ApplyImprovementRequest requests improvement application
+message ApplyImprovementRequest {
+  string improvement_id = 1;
+  bool force = 2; // Override autonomy level (requires admin)
+}
+
+// ApplyImprovementResponse confirms application
+message ApplyImprovementResponse {
+  bool success = 1;
+  string message = 2;
+  Improvement improvement = 3;
+  CanaryTest canary_test = 4; // Present if autonomy level 2
+}
+
+// CanaryTest represents a simple 10% canary deployment
+message CanaryTest {
+  string test_id = 1;
+  string pattern_name = 2;
+  string control_version = 3;
+  string treatment_version = 4;
+  double traffic_percentage = 5; // 0.10 for 10%
+  int64 duration_seconds = 6; // 1800 for 30 min
+  int64 start_time = 7;
+  CanaryTestStatus status = 8;
+  CanaryTestResult result = 9;
+}
+
+// CanaryTestStatus tracks test lifecycle
+enum CanaryTestStatus {
+  CANARY_TEST_STATUS_UNSPECIFIED = 0;
+  CANARY_RUNNING = 1;
+  CANARY_COMPLETED = 2;
+  CANARY_FAILED = 3;
+}
+
+// CanaryTestResult contains test outcome
+message CanaryTestResult {
+  PatternMetric control_metrics = 1;
+  PatternMetric treatment_metrics = 2;
+  double relative_improvement = 3;
+  double statistical_significance = 4; // p-value
+  bool should_promote = 5;
+  bool should_rollback = 6;
+  string recommendation = 7;
+}
+
+// ============================================================================
+// Rollback
+// ============================================================================
+
+// RollbackImprovementRequest requests rollback
+message RollbackImprovementRequest {
+  string improvement_id = 1;
+  string reason = 2;
+}
+
+// RollbackImprovementResponse confirms rollback
+message RollbackImprovementResponse {
+  bool success = 1;
+  string message = 2;
+  string restored_version = 3;
+  int64 rollback_completed_at = 4;
+}
+
+// ============================================================================
+// History
+// ============================================================================
+
+// GetImprovementHistoryRequest queries improvement history
+message GetImprovementHistoryRequest {
+  string agent_id = 1; // Optional: filter by agent
+  string domain = 2; // Optional: filter by domain
+  int32 limit = 3; // Default: 50
+  int32 offset = 4; // Default: 0
+  ImprovementStatus status = 5; // Optional: filter by status
+}
+
+// ImprovementHistoryResponse returns history records
+message ImprovementHistoryResponse {
+  repeated Improvement improvements = 1;
+  int32 total_count = 2;
+  ImprovementHistorySummary summary = 3;
+}
+
+// ImprovementHistorySummary provides aggregate stats
+message ImprovementHistorySummary {
+  int32 total_applied = 1;
+  int32 total_rolled_back = 2;
+  int32 total_pending = 3;
+  double avg_success_rate_improvement = 4;
+  double total_cost_savings_usd = 5;
+}
+
+// ============================================================================
+// Streaming Metrics
+// ============================================================================
+
+// StreamPatternMetricsRequest requests real-time metrics
+message StreamPatternMetricsRequest {
+  string domain = 1;
+  string agent_id = 2; // Optional
+  int32 batch_size = 3; // Events per batch (default: 10)
+}
+
+// PatternMetricEvent is a streaming event
+message PatternMetricEvent {
+  int64 timestamp = 1;
+  PatternMetric metric = 2;
+  PatternMetricEventType event_type = 3;
+}
+
+// PatternMetricEventType categorizes events
+enum PatternMetricEventType {
+  PATTERN_METRIC_EVENT_TYPE_UNSPECIFIED = 0;
+  METRIC_UPDATE = 1; // Regular metric update
+  THRESHOLD_EXCEEDED = 2; // Success rate threshold crossed
+  ANOMALY_DETECTED = 3; // Unusual behavior detected
+}
+
+// ============================================================================
+// Automated Pattern Tuning
+// ============================================================================
+
+// TunePatternsRequest requests automated pattern parameter tuning
+message TunePatternsRequest {
+  string domain = 1; // sql, rest, file, etc.
+  string agent_id = 2; // Optional: specific agent
+  OptimizationGoal optimization_goal = 3;
+  TuningStrategy strategy = 4; // How aggressive to tune
+  bool dry_run = 5; // If true, returns proposed changes without applying
+  string pattern_library_path = 6; // Path to pattern library YAML files
+
+  // Phase 6: Multi-dimensional tuning (judge integration)
+  repeated JudgeDimension target_dimensions = 10; // Optimize for specific dimensions
+  map<string, double> dimension_weights = 11; // Dimension weights for optimization (e.g., {"quality": 0.7, "cost": 0.3})
+}
+
+// TuningStrategy controls how aggressively to adjust patterns
+enum TuningStrategy {
+  TUNING_STRATEGY_UNSPECIFIED = 0;
+  TUNING_CONSERVATIVE = 1; // Small priority adjustments (±5)
+  TUNING_MODERATE = 2; // Medium adjustments (±10-15)
+  TUNING_AGGRESSIVE = 3; // Large adjustments (±20-30)
+}
+
+// TunePatternsResponse contains tuning results
+message TunePatternsResponse {
+  repeated PatternTuning tunings = 1;
+  TuningSummary summary = 2;
+  bool applied = 3; // False if dry_run=true
+}
+
+// PatternTuning represents adjustments made to a single pattern
+message PatternTuning {
+  string pattern_name = 1;
+  string domain = 2;
+  repeated ParameterAdjustment adjustments = 3;
+  PatternMetric before_metrics = 4;
+  PatternMetric projected_metrics = 5; // Estimated after tuning
+  string rationale = 6;
+  TuningConfidence confidence = 7;
+}
+
+// ParameterAdjustment describes a specific parameter change
+message ParameterAdjustment {
+  string parameter_name = 1; // e.g., "priority", "threshold"
+  string old_value = 2;
+  string new_value = 3;
+  string reason = 4;
+}
+
+// TuningConfidence indicates certainty of tuning decision
+enum TuningConfidence {
+  TUNING_CONFIDENCE_UNSPECIFIED = 0;
+  TUNING_LOW = 1; // Insufficient data (<50 samples)
+  TUNING_MEDIUM = 2; // Moderate data (50-200 samples)
+  TUNING_HIGH = 3; // Strong data (>200 samples)
+}
+
+// TuningSummary provides aggregate tuning statistics
+message TuningSummary {
+  int32 patterns_analyzed = 1;
+  int32 patterns_tuned = 2;
+  int32 patterns_promoted = 3; // Priority increased
+  int32 patterns_demoted = 4; // Priority decreased
+  int32 patterns_unchanged = 5; // Already optimal
+  double estimated_success_rate_improvement = 6;
+  double estimated_cost_reduction_usd = 7;
+  int64 estimated_latency_reduction_ms = 8;
+}
+
+// ============================================================================
+// Declarative Learning Agent Configuration
+// ============================================================================
+
+// LearningAgentConfig defines declarative configuration for the learning agent.
+// This enables full YAML-based configuration without server flags, supporting
+// the "everything is YAML" declarative model consistent with agents, workflows,
+// and eval suites.
+//
+// Example YAML:
+//   apiVersion: loom/v1
+//   kind: LearningAgentConfig
+//   metadata:
+//     name: market-intel-learner
+//   spec:
+//     enabled: true
+//     autonomy_level: AUTONOMY_HUMAN_APPROVAL
+//     analysis_interval: "1h"
+//     watch_eval_suites:
+//       - eval-suites/market-intel-judges.yaml
+message LearningAgentConfig {
+  // Unique name for this learning agent configuration
+  string name = 1;
+
+  // Human-readable description
+  string description = 2;
+
+  // Whether learning agent is enabled (default: true)
+  bool enabled = 3;
+
+  // Autonomy level controlling how improvements are applied
+  AutonomyLevel autonomy_level = 4;
+
+  // How often to analyze judge results (e.g., "1h", "30m", "15m")
+  // Default: "1h"
+  string analysis_interval = 5;
+
+  // Eval suites to monitor for judge feedback
+  // Paths relative to config directory or absolute
+  repeated string watch_eval_suites = 6;
+
+  // Domains this learning agent covers (e.g., "sql", "market-intelligence")
+  // Empty means all domains
+  repeated string domains = 7;
+
+  // Circuit breaker configuration to prevent runaway improvements
+  LearningCircuitBreakerConfig circuit_breaker = 8;
+
+  // Rules for applying improvements
+  ImprovementPolicy improvement_policy = 9;
+
+  // Notification configuration for improvement events
+  NotificationConfig notifications = 10;
+
+  // Optional metadata (author, version, tags, etc.)
+  map<string, string> metadata = 11;
+}
+
+// AutonomyLevel defines how autonomous the learning agent is
+enum AutonomyLevel {
+  AUTONOMY_LEVEL_UNSPECIFIED = 0;
+
+  // Manual: requires human approval for all improvements
+  // Improvements are generated and stored but never auto-applied
+  AUTONOMY_MANUAL = 1;
+
+  // Human Approval: improvements are queued for human approval
+  // Notifications are sent, and humans can approve/reject via CLI or API
+  AUTONOMY_HUMAN_APPROVAL = 2;
+
+  // Full: improvements are applied automatically (with circuit breaker)
+  // Use with caution - enable circuit breaker and set protected_agents
+  AUTONOMY_FULL = 3;
+}
+
+// LearningCircuitBreakerConfig prevents runaway improvements
+message LearningCircuitBreakerConfig {
+  // Whether circuit breaker is enabled (default: true)
+  bool enabled = 1;
+
+  // Number of consecutive failures before opening circuit (default: 5)
+  int32 failure_threshold = 2;
+
+  // Time to wait before retrying after circuit opens (e.g., "30m", "1h")
+  // Default: "30m"
+  string cooldown_period = 3;
+
+  // Number of successful improvements to close circuit (default: 3)
+  int32 success_threshold = 4;
+}
+
+// ImprovementPolicy defines rules for applying improvements
+message ImprovementPolicy {
+  // Minimum confidence to auto-apply (only if autonomy_level = AUTONOMY_FULL)
+  // Range: 0.0-1.0, default: 0.8
+  double auto_apply_min_confidence = 1;
+
+  // Maximum improvements to apply per day (default: 10)
+  int32 max_daily_changes = 2;
+
+  // These agents always require human approval regardless of autonomy level
+  // Use for critical agents that should never be auto-modified
+  repeated string protected_agents = 3;
+
+  // Allowed improvement types
+  // If empty, all types are allowed
+  // Values: "prompt_append", "prompt_replace", "tool_add", "source_add",
+  //         "parameter_tune", "pattern_add", "pattern_remove"
+  repeated string allowed_change_types = 4;
+
+  // Maximum impact level for auto-apply (only if autonomy_level = AUTONOMY_FULL)
+  // Improvements above this level always require human approval
+  // Default: IMPACT_MEDIUM
+  ImpactLevel max_auto_apply_impact = 5;
+}
+
+// NotificationConfig defines how to notify about improvement events
+message NotificationConfig {
+  // Slack webhook URL for notifications
+  string slack_webhook = 1;
+
+  // Email addresses for notifications
+  repeated string email_addresses = 2;
+
+  // Which events to notify on
+  // Values: "improvement_generated", "improvement_applied", "improvement_rejected",
+  //         "improvement_failed", "circuit_breaker_open", "circuit_breaker_closed"
+  repeated string notify_on = 3;
+
+  // Include detailed improvement info in notifications (default: true)
+  bool include_details = 4;
+}
+
+// LoadLearningAgentConfigRequest loads a learning agent config from file
+message LoadLearningAgentConfigRequest {
+  // Path to YAML config file
+  string config_path = 1;
+}
+
+// LoadLearningAgentConfigResponse returns the loaded config
+message LoadLearningAgentConfigResponse {
+  // Loaded configuration
+  LearningAgentConfig config = 1;
+
+  // Validation warnings (non-fatal issues)
+  repeated string warnings = 2;
+}

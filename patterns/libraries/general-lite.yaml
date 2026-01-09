@@ -1,0 +1,80 @@
+# General Purpose Lite - Optimized for Small Models
+# Essential patterns for common coding, debugging, and text processing tasks
+# Ultra-concise for minimal token consumption (~50 lines total)
+
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: general-lite
+  version: 1.0.0
+  domain: general
+  description: "Essential general-purpose patterns for small models - code, debug, text"
+  labels:
+    vendor: standard
+    category: general
+    maturity: production
+    optimization: small-models
+
+spec:
+  entries:
+    # Code Patterns
+    - name: code_review
+      description: "Review for bugs, security issues, performance, readability"
+      trigger_conditions:
+        - "review code"
+        - "check code"
+      example: "Look for: error handling, edge cases, resource leaks, type safety"
+      priority: 90
+      tags: [code, review]
+
+    - name: debug_error
+      description: "Analyze errors: read stack trace, identify root cause, suggest fix"
+      trigger_conditions:
+        - "debug"
+        - "error"
+        - "exception"
+      example: "1. Find error line, 2. Check inputs/state, 3. Identify cause, 4. Propose fix"
+      priority: 85
+      tags: [code, debugging]
+
+    - name: refactor
+      description: "Improve code: extract functions, remove duplication, simplify logic"
+      trigger_conditions:
+        - "refactor"
+        - "improve code"
+        - "clean up"
+      example: "Extract repeated code, use descriptive names, reduce nesting"
+      priority: 75
+      tags: [code, refactor]
+
+    # Text Patterns
+    - name: summarize
+      description: "Extract key points: main ideas, conclusions, action items"
+      trigger_conditions:
+        - "summarize"
+        - "tldr"
+        - "key points"
+      example: "Identify: purpose, main points (3-5), conclusion"
+      priority: 80
+      tags: [text, summary]
+
+    - name: extract_info
+      description: "Extract structured data: names, dates, numbers, entities"
+      trigger_conditions:
+        - "extract"
+        - "find"
+        - "list all"
+      example: "Parse text for: entities, values, relationships, patterns"
+      priority: 70
+      tags: [text, extraction]
+
+    # Documentation
+    - name: explain_code
+      description: "Document code: purpose, parameters, return values, examples"
+      trigger_conditions:
+        - "explain"
+        - "document"
+        - "how does this work"
+      example: "Describe: what it does, inputs/outputs, key logic, edge cases"
+      priority: 75
+      tags: [code, documentation]

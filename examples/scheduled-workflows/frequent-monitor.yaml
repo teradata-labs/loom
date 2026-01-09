@@ -1,0 +1,61 @@
+# Frequent System Monitoring Workflow
+# Executes every 5 minutes to monitor system health
+# Quick execution with short timeout
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: system-health-monitor
+  description: Monitor critical system metrics every 5 minutes
+
+spec:
+  type: pipeline
+  pipeline:
+    initial_prompt: "Check system health metrics and alert on anomalies"
+    stages:
+      - agent_id: metrics-collector
+        prompt: |
+          Collect current system metrics:
+          - CPU usage
+          - Memory usage
+          - Disk I/O
+          - Network throughput
+          - Database connection pool
+          - API response times
+
+      - agent_id: anomaly-detector
+        prompt: |
+          Analyze metrics for anomalies:
+          - Compare against baseline
+          - Check for threshold violations
+          - Detect unusual patterns
+
+      - agent_id: alerting
+        prompt: |
+          If anomalies detected:
+          - Send alerts to on-call engineer
+          - Create incident ticket
+          - Log to monitoring dashboard
+
+# Schedule Configuration
+schedule:
+  # Execute every 5 minutes
+  # "*/5 * * * *" = Every 5 minutes
+  cron: "*/5 * * * *"
+
+  timezone: "UTC"
+
+  enabled: true
+
+  # Skip if previous check is still running
+  # Monitoring should be quick - if it's taking too long, that's an issue itself
+  skip_if_running: true
+
+  # Short timeout - monitoring should complete in under 2 minutes
+  max_execution_seconds: 120
+
+  variables:
+    alert_threshold_cpu: "80"
+    alert_threshold_memory: "85"
+    alert_threshold_disk: "90"
+    alert_channel: "pagerduty"

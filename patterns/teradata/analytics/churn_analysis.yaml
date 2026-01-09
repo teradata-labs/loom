@@ -1,0 +1,520 @@
+# === METADATA START ===
+name: churn_analysis
+title: "Customer Churn Analysis and Prediction"
+description: |
+  Comprehensive customer churn analysis to identify at-risk customers and understand
+  retention drivers. Churn analysis examines customer behavior patterns, service usage,
+  demographics, and financial metrics to predict which customers are likely to leave.
+
+  Analysis dimensions:
+  - Overall churn rate and trends
+  - Churn by customer segments (demographics, service usage, contract type)
+  - Financial impact analysis (lifetime value of churned vs retained)
+  - Time-based patterns (tenure distribution, seasonal trends)
+  - Predictive features (leading indicators of churn)
+  - Retention opportunities (high-value at-risk customers)
+
+  **IMPORTANT COLUMN ALIAS RESTRICTIONS:**
+  Teradata restricts certain words as column aliases. Avoid using reserved words like
+  "Value", "Type", "User", "Date", etc. as aliases. Instead use descriptive names like
+  "ChurnRate", "CustomerCount", "MetricValue". If queries fail with syntax errors about
+  aliases, this is usually the cause.
+
+  **PERMISSION CHECKING:**
+  Before running churn analysis, call get_tables() to verify you have SELECT permissions
+  on the target table. This prevents wasted tokens on access-denied errors.
+
+category: analytics
+difficulty: intermediate
+teradata_function: AGGREGATION_ANALYTICS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Retention Strategy ---
+  - Customer retention strategy development
+
+  # --- Use Case 2: Churn Modeling ---
+  - Predictive churn modeling (feature engineering)
+
+  # --- Use Case 3: Revenue Impact ---
+  - Revenue impact analysis
+
+  # --- Use Case 4: Retention Campaigns ---
+  - Segment-specific retention campaigns
+
+  # --- Use Case 5: Service Quality ---
+  - Service quality improvement
+
+  # --- Use Case 6: Contract Optimization ---
+  - Contract optimization
+
+  # --- Use Case 7: Pricing Strategy ---
+  - Pricing strategy evaluation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing customer/subscription data"
+    example: "customer_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Must contain churn indicator column; call get_tables() to verify access
+    required: true
+    description: "Table with customer data including churn indicator"
+    example: "customers"
+
+  # --- Parameter 3: Churn Column ---
+  - name: churn_column
+    type: string
+    # LLM-HINT: Binary column marking churn; verify with get_table_schema() first
+    required: true
+    description: "Column indicating churn status (Yes/No, 1/0, True/False)"
+    example: "Churn"
+
+  # --- Parameter 4: Churn Indicator ---
+  - name: churn_indicator
+    type: string
+    # LLM-HINT: Value that equals "churned"; common: Yes, 1, True (default: Yes)
+    required: false
+    default: "Yes"
+    description: "Value that indicates customer churned"
+    example: "Yes"
+
+  # --- Parameter 5: Segment Columns ---
+  - name: segment_columns
+    type: array[string]
+    # LLM-HINT: Categorical columns for breakdown (contract, tier, region, service type)
+    required: false
+    description: "Categorical columns to segment by (contract type, service tier, etc.)"
+    example: '["Contract", "InternetService", "PaymentMethod"]'
+
+  # --- Parameter 6: Numeric Columns ---
+  - name: numeric_columns
+    type: array[string]
+    # LLM-HINT: Numeric columns for financial analysis (revenue, charges, usage, tenure)
+    required: false
+    description: "Numeric columns for analysis (charges, tenure, usage)"
+    example: '["MonthlyCharges", "TotalCharges", "tenure"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === OVERALL_CHURN_METRICS TEMPLATE ===
+  # LLM-HINT: Run this first to establish baseline churn rate before segmentation
+  overall_churn_metrics:
+    description: "High-level churn summary - total customers, churn rate, retention rate"
+    sql: |
+      -- Overall churn metrics
+      SELECT
+          COUNT(*) AS TotalCustomers,
+          SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) AS ChurnedCustomers,
+          SUM(CASE WHEN {{churn_column}} <> '{{churn_indicator}}' THEN 1 ELSE 0 END) AS RetainedCustomers,
+          CAST(SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) * 100.0
+               / COUNT(*) AS DECIMAL(10,2)) AS ChurnRatePercent,
+          CAST(SUM(CASE WHEN {{churn_column}} <> '{{churn_indicator}}' THEN 1 ELSE 0 END) * 100.0
+               / COUNT(*) AS DECIMAL(10,2)) AS RetentionRatePercent
+      FROM {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+      - churn_column
+      - churn_indicator
+
+  # === CHURN_BY_SEGMENT TEMPLATE ===
+  # LLM-HINT: Analyzes churn by category; reveals high-risk segments for targeting
+  churn_by_segment:
+    description: "Churn rate breakdown by categorical variable (e.g., contract type, service tier)"
+    sql: |
+      -- Churn analysis by segment
+      SELECT
+          {{segment_column}} AS Segment,
+          COUNT(*) AS TotalCustomers,
+          SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) AS ChurnedCustomers,
+          SUM(CASE WHEN {{churn_column}} <> '{{churn_indicator}}' THEN 1 ELSE 0 END) AS RetainedCustomers,
+          CAST(SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) * 100.0
+               / COUNT(*) AS DECIMAL(10,2)) AS ChurnRatePercent,
+          -- Revenue impact (if monetary column provided)
+          CAST(AVG(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN {{revenue_column}} END)
+               AS DECIMAL(10,2)) AS AvgRevenueChurned,
+          CAST(AVG(CASE WHEN {{churn_column}} <> '{{churn_indicator}}' THEN {{revenue_column}} END)
+               AS DECIMAL(10,2)) AS AvgRevenueRetained
+      FROM {{database}}.{{table}}
+      GROUP BY {{segment_column}}
+      ORDER BY ChurnRatePercent DESC;
+    required_parameters:
+      - database
+      - table
+      - segment_column
+      - churn_column
+      - churn_indicator
+
+  # === FINANCIAL_IMPACT TEMPLATE ===
+  # LLM-HINT: Compares revenue metrics; shows LTV and financial cost of churn
+  financial_impact:
+    description: "Compare financial metrics between churned and retained customers"
+    sql: |
+      -- Financial impact analysis
+      SELECT
+          {{churn_column}} AS ChurnStatus,
+          COUNT(*) AS CustomerCount,
+          CAST(AVG({{monthly_charge_column}}) AS DECIMAL(10,2)) AS AvgMonthlyCharge,
+          CAST(AVG({{total_charge_column}}) AS DECIMAL(10,2)) AS AvgTotalCharge,
+          CAST(AVG({{tenure_column}}) AS DECIMAL(10,2)) AS AvgTenureMonths,
+          -- Customer lifetime value estimate
+          CAST(AVG({{monthly_charge_column}} * {{tenure_column}}) AS DECIMAL(10,2)) AS EstimatedLTV,
+          -- Revenue per customer per month
+          CAST(SUM({{monthly_charge_column}}) AS DECIMAL(10,2)) AS TotalMonthlyRevenue
+      FROM {{database}}.{{table}}
+      GROUP BY {{churn_column}}
+      ORDER BY ChurnStatus;
+    required_parameters:
+      - database
+      - table
+      - churn_column
+      - monthly_charge_column
+      - total_charge_column
+      - tenure_column
+
+  # === TENURE_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Analyzes churn by customer lifecycle stage; identifies when churn risk peaks
+  tenure_analysis:
+    description: "Churn rate by tenure cohorts (early, mid, late lifecycle)"
+    sql: |
+      -- Tenure-based churn analysis
+      SELECT
+          CASE
+              WHEN {{tenure_column}} <= 12 THEN '0-12 months (New)'
+              WHEN {{tenure_column}} <= 24 THEN '13-24 months (Growing)'
+              WHEN {{tenure_column}} <= 36 THEN '25-36 months (Established)'
+              WHEN {{tenure_column}} <= 48 THEN '37-48 months (Mature)'
+              ELSE '48+ months (Loyal)'
+          END AS TenureCohort,
+          COUNT(*) AS TotalCustomers,
+          SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) AS ChurnedCustomers,
+          CAST(SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) * 100.0
+               / COUNT(*) AS DECIMAL(10,2)) AS ChurnRatePercent,
+          CAST(AVG({{tenure_column}}) AS DECIMAL(10,2)) AS AvgTenureInCohort,
+          CAST(AVG({{revenue_column}}) AS DECIMAL(10,2)) AS AvgRevenue
+      FROM {{database}}.{{table}}
+      GROUP BY
+          CASE
+              WHEN {{tenure_column}} <= 12 THEN '0-12 months (New)'
+              WHEN {{tenure_column}} <= 24 THEN '13-24 months (Growing)'
+              WHEN {{tenure_column}} <= 36 THEN '25-36 months (Established)'
+              WHEN {{tenure_column}} <= 48 THEN '37-48 months (Mature)'
+              ELSE '48+ months (Loyal)'
+          END
+      ORDER BY
+          MIN({{tenure_column}});
+    required_parameters:
+      - database
+      - table
+      - tenure_column
+      - churn_column
+      - churn_indicator
+      - revenue_column
+
+  # === HIGH_VALUE_AT_RISK TEMPLATE ===
+  # LLM-HINT: Identifies top revenue customers not yet churned for retention targeting
+  high_value_at_risk:
+    description: "Identify high-value customers at risk of churning"
+    sql: |
+      -- High-value at-risk customers
+      -- Customers with high revenue but indicators suggesting churn risk
+      SELECT
+          {{customer_id_column}} AS CustomerID,
+          {{revenue_column}} AS MonthlyRevenue,
+          {{tenure_column}} AS TenureMonths,
+          {{segment_column}} AS Segment,
+          -- Risk indicators
+          CASE
+              WHEN {{tenure_column}} < 12 THEN 'High Risk (New Customer)'
+              WHEN {{revenue_column}} > (SELECT AVG({{revenue_column}}) * 1.5 FROM {{database}}.{{table}})
+                   THEN 'High Value'
+              ELSE 'Standard'
+          END AS RiskProfile
+      FROM {{database}}.{{table}}
+      WHERE {{churn_column}} <> '{{churn_indicator}}'  -- Currently not churned
+        AND {{revenue_column}} > (SELECT PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {{revenue_column}})
+                                   FROM {{database}}.{{table}})  -- Top 25% revenue
+      ORDER BY {{revenue_column}} DESC
+      LIMIT 1000;
+    required_parameters:
+      - database
+      - table
+      - customer_id_column
+      - revenue_column
+      - tenure_column
+      - segment_column
+      - churn_column
+      - churn_indicator
+
+  # === MULTI_SEGMENT_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Cross-tabulates churn by 2+ dimensions; reveals interaction effects
+  multi_segment_analysis:
+    description: "Multi-dimensional churn analysis across multiple segments"
+    sql: |
+      -- Multi-dimensional churn breakdown
+      SELECT
+          {{segment1_column}} AS Segment1,
+          {{segment2_column}} AS Segment2,
+          COUNT(*) AS TotalCustomers,
+          SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) AS Churned,
+          CAST(SUM(CASE WHEN {{churn_column}} = '{{churn_indicator}}' THEN 1 ELSE 0 END) * 100.0
+               / COUNT(*) AS DECIMAL(10,2)) AS ChurnRatePercent,
+          CAST(AVG({{revenue_column}}) AS DECIMAL(10,2)) AS AvgRevenue,
+          CAST(AVG({{tenure_column}}) AS DECIMAL(10,2)) AS AvgTenure
+      FROM {{database}}.{{table}}
+      GROUP BY {{segment1_column}}, {{segment2_column}}
+      HAVING COUNT(*) >= 30  -- Minimum sample size for statistical validity
+      ORDER BY ChurnRatePercent DESC, TotalCustomers DESC
+      QUALIFY ROW_NUMBER() OVER (ORDER BY ChurnRatePercent DESC, TotalCustomers DESC) <= 50;
+    required_parameters:
+      - database
+      - table
+      - segment1_column
+      - segment2_column
+      - churn_column
+      - churn_indicator
+      - revenue_column
+      - tenure_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Telecom Churn ---
+  - name: "Telecom Churn Analysis"
+    description: "Analyze customer churn for telecommunications provider"
+    parameters:
+      database: "customer_data"
+      table: "Telco_Customer_Churn"
+      churn_column: "Churn"
+      churn_indicator: "Yes"
+      segment_column: "Contract"
+      revenue_column: "MonthlyCharges"
+      tenure_column: "tenure"
+    expected_result: |
+      Overall Metrics:
+      - Total Customers: 7,043
+      - Churned: 1,869 (26.50%)
+      - Retained: 5,174 (73.50%)
+
+      Churn by Contract Type:
+      - Month-to-month: 42.70% churn (3,875 customers) ⚠️ HIGH RISK
+      - One year: 11.30% churn (1,473 customers)
+      - Two year: 2.80% churn (1,695 customers) ✓ BEST RETENTION
+
+      Financial Impact:
+      - Churned customers: Avg $74.44/month, 18 months tenure
+      - Retained customers: Avg $61.27/month, 38 months tenure
+      - Churned customers pay 21% MORE but stay 52% LESS time
+
+      Key Insights:
+      1. Month-to-month contracts have 15x higher churn than 2-year
+      2. Customers paying premium prices churn faster (price sensitivity)
+      3. Long-term contracts dramatically improve retention
+
+      Recommendations:
+      - Incentivize annual/biennial contracts with discounts
+      - Review pricing for month-to-month tier
+      - Target month-to-month customers with retention offers
+
+  # --- Example 2: SaaS Churn ---
+  - name: "SaaS Subscription Churn"
+    description: "Analyze churn for SaaS product by pricing tier"
+    parameters:
+      database: "saas_metrics"
+      table: "subscriptions"
+      churn_column: "is_churned"
+      churn_indicator: "1"
+      segment_column: "pricing_tier"
+    expected_result: |
+      Churn by Pricing Tier:
+      - Free: 85% churn (low engagement)
+      - Starter ($29/mo): 35% churn
+      - Professional ($99/mo): 12% churn
+      - Enterprise ($499/mo): 4% churn ✓ BEST
+
+      Patterns:
+      - Higher-paying customers significantly more sticky
+      - Free tier churns quickly (conversion opportunity)
+      - Enterprise has dedicated success managers (retention driver)
+
+      Actions:
+      - Aggressive free-to-paid conversion campaigns
+      - Add white-glove service for Professional tier
+      - Early warning system for Starter tier
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Reserved Word Alias ---
+  - error: "Syntax error near 'AS Value'"
+    cause: "Using reserved word 'Value' as column alias"
+    solution: "Teradata restricts certain words as aliases. Use descriptive names like 'ChurnRate', 'CustomerCount', 'MetricValue' instead of 'Value', 'Type', 'User', 'Date', etc. If unsure, add a prefix like 'Metric_' or suffix like '_Value'."
+
+  # --- Error 2: Permission Denied ---
+  - error: "Permission denied (3523) when accessing table"
+    cause: "User lacks SELECT permission on target table"
+    solution: "Call get_tables() BEFORE running churn analysis to verify permissions. Check the 'Permissions' field in the result. If you see 'NONE' or the table isn't listed, request SELECT access from your DBA. This prevents wasted tokens on failed queries."
+
+  # --- Error 3: Division By Zero ---
+  - error: "Division by zero in churn rate calculation"
+    cause: "Segment with 0 customers"
+    solution: "Add HAVING COUNT(*) > 0 clause, or use NULLIF in denominator: COUNT(*) / NULLIF(SUM(...), 0)"
+
+  # --- Error 4: Column Not Found ---
+  - error: "Churn column not found"
+    cause: "Incorrect churn column name or case sensitivity"
+    solution: "Call get_table_schema() first to get ACTUAL column names. Teradata is case-insensitive but column names must match exactly as stored."
+
+  # --- Error 5: Slow Query ---
+  - error: "Very slow query on large customer tables"
+    cause: "Full table scan without indexes or aggregations on millions of rows"
+    solution: "Add WHERE clause to filter date range, use SAMPLE for exploratory analysis, or create summary tables with pre-aggregated churn metrics by segment."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Churn Analysis Best Practices
+
+  ### 1. Permission Pre-Check (Critical)
+  **Before running ANY churn query:**
+  - Call `get_tables(database)` to verify table access
+  - Check the `Permissions` column - must include 'R' (SELECT)
+  - If table shows 'NONE' or isn't listed, you don't have access
+  - This prevents 3523 errors and saves tokens on failed attempts
+
+  ### 2. Define Churn Correctly
+  **Churn definition varies by business:**
+  - **Subscription**: Canceled before renewal
+  - **Usage**: No activity for N days/months
+  - **Revenue**: Spending dropped to $0
+  - **Engagement**: No login for N days
+
+  **Choose appropriate window:**
+  - Monthly churn rate (most common)
+  - Annual churn rate (for enterprise)
+  - Rolling N-day churn (real-time monitoring)
+
+  ### 3. Segment Before Aggregating
+  **Don't analyze churn as single metric:**
+  - Segment by contract type, service tier, region
+  - Churn behavior varies dramatically across segments
+  - Month-to-month contracts may have 10x higher churn
+  - Reveals where to focus retention efforts
+
+  ### 4. Calculate Financial Impact
+  **Churn rate alone doesn't tell the story:**
+  ```sql
+  -- Revenue-weighted churn
+  SELECT
+    segment,
+    churn_rate,
+    avg_revenue_per_customer,
+    churn_rate * avg_revenue * customer_count AS monthly_revenue_at_risk
+  ```
+
+  **High-value customer churn hurts more than overall rate:**
+  - 10% churn of $500/month customers > 30% churn of $50/month customers
+
+  ### 5. Analyze Tenure Patterns
+  **When do customers churn?**
+  - Early (< 3 months): Onboarding/expectation mismatch
+  - Mid (6-12 months): Value realization failure
+  - Late (> 24 months): Competitive offers, life changes
+
+  **Different retention strategies for each:**
+  - Early: Improve onboarding, set expectations
+  - Mid: Demonstrate value, increase engagement
+  - Late: Loyalty rewards, contract renewals
+
+  ### 6. Identify Leading Indicators
+  **Churn prediction features:**
+  - Decreased usage/engagement
+  - Increased support tickets
+  - Payment failures
+  - Contract approaching renewal
+  - Price increases
+  - Competitor activity
+
+  **Build early warning system:**
+  ```sql
+  -- At-risk score
+  SELECT
+    customer_id,
+    CASE
+      WHEN usage_trend < -0.5 THEN 50  -- Usage dropped
+      WHEN support_tickets > 5 THEN 30 -- Many issues
+      WHEN contract_days_left < 30 THEN 20 -- Renewal soon
+      ELSE 0
+    END AS risk_score
+  ```
+
+  ### 7. Cohort Analysis
+  **Track churn over time:**
+  - Cohort: Group of customers who started in same period
+  - Track retention rate month-over-month
+  - Identify seasonal patterns
+  - Measure impact of product changes
+
+  ### 8. Avoid Common Column Alias Pitfalls
+  **Teradata reserved word restrictions:**
+  - ❌ `AS Value` → Syntax error
+  - ✅ `AS MetricValue` → Works
+  - ❌ `AS Type` → Syntax error
+  - ✅ `AS CustomerType` → Works
+
+  **Safe alias patterns:**
+  - Add prefixes: `Metric_`, `Customer_`, `Churn_`
+  - Add suffixes: `_Value`, `_Rate`, `_Count`
+  - Use descriptive names: `ChurnRatePercent`, `TotalCustomers`
+
+  ### 9. Statistical Validity
+  **Minimum sample sizes:**
+  - General analysis: 30+ customers per segment
+  - Statistical tests: 100+ customers
+  - Predictive modeling: 1,000+ churned customers
+
+  **Avoid:**
+  - Analyzing segments with < 30 customers
+  - Drawing conclusions from small samples
+  - Comparing incomparable cohorts
+
+  ### 10. Actionable Insights
+  **Every analysis should lead to action:**
+  - Which segment to target first? (Highest revenue impact)
+  - What retention offer to make? (Based on churn drivers)
+  - When to intervene? (Based on leading indicators)
+  - How to measure success? (Define KPIs upfront)
+
+  **Example action plan:**
+  1. Identify: Month-to-month customers with 40% churn
+  2. Analyze: They pay high prices with no commitment incentive
+  3. Action: Offer 20% discount for annual commitment
+  4. Measure: Track conversion rate and retention improvement
+  5. Iterate: Adjust offer based on results
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Customer Health Scoring ---
+  - customer_health_scoring
+
+  # --- Pattern 2: Funnel Analysis ---
+  - funnel_analysis
+
+  # --- Pattern 3: Attribution ---
+  - attribution
+
+  # --- Pattern 4: Data Profiling ---
+  - data_profiling
+# === RELATED_PATTERNS END ===

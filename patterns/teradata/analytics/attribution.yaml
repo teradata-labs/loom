@@ -1,0 +1,543 @@
+# === METADATA START ===
+name: attribution
+title: "Attribution Analysis"
+description: |
+  Analyze multi-touch attribution to understand which marketing touchpoints contribute to conversions.
+  The Attribution function distributes credit across multiple customer interactions leading to a conversion
+  event, helping marketers understand the true impact of each channel.
+
+  Attribution models supported:
+  - First-touch (100% credit to first interaction)
+  - Last-touch (100% credit to last interaction)
+  - Linear (equal credit across all touchpoints)
+  - Time-decay (more credit to recent touchpoints)
+  - U-shaped/Position-based (more credit to first and last)
+
+category: analytics
+difficulty: intermediate
+teradata_function: Attribution
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Marketing ROI ---
+  - Marketing ROI analysis across channels
+
+  # --- Use Case 2: Customer Journey ---
+  - Customer journey contribution analysis
+
+  # --- Use Case 3: Campaign Effectiveness ---
+  - Campaign effectiveness measurement
+
+  # --- Use Case 4: Budget Optimization ---
+  - Budget allocation optimization
+
+  # --- Use Case 5: Channel Mix ---
+  - Channel mix modeling
+
+  # --- Use Case 6: Cross-Channel Impact ---
+  - Cross-channel impact assessment
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing customer touchpoint data"
+    example: "marketing_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}}; must contain touchpoint data with timestamps
+    required: true
+    description: "Table with customer journey touchpoints"
+    example: "customer_touchpoints"
+
+  # --- Parameter 3: Partition Column ---
+  - name: partition_column
+    type: string
+    # LLM-HINT: Groups journey per user; typically customer_id or user_id
+    required: true
+    description: "Column to partition by (typically customer_id or user_id)"
+    example: "customer_id"
+
+  # --- Parameter 4: Timestamp Column ---
+  - name: timestamp_column
+    type: string
+    # LLM-HINT: Orders touchpoints chronologically within each journey
+    required: true
+    description: "Timestamp column for ordering touchpoints"
+    example: "touchpoint_timestamp"
+
+  # --- Parameter 5: Conversion Column ---
+  - name: conversion_column
+    type: string
+    # LLM-HINT: Binary indicator (0/1, true/false) marking conversion events
+    required: true
+    description: "Boolean or indicator column marking conversion events"
+    example: "is_conversion"
+
+  # --- Parameter 6: Channel Column ---
+  - name: channel_column
+    type: string
+    # LLM-HINT: Marketing channel or touchpoint type to receive credit
+    required: true
+    description: "Column containing marketing channel or touchpoint type"
+    example: "channel"
+
+  # --- Parameter 7: Model Type ---
+  - name: model_type
+    type: enum
+    # LLM-HINT: Determines credit distribution logic across touchpoints
+    required: true
+    description: "Attribution model: FIRST_TOUCH, LAST_TOUCH, LINEAR, TIME_DECAY, U_SHAPED"
+    example: "LINEAR"
+
+  # --- Parameter 8: Conversion Value Column ---
+  - name: conversion_value_column
+    type: string
+    # LLM-HINT: Optional; attribute revenue instead of just counting conversions
+    required: false
+    description: "Optional: revenue or value column to attribute"
+    example: "order_value"
+
+  # --- Parameter 9: Lookback Window Days ---
+  - name: lookback_window_days
+    type: integer
+    # LLM-HINT: Defines attribution window; shorter for e-commerce, longer for B2B
+    required: false
+    default: "30"
+    description: "Number of days to look back for attributable touchpoints"
+    example: "30"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === JOURNEY_EXPLORATION TEMPLATE ===
+  # LLM-HINT: Use first to understand typical journey patterns before attribution
+  journey_exploration:
+    description: "Explore customer journeys before applying attribution"
+    sql: |
+      -- Understand typical customer journeys
+      SELECT
+        {{partition_column}},
+        COUNT(*) as total_touchpoints,
+        COUNT(CASE WHEN {{conversion_column}} = 1 THEN 1 END) as conversions,
+        LISTAGG({{channel_column}}, ' -> ') WITHIN GROUP (ORDER BY {{timestamp_column}}) as journey_path
+      FROM {{database}}.{{table}}
+      WHERE {{timestamp_column}} >= CURRENT_DATE - {{lookback_window_days}}
+      GROUP BY {{partition_column}}
+      HAVING COUNT(CASE WHEN {{conversion_column}} = 1 THEN 1 END) > 0
+      ORDER BY total_touchpoints DESC
+      LIMIT 100;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - conversion_column
+      - channel_column
+      - lookback_window_days
+
+  # === FIRST_TOUCH_ATTRIBUTION TEMPLATE ===
+  # LLM-HINT: Assigns 100% credit to first touchpoint; use for awareness analysis
+  first_touch_attribution:
+    description: "First-touch attribution - 100% credit to first interaction"
+    sql: |
+      -- First-touch attribution model
+      SELECT
+        {{channel_column}} as attributed_channel,
+        COUNT(DISTINCT {{partition_column}}) as attributed_conversions,
+        {{#if conversion_value_column}}
+        SUM({{conversion_value_column}}) as attributed_revenue
+        {{else}}
+        COUNT(*) as attributed_events
+        {{/if}}
+      FROM (
+        SELECT
+          {{partition_column}},
+          FIRST_VALUE({{channel_column}}) OVER (
+            PARTITION BY {{partition_column}}
+            ORDER BY {{timestamp_column}}
+            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+          ) as {{channel_column}},
+          {{#if conversion_value_column}}{{conversion_value_column}}{{/if}}
+        FROM {{database}}.{{table}}
+        WHERE {{conversion_column}} = 1
+          AND {{timestamp_column}} >= CURRENT_DATE - {{lookback_window_days}}
+      ) first_touch
+      GROUP BY {{channel_column}}
+      ORDER BY attributed_conversions DESC;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - conversion_column
+      - channel_column
+      - lookback_window_days
+
+  # === LAST_TOUCH_ATTRIBUTION TEMPLATE ===
+  # LLM-HINT: Assigns 100% credit to final touchpoint before conversion
+  last_touch_attribution:
+    description: "Last-touch attribution - 100% credit to last interaction before conversion"
+    sql: |
+      -- Last-touch attribution model
+      WITH conversion_events AS (
+        SELECT
+          {{partition_column}},
+          {{timestamp_column}} as conversion_time,
+          {{#if conversion_value_column}}{{conversion_value_column}}{{/if}}
+        FROM {{database}}.{{table}}
+        WHERE {{conversion_column}} = 1
+      ),
+      last_touchpoints AS (
+        SELECT
+          t.{{partition_column}},
+          t.{{channel_column}},
+          c.conversion_time,
+          {{#if conversion_value_column}}c.{{conversion_value_column}}{{/if}},
+          ROW_NUMBER() OVER (
+            PARTITION BY t.{{partition_column}}, c.conversion_time
+            ORDER BY t.{{timestamp_column}} DESC
+          ) as rn
+        FROM {{database}}.{{table}} t
+        JOIN conversion_events c
+          ON t.{{partition_column}} = c.{{partition_column}}
+          AND t.{{timestamp_column}} < c.conversion_time
+          AND t.{{timestamp_column}} >= c.conversion_time - INTERVAL '{{lookback_window_days}}' DAY
+      )
+      SELECT
+        {{channel_column}} as attributed_channel,
+        COUNT(DISTINCT {{partition_column}}) as attributed_conversions,
+        {{#if conversion_value_column}}
+        SUM({{conversion_value_column}}) as attributed_revenue
+        {{else}}
+        COUNT(*) as attributed_events
+        {{/if}}
+      FROM last_touchpoints
+      WHERE rn = 1
+      GROUP BY {{channel_column}}
+      ORDER BY attributed_conversions DESC;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - conversion_column
+      - channel_column
+      - lookback_window_days
+
+  # === LINEAR_ATTRIBUTION TEMPLATE ===
+  # LLM-HINT: Distributes credit equally across all touchpoints in journey
+  linear_attribution:
+    description: "Linear attribution - equal credit distributed across all touchpoints"
+    sql: |
+      -- Linear attribution model
+      WITH conversion_journeys AS (
+        SELECT
+          {{partition_column}},
+          {{timestamp_column}} as conversion_time,
+          {{#if conversion_value_column}}{{conversion_value_column}}{{/if}}
+        FROM {{database}}.{{table}}
+        WHERE {{conversion_column}} = 1
+      ),
+      touchpoint_counts AS (
+        SELECT
+          t.{{partition_column}},
+          c.conversion_time,
+          {{#if conversion_value_column}}c.{{conversion_value_column}}{{/if}},
+          t.{{channel_column}},
+          COUNT(*) OVER (
+            PARTITION BY t.{{partition_column}}, c.conversion_time
+          ) as total_touchpoints
+        FROM {{database}}.{{table}} t
+        JOIN conversion_journeys c
+          ON t.{{partition_column}} = c.{{partition_column}}
+          AND t.{{timestamp_column}} < c.conversion_time
+          AND t.{{timestamp_column}} >= c.conversion_time - INTERVAL '{{lookback_window_days}}' DAY
+      )
+      SELECT
+        {{channel_column}} as attributed_channel,
+        {{#if conversion_value_column}}
+        SUM({{conversion_value_column}} / total_touchpoints) as attributed_revenue,
+        {{else}}
+        SUM(1.0 / total_touchpoints) as attributed_credit,
+        {{/if}}
+        COUNT(DISTINCT {{partition_column}}) as customers_influenced
+      FROM touchpoint_counts
+      GROUP BY {{channel_column}}
+      ORDER BY attributed_revenue DESC;
+    required_parameters:
+      - database
+      - table
+      - partition_column
+      - timestamp_column
+      - conversion_column
+      - channel_column
+      - lookback_window_days
+
+  # === COMPARE_MODELS TEMPLATE ===
+  # LLM-HINT: Compare first-touch, last-touch, linear; shows model sensitivity
+  compare_models:
+    description: "Compare results across different attribution models"
+    sql: |
+      -- Compare First-Touch, Last-Touch, and Linear attribution side by side
+      WITH all_models AS (
+        -- First-touch
+        SELECT 'First-Touch' as model, channel, credit
+        FROM first_touch_results
+        UNION ALL
+        -- Last-touch
+        SELECT 'Last-Touch' as model, channel, credit
+        FROM last_touch_results
+        UNION ALL
+        -- Linear
+        SELECT 'Linear' as model, channel, credit
+        FROM linear_results
+      )
+      SELECT
+        channel,
+        SUM(CASE WHEN model = 'First-Touch' THEN credit ELSE 0 END) as first_touch_credit,
+        SUM(CASE WHEN model = 'Last-Touch' THEN credit ELSE 0 END) as last_touch_credit,
+        SUM(CASE WHEN model = 'Linear' THEN credit ELSE 0 END) as linear_credit,
+        -- Show how much models differ
+        STDDEV_POP(credit) as model_variance
+      FROM all_models
+      GROUP BY channel
+      ORDER BY linear_credit DESC;
+    required_parameters:
+      - database
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: E-commerce Multi-Channel ---
+  - name: "E-commerce Multi-Channel Attribution"
+    description: "Attribute $500K in conversions across email, social, search, and direct"
+    parameters:
+      database: "marketing"
+      table: "customer_touchpoints"
+      partition_column: "customer_id"
+      timestamp_column: "interaction_date"
+      conversion_column: "purchased"
+      channel_column: "channel"
+      conversion_value_column: "order_value"
+      model_type: "LINEAR"
+      lookback_window_days: 30
+    expected_result: |
+      Linear attribution results:
+      - Search: $180K (36%) - Strong mid-funnel
+      - Email: $150K (30%) - Consistent touchpoint
+      - Social: $100K (20%) - Awareness driver
+      - Direct: $70K (14%) - Brand loyalty
+
+      Insight: Search gets more credit under linear model vs last-touch,
+      revealing its mid-funnel importance.
+
+  # --- Example 2: SaaS Trial-to-Paid ---
+  - name: "SaaS Trial-to-Paid Attribution"
+    description: "Understand which touchpoints drive trial conversions"
+    parameters:
+      database: "saas_analytics"
+      table: "user_interactions"
+      partition_column: "user_id"
+      timestamp_column: "event_time"
+      conversion_column: "converted_to_paid"
+      channel_column: "touchpoint_type"
+      model_type: "TIME_DECAY"
+      lookback_window_days: 14
+    expected_result: |
+      Time-decay attribution (14-day trial period):
+      - Product demo: 40% credit (late-stage, high impact)
+      - Email nurture: 25% credit (consistent presence)
+      - Webinar: 20% credit (mid-stage education)
+      - Blog content: 15% credit (early awareness)
+
+      Time-decay gives more credit to product demo which happens
+      closer to conversion decision.
+
+  # --- Example 3: Retail Store Visit ---
+  - name: "Retail Store Visit Attribution"
+    description: "Attribute in-store purchases to online touchpoints"
+    parameters:
+      database: "omnichannel"
+      table: "customer_journey"
+      partition_column: "customer_id"
+      timestamp_column: "touchpoint_time"
+      conversion_column: "in_store_purchase"
+      channel_column: "online_channel"
+      model_type: "U_SHAPED"
+      lookback_window_days: 7
+    expected_result: |
+      U-shaped attribution (more credit to first and last):
+      - Store locator: 35% (last touch before visit)
+      - Search ad: 30% (first discovery)
+      - Product page: 20% (research)
+      - Email: 15% (reminder)
+
+      U-shaped highlights both discovery (search) and decision
+      (store locator) moments.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Multiple Conversions ---
+  - error: "Multiple conversions per customer"
+    cause: "Customer converted multiple times in lookback window"
+    solution: "Decide if you want to attribute each conversion separately or only first/most recent. Add WHERE clause to filter."
+
+  # --- Error 2: Touchpoints After Conversion ---
+  - error: "Touchpoints after conversion"
+    cause: "Not filtering touchpoints to only those before conversion"
+    solution: "Ensure JOIN condition includes: touchpoint_timestamp < conversion_timestamp"
+
+  # --- Error 3: Missing Touchpoints ---
+  - error: "Missing touchpoints in journey"
+    cause: "Lookback window too short or data gaps"
+    solution: "Increase lookback_window_days. Check for data completeness in source table."
+
+  # --- Error 4: Credit Sum Mismatch ---
+  - error: "Attribution credits don't sum to 100%"
+    cause: "Incorrect division or missing touchpoints"
+    solution: "Verify total_touchpoints calculation. Check that all journey touchpoints are included."
+
+  # --- Error 5: Duplicate Channel Credits ---
+  - error: "Same channel credited multiple times per journey"
+    cause: "Customer interacted with same channel multiple times"
+    solution: "Decide if you want to count each interaction separately or deduplicate by channel per journey."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Attribution Analysis Best Practices
+
+  ### 1. Choose the Right Model
+
+  **First-Touch:** Good for understanding awareness/discovery
+  - Use when: Measuring top-of-funnel effectiveness
+  - Caveat: Ignores all nurturing efforts
+
+  **Last-Touch:** Good for understanding final conversion driver
+  - Use when: Optimizing bottom-of-funnel
+  - Caveat: Ignores brand building and awareness
+
+  **Linear:** Fair distribution across journey
+  - Use when: All touchpoints contribute equally
+  - Caveat: May over-credit low-value touchpoints
+
+  **Time-Decay:** More credit to recent interactions
+  - Use when: Recent actions drive decisions
+  - Caveat: Under-values early awareness
+
+  **U-Shaped:** Credits first and last interactions most
+  - Use when: Discovery and decision moments matter most
+  - Caveat: Under-values middle-funnel nurturing
+
+  ### 2. Set Appropriate Lookback Windows
+
+  **Short purchase cycles (e-commerce):** 7-14 days
+  **Medium cycles (SaaS trials):** 30-60 days
+  **Long cycles (B2B enterprise):** 90-180 days
+
+  Too short = miss early touchpoints
+  Too long = include irrelevant interactions
+
+  ### 3. Data Requirements
+
+  **Minimum required fields:**
+  - Customer/User ID
+  - Timestamp of interaction
+  - Channel/Touchpoint type
+  - Conversion indicator
+  - (Optional) Conversion value
+
+  **Data quality checks:**
+  ```sql
+  -- Check for complete customer journeys
+  SELECT
+    customer_id,
+    COUNT(*) as touchpoints,
+    MIN(timestamp) as first_interaction,
+    MAX(timestamp) as last_interaction
+  FROM touchpoints
+  GROUP BY customer_id
+  HAVING COUNT(*) < 2;  -- Flag single-touch journeys
+  ```
+
+  ### 4. Compare Multiple Models
+
+  Never rely on a single attribution model. Compare 2-3 models:
+  - Helps understand model sensitivity
+  - Reveals which channels benefit from each model
+  - Provides range of possible attributions
+
+  **Model comparison query:**
+  - Run first-touch, last-touch, linear
+  - Compare channel credits
+  - Channels with consistent credit = reliable performers
+  - Channels with variable credit = model-dependent
+
+  ### 5. Validate Results
+
+  **Sanity checks:**
+  - Total attributed conversions = actual conversions
+  - Total attributed revenue = actual revenue
+  - Channel contributions seem reasonable vs actual costs
+
+  **A/B testing validation:**
+  - Pause a channel and measure impact
+  - Should align with attribution predictions
+  - If not, adjust model or investigate data quality
+
+  ### 6. Actionability
+
+  **Use attribution for:**
+  - Budget reallocation across channels
+  - Understanding multi-touch journeys
+  - Identifying channel synergies
+  - Optimizing customer journey
+
+  **Don't use for:**
+  - Exact channel ROI (too many assumptions)
+  - Eliminating "low-credit" channels (may have indirect effects)
+  - Short-term tactical decisions (attribution is strategic)
+
+  ### 7. Segment Your Analysis
+
+  **Segment by:**
+  - Customer type (new vs returning)
+  - Product category
+  - Geography
+  - Purchase value tier
+
+  Attribution patterns differ by segment.
+  High-value customers may have different journeys than low-value.
+
+  ### 8. Track Over Time
+
+  Monitor attribution trends monthly/quarterly:
+  - Channel effectiveness changes
+  - Seasonality effects
+  - Impact of marketing changes
+  - Competitive dynamics
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: nPath ---
+  - npath
+
+  # --- Pattern 2: Funnel Analysis ---
+  - funnel_analysis
+
+  # --- Pattern 3: Cohort Analysis ---
+  - cohort_analysis
+
+  # --- Pattern 4: Customer Journey ---
+  - customer_journey_mapping
+# === RELATED_PATTERNS END ===

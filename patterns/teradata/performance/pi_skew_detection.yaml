@@ -1,0 +1,364 @@
+# === METADATA START ===
+name: pi_skew_detection
+title: "Primary Index Skew Detection"
+description: |
+  Detect and analyze Primary Index (PI) skew by measuring row distribution across AMPs.
+  PI skew is the #1 performance problem in Teradata - uneven distribution causes:
+  - Hot AMPs doing all the work while others idle
+  - Excessive spool space on overloaded AMPs
+  - Degraded query performance (queries as slow as slowest AMP)
+  - Unbalanced parallel processing
+
+  **CRITICAL: Always check PI skew before blaming "slow queries".**
+  A table with 10% skew can have queries 10x slower than expected.
+
+  **TABLE TYPE REQUIREMENTS:**
+  PI skew detection works on base tables with primary indexes. It does NOT apply to:
+  - NoPI (No Primary Index) tables - these are inherently distributed
+  - Views - check underlying base tables
+  - Global temporary tables - distribution varies by session
+  Call get_tables() first to verify table has a primary index before skew analysis.
+
+  **WHAT IS GOOD SKEW?**
+  - < 5% skew: Excellent distribution
+  - 5-10% skew: Acceptable, monitor
+  - 10-20% skew: Poor, investigate PI choice
+  - > 20% skew: Critical, redesign PI immediately
+
+category: performance
+difficulty: intermediate
+teradata_function: HASHAMP, HASHBUCKET
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Identify tables with poor Primary Index distribution
+  - Diagnose slow query performance caused by skew
+  - Validate PI column choice after table design
+  - Monitor skew after data loads
+  - Detect demographic skew (many NULL values in PI)
+  - Compare skew across similar tables
+  - Guide PI redesign decisions
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database containing the table"
+    example: "sales_db"
+
+  - name: table
+    type: string
+    required: true
+    description: "Table name to analyze for PI skew"
+    example: "orders"
+
+  - name: threshold
+    type: number
+    required: false
+    default: 10.0
+    description: "Skew percentage threshold (default: 10%)"
+    example: "15.0"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  pi_skew_analysis:
+    description: "Analyze Primary Index distribution across AMPs"
+    sql: |
+      -- PI Skew Analysis for {{database}}.{{table}}
+
+      -- Method 1: Quick skew check using HASHAMP()
+      SELECT
+        HASHAMP(HASHBUCKET(HASHROW({{pi_columns}}))) AS amp_number,
+        COUNT(*) AS row_count,
+        COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS pct_of_total
+      FROM {{database}}.{{table}}
+      GROUP BY 1
+      ORDER BY row_count DESC;
+
+      -- Method 2: Detailed skew metrics
+      WITH amp_distribution AS (
+        SELECT
+          HASHAMP(HASHBUCKET(HASHROW({{pi_columns}}))) AS amp_number,
+          COUNT(*) AS row_count
+        FROM {{database}}.{{table}}
+        GROUP BY 1
+      ),
+      skew_metrics AS (
+        SELECT
+          AVG(row_count) AS avg_rows_per_amp,
+          MIN(row_count) AS min_rows_per_amp,
+          MAX(row_count) AS max_rows_per_amp,
+          STDDEV_POP(row_count) AS stddev_rows,
+          COUNT(DISTINCT amp_number) AS active_amps
+        FROM amp_distribution
+      )
+      SELECT
+        '{{database}}.{{table}}' AS table_name,
+        avg_rows_per_amp,
+        min_rows_per_amp,
+        max_rows_per_amp,
+        max_rows_per_amp - min_rows_per_amp AS range_rows,
+        ((max_rows_per_amp - avg_rows_per_amp) / NULLIFZERO(avg_rows_per_amp)) * 100 AS skew_pct,
+        stddev_rows / NULLIFZERO(avg_rows_per_amp) * 100 AS cv_pct,
+        active_amps,
+        CASE
+          WHEN ((max_rows_per_amp - avg_rows_per_amp) / NULLIFZERO(avg_rows_per_amp)) * 100 < 5 THEN 'EXCELLENT'
+          WHEN ((max_rows_per_amp - avg_rows_per_amp) / NULLIFZERO(avg_rows_per_amp)) * 100 < 10 THEN 'GOOD'
+          WHEN ((max_rows_per_amp - avg_rows_per_amp) / NULLIFZERO(avg_rows_per_amp)) * 100 < 20 THEN 'POOR'
+          ELSE 'CRITICAL'
+        END AS skew_rating
+      FROM skew_metrics;
+
+  pi_skew_system_view:
+    description: "Check skew using DBC system tables (faster for large tables)"
+    sql: |
+      -- Use DBC.TableSizeV for quick skew estimate
+      SELECT
+        DatabaseName,
+        TableName,
+        SUM(CurrentPerm) AS total_perm_space,
+        MAX(CurrentPerm) AS max_amp_space,
+        MIN(CurrentPerm) AS min_amp_space,
+        AVG(CurrentPerm) AS avg_amp_space,
+        ((MAX(CurrentPerm) - AVG(CurrentPerm)) / NULLIFZERO(AVG(CurrentPerm))) * 100 AS skew_pct_estimate
+      FROM DBC.TableSizeV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      GROUP BY DatabaseName, TableName;
+
+  hot_amp_identification:
+    description: "Identify which AMPs are overloaded"
+    sql: |
+      -- Find hot AMPs (above average + 1 stddev)
+      WITH amp_dist AS (
+        SELECT
+          HASHAMP(HASHBUCKET(HASHROW({{pi_columns}}))) AS amp_number,
+          COUNT(*) AS row_count
+        FROM {{database}}.{{table}}
+        GROUP BY 1
+      ),
+      stats AS (
+        SELECT
+          AVG(row_count) AS avg_rows,
+          STDDEV_POP(row_count) AS stddev_rows
+        FROM amp_dist
+      )
+      SELECT
+        a.amp_number,
+        a.row_count,
+        a.row_count - s.avg_rows AS rows_above_avg,
+        ((a.row_count - s.avg_rows) / NULLIFZERO(s.avg_rows)) * 100 AS pct_above_avg,
+        CASE
+          WHEN a.row_count > s.avg_rows + s.stddev_rows THEN 'HOT_AMP'
+          WHEN a.row_count < s.avg_rows - s.stddev_rows THEN 'COLD_AMP'
+          ELSE 'NORMAL'
+        END AS amp_status
+      FROM amp_dist a
+      CROSS JOIN stats s
+      WHERE a.row_count > s.avg_rows + s.stddev_rows
+      ORDER BY a.row_count DESC;
+
+  pi_column_analysis:
+    description: "Analyze Primary Index column characteristics"
+    sql: |
+      -- Get PI column information
+      SELECT
+        DatabaseName,
+        TableName,
+        ColumnName,
+        ColumnPosition,
+        IndexType,
+        IndexNumber
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND IndexType = 'P'
+      ORDER BY IndexNumber, ColumnPosition;
+
+      -- Check PI column cardinality
+      SELECT
+        COUNT(DISTINCT {{pi_columns}}) AS distinct_pi_values,
+        COUNT(*) AS total_rows,
+        COUNT(DISTINCT {{pi_columns}}) * 100.0 / NULLIFZERO(COUNT(*)) AS uniqueness_pct,
+        SUM(CASE WHEN {{pi_columns}} IS NULL THEN 1 ELSE 0 END) AS null_count,
+        SUM(CASE WHEN {{pi_columns}} IS NULL THEN 1 ELSE 0 END) * 100.0 / NULLIFZERO(COUNT(*)) AS null_pct
+      FROM {{database}}.{{table}};
+
+  skew_recommendations:
+    description: "Generate recommendations based on skew analysis"
+    sql: |
+      -- This is a template for recommendations, actual analysis done by LLM
+      -- based on skew_pct, null_pct, uniqueness_pct from prior queries
+
+      -- Recommendation categories:
+      -- 1. If skew > 20% and null_pct > 10%: "Remove NULLs from PI or use NUPI"
+      -- 2. If skew > 20% and uniqueness_pct < 50%: "PI has low cardinality, choose better column"
+      -- 3. If skew > 20% and uniqueness_pct > 90%: "Consider composite PI to balance distribution"
+      -- 4. If skew < 5%: "PI distribution is excellent, no action needed"
+
+      SELECT
+        '{{database}}.{{table}}' AS table_name,
+        'Run pi_skew_analysis template to get skew_pct' AS recommendation,
+        'Then run pi_column_analysis to get null_pct and uniqueness_pct' AS next_step,
+        'LLM will provide specific recommendations based on metrics' AS note;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Excellent PI distribution"
+    parameters:
+      database: "sales"
+      table: "orders"
+    expected_result: |
+      Skew Analysis Results:
+      - Average rows per AMP: 10,000
+      - Max rows per AMP: 10,300
+      - Min rows per AMP: 9,700
+      - Skew percentage: 3.0%
+      - Rating: EXCELLENT
+
+      No action needed. PI distribution is well-balanced.
+
+  - name: "Critical skew with demographic issue"
+    parameters:
+      database: "crm"
+      table: "customers"
+    expected_result: |
+      Skew Analysis Results:
+      - Average rows per AMP: 50,000
+      - Max rows per AMP: 95,000
+      - Min rows per AMP: 5,000
+      - Skew percentage: 90%
+      - Rating: CRITICAL
+
+      PI Column Analysis:
+      - PI column: customer_type
+      - NULL values: 45% of rows
+      - Distinct values: 5 (very low cardinality)
+
+      Recommendations:
+      1. CRITICAL: Remove customer_type from PI (low cardinality + high NULLs)
+      2. Consider customer_id as PI (likely unique)
+      3. If keeping customer_type, handle NULLs explicitly (COALESCE)
+      4. Estimated improvement: 90% → <5% skew
+
+  - name: "Hot AMP identification"
+    parameters:
+      database: "warehouse"
+      table: "fact_sales"
+    expected_result: |
+      Hot AMP Detection:
+      - AMP 47: 150,000 rows (50% above average) - HOT_AMP
+      - AMP 23: 145,000 rows (45% above average) - HOT_AMP
+      - AMP 91: 140,000 rows (40% above average) - HOT_AMP
+
+      Cold AMPs:
+      - AMP 12: 50,000 rows (50% below average) - COLD_AMP
+      - AMP 65: 55,000 rows (45% below average) - COLD_AMP
+
+      Impact: Queries wait for AMPs 47, 23, 91 while others sit idle.
+
+      Next step: Analyze PI column value distribution to find hot values.
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## PI Skew Detection Best Practices
+
+  ### 1. Check Skew After Every Major Data Load
+  ```sql
+  -- Post-ETL validation
+  LOAD DATA INTO sales.orders;
+  -- Run pi_skew_analysis
+  ```
+
+  ### 2. Use System Views for Quick Checks
+  DBC.TableSizeV provides fast skew estimates without full table scan:
+  ```sql
+  SELECT DatabaseName, TableName,
+         ((MAX(CurrentPerm) - AVG(CurrentPerm)) / NULLIFZERO(AVG(CurrentPerm))) * 100 AS skew_pct
+  FROM DBC.TableSizeV
+  WHERE DatabaseName = 'sales'
+  GROUP BY DatabaseName, TableName
+  HAVING skew_pct > 10;
+  ```
+
+  ### 3. Understand Skew Thresholds
+  - **< 5%**: Excellent, no action needed
+  - **5-10%**: Good, monitor over time
+  - **10-20%**: Investigate PI choice, consider alternatives
+  - **> 20%**: Critical, redesign PI immediately
+
+  ### 4. Analyze PI Column Cardinality
+  Low cardinality PI columns cause skew:
+  ```sql
+  -- Check distinct values
+  SELECT COUNT(DISTINCT pi_column) FROM table;
+  ```
+  Rule of thumb: Distinct PI values should be > number of AMPs × 10
+
+  ### 5. Watch for NULL Skew
+  Many NULLs in PI cause demographic skew (all NULLs hash to same AMP):
+  ```sql
+  SELECT SUM(CASE WHEN pi_column IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+  FROM table;
+  ```
+  If > 10% NULLs, consider COALESCE or different PI.
+
+  ### 6. Consider Composite PI for Balance
+  Single column skewed? Add second column:
+  ```sql
+  -- Before: PRIMARY INDEX (customer_type)  -- Skewed
+  -- After:  PRIMARY INDEX (customer_type, customer_id)  -- Balanced
+  ```
+
+  ### 7. Monitor Skew Trend Over Time
+  Skew can develop as data grows:
+  - New customers concentrate in certain segments
+  - Date-based PI becomes skewed as recent dates accumulate
+  - Seasonal patterns affect distribution
+
+  ### 8. Use NUPI for Highly Skewed Data
+  If data is inherently skewed, use Non-Unique Primary Index (NUPI):
+  ```sql
+  CREATE TABLE transactions (
+    transaction_id INTEGER,
+    customer_id INTEGER,
+    amount DECIMAL(10,2)
+  )
+  PRIMARY INDEX (customer_id);  -- NUPI allows duplicates
+  ```
+
+  ### 9. Memory Layers for Skew Tracking
+  - **Kernel Layer**: Cache PI column definitions and current AMP count for hash calculations
+  - **L1 Cache**: Keep recent skew analysis results (last 5-8 tables) to track trends
+  - **L2 Compressed**: Archive historical skew measurements showing degradation over time
+  - **Swap Layer**: Store complete skew history; use recall_conversation to compare current skew against baseline from months ago when table was first created
+  This enables identifying when skew develops and correlating with data load patterns.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "NoPI table has no skew metrics"
+    cause: "Table has NO PRIMARY INDEX defined"
+    solution: "NoPI tables distribute via hash of row contents. Check DBC.IndicesV to verify PI exists."
+
+  - error: "Cannot calculate HASHAMP on view"
+    cause: "Attempted skew analysis on view instead of base table"
+    solution: "Identify underlying base tables and analyze those. Use DBC.TablesV to find base tables."
+
+  - error: "Skew percentage varies between runs"
+    cause: "Data is actively changing between analyses"
+    solution: "Run analysis during stable period (after ETL, before queries start)."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - statistics_collection  # Collect stats after PI redesign
+  - column_distribution_analysis  # Analyze PI column value distribution
+  - amp_usage_analysis  # Detailed AMP-level resource usage
+# === RELATED_PATTERNS END ===

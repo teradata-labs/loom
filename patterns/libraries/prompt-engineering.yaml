@@ -1,0 +1,149 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: prompt-engineering
+  version: 1.0.0
+  domain: meta
+  description: "Universal prompting techniques that work across all backends - SQL, REST, documents, code, and more. These meta-patterns improve reasoning, reliability, and output quality for any agent task."
+  labels:
+    vendor: anthropic
+    category: prompt_engineering
+    maturity: production
+
+spec:
+  entries:
+    - name: chain_of_thought
+      description: "Enable step-by-step reasoning for complex problems. Improves accuracy 30-50% on multi-step tasks."
+      trigger_conditions:
+        - "task requires multiple logical steps"
+        - "user asks for analysis or planning"
+        - "debugging or troubleshooting needed"
+        - "mathematical calculations required"
+        - "complex decision making with many factors"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/prompt_engineering/chain-of-thought.yaml
+
+        Key use cases:
+        - Complex SQL query planning
+        - Multi-step data transformations
+        - Root cause analysis
+        - Performance optimization
+        - System architecture decisions
+
+        Templates:
+        - basic: Simple 3-step reasoning
+        - explicit_thinking: Claude's <thinking> tags
+        - guided_steps: Structured prompts per step
+        - hypothesis_testing: Scientific method for debugging
+        - mathematical: Step-by-step calculations
+      priority: 95
+      tags:
+        - reasoning
+        - analysis
+        - debugging
+        - planning
+        - universal
+
+    - name: few_shot_learning
+      description: "Teach Claude through 2-5 examples. Show input-output pairs to establish patterns without fine-tuning."
+      trigger_conditions:
+        - "need to establish consistent format or style"
+        - "user provides examples of desired behavior"
+        - "query generation from natural language"
+        - "data transformation patterns"
+        - "classification tasks"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/prompt_engineering/few-shot-learning.yaml
+
+        Key use cases:
+        - Natural language to SQL
+        - Code style consistency
+        - Data format conversion
+        - Text classification
+        - Error fix patterns
+
+        Templates:
+        - basic: 3 examples with new input
+        - detailed: Examples with explanations
+        - classification: Examples per category
+        - with_reasoning: Combine with chain-of-thought
+        - error_correction: Show incorrect → correct
+      priority: 90
+      tags:
+        - learning
+        - examples
+        - training
+        - consistency
+        - universal
+
+    - name: structured_output
+      description: "Force JSON or XML output for programmatic parsing. Essential for workflow automation and API integration."
+      trigger_conditions:
+        - "output needs to be parsed programmatically"
+        - "multi-agent workflow coordination"
+        - "API response formatting"
+        - "database storage required"
+        - "dashboard integration"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/prompt_engineering/structured-output.yaml
+
+        Key use cases:
+        - Multi-agent workflow data passing
+        - API responses
+        - Database storage
+        - Dashboard feeds
+        - Configuration generation
+
+        Templates:
+        - json_strict: Force valid JSON with schema
+        - json_with_example: Show exact format
+        - json_typed: Specify types per field
+        - xml_structured: Force XML output
+        - json_list: Return JSON array
+        - json_with_metadata: Include confidence/reasoning
+      priority: 92
+      tags:
+        - formatting
+        - json
+        - xml
+        - parsing
+        - workflows
+        - universal
+
+    - name: hallucination_prevention
+      description: "Prevent hallucinations through citations, grounding, and verification. Critical for compliance, finance, medical, legal."
+      trigger_conditions:
+        - "high-stakes decision making"
+        - "compliance or regulatory requirements"
+        - "SQL query generation (verify schema)"
+        - "audit trail needed"
+        - "accuracy is non-negotiable"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/prompt_engineering/hallucination-prevention.yaml
+
+        Key use cases:
+        - SQL query generation with schema verification
+        - Compliance reporting with audit trail
+        - Data quality analysis with citations
+        - API integration (verify endpoints exist)
+        - Financial/medical recommendations
+
+        Templates:
+        - citation_required: Cite source for every claim
+        - grounded_generation: Only use provided context
+        - tool_use_required: Force verification via tools
+        - uncertainty_explicit: Mark confidence scores
+        - retrieval_augmented: RAG pattern
+        - sql_schema_grounded: Schema-first SQL generation
+      priority: 98
+      tags:
+        - reliability
+        - verification
+        - citations
+        - compliance
+        - schema_validation
+        - universal

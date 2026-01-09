@@ -1,0 +1,540 @@
+# === METADATA START ===
+name: csv_to_teradata_intelligent
+title: "Intelligent CSV to Teradata Import"
+description: |
+  Import CSV to Teradata with intelligent type inference, data quality handling, and FastLoad for large datasets.
+  Analyzes CSV structure, infers optimal Teradata types, validates data quality, and uses FastLoad for bulk operations.
+category: data-import
+difficulty: advanced
+backend_type: teradata
+version: 1.0.0
+author: Loom Framework
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Import CSV files to Teradata with intelligent type mapping
+  - Bulk load large datasets (>100K rows) using FastLoad
+  - Validate data quality before import
+  - Handle data type inference and conversion
+  - Detect and report data quality issues
+  - Create optimized Teradata schemas from CSV
+  - Import with error handling and recovery
+  - Generate data quality reports
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: csv_file
+    type: string
+    required: true
+    description: "Path to the CSV file to import"
+    example: "sales_data.csv"
+
+  - name: database
+    type: string
+    required: true
+    description: "Target Teradata database name"
+    example: "my_database"
+
+  - name: table_name
+    type: string
+    required: true
+    description: "Target table name"
+    example: "sales_q4"
+
+  - name: delimiter
+    type: string
+    required: false
+    default: ","
+    description: "CSV delimiter"
+    example: ","
+
+  - name: has_header
+    type: boolean
+    required: false
+    default: true
+    description: "Whether CSV has header row"
+    example: "true"
+
+  - name: skip_rows
+    type: integer
+    required: false
+    default: 0
+    description: "Number of rows to skip from beginning"
+    example: "0"
+
+  - name: max_errors
+    type: integer
+    required: false
+    default: 10
+    description: "Maximum errors allowed during load"
+    example: "10"
+
+  - name: batch_size
+    type: integer
+    required: false
+    default: 1000
+    description: "Batch size for FastLoad"
+    example: "1000"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  intelligent_import:
+    description: "Import CSV with intelligent type inference and data quality checks"
+    content: |
+      Import {{csv_file}} to {{database}}.{{table_name}} with intelligent analysis:
+
+      Step 1: CSV Analysis
+      - Parse CSV using parse_document tool with detailed_analysis mode
+      - Profile each column (null rates, distinct counts, min/max, string lengths)
+      - Detect data quality issues (mixed types, invalid dates, outliers)
+      - Assign confidence scores to type inferences
+
+      Step 2: Intelligent Type Mapping (CSV → Teradata)
+      For each column, infer optimal Teradata type:
+      - Integers: SMALLINT (-32K to 32K), INTEGER (-2B to 2B), or BIGINT
+      - Floats: DECIMAL(p,s) for currency/fixed precision, DOUBLE for scientific
+      - Strings: CHAR(n) for fixed length <=10, VARCHAR with 20% buffer, CLOB for large text
+      - Dates: DATE for dates, TIMESTAMP for datetime
+      - Booleans: BYTEINT (0/1)
+      - Mixed types: VARCHAR fallback with data quality warning
+
+      Step 3: Data Quality Report
+      - Overall quality score (0.0-1.0)
+      - Per-column issues (nulls %, invalid values, outliers)
+      - Recommendations for cleansing
+      - Confidence levels for type mappings
+
+      Step 4: Schema Validation
+      - Check if table {{database}}.{{table_name}} exists (query DBC.ColumnsV)
+      - If exists: compare inferred vs existing schema, warn about mismatches
+      - If not exists: generate optimized CREATE TABLE DDL
+
+      Step 5: DDL Generation (if new table)
+      ```sql
+      CREATE TABLE {{database}}.{{table_name}} (
+        -- Columns with inferred types
+        -- PRIMARY INDEX on high-cardinality column
+        -- Consider PARTITION BY for date ranges
+        -- Use CHAR for fixed-length codes
+        -- Add created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+      PRIMARY INDEX (appropriate_column);
+      ```
+      Show DDL to user for confirmation before creating.
+
+      Step 6: Loading Strategy Selection
+      - Small files (<1K rows): Standard INSERT
+      - Medium files (1K-100K rows): Multi-row INSERT (batch size 100-1000)
+      - Large files (>100K rows): teradata_import_csv tool (FastLoad-based)
+
+      Step 7: Data Loading
+      For large files:
+      ```
+      teradata_import_csv {
+        "database": "{{database}}",
+        "tableName": "{{table_name}}",
+        "csvPath": "{{csv_file}}",
+        "delimiter": "{{delimiter}}",
+        "hasHeader": {{has_header}},
+        "skipRows": {{skip_rows}},
+        "maxErrors": {{max_errors}},
+        "batchSize": {{batch_size}}
+      }
+      ```
+
+      Step 8: Post-Load Actions
+      - Report statistics (rows processed, inserted, failed, duration, throughput)
+      - Collect statistics: COLLECT STATISTICS ON {{database}}.{{table_name}}
+      - Suggest indexes for frequent queries
+      - Provide data validation queries
+
+      Always show data quality report and DDL before proceeding with load.
+    required_parameters:
+      - csv_file
+      - database
+      - table_name
+
+  type_inference_only:
+    description: "Analyze CSV and suggest Teradata schema without importing"
+    content: |
+      Analyze {{csv_file}} and suggest optimal Teradata schema:
+
+      1. Parse and Profile CSV:
+         - Use parse_document tool with detailed analysis
+         - Profile all columns statistically
+         - Detect data types and patterns
+
+      2. Type Inference with Confidence Scores:
+         For each column:
+         - Inferred Teradata type
+         - Confidence level (0.0-1.0)
+         - Reasoning (range, patterns, examples)
+         - Alternative types considered
+         - Data quality issues found
+
+      3. Generate Optimized DDL:
+         ```sql
+         CREATE TABLE {{database}}.{{table_name}} (
+           -- Columns with optimal types
+           -- Consider PRIMARY INDEX selection
+           -- Add compression hints for repeated values
+           -- Partition suggestions for large tables
+         )
+         PRIMARY INDEX (recommended_column);
+         ```
+
+      4. Recommendations:
+         - Primary index selection rationale
+         - Partitioning strategy if applicable
+         - Columns suitable for compression
+         - Statistics collection plan
+         - Data quality improvements needed
+
+      Do not perform actual import, only analysis and recommendations.
+    required_parameters:
+      - csv_file
+      - database
+      - table_name
+
+  data_quality_check:
+    description: "Perform detailed data quality analysis on CSV before import"
+    content: |
+      Perform data quality analysis on: {{csv_file}}
+
+      1. Dataset Overview:
+         - Row count, column count
+         - File size
+         - Delimiter and format validation
+
+      2. Column-Level Quality Metrics:
+         For each column:
+         - Null/missing rate (% of rows)
+         - Distinct value count and cardinality
+         - Data type consistency (% matching inferred type)
+         - Invalid values (dates, numbers, formats)
+         - Outliers (statistical analysis for numeric columns)
+         - String length analysis (min, max, avg)
+
+      3. Cross-Column Validation:
+         - Detect potential relationships (foreign keys)
+         - Identify duplicate rows
+         - Check for referential integrity issues
+         - Validate calculated columns if patterns detected
+
+      4. Quality Score Calculation:
+         - Completeness: (1 - avg_null_rate)
+         - Validity: (avg_type_match_rate)
+         - Consistency: (1 - outlier_rate)
+         - Overall Quality: weighted average
+         - Grade: Excellent (>95%), Good (85-95%), Fair (70-85%), Poor (<70%)
+
+      5. Recommendations:
+         - Critical issues requiring immediate attention
+         - Suggested data cleansing steps
+         - Columns suitable for NOT NULL constraints
+         - Potential lookup tables for low-cardinality columns
+
+      Provide actionable insights for improving data quality before import.
+    required_parameters:
+      - csv_file
+# === TEMPLATES END ===
+
+system: |
+  Teradata CSV Import Analysis: Perform detailed CSV profiling, intelligent type mapping, and generate optimized import scripts.
+
+  ## Analysis Steps
+
+  1. **Detailed CSV Analysis**
+     - Parse CSV and perform statistical profiling on each column
+     - Calculate: null rates, distinct counts, min/max values, string lengths
+     - Detect data quality issues (mixed types, invalid dates, outliers)
+     - Assign confidence scores to type inferences
+
+  2. **Intelligent Type Mapping (CSV → Teradata)**
+
+     ### Integer Columns
+     - Range -32,768 to 32,767 → SMALLINT
+     - Range -2B to 2B → INTEGER
+     - Larger → BIGINT
+     - Mixed types (e.g., "123" and "abc") → VARCHAR with warning
+
+     ### Float Columns
+     - Currency-like (2 decimals) → DECIMAL(18,2)
+     - Observed precision → DECIMAL(p,s) where s = max decimal places
+     - Scientific notation or >1e15 → DOUBLE PRECISION
+     - Consider max value for precision sizing
+
+     ### String Columns
+     - Fixed length (min=max, <=10 chars) → CHAR(n) for efficiency
+     - Variable length → VARCHAR(max_length * 1.2) with 20% buffer
+     - Cap: <=255 → VARCHAR(255), <=4000 → VARCHAR(4000), <=32000 → VARCHAR(32000)
+     - >32000 → CLOB (warn about performance)
+     - Low cardinality (<100 distinct in >1000 rows) → Suggest lookup table
+
+     ### Date Columns
+     - Valid dates → DATE
+     - Timestamp detected → TIMESTAMP
+     - Invalid dates → VARCHAR with warning, or DATE with NULLs
+
+     ### Boolean Columns
+     - true/false, 0/1, yes/no, Y/N → BYTEINT (0=false, 1=true)
+
+     ### Mixed Types (Data Quality Issue)
+     - Fallback to VARCHAR(appropriate_size)
+     - Flag for data cleansing
+     - Recommend validation rules
+
+  3. **Schema Validation**
+     - Query DBC.ColumnsV to check if table exists
+     - Compare inferred schema vs existing schema
+     - Warn about type mismatches
+     - Suggest ALTER TABLE if compatible, or new table name
+
+  4. **Smart Loading Strategy**
+
+     ### Small Files (<1,000 rows)
+     ```sql
+     -- Use standard INSERT
+     INSERT INTO db.table VALUES (row1);
+     INSERT INTO db.table VALUES (row2);
+     ...
+     ```
+
+     ### Medium Files (1,000 - 100,000 rows)
+     ```sql
+     -- Use multi-row INSERT (if vantage-mcp supports)
+     INSERT INTO db.table VALUES
+       (row1),
+       (row2),
+       ...
+       (row100);  -- Batch size: 100-1000 rows
+     ```
+
+     ### Large Files (>100,000 rows)
+     ```bash
+     # Use teradata_import_csv tool (FastLoad-based) via vantage-mcp
+     # Step 1: Create table with inferred schema
+     CREATE TABLE db.table (...);
+
+     # Step 2: Invoke teradata_import_csv tool
+     teradata_import_csv {
+       "database": "db",
+       "tableName": "table",
+       "csvPath": "/absolute/path/to/data.csv",
+       "delimiter": ",",
+       "hasHeader": true,
+       "skipRows": 0,
+       "maxErrors": 10,
+       "batchSize": 1000
+     }
+
+     # FastLoad implementation:
+     # - Batch processing: 1000 rows/batch (configurable)
+     # - Parallel workers: 4 workers (for very large files)
+     # - Statistics: rows/sec, duration, success/failure counts
+     # - 10-100x faster than INSERT for bulk loads
+     ```
+
+  5. **Data Quality Reporting**
+     - Overall quality score (0.0-1.0)
+     - Per-column issues (nulls, invalid values, outliers)
+     - Recommendations for cleansing
+     - Estimated load time
+
+  6. **Error Handling**
+     - Invalid dates → Set to NULL, log count
+     - Type mismatches → Coerce or VARCHAR fallback
+     - Duplicate keys → Skip or upsert strategy
+     - Constraint violations → Error table creation
+
+  ## Workflow
+
+  ```
+  User: Import sales_data.csv to my database as sales_q4
+
+  Step 1: CSV Analysis
+  ✅ Parsed 125,450 rows × 8 columns
+  📊 Statistical profiling complete
+
+  Step 2: Type Inference
+  - customer_id: INTEGER (confidence: 1.0)
+  - customer_name: VARCHAR(255) (confidence: 0.95)
+  - amount: DECIMAL(10,2) (confidence: 0.98)
+  - transaction_date: DATE (confidence: 0.95)
+    ⚠️  125 invalid dates (0.1%) will be NULL
+  - status: CHAR(1) (confidence: 1.0)
+    💡 Low cardinality (4 values) - consider lookup table
+
+  Overall Quality: 99.2% (Excellent)
+
+  Step 3: Schema Validation
+  ℹ️  Table 'sales_q4' does not exist in your database
+
+  Step 4: DDL Generation
+  CREATE TABLE your_db.sales_q4 (
+    customer_id INTEGER NOT NULL,
+    customer_name VARCHAR(255),
+    amount DECIMAL(10,2),
+    transaction_date DATE,
+    status CHAR(1) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+  PRIMARY INDEX (customer_id);
+
+  Confirm? (yes/no/edit)
+
+  [User confirms]
+
+  Step 5: Table Creation
+  ✅ Table created successfully
+
+  Step 6: Data Loading (Large file detected - using teradata_import_csv)
+  🚀 FastLoad initiated (batch size: 1000, max errors: 10)...
+  ⏱️  Estimated time: 45 seconds
+
+  Progress: [████████████████████] 100% (125,450 rows)
+
+  ✅ Import Complete!
+  Statistics:
+  - Rows Processed: 125,450
+  - Rows Inserted: 125,325
+  - Rows Failed: 125 (invalid dates)
+  - Load time: 42.3s
+  - Throughput: 2,963 rows/sec
+
+  Summary:
+  - Table: your_db.sales_q4
+  - Rows: 125,450
+  - Quality Score: 99.2%
+  - Performance: Excellent (FastLoad used)
+
+  Next steps:
+  - Run data validation queries
+  - Create indexes for frequent queries
+  - Set up statistics for query optimizer
+  ```
+
+  ## Best Practices
+
+  - **Always ask for target database and table name** (don't assume)
+  - **Show DDL before creating table** (let user review)
+  - **Warn about performance** for large files with INSERT
+  - **Recommend FastLoad** for files >100K rows
+  - **Report data quality issues** with actionable recommendations
+  - **Provide row counts and timing** for transparency
+  - **Create error table** for rejected rows (FastLoad requirement)
+  - **Set statistics** after load for query optimization
+
+  ## Error Recovery
+
+  - **FastLoad fails mid-load**: Table is locked, requires DROP TABLE + restart
+  - **Type coercion fails**: Fall back to VARCHAR, warn user
+  - **Duplicate primary index**: Use staging table + INSERT SELECT with QUALIFY
+  - **Insufficient spool space**: Reduce batch size or use MultiLoad
+
+  ## Teradata-Specific Optimizations
+
+  - Use **PRIMARY INDEX** on high-cardinality column (not customer_id if low cardinality)
+  - Consider **PARTITION BY** for date ranges
+  - Use **CHAR** for fixed-length codes (state, country)
+  - Use **COMPRESS** for columns with repeated values
+  - **Collect Statistics** after load for optimizer
+
+tools:
+  required:
+    - parse_document        # Enhanced with detailed_analysis mode
+    - teradata_import_csv   # FastLoad-based bulk import (vantage-mcp)
+    - teradata_create_table # Table creation (vantage-mcp)
+    - teradata_execute_sql  # DDL execution and queries (vantage-mcp)
+    - teradata_get_table_schema  # Schema validation via DBC.ColumnsV (vantage-mcp)
+
+guardrails:
+  - "Never drop existing tables without explicit user confirmation"
+  - "Always validate schema before loading data"
+  - "Warn about data quality issues before proceeding"
+  - "Use teradata_import_csv (FastLoad) for files >100K rows (10-100x faster)"
+  - "FastLoad parameters: batchSize=1000, maxErrors=10 (configurable)"
+  - "Table must exist before calling teradata_import_csv (create it first)"
+  - "Never expose passwords or credentials in logs"
+  - "Respect user's target database (don't use 'public' or shared DBs)"
+  - "Set table permissions appropriately after creation"
+  - "Collect statistics after load: COLLECT STATISTICS ON tablename"
+
+examples:
+  - input: "Import sales_data.csv to my database as sales_q4"
+    output: "[Detailed workflow as shown above]"
+
+  - input: "Load customer_list.csv but skip the first 3 rows (comments)"
+    output: |
+      I'll import customer_list.csv, skipping the first 3 rows.
+
+      ⚙️  Options: skipRows=3
+
+      Step 1: Analyzing CSV...
+      Step 2: Creating table...
+      Step 3: Importing with teradata_import_csv(skipRows=3)...
+      ✅ Complete!
+
+  - input: "The amount column should be DECIMAL(15,2) not DECIMAL(10,2)"
+    output: |
+      ✅ Updated type mapping:
+      - amount: DECIMAL(15,2) ← DECIMAL(10,2)
+
+      Regenerating DDL...
+      [Shows updated DDL]
+
+  - input: "Import large_dataset.csv (500K rows) to my database"
+    output: |
+      📊 Analyzed: 500,000 rows × 12 columns
+      Quality: 98.5% (Excellent)
+
+      📝 Generated DDL for your_db.large_dataset
+      ✅ Table created
+
+      🚀 Large file detected (500K rows) - using teradata_import_csv
+      Parameters:
+      - batchSize: 1000
+      - maxErrors: 10
+      - hasHeader: true
+
+      Statistics:
+      - Rows Processed: 500,000
+      - Rows Inserted: 499,875
+      - Rows Failed: 125
+      - Duration: 2m 48s
+      - Throughput: 2,976 rows/sec
+
+      ✅ Import complete!
+
+tags:
+  - csv
+  - teradata
+  - import
+  - fastload
+  - type-inference
+  - data-quality
+  - bulk-loading
+
+# Metadata for weaver
+weaver_hints:
+  auto_select_conditions:
+    - keywords: ["import", "csv", "teradata", "load", "upload"]
+    - file_extension: ".csv"
+    - backend: "teradata"
+
+  estimated_time:
+    small_files: "30 seconds"
+    medium_files: "1-2 minutes"
+    large_files: "1-5 minutes (with FastLoad)"
+
+# Future enhancements
+roadmap:
+  - "Support for Excel (.xlsx) import"
+  - "Support for JSON/Parquet formats"
+  - "Automatic data cleansing suggestions"
+  - "Integration with data profiling tools"
+  - "Support for MultiLoad (for updates/upserts)"
+  - "Support for TPT (Teradata Parallel Transporter)"

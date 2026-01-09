@@ -1,0 +1,106 @@
+name: metaagent_tool_selection
+namespace: loom
+prompts:
+  - id: select_tools
+    content: |
+      You are selecting tools for a LOOM FRAMEWORK AGENT.
+
+      LOOM FRAMEWORK CONTEXT:
+      - Loom agents use "shuttle tools" for execution
+      - Builtin tools: http_request, file_write, grpc_call, shell_execute, etc.
+      - MCP tools: Model Context Protocol servers (domain-specific capabilities)
+      - Your job: Select which shuttle tools the agent needs, NOT write tool implementation code
+
+      OUTPUT CONSTRAINT: Select tools for a Loom agent configuration, NOT suggest writing custom tool code!
+
+      Requirements:
+      - Primary Intent: {{.primary_intent}}
+      - Domain: {{.domain}}
+      - Capabilities needed: {{.capabilities}}
+      - Data sources: {{.data_sources}}
+      - Complexity: {{.complexity}}
+
+      {{.builtin_tools_section}}
+
+      {{.mcp_tools_section}}
+
+      IMPORTANT CONSIDERATIONS:
+      1. MCP tools are often domain-specific (e.g., vantage-mcp for Teradata SQL)
+      2. Prefer MCP tools over builtins when:
+         - MCP tool is specialized for the domain
+         - MCP tool provides richer functionality
+      3. Check for conflicts between:
+         - Builtin vs builtin (use metadata conflicts field)
+         - Builtin vs MCP (semantic overlap)
+         - MCP vs MCP (two servers providing same capability)
+
+      Select tools that:
+      1. Match the requirements
+      2. Include necessary MCP tools for domain
+      3. Don't conflict with each other
+      4. Have prerequisites available
+
+      Output JSON:
+      {
+        "builtin_tools": ["tool1", "tool2"],
+        "mcp_tools": [
+          {"name": "tool3", "server": "vantage-mcp", "reason": "Specialized for Teradata"},
+          {"name": "tool4", "server": "filesystem", "reason": "File operations"}
+        ],
+        "reasoning": "why each tool was chosen, including why MCP over builtin",
+        "potential_conflicts": [
+          {
+            "tools": ["http_request", "mcp:fetch_api"],
+            "reason": "Both fetch HTTP resources",
+            "needs_clarification": true,
+            "recommendation": "Use MCP fetch_api if specialized, else http_request",
+            "confidence": 0.6
+          }
+        ],
+        "prerequisite_warnings": ["missing API keys, etc."],
+        "referenced_examples": ["which examples influenced decisions"]
+      }
+    variables:
+      primary_intent:
+        name: primary_intent
+        type: 1  # STRING
+        required: true
+        description: "Primary goal of the agent"
+      domain:
+        name: domain
+        type: 1  # STRING
+        required: true
+        description: "Agent domain (sql, rest, file, etc.)"
+      capabilities:
+        name: capabilities
+        type: 1  # STRING
+        required: true
+        description: "List of required capabilities"
+      data_sources:
+        name: data_sources
+        type: 1  # STRING
+        required: true
+        description: "List of data sources"
+      complexity:
+        name: complexity
+        type: 1  # STRING
+        required: true
+        description: "Complexity level (low, medium, high)"
+      builtin_tools_section:
+        name: builtin_tools_section
+        type: 1  # STRING
+        required: true
+        description: "Formatted builtin tools metadata"
+      mcp_tools_section:
+        name: mcp_tools_section
+        type: 1  # STRING
+        required: false
+        default_value: ""
+        description: "Formatted MCP tools metadata"
+    tags:
+      - metaagent
+      - tool-selection
+      - weaver
+    metadata:
+      version: "v1.0"
+      description: "Tool selection prompt for ToolSelector sub-agent"

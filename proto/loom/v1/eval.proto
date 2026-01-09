@@ -1,0 +1,151 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/protobuf/timestamp.proto";
+import "loom/v1/judge.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// EvalSuite represents a test suite for agent evaluation
+message EvalSuite {
+  // Metadata
+  EvalMetadata metadata = 1;
+
+  // Specification
+  EvalSpec spec = 2;
+}
+
+message EvalMetadata {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+  map<string, string> labels = 4;
+}
+
+message EvalSpec {
+  // Agent to test (can be name or config file)
+  string agent_id = 1;
+
+  // Test cases
+  repeated TestCase test_cases = 2;
+
+  // Metrics to collect
+  repeated string metrics = 3; // "accuracy", "cost_efficiency", "latency", "tool_usage"
+
+  // Export results to hawk
+  bool hawk_export = 4;
+
+  // Golden file comparison
+  GoldenFileConfig golden_files = 5;
+
+  // Timeout for entire suite
+  int32 timeout_seconds = 6;
+
+  // Comparison settings (for A/B testing)
+  ComparisonConfig comparison = 7;
+
+  // Multi-judge evaluation configuration
+  MultiJudgeConfig multi_judge = 8;
+}
+
+message TestCase {
+  string name = 1;
+  string input = 2;
+
+  // Expected outputs
+  repeated string expected_output_contains = 3;
+  repeated string expected_output_not_contains = 4;
+  string expected_output_regex = 5;
+
+  // Expected tool usage
+  repeated string expected_tools = 6;
+
+  // Expected cost constraints
+  double max_cost_usd = 7;
+
+  // Expected latency constraints
+  int32 max_latency_ms = 8;
+
+  // Context/variables for this test
+  map<string, string> context = 9;
+
+  // Golden file reference (for output comparison)
+  string golden_file = 10;
+
+  // Test-case specific similarity threshold (overrides suite-level)
+  double golden_similarity_threshold = 11;
+}
+
+message GoldenFileConfig {
+  string directory = 1; // Path to golden files directory
+  bool update_on_mismatch = 2; // Auto-update golden files
+  double similarity_threshold = 3; // 0.0-1.0 for fuzzy matching
+}
+
+message ComparisonConfig {
+  string baseline_agent_id = 1;
+  repeated string comparison_metrics = 2;
+}
+
+// EvalResult represents the result of running an eval suite
+message EvalResult {
+  string suite_name = 1;
+  string agent_id = 2;
+  google.protobuf.Timestamp run_at = 3;
+
+  // Overall metrics
+  EvalMetrics overall = 4;
+
+  // Per-test-case results
+  repeated TestCaseResult test_results = 5;
+
+  // Pass/fail status
+  bool passed = 6;
+  string failure_reason = 7;
+
+  // Store ID (set when saved to store)
+  string id = 8;
+}
+
+message EvalMetrics {
+  int32 total_tests = 1;
+  int32 passed_tests = 2;
+  int32 failed_tests = 3;
+  double accuracy = 4; // passed / total
+  double total_cost_usd = 5;
+  int64 total_latency_ms = 6;
+  int32 total_tool_calls = 7;
+  map<string, double> custom_metrics = 8;
+}
+
+message TestCaseResult {
+  string test_name = 1;
+  bool passed = 2;
+  string failure_reason = 3;
+
+  string actual_output = 4;
+  repeated string tools_used = 5;
+  double cost_usd = 6;
+  int64 latency_ms = 7;
+
+  // Golden file comparison
+  GoldenFileResult golden_result = 8;
+
+  // Observability
+  string trace_id = 9; // Hawk trace ID for this test execution
+
+  // Multi-judge evaluation result
+  EvaluateResponse multi_judge_result = 10;
+}
+
+message GoldenFileResult {
+  bool matched = 1;
+  double similarity_score = 2;
+  string diff = 3; // Diff output if not matched
+}

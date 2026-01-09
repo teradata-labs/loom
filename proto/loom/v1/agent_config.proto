@@ -1,0 +1,309 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// AgentConfig defines a complete agent configuration.
+// This message represents a declarative agent specification that can be
+// loaded from YAML files or created programmatically.
+message AgentConfig {
+  // Unique name for the agent (e.g., "sql_expert", "security_analyst")
+  string name = 1;
+
+  // Human-readable description of the agent's purpose
+  string description = 2;
+
+  // LLM configuration
+  LLMConfig llm = 3;
+
+  // System prompt that defines the agent's behavior and persona
+  string system_prompt = 4;
+
+  // Tools configuration
+  ToolsConfig tools = 5;
+
+  // Memory/session storage configuration
+  MemoryConfig memory = 6;
+
+  // Behavior constraints and limits
+  BehaviorConfig behavior = 7;
+
+  // Optional metadata (author, version, tags, etc.)
+  map<string, string> metadata = 8;
+
+  // Ephemeral agent policies - defines which agents can be spawned dynamically
+  repeated EphemeralAgentPolicy ephemeral_agents = 9;
+
+  // ROM (Read-Only Memory) identifier for domain-specific knowledge
+  // Options:
+  //   - "TD" or "teradata": Load Teradata SQL guidance (embedded TD.rom)
+  //   - "auto": Auto-detect based on backend configuration (default)
+  //   - "": No ROM (empty system prompt only)
+  // If not specified, defaults to "auto" which detects ROM from backend path
+  string rom = 10;
+}
+
+// LLMConfig configures the language model provider and parameters
+message LLMConfig {
+  // Provider name: "anthropic", "bedrock", "ollama"
+  string provider = 1;
+
+  // Model identifier (e.g., "claude-3-5-sonnet-20241022-v2:0")
+  string model = 2;
+
+  // Temperature (0.0-1.0) controls randomness
+  float temperature = 3;
+
+  // Maximum tokens in response
+  int32 max_tokens = 4;
+
+  // Stop sequences to end generation
+  repeated string stop_sequences = 5;
+
+  // Top-p sampling parameter (0.0-1.0)
+  float top_p = 6;
+
+  // Top-k sampling parameter
+  int32 top_k = 7;
+
+  // Maximum context window tokens supported by the model
+  // If not set, will be auto-detected from model name or use provider default
+  // Examples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000
+  int32 max_context_tokens = 8;
+
+  // Tokens reserved for model output (typically 10% of max_context_tokens)
+  // If not set, will be calculated as max_context_tokens * 0.1
+  // Examples: Claude (200K) = 20000, Llama (128K) = 12800, Mistral (32K) = 3200
+  int32 reserved_output_tokens = 9;
+}
+
+// ToolsConfig defines tools available to the agent
+message ToolsConfig {
+  // MCP (Model Context Protocol) tools from servers
+  repeated MCPToolConfig mcp = 1;
+
+  // Custom tool implementations
+  repeated CustomToolConfig custom = 2;
+
+  // Built-in tools (e.g., "web_search", "calculator")
+  repeated string builtin = 3;
+}
+
+// MCPToolConfig specifies tools from an MCP server
+message MCPToolConfig {
+  // MCP server name (must be configured in MCP manager)
+  string server = 1;
+
+  // Specific tool names to enable (empty = all tools from server)
+  repeated string tools = 2;
+}
+
+// CustomToolConfig defines a custom tool implementation
+message CustomToolConfig {
+  // Tool name
+  string name = 1;
+
+  // Path to tool implementation (Go file or plugin)
+  string implementation = 2;
+}
+
+// MemoryConfig defines agent memory and session storage
+message MemoryConfig {
+  // Storage type: "memory" (in-memory), "sqlite", "postgres"
+  string type = 1;
+
+  // File path for file-based storage (sqlite)
+  string path = 2;
+
+  // Database DSN for database storage (postgres)
+  string dsn = 3;
+
+  // Maximum conversation history to retain
+  int32 max_history = 4;
+
+  // Memory compression configuration (conversation history compression)
+  MemoryCompressionConfig memory_compression = 5;
+}
+
+// WorkloadProfile defines memory compression behavior profiles for different use cases
+enum WorkloadProfile {
+  WORKLOAD_PROFILE_UNSPECIFIED = 0;
+
+  // Balanced profile (default): maxL1=8, warning=60%, critical=75%
+  // Suitable for general-purpose agents with mixed workloads
+  WORKLOAD_PROFILE_BALANCED = 1;
+
+  // Data-intensive profile: maxL1=5, warning=50%, critical=70%
+  // Optimized for agents handling large tool outputs (SQL, file operations)
+  WORKLOAD_PROFILE_DATA_INTENSIVE = 2;
+
+  // Conversational profile: maxL1=12, warning=70%, critical=85%
+  // Optimized for chat-heavy agents with minimal tool usage
+  WORKLOAD_PROFILE_CONVERSATIONAL = 3;
+}
+
+// MemoryCompressionBatchSizes defines how many messages to compress in each batch
+message MemoryCompressionBatchSizes {
+  // Number of messages to compress in normal conditions (default: 3)
+  int32 normal = 1;
+
+  // Number of messages to compress under warning threshold (default: 5)
+  int32 warning = 2;
+
+  // Number of messages to compress under critical threshold (default: 7)
+  int32 critical = 3;
+}
+
+// MemoryCompressionConfig defines conversation history compression behavior
+message MemoryCompressionConfig {
+  // Workload profile (default: WORKLOAD_PROFILE_BALANCED)
+  // Provides preset values for thresholds and limits
+  WorkloadProfile workload_profile = 1;
+
+  // Maximum messages in L1 cache before compression triggers (default: profile-dependent)
+  // data_intensive=5, balanced=8, conversational=12
+  int32 max_l1_messages = 2;
+
+  // Minimum messages in L1 cache after compression (default: max_l1_messages / 2)
+  // Ensures L1 doesn't stay empty after aggressive compression
+  int32 min_l1_messages = 3;
+
+  // Warning threshold as percentage (0-100) (default: profile-dependent)
+  // data_intensive=50, balanced=60, conversational=70
+  int32 warning_threshold_percent = 4;
+
+  // Critical threshold as percentage (0-100) (default: profile-dependent)
+  // data_intensive=70, balanced=75, conversational=85
+  int32 critical_threshold_percent = 5;
+
+  // Batch sizes for compression operations
+  MemoryCompressionBatchSizes batch_sizes = 6;
+}
+
+// BehaviorConfig defines agent behavior constraints
+message BehaviorConfig {
+  // Maximum tool call iterations per turn
+  int32 max_iterations = 1;
+
+  // Timeout in seconds for each message
+  int32 timeout_seconds = 2;
+
+  // Whether to allow code execution (security setting)
+  bool allow_code_execution = 3;
+
+  // Allowed domains for web access (empty = all)
+  repeated string allowed_domains = 4;
+
+  // Maximum conversation turns before forcing completion (default: 25)
+  // A turn is one LLM call/response cycle. Complex tasks with many tool calls
+  // may need higher values (e.g., 50-100).
+  int32 max_turns = 5;
+
+  // Maximum tool executions per conversation (default: 50)
+  int32 max_tool_executions = 6;
+}
+
+// AgentTemplate defines a reusable agent template
+message AgentTemplate {
+  // Template name (e.g., "expert", "code_reviewer")
+  string name = 1;
+
+  // Template description
+  string description = 2;
+
+  // Template parameters
+  repeated TemplateParameter parameters = 3;
+
+  // Template config with placeholders
+  AgentConfig template_config = 4;
+}
+
+// TemplateParameter defines a template parameter
+message TemplateParameter {
+  // Parameter name
+  string name = 1;
+
+  // Parameter type: "string", "int", "float", "bool", "list"
+  string type = 2;
+
+  // Whether parameter is required
+  bool required = 3;
+
+  // Default value (if not required)
+  string default_value = 4;
+
+  // Parameter description
+  string description = 5;
+}
+
+// AgentProfile defines environment-specific configuration overrides
+message AgentProfile {
+  // Profile name (e.g., "development", "production")
+  string name = 1;
+
+  // Default values for all agents
+  AgentConfig defaults = 2;
+
+  // Per-agent overrides
+  map<string, AgentConfig> overrides = 3;
+}
+
+// EphemeralAgentPolicy defines when and how to spawn ephemeral agents.
+// Agents declare these policies to dynamically create other agents based on runtime conditions.
+message EphemeralAgentPolicy {
+  // Role name for the ephemeral agent (e.g., "judge", "domain_expert", "moderator")
+  string role = 1;
+
+  // Trigger conditions that determine when to spawn this agent
+  SpawnTrigger trigger = 2;
+
+  // Template configuration for the spawned agent
+  AgentConfig template = 3;
+
+  // Maximum number of times this agent can be spawned per workflow
+  int32 max_spawns = 4;
+
+  // Cost budget in USD (prevents runaway spawning)
+  float cost_limit_usd = 5;
+}
+
+// SpawnTrigger defines conditions for spawning ephemeral agents
+message SpawnTrigger {
+  // Trigger type
+  SpawnTriggerType type = 1;
+
+  // Threshold value (interpretation depends on type)
+  float threshold = 2;
+
+  // Optional: Custom condition expression (for extensibility)
+  string condition = 3;
+}
+
+// SpawnTriggerType enumerates trigger conditions
+enum SpawnTriggerType {
+  SPAWN_TRIGGER_TYPE_UNSPECIFIED = 0;
+
+  // Spawn when consensus is not reached in debate/swarm
+  CONSENSUS_NOT_REACHED = 1;
+
+  // Spawn when average confidence falls below threshold
+  CONFIDENCE_BELOW = 2;
+
+  // Spawn when voting results in a tie
+  TIE_DETECTED = 3;
+
+  // Spawn when agent explicitly requests escalation
+  ESCALATION_REQUESTED = 4;
+
+  // Spawn unconditionally (for testing)
+  ALWAYS = 5;
+
+  // Custom condition evaluated at runtime
+  CUSTOM = 6;
+}

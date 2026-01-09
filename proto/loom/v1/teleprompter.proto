@@ -1,0 +1,380 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+import "loom/v1/judge.proto";
+import "loom/v1/memory.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// TeleprompterService provides DSPy-style program optimization.
+// A "teleprompter" compiles a program (agent) by optimizing its prompts and demonstrations
+// based on training data and metrics.
+//
+// Supported teleprompters:
+// - BootstrapFewShot: Collect successful traces, use as few-shot demonstrations
+// - BootstrapFewShotWithRandomSearch: Bootstrap + hyperparameter search
+// - MIPRO: Multi-prompt Instruction Proposal Optimizer
+// - COPRO: Collaborative Prompt Optimizer
+// - KNNFewShot: K-nearest neighbor demonstration selection
+// - Ensemble: Combine multiple compiled programs
+service TeleprompterService {
+  // Compile optimizes an agent using a teleprompter
+  rpc Compile(CompileRequest) returns (CompileResponse);
+
+  // GetCompilationHistory retrieves optimization history
+  rpc GetCompilationHistory(GetCompilationHistoryRequest) returns (GetCompilationHistoryResponse);
+
+  // RollbackCompilation reverts to a previous compilation
+  rpc RollbackCompilation(RollbackCompilationRequest) returns (RollbackCompilationResponse);
+
+  // CompareCompilations A/B tests two compiled versions
+  rpc CompareCompilations(CompareCompilationsRequest) returns (CompareCompilationsResponse);
+}
+
+// ============================================================================
+// Compilation Request/Response
+// ============================================================================
+
+message CompileRequest {
+  string agent_id = 1;
+  TeleprompterType teleprompter = 2;
+  TeleprompterConfig config = 3;
+  repeated Example trainset = 4;
+  repeated Example devset = 5; // Optional: for validation
+  MetricConfig metric = 6;
+}
+
+message CompileResponse {
+  bool success = 1;
+  string compilation_id = 2; // UUID for tracking
+  CompilationResult result = 3;
+  string message = 4;
+}
+
+// TeleprompterType defines available optimizers
+enum TeleprompterType {
+  TELEPROMPTER_TYPE_UNSPECIFIED = 0;
+
+  // Basic bootstrapping
+  TELEPROMPTER_BOOTSTRAP_FEW_SHOT = 1;
+
+  // Bootstrap with hyperparameter search
+  TELEPROMPTER_BOOTSTRAP_RANDOM_SEARCH = 2;
+
+  // Instruction optimization
+  TELEPROMPTER_MIPRO = 3; // Multi-prompt Instruction Proposal Optimizer
+
+  // Collaborative optimization
+  TELEPROMPTER_COPRO = 4; // Collaborative Prompt Optimizer
+
+  // Bayesian optimization
+  TELEPROMPTER_BAYESIAN_SIGNATURE = 5;
+
+  // Example-based
+  TELEPROMPTER_KNN_FEW_SHOT = 6;
+  TELEPROMPTER_LABELED_FEW_SHOT = 7;
+
+  // Meta-optimization
+  TELEPROMPTER_ENSEMBLE = 8;
+
+  // Fine-tuning based
+  TELEPROMPTER_BOOTSTRAP_FINETUNE = 9;
+}
+
+// TeleprompterConfig contains optimizer-specific settings
+message TeleprompterConfig {
+  // Common settings (all teleprompters)
+  int32 max_bootstrapped_demos = 1; // Default: 5
+  int32 max_labeled_demos = 2; // Default: 8
+  double min_confidence = 3; // Default: 0.7
+  int32 max_rounds = 4; // Default: 1 (multi-round optimization)
+
+  // Teacher configuration (bootstrap teleprompters)
+  TeacherConfig teacher = 5;
+
+  // Search configuration (random search, Bayesian)
+  SearchConfig search = 6;
+
+  // MIPRO-specific
+  MIPROConfig mipro = 7;
+
+  // COPRO-specific
+  COPROConfig copro = 8;
+
+  // Ensemble-specific
+  EnsembleConfig ensemble = 9;
+
+  // KNN-specific
+  KNNConfig knn = 10;
+}
+
+// TeacherConfig defines a more capable "teacher" agent for bootstrapping
+message TeacherConfig {
+  bool use_teacher = 1; // Use different model as teacher
+  string teacher_llm_provider = 2; // e.g., "anthropic"
+  string teacher_llm_model = 3; // e.g., "claude-opus-4"
+  int32 teacher_temperature = 4; // More creative teacher (e.g., 0.8)
+  int32 teacher_max_tokens = 5; // Higher token budget
+}
+
+// SearchConfig for hyperparameter optimization
+message SearchConfig {
+  int32 num_candidates = 1; // Number of configurations to try
+  repeated string search_params = 2; // Which params to optimize
+  SearchStrategy strategy = 3;
+}
+
+enum SearchStrategy {
+  SEARCH_STRATEGY_UNSPECIFIED = 0;
+  SEARCH_RANDOM = 1; // Random search
+  SEARCH_GRID = 2; // Grid search
+  SEARCH_BAYESIAN = 3; // Bayesian optimization
+  SEARCH_EVOLUTIONARY = 4; // Genetic algorithm
+}
+
+// MIPROConfig for Multi-prompt Instruction Proposal Optimizer
+message MIPROConfig {
+  int32 num_candidates = 1; // Number of instruction candidates
+  int32 num_trials = 2; // Optimization trials
+  bool optimize_instructions = 3; // Optimize system instructions
+  bool optimize_demonstrations = 4; // Optimize demo selection
+  int32 prompt_model_size = 5; // 0=same, 1=larger, -1=smaller
+
+  // Multi-judge integration (Phase 4)
+  repeated string instruction_candidates = 6; // Pre-defined instruction candidates to evaluate
+  string task_description = 7; // Task description for LLM-based instruction generation
+  map<string, double> dimension_priorities = 8; // Dimension weights for instruction selection (e.g., {"quality": 2.0, "cost": 1.0})
+}
+
+// COPROConfig for Collaborative Prompt Optimizer
+message COPROConfig {
+  int32 num_iterations = 1; // Optimization iterations
+  int32 breadth = 2; // Candidates per iteration
+  int32 depth = 3; // Refinement depth
+  bool use_feedback = 4; // Use error feedback
+  string feedback_mode = 5; // "error_only", "full_trace"
+}
+
+// EnsembleConfig for combining multiple programs
+message EnsembleConfig {
+  repeated TeleprompterType members = 1; // Teleprompters to ensemble
+  EnsembleStrategy strategy = 2;
+  int32 size = 3; // Ensemble size
+}
+
+enum EnsembleStrategy {
+  ENSEMBLE_STRATEGY_UNSPECIFIED = 0;
+  ENSEMBLE_MAJORITY_VOTE = 1; // Vote on outputs
+  ENSEMBLE_WEIGHTED = 2; // Weight by confidence
+  ENSEMBLE_STACKING = 3; // Meta-learner on top
+}
+
+// KNNConfig for K-nearest neighbor demonstration selection
+message KNNConfig {
+  int32 k = 1; // Number of neighbors
+  string distance_metric = 2; // "cosine", "euclidean", "jaccard"
+  string embedding_model = 3; // For computing similarity
+}
+
+// ============================================================================
+// Examples and Metrics
+// ============================================================================
+
+// Example represents a training or test case
+message Example {
+  string id = 1;
+  map<string, string> inputs = 2; // Field name -> value
+  map<string, string> outputs = 3; // Expected outputs (ground truth)
+  map<string, string> metadata = 4; // Domain, complexity, etc.
+}
+
+// MetricConfig defines how to evaluate program quality
+message MetricConfig {
+  MetricType type = 1;
+  map<string, string> params = 2; // Metric-specific parameters
+
+  // Multi-judge configuration (for METRIC_MULTI_JUDGE type)
+  MultiJudgeMetricConfig multi_judge = 3;
+}
+
+enum MetricType {
+  METRIC_TYPE_UNSPECIFIED = 0;
+
+  // Exact match metrics
+  METRIC_EXACT_MATCH = 1; // Output == expected (strict)
+  METRIC_FUZZY_MATCH = 2; // Output ≈ expected (normalized)
+
+  // Semantic metrics
+  METRIC_SEMANTIC_SIMILARITY = 3; // Embedding similarity
+  METRIC_ANSWER_CORRECTNESS = 4; // LLM-as-judge correctness
+
+  // Pattern-based metrics
+  METRIC_ANSWER_PASSAGE_MATCH = 5; // Answer found in retrieved context
+  METRIC_CONTEXT_RECALL = 6; // Retrieved correct context
+
+  // Composite metrics
+  METRIC_WEIGHTED_COMPOSITE = 7; // Combine multiple metrics
+
+  // Multi-judge metric (RECOMMENDED - uses Loom's multi-judge infrastructure)
+  METRIC_MULTI_JUDGE = 9; // Multi-dimensional LLM-as-judge evaluation
+
+  // Custom metrics
+  METRIC_CUSTOM = 8; // User-defined metric function
+}
+
+// ============================================================================
+// Phase 10: Gradient Auto-Apply with Validation
+// ============================================================================
+
+// AutoApplyMode controls how gradient improvements are applied
+enum AutoApplyMode {
+  AUTO_APPLY_MODE_UNSPECIFIED = 0;
+  AUTO_APPLY_MODE_MANUAL = 1; // Return suggestions, don't apply (current behavior)
+  AUTO_APPLY_MODE_DRY_RUN = 2; // Apply to temp agent, test, show results
+  AUTO_APPLY_MODE_VALIDATED = 3; // Apply if validation passes
+  AUTO_APPLY_MODE_AUTONOMOUS = 4; // Apply immediately, monitor, rollback if regression
+}
+
+// ValidationConfig configures validation for auto-applied improvements
+message ValidationConfig {
+  // Validation set (examples to test improvements against)
+  repeated Example validation_set = 1;
+
+  // Minimum score improvement required to accept (default: 0.0 = no regression)
+  double min_score_delta = 2;
+
+  // Validation metric type
+  MetricType validation_metric = 3;
+
+  // Rollback on failure
+  bool rollback_on_failure = 4;
+
+  // Metric configuration for validation
+  MetricConfig metric_config = 5;
+}
+
+// MultiJudgeMetricConfig configures multi-judge evaluation for teleprompters
+message MultiJudgeMetricConfig {
+  // Judge IDs to run (references registered judges)
+  repeated string judge_ids = 1;
+
+  // Aggregation strategy
+  loom.v1.AggregationStrategy aggregation = 2;
+
+  // Target dimensions (optional - filter judges by dimension)
+  repeated loom.v1.JudgeDimension target_dimensions = 3;
+
+  // Dimension weights for score calculation
+  map<string, double> dimension_weights = 4;
+
+  // Minimum threshold for selection (0-100)
+  double min_threshold = 5;
+
+  // Export to Hawk
+  bool export_to_hawk = 6;
+}
+
+// ============================================================================
+// Compilation Results
+// ============================================================================
+
+message CompilationResult {
+  string compilation_id = 1;
+  string agent_id = 2;
+  TeleprompterType teleprompter = 3;
+
+  // Learned content
+  map<string, string> optimized_prompts = 4;
+  repeated Demonstration demonstrations = 5;
+
+  // Evaluation metrics
+  double trainset_score = 6;
+  double devset_score = 7;
+  int32 examples_used = 8;
+  int32 successful_traces = 9;
+
+  // Optimization details
+  int32 optimization_rounds = 10;
+  double improvement_delta = 11; // Score improvement vs baseline
+  int64 compilation_time_ms = 12;
+
+  // Version tracking
+  string compiled_version = 13; // Hash of learned content
+  int64 compiled_at = 14; // Unix timestamp
+
+  // Metadata
+  map<string, string> metadata = 15;
+}
+
+// ============================================================================
+// History and Rollback
+// ============================================================================
+
+message GetCompilationHistoryRequest {
+  string agent_id = 1;
+  int32 limit = 2; // Default: 20
+  int32 offset = 3;
+}
+
+message GetCompilationHistoryResponse {
+  repeated CompilationResult compilations = 1;
+  int32 total_count = 2;
+}
+
+message RollbackCompilationRequest {
+  string agent_id = 1;
+  string compilation_id = 2; // Revert to this compilation
+}
+
+message RollbackCompilationResponse {
+  bool success = 1;
+  string message = 2;
+  CompilationResult restored = 3;
+}
+
+// ============================================================================
+// A/B Testing
+// ============================================================================
+
+message CompareCompilationsRequest {
+  string agent_id = 1;
+  string compilation_a = 2; // First compilation ID
+  string compilation_b = 3; // Second compilation ID
+  repeated Example testset = 4;
+  MetricConfig metric = 5;
+}
+
+message CompareCompilationsResponse {
+  CompilationComparison comparison = 1;
+  string recommendation = 2; // Which compilation is better
+}
+
+message CompilationComparison {
+  string compilation_a = 1;
+  string compilation_b = 2;
+
+  double score_a = 3;
+  double score_b = 4;
+  double score_delta = 5; // B - A
+
+  int32 a_wins = 6; // Examples where A performed better
+  int32 b_wins = 7; // Examples where B performed better
+  int32 ties = 8;
+
+  double statistical_significance = 9; // p-value
+  bool is_significant = 10; // p < 0.05
+}

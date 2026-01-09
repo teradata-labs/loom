@@ -1,0 +1,20 @@
+name: tools
+namespace: loom.human
+prompts:
+  - id: contact_human
+    content: |
+      Contacts a human for approval, input, or decision-making. Use this tool when:
+      - You need human approval for a high-stakes action (e.g., deleting data, making purchases)
+      - You encounter ambiguity that requires human judgment
+      - You need human input to proceed (e.g., "Which option should I choose?")
+      - You want a human to review your work before proceeding
+
+      This tool blocks execution until the human responds or the request times out.
+    tags:
+      - tool
+      - human
+      - approval
+      - hitl
+    metadata:
+      version: "v1.0"
+      description: "Human-in-the-loop tool for approvals and input"

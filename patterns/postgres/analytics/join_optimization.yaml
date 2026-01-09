@@ -1,0 +1,219 @@
+# === METADATA START ===
+name: join_optimization
+title: "JOIN Optimization"
+description: "Optimizes multi-table JOIN queries for better performance by analyzing join order, indexes, and query structure"
+category: analytics
+difficulty: intermediate
+backend_type: postgres
+priority: 85
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - "Optimize slow multi-table queries"
+  - "Recommend join order improvements"
+  - "Identify missing foreign key indexes"
+  - "Reduce query execution time for reporting"
+  - "Improve dashboard performance"
+  - "Optimize ETL join operations"
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: tables
+    type: array
+    required: true
+    description: "Tables being joined"
+    example: "['orders', 'users']"
+
+  - name: join_type
+    type: string
+    required: false
+    description: "Type of join (INNER, LEFT, RIGHT, FULL)"
+    default: "INNER"
+    example: "INNER"
+
+  - name: join_columns
+    type: object
+    required: false
+    description: "Mapping of join relationships {table1: column1, table2: column2}"
+    example: "{orders: user_id, users: id}"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  analysis: |
+    -- JOIN Performance Analysis
+    -- Tables: {{.tables}}
+    -- Join Type: {{.join_type}}
+
+    -- Step 1: Check current query plan
+    EXPLAIN (ANALYZE, BUFFERS)
+    SELECT *
+    FROM {{index .tables 0}} t1
+    {{.join_type}} JOIN {{index .tables 1}} t2 ON t1.{{.join_column_1}} = t2.{{.join_column_2}};
+
+    -- Step 2: Identify missing indexes
+    SELECT
+      schemaname,
+      tablename,
+      attname,
+      n_distinct,
+      correlation
+    FROM pg_stats
+    WHERE tablename IN ({{range $i, $t := .tables}}{{if $i}}, {{end}}'{{$t}}'{{end}})
+      AND attname IN ({{.join_columns}});
+
+    -- Step 3: Check for foreign keys
+    SELECT
+      tc.table_name,
+      kcu.column_name,
+      ccu.table_name AS foreign_table_name,
+      ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints AS tc
+    JOIN information_schema.key_column_usage AS kcu
+      ON tc.constraint_name = kcu.constraint_name
+    JOIN information_schema.constraint_column_usage AS ccu
+      ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_name IN ({{range $i, $t := .tables}}{{if $i}}, {{end}}'{{$t}}'{{end}});
+
+  optimization: |
+    -- JOIN Optimization Recommendations
+
+    -- 1. Add indexes on join columns (if missing)
+    {{range $i, $t := .tables}}
+    CREATE INDEX IF NOT EXISTS idx_{{$t}}_{{index $.join_columns $i}}
+      ON {{$t}}({{index $.join_columns $i}});
+    {{end}}
+
+    -- 2. Rewrite query with optimized join order (smallest table first)
+    -- Check table sizes:
+    SELECT
+      schemaname,
+      tablename,
+      pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+      n_live_tup AS row_estimate
+    FROM pg_stat_user_tables
+    WHERE tablename IN ({{range $i, $t := .tables}}{{if $i}}, {{end}}'{{$t}}'{{end}})
+    ORDER BY pg_total_relation_size(schemaname||'.'||tablename) ASC;
+
+    -- 3. Use EXISTS instead of IN for subqueries (if applicable)
+    -- Bad:  WHERE user_id IN (SELECT id FROM users WHERE active = true)
+    -- Good: WHERE EXISTS (SELECT 1 FROM users WHERE users.id = orders.user_id AND active = true)
+
+    -- 4. Filter early - push WHERE conditions to join predicates
+    -- Move conditions from WHERE to ON when possible to reduce intermediate results
+
+  verification: |
+    -- Verify optimization impact
+    EXPLAIN (ANALYZE, BUFFERS)
+    SELECT *
+    FROM {{index .tables 0}} t1
+    {{.join_type}} JOIN {{index .tables 1}} t2 ON t1.{{.join_column_1}} = t2.{{.join_column_2}}
+    WHERE t1.some_filter = 'value';
+
+    -- Compare metrics:
+    -- - Planning time
+    -- - Execution time
+    -- - Buffers (shared hit/read)
+    -- - Rows returned
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Orders with users"
+    parameters:
+      tables: ["orders", "users"]
+      join_type: "INNER"
+      join_columns: {"orders": "user_id", "users": "id"}
+    expected_result: |
+      - Create index on orders.user_id (if missing)
+      - Verify users.id has primary key index
+      - Join order: users (smaller) → orders (larger)
+      - Execution time reduced by 60-80%
+
+  - name: "Three-way join"
+    parameters:
+      tables: ["orders", "order_items", "products"]
+      join_type: "INNER"
+    expected_result: |
+      - Optimize join order: products → order_items → orders
+      - Add indexes on order_items.product_id and orders.id
+      - Consider materialized view for frequent queries
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## JOIN Optimization Best Practices
+
+  ### 1. Index Foreign Keys
+  **Always** create indexes on foreign key columns used in joins. Postgres doesn't automatically index FKs.
+
+  ### 2. Join Order Matters
+  - Start with smallest table (fewest rows)
+  - Filter early with WHERE on indexed columns
+  - Postgres query planner usually optimizes, but explicit ordering helps
+
+  ### 3. Use Appropriate JOIN Types
+  - **INNER**: Only matching rows (fastest)
+  - **LEFT**: All left table rows + matches (slower)
+  - **FULL**: All rows from both (slowest)
+  - Avoid FULL OUTER JOIN when possible
+
+  ### 4. Select Only Needed Columns
+  ```sql
+  -- Bad:  SELECT * FROM orders JOIN users ...
+  -- Good: SELECT orders.id, orders.amount, users.name FROM orders JOIN users ...
+  ```
+
+  ### 5. Use EXISTS Over IN
+  For subqueries, EXISTS is more efficient than IN:
+  ```sql
+  -- Bad:  WHERE user_id IN (SELECT id FROM users WHERE active)
+  -- Good: WHERE EXISTS (SELECT 1 FROM users WHERE id = orders.user_id AND active)
+  ```
+
+  ### 6. Analyze Query Plans
+  Use EXPLAIN (ANALYZE, BUFFERS) to understand:
+  - Actual join strategy (Hash Join, Merge Join, Nested Loop)
+  - Index usage
+  - Buffer hits vs reads
+
+  ### 7. Statistics Up-to-Date
+  Run ANALYZE regularly (or enable autovacuum):
+  ```sql
+  ANALYZE orders, users;
+  ```
+
+  ### 8. Consider Materialized Views
+  For frequently-run complex joins:
+  ```sql
+  CREATE MATERIALIZED VIEW user_order_summary AS
+  SELECT ... FROM orders JOIN users ...;
+  REFRESH MATERIALIZED VIEW user_order_summary;
+  ```
+
+  ### 9. Partition Large Tables
+  For tables >10M rows, consider partitioning on join columns to reduce scan size.
+
+  ### 10. Memory Layers for Query Optimization
+  - **Kernel Layer**: Cache table statistics and index metadata for the session
+  - **L1 Cache**: Keep recent query plans and performance metrics for comparison
+  - **L2 Compressed**: Archive optimization history from earlier in conversation
+  This enables tracking query performance improvements across multiple optimization iterations.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - missing_index_analysis
+  - query_rewrite
+  - sequential_scan_detection
+# === RELATED_PATTERNS END ===
+
+validation:
+  rules:
+    - "Verify all join columns are indexed"
+    - "Check join order for smallest table first"
+    - "Ensure foreign keys exist"
+    - "Confirm execution time improvement >30%"

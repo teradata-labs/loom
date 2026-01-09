@@ -1,0 +1,16 @@
+product_id,product_name,category,region,price
+P001,Widget A,Electronics,US,29.99
+P002,Widget B,Electronics,CA,39.99
+P003,Gadget X,Electronics,US,49.99
+P004,Tool Y,Hardware,UK,19.99
+P005,Widget C,Electronics,US,34.99
+P006,Gadget Z,Electronics,CA,59.99
+P007,Tool W,Hardware,US,24.99
+P008,Widget D,Electronics,UK,44.99
+P009,Gadget V,Electronics,US,54.99
+P010,Tool U,Hardware,CA,29.99
+P011,Widget E,Electronics,US,39.99
+P012,Gadget T,Electronics,CA,64.99
+P013,Tool S,Hardware,UK,34.99
+P014,Widget F,Electronics,US,49.99
+P015,Gadget R,Electronics,CA,69.99

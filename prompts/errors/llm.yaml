@@ -1,0 +1,143 @@
+name: errors
+namespace: loom.llm
+prompts:
+  - id: rate_limit
+    content: |
+      Rate limit exceeded for {{.provider}}.
+
+      {{if .retry_after}}Retry after: {{.retry_after}} seconds{{end}}
+
+      Please wait a moment and try again. Consider:
+      - Reducing request frequency
+      - Using a different model tier
+      - Implementing exponential backoff
+    variables:
+      provider:
+        name: provider
+        type: 1  # STRING
+        required: true
+        description: "LLM provider name (Anthropic, OpenAI, etc.)"
+      retry_after:
+        name: retry_after
+        type: 2  # INT
+        required: false
+        description: "Seconds until retry allowed"
+    tags:
+      - error
+      - llm
+      - rate_limit
+    metadata:
+      version: "v1.0"
+      description: "LLM rate limit error"
+
+  - id: timeout
+    content: |
+      LLM request timed out after {{.timeout_seconds}}s.
+
+      This may be due to:
+      - Large context size ({{if .context_tokens}}{{.context_tokens}} tokens{{end}})
+      - Provider service issues
+      - Network problems
+
+      Try simplifying your request or reducing context size.
+    variables:
+      timeout_seconds:
+        name: timeout_seconds
+        type: 2  # INT
+        required: true
+        description: "Timeout duration in seconds"
+      context_tokens:
+        name: context_tokens
+        type: 2  # INT
+        required: false
+        description: "Number of tokens in context"
+    tags:
+      - error
+      - llm
+      - timeout
+    metadata:
+      version: "v1.0"
+      description: "LLM timeout error"
+
+  - id: invalid_response
+    content: |
+      Received invalid response from LLM provider.
+
+      Error: {{.error_details}}
+
+      This may indicate:
+      - Malformed API response
+      - Unexpected response format
+      - Provider API changes
+
+      Retrying with corrected request...
+    variables:
+      error_details:
+        name: error_details
+        type: 1  # STRING
+        required: true
+        description: "Details about the invalid response"
+    tags:
+      - error
+      - llm
+      - validation
+    metadata:
+      version: "v1.0"
+      description: "LLM invalid response error"
+
+  - id: authentication_failed
+    content: |
+      Authentication failed for {{.provider}}.
+
+      Please check:
+      - API key is correctly configured
+      - API key has not expired
+      - API key has necessary permissions
+
+      Configuration: {{if .config_location}}{{.config_location}}{{else}}looms.yaml or keyring{{end}}
+    variables:
+      provider:
+        name: provider
+        type: 1  # STRING
+        required: true
+        description: "LLM provider name"
+      config_location:
+        name: config_location
+        type: 1  # STRING
+        required: false
+        description: "Where to configure the API key"
+    tags:
+      - error
+      - llm
+      - authentication
+    metadata:
+      version: "v1.0"
+      description: "LLM authentication error"
+
+  - id: context_length_exceeded
+    content: |
+      Context length exceeded: {{.actual_tokens}} tokens (maximum: {{.max_tokens}})
+
+      The conversation history is too large for this model. Consider:
+      - Using a model with larger context window
+      - Reducing conversation history
+      - Summarizing earlier turns
+      - Starting a new session
+    variables:
+      actual_tokens:
+        name: actual_tokens
+        type: 2  # INT
+        required: true
+        description: "Actual number of tokens"
+      max_tokens:
+        name: max_tokens
+        type: 2  # INT
+        required: true
+        description: "Maximum allowed tokens"
+    tags:
+      - error
+      - llm
+      - context_length
+    metadata:
+      version: "v1.0"
+      description: "Context length exceeded error"

@@ -1,0 +1,28 @@
+# Staging Test Agent - Phase 2 Validation
+#
+# This agent is configured to quickly test compression behavior with:
+# - data_intensive profile (aggressive compression)
+# - Smaller context budget (triggers compression faster)
+# - SQLite persistence (for session testing)
+#
+# Use this for staging validation of Phase 2 adaptive compression.
+
+agent:
+  name: staging-test-agent
+  description: Staging test agent for Phase 2 compression validation (data_intensive profile)
+
+  # No LLM specification - inherits from server defaults
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+
+# Expected Hawk Metrics:
+# - memory.profile_configured event with profile="data_intensive"
+# - memory.compression.events should trigger every 3-5 turns
+# - memory.compression.budget_pct should show 50-70% at compression
+# - memory.compression.tokens_saved should show 50-70% savings
+# - memory.l1.size should stay <= 5

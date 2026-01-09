@@ -1,0 +1,59 @@
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: swarm-coordinator
+  description: Coordinates swarm voting with automatic judge spawning
+
+spec:
+  # No LLM specification - inherits from server defaults
+
+  system_prompt: |
+    You coordinate group decisions through voting.
+    Collect votes from multiple agents and determine consensus.
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+  config:
+    max_turns: 10
+    max_tool_executions: 30
+    timeout_seconds: 120
+
+  # Ephemeral agent policies - declarative spawning rules
+  ephemeral_agents:
+    # Judge agent spawns when consensus isn't reached
+    - role: judge
+      trigger:
+        type: CONSENSUS_NOT_REACHED
+        threshold: 0.67  # Spawn if <67% agreement
+      template:
+        name: ephemeral-judge
+        # No LLM specification - inherits from server defaults
+        system_prompt: |
+          Analyze voting results and make an impartial final decision.
+          Consider:
+          - Weight of evidence in each agent's reasoning
+          - Confidence levels expressed
+          - Distribution of votes
+          - Practical implications of each choice
+
+          Provide a clear, decisive answer with brief justification.
+      max_spawns: 1  # Only one judge per workflow
+      cost_limit_usd: 0.50  # Budget limit
+
+    # Domain expert spawns for low-confidence situations
+    - role: domain_expert
+      trigger:
+        type: CONFIDENCE_BELOW
+        threshold: 0.5  # Spawn if avg confidence <50%
+      template:
+        name: ephemeral-expert
+        # No LLM specification - inherits from server defaults
+        system_prompt: |
+          You are a domain expert brought in to resolve uncertainty.
+          Provide deep analysis with strong supporting evidence.
+      max_spawns: 1
+      cost_limit_usd: 2.00  # Higher budget for expert analysis

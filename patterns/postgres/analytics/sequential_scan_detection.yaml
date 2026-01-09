@@ -1,0 +1,436 @@
+# === METADATA START ===
+name: sequential_scan_detection
+title: "Sequential Scan Detection"
+description: "Identifies queries performing full table scans that could benefit from indexes by analyzing query plans, table statistics, and scan patterns"
+category: analytics
+difficulty: beginner
+backend_type: postgres
+priority: 95
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - "Identify slow queries doing full table scans"
+  - "Recommend indexes for filtered columns"
+  - "Optimize WHERE clause performance"
+  - "Detect missing indexes on large tables"
+  - "Find tables with high seq_scan counts"
+  - "Improve query response time by 10-1000x"
+  - "Reduce I/O and buffer usage"
+  - "Monitor production query patterns"
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: table_name
+    type: string
+    required: true
+    description: "Table being scanned"
+    example: "users"
+
+  - name: filter_column
+    type: string
+    required: false
+    description: "Column used in WHERE clause"
+    example: "email"
+
+  - name: schema_name
+    type: string
+    required: false
+    description: "Schema name (defaults to public)"
+    default: "public"
+    example: "public"
+
+  - name: query
+    type: string
+    required: false
+    description: "Full query to analyze"
+    example: "SELECT * FROM users WHERE email = 'user@example.com'"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  detection: |
+    -- Sequential Scan Detection for {{.table_name}}
+    -- Schema: {{.schema_name}}
+
+    -- Step 1: Run EXPLAIN ANALYZE to detect sequential scans
+    EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
+    {{if .query}}
+    {{.query}};
+    {{else}}
+    SELECT * FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_column}}WHERE {{.filter_column}} = 'test_value'{{end}};
+    {{end}}
+
+    -- Look for "Seq Scan" in the output
+    -- Indicators of problem:
+    --   - "Seq Scan on {{.table_name}}"
+    --   - High "Buffers: shared read" (disk I/O)
+    --   - Long execution time
+    --   - Large number of rows scanned
+
+    -- Step 2: Check table size and row count
+    SELECT
+      schemaname,
+      tablename,
+      n_live_tup AS estimated_rows,
+      n_dead_tup AS dead_rows,
+      pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS total_size,
+      pg_size_pretty(pg_relation_size(schemaname||'.'||tablename)) AS table_size,
+      pg_size_pretty(pg_indexes_size(schemaname||'.'||tablename)) AS indexes_size,
+      last_vacuum,
+      last_analyze
+    FROM pg_stat_user_tables
+    WHERE schemaname = '{{.schema_name}}'
+      AND tablename = '{{.table_name}}';
+
+    -- Sequential scans are problematic when:
+    -- - Table has > 1,000 rows
+    -- - Query is run frequently
+    -- - Filter returns small subset of rows
+
+  system_wide_detection: |
+    -- System-wide sequential scan analysis
+    -- Find tables with most sequential scans
+
+    SELECT
+      schemaname,
+      tablename,
+      seq_scan AS sequential_scans,
+      seq_tup_read AS rows_read_sequentially,
+      idx_scan AS index_scans,
+      n_live_tup AS estimated_rows,
+      pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+      -- Calculate average rows per sequential scan
+      CASE
+        WHEN seq_scan = 0 THEN 0
+        ELSE ROUND(seq_tup_read::numeric / seq_scan, 0)
+      END AS avg_rows_per_seq_scan,
+      -- Ratio of sequential to index scans
+      CASE
+        WHEN idx_scan = 0 THEN 'Only seq scans'
+        WHEN seq_scan = 0 THEN 'Only index scans'
+        ELSE ROUND((seq_scan::numeric / (seq_scan + idx_scan)) * 100, 1)::text || '%'
+      END AS seq_scan_percentage
+    FROM pg_stat_user_tables
+    WHERE schemaname = '{{.schema_name}}'
+      AND n_live_tup > 1000  -- Focus on tables with data
+    ORDER BY seq_scan DESC, seq_tup_read DESC
+    LIMIT 20;
+
+    -- High seq_scan count indicates:
+    -- 1. Missing indexes
+    -- 2. Queries selecting all rows (legitimate)
+    -- 3. Small table where seq scan is faster than index
+
+  cost_analysis: |
+    -- Analyze cost of sequential scan vs index scan
+
+    -- Step 1: Get table statistics
+    SELECT
+      tablename,
+      attname AS column_name,
+      n_distinct,
+      correlation,
+      most_common_vals,
+      most_common_freqs
+    FROM pg_stats
+    WHERE schemaname = '{{.schema_name}}'
+      AND tablename = '{{.table_name}}'
+      {{if .filter_column}}AND attname = '{{.filter_column}}'{{end}}
+    ORDER BY attname;
+
+    -- Step 2: Estimate index benefit
+    -- High n_distinct = good index candidate
+    -- High correlation = index scan will be sequential (good)
+    -- Low correlation = index scan will be random I/O (potentially bad)
+
+    -- Step 3: Check existing indexes
+    SELECT
+      schemaname,
+      tablename,
+      indexname,
+      indexdef,
+      pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
+      idx_scan AS times_used,
+      idx_tup_read AS tuples_read,
+      idx_tup_fetch AS tuples_fetched
+    FROM pg_stat_user_indexes
+    WHERE schemaname = '{{.schema_name}}'
+      AND tablename = '{{.table_name}}'
+    ORDER BY indexname;
+
+  recommendation: |
+    -- Index Recommendations for {{.table_name}}
+
+    -- Detected sequential scan on {{.schema_name}}.{{.table_name}}
+
+    {{if .filter_column}}
+    -- Recommendation: Add index on {{.filter_column}}
+    CREATE INDEX IF NOT EXISTS idx_{{.table_name}}_{{.filter_column}}
+      ON {{.schema_name}}.{{.table_name}}({{.filter_column}});
+
+    -- Estimated impact:
+    -- - Execution time: 100-1000x faster for selective queries
+    -- - Buffer usage: Reduced by 90-99%
+    -- - Cost: ~5-20% of table size for index storage
+
+    {{else}}
+    -- Analyze the query to identify filter columns
+    -- Common candidates for indexes:
+    -- 1. Columns in WHERE clauses
+    -- 2. Foreign key columns used in JOINs
+    -- 3. Columns in ORDER BY (for sorted results)
+    -- 4. Columns in GROUP BY
+    {{end}}
+
+    -- When NOT to add index:
+    -- 1. Table has < 1,000 rows (seq scan is faster)
+    -- 2. Column has low cardinality (e.g., boolean, status with 2-3 values)
+    -- 3. Query returns > 10-20% of table rows (seq scan is faster)
+    -- 4. Column is rarely queried
+
+  verification: |
+    -- Verify index eliminates sequential scan
+
+    -- Step 1: Re-run EXPLAIN ANALYZE after creating index
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{if .query}}
+    {{.query}};
+    {{else}}
+    SELECT * FROM {{.schema_name}}.{{.table_name}}
+    {{if .filter_column}}WHERE {{.filter_column}} = 'test_value'{{end}};
+    {{end}}
+
+    -- Expected changes in query plan:
+    -- Before: "Seq Scan on {{.table_name}}"
+    -- After:  "Index Scan using idx_{{.table_name}}_{{.filter_column}}"
+    --     or "Bitmap Index Scan on idx_{{.table_name}}_{{.filter_column}}"
+
+    -- Step 2: Compare metrics
+    -- Metric                  Before (Seq Scan)     After (Index Scan)
+    -- Execution Time          500ms                 5ms (100x faster)
+    -- Planning Time           0.1ms                 0.2ms
+    -- Buffers: shared hit     50                    5
+    -- Buffers: shared read    8000                  2
+    -- Rows scanned            100,000               1
+    -- Rows returned           1                     1
+
+    -- Step 3: Check index usage over time
+    SELECT
+      indexname,
+      idx_scan AS times_used,
+      idx_tup_read AS tuples_read,
+      idx_tup_fetch AS tuples_fetched,
+      pg_size_pretty(pg_relation_size(indexrelid)) AS size
+    FROM pg_stat_user_indexes
+    WHERE schemaname = '{{.schema_name}}'
+      AND tablename = '{{.table_name}}'
+      {{if .filter_column}}AND indexname LIKE '%{{.filter_column}}%'{{end}}
+    ORDER BY idx_scan DESC;
+
+    -- If idx_scan = 0 after a while, index may not be used (wrong column or low selectivity)
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Email lookup with sequential scan"
+    parameters:
+      table_name: "users"
+      filter_column: "email"
+      schema_name: "public"
+      query: "SELECT * FROM users WHERE email = 'john@example.com'"
+    expected_result: |
+      Sequential scan detected on users table (500,000 rows).
+
+      Query plan shows:
+      Seq Scan on users (cost=0.00..12345.00 rows=1 width=200)
+        Filter: (email = 'john@example.com'::text)
+        Rows Removed by Filter: 499,999
+        Buffers: shared read=8500
+
+      Recommendation:
+      CREATE INDEX idx_users_email ON users(email);
+
+      Expected improvement:
+      - Before: 450ms execution (full table scan)
+      - After:  2ms execution (225x faster)
+      - Index size: ~25 MB
+
+  - name: "System-wide sequential scan analysis"
+    parameters:
+      schema_name: "public"
+    expected_result: |
+      Top tables with sequential scans:
+
+      1. orders (2.5M rows, 15 GB)
+         - Sequential scans: 12,450
+         - Avg rows per scan: 125,000
+         - Index scans: 850
+         - Issue: Missing index on status column
+
+      2. logs (10M rows, 50 GB)
+         - Sequential scans: 8,200
+         - Avg rows per scan: 10M
+         - Index scans: 0
+         - Analysis: Legitimate full table scans for ETL jobs
+
+      3. products (50K rows, 500 MB)
+         - Sequential scans: 5,500
+         - Avg rows per scan: 50,000
+         - Issue: Missing index on category
+
+  - name: "Status column filter"
+    parameters:
+      table_name: "orders"
+      filter_column: "status"
+      schema_name: "public"
+      query: "SELECT * FROM orders WHERE status = 'pending'"
+    expected_result: |
+      Sequential scan detected on orders table (1M rows).
+
+      Column statistics:
+      - status has 5 distinct values: pending, processing, shipped, delivered, cancelled
+      - Cardinality: 5 (low)
+      - Distribution: pending (2%), processing (5%), shipped (20%), delivered (70%), cancelled (3%)
+
+      Analysis:
+      - status = 'pending' returns only 2% of rows (20,000 rows)
+      - High selectivity makes this a good index candidate
+
+      Recommendation:
+      CREATE INDEX idx_orders_status ON orders(status);
+
+      Alternative (better for low cardinality):
+      CREATE INDEX idx_orders_pending ON orders(status) WHERE status = 'pending';
+      (Partial index - smaller, faster for this specific query)
+
+      Expected improvement:
+      - Before: 280ms execution
+      - After:  15ms execution (18x faster)
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Sequential Scan Detection Best Practices
+
+  ### 1. When Sequential Scans are Normal
+  Sequential scans are not always bad:
+  - **Small tables** (< 1,000 rows): Seq scan is faster than index
+  - **High selectivity queries**: Returning > 10-20% of rows
+  - **Full table queries**: `SELECT * FROM table` (no WHERE)
+  - **Analytics queries**: Aggregating all data
+
+  ### 2. When Sequential Scans are Problems
+  Add indexes when:
+  - Table has > 10,000 rows
+  - Query returns < 10% of rows
+  - Query is run frequently (> 100 times/day)
+  - Execution time is slow (> 100ms)
+
+  ### 3. Use EXPLAIN ANALYZE
+  Always check query plans before adding indexes:
+  ```sql
+  EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM users WHERE email = 'test@example.com';
+  ```
+
+  Look for:
+  - `Seq Scan`: Full table scan (problem on large tables)
+  - `Buffers: shared read`: Disk I/O (high = slow)
+  - `Rows Removed by Filter`: Wasted work
+
+  ### 4. Analyze System-Wide Patterns
+  Find tables needing indexes:
+  ```sql
+  SELECT tablename, seq_scan, seq_tup_read, n_live_tup
+  FROM pg_stat_user_tables
+  WHERE seq_scan > 1000 AND n_live_tup > 10000
+  ORDER BY seq_scan DESC;
+  ```
+
+  ### 5. Check Column Cardinality
+  High cardinality columns make good indexes:
+  ```sql
+  SELECT attname, n_distinct FROM pg_stats
+  WHERE tablename = 'users';
+  ```
+
+  - `n_distinct = -1`: Every value is unique (excellent!)
+  - `n_distinct > 100`: High cardinality (good)
+  - `n_distinct < 10`: Low cardinality (poor index candidate)
+
+  ### 6. Consider Partial Indexes
+  For low-cardinality columns with selective queries:
+  ```sql
+  -- Instead of full index on status
+  CREATE INDEX idx_orders_pending ON orders(created_at)
+    WHERE status = 'pending';
+
+  -- Much smaller, faster for pending orders
+  ```
+
+  ### 7. Monitor Index Usage
+  Track if indexes are being used:
+  ```sql
+  SELECT tablename, indexname, idx_scan
+  FROM pg_stat_user_indexes
+  WHERE idx_scan = 0
+  ORDER BY pg_relation_size(indexrelid) DESC;
+  ```
+
+  Remove unused indexes to save space and write performance.
+
+  ### 8. Understand Index Correlation
+  Check `correlation` in pg_stats:
+  - **High correlation** (near ±1.0): Physical row order matches index order (fast)
+  - **Low correlation** (near 0): Random I/O required (slower)
+
+  ### 9. Test in Production-Like Environment
+  Index effectiveness depends on:
+  - Data distribution
+  - Query selectivity
+  - Table size
+  - Available memory
+
+  Always test with realistic data volumes.
+
+  ### 10. Balance Reads vs Writes
+  Each index:
+  - **Speeds up** SELECT queries
+  - **Slows down** INSERT/UPDATE/DELETE
+  - **Consumes** disk space
+
+  For write-heavy tables, minimize indexes.
+
+  ### 11. Memory Layers for Scan Detection
+  - **Kernel Layer**: Cache table schemas, statistics, and current index list for quick reference
+  - **L1 Cache**: Keep recent EXPLAIN results (last 10-15 queries) showing sequential scans and their patterns
+  - **L2 Compressed**: Archive index recommendations and performance improvements from earlier in conversation
+  - **Swap Layer**: Store complete query performance history for long-running optimization projects; use recall_conversation to compare current scan patterns against baseline from weeks ago
+  This enables identifying recurring sequential scan patterns and tracking cumulative optimization impact.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - missing_index_analysis
+  - join_optimization
+  - query_rewrite
+  - partition_recommendation
+# === RELATED_PATTERNS END ===
+
+metrics:
+  - execution_time_before
+  - execution_time_after
+  - rows_scanned
+  - index_size
+  - buffer_hits
+  - buffer_reads
+
+validation:
+  rules:
+    - "Check if EXPLAIN shows 'Seq Scan'"
+    - "Verify row count > 1000 (worth indexing)"
+    - "Ensure column has high cardinality (n_distinct > 100)"
+    - "Confirm query selectivity < 10% of rows"
+    - "Validate index is used after creation"

@@ -1,0 +1,288 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// ToolRegistryService provides tool discovery and search capabilities.
+// Agents use this to dynamically find tools based on their current needs.
+service ToolRegistryService {
+  // SearchTools finds tools matching a natural language query.
+  // Uses LLM-assisted search for high accuracy.
+  rpc SearchTools(SearchToolsRequest) returns (SearchToolsResponse);
+
+  // IndexTools triggers re-indexing of tools from all sources.
+  // Called when MCP servers are added/removed or on startup.
+  rpc IndexTools(IndexToolsRequest) returns (IndexToolsResponse);
+
+  // ListToolSources returns all registered tool sources (MCP servers, builtin, custom).
+  rpc ListToolSources(ListToolSourcesRequest) returns (ListToolSourcesResponse);
+
+  // GetIndexedTool retrieves the full indexed definition of a specific tool.
+  rpc GetIndexedTool(GetIndexedToolRequest) returns (IndexedTool);
+
+  // GetToolsByCapability retrieves tools tagged with a specific capability.
+  rpc GetToolsByCapability(GetToolsByCapabilityRequest) returns (GetToolsByCapabilityResponse);
+}
+
+// SearchMode controls the accuracy vs speed tradeoff for tool search.
+enum SearchMode {
+  // UNSPECIFIED defaults to BALANCED.
+  SEARCH_MODE_UNSPECIFIED = 0;
+
+  // FAST uses FTS5 only - fastest but least accurate for ambiguous queries.
+  SEARCH_MODE_FAST = 1;
+
+  // BALANCED uses FTS5 + LLM re-ranking - good balance (default).
+  SEARCH_MODE_BALANCED = 2;
+
+  // ACCURATE uses full LLM pipeline with query understanding - most accurate.
+  SEARCH_MODE_ACCURATE = 3;
+}
+
+// ToolSource identifies where a tool comes from.
+enum ToolSource {
+  TOOL_SOURCE_UNSPECIFIED = 0;
+  TOOL_SOURCE_BUILTIN = 1; // Built into Loom (pkg/shuttle)
+  TOOL_SOURCE_MCP = 2; // From an MCP server
+  TOOL_SOURCE_CUSTOM = 3; // Custom tool definition
+}
+
+// SearchToolsRequest is the input for tool search.
+message SearchToolsRequest {
+  // Natural language query describing what the agent needs.
+  // Examples:
+  //   "send a slack notification"
+  //   "query a postgres database"
+  //   "read and parse a JSON file"
+  string query = 1;
+
+  // Search mode controlling accuracy vs speed.
+  SearchMode mode = 2;
+
+  // Optional capability filters to narrow results.
+  // Examples: ["notification", "database", "file_io"]
+  repeated string capability_filters = 3;
+
+  // Optional source filter to limit to specific sources.
+  repeated ToolSource source_filters = 4;
+
+  // Maximum number of results to return (default: 5, max: 20).
+  int32 max_results = 5;
+
+  // Include full JSON schema in results (default: true).
+  bool include_schema = 6;
+
+  // Context about the agent's current task (helps LLM rank better).
+  string task_context = 7;
+}
+
+// SearchToolsResponse contains the search results.
+message SearchToolsResponse {
+  // Matched tools ordered by relevance.
+  repeated ToolSearchResult results = 1;
+
+  // Search metadata for debugging/observability.
+  SearchMetadata metadata = 2;
+}
+
+// ToolSearchResult is a single search result with confidence scoring.
+message ToolSearchResult {
+  // The indexed tool definition.
+  IndexedTool tool = 1;
+
+  // Confidence score (0.0 - 1.0) indicating match quality.
+  double confidence = 2;
+
+  // Explanation of why this tool matched (from LLM re-ranking).
+  string match_reason = 3;
+
+  // Relevance signals that contributed to the score.
+  repeated RelevanceSignal signals = 4;
+}
+
+// RelevanceSignal explains why a tool was ranked highly.
+message RelevanceSignal {
+  string signal_type = 1; // "keyword_match", "capability_match", "semantic_similarity"
+  string description = 2;
+  double weight = 3;
+}
+
+// SearchMetadata provides debugging info about the search.
+message SearchMetadata {
+  // Total tools in the index.
+  int32 total_indexed = 1;
+
+  // Number of candidates after FTS5 retrieval.
+  int32 candidates_retrieved = 2;
+
+  // Search mode that was used.
+  SearchMode mode_used = 3;
+
+  // Time taken for each stage (milliseconds).
+  int64 query_understanding_ms = 4;
+  int64 fts_retrieval_ms = 5;
+  int64 llm_reranking_ms = 6;
+  int64 total_ms = 7;
+
+  // Expanded search terms (from LLM query understanding).
+  repeated string expanded_terms = 8;
+}
+
+// IndexedTool is the complete indexed definition of a tool for search.
+// Extends the basic ToolDefinition with search-specific metadata.
+message IndexedTool {
+  // Unique identifier for this tool (source:server:name format).
+  string id = 1;
+
+  // Human-readable name.
+  string name = 2;
+
+  // Detailed description of what the tool does.
+  string description = 3;
+
+  // Source of the tool.
+  ToolSource source = 4;
+
+  // For MCP tools, which server provides it.
+  string mcp_server = 5;
+
+  // JSON Schema for the tool's input parameters.
+  string input_schema = 6;
+
+  // JSON Schema for the tool's output (if known).
+  string output_schema = 7;
+
+  // Capability tags for filtering.
+  repeated string capabilities = 8;
+
+  // Keywords for search (auto-extracted + manual).
+  repeated string keywords = 9;
+
+  // Usage examples (optional, improves search accuracy).
+  repeated ToolExample examples = 10;
+
+  // When this tool was last indexed.
+  string indexed_at = 11;
+
+  // Version info (for MCP tools, from server).
+  string version = 12;
+
+  // Whether this tool requires special permissions.
+  bool requires_approval = 13;
+
+  // Rate limit info (if any).
+  RateLimitInfo rate_limit = 14;
+}
+
+// ToolExample shows how to use a tool.
+message ToolExample {
+  // Natural language description of the use case.
+  string description = 1;
+
+  // Example input (JSON).
+  string input = 2;
+
+  // Example output (JSON).
+  string output = 3;
+}
+
+// RateLimitInfo describes rate limiting for a tool.
+message RateLimitInfo {
+  int32 requests_per_minute = 1;
+  int32 requests_per_hour = 2;
+  string notes = 3;
+}
+
+// IndexToolsRequest triggers tool re-indexing.
+message IndexToolsRequest {
+  // If true, full re-index. If false, incremental update.
+  bool full_reindex = 1;
+
+  // Specific sources to re-index (empty = all).
+  repeated ToolSource sources = 2;
+
+  // Specific MCP servers to re-index (empty = all).
+  repeated string mcp_servers = 3;
+}
+
+// IndexToolsResponse returns indexing results.
+message IndexToolsResponse {
+  // Number of tools indexed by source.
+  int32 builtin_count = 1;
+  int32 mcp_count = 2;
+  int32 custom_count = 3;
+  int32 total_count = 4;
+
+  // Any errors during indexing.
+  repeated IndexError errors = 5;
+
+  // Time taken (milliseconds).
+  int64 duration_ms = 6;
+}
+
+// IndexError describes a failure during indexing.
+message IndexError {
+  ToolSource source = 1;
+  string server_name = 2; // For MCP errors
+  string error_message = 3;
+}
+
+// ListToolSourcesRequest lists all tool sources.
+message ListToolSourcesRequest {}
+
+// ListToolSourcesResponse returns registered sources.
+message ListToolSourcesResponse {
+  repeated ToolSourceInfo sources = 1;
+}
+
+// ToolSourceInfo describes a tool source.
+message ToolSourceInfo {
+  ToolSource type = 1;
+  string name = 2; // e.g., "slack-mcp", "builtin"
+  string description = 3;
+  int32 tool_count = 4;
+  string last_indexed = 5;
+  bool available = 6; // Is the source currently reachable?
+  string status_message = 7; // e.g., "connected", "connection failed"
+}
+
+// GetIndexedToolRequest retrieves a specific tool.
+message GetIndexedToolRequest {
+  // Tool ID or name.
+  string tool_id = 1;
+
+  // If tool_id is ambiguous, specify source.
+  ToolSource source = 2;
+  string mcp_server = 3;
+}
+
+// GetToolsByCapabilityRequest finds tools by capability tag.
+message GetToolsByCapabilityRequest {
+  // Capability to search for.
+  string capability = 1;
+
+  // Optional source filter.
+  repeated ToolSource source_filters = 2;
+
+  // Max results (default: 10).
+  int32 max_results = 3;
+}
+
+// GetToolsByCapabilityResponse returns matching tools.
+message GetToolsByCapabilityResponse {
+  repeated IndexedTool tools = 1;
+}

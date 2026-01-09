@@ -1,0 +1,64 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: dungeon-crawl-workflow
+  version: "2.0.0"
+  description: "Multi-agent D&D dungeon crawl using pub-sub communication for party chat"
+  labels:
+    domain: gaming
+    category: roleplaying
+
+spec:
+  entrypoint: dm
+
+  agents:
+    - name: dm
+      agent: dm
+      description: "Dungeon Master - facilitates the adventure and responds to party actions"
+
+    - name: fighter
+      agent: fighter
+      description: "Grog the Fighter - brave half-orc warrior who loves combat"
+
+    - name: wizard
+      agent: wizard
+      description: "Elara the Wizard - intelligent high elf mage with arcane knowledge"
+
+    - name: rogue
+      agent: rogue
+      description: "Whisper the Rogue - clever halfling who notices traps and hidden things"
+
+  # Communication pattern documentation (advisory only - not enforced by runtime)
+  #
+  # The "peer-to-peer pub-sub" pattern emerges through Loom's tri-modal communication:
+  # - Message Queue: send_message/receive_message for direct communication (not used here)
+  # - Broadcast Bus: publish/subscribe for topic-based messaging (USED IN THIS WORKFLOW)
+  # - Shared Memory: shared_memory_write/read for shared state (not used here)
+  #
+  # All agents (DM and players) communicate as peers via the "party-chat" topic:
+  # 1. Each agent subscribes to "party-chat" topic
+  # 2. Agents publish messages to "party-chat" using publish()
+  # 3. Agents receive messages using receive_broadcast() which is event-driven
+  # 4. No hierarchy - all agents are equal participants in the conversation
+  #
+  # The DM is the entrypoint (users chat with the DM first) but all agents
+  # communicate as peers through the broadcast bus.
+  #
+  # This field documents the intended communication topology but is not parsed
+  # or enforced by the runtime - the pattern emerges from agent configuration.
+  communication:
+    pattern: "peer-to-peer-pub-sub"
+    topic: "party-chat"
+    entrypoint: dm
+
+  config:
+    timeout_seconds: 600  # 10 minutes for dungeon adventure
+    max_workflow_turns: 200
+
+  observability:
+    export_traces: true
+    export_metrics: true
+    tags:
+      workflow: dungeon-crawl
+      version: "2.0.0"
+      domain: gaming

@@ -1,0 +1,384 @@
+# === METADATA START ===
+name: fastload_generation
+title: "FastLoad Script Generation"
+description: |
+  Generate Teradata FastLoad scripts for high-speed bulk loading of data into empty tables.
+  FastLoad is optimized for loading large volumes of data (millions/billions of rows) into
+  empty tables with maximum throughput.
+
+  **CRITICAL: FastLoad Requirements**
+  - Target table must be EMPTY (drop/recreate or delete all rows first)
+  - No secondary indexes allowed during load (drop before, recreate after)
+  - No triggers or referential integrity constraints
+  - Single data file per FastLoad job
+  - Session mode for small loads, data mover mode for large loads
+
+  **USE CASES:**
+  - Initial bulk load of historical data
+  - Daily/weekly batch loads into staging tables
+  - Data warehouse fact table population
+  - Migration from other systems
+
+  **WHEN TO USE:**
+  - Loading > 100K rows (for smaller loads, use INSERT or MultiLoad)
+  - Table is empty or can be emptied
+  - No need to update existing rows
+
+  **TABLE REQUIREMENTS:**
+  Call get_tables() to verify target table exists and check for secondary indexes.
+  FastLoad will fail if secondary indexes exist - must drop them first.
+
+category: data_loading
+difficulty: intermediate
+teradata_function: FASTLOAD
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Generate FastLoad script from table schema
+  - Bulk load CSV/flat files into Teradata tables
+  - Initial population of fact tables
+  - Daily batch load into staging tables
+  - Migration of historical data
+  - Load testing with large datasets
+  - ETL pipeline FastLoad generation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Target database name"
+    example: "sales_db"
+
+  - name: table
+    type: string
+    required: true
+    description: "Target table name (must be empty)"
+    example: "fact_orders"
+
+  - name: source_file
+    type: string
+    required: true
+    description: "Path to input data file"
+    example: "/data/orders.csv"
+
+  - name: delimiter
+    type: string
+    required: false
+    default: ","
+    description: "Field delimiter in source file"
+    example: ","
+
+  - name: checkpoint_rows
+    type: number
+    required: false
+    default: 100000
+    description: "Checkpoint every N rows"
+    example: "100000"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  fastload_script:
+    description: "Generate complete FastLoad script"
+    sql: |
+      /* FastLoad Script for {{database}}.{{table}} */
+      /* Generated: {{current_timestamp}} */
+
+      /* Step 1: Session Configuration */
+      .LOGON tdpid/username,password;
+      .SET ERRORLEVEL 3807 SEVERITY 0;  /* Ignore duplicate row errors if needed */
+
+      /* Step 2: Define Session Parameters */
+      .SET RECORD VARTEXT "{{delimiter}}";
+      .SET NOTIFY {{checkpoint_rows}};
+      .SET TENACITY 4;
+      .SET SLEEP 6;
+
+      /* Step 3: Drop Error Tables (if exist) */
+      DROP TABLE {{database}}.{{table}}_ERR1;
+      DROP TABLE {{database}}.{{table}}_ERR2;
+
+      /* Step 4: Begin Loading */
+      BEGIN LOADING {{database}}.{{table}}
+        ERRORFILES {{database}}.{{table}}_ERR1, {{database}}.{{table}}_ERR2
+        CHECKPOINT {{checkpoint_rows}};
+
+      /* Step 5: Define Input Schema */
+      DEFINE
+        {{range $i, $col := .columns}}
+        {{$col.name}} (VARCHAR({{$col.length}})){{if not (last $i $.columns)}},{{end}}
+        {{end}}
+      FILE = {{source_file}};
+
+      /* Step 6: Insert Statement */
+      INSERT INTO {{database}}.{{table}} (
+        {{range $i, $col := .columns}}
+        {{$col.name}}{{if not (last $i $.columns)}},{{end}}
+        {{end}}
+      ) VALUES (
+        {{range $i, $col := .columns}}
+        :{{$col.name}}{{if not (last $i $.columns)}},{{end}}
+        {{end}}
+      );
+
+      /* Step 7: End Loading */
+      END LOADING;
+
+      /* Step 8: Collect Statistics */
+      COLLECT STATISTICS ON {{database}}.{{table}};
+
+      /* Step 9: Logoff */
+      .LOGOFF;
+
+  pre_load_checks:
+    description: "Verify table is ready for FastLoad"
+    sql: |
+      -- Check 1: Verify table exists
+      SELECT DatabaseName, TableName, TableKind, CreatorName
+      FROM DBC.TablesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}';
+
+      -- Check 2: Verify table is empty
+      SELECT COUNT(*) AS row_count
+      FROM {{database}}.{{table}};
+      -- CRITICAL: Must return 0 for FastLoad to succeed
+
+      -- Check 3: Check for secondary indexes (must drop before FastLoad)
+      SELECT IndexName, IndexType, ColumnName
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND IndexType IN ('S', 'J');  -- Secondary or Join indexes
+      -- CRITICAL: Must return 0 rows (drop indexes first)
+
+      -- Check 4: Get column definitions for DEFINE section
+      SELECT
+        ColumnName,
+        ColumnType,
+        ColumnLength,
+        DecimalTotalDigits,
+        DecimalFractionalDigits,
+        Nullable
+      FROM DBC.ColumnsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      ORDER BY ColumnId;
+
+  post_load_validation:
+    description: "Verify FastLoad completed successfully"
+    sql: |
+      -- Check 1: Verify row count
+      SELECT COUNT(*) AS rows_loaded
+      FROM {{database}}.{{table}};
+
+      -- Check 2: Check error tables
+      SELECT COUNT(*) AS error_count, 'ERR1 - Acquisition Errors' AS error_type
+      FROM {{database}}.{{table}}_ERR1
+      UNION ALL
+      SELECT COUNT(*), 'ERR2 - Constraint Errors'
+      FROM {{database}}.{{table}}_ERR2;
+
+      -- Check 3: Sample loaded data
+      SELECT * FROM {{database}}.{{table}} SAMPLE 10;
+
+      -- Check 4: Verify statistics collected
+      SELECT ColumnName, CollectTimeStamp, UniqueValueCount
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      ORDER BY ColumnName;
+
+  drop_recreate_indexes:
+    description: "Drop indexes before FastLoad, recreate after"
+    sql: |
+      -- Step 1: Generate DROP statements (run before FastLoad)
+      SELECT 'DROP INDEX ' || TRIM(IndexName) || ' ON {{database}}.{{table}};' AS drop_statement
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND IndexType IN ('S', 'J');
+
+      -- Step 2: Save CREATE statements for recreation after load
+      SELECT 'CREATE INDEX ' || TRIM(IndexName) || ' (' ||
+             TRIM(ColumnName) || ') ON {{database}}.{{table}};' AS create_statement
+      FROM DBC.IndicesV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND IndexType IN ('S', 'J')
+      ORDER BY IndexNumber;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Basic FastLoad for fact table"
+    parameters:
+      database: "sales_dw"
+      table: "fact_orders"
+      source_file: "/data/orders.csv"
+      delimiter: ","
+      checkpoint_rows: 100000
+    expected_result: |
+      Generated FastLoad Script:
+
+      .LOGON tdpid/user,pass;
+      .SET RECORD VARTEXT ",";
+      .SET NOTIFY 100000;
+
+      BEGIN LOADING sales_dw.fact_orders
+        ERRORFILES sales_dw.fact_orders_ERR1, sales_dw.fact_orders_ERR2
+        CHECKPOINT 100000;
+
+      DEFINE
+        order_id (VARCHAR(20)),
+        customer_id (VARCHAR(20)),
+        order_date (VARCHAR(10)),
+        amount (VARCHAR(20))
+      FILE = /data/orders.csv;
+
+      INSERT INTO sales_dw.fact_orders VALUES (
+        :order_id, :customer_id, :order_date, :amount
+      );
+
+      END LOADING;
+      COLLECT STATISTICS ON sales_dw.fact_orders;
+      .LOGOFF;
+
+      Execution Results:
+      - Loaded: 5,000,000 rows
+      - Duration: 8 minutes
+      - Throughput: 625,000 rows/min
+      - Errors: 0
+
+  - name: "FastLoad with pre-checks"
+    parameters:
+      database: "warehouse"
+      table: "staging_products"
+    expected_result: |
+      Pre-Load Checks:
+      1. Table exists: ✅ warehouse.staging_products
+      2. Row count: 0 ✅ (empty, ready for FastLoad)
+      3. Secondary indexes: 1 ❌ (idx_product_name exists)
+
+      Action Required:
+      DROP INDEX idx_product_name ON warehouse.staging_products;
+
+      After dropping index, FastLoad can proceed.
+      Remember to recreate index after load:
+      CREATE INDEX idx_product_name (product_name) ON warehouse.staging_products;
+
+  - name: "Post-load validation"
+    parameters:
+      database: "sales_dw"
+      table: "fact_orders"
+    expected_result: |
+      Post-Load Validation:
+
+      1. Rows Loaded: 5,000,000 ✅
+      2. Error Analysis:
+         - ERR1 (Acquisition): 0 rows
+         - ERR2 (Constraints): 0 rows
+
+      3. Sample Data:
+         order_id | customer_id | order_date | amount
+         ---------|-------------|------------|-------
+         ORD001   | CUST123     | 2024-01-15 | 150.00
+         ORD002   | CUST456     | 2024-01-15 | 225.50
+
+      4. Statistics: Collected on all columns ✅
+
+      FastLoad completed successfully! Table ready for queries.
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## FastLoad Best Practices
+
+  ### 1. Always Empty Table First
+  ```sql
+  -- Option 1: DELETE (preserves table structure)
+  DELETE FROM database.table;
+
+  -- Option 2: DROP/CREATE (cleaner)
+  DROP TABLE database.table;
+  CREATE TABLE database.table (...);
+  ```
+
+  ### 2. Drop Secondary Indexes Before Load
+  FastLoad will fail if secondary indexes exist:
+  ```sql
+  -- Generate drop statements
+  SELECT 'DROP INDEX ' || IndexName || ';'
+  FROM DBC.IndicesV
+  WHERE DatabaseName = 'db' AND TableName = 'table' AND IndexType = 'S';
+  ```
+
+  ### 3. Use Checkpoints for Large Loads
+  Checkpoints allow restart from failure:
+  ```
+  CHECKPOINT 100000;  -- Every 100K rows
+  ```
+
+  ### 4. Handle Data Type Conversions
+  Define all input as VARCHAR, convert in INSERT:
+  ```
+  DEFINE amount (VARCHAR(20)) FILE = input.csv;
+  INSERT INTO table VALUES (:amount (DECIMAL(10,2)));
+  ```
+
+  ### 5. Monitor Error Tables
+  Always check ERR1 and ERR2 after load:
+  - **ERR1**: Data acquisition errors (bad format, missing fields)
+  - **ERR2**: Constraint violations (duplicate keys, nulls)
+
+  ### 6. Collect Statistics After Load
+  Critical for query performance:
+  ```sql
+  COLLECT STATISTICS ON database.table;
+  ```
+
+  ### 7. Use .SET ERRORLEVEL for Tolerant Loads
+  ```
+  .SET ERRORLEVEL 3807 SEVERITY 0;  /* Ignore duplicate errors */
+  ```
+
+  ### 8. Session Mode vs Data Mover Mode
+  - **Session mode**: Default, good for < 1M rows
+  - **Data mover mode**: For > 1M rows, better throughput
+
+  ### 9. Memory Layers for FastLoad Management
+  - **Kernel Layer**: Cache table schemas and index definitions needed for FastLoad prep
+  - **L1 Cache**: Keep recent FastLoad scripts (last 5-8 tables) to reuse patterns
+  - **L2 Compressed**: Archive FastLoad performance metrics (rows/min, durations)
+  - **Swap Layer**: Store complete load history; use recall_conversation to reference similar bulk loads from previous ETL cycles
+  This enables optimizing checkpoint intervals and parallelism based on historical throughput.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Table must be empty (3807)"
+    cause: "Target table contains rows"
+    solution: "DELETE FROM table or DROP/CREATE table before FastLoad"
+
+  - error: "Secondary index exists"
+    cause: "Cannot FastLoad with secondary indexes present"
+    solution: "DROP INDEX statements before load, recreate after"
+
+  - error: "Checkpoint restart failed"
+    cause: "Error tables not cleaned up from previous run"
+    solution: "DROP TABLE table_ERR1 and table_ERR2 before rerunning"
+
+  - error: "Data conversion error in ERR1"
+    cause: "Input data doesn't match DEFINE schema"
+    solution: "Check delimiter, field count, data types in DEFINE section"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - statistics_collection  # Always collect stats after FastLoad
+  - multiload_generation  # For updates/deletes (use MultiLoad instead)
+  - pi_skew_detection  # Verify good distribution after load
+# === RELATED_PATTERNS END ===

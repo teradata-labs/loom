@@ -1,0 +1,37 @@
+baseURL = "https://teradata-tio.github.io/loom/"
+title = "Loom Documentation"
+theme = "book"
+defaultContentLanguage = "en"
+defaultContentLanguageInSubdir = false
+
+# Hugo Book theme configuration
+enableGitInfo = false
+enableRobotsTXT = true
+
+[markup]
+  [markup.goldmark.renderer]
+    unsafe = true
+  [markup.tableOfContents]
+    endLevel = 3
+    ordered = false
+    startLevel = 2
+
+[params]
+  # Book theme settings
+  BookRepo = 'https://github.com/teradata-labs/loom'
+  BookEditPath = 'edit/main/docs'
+  BookSearch = true
+  BookToC = true
+  BookComments = false
+
+  # Enable Mermaid diagrams
+  BookMermaid = true
+
+  # Custom CSS
+  BookCustomCSS = ["/custom.css"]
+
+[menu]
+[[menu.main]]
+  name = 'GitHub'
+  url = 'https://github.com/teradata-labs/loom'
+  weight = 10

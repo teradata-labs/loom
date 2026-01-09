@@ -1,0 +1,144 @@
+# === METADATA START ===
+name: sentiment_analysis
+title: "Multi-Class Sentiment Detection"
+description: |
+  Classify text into sentiment categories (positive, negative, neutral) with confidence scores.
+  Essential for customer feedback analysis, support ticket prioritization, social media monitoring,
+  and user review classification. Works without external NLP services - just Claude.
+
+category: classification
+difficulty: beginner
+backend_type: text
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Customer feedback analysis and prioritization
+  - Support ticket sentiment-based routing
+  - Product review classification
+  - Social media monitoring
+  - Employee feedback analysis
+  - Brand sentiment tracking
+  - Survey response analysis
+  - Chat message tone detection
+  - Email sentiment for CRM
+  - Comment moderation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: input_text
+    type: string
+    required: true
+    description: "Text to analyze for sentiment"
+    example: "This product exceeded my expectations!"
+
+  - name: sentiment_scale
+    type: enum[three_class, five_point, binary]
+    required: false
+    default: "three_class"
+    description: "Sentiment classification scale"
+    example: "five_point"
+
+  - name: include_reasoning
+    type: boolean
+    required: false
+    default: true
+    description: "Include explanation of sentiment classification"
+    example: "true"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  three_class:
+    description: "Positive, Negative, or Neutral"
+    content: |
+      Analyze the sentiment of this text:
+      "{{input_text}}"
+
+      Classify as: positive, negative, or neutral
+
+      Return JSON:
+      {
+        "sentiment": "positive|negative|neutral",
+        "confidence": 0.0-1.0,
+        "reasoning": "brief explanation"
+      }
+    required_parameters:
+      - input_text
+
+  five_point:
+    description: "1-5 scale (very negative to very positive)"
+    content: |
+      Rate the sentiment on a 1-5 scale:
+      "{{input_text}}"
+
+      Scale:
+      1 = Very Negative
+      2 = Negative
+      3 = Neutral
+      4 = Positive
+      5 = Very Positive
+
+      Return JSON with score, confidence, reasoning.
+    required_parameters:
+      - input_text
+
+  with_aspects:
+    description: "Analyze sentiment for multiple aspects"
+    content: |
+      Analyze sentiment for different aspects of:
+      "{{input_text}}"
+
+      Return JSON:
+      {
+        "overall_sentiment": "positive|negative|neutral",
+        "aspects": [
+          {"name": "quality", "sentiment": "positive", "confidence": 0.9},
+          {"name": "price", "sentiment": "negative", "confidence": 0.7}
+        ],
+        "reasoning": "explanation"
+      }
+    required_parameters:
+      - input_text
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Product Review - Positive"
+    parameters:
+      input_text: "Amazing quality! Fast shipping and great customer service."
+      sentiment_scale: "three_class"
+    expected_result: |
+      {
+        "sentiment": "positive",
+        "confidence": 0.95,
+        "reasoning": "Multiple positive indicators: 'amazing', 'great', no negative language"
+      }
+
+  - name: "Support Ticket - Negative"
+    parameters:
+      input_text: "Very frustrated. This is the third time I've had to contact support about the same issue."
+      sentiment_scale: "five_point"
+    expected_result: |
+      {
+        "score": 1,
+        "confidence": 0.9,
+        "reasoning": "Strong negative language ('frustrated'), repeated issue indicates severe dissatisfaction"
+      }
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Sentiment Analysis Best Practices
+
+  1. **Context Matters**: Consider domain-specific language
+  2. **Sarcasm Detection**: Note when confidence is low
+  3. **Mixed Sentiment**: Use aspect-based for nuanced text
+  4. **Confidence Thresholds**: <0.6 = uncertain, >0.8 = reliable
+  5. **Batch Processing**: Analyze multiple texts efficiently
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - classification
+  - text_processing

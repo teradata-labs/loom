@@ -1,0 +1,2473 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "loom/v1/agent_config.proto";
+import "loom/v1/bus.proto";
+import "loom/v1/communication.proto";
+import "loom/v1/orchestration.proto";
+import "loom/v1/server.proto";
+import "loom/v1/shared_memory.proto";
+import "loom/v1/tools.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// LoomService provides the core agent runtime API for multi-domain
+// autonomous LLM agents with pattern-guided learning and self-correction.
+service LoomService {
+  // Weave executes a user query by selecting patterns, executing tools,
+  // and weaving LLM intelligence with domain knowledge.
+  rpc Weave(WeaveRequest) returns (WeaveResponse) {
+    option (google.api.http) = {
+      post: "/v1/weave"
+      body: "*"
+    };
+  }
+
+  // StreamWeave executes a query and streams incremental progress updates.
+  rpc StreamWeave(WeaveRequest) returns (stream WeaveProgress) {
+    option (google.api.http) = {
+      post: "/v1/weave:stream"
+      body: "*"
+    };
+  }
+
+  // LoadPatterns loads pattern definitions from a directory or repository.
+  rpc LoadPatterns(LoadPatternsRequest) returns (LoadPatternsResponse) {
+    option (google.api.http) = {
+      post: "/v1/patterns:load"
+      body: "*"
+    };
+  }
+
+  // ListPatterns retrieves available patterns with optional filtering.
+  rpc ListPatterns(ListPatternsRequest) returns (ListPatternsResponse) {
+    option (google.api.http) = {get: "/v1/patterns"};
+  }
+
+  // GetPattern retrieves a specific pattern by name.
+  rpc GetPattern(GetPatternRequest) returns (Pattern) {
+    option (google.api.http) = {get: "/v1/patterns/{name}"};
+  }
+
+  // CreatePattern creates a new pattern at runtime.
+  rpc CreatePattern(CreatePatternRequest) returns (CreatePatternResponse) {
+    option (google.api.http) = {
+      post: "/v1/patterns"
+      body: "*"
+    };
+  }
+
+  // StreamPatternUpdates streams real-time pattern updates (additions, changes, deletions).
+  // Used by TUI and other clients to show live pattern library changes.
+  rpc StreamPatternUpdates(StreamPatternUpdatesRequest) returns (stream PatternUpdateEvent) {
+    option (google.api.http) = {get: "/v1/patterns:stream"};
+  }
+
+  // Multi-Turn Clarification RPCs
+
+  // AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.
+  // Used by TUI and other clients to respond to EventQuestionAsked progress events.
+  rpc AnswerClarificationQuestion(AnswerClarificationRequest) returns (AnswerClarificationResponse) {
+    option (google.api.http) = {
+      post: "/v1/clarifications/{session_id}/answer"
+      body: "*"
+    };
+  }
+
+  // CreateSession creates a new conversation session.
+  rpc CreateSession(CreateSessionRequest) returns (Session) {
+    option (google.api.http) = {
+      post: "/v1/sessions"
+      body: "*"
+    };
+  }
+
+  // GetSession retrieves session details.
+  rpc GetSession(GetSessionRequest) returns (Session) {
+    option (google.api.http) = {get: "/v1/sessions/{session_id}"};
+  }
+
+  // ListSessions lists all sessions with optional filtering.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {get: "/v1/sessions"};
+  }
+
+  // DeleteSession deletes a session and its history.
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse) {
+    option (google.api.http) = {delete: "/v1/sessions/{session_id}"};
+  }
+
+  // SubscribeToSession subscribes to real-time updates for a session.
+  // Returns a stream of updates when new messages arrive or session state changes.
+  // This allows clients to receive asynchronous responses from workflow coordinators
+  // and sub-agents without polling.
+  rpc SubscribeToSession(SubscribeToSessionRequest) returns (stream SessionUpdate) {
+    option (google.api.http) = {get: "/v1/sessions/{session_id}:subscribe"};
+  }
+
+  // GetConversationHistory retrieves conversation history for a session.
+  rpc GetConversationHistory(GetConversationHistoryRequest) returns (ConversationHistory) {
+    option (google.api.http) = {get: "/v1/sessions/{session_id}/history"};
+  }
+
+  // RegisterTool dynamically registers a new tool.
+  rpc RegisterTool(RegisterToolRequest) returns (RegisterToolResponse) {
+    option (google.api.http) = {
+      post: "/v1/tools:register"
+      body: "*"
+    };
+  }
+
+  // ListTools lists all registered tools.
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse) {
+    option (google.api.http) = {get: "/v1/tools"};
+  }
+
+  // GetTrace retrieves execution trace for observability.
+  rpc GetTrace(GetTraceRequest) returns (Trace) {
+    option (google.api.http) = {get: "/v1/traces/{trace_id}"};
+  }
+
+  // GetHealth returns health status of the agent.
+  rpc GetHealth(GetHealthRequest) returns (HealthStatus) {
+    option (google.api.http) = {get: "/v1/health"};
+  }
+
+  // Server Management RPCs
+
+  // GetServerConfig retrieves the current server configuration.
+  rpc GetServerConfig(GetServerConfigRequest) returns (ServerConfig) {
+    option (google.api.http) = {get: "/v1/server/config"};
+  }
+
+  // GetTLSStatus retrieves the current TLS/certificate status.
+  rpc GetTLSStatus(GetTLSStatusRequest) returns (TLSStatus) {
+    option (google.api.http) = {get: "/v1/server/tls"};
+  }
+
+  // RenewCertificate manually triggers certificate renewal (for Let's Encrypt).
+  rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse) {
+    option (google.api.http) = {
+      post: "/v1/server/tls:renew"
+      body: "*"
+    };
+  }
+
+  // Agent Management RPCs
+
+  // CreateAgentFromConfig creates an agent from configuration.
+  rpc CreateAgentFromConfig(CreateAgentRequest) returns (AgentInfo) {
+    option (google.api.http) = {
+      post: "/v1/agents"
+      body: "*"
+    };
+  }
+
+  // ListAgents lists all registered agents.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
+    option (google.api.http) = {get: "/v1/agents"};
+  }
+
+  // GetAgent retrieves agent information.
+  rpc GetAgent(GetAgentRequest) returns (AgentInfo) {
+    option (google.api.http) = {get: "/v1/agents/{agent_id}"};
+  }
+
+  // StartAgent starts a stopped agent.
+  rpc StartAgent(StartAgentRequest) returns (AgentInfo) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_id}:start"
+      body: "*"
+    };
+  }
+
+  // StopAgent stops a running agent.
+  rpc StopAgent(StopAgentRequest) returns (AgentInfo) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_id}:stop"
+      body: "*"
+    };
+  }
+
+  // DeleteAgent deletes an agent.
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse) {
+    option (google.api.http) = {delete: "/v1/agents/{agent_id}"};
+  }
+
+  // ReloadAgent hot-reloads agent configuration without stopping.
+  rpc ReloadAgent(ReloadAgentRequest) returns (AgentInfo) {
+    option (google.api.http) = {
+      post: "/v1/agents/{agent_id}:reload"
+      body: "*"
+    };
+  }
+
+  // SwitchModel switches the LLM model/provider for a session without losing context.
+  rpc SwitchModel(SwitchModelRequest) returns (SwitchModelResponse) {
+    option (google.api.http) = {
+      post: "/v1/sessions/{session_id}:switch-model"
+      body: "*"
+    };
+  }
+
+  // ListAvailableModels lists all available LLM models/providers.
+  rpc ListAvailableModels(ListAvailableModelsRequest) returns (ListAvailableModelsResponse) {
+    option (google.api.http) = {get: "/v1/models"};
+  }
+
+  // RequestToolPermission requests user permission to execute a tool.
+  rpc RequestToolPermission(ToolPermissionRequest) returns (ToolPermissionResponse) {
+    option (google.api.http) = {
+      post: "/v1/tools:request-permission"
+      body: "*"
+    };
+  }
+
+  // MCP Server Management RPCs
+
+  // ListMCPServers lists all configured MCP servers.
+  rpc ListMCPServers(ListMCPServersRequest) returns (ListMCPServersResponse) {
+    option (google.api.http) = {get: "/v1/mcp/servers"};
+  }
+
+  // GetMCPServer retrieves a specific MCP server configuration.
+  rpc GetMCPServer(GetMCPServerRequest) returns (MCPServerInfo) {
+    option (google.api.http) = {get: "/v1/mcp/servers/{server_name}"};
+  }
+
+  // AddMCPServer adds a new MCP server configuration.
+  rpc AddMCPServer(AddMCPServerRequest) returns (AddMCPServerResponse) {
+    option (google.api.http) = {
+      post: "/v1/mcp/servers"
+      body: "*"
+    };
+  }
+
+  // UpdateMCPServer updates an existing MCP server configuration.
+  rpc UpdateMCPServer(UpdateMCPServerRequest) returns (MCPServerInfo) {
+    option (google.api.http) = {
+      put: "/v1/mcp/servers/{server_name}"
+      body: "*"
+    };
+  }
+
+  // DeleteMCPServer removes an MCP server configuration.
+  rpc DeleteMCPServer(DeleteMCPServerRequest) returns (DeleteMCPServerResponse) {
+    option (google.api.http) = {delete: "/v1/mcp/servers/{server_name}"};
+  }
+
+  // RestartMCPServer restarts a running MCP server.
+  rpc RestartMCPServer(RestartMCPServerRequest) returns (MCPServerInfo) {
+    option (google.api.http) = {
+      post: "/v1/mcp/servers/{server_name}:restart"
+      body: "*"
+    };
+  }
+
+  // HealthCheckMCPServers checks health of all MCP servers.
+  rpc HealthCheckMCPServers(HealthCheckMCPServersRequest) returns (HealthCheckMCPServersResponse) {
+    option (google.api.http) = {get: "/v1/mcp/servers:health"};
+  }
+
+  // TestMCPServerConnection tests an MCP server configuration without persisting it.
+  // This allows users to validate their configuration (command, args, env vars) before saving.
+  rpc TestMCPServerConnection(TestMCPServerConnectionRequest) returns (TestMCPServerConnectionResponse) {
+    option (google.api.http) = {
+      post: "/v1/mcp/servers:test"
+      body: "*"
+    };
+  }
+
+  // ListMCPServerTools lists all tools from a specific MCP server.
+  // This queries the MCP server directly through the manager, not the agent's tool registry.
+  rpc ListMCPServerTools(ListMCPServerToolsRequest) returns (ListMCPServerToolsResponse) {
+    option (google.api.http) = {get: "/v1/mcp/servers/{server_name}/tools"};
+  }
+
+  // Workflow Orchestration RPCs
+
+  // ExecuteWorkflow executes a multi-agent workflow pattern.
+  rpc ExecuteWorkflow(ExecuteWorkflowRequest) returns (ExecuteWorkflowResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows:execute"
+      body: "*"
+    };
+  }
+
+  // StreamWorkflow executes a workflow and streams progress updates.
+  rpc StreamWorkflow(ExecuteWorkflowRequest) returns (stream WorkflowProgress) {
+    option (google.api.http) = {
+      post: "/v1/workflows:stream"
+      body: "*"
+    };
+  }
+
+  // GetWorkflowExecution retrieves a workflow execution.
+  rpc GetWorkflowExecution(GetWorkflowExecutionRequest) returns (WorkflowExecution) {
+    option (google.api.http) = {get: "/v1/workflows/executions/{execution_id}"};
+  }
+
+  // ListWorkflowExecutions lists workflow executions.
+  rpc ListWorkflowExecutions(ListWorkflowExecutionsRequest) returns (ListWorkflowExecutionsResponse) {
+    option (google.api.http) = {get: "/v1/workflows/executions"};
+  }
+
+  // Workflow Scheduling RPCs
+
+  // ScheduleWorkflow creates a new scheduled workflow.
+  rpc ScheduleWorkflow(ScheduleWorkflowRequest) returns (ScheduleWorkflowResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows/schedules"
+      body: "*"
+    };
+  }
+
+  // UpdateScheduledWorkflow updates an existing scheduled workflow.
+  rpc UpdateScheduledWorkflow(UpdateScheduledWorkflowRequest) returns (ScheduleWorkflowResponse) {
+    option (google.api.http) = {
+      patch: "/v1/workflows/schedules/{schedule_id}"
+      body: "*"
+    };
+  }
+
+  // GetScheduledWorkflow retrieves a scheduled workflow by ID.
+  rpc GetScheduledWorkflow(GetScheduledWorkflowRequest) returns (ScheduledWorkflow) {
+    option (google.api.http) = {get: "/v1/workflows/schedules/{schedule_id}"};
+  }
+
+  // ListScheduledWorkflows lists all scheduled workflows.
+  rpc ListScheduledWorkflows(ListScheduledWorkflowsRequest) returns (ListScheduledWorkflowsResponse) {
+    option (google.api.http) = {get: "/v1/workflows/schedules"};
+  }
+
+  // DeleteScheduledWorkflow deletes a scheduled workflow.
+  rpc DeleteScheduledWorkflow(DeleteScheduledWorkflowRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {delete: "/v1/workflows/schedules/{schedule_id}"};
+  }
+
+  // TriggerScheduledWorkflow manually triggers a scheduled workflow immediately.
+  rpc TriggerScheduledWorkflow(TriggerScheduledWorkflowRequest) returns (ExecuteWorkflowResponse) {
+    option (google.api.http) = {
+      post: "/v1/workflows/schedules/{schedule_id}:trigger"
+      body: "*"
+    };
+  }
+
+  // PauseSchedule pauses a schedule without deleting it.
+  rpc PauseSchedule(PauseScheduleRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/workflows/schedules/{schedule_id}:pause"
+      body: "*"
+    };
+  }
+
+  // ResumeSchedule resumes a paused schedule.
+  rpc ResumeSchedule(ResumeScheduleRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/workflows/schedules/{schedule_id}:resume"
+      body: "*"
+    };
+  }
+
+  // GetScheduleHistory retrieves execution history for a schedule.
+  rpc GetScheduleHistory(GetScheduleHistoryRequest) returns (GetScheduleHistoryResponse) {
+    option (google.api.http) = {get: "/v1/workflows/schedules/{schedule_id}/history"};
+  }
+
+  // Tri-Modal Communication RPCs
+
+  // Broadcast Bus (Pub/Sub) Operations
+
+  // Publish publishes a message to a topic (one-to-many broadcast).
+  rpc Publish(PublishRequest) returns (PublishResponse) {
+    option (google.api.http) = {
+      post: "/v1/bus/publish"
+      body: "*"
+    };
+  }
+
+  // Subscribe subscribes to a topic and receives messages via stream.
+  rpc Subscribe(SubscribeRequest) returns (stream BusMessage) {
+    option (google.api.http) = {
+      post: "/v1/bus/subscribe"
+      body: "*"
+    };
+  }
+
+  // Unsubscribe cancels a topic subscription.
+  rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse) {
+    option (google.api.http) = {
+      post: "/v1/bus/unsubscribe"
+      body: "*"
+    };
+  }
+
+  // ListTopics lists all active topics.
+  rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse) {
+    option (google.api.http) = {get: "/v1/bus/topics"};
+  }
+
+  // GetTopicStats retrieves statistics for a topic.
+  rpc GetTopicStats(GetTopicStatsRequest) returns (TopicStats) {
+    option (google.api.http) = {get: "/v1/bus/topics/{topic}/stats"};
+  }
+
+  // Point-to-Point (Unicast) Enhancements
+
+  // SendAsync sends a message asynchronously (fire-and-forget).
+  rpc SendAsync(SendAsyncRequest) returns (SendAsyncResponse) {
+    option (google.api.http) = {
+      post: "/v1/messages:sendAsync"
+      body: "*"
+    };
+  }
+
+  // SendAndReceive sends a message and waits for response (RPC-style).
+  rpc SendAndReceive(SendAndReceiveRequest) returns (SendAndReceiveResponse) {
+    option (google.api.http) = {
+      post: "/v1/messages:sendAndReceive"
+      body: "*"
+    };
+  }
+
+  // Shared Memory Operations
+
+  // PutSharedMemory writes or updates a value in shared memory.
+  rpc PutSharedMemory(PutSharedMemoryRequest) returns (PutSharedMemoryResponse) {
+    option (google.api.http) = {
+      put: "/v1/shared-memory/{namespace}/{key}"
+      body: "*"
+    };
+  }
+
+  // GetSharedMemory reads a value from shared memory.
+  rpc GetSharedMemory(GetSharedMemoryRequest) returns (GetSharedMemoryResponse) {
+    option (google.api.http) = {get: "/v1/shared-memory/{namespace}/{key}"};
+  }
+
+  // DeleteSharedMemory removes a value from shared memory.
+  rpc DeleteSharedMemory(DeleteSharedMemoryRequest) returns (DeleteSharedMemoryResponse) {
+    option (google.api.http) = {delete: "/v1/shared-memory/{namespace}/{key}"};
+  }
+
+  // WatchSharedMemory watches for changes to keys in a namespace.
+  rpc WatchSharedMemory(WatchSharedMemoryRequest) returns (stream SharedMemoryValue) {
+    option (google.api.http) = {
+      post: "/v1/shared-memory:watch"
+      body: "*"
+    };
+  }
+
+  // ListSharedMemoryKeys lists all keys in a namespace.
+  rpc ListSharedMemoryKeys(ListSharedMemoryKeysRequest) returns (ListSharedMemoryKeysResponse) {
+    option (google.api.http) = {get: "/v1/shared-memory/{namespace}/keys"};
+  }
+
+  // GetSharedMemoryStats retrieves statistics for a namespace.
+  rpc GetSharedMemoryStats(GetSharedMemoryStatsRequest) returns (SharedMemoryStats) {
+    option (google.api.http) = {get: "/v1/shared-memory/{namespace}/stats"};
+  }
+
+  // Artifact Management RPCs
+
+  // ListArtifacts lists artifacts with optional filtering.
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse) {
+    option (google.api.http) = {get: "/v1/artifacts"};
+  }
+
+  // GetArtifact retrieves artifact metadata.
+  rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse) {
+    option (google.api.http) = {get: "/v1/artifacts/{id}"};
+  }
+
+  // UploadArtifact uploads a file to artifacts storage.
+  rpc UploadArtifact(UploadArtifactRequest) returns (UploadArtifactResponse) {
+    option (google.api.http) = {
+      post: "/v1/artifacts"
+      body: "*"
+    };
+  }
+
+  // DeleteArtifact deletes an artifact (soft or hard delete).
+  rpc DeleteArtifact(DeleteArtifactRequest) returns (DeleteArtifactResponse) {
+    option (google.api.http) = {delete: "/v1/artifacts/{id}"};
+  }
+
+  // SearchArtifacts performs full-text search on artifacts.
+  rpc SearchArtifacts(SearchArtifactsRequest) returns (SearchArtifactsResponse) {
+    option (google.api.http) = {get: "/v1/artifacts:search"};
+  }
+
+  // GetArtifactContent reads artifact file content.
+  rpc GetArtifactContent(GetArtifactContentRequest) returns (GetArtifactContentResponse) {
+    option (google.api.http) = {get: "/v1/artifacts/{id}/content"};
+  }
+
+  // GetArtifactStats retrieves storage statistics.
+  rpc GetArtifactStats(GetArtifactStatsRequest) returns (GetArtifactStatsResponse) {
+    option (google.api.http) = {get: "/v1/artifacts/stats"};
+  }
+}
+
+// WeaveRequest initiates a query execution.
+message WeaveRequest {
+  // User's natural language query
+  string query = 1;
+
+  // Session ID for conversation continuity (optional)
+  string session_id = 2;
+
+  // Backend configuration overrides (optional)
+  map<string, string> backend_config = 3;
+
+  // Maximum execution rounds (default: 3)
+  int32 max_rounds = 4;
+
+  // Timeout in seconds (default: 300)
+  int32 timeout_seconds = 5;
+
+  // Context variables for prompt interpolation
+  map<string, string> context = 6;
+
+  // Force specific pattern (bypass pattern selection)
+  string force_pattern = 7;
+
+  // Enable tracing for this request
+  bool enable_trace = 8;
+
+  // Agent ID to route request to (optional, uses default if not specified)
+  string agent_id = 9;
+}
+
+// WeaveResponse contains the execution result.
+message WeaveResponse {
+  // Generated response text
+  string text = 1;
+
+  // Execution result (domain-specific)
+  ExecutionResult result = 2;
+
+  // Session ID used
+  string session_id = 3;
+
+  // Trace ID for observability
+  string trace_id = 4;
+
+  // Cost attribution
+  CostInfo cost = 5;
+
+  // Execution metadata
+  ExecutionMetadata metadata = 6;
+
+  // Self-correction attempts (if any)
+  repeated SelfCorrectionAttempt corrections = 7;
+
+  // Agent ID that handled this request
+  string agent_id = 8;
+}
+
+// WeaveProgress streams incremental updates during execution.
+message WeaveProgress {
+  // Current stage
+  ExecutionStage stage = 1;
+
+  // Progress percentage (0-100)
+  int32 progress = 2;
+
+  // Current operation description
+  string message = 3;
+
+  // Tool being executed (if applicable)
+  string tool_name = 4;
+
+  // Timestamp
+  int64 timestamp = 5;
+
+  // Partial result (available at certain stages)
+  ExecutionResult partial_result = 6;
+
+  // HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP)
+  HITLRequestInfo hitl_request = 7;
+
+  // Token streaming fields
+  // Accumulated content so far (for streaming responses)
+  string partial_content = 8;
+
+  // True if this is a token streaming update
+  bool is_token_stream = 9;
+
+  // Running token count (for streaming responses)
+  int32 token_count = 10;
+
+  // Time to first token in milliseconds (for streaming responses)
+  int64 ttft_ms = 11;
+
+  // Cost information (included in completion event)
+  CostInfo cost = 12;
+}
+
+// HITLRequestInfo carries information about a human-in-the-loop request.
+message HITLRequestInfo {
+  // Request ID (generated by contact_human tool or clarification system)
+  string request_id = 1;
+
+  // Question being asked to the human
+  string question = 2;
+
+  // Request type (approval, decision, input, review, clarification)
+  string request_type = 3;
+
+  // Priority (low, normal, high, critical)
+  string priority = 4;
+
+  // Timeout in seconds
+  int32 timeout_seconds = 5;
+
+  // Additional context as JSON
+  string context_json = 6;
+
+  // Question ID for clarification questions (used with AnswerClarificationQuestion RPC)
+  string question_id = 7;
+
+  // Suggested options for the user (if applicable)
+  repeated string options = 8;
+}
+
+// ExecutionStage enum for tracking progress.
+enum ExecutionStage {
+  EXECUTION_STAGE_UNSPECIFIED = 0;
+  EXECUTION_STAGE_PATTERN_SELECTION = 1;
+  EXECUTION_STAGE_SCHEMA_DISCOVERY = 2;
+  EXECUTION_STAGE_LLM_GENERATION = 3;
+  EXECUTION_STAGE_TOOL_EXECUTION = 4;
+  EXECUTION_STAGE_HUMAN_IN_THE_LOOP = 9; // Waiting for human response
+  EXECUTION_STAGE_GUARDRAIL_CHECK = 5;
+  EXECUTION_STAGE_SELF_CORRECTION = 6;
+  EXECUTION_STAGE_COMPLETED = 7;
+  EXECUTION_STAGE_FAILED = 8;
+}
+
+// ExecutionResult contains domain-specific execution results.
+message ExecutionResult {
+  // Result type (query, operation, document, etc.)
+  string type = 1;
+
+  // Structured data (JSON) - for small results only
+  string data_json = 2;
+
+  // Row count (for query results)
+  int32 row_count = 3;
+
+  // Columns (for tabular results)
+  repeated string columns = 4;
+
+  // Data scanned (bytes)
+  int64 bytes_scanned = 5;
+
+  // Execution duration (milliseconds)
+  int64 duration_ms = 6;
+
+  // Backend-specific metadata
+  map<string, string> backend_metadata = 7;
+
+  // Data reference for large results (stored in shared memory)
+  DataReference data_reference = 8;
+}
+
+// StorageLocation indicates where data is stored.
+enum StorageLocation {
+  STORAGE_LOCATION_UNSPECIFIED = 0;
+  STORAGE_LOCATION_MEMORY = 1; // In-memory shared storage
+  STORAGE_LOCATION_DISK = 2; // Disk overflow cache
+  STORAGE_LOCATION_DATABASE = 3; // Queryable SQL storage
+}
+
+// DataReference points to data in shared memory.
+message DataReference {
+  // Unique identifier for this data chunk
+  string id = 1;
+
+  // Size in bytes
+  int64 size_bytes = 2;
+
+  // Where the data is stored
+  StorageLocation location = 3;
+
+  // Checksum for validation (SHA-256)
+  string checksum = 4;
+
+  // Whether data is compressed
+  bool compressed = 5;
+
+  // MIME type or data format hint
+  string content_type = 6;
+
+  // Metadata about the data
+  map<string, string> metadata = 7;
+
+  // Timestamp when data was stored (Unix milliseconds)
+  int64 stored_at = 8;
+}
+
+// SharedMemoryConfig configures the shared memory system.
+message SharedMemoryConfig {
+  // Enable shared memory for large results
+  bool enabled = 1;
+
+  // Maximum memory size in bytes (default: 1GB)
+  int64 max_memory_bytes = 2;
+
+  // Threshold for using shared memory (default: 100KB)
+  int64 threshold_bytes = 3;
+
+  // Disk overflow configuration
+  DiskOverflowConfig disk_overflow = 4;
+
+  // Compression configuration
+  CompressionConfig compression = 5;
+
+  // Cleanup configuration
+  CleanupConfig cleanup = 6;
+}
+
+// DiskOverflowConfig configures disk overflow.
+message DiskOverflowConfig {
+  // Enable disk overflow
+  bool enabled = 1;
+
+  // Disk cache directory path
+  string cache_path = 2;
+
+  // Maximum disk cache size in bytes (default: 10GB)
+  int64 max_disk_bytes = 3;
+}
+
+// CompressionConfig configures data compression.
+message CompressionConfig {
+  // Enable compression
+  bool enabled = 1;
+
+  // Compression threshold in bytes (default: 1MB)
+  int64 threshold_bytes = 2;
+
+  // Compression algorithm (gzip, zstd, etc.)
+  string algorithm = 3;
+}
+
+// CleanupConfig configures automatic cleanup.
+message CleanupConfig {
+  // Time-to-live in seconds (default: 3600)
+  int64 ttl_seconds = 1;
+
+  // Cleanup check interval in seconds (default: 300)
+  int64 check_interval_seconds = 2;
+}
+
+// CostInfo tracks LLM and execution costs.
+message CostInfo {
+  // Total cost (USD)
+  double total_cost_usd = 1;
+
+  // LLM cost breakdown
+  LLMCost llm_cost = 2;
+
+  // Backend execution cost (if applicable)
+  double backend_cost_usd = 3;
+}
+
+// LLMCost tracks token usage and costs.
+message LLMCost {
+  // Total tokens used
+  int32 total_tokens = 1;
+
+  // Input tokens
+  int32 input_tokens = 2;
+
+  // Output tokens
+  int32 output_tokens = 3;
+
+  // Cost for this LLM usage (USD)
+  double cost_usd = 4;
+
+  // Model used
+  string model = 5;
+
+  // Provider
+  string provider = 6;
+}
+
+// ExecutionMetadata contains execution metadata.
+message ExecutionMetadata {
+  // Pattern selected
+  string pattern_name = 1;
+
+  // Number of LLM calls
+  int32 llm_calls = 2;
+
+  // Number of tool executions
+  int32 tool_executions = 3;
+
+  // Number of self-correction attempts
+  int32 correction_attempts = 4;
+
+  // Total execution time (milliseconds)
+  int64 total_duration_ms = 5;
+
+  // Guardrail checks performed
+  repeated string guardrails_checked = 6;
+}
+
+// SelfCorrectionAttempt records a self-correction event.
+message SelfCorrectionAttempt {
+  // Error that triggered correction
+  string original_error = 1;
+
+  // Correction strategy applied
+  string strategy = 2;
+
+  // Whether correction succeeded
+  bool success = 3;
+
+  // Duration of correction (milliseconds)
+  int64 duration_ms = 4;
+
+  // Token cost of correction
+  LLMCost cost = 5;
+}
+
+// LoadPatternsRequest loads patterns.
+message LoadPatternsRequest {
+  // Directory path or repository URL
+  string source = 1;
+
+  // Domain filter (sql, api, document, etc.)
+  repeated string domains = 2;
+
+  // Force reload (clear cache)
+  bool force_reload = 3;
+
+  // Agent ID to load patterns for (optional, loads for all agents if not specified)
+  string agent_id = 4;
+}
+
+// LoadPatternsResponse confirms pattern loading.
+message LoadPatternsResponse {
+  // Number of patterns loaded
+  int32 patterns_loaded = 1;
+
+  // Pattern names
+  repeated string pattern_names = 2;
+
+  // Errors encountered (non-fatal)
+  repeated string errors = 3;
+}
+
+// ListPatternsRequest lists patterns.
+message ListPatternsRequest {
+  // Filter by domain
+  string domain = 1;
+
+  // Filter by category
+  string category = 2;
+
+  // Search query
+  string search = 3;
+}
+
+// ListPatternsResponse returns patterns.
+message ListPatternsResponse {
+  // Available patterns
+  repeated Pattern patterns = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// GetPatternRequest retrieves a pattern.
+message GetPatternRequest {
+  // Pattern name
+  string name = 1;
+}
+
+// CreatePatternRequest creates a new pattern at runtime.
+message CreatePatternRequest {
+  // Agent ID to create pattern for
+  string agent_id = 1;
+
+  // Pattern name (must be unique within agent)
+  string name = 2;
+
+  // Pattern YAML content
+  string yaml_content = 3;
+}
+
+// CreatePatternResponse confirms pattern creation.
+message CreatePatternResponse {
+  // Success status
+  bool success = 1;
+
+  // Created pattern name
+  string pattern_name = 2;
+
+  // Error message (if failed)
+  string error = 3;
+
+  // File path where pattern was written
+  string file_path = 4;
+}
+
+// StreamPatternUpdatesRequest requests real-time pattern updates.
+message StreamPatternUpdatesRequest {
+  // Optional: Filter by agent ID (empty = all agents)
+  string agent_id = 1;
+
+  // Optional: Filter by pattern category
+  string category = 2;
+}
+
+// PatternUpdateEvent represents a pattern change event.
+message PatternUpdateEvent {
+  // Event type
+  PatternUpdateType type = 1;
+
+  // Agent ID
+  string agent_id = 2;
+
+  // Pattern name
+  string pattern_name = 3;
+
+  // Pattern category (optional)
+  string category = 4;
+
+  // Timestamp (Unix milliseconds)
+  int64 timestamp = 5;
+
+  // File path (for created/modified patterns)
+  string file_path = 6;
+
+  // Error message (if validation failed)
+  string error = 7;
+}
+
+// Multi-Turn Clarification Messages
+
+// AnswerClarificationRequest provides an answer to a clarification question.
+message AnswerClarificationRequest {
+  // Session ID where the question was asked
+  string session_id = 1;
+
+  // Question ID (from QuestionAskedMsg/HITLRequestInfo)
+  string question_id = 2;
+
+  // User's answer
+  string answer = 3;
+
+  // Agent ID (optional, for multi-agent scenarios)
+  string agent_id = 4;
+}
+
+// AnswerClarificationResponse acknowledges the answer.
+message AnswerClarificationResponse {
+  // Success status
+  bool success = 1;
+
+  // Error message (if failed)
+  string error = 2;
+
+  // Whether the answer was accepted (may be rejected if invalid/timeout)
+  bool accepted = 3;
+}
+
+// PatternUpdateType enum for pattern change events.
+enum PatternUpdateType {
+  PATTERN_UPDATE_TYPE_UNSPECIFIED = 0;
+  PATTERN_CREATED = 1;
+  PATTERN_MODIFIED = 2;
+  PATTERN_DELETED = 3;
+  PATTERN_VALIDATION_FAILED = 4;
+}
+
+// Pattern represents a domain knowledge pattern.
+message Pattern {
+  // Pattern name
+  string name = 1;
+
+  // Domain (sql, api, document, etc.)
+  string domain = 2;
+
+  // Category (analytics, ml, crud, etc.)
+  string category = 3;
+
+  // Human-readable description
+  string description = 4;
+
+  // Parameters required
+  repeated PatternParameter parameters = 5;
+
+  // Example usage
+  repeated PatternExample examples = 6;
+
+  // Backend hints
+  map<string, string> backend_hints = 7;
+
+  // Tags for search
+  repeated string tags = 8;
+}
+
+// PatternParameter defines a pattern parameter.
+message PatternParameter {
+  // Parameter name
+  string name = 1;
+
+  // Type (string, int, bool, etc.)
+  string type = 2;
+
+  // Whether required
+  bool required = 3;
+
+  // Default value
+  string default_value = 4;
+
+  // Description
+  string description = 5;
+}
+
+// PatternExample shows pattern usage.
+message PatternExample {
+  // Example input
+  string input = 1;
+
+  // Expected output
+  string output = 2;
+
+  // Description
+  string description = 3;
+}
+
+// CreateSessionRequest creates a session.
+message CreateSessionRequest {
+  // Session name (optional)
+  string name = 1;
+
+  // Backend type
+  string backend = 2;
+
+  // Backend configuration
+  map<string, string> config = 3;
+
+  // Metadata
+  map<string, string> metadata = 4;
+
+  // Agent ID (optional, defaults to first available agent in multi-agent mode)
+  string agent_id = 5;
+}
+
+// Session represents a conversation session.
+message Session {
+  // Session ID
+  string id = 1;
+
+  // Session name
+  string name = 2;
+
+  // Backend type
+  string backend = 3;
+
+  // Creation timestamp
+  int64 created_at = 4;
+
+  // Last activity timestamp
+  int64 updated_at = 5;
+
+  // Session state (active, idle, closed)
+  string state = 6;
+
+  // Total cost so far
+  double total_cost_usd = 7;
+
+  // Number of conversations
+  int32 conversation_count = 8;
+
+  // Metadata
+  map<string, string> metadata = 9;
+}
+
+// GetSessionRequest retrieves a session.
+message GetSessionRequest {
+  // Session ID
+  string session_id = 1;
+}
+
+// ListSessionsRequest lists sessions.
+message ListSessionsRequest {
+  // Filter by state
+  string state = 1;
+
+  // Filter by backend
+  string backend = 2;
+
+  // Pagination offset
+  int32 offset = 3;
+
+  // Pagination limit
+  int32 limit = 4;
+}
+
+// ListSessionsResponse returns sessions.
+message ListSessionsResponse {
+  // Sessions
+  repeated Session sessions = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// DeleteSessionRequest deletes a session.
+message DeleteSessionRequest {
+  // Session ID
+  string session_id = 1;
+}
+
+// DeleteSessionResponse confirms deletion.
+message DeleteSessionResponse {
+  // Success status
+  bool success = 1;
+
+  // Message
+  string message = 2;
+}
+
+// SubscribeToSessionRequest subscribes to session updates.
+message SubscribeToSessionRequest {
+  // Session ID to subscribe to
+  string session_id = 1;
+
+  // Optional: Agent ID to filter updates (empty = all agents in session)
+  string agent_id = 2;
+}
+
+// SessionUpdate represents a real-time update for a session.
+// Sent when new messages arrive or session state changes.
+message SessionUpdate {
+  // Session ID
+  string session_id = 1;
+
+  // Agent ID that produced this update
+  string agent_id = 2;
+
+  // Timestamp of the update (Unix timestamp in seconds)
+  int64 timestamp = 3;
+
+  // Type of update
+  oneof update_type {
+    // New message added to conversation
+    NewMessageUpdate new_message = 4;
+
+    // Session status changed
+    SessionStatusUpdate status_change = 5;
+  }
+}
+
+// NewMessageUpdate indicates a new message was added to the conversation.
+message NewMessageUpdate {
+  // Message role (user, assistant, tool, system)
+  string role = 1;
+
+  // Message content
+  string content = 2;
+
+  // Message timestamp (Unix timestamp in seconds)
+  int64 message_timestamp = 3;
+
+  // Optional: Tool name if this is a tool message
+  string tool_name = 4;
+
+  // Optional: Cost information for LLM responses
+  CostInfo cost = 5;
+}
+
+// SessionStatusUpdate indicates session status changed.
+message SessionStatusUpdate {
+  // New status (active, waiting, completed, failed)
+  string status = 1;
+
+  // Optional status message
+  string message = 2;
+}
+
+// GetConversationHistoryRequest retrieves history.
+message GetConversationHistoryRequest {
+  // Session ID
+  string session_id = 1;
+
+  // Limit number of messages
+  int32 limit = 2;
+
+  // Offset for pagination
+  int32 offset = 3;
+}
+
+// ConversationHistory contains conversation messages.
+message ConversationHistory {
+  // Session ID
+  string session_id = 1;
+
+  // Messages
+  repeated Message messages = 2;
+
+  // Total message count
+  int32 total_count = 3;
+}
+
+// Message represents a conversation message.
+message Message {
+  // Message ID
+  string id = 1;
+
+  // Role (user, assistant, tool)
+  string role = 2;
+
+  // Content
+  string content = 3;
+
+  // Timestamp
+  int64 timestamp = 4;
+
+  // Tool calls (if applicable)
+  repeated ToolCall tool_calls = 5;
+
+  // Cost for this message
+  CostInfo cost = 6;
+}
+
+// ToolCall represents a tool execution.
+message ToolCall {
+  // Tool name
+  string name = 1;
+
+  // Arguments (JSON)
+  string args_json = 2;
+
+  // Result (JSON)
+  string result_json = 3;
+
+  // Duration (milliseconds)
+  int64 duration_ms = 4;
+
+  // Success status
+  bool success = 5;
+
+  // Error message (if failed)
+  string error = 6;
+}
+
+// RegisterToolRequest registers a tool.
+message RegisterToolRequest {
+  // Tool definition
+  ToolDefinition tool = 1;
+}
+
+// RegisterToolResponse confirms registration.
+message RegisterToolResponse {
+  // Success status
+  bool success = 1;
+
+  // Message
+  string message = 2;
+}
+
+// ListToolsRequest lists tools.
+message ListToolsRequest {
+  // Filter by backend
+  string backend = 1;
+}
+
+// ListToolsResponse returns tools.
+message ListToolsResponse {
+  // Registered tools
+  repeated ToolDefinition tools = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// ToolDefinition defines a tool with comprehensive metadata.
+// Extended to support self-describing tools for LLM-driven selection.
+message ToolDefinition {
+  // Tool name
+  string name = 1;
+
+  // Description
+  string description = 2;
+
+  // Input schema (JSON Schema)
+  string input_schema_json = 3;
+
+  // Backend compatibility
+  repeated string backends = 4;
+
+  // === RICH METADATA START (Phase 1: Self-Describing Tool System) ===
+
+  // Output schema (JSON Schema) - describes what the tool returns
+  string output_schema_json = 5;
+
+  // Semantic capabilities (e.g., "search", "http", "rest_api", "file")
+  repeated string capabilities = 6;
+
+  // Additional search keywords
+  repeated string keywords = 7;
+
+  // Use case examples
+  repeated ToolUseCase use_cases = 8;
+
+  // Tool conflicts (tools that shouldn't be used together)
+  repeated ToolConflict conflicts = 9;
+
+  // Alternative tools for specific scenarios
+  repeated ToolAlternative alternatives = 10;
+
+  // Worked examples with input/output pairs (reuses ToolExample from tools.proto)
+  repeated ToolExample examples = 11;
+
+  // Prerequisites and requirements
+  repeated ToolPrerequisite prerequisites = 12;
+
+  // Rate limiting information (reuses RateLimitInfo from tools.proto)
+  RateLimitInfo rate_limit = 13;
+
+  // Common errors and solutions
+  repeated ToolCommonError common_errors = 14;
+
+  // Best practices documentation
+  string best_practices = 15;
+
+  // Tool category (e.g., "web", "file", "rest_api", "vision")
+  string category = 16;
+
+  // Complementary tools that work well together
+  repeated ToolComplement complements = 17;
+
+  // Providers (for multi-provider tools like web_search)
+  repeated string providers = 18;
+
+  // === RICH METADATA END ===
+}
+
+// ToolUseCase describes a specific use case for a tool.
+message ToolUseCase {
+  // Use case title
+  string title = 1;
+
+  // When to use this tool
+  string when_to_use = 2;
+
+  // Example query or scenario
+  string example = 3;
+
+  // When NOT to use (clarifies boundaries)
+  string not_for = 4;
+}
+
+// ToolConflict describes a conflict with another tool.
+message ToolConflict {
+  // Conflicting tool name (can be "tool_name" or "mcp:server_name")
+  string tool_name = 1;
+
+  // Reason for the conflict
+  string reason = 2;
+
+  // When to prefer this tool over the other
+  string when_prefer_this = 3;
+
+  // When to prefer the other tool
+  string when_prefer_other = 4;
+
+  // Severity of the conflict ("high", "medium", "low")
+  string severity = 5;
+}
+
+// ToolAlternative suggests an alternative tool for specific scenarios.
+message ToolAlternative {
+  // Alternative tool name
+  string tool_name = 1;
+
+  // When to use the alternative instead
+  string when = 2;
+
+  // Benefits of the alternative
+  string benefits = 3;
+}
+
+// ToolComplement describes a tool that works well with this one.
+message ToolComplement {
+  // Complementary tool name
+  string tool_name = 1;
+
+  // Scenario where they work together
+  string scenario = 2;
+
+  // Example of combined usage
+  string example = 3;
+}
+
+// NOTE: ToolExample and RateLimitInfo are defined in tools.proto and reused here.
+
+// ToolPrerequisite describes a requirement for using the tool.
+message ToolPrerequisite {
+  // Prerequisite name (e.g., "API Key", "File Permissions")
+  string name = 1;
+
+  // Which providers/modes require this (e.g., ["tavily", "brave"])
+  repeated string required_for = 2;
+
+  // Environment variables for this prerequisite
+  repeated string env_vars = 3;
+
+  // How to obtain this prerequisite
+  string how_to_get = 4;
+
+  // Fallback if prerequisite unavailable
+  string fallback = 5;
+}
+
+// ToolCommonError documents a common error and its solution.
+message ToolCommonError {
+  // Error message or pattern
+  string error = 1;
+
+  // Cause of the error
+  string cause = 2;
+
+  // Solution or workaround
+  string solution = 3;
+}
+
+// GetTraceRequest retrieves a trace.
+message GetTraceRequest {
+  // Trace ID
+  string trace_id = 1;
+}
+
+// Trace contains execution trace for observability.
+message Trace {
+  // Trace ID
+  string id = 1;
+
+  // Session ID
+  string session_id = 2;
+
+  // Root span
+  Span root_span = 3;
+
+  // All spans (flat list)
+  repeated Span spans = 4;
+
+  // Total duration (milliseconds)
+  int64 total_duration_ms = 5;
+
+  // Total cost
+  CostInfo total_cost = 6;
+}
+
+// Span represents a trace span.
+message Span {
+  // Span ID
+  string id = 1;
+
+  // Parent span ID
+  string parent_id = 2;
+
+  // Span name
+  string name = 3;
+
+  // Start timestamp (Unix microseconds)
+  int64 start_time_us = 4;
+
+  // End timestamp (Unix microseconds)
+  int64 end_time_us = 5;
+
+  // Duration (microseconds)
+  int64 duration_us = 6;
+
+  // Status (ok, error)
+  string status = 7;
+
+  // Attributes (key-value pairs)
+  map<string, string> attributes = 8;
+
+  // Events within this span
+  repeated SpanEvent events = 9;
+}
+
+// SpanEvent represents an event within a span.
+message SpanEvent {
+  // Event name
+  string name = 1;
+
+  // Timestamp (Unix microseconds)
+  int64 timestamp_us = 2;
+
+  // Attributes
+  map<string, string> attributes = 3;
+}
+
+// GetHealthRequest checks health.
+message GetHealthRequest {}
+
+// HealthStatus returns system health.
+message HealthStatus {
+  // Overall status (healthy, degraded, unhealthy)
+  string status = 1;
+
+  // Component statuses
+  map<string, ComponentHealth> components = 2;
+
+  // Version info
+  string version = 3;
+
+  // Uptime (seconds)
+  int64 uptime_seconds = 4;
+}
+
+// ComponentHealth tracks individual component health.
+message ComponentHealth {
+  // Component status
+  string status = 1;
+
+  // Last check timestamp
+  int64 last_check = 2;
+
+  // Error message (if unhealthy)
+  string error = 3;
+
+  // Latency (milliseconds)
+  int64 latency_ms = 4;
+}
+
+// Agent Management Messages
+
+// CreateAgentRequest creates an agent from configuration.
+message CreateAgentRequest {
+  // Agent configuration
+  AgentConfig config = 1;
+
+  // Alternative: load from file path
+  string config_path = 2;
+}
+
+// AgentInfo provides information about an agent instance.
+message AgentInfo {
+  // Unique agent identifier
+  string id = 1;
+
+  // Agent name
+  string name = 2;
+
+  // Agent status: "running", "stopped", "error", "initializing"
+  string status = 3;
+
+  // Uptime in seconds
+  int64 uptime_seconds = 4;
+
+  // Number of active sessions
+  int32 active_sessions = 5;
+
+  // Number of total messages processed
+  int64 total_messages = 6;
+
+  // Agent metadata
+  map<string, string> metadata = 7;
+
+  // Agent configuration
+  AgentConfig config = 8;
+
+  // Error message (if status is "error")
+  string error = 9;
+
+  // Timestamp when agent was created (Unix seconds)
+  int64 created_at = 10;
+
+  // Timestamp when agent was last updated (Unix seconds)
+  int64 updated_at = 11;
+}
+
+// ListAgentsRequest lists all agents.
+message ListAgentsRequest {
+  // Filter by status
+  string status_filter = 1;
+
+  // Page size for pagination
+  int32 page_size = 2;
+
+  // Page token for pagination
+  string page_token = 3;
+}
+
+// ListAgentsResponse returns list of agents.
+message ListAgentsResponse {
+  // List of agents
+  repeated AgentInfo agents = 1;
+
+  // Next page token
+  string next_page_token = 2;
+
+  // Total count (without pagination)
+  int32 total_count = 3;
+}
+
+// GetAgentRequest retrieves agent information.
+message GetAgentRequest {
+  // Agent identifier (name or ID)
+  string agent_id = 1;
+}
+
+// StartAgentRequest starts an agent.
+message StartAgentRequest {
+  // Agent identifier
+  string agent_id = 1;
+}
+
+// StopAgentRequest stops an agent.
+message StopAgentRequest {
+  // Agent identifier
+  string agent_id = 1;
+
+  // Graceful shutdown timeout (seconds)
+  int32 timeout_seconds = 2;
+}
+
+// DeleteAgentRequest deletes an agent.
+message DeleteAgentRequest {
+  // Agent identifier
+  string agent_id = 1;
+
+  // Force delete even if running
+  bool force = 2;
+}
+
+// DeleteAgentResponse confirms deletion.
+message DeleteAgentResponse {
+  // Whether deletion was successful
+  bool success = 1;
+
+  // Deleted agent ID
+  string agent_id = 2;
+}
+
+// ReloadAgentRequest hot-reloads agent configuration.
+message ReloadAgentRequest {
+  // Agent identifier
+  string agent_id = 1;
+
+  // New configuration (if not loading from file)
+  AgentConfig config = 2;
+
+  // Reload from original config file
+  bool reload_from_file = 3;
+}
+
+// Workflow Orchestration Messages
+
+// GetWorkflowExecutionRequest retrieves a workflow execution.
+message GetWorkflowExecutionRequest {
+  // Execution ID
+  string execution_id = 1;
+}
+
+// ListWorkflowExecutionsRequest lists workflow executions.
+message ListWorkflowExecutionsRequest {
+  // Filter by status
+  string status_filter = 1;
+
+  // Filter by pattern type
+  string pattern_type_filter = 2;
+
+  // Page size
+  int32 page_size = 3;
+
+  // Page token
+  string page_token = 4;
+}
+
+// ListWorkflowExecutionsResponse returns workflow executions.
+message ListWorkflowExecutionsResponse {
+  // Workflow executions
+  repeated WorkflowExecution executions = 1;
+
+  // Next page token
+  string next_page_token = 2;
+
+  // Total count
+  int32 total_count = 3;
+}
+
+// WorkflowProgress streams workflow execution progress.
+message WorkflowProgress {
+  // Execution ID
+  string execution_id = 1;
+
+  // Current pattern being executed
+  string pattern_type = 2;
+
+  // Current agent executing (if applicable)
+  string current_agent_id = 3;
+
+  // Progress percentage (0-100)
+  int32 progress = 4;
+
+  // Current operation description
+  string message = 5;
+
+  // Timestamp
+  int64 timestamp = 6;
+
+  // Partial results (available at certain stages)
+  repeated AgentResult partial_results = 7;
+}
+
+// Workflow Scheduling Messages
+
+// ScheduleWorkflowRequest creates a new scheduled workflow.
+message ScheduleWorkflowRequest {
+  // Workflow name
+  string workflow_name = 1;
+
+  // Workflow pattern to execute
+  WorkflowPattern pattern = 2;
+
+  // Schedule configuration
+  ScheduleConfig schedule = 3;
+
+  // Optional labels/metadata
+  map<string, string> metadata = 4;
+}
+
+// ScheduleWorkflowResponse returns the created schedule.
+message ScheduleWorkflowResponse {
+  // Schedule ID
+  string schedule_id = 1;
+
+  // Created schedule
+  ScheduledWorkflow schedule = 2;
+}
+
+// UpdateScheduledWorkflowRequest updates an existing schedule.
+message UpdateScheduledWorkflowRequest {
+  // Schedule ID to update
+  string schedule_id = 1;
+
+  // Optional: New workflow pattern
+  WorkflowPattern pattern = 2;
+
+  // Optional: New schedule configuration
+  ScheduleConfig schedule = 3;
+}
+
+// GetScheduledWorkflowRequest retrieves a schedule by ID.
+message GetScheduledWorkflowRequest {
+  // Schedule ID
+  string schedule_id = 1;
+}
+
+// ListScheduledWorkflowsRequest lists all schedules.
+message ListScheduledWorkflowsRequest {
+  // Filter to enabled schedules only
+  bool enabled_only = 1;
+
+  // Page size
+  int32 page_size = 2;
+
+  // Page token
+  string page_token = 3;
+}
+
+// ListScheduledWorkflowsResponse returns schedules.
+message ListScheduledWorkflowsResponse {
+  // Scheduled workflows
+  repeated ScheduledWorkflow schedules = 1;
+
+  // Next page token
+  string next_page_token = 2;
+}
+
+// DeleteScheduledWorkflowRequest deletes a schedule.
+message DeleteScheduledWorkflowRequest {
+  // Schedule ID to delete
+  string schedule_id = 1;
+}
+
+// TriggerScheduledWorkflowRequest manually triggers a schedule.
+message TriggerScheduledWorkflowRequest {
+  // Schedule ID to trigger
+  string schedule_id = 1;
+
+  // Override skip_if_running setting
+  bool skip_if_running = 2;
+
+  // Override variables
+  map<string, string> variables = 3;
+}
+
+// PauseScheduleRequest pauses a schedule.
+message PauseScheduleRequest {
+  // Schedule ID to pause
+  string schedule_id = 1;
+}
+
+// ResumeScheduleRequest resumes a paused schedule.
+message ResumeScheduleRequest {
+  // Schedule ID to resume
+  string schedule_id = 1;
+}
+
+// GetScheduleHistoryRequest retrieves execution history.
+message GetScheduleHistoryRequest {
+  // Schedule ID
+  string schedule_id = 1;
+
+  // Maximum number of executions to return (default: 50)
+  int32 limit = 2;
+}
+
+// GetScheduleHistoryResponse returns execution history.
+message GetScheduleHistoryResponse {
+  // Schedule executions
+  repeated ScheduleExecution executions = 1;
+}
+
+// ScheduleExecution represents a single execution of a scheduled workflow.
+message ScheduleExecution {
+  // Execution ID
+  string execution_id = 1;
+
+  // Started at timestamp (Unix seconds)
+  int64 started_at = 2;
+
+  // Completed at timestamp (Unix seconds)
+  int64 completed_at = 3;
+
+  // Status: "success", "failed", "skipped"
+  string status = 4;
+
+  // Error message (if failed)
+  string error = 5;
+
+  // Duration in milliseconds
+  int64 duration_ms = 6;
+}
+
+// Server Management Messages
+
+// GetServerConfigRequest retrieves server configuration.
+message GetServerConfigRequest {}
+
+// GetTLSStatusRequest retrieves TLS status.
+message GetTLSStatusRequest {}
+
+// RenewCertificateRequest manually triggers certificate renewal.
+message RenewCertificateRequest {
+  // Force renewal even if not near expiry
+  bool force = 1;
+}
+
+// RenewCertificateResponse confirms renewal.
+message RenewCertificateResponse {
+  // Whether renewal was successful
+  bool success = 1;
+
+  // Error message (if failed)
+  string error = 2;
+
+  // New certificate information
+  CertificateInfo certificate = 3;
+}
+
+// Model Switching Messages
+
+// SwitchModelRequest switches the LLM model for a session.
+message SwitchModelRequest {
+  // Session ID to switch model for
+  string session_id = 1;
+
+  // Agent ID (optional, uses session's current agent if not specified)
+  string agent_id = 2;
+
+  // Model provider (anthropic, bedrock, ollama, etc.)
+  string provider = 3;
+
+  // Specific model name (claude-sonnet-4.5, llama3, etc.)
+  string model = 4;
+
+  // Preserve conversation context (default: true)
+  bool preserve_context = 5;
+}
+
+// SwitchModelResponse confirms model switch.
+message SwitchModelResponse {
+  // Success status
+  bool success = 1;
+
+  // Previous model info
+  ModelInfo previous_model = 2;
+
+  // New model info
+  ModelInfo new_model = 3;
+
+  // Message
+  string message = 4;
+}
+
+// ListAvailableModelsRequest lists available models.
+message ListAvailableModelsRequest {
+  // Filter by provider
+  string provider_filter = 1;
+
+  // Filter by capability (text, vision, tool-use, etc.)
+  repeated string capability_filter = 2;
+}
+
+// ListAvailableModelsResponse returns available models.
+message ListAvailableModelsResponse {
+  // Available models grouped by provider
+  repeated ModelInfo models = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// ModelInfo provides information about an LLM model.
+message ModelInfo {
+  // Model identifier (e.g., "claude-sonnet-4.5", "llama3")
+  string id = 1;
+
+  // Human-readable name
+  string name = 2;
+
+  // Provider (anthropic, bedrock, ollama, etc.)
+  string provider = 3;
+
+  // Capabilities (text, vision, tool-use, etc.)
+  repeated string capabilities = 4;
+
+  // Context window size
+  int32 context_window = 5;
+
+  // Cost per 1M input tokens (USD)
+  double cost_per_1m_input_usd = 6;
+
+  // Cost per 1M output tokens (USD)
+  double cost_per_1m_output_usd = 7;
+
+  // Whether model is currently available
+  bool available = 8;
+}
+
+// Tool Permission Messages
+
+// ToolPermissionRequest requests permission to execute a tool.
+message ToolPermissionRequest {
+  // Session ID
+  string session_id = 1;
+
+  // Tool name
+  string tool_name = 2;
+
+  // Tool arguments (JSON)
+  string args_json = 3;
+
+  // Tool description
+  string description = 4;
+
+  // Risk level (low, medium, high)
+  string risk_level = 5;
+
+  // Timeout for user response (seconds, default: 300)
+  int32 timeout_seconds = 6;
+}
+
+// ToolPermissionResponse contains user's permission decision.
+message ToolPermissionResponse {
+  // Whether permission was granted
+  bool granted = 1;
+
+  // User's response message (if any)
+  string message = 2;
+
+  // Whether to remember this decision
+  bool remember_decision = 3;
+
+  // Whether request timed out
+  bool timed_out = 4;
+}
+
+// MCP Server Management Messages
+
+// ListMCPServersRequest lists MCP servers.
+message ListMCPServersRequest {}
+
+// ListMCPServersResponse returns MCP servers.
+message ListMCPServersResponse {
+  // List of MCP servers
+  repeated MCPServerInfo servers = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// GetMCPServerRequest retrieves an MCP server.
+message GetMCPServerRequest {
+  // Server name
+  string server_name = 1;
+}
+
+// MCPServerInfo provides information about an MCP server.
+message MCPServerInfo {
+  // Server name
+  string name = 1;
+
+  // Whether server is enabled
+  bool enabled = 2;
+
+  // Whether server is currently connected
+  bool connected = 3;
+
+  // Transport type (stdio, http, sse)
+  string transport = 4;
+
+  // Command to execute
+  string command = 5;
+
+  // Command arguments
+  repeated string args = 6;
+
+  // Environment variables
+  map<string, string> env = 7;
+
+  // Server status (running, stopped, error, disabled)
+  string status = 8;
+
+  // Error message if status is error
+  string error = 9;
+
+  // Uptime in seconds
+  int64 uptime_seconds = 10;
+
+  // Number of tools exposed by this server
+  int32 tool_count = 11;
+}
+
+// ToolFilterConfig configures which tools to register from an MCP server.
+message ToolFilterConfig {
+  // Register all tools
+  bool all = 1;
+
+  // Include only these tools
+  repeated string include = 2;
+
+  // Exclude these tools
+  repeated string exclude = 3;
+}
+
+// AddMCPServerRequest adds a new MCP server.
+message AddMCPServerRequest {
+  // Server name (unique identifier)
+  string name = 1;
+
+  // Whether to enable the server
+  bool enabled = 2;
+
+  // Transport type (stdio, http, sse)
+  string transport = 3;
+
+  // Command to execute
+  string command = 4;
+
+  // Command arguments
+  repeated string args = 5;
+
+  // Environment variables
+  map<string, string> env = 6;
+
+  // Working directory
+  string working_dir = 7;
+
+  // Whether to start the server immediately after adding
+  bool auto_start = 8;
+
+  // Tool filter configuration
+  ToolFilterConfig tool_filter = 9;
+}
+
+// AddMCPServerResponse confirms MCP server addition.
+message AddMCPServerResponse {
+  // Whether addition was successful
+  bool success = 1;
+
+  // Status message
+  string message = 2;
+
+  // Server information
+  MCPServerInfo server = 3;
+}
+
+// UpdateMCPServerRequest updates an MCP server.
+message UpdateMCPServerRequest {
+  // Server name to update
+  string server_name = 1;
+
+  // Whether to enable the server
+  bool enabled = 2;
+
+  // Transport type (stdio, http, sse)
+  string transport = 3;
+
+  // Command to execute
+  string command = 4;
+
+  // Command arguments
+  repeated string args = 5;
+
+  // Environment variables
+  map<string, string> env = 6;
+
+  // Working directory
+  string working_dir = 7;
+
+  // Whether to restart the server if it's currently running
+  bool restart_if_running = 8;
+
+  // Tool filter configuration
+  ToolFilterConfig tool_filter = 9;
+
+  // Timeout in seconds for restart operation (default: 1 second)
+  int32 timeout_seconds = 10;
+}
+
+// DeleteMCPServerRequest deletes an MCP server.
+message DeleteMCPServerRequest {
+  // Server name to delete
+  string server_name = 1;
+
+  // Force delete even if server is running
+  bool force = 2;
+}
+
+// DeleteMCPServerResponse confirms deletion.
+message DeleteMCPServerResponse {
+  // Whether deletion was successful
+  bool success = 1;
+
+  // Status message
+  string message = 2;
+}
+
+// RestartMCPServerRequest restarts an MCP server.
+message RestartMCPServerRequest {
+  // Server name to restart
+  string server_name = 1;
+
+  // Graceful shutdown timeout in seconds
+  int32 timeout_seconds = 2;
+}
+
+// HealthCheckMCPServersRequest checks health of MCP servers.
+message HealthCheckMCPServersRequest {}
+
+// HealthCheckMCPServersResponse returns health status.
+message HealthCheckMCPServersResponse {
+  // Health status for each server
+  map<string, MCPServerHealth> servers = 1;
+}
+
+// MCPServerHealth tracks individual MCP server health.
+message MCPServerHealth {
+  // Health status (healthy, unhealthy, unknown)
+  string status = 1;
+
+  // Timestamp of last health check (Unix seconds)
+  int64 last_check_timestamp = 2;
+
+  // Error message if unhealthy
+  string error = 3;
+
+  // Latency in milliseconds
+  int64 latency_ms = 4;
+}
+
+// TestMCPServerConnectionRequest tests an MCP server configuration.
+message TestMCPServerConnectionRequest {
+  // Transport type (stdio, http, sse)
+  string transport = 1;
+
+  // Command to execute
+  string command = 2;
+
+  // Command arguments
+  repeated string args = 3;
+
+  // Environment variables
+  map<string, string> env = 4;
+
+  // Working directory
+  string working_dir = 5;
+
+  // Tool filter configuration
+  ToolFilterConfig tool_filter = 6;
+
+  // Timeout for connection test in seconds (default: 10)
+  int32 timeout_seconds = 7;
+}
+
+// TestMCPServerConnectionResponse returns test results.
+message TestMCPServerConnectionResponse {
+  // Whether the connection test succeeded
+  bool success = 1;
+
+  // Status message
+  string message = 2;
+
+  // Error details if failed
+  string error = 3;
+
+  // Number of tools discovered (if successful)
+  int32 tool_count = 4;
+
+  // Server capabilities (if successful)
+  repeated string capabilities = 5;
+
+  // Connection latency in milliseconds
+  int64 latency_ms = 6;
+}
+
+// ListMCPServerToolsRequest lists tools from a specific MCP server.
+message ListMCPServerToolsRequest {
+  // Server name to list tools from
+  string server_name = 1;
+}
+
+// ListMCPServerToolsResponse returns tools from an MCP server.
+message ListMCPServerToolsResponse {
+  // List of tools from the MCP server
+  repeated ToolDefinition tools = 1;
+
+  // Total count
+  int32 total_count = 2;
+
+  // Server name
+  string server_name = 3;
+}
+
+// ============================================================================
+// Artifact Management Messages
+// ============================================================================
+
+// Artifact represents a file in ~/.loom/artifacts/
+message Artifact {
+  // Unique identifier (UUID)
+  string id = 1;
+
+  // Filename
+  string name = 2;
+
+  // Absolute path to the file
+  string path = 3;
+
+  // Source type: "user" | "generated" | "agent"
+  string source = 4;
+
+  // Agent ID if generated by an agent (optional)
+  string source_agent_id = 5;
+
+  // Human-readable description/purpose (optional)
+  string purpose = 6;
+
+  // MIME type (e.g., "application/vnd.ms-excel", "text/csv")
+  string content_type = 7;
+
+  // File size in bytes
+  int64 size_bytes = 8;
+
+  // SHA256 checksum for integrity verification
+  string checksum = 9;
+
+  // Creation timestamp (Unix seconds)
+  int64 created_at = 10;
+
+  // Last modification timestamp (Unix seconds)
+  int64 updated_at = 11;
+
+  // Last access timestamp (Unix seconds, optional)
+  int64 last_accessed_at = 12;
+
+  // Number of times artifact has been accessed
+  int32 access_count = 13;
+
+  // Tags for categorization (e.g., ["excel", "report", "finance"])
+  repeated string tags = 14;
+
+  // Additional metadata (JSON-serializable key-value pairs)
+  map<string, string> metadata = 15;
+
+  // Soft delete timestamp (Unix seconds, optional)
+  int64 deleted_at = 16;
+}
+
+// ListArtifactsRequest lists artifacts with optional filtering.
+message ListArtifactsRequest {
+  // Filter by source: "user", "generated", or "agent" (optional)
+  string source = 1;
+
+  // Filter by MIME type (e.g., "text/csv") (optional)
+  string content_type = 2;
+
+  // Filter by tags (artifacts must have ALL specified tags) (optional)
+  repeated string tags = 3;
+
+  // Maximum number of results (default: 50)
+  int32 limit = 4;
+
+  // Pagination offset
+  int32 offset = 5;
+
+  // Include soft-deleted artifacts
+  bool include_deleted = 6;
+}
+
+// ListArtifactsResponse returns a list of artifacts.
+message ListArtifactsResponse {
+  // List of artifacts matching the filter
+  repeated Artifact artifacts = 1;
+
+  // Total count of matching artifacts (ignoring limit/offset)
+  int32 total_count = 2;
+}
+
+// GetArtifactRequest retrieves a specific artifact.
+message GetArtifactRequest {
+  // Artifact ID (primary lookup)
+  string id = 1;
+
+  // Artifact name (alternative lookup if ID not provided)
+  string name = 2;
+}
+
+// GetArtifactResponse returns artifact metadata.
+message GetArtifactResponse {
+  // Artifact metadata
+  Artifact artifact = 1;
+}
+
+// UploadArtifactRequest uploads a file to artifacts storage.
+message UploadArtifactRequest {
+  // Filename
+  string name = 1;
+
+  // File content (bytes)
+  bytes content = 2;
+
+  // Source: "user", "generated", or "agent"
+  string source = 3;
+
+  // Agent ID if generated by an agent (optional)
+  string source_agent_id = 4;
+
+  // Human-readable purpose/description (optional)
+  string purpose = 5;
+
+  // Tags for categorization (optional)
+  repeated string tags = 6;
+}
+
+// UploadArtifactResponse returns the created artifact metadata.
+message UploadArtifactResponse {
+  // Created artifact metadata
+  Artifact artifact = 1;
+}
+
+// DeleteArtifactRequest deletes an artifact.
+message DeleteArtifactRequest {
+  // Artifact ID
+  string id = 1;
+
+  // If true, physically delete the file; if false, soft delete (default: false)
+  bool hard_delete = 2;
+}
+
+// DeleteArtifactResponse confirms deletion.
+message DeleteArtifactResponse {
+  // Whether deletion was successful
+  bool success = 1;
+}
+
+// SearchArtifactsRequest performs FTS5 full-text search on artifacts.
+message SearchArtifactsRequest {
+  // Search query (FTS5 syntax supported)
+  string query = 1;
+
+  // Maximum number of results (default: 20)
+  int32 limit = 2;
+}
+
+// SearchArtifactsResponse returns search results.
+message SearchArtifactsResponse {
+  // Matching artifacts (ranked by relevance)
+  repeated Artifact artifacts = 1;
+}
+
+// GetArtifactContentRequest reads artifact file content.
+message GetArtifactContentRequest {
+  // Artifact ID
+  string id = 1;
+
+  // Output encoding: "text" or "base64" (default: "text")
+  string encoding = 2;
+
+  // Maximum file size to read in MB (default: 10MB)
+  int64 max_size_mb = 3;
+}
+
+// GetArtifactContentResponse returns file content.
+message GetArtifactContentResponse {
+  // File content (text or base64-encoded)
+  bytes content = 1;
+
+  // Encoding used: "text" or "base64"
+  string encoding = 2;
+}
+
+// GetArtifactStatsRequest retrieves storage statistics.
+message GetArtifactStatsRequest {}
+
+// GetArtifactStatsResponse returns artifact storage stats.
+message GetArtifactStatsResponse {
+  // Total number of artifacts
+  int32 total_files = 1;
+
+  // Total storage used in bytes
+  int64 total_size_bytes = 2;
+
+  // Number of user-provided artifacts
+  int32 user_files = 3;
+
+  // Number of generated artifacts
+  int32 generated_files = 4;
+
+  // Number of soft-deleted artifacts
+  int32 deleted_files = 5;
+}

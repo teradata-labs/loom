@@ -1,0 +1,222 @@
+# === METADATA START ===
+name: root_cause_analysis
+title: "Systematic Error Investigation"
+description: |
+  Apply structured debugging techniques to find root causes of errors, performance issues,
+  and system failures. Uses 5 Whys, hypothesis testing, and scientific method approaches.
+  Essential for production incident response, performance optimization, and quality assurance.
+
+category: troubleshooting
+difficulty: intermediate
+backend_type: debugging
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Production incident investigation
+  - SQL query performance issues
+  - API endpoint failures
+  - Data quality problems
+  - System crashes and errors
+  - Performance degradation
+  - Integration failures
+  - Security vulnerabilities
+  - Data inconsistencies
+  - Timeout and latency issues
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: problem_description
+    type: string
+    required: true
+    description: "Description of the problem or error"
+    example: "API endpoint /api/orders returns 500 errors for 15% of requests"
+
+  - name: symptoms
+    type: array[string]
+    required: false
+    description: "Observable symptoms"
+    example: '["500 errors", "connection timeout", "started 2 hours ago"]'
+
+  - name: analysis_method
+    type: enum[five_whys, hypothesis_testing, timeline, fishbone]
+    required: false
+    default: "hypothesis_testing"
+    description: "Root cause analysis method"
+    example: "hypothesis_testing"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  five_whys:
+    description: "5 Whys technique for root cause"
+    content: |
+      Problem: {{problem_description}}
+
+      Symptoms:
+      {{#each symptoms}}
+      - {{this}}
+      {{/each}}
+
+      Apply the 5 Whys technique:
+
+      1. Why did this problem occur?
+      2. Why did that happen?
+      3. Why was that the case?
+      4. Why did we reach this state?
+      5. What is the root cause?
+
+      Then provide:
+      - Root cause identified
+      - Recommended fix
+      - Prevention strategy
+      - Verification steps
+    required_parameters:
+      - problem_description
+
+  hypothesis_testing:
+    description: "Scientific method approach"
+    content: |
+      Problem: {{problem_description}}
+
+      Use the scientific method:
+
+      1. Observation:
+         - What exactly is the problem?
+         - What symptoms are we seeing?
+         - When did it start?
+
+      2. Hypothesis Formation:
+         - List 3-5 possible causes
+         - Rank by likelihood (high/medium/low)
+         - Note confidence level for each
+
+      3. Prediction:
+         - For each hypothesis, what would we expect to see if it's correct?
+
+      4. Testing Strategy:
+         - What tests or checks can we run?
+         - What tools or commands should we use?
+         - In what order should we test?
+
+      5. Analysis:
+         - What do the results tell us?
+         - Which hypothesis is most likely?
+
+      6. Conclusion:
+         - What is the root cause?
+         - What is the recommended fix?
+         - How can we verify the fix works?
+    required_parameters:
+      - problem_description
+
+  timeline_analysis:
+    description: "Timeline-based root cause (what changed?)"
+    content: |
+      Problem: {{problem_description}}
+
+      Timeline Analysis:
+
+      1. When did the problem start? (exact time if possible)
+      2. What changed around that time?
+         - Code deployments
+         - Configuration changes
+         - Data migrations
+         - Infrastructure changes
+         - Traffic patterns
+
+      3. Correlation Analysis:
+         - Which change correlates with problem onset?
+         - Was the change rolled back? Did problem persist?
+
+      4. Root Cause:
+         - Most likely cause based on timeline
+         - Evidence supporting this cause
+         - How to verify
+
+      5. Fix and Prevention:
+         - Immediate fix
+         - Long-term solution
+         - Monitoring to prevent recurrence
+    required_parameters:
+      - problem_description
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "API 500 Errors"
+    parameters:
+      problem_description: "API endpoint /api/orders returns 500 errors for 15% of requests since 2 hours ago"
+      symptoms: ["500 errors", "connection timeout to database", "affects 15% of requests"]
+      analysis_method: "hypothesis_testing"
+    expected_result: |
+      1. Observation:
+         - Problem: 500 errors on /api/orders
+         - Symptom: "Connection timeout to database"
+         - Frequency: 15% of requests
+         - Started: 2 hours ago (sudden onset)
+
+      2. Hypothesis Formation:
+         H1: Database connection pool exhausted (HIGH likelihood)
+            - Explains timeout errors
+            - Explains 15% failure rate (intermittent)
+         H2: Slow query holding connections (HIGH likelihood)
+            - Could cause pool exhaustion
+            - Time-correlated
+         H3: Recent deployment introduced connection leak (MEDIUM)
+            - Timing matches
+            - Need to verify recent deployments
+         H4: Sudden traffic spike (MEDIUM)
+            - Would explain resource exhaustion
+            - Check metrics to confirm
+         H5: Network issue between API and DB (LOW)
+            - Would affect 100%, not 15%
+
+      3. Prediction & Testing:
+         If H1 (pool exhausted):
+           Test: Check connection pool metrics (current/max)
+           Expected: See connection count at max limit
+
+         If H2 (slow queries):
+           Test: Check slow query log for queries from last 3 hours
+           Expected: See queries taking >5s holding connections
+
+      4. Testing Results:
+         ✓ Connection pool: 95/100 connections in use (near max)
+         ✓ Slow query log: Found query taking 45s on average (1000x slower than normal)
+         ✓ Query: SELECT * FROM orders JOIN order_items ... (missing index)
+
+      5. Root Cause:
+         Slow query introduced in deployment 2 hours ago is holding database connections,
+         exhausting the connection pool and causing timeouts for other requests.
+
+      6. Fix:
+         Immediate: Rollback deployment
+         Short-term: Add missing index on order_items.order_id
+         Long-term: Add query timeout (5s), connection pool monitoring alerts
+
+      7. Verification:
+         - Rollback → verify 500 errors stop
+         - Add index → verify query time <100ms
+         - Monitor pool usage → stays below 80%
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Root Cause Analysis Best Practices
+
+  1. **Don't Jump to Conclusions**: Follow systematic method
+  2. **Gather Data First**: Metrics, logs, timelines before hypothesizing
+  3. **Consider Multiple Hypotheses**: Avoid confirmation bias
+  4. **Test, Don't Guess**: Use tools to verify hypotheses
+  5. **Document Analysis**: Create audit trail for future reference
+  6. **Fix Root Cause**: Don't just treat symptoms
+  7. **Prevent Recurrence**: Add monitoring/alerts
+  8. **Timeline is Key**: "What changed?" often reveals root cause
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - chain_of_thought
+  - hypothesis_testing
+  - debugging

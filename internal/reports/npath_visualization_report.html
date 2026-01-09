@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Journey Analysis - N-Path Results</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            /* Teradata Orange Primary */
+            --primary: #F37021;
+            --primary-glow: rgba(243, 112, 33, 0.4);
+            
+            /* Background & Surfaces */
+            --background: #0d0d0d;
+            --card-bg: rgba(26, 26, 26, 0.6);
+            --border: rgba(255, 255, 255, 0.1);
+            
+            /* Text */
+            --foreground: #f5f5f5;
+            --muted: #b5b5b5;
+            
+            /* Semantic Colors */
+            --success: #10b981;
+            --success-glow: rgba(16, 185, 129, 0.3);
+            --warning: #fbbf24;
+            --warning-glow: rgba(251, 191, 36, 0.3);
+            --destructive: #ff4757;
+            --destructive-glow: rgba(255, 71, 87, 0.3);
+            --info: #60a5fa;
+            --info-glow: rgba(96, 165, 250, 0.3);
+            
+            /* Extended Palette for Charts */
+            --chart-1: #F37021;
+            --chart-2: #60a5fa;
+            --chart-3: #10b981;
+            --chart-4: #fbbf24;
+            --chart-5: #a78bfa;
+            --chart-6: #f472b6;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--background);
+            color: var(--foreground);
+            line-height: 1.6;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* Typography */
+        h1, h2, h3, h4 {
+            font-family: 'IBM Plex Mono', monospace;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--info) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            color: var(--primary);
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .subtitle {
+            font-size: 1.25rem;
+            color: var(--muted);
+            margin-bottom: 3rem;
+            animation: fadeInUp 0.6s ease-out 0.1s both;
+        }
+
+        /* Glass Morphism Cards */
+        .glass {
+            background: var(--card-bg);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .glass:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 32px rgba(243, 112, 33, 0.15);
+            border-color: rgba(243, 112, 33, 0.3);
+        }
+
+        /* Header Section */
+        .header {
+            margin-bottom: 3rem;
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 10px var(--success-glow);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        /* Executive Summary Grid */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+            animation: fadeInUp 0.6s ease-out 0.2s both;
+        }
+
+        .metric-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--info));
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .metric-card:hover::before {
+            opacity: 1;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 40px var(--primary-glow);
+            border-color: var(--primary);
+        }
+
+        .metric-label {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-value {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary);
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .metric-description {
+            font-size: 0.875rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+
+        /* Chart Grid */
+        .chart-grid {
+            display: grid;
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+
+        .chart-container {
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        .chart-container:nth-child(1) { animation-delay: 0.3s; animation-fill-mode: both; }
+        .chart-container:nth-child(2) { animation-delay: 0.4s; animation-fill-mode: both; }
+        .chart-container:nth-child(3) { animation-delay: 0.5s; animation-fill-mode: both; }
+        .chart-container:nth-child(4) { animation-delay: 0.6s; animation-fill-mode: both; }
+
+        .chart-wrapper {
+            height: 400px;
+            margin-top: 1rem;
+        }
+
+        /* Insights Section */
+        .insights-section {
+            margin-top: 3rem;
+            animation: fadeInUp 0.6s ease-out 0.7s both;
+        }
+
+        .insight-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid var(--primary);
+            transition: all 0.3s ease;
+        }
+
+        .insight-card:hover {
+            transform: translateX(4px);
+            box-shadow: 0 4px 20px var(--primary-glow);
+        }
+
+        .insight-category {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .insight-text {
+            color: var(--foreground);
+            line-height: 1.6;
+        }
+
+        /* Footer */
+        .footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.875rem;
+            animation: fadeInUp 0.6s ease-out 0.8s both;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            h1 {
+                font-size: 2rem;
+            }
+
+            .subtitle {
+                font-size: 1rem;
+            }
+
+            .summary-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .chart-wrapper {
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>CUSTOMER JOURNEY ANALYSIS</h1>
+            <p class="subtitle">N-Path Conversion Analysis - Teradata Advanced SQL Analytics</p>
+            <div class="status-indicator">
+                <div class="status-dot"></div>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 0.875rem; color: var(--muted);">
+                    Analysis Complete • Generated 2025-12-03
+                </span>
+            </div>
+        </div>
+
+        <!-- Executive Summary -->
+        <div class="summary-grid">
+            <div class="metric-card">
+                <div class="metric-label">Total Conversions</div>
+                <div class="metric-value">397</div>
+                <div class="metric-description">Across all customer segments</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Customer Segments</div>
+                <div class="metric-value">3</div>
+                <div class="metric-description">Gold, Platinum, Silver</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Top Segment</div>
+                <div class="metric-value">53.7%</div>
+                <div class="metric-description">Gold customers leading</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Avg Journey Steps</div>
+                <div class="metric-value">4.74</div>
+                <div class="metric-description">Steps to conversion</div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="chart-grid">
+            <!-- Top Journey Patterns -->
+            <div class="chart-container glass">
+                <h2>Top Journey Patterns</h2>
+                <p style="color: var(--muted); margin-bottom: 1rem;">Most frequent conversion paths by customer segment</p>
+                <div id="chart1" class="chart-wrapper"></div>
+            </div>
+
+            <!-- Customer Segment Distribution -->
+            <div class="chart-container glass">
+                <h2>Customer Segment Distribution</h2>
+                <p style="color: var(--muted); margin-bottom: 1rem;">Conversion breakdown by customer type</p>
+                <div id="chart2" class="chart-wrapper"></div>
+            </div>
+
+            <!-- Conversion Funnel -->
+            <div class="chart-container glass">
+                <h2>Conversion Funnel</h2>
+                <p style="color: var(--muted); margin-bottom: 1rem;">Customer journey progression through segments</p>
+                <div id="chart3" class="chart-wrapper"></div>
+            </div>
+
+            <!-- Average Steps Analysis -->
+            <div class="chart-container glass">
+                <h2>Average Steps to Conversion</h2>
+                <p style="color: var(--muted); margin-bottom: 1rem;">Journey complexity by customer segment</p>
+                <div id="chart4" class="chart-wrapper"></div>
+            </div>
+        </div>
+
+        <!-- Insights -->
+        <div class="insights-section">
+            <h2>Key Insights</h2>
+            
+            <div class="insight-card">
+                <div class="insight-category">Top Performer</div>
+                <div class="insight-text">
+                    Gold customers drive the majority of conversions at 53.7% (213 of 397 total), 
+                    establishing them as the most valuable segment for conversion optimization.
+                </div>
+            </div>
+
+            <div class="insight-card">
+                <div class="insight-category">Efficiency</div>
+                <div class="insight-text">
+                    Silver customers have the shortest average path to conversion (4.51 steps), 
+                    while Platinum customers take the longest (5.04 steps), suggesting different 
+                    decision-making patterns across segments.
+                </div>
+            </div>
+
+            <div class="insight-card">
+                <div class="insight-category">Variability</div>
+                <div class="insight-text">
+                    Platinum customers show the widest range of steps (4-12), indicating more varied 
+                    customer journeys and potentially more complex decision-making processes requiring 
+                    tailored engagement strategies.
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>Generated by Teradata Advanced SQL Analytics • N-Path Analysis</p>
+            <p style="margin-top: 0.5rem;">Powered by HAWK Design System</p>
+        </div>
+    </div>
+
+    <script>
+        // Chart Theme Configuration (Hawk StyleGuide)
+        const hawkTheme = {
+            color: ['#F37021', '#60a5fa', '#10b981', '#fbbf24', '#a78bfa', '#f472b6'],
+            backgroundColor: 'transparent',
+            textStyle: {
+                fontFamily: 'IBM Plex Mono, monospace',
+                color: '#f5f5f5'
+            },
+            title: {
+                textStyle: {
+                    color: '#f5f5f5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontWeight: 'bold'
+                }
+            },
+            tooltip: {
+                backgroundColor: 'rgba(26, 26, 26, 0.95)',
+                borderColor: '#F37021',
+                borderWidth: 1,
+                textStyle: {
+                    color: '#f5f5f5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 12
+                },
+                axisPointer: {
+                    lineStyle: {
+                        color: '#F37021'
+                    }
+                }
+            },
+            legend: {
+                textStyle: {
+                    color: '#b5b5b5',
+                    fontFamily: 'Inter, sans-serif'
+                }
+            },
+            grid: {
+                borderColor: 'rgba(255, 255, 255, 0.1)'
+            },
+            categoryAxis: {
+                axisLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    }
+                },
+                axisLabel: {
+                    color: '#b5b5b5',
+                    fontFamily: 'Inter, sans-serif',
+                    fontSize: 11
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    }
+                }
+            },
+            valueAxis: {
+                axisLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    }
+                },
+                axisLabel: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 11
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    }
+                }
+            }
+        };
+
+        // Data from npath_viz_data.json
+        const data = {
+            top_patterns: [
+                {"pattern": "Browse → Start → Complete → Booked (Gold)", "frequency": 213, "conversion_rate": 53.7},
+                {"pattern": "Browse → Start → Complete → Booked (Platinum)", "frequency": 102, "conversion_rate": 25.7},
+                {"pattern": "Browse → Start → Complete → Booked (Silver)", "frequency": 82, "conversion_rate": 20.7}
+            ],
+            interaction_distribution: [
+                {"interaction_type": "Gold Conversions", "count": 213},
+                {"interaction_type": "Platinum Conversions", "count": 102},
+                {"interaction_type": "Silver Conversions", "count": 82}
+            ],
+            conversion_funnel: [
+                {"stage": "Total Conversions", "users": 397, "conversion": 100.0},
+                {"stage": "Gold Customers", "users": 213, "conversion": 53.7},
+                {"stage": "Platinum Customers", "users": 102, "conversion": 25.7},
+                {"stage": "Silver Customers", "users": 82, "conversion": 20.7}
+            ],
+            customer_type_summary: [
+                {"customer_type": "Gold", "total_conversions": 213, "avg_steps": 4.67, "min_steps": 4, "max_steps": 11},
+                {"customer_type": "Platinum", "total_conversions": 102, "avg_steps": 5.04, "min_steps": 4, "max_steps": 12},
+                {"customer_type": "Silver", "total_conversions": 82, "avg_steps": 4.51, "min_steps": 4, "max_steps": 9}
+            ]
+        };
+
+        // Chart 1: Top Journey Patterns (Bar Chart)
+        const chart1 = echarts.init(document.getElementById('chart1'));
+        chart1.setOption({
+            ...hawkTheme,
+            tooltip: {
+                ...hawkTheme.tooltip,
+                trigger: 'axis',
+                axisPointer: {
+                    type: 'shadow'
+                },
+                formatter: function(params) {
+                    const item = params[0];
+                    return `<div style="padding: 8px;">
+                        <div style="color: #F37021; font-weight: bold; margin-bottom: 4px;">${item.name}</div>
+                        <div style="color: #b5b5b5;">Frequency: <span style="color: #f5f5f5; font-weight: bold;">${item.value}</span></div>
+                        <div style="color: #b5b5b5;">Conversion Rate: <span style="color: #f5f5f5; font-weight: bold;">${data.top_patterns[item.dataIndex].conversion_rate}%</span></div>
+                    </div>`;
+                }
+            },
+            grid: {
+                left: '3%',
+                right: '4%',
+                bottom: '15%',
+                top: '10%',
+                containLabel: true
+            },
+            xAxis: {
+                type: 'category',
+                data: data.top_patterns.map(p => p.pattern.split(' (')[1].replace(')', '')),
+                axisLabel: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 12,
+                    fontWeight: 'bold'
+                },
+                axisLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    }
+                }
+            },
+            yAxis: {
+                type: 'value',
+                name: 'Frequency',
+                nameTextStyle: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 11
+                },
+                axisLabel: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace'
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    }
+                }
+            },
+            series: [{
+                type: 'bar',
+                data: data.top_patterns.map(p => p.frequency),
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: '#F37021' },
+                        { offset: 1, color: 'rgba(243, 112, 33, 0.6)' }
+                    ]),
+                    borderRadius: [8, 8, 0, 0],
+                    shadowColor: 'rgba(243, 112, 33, 0.4)',
+                    shadowBlur: 10
+                },
+                emphasis: {
+                    itemStyle: {
+                        shadowBlur: 20,
+                        shadowColor: 'rgba(243, 112, 33, 0.6)'
+                    }
+                },
+                barWidth: '60%'
+            }]
+        });
+
+        // Chart 2: Customer Segment Distribution (Pie Chart)
+        const chart2 = echarts.init(document.getElementById('chart2'));
+        chart2.setOption({
+            ...hawkTheme,
+            tooltip: {
+                ...hawkTheme.tooltip,
+                trigger: 'item',
+                formatter: function(params) {
+                    return `<div style="padding: 8px;">
+                        <div style="color: #F37021; font-weight: bold; margin-bottom: 4px;">${params.name}</div>
+                        <div style="color: #b5b5b5;">Count: <span style="color: #f5f5f5; font-weight: bold;">${params.value}</span></div>
+                        <div style="color: #b5b5b5;">Percentage: <span style="color: #f5f5f5; font-weight: bold;">${params.percent}%</span></div>
+                    </div>`;
+                }
+            },
+            legend: {
+                orient: 'horizontal',
+                bottom: '5%',
+                textStyle: {
+                    color: '#b5b5b5',
+                    fontFamily: 'Inter, sans-serif'
+                }
+            },
+            series: [{
+                type: 'pie',
+                radius: ['40%', '70%'],
+                center: ['50%', '45%'],
+                avoidLabelOverlap: true,
+                itemStyle: {
+                    borderRadius: 8,
+                    borderColor: '#0d0d0d',
+                    borderWidth: 2,
+                    shadowBlur: 10,
+                    shadowColor: 'rgba(0, 0, 0, 0.5)'
+                },
+                label: {
+                    show: true,
+                    formatter: '{b}\n{d}%',
+                    color: '#f5f5f5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 12,
+                    fontWeight: 'bold'
+                },
+                emphasis: {
+                    label: {
+                        show: true,
+                        fontSize: 14,
+                        fontWeight: 'bold'
+                    },
+                    itemStyle: {
+                        shadowBlur: 20,
+                        shadowOffsetX: 0,
+                        shadowColor: 'rgba(243, 112, 33, 0.5)'
+                    }
+                },
+                data: data.interaction_distribution.map((item, index) => ({
+                    value: item.count,
+                    name: item.interaction_type.replace(' Conversions', ''),
+                    itemStyle: {
+                        color: hawkTheme.color[index],
+                        shadowColor: `${hawkTheme.color[index]}40`
+                    }
+                }))
+            }]
+        });
+
+        // Chart 3: Conversion Funnel (Funnel Chart)
+        const chart3 = echarts.init(document.getElementById('chart3'));
+        chart3.setOption({
+            ...hawkTheme,
+            tooltip: {
+                ...hawkTheme.tooltip,
+                trigger: 'item',
+                formatter: function(params) {
+                    return `<div style="padding: 8px;">
+                        <div style="color: #F37021; font-weight: bold; margin-bottom: 4px;">${params.name}</div>
+                        <div style="color: #b5b5b5;">Users: <span style="color: #f5f5f5; font-weight: bold;">${params.value}</span></div>
+                        <div style="color: #b5b5b5;">Percentage: <span style="color: #f5f5f5; font-weight: bold;">${params.data.conversion}%</span></div>
+                    </div>`;
+                }
+            },
+            series: [{
+                type: 'funnel',
+                left: '10%',
+                top: '10%',
+                bottom: '10%',
+                width: '80%',
+                min: 0,
+                max: 397,
+                minSize: '0%',
+                maxSize: '100%',
+                sort: 'descending',
+                gap: 2,
+                label: {
+                    show: true,
+                    position: 'inside',
+                    formatter: '{b}\n{c} ({d}%)',
+                    color: '#fff',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 13,
+                    fontWeight: 'bold'
+                },
+                labelLine: {
+                    length: 10,
+                    lineStyle: {
+                        width: 1,
+                        type: 'solid'
+                    }
+                },
+                itemStyle: {
+                    borderColor: '#0d0d0d',
+                    borderWidth: 2,
+                    shadowBlur: 10
+                },
+                emphasis: {
+                    label: {
+                        fontSize: 15
+                    },
+                    itemStyle: {
+                        shadowBlur: 20,
+                        shadowColor: 'rgba(243, 112, 33, 0.5)'
+                    }
+                },
+                data: data.conversion_funnel.map((item, index) => ({
+                    value: item.users,
+                    name: item.stage,
+                    conversion: item.conversion,
+                    itemStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+                            { offset: 0, color: hawkTheme.color[index % hawkTheme.color.length] },
+                            { offset: 1, color: `${hawkTheme.color[index % hawkTheme.color.length]}80` }
+                        ]),
+                        shadowColor: `${hawkTheme.color[index % hawkTheme.color.length]}40`
+                    }
+                }))
+            }]
+        });
+
+        // Chart 4: Average Steps Analysis (Bar Chart with Range)
+        const chart4 = echarts.init(document.getElementById('chart4'));
+        chart4.setOption({
+            ...hawkTheme,
+            tooltip: {
+                ...hawkTheme.tooltip,
+                trigger: 'axis',
+                axisPointer: {
+                    type: 'shadow'
+                },
+                formatter: function(params) {
+                    const item = params[0];
+                    const dataItem = data.customer_type_summary[item.dataIndex];
+                    return `<div style="padding: 8px;">
+                        <div style="color: #F37021; font-weight: bold; margin-bottom: 4px;">${dataItem.customer_type} Customers</div>
+                        <div style="color: #b5b5b5;">Avg Steps: <span style="color: #f5f5f5; font-weight: bold;">${dataItem.avg_steps}</span></div>
+                        <div style="color: #b5b5b5;">Range: <span style="color: #f5f5f5; font-weight: bold;">${dataItem.min_steps} - ${dataItem.max_steps}</span></div>
+                        <div style="color: #b5b5b5;">Conversions: <span style="color: #f5f5f5; font-weight: bold;">${dataItem.total_conversions}</span></div>
+                    </div>`;
+                }
+            },
+            grid: {
+                left: '3%',
+                right: '4%',
+                bottom: '10%',
+                top: '10%',
+                containLabel: true
+            },
+            xAxis: {
+                type: 'category',
+                data: data.customer_type_summary.map(c => c.customer_type),
+                axisLabel: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 12,
+                    fontWeight: 'bold'
+                },
+                axisLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    }
+                }
+            },
+            yAxis: {
+                type: 'value',
+                name: 'Average Steps',
+                nameTextStyle: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 11
+                },
+                axisLabel: {
+                    color: '#b5b5b5',
+                    fontFamily: 'IBM Plex Mono, monospace'
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    }
+                },
+                min: 4,
+                max: 6
+            },
+            series: [{
+                type: 'bar',
+                data: data.customer_type_summary.map(c => c.avg_steps),
+                itemStyle: {
+                    color: function(params) {
+                        return new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: hawkTheme.color[params.dataIndex] },
+                            { offset: 1, color: `${hawkTheme.color[params.dataIndex]}80` }
+                        ]);
+                    },
+                    borderRadius: [8, 8, 0, 0],
+                    shadowBlur: 10,
+                    shadowColor: function(params) {
+                        return `${hawkTheme.color[params.dataIndex]}40`;
+                    }
+                },
+                emphasis: {
+                    itemStyle: {
+                        shadowBlur: 20
+                    }
+                },
+                barWidth: '50%',
+                label: {
+                    show: true,
+                    position: 'top',
+                    formatter: '{c}',
+                    color: '#f5f5f5',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 12,
+                    fontWeight: 'bold'
+                }
+            }]
+        });
+
+        // Responsive resize
+        window.addEventListener('resize', function() {
+            chart1.resize();
+            chart2.resize();
+            chart3.resize();
+            chart4.resize();
+        });
+    </script>
+</body>
+</html>

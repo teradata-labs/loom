@@ -1,0 +1,66 @@
+# SQL Core Lite - Optimized for Small Models (Llama 3.1 8B, Gemma, Phi)
+# This is a streamlined version of sql-core.yaml with:
+# - Concise descriptions (no verbose examples)
+# - Essential patterns only (top 5 most commonly used)
+# - Minimal token usage (~40 lines vs 194 lines in full version)
+# - Direct, actionable guidance
+
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: sql-core-lite
+  version: 1.0.0
+  domain: sql
+  description: "Essential SQL patterns optimized for small models - concise, focused, practical"
+  labels:
+    vendor: standard
+    category: sql
+    maturity: production
+    optimization: small-models
+
+spec:
+  entries:
+    - name: data_profiling
+      description: "Profile table columns: COUNT, DISTINCT, NULL%, MIN, MAX, AVG"
+      trigger_conditions:
+        - "profile data"
+        - "analyze columns"
+      example: "SELECT COUNT(*), COUNT(DISTINCT col), AVG(col) FROM table"
+      priority: 90
+      tags: [sql, profiling]
+
+    - name: duplicate_detection
+      description: "Find duplicates using ROW_NUMBER() or GROUP BY with HAVING COUNT(*) > 1"
+      trigger_conditions:
+        - "find duplicates"
+        - "detect duplicates"
+      example: "SELECT *, ROW_NUMBER() OVER (PARTITION BY key) as rn WHERE rn > 1"
+      priority: 85
+      tags: [sql, duplicates]
+
+    - name: missing_value_analysis
+      description: "Analyze NULLs: percentage, COALESCE for defaults, LAG/LEAD for filling"
+      trigger_conditions:
+        - "handle nulls"
+        - "missing values"
+      example: "SELECT COALESCE(col, default_value) FROM table"
+      priority: 80
+      tags: [sql, nulls]
+
+    - name: moving_average
+      description: "Rolling statistics with window functions: AVG() OVER (ORDER BY ... ROWS BETWEEN)"
+      trigger_conditions:
+        - "moving average"
+        - "rolling average"
+      example: "AVG(value) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)"
+      priority: 75
+      tags: [sql, timeseries]
+
+    - name: join_optimization
+      description: "Efficient joins: explicit JOIN, qualify columns, use indexes, avoid Cartesian products"
+      trigger_conditions:
+        - "optimize join"
+        - "slow join"
+      example: "Use INNER JOIN ON a.id = b.id instead of WHERE clause joins"
+      priority: 70
+      tags: [sql, performance]

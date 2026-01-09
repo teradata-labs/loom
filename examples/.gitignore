@@ -1,0 +1,16 @@
+# Compiled binaries
+tls-client-test
+*.test
+*.exe
+
+# Database files (runtime generated)
+*.db
+!data/*.db
+
+# Temporary files
+*REVIEW*
+*FINDINGS*
+*NOTES*
+*TODO*
+*.tmp
+*WIP*

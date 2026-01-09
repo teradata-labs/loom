@@ -1,0 +1,68 @@
+name: vacuum_recommendation
+title: "VACUUM and ANALYZE Recommendation"
+description: "Identifies tables needing VACUUM/ANALYZE for optimal query planning"
+category: analytics
+difficulty: beginner
+backend_type: postgres
+priority: 65
+
+parameters:
+  - name: table_name
+    type: string
+    required: false
+    description: "Specific table to check (empty for all tables)"
+
+templates:
+  check_bloat: |
+    -- Check table bloat (dead tuples)
+    SELECT
+      schemaname,
+      tablename,
+      n_dead_tup,
+      n_live_tup,
+      ROUND(100.0 * n_dead_tup / NULLIF(n_live_tup + n_dead_tup, 0), 2) AS dead_ratio
+    FROM pg_stat_user_tables
+    {{if .table_name}}WHERE tablename = '{{.table_name}}'{{end}}
+    ORDER BY n_dead_tup DESC
+
+  check_analyze_stats: |
+    -- Check when tables were last analyzed
+    SELECT
+      schemaname,
+      tablename,
+      last_vacuum,
+      last_autovacuum,
+      last_analyze,
+      last_autoanalyze
+    FROM pg_stat_user_tables
+    {{if .table_name}}WHERE tablename = '{{.table_name}}'{{end}}
+    ORDER BY last_analyze NULLS FIRST
+
+  vacuum_command: |
+    -- Run VACUUM to reclaim space and update stats
+    {{if .table_name}}
+    VACUUM ANALYZE {{.table_name}};
+    {{else}}
+    VACUUM ANALYZE;
+    {{end}}
+
+examples:
+  - name: "Check all tables"
+    parameters: {}
+    expected_result: "List tables with high dead tuple ratio"
+
+  - name: "Check specific table"
+    parameters:
+      table_name: orders
+    expected_result: "VACUUM ANALYZE orders if needed"
+
+use_cases:
+  - "Identify bloated tables"
+  - "Update query planner statistics"
+  - "Reclaim disk space"
+
+validation:
+  rules:
+    - "VACUUM if dead_ratio > 20%"
+    - "ANALYZE if last_analyze > 7 days"
+    - "Consider autovacuum settings"

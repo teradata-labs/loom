@@ -1,0 +1,163 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+package loom.v1;
+
+import "loom/v1/communication.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// BusMessage is the envelope for pub/sub messages broadcast to topic subscribers.
+// Unlike point-to-point CommunicationMessage, BusMessage is one-to-many.
+message BusMessage {
+  // Unique message ID for tracking and deduplication
+  string id = 1;
+
+  // Topic this message is published to (e.g., "workflow.started", "agent.status")
+  string topic = 2;
+
+  // Source agent ID that published this message
+  string from_agent = 3;
+
+  // Message payload (value for small messages <1KB, reference for large >1KB)
+  MessagePayload payload = 4;
+
+  // Message metadata (arbitrary key/value pairs for filtering and routing)
+  map<string, string> metadata = 5;
+
+  // Publish timestamp (Unix milliseconds)
+  int64 timestamp = 6;
+
+  // Message TTL in seconds (0 = no expiry, message lives until consumed)
+  int32 ttl_seconds = 7;
+}
+
+// SubscriptionFilter filters messages at subscriber level.
+// All filter conditions are AND-ed together (all must match for delivery).
+message SubscriptionFilter {
+  // Only receive messages from these agents (empty = receive from all agents)
+  repeated string from_agents = 1;
+
+  // Minimum message size in bytes (0 = no minimum)
+  int64 min_size = 2;
+
+  // Maximum message size in bytes (0 = no maximum)
+  int64 max_size = 3;
+
+  // Required metadata key/value pairs (all must match)
+  map<string, string> metadata = 4;
+}
+
+// TopicStats provides statistics and metrics for a topic.
+message TopicStats {
+  // Topic name
+  string topic = 1;
+
+  // Total messages ever published to this topic
+  int64 total_published = 2;
+
+  // Total messages successfully delivered to subscribers
+  int64 total_delivered = 3;
+
+  // Total messages dropped due to full subscriber buffers
+  int64 total_dropped = 4;
+
+  // Number of active subscribers currently listening to this topic
+  int32 active_subscribers = 5;
+
+  // Topic creation timestamp (Unix milliseconds)
+  int64 created_at = 6;
+
+  // Last publish timestamp (Unix milliseconds, 0 if never published)
+  int64 last_publish_at = 7;
+}
+
+// PublishRequest publishes a message to a topic.
+message PublishRequest {
+  // Topic to publish to (e.g., "workflow.started", "agent.status")
+  string topic = 1;
+
+  // Message to publish
+  BusMessage message = 2;
+}
+
+// PublishResponse confirms message publication.
+message PublishResponse {
+  // Message ID assigned by the bus
+  string message_id = 1;
+
+  // Number of subscribers that received the message
+  int32 subscriber_count = 2;
+
+  // Publish timestamp (Unix milliseconds)
+  int64 published_at = 3;
+}
+
+// SubscribeRequest subscribes to a topic with optional filtering.
+message SubscribeRequest {
+  // Agent ID subscribing to the topic
+  string agent_id = 1;
+
+  // Topic pattern to subscribe to (supports wildcards: "workflow.*", "agent.status")
+  string topic_pattern = 2;
+
+  // Optional filter to apply at subscriber level
+  SubscriptionFilter filter = 3;
+
+  // Buffer size for this subscription (default: 100 messages)
+  int32 buffer_size = 4;
+}
+
+// UnsubscribeRequest cancels a subscription.
+message UnsubscribeRequest {
+  // Agent ID unsubscribing
+  string agent_id = 1;
+
+  // Subscription ID to cancel (returned from Subscribe)
+  string subscription_id = 2;
+}
+
+// UnsubscribeResponse confirms unsubscription.
+message UnsubscribeResponse {
+  // True if subscription was found and cancelled
+  bool success = 1;
+
+  // Number of queued messages discarded
+  int32 messages_discarded = 2;
+}
+
+// ListTopicsRequest lists all active topics.
+message ListTopicsRequest {
+  // Optional filter pattern (supports wildcards: "workflow.*")
+  string filter_pattern = 1;
+
+  // Include topics with zero subscribers (default: false)
+  bool include_inactive = 2;
+}
+
+// ListTopicsResponse returns all matching topics.
+message ListTopicsResponse {
+  // List of topic names
+  repeated string topics = 1;
+
+  // Total number of topics (before filtering)
+  int32 total_count = 2;
+}
+
+// GetTopicStatsRequest retrieves statistics for a topic.
+message GetTopicStatsRequest {
+  // Topic name
+  string topic = 1;
+}

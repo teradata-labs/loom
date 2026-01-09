@@ -1,0 +1,115 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-ml
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata in-database machine learning patterns for regression, classification, and clustering using Vantage ML Engine"
+  labels:
+    vendor: teradata
+    category: ml
+    maturity: production
+
+spec:
+  entries:
+    - name: linear_regression
+      description: "Linear regression for predicting continuous numeric values using Teradata ML Engine"
+      trigger_conditions:
+        - "user asks about predicting numeric values"
+        - "user asks about linear regression"
+        - "user mentions forecasting continuous variables"
+        - "user asks about price prediction"
+        - "user asks about sales forecasting"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/linear_regression.yaml
+
+        Key use cases:
+        - Sales forecasting
+        - Price prediction
+        - Demand forecasting
+        - Resource estimation
+        - Revenue prediction
+      priority: 80
+      tags:
+        - ml
+        - regression
+        - prediction
+        - teradata
+
+    - name: logistic_regression
+      description: "Logistic regression for binary classification problems using Teradata ML Engine"
+      trigger_conditions:
+        - "user asks about classification"
+        - "user asks about logistic regression"
+        - "user mentions binary prediction"
+        - "user asks about yes/no prediction"
+        - "user asks about churn prediction"
+        - "user asks about conversion prediction"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/logistic_regression.yaml
+
+        Key use cases:
+        - Churn prediction (will customer leave?)
+        - Conversion prediction (will user buy?)
+        - Fraud detection (fraudulent or legitimate?)
+        - Risk assessment (high risk or low risk?)
+        - Email response prediction (will they click?)
+      priority: 85
+      tags:
+        - ml
+        - classification
+        - logistic-regression
+        - teradata
+
+    - name: kmeans
+      description: "K-means clustering for customer segmentation and pattern discovery using Teradata ML Engine"
+      trigger_conditions:
+        - "user asks about clustering"
+        - "user asks about customer segmentation"
+        - "user mentions grouping similar items"
+        - "user asks about kmeans"
+        - "user asks about unsupervised learning"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/kmeans.yaml
+
+        Key use cases:
+        - Customer segmentation (RFM analysis)
+        - Product categorization
+        - Anomaly detection (outlier clusters)
+        - Geographic segmentation
+        - Behavioral grouping
+      priority: 75
+      tags:
+        - ml
+        - clustering
+        - segmentation
+        - teradata
+
+    - name: decision_tree
+      description: "Decision tree classification and regression using Teradata ML Engine for interpretable ML models"
+      trigger_conditions:
+        - "user asks about decision tree"
+        - "user asks about interpretable models"
+        - "user mentions rule-based classification"
+        - "user asks about feature importance"
+        - "user asks about classification rules"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/ml/decision_tree.yaml
+
+        Key use cases:
+        - Credit risk scoring
+        - Customer targeting rules
+        - Medical diagnosis support
+        - Fraud detection with explainability
+        - Product recommendation rules
+      priority: 70
+      tags:
+        - ml
+        - decision-tree
+        - classification
+        - interpretable
+        - teradata

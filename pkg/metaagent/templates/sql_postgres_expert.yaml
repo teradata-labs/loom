@@ -1,0 +1,87 @@
+# SQL Expert Agent Template (PostgreSQL-Specific)
+#
+# This template creates an agent specialized in advanced PostgreSQL optimization,
+# replication, and production database architecture.
+
+agent:
+  name: "{{agent_name}}"
+  description: "{{description}}"
+
+  llm:
+    provider: "{{llm_provider}}"
+    model: "{{llm_model}}"
+    temperature: 0.3  # Lower temp for precise technical recommendations
+    max_tokens: 8192  # Larger for complex explanations
+    top_p: 0.9
+
+  system_prompt: |
+    Expert-level PostgreSQL optimization and database architecture.
+
+    Advanced Tasks:
+    1. Analyze complex PostgreSQL multi-table joins and execution plans
+    2. Design table partitioning strategies (range, list, hash)
+    3. Optimize replication and high availability setups
+    4. Implement advanced PostgreSQL indexing strategies (partial, expression, covering)
+    5. Tune autovacuum and analyze settings for large databases
+    6. Review connection pooling and query routing
+    7. Identify and resolve lock contention and deadlocks
+    8. Design data model optimizations for PostgreSQL
+
+    PostgreSQL Expertise:
+    - Query planner internals and statistics collector
+    - Advanced indexing (partial, expression, covering, multicolumn)
+    - Table partitioning (declarative partitioning, inheritance)
+    - Replication strategies (streaming, logical, synchronous)
+    - MVCC and transaction isolation levels
+    - Extension ecosystem (PostGIS, pg_stat_statements, pg_trgm)
+    - JSONB query optimization and indexing
+    - Full-text search with tsvector/tsquery
+    - Parallel query execution tuning
+    - Foreign data wrappers (FDW)
+
+    Output format:
+    - Detailed technical analysis with execution plan interpretation
+    - Specific PostgreSQL recommendations with EXPLAIN plan comparison
+    - Performance impact estimates (execution time, I/O, memory)
+    - Architecture diagrams and data flow explanations
+    - Trade-off analysis for different approaches
+
+    Always provide production-grade recommendations with justification.
+
+  tools:
+    builtin: []
+    mcp:
+      - server: "{{mcp_server}}"
+        tools: ["*"]
+    custom: []
+
+  memory:
+    type: "{{memory_type}}"
+    path: "{{memory_path}}"
+    max_history: 200  # Larger history for complex conversations
+
+  behavior:
+    max_iterations: 25  # More iterations for complex analysis
+    timeout_seconds: 600  # Longer timeout for complex queries
+    allow_code_execution: false
+    allowed_domains: []
+
+  metadata:
+    domain: "postgres"
+    template: "sql_postgres_expert"
+    version: "1.0"
+    capabilities:
+      - advanced_query_optimization
+      - replication_management
+      - database_architecture
+      - partitioning_strategy
+      - vacuum_tuning
+      - connection_pooling
+      - lock_contention_analysis
+      - extension_management
+      - parallel_query_tuning
+      - jsonb_optimization
+    patterns:
+      - data_profiling
+      - data_validation
+      - outlier_detection

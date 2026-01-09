@@ -1,0 +1,448 @@
+/* Teradata Orange Theme for Loom Documentation */
+/* Based on StyleGuide.tsx - Dark-first with glass morphism */
+
+:root {
+  /* Teradata Brand Colors */
+  --primary: #FF8A47;        /* Lighter Teradata Orange for better contrast */
+  --primary-hover: #FFB380;  /* Even lighter orange for hover */
+  --background: #0d0d0d;     /* Deep charcoal */
+  --foreground: #e5e5e5;     /* Light grey (better than pure white) */
+  --muted: #9ca3af;          /* Lighter muted text for readability */
+  --border: rgba(255, 138, 71, 0.3); /* Lighter orange border */
+  --card: rgba(26, 26, 26, 0.6); /* Glass morphism */
+  --code-bg: rgba(20, 20, 20, 0.95); /* Darker code background */
+  --code-text: #34d399;      /* Lighter green for code (WCAG AA compliant) */
+
+  /* Semantic Colors - All lightened for dark backgrounds */
+  --success: #34d399;        /* Lighter green (WCAG AA on dark) */
+  --warning: #fbbf24;        /* Lighter yellow */
+  --error: #f87171;          /* Lighter red */
+  --info: #60a5fa;           /* Lighter blue */
+}
+
+/* Global Overrides */
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Primary Color - Links and Accents */
+a {
+  color: var(--primary);
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  color: var(--primary-hover);
+}
+
+/* Headers - Monospace like Hawk */
+h1, h2, h3, h4, h5, h6 {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Code", monospace;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  color: var(--foreground);
+  border-bottom: 2px solid var(--primary);
+  padding-bottom: 0.5rem;
+}
+
+h2 {
+  color: var(--foreground);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3rem;
+}
+
+/* Navigation Sidebar */
+.book-menu {
+  background: rgba(13, 13, 13, 0.95);
+  border-right: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+}
+
+.book-menu a {
+  color: var(--foreground);
+  transition: all 0.2s ease;
+}
+
+.book-menu a:hover,
+.book-menu a.active {
+  color: var(--primary);
+  background: rgba(243, 112, 33, 0.1);
+}
+
+.book-brand a {
+  color: var(--primary) !important;
+  font-family: "SF Mono", monospace;
+  font-weight: 700;
+  font-size: 1.2rem;
+  letter-spacing: 0.05em;
+}
+
+/* Code Blocks - Terminal Aesthetic */
+code {
+  background: var(--code-bg) !important;
+  color: var(--code-text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2em 0.4em;
+  font-family: "SF Mono", "Monaco", monospace;
+  font-size: 0.9em;
+}
+
+pre {
+  background: var(--code-bg) !important;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+pre code {
+  background: transparent !important;
+  display: block;
+  padding: 0;
+  border: none;
+  color: var(--code-text);
+}
+
+/* Override Hugo syntax highlighting */
+.highlight,
+.highlight pre,
+div.highlight {
+  background: var(--code-bg) !important;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.highlight code {
+  background: transparent !important;
+}
+
+/* Chroma syntax highlighting overrides */
+.chroma {
+  background: var(--code-bg) !important;
+  color: var(--foreground) !important;
+}
+
+.chroma .err { color: var(--error); }
+.chroma .k, .chroma .kd, .chroma .kn { color: var(--info); }
+.chroma .s, .chroma .s1, .chroma .s2 { color: var(--success); }
+.chroma .n, .chroma .na, .chroma .nb { color: var(--foreground); }
+.chroma .c, .chroma .c1, .chroma .cm { color: var(--muted); font-style: italic; }
+
+/* Inline code in prose */
+p code, li code, td code {
+  color: var(--primary) !important;
+  background: rgba(255, 138, 71, 0.15) !important;
+  border-color: var(--primary);
+}
+
+/* Tables */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.5rem 0;
+}
+
+th {
+  background: rgba(255, 138, 71, 0.15);
+  color: var(--primary);
+  font-family: "SF Mono", monospace;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+}
+
+td {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* Remove hover effect - solid black rows */
+tr:hover td {
+  background: var(--background);
+}
+
+/* Badges/Labels */
+.badge, .label {
+  background: rgba(243, 112, 33, 0.2);
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-family: "SF Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Status Indicators */
+.status-success {
+  color: var(--success);
+}
+
+.status-warning {
+  color: var(--warning);
+}
+
+.status-error {
+  color: var(--error);
+}
+
+/* Blockquotes */
+blockquote {
+  border-left: 4px solid var(--primary);
+  background: rgba(243, 112, 33, 0.05);
+  padding: 1rem 1.5rem;
+  margin: 1.5rem 0;
+  font-style: italic;
+}
+
+/* Search */
+.book-search input {
+  background: rgba(26, 26, 26, 0.8);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.book-search input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(243, 112, 33, 0.2);
+}
+
+/* Footer */
+.book-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  color: var(--muted);
+}
+
+/* Glass Card Effect (for callouts, warnings, etc.) */
+.callout, .note, .warning {
+  background: rgba(26, 26, 26, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.5rem;
+  margin: 1.5rem 0;
+  backdrop-filter: blur(10px);
+}
+
+.callout-primary {
+  border-color: var(--primary);
+  background: rgba(243, 112, 33, 0.1);
+}
+
+.callout-success {
+  border-color: var(--success);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.callout-warning {
+  border-color: var(--warning);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.callout-error {
+  border-color: var(--error);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Glow effect on hover for primary elements */
+.glow-primary:hover {
+  box-shadow: 0 0 20px rgba(243, 112, 33, 0.4);
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(13, 13, 13, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-hover);
+}
+
+/* Anchor Links */
+.anchor {
+  color: var(--primary);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  margin-left: 0.5rem;
+}
+
+h1:hover .anchor,
+h2:hover .anchor,
+h3:hover .anchor,
+h4:hover .anchor {
+  opacity: 1;
+}
+
+/* Documentation Cards */
+.doc-card {
+  background: rgba(26, 26, 26, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.doc-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 4px 16px rgba(243, 112, 33, 0.2);
+}
+
+/* Button Styling */
+button, .button {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-family: "SF Mono", monospace;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+button:hover, .button:hover {
+  background: var(--primary-hover);
+  box-shadow: 0 0 16px rgba(243, 112, 33, 0.4);
+}
+
+/* Progress Bars / Status */
+.progress-bar {
+  background: rgba(26, 26, 26, 0.8);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  height: 8px;
+}
+
+.progress-fill {
+  background: linear-gradient(90deg, var(--primary), var(--primary-hover));
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+/* Markdown Content Area */
+.markdown {
+  line-height: 1.8;
+}
+
+.markdown p {
+  margin: 1rem 0;
+  color: var(--foreground);
+}
+
+.markdown ul, .markdown ol {
+  margin: 1rem 0;
+  padding-left: 2rem;
+}
+
+.markdown li {
+  margin: 0.5rem 0;
+}
+
+/* Horizontal Rules */
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+/* Selection */
+::selection {
+  background: rgba(243, 112, 33, 0.3);
+  color: white;
+}
+
+/* Mermaid Diagram Theming */
+.mermaid {
+  background: transparent !important;
+  text-align: center;
+  margin: 2rem 0;
+  cursor: zoom-in;
+}
+
+/* Make Mermaid diagrams larger and responsive */
+.mermaid svg {
+  background: transparent !important;
+  max-width: 100%;
+  height: auto;
+  min-height: 400px;
+}
+
+/* Zoom on click */
+.mermaid.zoomed {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(13, 13, 13, 0.95);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  padding: 2rem;
+}
+
+.mermaid.zoomed svg {
+  max-width: 95vw;
+  max-height: 95vh;
+}
+
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .node polygon {
+  fill: #1a1a1a !important;
+  stroke: var(--primary) !important;
+  stroke-width: 2px !important;
+  rx: 4px !important;
+  min-width: 180px !important;
+}
+
+.mermaid .node text {
+  fill: var(--foreground) !important;
+  font-family: "SF Mono", monospace !important;
+  font-size: 14px !important;
+}
+
+/* Make node labels wrap instead of truncate */
+.mermaid .nodeLabel {
+  white-space: normal !important;
+  word-wrap: break-word !important;
+  max-width: 250px !important;
+}
+
+.mermaid .edgePath .path {
+  stroke: var(--border) !important;
+  stroke-width: 1.5px !important;
+}
+
+.mermaid .edgeLabel {
+  background: var(--background) !important;
+  color: var(--muted) !important;
+  font-family: "SF Mono", monospace !important;
+}

@@ -1,0 +1,36 @@
+# Minimal test configuration for no-code agent deployment
+
+server:
+  port: 9091
+  host: 127.0.0.1
+  enable_reflection: true
+
+llm:
+  provider: anthropic
+  anthropic_model: claude-sonnet-4-5-20250929
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+database:
+  path: ./test-loom.db
+  driver: sqlite
+
+observability:
+  enabled: false
+
+logging:
+  level: info
+  format: text
+
+# Single agent configuration for testing
+agents:
+  agents:
+    sqlite-agent:
+      name: SQLite Test Agent
+      description: Test agent for SQLite queries
+      backend_path: ./examples/reference/backends/sqlite.yaml
+      system_prompt: "You are a helpful SQLite assistant."
+      max_turns: 10
+      max_tool_executions: 20
+      enable_tracing: false

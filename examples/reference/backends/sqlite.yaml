@@ -1,0 +1,21 @@
+# Example backend configuration for SQLite database
+# Usage: Reference this file in your looms.yaml agent configuration
+
+apiVersion: loom/v1
+kind: Backend
+name: sqlite-backend
+type: sqlite
+description: SQLite database backend for SQL queries
+
+database:
+  # SQLite database file path
+  dsn: ./examples/data/example.db
+  driver: sqlite3
+
+# Capabilities configuration
+capabilities:
+  query_execution: true
+  schema_discovery: true
+  metadata: true
+  resource_listing: true
+  custom_operations: false

@@ -1,0 +1,404 @@
+# === METADATA START ===
+name: commit_message_limerick
+title: "Commit Message Limerick Generator"
+backend_type: text
+description: |
+  Transform boring commit messages into delightful limericks!
+
+  Perfect for making your git history more entertaining while still being informative.
+  Great for release notes, team stand-ups, or just bringing joy to your code reviews.
+
+  **LIMERICK RULES:**
+  - 5 lines with AABBA rhyme scheme
+  - Lines 1, 2, 5 are longer (7-10 syllables)
+  - Lines 3, 4 are shorter (5-7 syllables)
+  - Should mention the actual technical change
+  - Bonus points for puns and wordplay
+
+  **USE CASES:**
+  - Make boring commits memorable
+  - Create entertaining release notes
+  - Lighten up code review comments
+  - Generate creative git commit messages
+  - Document changes in a fun way
+  - Stand-up presentations with flair
+
+category: fun
+difficulty: beginner
+tags: [git, commit-messages, poetry, limerick, fun]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Transform commit history into poetry
+  - Generate creative release notes
+  - Make code reviews more entertaining
+  - Create memorable documentation
+  - Spice up team standups
+  - Celebrate major milestones with verse
+  - Make git log actually fun to read
+  - Generate unique commit messages
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: commit_message
+    type: string
+    required: true
+    description: "The commit message to transform into a limerick"
+    example: "fix: resolve null pointer exception in user service"
+
+  - name: commit_diff
+    type: string
+    required: false
+    description: "Optional git diff or description of changes"
+    example: "Added null check before accessing user.email"
+
+  - name: style
+    type: enum[technical, silly, epic, dramatic]
+    required: false
+    default: "technical"
+    description: "Style of limerick"
+    example: "silly"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  generate_limerick:
+    description: "Generate a limerick from a commit message"
+    content: |
+      Transform this commit into a delightful limerick:
+
+      **Commit:** {{commit_message}}
+      {{#if commit_diff}}
+      **Changes:** {{commit_diff}}
+      {{/if}}
+      **Style:** {{style}}
+
+      Create a limerick that:
+      - Follows AABBA rhyme scheme
+      - Has proper syllable counts (lines 1,2,5: 7-10 syllables; lines 3,4: 5-7 syllables)
+      - References the actual technical change
+      - Is clever and memorable
+      - Could actually be used in a commit message
+
+      Format:
+      ```
+      [Line 1 - sets up the situation] (A)
+      [Line 2 - continues the setup] (A)
+      [Line 3 - twist or complication] (B)
+      [Line 4 - continues twist] (B)
+      [Line 5 - punchline or resolution] (A)
+      ```
+
+      Example for "fix: null pointer in user service":
+      ```
+      A null pointer gave us quite a scare,
+      In user service, hiding right there,
+          We added a check,
+          No more train wreck,
+      Now emails are handled with care!
+      ```
+
+  batch_history:
+    description: "Generate limericks for multiple commits"
+    content: |
+      Transform this git history into a series of limericks:
+
+      **Commits:**
+      {{commit_message}}
+
+      Create a limerick for each significant commit. Group minor commits if appropriate.
+      Make sure each limerick:
+      - Tells the story of what changed
+      - Rhymes properly (AABBA)
+      - Is technically accurate
+      - Flows well when read aloud
+
+      Present as:
+      ```
+      ## Git History: The Limerick Edition
+
+      ### Commit abc123
+      [Limerick here]
+
+      ### Commit def456
+      [Limerick here]
+      ```
+
+  release_notes:
+    description: "Generate limerick-style release notes"
+    content: |
+      Create entertaining release notes in limerick form:
+
+      **Version:** {{version}}
+      **Changes:** {{commit_message}}
+
+      Generate:
+      1. An epic opening limerick about the release
+      2. Individual limericks for major features
+      3. A closing limerick thanking contributors
+
+      Make it celebratory and fun while being informative about actual changes!
+
+  pr_description:
+    description: "Limerick PR description generator"
+    content: |
+      Create a pull request description in limerick form:
+
+      **PR Title:** {{commit_message}}
+      {{#if commit_diff}}
+      **Changes:** {{commit_diff}}
+      {{/if}}
+
+      Generate:
+      ```markdown
+      ## 📜 The Pull Request Limerick
+
+      [Opening limerick describing the change]
+
+      ## What Changed
+      - [Actual bullet points of changes]
+
+      ## Testing
+      [Limerick about how it was tested]
+
+      ## Breaking Changes
+      [If any, described in limerick form]
+
+      ## Reviewer's Delight
+      [Closing limerick encouraging code review]
+      ```
+
+  commit_message_generator:
+    description: "Generate creative commit messages as limericks"
+    content: |
+      Based on this change description, generate a commit message in limerick form:
+
+      **Change:** {{commit_message}}
+
+      Create:
+      1. A conventional commit prefix (feat:, fix:, refactor:, etc.)
+      2. A one-line summary (can be the first line of limerick)
+      3. The full limerick in the commit body
+
+      Format:
+      ```
+      feat: Added null checks to user service
+
+      A null pointer gave us quite a scare,
+      In user service, hiding right there,
+          We added a check,
+          No more train wreck,
+      Now emails are handled with care!
+
+      Co-authored-by: The Limerick Bot
+      ```
+
+  style_technical:
+    description: "Technical limerick maintaining formal tone"
+    content: |
+      Create a technically accurate limerick for:
+      {{commit_message}}
+
+      Rules:
+      - Use proper technical terminology
+      - Reference actual code/architecture concepts
+      - Maintain professional tone
+      - But still make it rhyme and scan properly
+
+      Example style:
+      ```
+      The database query was quite slow,
+      With N+1 issues in tow,
+          We added a join,
+          Performance purloined,
+      Now milliseconds help data flow!
+      ```
+
+  style_silly:
+    description: "Maximize the silliness while staying relevant"
+    content: |
+      Create the silliest limerick possible for:
+      {{commit_message}}
+
+      Go wild with:
+      - Absurd metaphors
+      - Playful exaggerations
+      - Unexpected rhymes
+      - Programming puns
+      - But still mention what actually changed!
+
+      Example style:
+      ```
+      A bug crawled into our React state,
+      And made all the buttons quite late,
+          We squashed it with hooks,
+          By following the books,
+      Now renders are light as a freight... wait, freight's heavy. Slate! That rhymes better.
+      ```
+
+  style_epic:
+    description: "Epic, heroic limerick for major changes"
+    content: |
+      Create an EPIC limerick for this mighty deed:
+      {{commit_message}}
+
+      Use:
+      - Heroic language
+      - Battle metaphors
+      - Triumph and glory
+      - Make it sound like you saved the world
+
+      Example style:
+      ```
+      The migration beast reared its head high,
+      With breaking changes reaching the sky,
+          We battled through pain,
+          Updated the chain,
+      Now v2.0 helps us all fly!
+      ```
+
+  style_dramatic:
+    description: "Overly dramatic limerick"
+    content: |
+      Create a DRAMATICALLY INTENSE limerick for:
+      {{commit_message}}
+
+      Channel your inner soap opera:
+      - Suspense and tension
+      - Life-or-death stakes
+      - Emotional rollercoaster
+      - Plot twists!
+
+      Example style:
+      ```
+      Production went down... oh the dread!
+      The servers, it seemed, were quite dead,
+          But wait—just one byte,
+          A cache cleared just right,
+      And crisis was vanquished instead!
+      ```
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Bug fix limerick"
+    parameters:
+      commit_message: "fix: resolve race condition in authentication service"
+      style: "technical"
+    expected_result: |
+      A race condition caused users dismay,
+      As auth tokens vanished in disarray,
+          We added a lock,
+          Around the code block,
+      Now login works perfectly each day!
+
+  - name: "Feature limerick"
+    parameters:
+      commit_message: "feat: add dark mode support to dashboard"
+      style: "silly"
+    expected_result: |
+      Our users all squinted with pain,
+      The bright white was hard to sustain,
+          We darkened the theme,
+          Now eyes gently gleam,
+      And nobody's retinas strain!
+
+  - name: "Refactor limerick"
+    parameters:
+      commit_message: "refactor: extract payment logic into separate service"
+      style: "epic"
+    expected_result: |
+      The monolith grew far too great,
+      With payment code sealed by fate,
+          We carved out the chunk,
+          Removed all the junk,
+      A microservice seals its state!
+
+  - name: "Dependency update"
+    parameters:
+      commit_message: "chore: upgrade React from 17 to 18"
+      style: "dramatic"
+    expected_result: |
+      The framework was aging quite fast,
+      Stuck in versions long past,
+          We held our breath tight,
+          Upgraded that night,
+      And tests all miraculously passed!
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Limerick Commit Best Practices
+
+  ### 1. Keep It Professional (Mostly)
+  - Fun, but not offensive
+  - Appropriate for team culture
+  - Actually informative about changes
+
+  ### 2. Proper Limerick Structure
+  - **Meter matters**: Read it aloud
+  - **Rhyme scheme**: AABBA is sacred
+  - **Syllables**: 8-8-5-5-8 is the goal
+  - **Bonus**: Internal rhymes in long lines
+
+  ### 3. Technical Accuracy
+  - Mention the actual change
+  - Use correct technical terms
+  - Don't sacrifice clarity for rhyme
+
+  ### 4. When to Use
+  - ✅ Major releases
+  - ✅ Significant features
+  - ✅ Memorable bug fixes
+  - ✅ Team celebrations
+  - ❌ Security patches (stay serious)
+  - ❌ Production hotfixes (unless after the fact)
+  - ❌ Client-facing official docs
+
+  ### 5. Limerick Writing Tips
+  - Start with the rhyme words (A-A-B-B-A)
+  - Build content around those words
+  - Read aloud to check rhythm
+  - Revise until it flows naturally
+  - Embrace imperfection (it adds charm)
+
+  ### 6. Git Integration
+  ```bash
+  # Add limerick to commit message body
+  git commit -m "feat: add dark mode" -m "$(cat limerick.txt)"
+
+  # Generate limerick from last commit
+  git log -1 --pretty=%B | loom-limerick-generator
+
+  # Limerick changelog
+  git log --oneline | loom-limerick-generator > LIMERICK_CHANGELOG.md
+  ```
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Limerick doesn't scan/flow properly"
+    cause: "Wrong syllable count or stress pattern"
+    solution: "Read it aloud. Clap out the beats. Each line should have a natural rhythm."
+
+  - error: "Rhymes are forced and awkward"
+    cause: "Trying to rhyme first, content second"
+    solution: "Start with clear content, then find natural rhymes. It's okay to adjust the content to fit."
+
+  - error: "Too vague or generic"
+    cause: "Not mentioning specific technical details"
+    solution: "Include at least one concrete detail (method name, file, specific bug)."
+
+  - error: "Offensive or inappropriate"
+    cause: "Trying too hard to be funny"
+    solution: "Remember this goes in commit history. Keep it PG-rated and professional."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - fun/code_haiku  # Another poetic pattern
+  - fun/rubber_duck_debugger  # More fun patterns
+  - code/doc_generation  # Serious documentation
+# === RELATED_PATTERNS END ===

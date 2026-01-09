@@ -1,0 +1,575 @@
+# === METADATA START ===
+name: missing_value_analysis
+title: "Missing Value Analysis and Imputation"
+description: |
+  Analyze patterns of missing data and implement appropriate handling strategies.
+  Missing values can indicate data quality issues, collection problems, or genuine
+  absence of information. Proper handling is critical for analytics and ML.
+
+  Missing value types:
+  - MCAR (Missing Completely at Random): No pattern
+  - MAR (Missing at Random): Depends on observed data
+  - MNAR (Missing Not at Random): Depends on unobserved data
+
+  Handling strategies:
+  - Deletion (listwise, pairwise)
+  - Imputation (mean, median, mode, forward-fill, model-based)
+  - Flagging (create indicator variables)
+  - Analysis (understand why missing)
+
+category: data_quality
+difficulty: intermediate
+teradata_function: SQL_COALESCE
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Pre-ML data preparation
+  - Data quality reporting
+  - ETL validation
+  - Customer data completeness
+  - Survey response analysis
+  - Sensor data gap-filling
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing table to analyze"
+    example: "customer_data"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table with missing values"
+    example: "customers"
+
+  # --- Parameter 3: Columns ---
+  - name: columns
+    type: array[string]
+    # LLM-HINT: If empty, analyze all columns (used in all_columns templates)
+    required: false
+    description: "Columns to analyze (empty = all columns)"
+    example: '["email", "phone", "address"]'
+
+  # --- Parameter 4: Imputation Method ---
+  - name: imputation_method
+    type: enum
+    required: false
+    default: "MEDIAN"
+    description: "Method: MEAN, MEDIAN, MODE, FORWARD_FILL, DROP"
+    example: "MEDIAN"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === COMPLETENESS_REPORT TEMPLATE ===
+  # LLM-HINT: Start with this to get per-column null counts and percentages
+  completeness_report:
+    description: "Comprehensive missing value report across all columns"
+    sql: |
+      -- Missing value analysis per column
+      SELECT
+        '{{column}}' as column_name,
+        COUNT(*) as total_rows,
+        COUNT({{column}}) as non_null_count,
+        COUNT(*) - COUNT({{column}}) as null_count,
+        CAST((COUNT(*) - COUNT({{column}})) * 100.0 / COUNT(*) AS DECIMAL(5,2)) as null_percentage,
+        CASE
+          WHEN COUNT(*) - COUNT({{column}}) = 0 THEN 'Complete'
+          WHEN (COUNT(*) - COUNT({{column}})) * 100.0 / COUNT(*) < 5 THEN 'Mostly Complete'
+          WHEN (COUNT(*) - COUNT({{column}})) * 100.0 / COUNT(*) < 30 THEN 'Incomplete'
+          ELSE 'Severely Incomplete'
+        END as completeness_status
+      FROM {{database}}.{{table}};
+
+    required_parameters:
+      - database
+      - table
+      - column
+
+  # === MISSING_PATTERN_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Identifies cross-column missing patterns (e.g., all 3 missing together)
+  missing_pattern_analysis:
+    description: "Identify patterns in missing data across multiple columns"
+    sql: |
+      -- Missing data pattern analysis
+      SELECT
+        CASE WHEN {{column1}} IS NULL THEN 1 ELSE 0 END as {{column1}}_missing,
+        CASE WHEN {{column2}} IS NULL THEN 1 ELSE 0 END as {{column2}}_missing,
+        CASE WHEN {{column3}} IS NULL THEN 1 ELSE 0 END as {{column3}}_missing,
+        COUNT(*) as pattern_count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as percentage
+      FROM {{database}}.{{table}}
+      GROUP BY
+        CASE WHEN {{column1}} IS NULL THEN 1 ELSE 0 END,
+        CASE WHEN {{column2}} IS NULL THEN 1 ELSE 0 END,
+        CASE WHEN {{column3}} IS NULL THEN 1 ELSE 0 END
+      ORDER BY pattern_count DESC;
+
+    required_parameters:
+      - database
+      - table
+      - column1
+      - column2
+      - column3
+
+  # === TEMPORAL_MISSING_ANALYSIS TEMPLATE ===
+  # LLM-HINT: Checks if missing values correlate with time (trends over time)
+  temporal_missing_analysis:
+    description: "Analyze if missing values correlate with time"
+    sql: |
+      -- Temporal analysis of missing values
+      SELECT
+        DATE_TRUNC('{{time_grain}}', {{timestamp_column}}) as time_period,
+        COUNT(*) as total_records,
+        COUNT({{column}}) as non_null_count,
+        COUNT(*) - COUNT({{column}}) as null_count,
+        CAST((COUNT(*) - COUNT({{column}})) * 100.0 / COUNT(*) AS DECIMAL(5,2)) as null_percentage
+      FROM {{database}}.{{table}}
+      GROUP BY DATE_TRUNC('{{time_grain}}', {{timestamp_column}})
+      ORDER BY time_period;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - timestamp_column
+      - time_grain
+
+  # === IMPUTE_WITH_MEAN TEMPLATE ===
+  # LLM-HINT: Fills NULLs with arithmetic mean (for normally distributed numeric data)
+  impute_with_mean:
+    description: "Fill missing numeric values with column mean"
+    sql: |
+      -- Mean imputation for numeric column
+      WITH mean_calc AS (
+        SELECT AVG({{column}}) as mean_value
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      )
+      SELECT
+        {{id_column}},
+        {{column}} as original_value,
+        COALESCE({{column}}, m.mean_value) as imputed_value,
+        CASE WHEN {{column}} IS NULL THEN 1 ELSE 0 END as was_imputed
+      FROM {{database}}.{{table}} t, mean_calc m;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+
+  # === IMPUTE_WITH_MEDIAN TEMPLATE ===
+  # LLM-HINT: More robust than mean for skewed data (outlier-resistant)
+  impute_with_median:
+    description: "Fill missing numeric values with column median (more robust)"
+    sql: |
+      -- Median imputation for numeric column
+      WITH median_calc AS (
+        SELECT MEDIAN({{column}}) as median_value
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+      )
+      SELECT
+        {{id_column}},
+        {{column}} as original_value,
+        COALESCE({{column}}, m.median_value) as imputed_value,
+        CASE WHEN {{column}} IS NULL THEN 1 ELSE 0 END as was_imputed
+      FROM {{database}}.{{table}} t, median_calc m;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+
+  # === IMPUTE_WITH_MODE TEMPLATE ===
+  # LLM-HINT: Use for categorical columns (fills with most common value)
+  impute_with_mode:
+    description: "Fill missing categorical values with most common value"
+    sql: |
+      -- Mode imputation for categorical column
+      WITH mode_calc AS (
+        SELECT {{column}} as mode_value
+        FROM {{database}}.{{table}}
+        WHERE {{column}} IS NOT NULL
+        GROUP BY {{column}}
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+      )
+      SELECT
+        {{id_column}},
+        {{column}} as original_value,
+        COALESCE({{column}}, m.mode_value) as imputed_value,
+        CASE WHEN {{column}} IS NULL THEN 1 ELSE 0 END as was_imputed
+      FROM {{database}}.{{table}} t, mode_calc m;
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+
+  # === FORWARD_FILL TEMPLATE ===
+  # LLM-HINT: For time series - carries forward last observed value (LOCF)
+  forward_fill:
+    description: "Fill missing values with last observed value (time series)"
+    sql: |
+      -- Forward fill imputation for time series
+      SELECT
+        {{id_column}},
+        {{timestamp_column}},
+        {{column}} as original_value,
+        LAST_VALUE({{column}} IGNORE NULLS) OVER (
+          ORDER BY {{timestamp_column}}
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) as imputed_value
+      FROM {{database}}.{{table}}
+      ORDER BY {{timestamp_column}};
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+      - timestamp_column
+
+  # === CREATE_MISSING_INDICATORS TEMPLATE ===
+  # LLM-HINT: Creates binary flags for ML models (missingness as a feature)
+  create_missing_indicators:
+    description: "Create binary indicator columns for missing values (for ML)"
+    sql: |
+      -- Create missing value indicator flags
+      SELECT
+        {{id_column}},
+        {{column}},
+        CASE WHEN {{column}} IS NULL THEN 1 ELSE 0 END as {{column}}_is_missing,
+        COALESCE({{column}}, 0) as {{column}}_filled_zero
+      FROM {{database}}.{{table}};
+
+    required_parameters:
+      - database
+      - table
+      - column
+      - id_column
+
+  # === MISSING_VALUE_CORRELATION TEMPLATE ===
+  # LLM-HINT: Tests if missing values correlate with another variable (MAR detection)
+  missing_value_correlation:
+    description: "Check if missing values correlate with another variable"
+    sql: |
+      -- Correlation between missing values and another variable
+      WITH missing_flags AS (
+        SELECT
+          {{id_column}},
+          CASE WHEN {{column_with_missing}} IS NULL THEN 1 ELSE 0 END as is_missing,
+          {{correlation_column}}
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        is_missing,
+        COUNT(*) as count,
+        AVG({{correlation_column}}) as avg_correlation_value,
+        MEDIAN({{correlation_column}}) as median_correlation_value
+      FROM missing_flags
+      GROUP BY is_missing;
+
+    required_parameters:
+      - database
+      - table
+      - column_with_missing
+      - correlation_column
+      - id_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Email Completeness ---
+  - name: "Customer Email Completeness"
+    description: "Analyze missing email addresses in customer database"
+    parameters:
+      database: "crm"
+      table: "customers"
+      columns: ["email", "phone", "address"]
+    expected_result: |
+      Completeness Report:
+
+      email:
+      - Total: 100,000 customers
+      - Missing: 15,000 (15%)
+      - Status: Incomplete
+
+      phone:
+      - Total: 100,000
+      - Missing: 8,000 (8%)
+      - Status: Mostly Complete
+
+      address:
+      - Total: 100,000
+      - Missing: 22,000 (22%)
+      - Status: Incomplete
+
+      Missing Pattern Analysis:
+      - All 3 missing: 3,500 (3.5%) - NEW CUSTOMERS
+      - Email only missing: 8,000 (8%) - Privacy concerns?
+      - Phone only missing: 2,500 (2.5%)
+      - Complete records: 73,000 (73%)
+
+      Action:
+      - Email collection campaign for 15K customers
+      - Investigate why new customers skip contact info
+      - Consider making email required in signup
+
+  # --- Example 2: Sensor Data Gap Filling ---
+  - name: "Sensor Data Gap Filling"
+    description: "Fill missing temperature readings from IoT sensors"
+    parameters:
+      database: "iot"
+      table: "sensor_readings"
+      column: "temperature"
+      imputation_method: "FORWARD_FILL"
+    expected_result: |
+      Temperature readings for Sensor #A123:
+
+      Original data:
+      - 10:00 AM: 22.5°C
+      - 10:05 AM: NULL (sensor offline)
+      - 10:10 AM: NULL (sensor offline)
+      - 10:15 AM: 23.1°C
+
+      After forward-fill imputation:
+      - 10:00 AM: 22.5°C
+      - 10:05 AM: 22.5°C (filled from 10:00)
+      - 10:10 AM: 22.5°C (filled from 10:00)
+      - 10:15 AM: 23.1°C
+
+      Missing data: 2 of 96 readings (2%)
+      Reason: Network outage 10:05-10:15
+
+  # --- Example 3: Survey Response Imputation ---
+  - name: "Survey Response Imputation"
+    description: "Handle missing survey responses"
+    parameters:
+      database: "surveys"
+      table: "customer_satisfaction"
+      column: "nps_score"
+      imputation_method: "MEDIAN"
+    expected_result: |
+      NPS Score (1-10 scale):
+
+      Original responses:
+      - Total surveys: 5,000
+      - Responses: 4,200 (84% response rate)
+      - Missing: 800 (16% - question skipped)
+
+      Imputation options:
+
+      1. Drop missing (listwise deletion):
+         - Analyze 4,200 responses only
+         - Pro: No bias from imputation
+         - Con: Lose 16% of data
+
+      2. Median imputation:
+         - Median score: 8
+         - Fill 800 missing with 8
+         - Pro: Keep full dataset
+         - Con: Reduces variance
+
+      3. Mode imputation:
+         - Most common: 9 (30% of responses)
+         - Fill with 9
+         - Pro: Uses actual response
+         - Con: Skews distribution
+
+      Recommendation: Drop missing (enough responses remain)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Changed Distribution ---
+  - error: "Imputation changes data distribution"
+    cause: "Mean/median imputation reduces variance"
+    solution: "Use multiple imputation or model-based methods. Or simply drop missing if sufficient data remains."
+
+  # --- Error 2: Obvious Imputed Values ---
+  - error: "Imputed values obvious in analysis"
+    cause: "All imputed values identical (e.g., all mean)"
+    solution: "Add random noise, use model-based imputation, or create missing indicators."
+
+  # --- Error 3: Error Propagation ---
+  - error: "Forward-fill propagates errors"
+    cause: "Last observed value may be an outlier"
+    solution: "Validate last value before filling. Use interpolation instead of forward-fill."
+
+  # --- Error 4: Ignored Patterns ---
+  - error: "Missing pattern ignored"
+    cause: "Blindly imputing without understanding why missing"
+    solution: "Always analyze missing patterns first. MNAR (not at random) needs different approach."
+
+  # --- Error 5: Data Leakage ---
+  - error: "Imputation in test set leaks information"
+    cause: "Using statistics from full dataset including test set"
+    solution: "Calculate imputation values on training set only, apply to test set."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Missing Value Best Practices
+
+  ### 1. Understand Why Data is Missing
+
+  **Missing types:**
+  - **MCAR (Completely at Random):** No pattern, safe to drop or impute
+  - **MAR (at Random):** Depends on other variables, use model-based imputation
+  - **MNAR (Not at Random):** Missingness is informative, need domain expertise
+
+  **Investigate causes:**
+  - Collection issues (sensor failure, form bug)
+  - User behavior (privacy, skip questions)
+  - System issues (integration failure)
+  - Genuinely not applicable (e.g., "children" for non-parents)
+
+  ### 2. Report Missing Value Patterns
+
+  **Key metrics:**
+  - % missing per column
+  - % rows with any missing
+  - % rows completely missing
+  - Temporal trends (getting worse over time?)
+  - Correlations (missing in one column → missing in another?)
+
+  ### 3. Choose Appropriate Handling Strategy
+
+  **Deletion:**
+  - ✅ Simple and unbiased
+  - ✅ Good when < 5% missing and MCAR
+  - ❌ Loses information
+  - ❌ Can introduce bias if MAR/MNAR
+
+  **Mean/Median Imputation:**
+  - ✅ Simple and fast
+  - ✅ Preserves sample size
+  - ❌ Reduces variance
+  - ❌ Distorts distributions
+  - **Use:** When missing % low (< 10%) and MCAR
+
+  **Mode Imputation:**
+  - ✅ Works for categorical data
+  - ✅ Uses real values
+  - ❌ Increases frequency of mode
+  - **Use:** Categorical variables, low missing %
+
+  **Forward-Fill/Back-Fill:**
+  - ✅ Logical for time series
+  - ✅ Preserves trends
+  - ❌ Not suitable for non-temporal
+  - **Use:** Time series sensor data
+
+  **Model-Based:**
+  - ✅ Most sophisticated
+  - ✅ Preserves relationships
+  - ❌ Complex and slow
+  - **Use:** MAR patterns, important features
+
+  **Indicator Variables:**
+  - ✅ Preserves information about missingness
+  - ✅ Lets model learn pattern
+  - ❌ Increases dimensionality
+  - **Use:** For ML when missingness may be predictive
+
+  ### 4. Validate Imputation Results
+
+  **Check:**
+  - Distribution before vs after imputation
+  - Correlation structure preserved?
+  - Mean/variance changed significantly?
+  - Model performance with vs without imputation
+
+  ### 5. Document Decisions
+
+  **Record:**
+  - Which columns had missing values
+  - % missing
+  - Imputation method used
+  - Rationale for method choice
+  - Impact on analysis
+
+  ### 6. Special Cases
+
+  **Survey data:**
+  - "Prefer not to answer" ≠ missing
+  - Consider as separate category
+
+  **Time series:**
+  - Forward-fill for short gaps
+  - Interpolation for longer gaps
+  - Flag extended outages
+
+  **ML feature engineering:**
+  - Create is_missing indicator
+  - Impute with -999 or special value
+  - Let model learn missingness pattern
+
+  ### 7. ML-Specific Guidelines
+
+  **For model training:**
+  1. Split data BEFORE imputation
+  2. Calculate imputation values on training set only
+  3. Apply same imputation to test set
+  4. Never let test data influence imputation
+
+  **Example:**
+  ```sql
+  -- WRONG: Global mean includes test set
+  WITH global_mean AS (
+    SELECT AVG(feature) FROM all_data
+  )
+  ...
+
+  -- RIGHT: Training mean only
+  WITH train_mean AS (
+    SELECT AVG(feature) FROM all_data
+    WHERE is_training = 1
+  )
+  ...
+  ```
+
+  ### 8. Performance Considerations
+
+  **For large tables:**
+  - Calculate imputation values once
+  - Store in lookup table
+  - Apply via JOIN instead of subquery
+  - Use sampling for exploratory analysis
+
+  ### 9. When NOT to Impute
+
+  **Skip imputation if:**
+  - Missing % very high (> 40%)
+  - Missingness is the signal (e.g., no purchase = $0)
+  - Sufficient complete cases remain
+  - Risk of bias too high
+
+  ### 10. Monitoring
+
+  **Track over time:**
+  - Missing % per column
+  - New patterns emerging?
+  - Data quality degrading?
+  - Set alerts for sudden increases
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - data_profiling
+  - outlier_detection
+  - data_validation
+# === RELATED_PATTERNS END ===

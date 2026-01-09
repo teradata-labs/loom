@@ -1,0 +1,65 @@
+name: foreign_key_validation
+title: "Foreign Key Validation"
+description: "Identifies missing foreign keys and recommends indexes on FK columns"
+category: analytics
+difficulty: beginner
+backend_type: postgres
+priority: 70
+
+parameters:
+  - name: table_name
+    type: string
+    required: true
+    description: "Table to validate"
+
+templates:
+  check_fks: |
+    -- Check existing foreign keys
+    SELECT
+      tc.constraint_name,
+      tc.table_name,
+      kcu.column_name,
+      ccu.table_name AS foreign_table_name,
+      ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints AS tc
+    JOIN information_schema.key_column_usage AS kcu
+      ON tc.constraint_name = kcu.constraint_name
+    JOIN information_schema.constraint_column_usage AS ccu
+      ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_name = '{{.table_name}}'
+
+  check_fk_indexes: |
+    -- Check if foreign key columns have indexes
+    SELECT
+      t.relname AS table_name,
+      a.attname AS column_name,
+      i.relname AS index_name
+    FROM pg_class t
+    JOIN pg_attribute a ON a.attrelid = t.oid
+    LEFT JOIN pg_index ix ON ix.indrelid = t.oid AND a.attnum = ANY(ix.indkey)
+    LEFT JOIN pg_class i ON i.oid = ix.indexrelid
+    WHERE t.relname = '{{.table_name}}'
+      AND a.attname LIKE '%_id'
+
+  recommendation: |
+    -- Add indexes on foreign key columns for JOIN performance
+    -- Pattern: Every FK column should have an index
+    CREATE INDEX idx_{{.table_name}}_fk ON {{.table_name}}(fk_column)
+
+examples:
+  - name: "Check orders table"
+    parameters:
+      table_name: orders
+    expected_result: "Find user_id FK, recommend index"
+
+use_cases:
+  - "Audit referential integrity"
+  - "Identify missing FK indexes"
+  - "Optimize JOIN performance"
+
+validation:
+  rules:
+    - "Every FK column should have index"
+    - "FK constraint exists in database"
+    - "Referenced table has primary key"

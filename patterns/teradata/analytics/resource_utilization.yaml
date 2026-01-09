@@ -1,0 +1,620 @@
+# === METADATA START ===
+name: resource_utilization
+title: "Resource Utilization Analysis"
+description: |
+  Comprehensive CPU and storage utilization analysis across VantageCloud Lake and
+  Enterprise platforms. Provides capacity planning insights, optimization opportunities,
+  and resource health assessment through standardized metrics and business thresholds.
+
+  **Production-proven**: This pattern provides consistent resource metrics used in
+  customer health scoring (73% churn prediction accuracy), capacity planning, and
+  cost optimization initiatives across Teradata's multi-platform environment.
+
+  The pattern supports three analysis modes:
+  - **Comprehensive** (CPU + Storage): Complete resource health assessment
+  - **CPU-focused**: Performance bottleneck identification and capacity planning
+  - **Storage-focused**: Capacity management and growth trending
+
+  **Business Value**:
+  - Capacity planning: Identify expansion opportunities (>80% utilization)
+  - Cost optimization: Detect under-utilization (<20% CPU, <25% storage)
+  - Health monitoring: Track resource efficiency for customer success scoring
+  - Platform comparison: Consistent metrics across Lake and Enterprise deployments
+
+category: analytics
+difficulty: intermediate
+teradata_function: aggregation
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Capacity Planning ---
+  - CPU and storage capacity planning and expansion identification
+
+  # --- Use Case 2: Resource Optimization ---
+  - Resource optimization and right-sizing recommendations
+
+  # --- Use Case 3: Customer Health Scoring ---
+  - Customer health scoring component (performance and resource optimization)
+
+  # --- Use Case 4: Cost Efficiency ---
+  - Cost efficiency analysis and under-utilization detection
+
+  # --- Use Case 5: Platform Benchmarking ---
+  - Platform performance benchmarking (Lake vs Enterprise)
+
+  # --- Use Case 6: I/O Analysis ---
+  - I/O bottleneck identification and storage growth trending
+
+  # --- Use Case 7: Executive Alerting ---
+  - Executive capacity alerting and runway analysis
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Customer Table ---
+  - name: customer_table
+    type: string
+    # LLM-HINT: Master customer data; must contain site_id for resource metric joins
+    required: true
+    description: "Customer master data table (must have site_id)"
+    example: "customer_sites"
+
+  # --- Parameter 2: CPU Table ---
+  - name: cpu_table
+    type: string
+    # LLM-HINT: Optional; provides performance health score from CPU/IO wait metrics
+    required: false
+    description: "Daily CPU utilization table (must have site_id, log_dt, avg_cpu_busy_pct, avg_io_wait_pct)"
+    example: "sites_daily_cpu_utilization"
+
+  # --- Parameter 3: Storage Table ---
+  - name: storage_table
+    type: string
+    # LLM-HINT: Optional; provides storage capacity and utilization metrics for planning
+    required: false
+    description: "Daily storage utilization table (must have site_id, log_dt, perm_storage_used_gb, perm_storage_capacity_gb, perm_utilization_pct)"
+    example: "sites_daily_storage_utilization"
+
+  # --- Parameter 4: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in SQL templates; contains customer and resource tables
+    required: true
+    description: "Database containing all tables"
+    example: "DataMart_CTO"
+
+  # --- Parameter 5: Lookback Days ---
+  - name: lookback_days
+    type: integer
+    # LLM-HINT: Analysis window; 30 days for monthly trends, 7 for weekly snapshots
+    required: false
+    description: "Number of days to analyze (default 30 for monthly assessment)"
+    example: "30"
+    default: "30"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === MAIN TEMPLATE ===
+  # LLM-HINT: Comprehensive analysis (CPU + storage); supports 3 modes via optional parameters
+  main:
+    description: "Comprehensive CPU and storage utilization analysis for capacity planning and optimization"
+    sql: |
+      -- =============================================================================
+      -- Resource Utilization Analysis - Comprehensive CPU and Storage Assessment
+      -- =============================================================================
+      WITH resource_metrics AS (
+          SELECT
+              cs.site_id,
+              cs.customer_id,
+              cs.account_name,
+              {{if .scale_tier}}cs.scale_tier,{{end}}
+              {{if .is_vcl}}cs.is_vcl,{{end}}
+
+              -- CPU Utilization Metrics
+              {{if .cpu_table}}
+              ROUND(AVG(cpu.avg_cpu_busy_pct), 2) AS avg_cpu_utilization,
+              ROUND(MAX(cpu.peak_cpu_busy_pct), 2) AS peak_cpu_utilization,
+              ROUND(AVG(cpu.avg_io_wait_pct), 2) AS avg_io_wait,
+              ROUND(MAX(cpu.peak_io_wait_pct), 2) AS peak_io_wait,
+              ROUND(AVG(cpu.total_io_mb), 2) AS avg_daily_io_mb,
+              {{else}}
+              CAST(NULL AS DECIMAL(5,2)) AS avg_cpu_utilization,
+              CAST(NULL AS DECIMAL(5,2)) AS peak_cpu_utilization,
+              CAST(NULL AS DECIMAL(5,2)) AS avg_io_wait,
+              CAST(NULL AS DECIMAL(5,2)) AS peak_io_wait,
+              CAST(NULL AS DECIMAL(15,2)) AS avg_daily_io_mb,
+              {{end}}
+
+              -- Storage Utilization Metrics
+              {{if .storage_table}}
+              ROUND(AVG(stor.perm_storage_used_gb), 2) AS avg_storage_used_gb,
+              ROUND(AVG(stor.perm_storage_capacity_gb), 2) AS avg_storage_capacity_gb,
+              ROUND(AVG(stor.perm_utilization_pct), 2) AS avg_storage_utilization,
+              ROUND(MAX(stor.perm_utilization_pct), 2) AS peak_storage_utilization,
+              {{else}}
+              CAST(NULL AS DECIMAL(18,2)) AS avg_storage_used_gb,
+              CAST(NULL AS DECIMAL(18,2)) AS avg_storage_capacity_gb,
+              CAST(NULL AS DECIMAL(5,2)) AS avg_storage_utilization,
+              CAST(NULL AS DECIMAL(5,2)) AS peak_storage_utilization,
+              {{end}}
+
+              -- Data quality metrics
+              {{if .cpu_table}}COUNT(DISTINCT cpu.log_dt) AS cpu_days_measured,{{else}}0 AS cpu_days_measured,{{end}}
+              {{if .storage_table}}COUNT(DISTINCT stor.log_dt) AS storage_days_measured,{{else}}0 AS storage_days_measured,{{end}}
+
+              MAX(COALESCE({{if .cpu_table}}cpu.log_dt{{end}}{{if .storage_table}}{{if .cpu_table}}, {{end}}stor.log_dt{{end}})) AS last_measured_date
+
+          FROM {{.database}}.{{.customer_table}} cs
+          {{if .cpu_table}}
+          LEFT JOIN {{.database}}.{{.cpu_table}} cpu
+              ON cs.site_id = cpu.site_id
+              AND cpu.log_dt >= CURRENT_DATE - {{.lookback_days}}
+          {{end}}
+          {{if .storage_table}}
+          LEFT JOIN {{.database}}.{{.storage_table}} stor
+              ON cs.site_id = stor.site_id
+              AND stor.log_dt >= CURRENT_DATE - {{.lookback_days}}
+          {{end}}
+          WHERE cs.effective_end_date IS NULL  -- Active customers only
+          GROUP BY
+              cs.site_id,
+              cs.customer_id,
+              cs.account_name
+              {{if .scale_tier}}, cs.scale_tier{{end}}
+              {{if .is_vcl}}, cs.is_vcl{{end}}
+      ),
+
+      utilization_assessment AS (
+          SELECT *,
+              -- CPU Performance Assessment (0-25 points for health scoring)
+              CASE
+                  WHEN avg_cpu_utilization IS NULL THEN NULL
+                  WHEN avg_cpu_utilization < 50 AND avg_io_wait < 10 THEN 25  -- Excellent
+                  WHEN avg_cpu_utilization < 70 AND avg_io_wait < 20 THEN 20  -- Good
+                  WHEN avg_cpu_utilization < 85 AND avg_io_wait < 30 THEN 15  -- Acceptable
+                  WHEN avg_cpu_utilization < 95 THEN 10  -- Poor
+                  ELSE 5  -- Critical
+              END AS cpu_health_score,
+
+              -- Storage Optimization Assessment (0-25 points for health scoring)
+              CASE
+                  WHEN avg_storage_utilization IS NULL THEN NULL
+                  WHEN avg_storage_utilization BETWEEN 60 AND 85 THEN 25  -- Optimal
+                  WHEN avg_storage_utilization BETWEEN 40 AND 95 THEN 20  -- Good
+                  WHEN avg_storage_utilization BETWEEN 20 AND 98 THEN 15  -- Acceptable
+                  WHEN avg_storage_utilization < 20 THEN 10  -- Under-utilized
+                  ELSE 5  -- Over-utilized
+              END AS storage_health_score,
+
+              -- CPU Capacity Status
+              CASE
+                  WHEN avg_cpu_utilization IS NULL THEN 'No CPU Data'
+                  WHEN avg_cpu_utilization >= 90 THEN 'Critical - Immediate Action'
+                  WHEN avg_cpu_utilization >= 85 THEN 'High - Plan Expansion'
+                  WHEN avg_cpu_utilization >= 70 THEN 'Elevated - Monitor'
+                  WHEN avg_cpu_utilization < 20 THEN 'Under-Utilized'
+                  ELSE 'Normal'
+              END AS cpu_capacity_status,
+
+              -- Storage Capacity Status
+              CASE
+                  WHEN avg_storage_utilization IS NULL THEN 'No Storage Data'
+                  WHEN avg_storage_utilization >= 95 THEN 'Critical - Immediate Action'
+                  WHEN avg_storage_utilization >= 90 THEN 'Urgent - Plan Expansion'
+                  WHEN avg_storage_utilization >= 85 THEN 'Warning - Plan Expansion'
+                  WHEN avg_storage_utilization >= 75 THEN 'Alert - Monitor Closely'
+                  WHEN avg_storage_utilization < 25 THEN 'Under-Utilized'
+                  ELSE 'Normal'
+              END AS storage_capacity_status,
+
+              -- I/O Performance Assessment
+              CASE
+                  WHEN avg_io_wait IS NULL THEN 'No I/O Data'
+                  WHEN avg_io_wait > 20 THEN 'Storage Performance Issue'
+                  WHEN avg_io_wait > 10 THEN 'Monitor Storage'
+                  ELSE 'Normal'
+              END AS io_performance_status
+
+          FROM resource_metrics
+      )
+
+      SELECT
+          site_id,
+          customer_id,
+          account_name,
+          {{if .scale_tier}}scale_tier,{{end}}
+          {{if .is_vcl}}is_vcl,{{end}}
+
+          -- CPU Metrics
+          avg_cpu_utilization,
+          peak_cpu_utilization,
+          avg_io_wait,
+          peak_io_wait,
+          avg_daily_io_mb,
+          cpu_health_score,
+          cpu_capacity_status,
+          io_performance_status,
+
+          -- Storage Metrics
+          avg_storage_used_gb,
+          avg_storage_capacity_gb,
+          avg_storage_capacity_gb - avg_storage_used_gb AS available_storage_gb,
+          avg_storage_utilization,
+          peak_storage_utilization,
+          storage_health_score,
+          storage_capacity_status,
+
+          -- Composite Resource Health Score (0-50 if both metrics available)
+          CASE
+              WHEN cpu_health_score IS NULL AND storage_health_score IS NULL THEN NULL
+              WHEN cpu_health_score IS NULL THEN storage_health_score * 2  -- Scale to 0-50
+              WHEN storage_health_score IS NULL THEN cpu_health_score * 2  -- Scale to 0-50
+              ELSE cpu_health_score + storage_health_score  -- Both available
+          END AS composite_resource_score,
+
+          -- Business Action Recommendations
+          CASE
+              WHEN avg_cpu_utilization >= 85 OR avg_storage_utilization >= 85
+                  THEN 'Capacity Expansion Required'
+              WHEN avg_io_wait > 15 AND avg_daily_io_mb > 10000
+                  THEN 'Storage Optimization Opportunity'
+              WHEN avg_cpu_utilization < 20 AND avg_storage_utilization < 25
+                  THEN 'Right-Sizing Candidate'
+              WHEN avg_storage_utilization >= 75
+                  THEN 'Monitor Capacity Growth'
+              WHEN avg_cpu_utilization >= 70
+                  THEN 'Monitor Performance'
+              ELSE 'Healthy - Standard Monitoring'
+          END AS recommended_action,
+
+          -- Priority Classification
+          CASE
+              WHEN avg_cpu_utilization >= 90 OR avg_storage_utilization >= 95 THEN 'P1 - Critical'
+              WHEN avg_cpu_utilization >= 85 OR avg_storage_utilization >= 85 THEN 'P2 - High'
+              WHEN avg_cpu_utilization >= 70 OR avg_storage_utilization >= 75 THEN 'P3 - Medium'
+              ELSE 'P4 - Low'
+          END AS priority,
+
+          -- Data Quality Context
+          cpu_days_measured,
+          storage_days_measured,
+          last_measured_date,
+          CURRENT_TIMESTAMP AS analysis_timestamp
+
+      FROM utilization_assessment
+      WHERE cpu_days_measured > 0 OR storage_days_measured > 0  -- At least some data available
+      ORDER BY
+          CASE
+              WHEN avg_cpu_utilization >= 90 OR avg_storage_utilization >= 95 THEN 1
+              WHEN avg_cpu_utilization >= 85 OR avg_storage_utilization >= 85 THEN 2
+              WHEN avg_cpu_utilization >= 70 OR avg_storage_utilization >= 75 THEN 3
+              ELSE 4
+          END,
+          COALESCE(avg_cpu_utilization, 0) + COALESCE(avg_storage_utilization, 0) DESC;
+
+    required_parameters:
+      - database
+      - customer_table
+
+  # === CPU_ONLY TEMPLATE ===
+  # LLM-HINT: CPU-focused analysis; use when performance bottlenecks need investigation
+  cpu_only:
+    description: "CPU-focused utilization analysis for performance bottleneck identification"
+    sql: |
+      -- =============================================================================
+      -- CPU Utilization Analysis Only
+      -- =============================================================================
+      SELECT
+          cs.site_id,
+          cs.customer_id,
+          cs.account_name,
+          {{if .scale_tier}}cs.scale_tier,{{end}}
+          {{if .is_vcl}}cs.is_vcl,{{end}}
+
+          -- CPU Metrics
+          ROUND(AVG(cpu.avg_cpu_busy_pct), 2) AS avg_cpu_utilization,
+          ROUND(MAX(cpu.peak_cpu_busy_pct), 2) AS peak_cpu_utilization,
+          ROUND(AVG(cpu.avg_io_wait_pct), 2) AS avg_io_wait,
+          ROUND(MAX(cpu.peak_io_wait_pct), 2) AS peak_io_wait,
+          ROUND(AVG(cpu.total_io_mb), 2) AS avg_daily_io_mb,
+          ROUND(AVG(cpu.total_read_mb), 2) AS avg_daily_read_mb,
+          ROUND(AVG(cpu.total_write_mb), 2) AS avg_daily_write_mb,
+
+          -- CPU Health Assessment
+          CASE
+              WHEN AVG(cpu.avg_cpu_busy_pct) < 50 AND AVG(cpu.avg_io_wait_pct) < 10 THEN 'Excellent'
+              WHEN AVG(cpu.avg_cpu_busy_pct) < 70 AND AVG(cpu.avg_io_wait_pct) < 20 THEN 'Good'
+              WHEN AVG(cpu.avg_cpu_busy_pct) < 85 AND AVG(cpu.avg_io_wait_pct) < 30 THEN 'Acceptable'
+              WHEN AVG(cpu.avg_cpu_busy_pct) < 95 THEN 'Poor'
+              ELSE 'Critical'
+          END AS cpu_health_tier,
+
+          -- Capacity Assessment
+          CASE
+              WHEN AVG(cpu.avg_cpu_busy_pct) >= 90 THEN 'Critical - Immediate Action'
+              WHEN AVG(cpu.avg_cpu_busy_pct) >= 85 THEN 'High - Plan Capacity Expansion'
+              WHEN AVG(cpu.avg_cpu_busy_pct) >= 70 THEN 'Elevated - Monitor Closely'
+              WHEN AVG(cpu.avg_cpu_busy_pct) < 20 THEN 'Under-Utilized - Consider Right-Sizing'
+              ELSE 'Normal'
+          END AS capacity_status,
+
+          -- I/O Assessment
+          CASE
+              WHEN AVG(cpu.avg_io_wait_pct) > 20 THEN 'Storage Performance Issue'
+              WHEN AVG(cpu.avg_io_wait_pct) > 10 THEN 'Monitor Storage'
+              ELSE 'Normal'
+          END AS io_status,
+
+          -- Days with high utilization
+          COUNT(CASE WHEN cpu.avg_cpu_busy_pct > 85 THEN 1 END) AS days_high_cpu,
+          COUNT(DISTINCT cpu.log_dt) AS days_measured,
+          MAX(cpu.log_dt) AS last_measured_date,
+          CURRENT_TIMESTAMP AS analysis_timestamp
+
+      FROM {{.database}}.{{.customer_table}} cs
+      INNER JOIN {{.database}}.{{.cpu_table}} cpu
+          ON cs.site_id = cpu.site_id
+          AND cpu.log_dt >= CURRENT_DATE - {{.lookback_days}}
+      WHERE cs.effective_end_date IS NULL  -- Active customers only
+      GROUP BY
+          cs.site_id,
+          cs.customer_id,
+          cs.account_name
+          {{if .scale_tier}}, cs.scale_tier{{end}}
+          {{if .is_vcl}}, cs.is_vcl{{end}}
+      HAVING COUNT(cpu.log_dt) >= {{.lookback_days}} * 0.5  -- At least 50% data coverage
+      ORDER BY avg_cpu_utilization DESC;
+
+    required_parameters:
+      - database
+      - customer_table
+      - cpu_table
+
+  # === STORAGE_ONLY TEMPLATE ===
+  # LLM-HINT: Storage-focused analysis; includes growth trending and runway calculations
+  storage_only:
+    description: "Storage-focused utilization with growth trending and runway analysis"
+    sql: |
+      -- =============================================================================
+      -- Storage Utilization Analysis Only
+      -- =============================================================================
+      WITH storage_metrics AS (
+          SELECT
+              cs.site_id,
+              cs.customer_id,
+              cs.account_name,
+              {{if .scale_tier}}cs.scale_tier,{{end}}
+              {{if .is_vcl}}cs.is_vcl,{{end}}
+
+              -- Current storage metrics
+              ROUND(AVG(stor.perm_storage_used_gb), 2) AS avg_storage_used_gb,
+              ROUND(AVG(stor.perm_storage_capacity_gb), 2) AS avg_storage_capacity_gb,
+              ROUND(AVG(stor.perm_utilization_pct), 2) AS avg_storage_utilization,
+              ROUND(MAX(stor.perm_utilization_pct), 2) AS peak_storage_utilization,
+
+              -- Growth trending (30-day comparison)
+              ROUND(
+                  AVG(stor.perm_storage_used_gb) -
+                  AVG(LAG(stor.perm_storage_used_gb, 30) OVER (PARTITION BY cs.site_id ORDER BY stor.log_dt)),
+                  2
+              ) AS storage_growth_30d_gb,
+
+              COUNT(DISTINCT stor.log_dt) AS days_measured,
+              MAX(stor.log_dt) AS last_measured_date
+
+          FROM {{.database}}.{{.customer_table}} cs
+          INNER JOIN {{.database}}.{{.storage_table}} stor
+              ON cs.site_id = stor.site_id
+              AND stor.log_dt >= CURRENT_DATE - {{.lookback_days}}
+          WHERE cs.effective_end_date IS NULL  -- Active customers only
+          GROUP BY
+              cs.site_id,
+              cs.customer_id,
+              cs.account_name
+              {{if .scale_tier}}, cs.scale_tier{{end}}
+              {{if .is_vcl}}, cs.is_vcl{{end}}
+      )
+
+      SELECT
+          site_id,
+          customer_id,
+          account_name,
+          {{if .scale_tier}}scale_tier,{{end}}
+          {{if .is_vcl}}is_vcl,{{end}}
+
+          -- Storage Metrics
+          avg_storage_used_gb,
+          avg_storage_capacity_gb,
+          avg_storage_capacity_gb - avg_storage_used_gb AS available_storage_gb,
+          avg_storage_utilization,
+          peak_storage_utilization,
+          storage_growth_30d_gb,
+
+          -- Capacity Status
+          CASE
+              WHEN avg_storage_utilization >= 95 THEN 'CRITICAL - Immediate Action Required'
+              WHEN avg_storage_utilization >= 90 THEN 'URGENT - Plan Expansion Within Days'
+              WHEN avg_storage_utilization >= 85 THEN 'WARNING - Plan Expansion Within Week'
+              WHEN avg_storage_utilization >= 75 THEN 'ALERT - Plan Expansion Within Month'
+              WHEN avg_storage_utilization < 25 THEN 'Under-Utilized - Consider Right-Sizing'
+              ELSE 'Normal'
+          END AS capacity_status,
+
+          -- Growth Trend Assessment
+          CASE
+              WHEN storage_growth_30d_gb > avg_storage_capacity_gb * 0.5 THEN 'Rapid Growth - High Priority'
+              WHEN storage_growth_30d_gb > avg_storage_capacity_gb * 0.2 THEN 'Fast Growth - Monitor'
+              WHEN storage_growth_30d_gb > 0 THEN 'Growing'
+              WHEN storage_growth_30d_gb < 0 THEN 'Declining'
+              ELSE 'Stable'
+          END AS growth_trend,
+
+          -- Runway Calculation (days until capacity)
+          CASE
+              WHEN storage_growth_30d_gb > 0 THEN
+                  ROUND(
+                      (avg_storage_capacity_gb - avg_storage_used_gb) * 30.0 /
+                      NULLIFZERO(storage_growth_30d_gb),
+                      0
+                  )
+              ELSE NULL
+          END AS runway_days,
+
+          -- Priority Classification
+          CASE
+              WHEN avg_storage_utilization >= 95 THEN 'P1 - Critical'
+              WHEN avg_storage_utilization >= 85 THEN 'P2 - High'
+              WHEN avg_storage_utilization >= 75 THEN 'P3 - Medium'
+              ELSE 'P4 - Low'
+          END AS priority,
+
+          days_measured,
+          last_measured_date,
+          CURRENT_TIMESTAMP AS analysis_timestamp
+
+      FROM storage_metrics
+      WHERE days_measured >= {{.lookback_days}} * 0.5  -- At least 50% data coverage
+      ORDER BY
+          CASE
+              WHEN avg_storage_utilization >= 95 THEN 1
+              WHEN avg_storage_utilization >= 85 THEN 2
+              WHEN avg_storage_utilization >= 75 THEN 3
+              ELSE 4
+          END,
+          avg_storage_utilization DESC;
+
+    required_parameters:
+      - database
+      - customer_table
+      - storage_table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Capacity Expansion ---
+  - description: "Identify sites requiring immediate capacity expansion (CPU or storage)"
+    parameters:
+      database: "DataMart_CTO"
+      customer_table: "customer_sites"
+      cpu_table: "sites_daily_cpu_utilization"
+      storage_table: "sites_daily_storage_utilization"
+      lookback_days: "30"
+    expected_result: |
+      Sites with avg_cpu_utilization >= 85 OR avg_storage_utilization >= 85
+      sorted by priority (P1 Critical first)
+    note: "Wrap with WHERE clause to filter: WHERE priority IN ('P1 - Critical', 'P2 - High')"
+
+  # --- Example 2: CPU Bottleneck Analysis ---
+  - description: "CPU-only analysis for performance bottleneck identification"
+    parameters:
+      database: "DataMart_CTO"
+      customer_table: "customer_sites"
+      cpu_table: "sites_daily_cpu_utilization"
+      lookback_days: "30"
+    template: "cpu_only"
+    expected_result: |
+      Sites ordered by avg_cpu_utilization descending with health tier classification
+    note: "Use for sites with known CPU constraints, excludes storage metrics"
+
+  # --- Example 3: Storage Runway Analysis ---
+  - description: "Storage capacity runway analysis for executive reporting"
+    parameters:
+      database: "DataMart_CTO"
+      customer_table: "customer_sites"
+      storage_table: "sites_daily_storage_utilization"
+      lookback_days: "60"
+    template: "storage_only"
+    expected_result: |
+      Sites with growth trends and runway_days calculation
+      sorted by priority and runway days ascending
+    note: "Use 60-day lookback for more accurate growth trending"
+
+  # --- Example 4: Right-Sizing Candidates ---
+  - description: "Under-utilized resources for right-sizing recommendations"
+    parameters:
+      database: "DataMart_CTO"
+      customer_table: "customer_sites"
+      cpu_table: "sites_daily_cpu_utilization"
+      storage_table: "sites_daily_storage_utilization"
+      lookback_days: "30"
+    expected_result: |
+      Sites with avg_cpu_utilization < 20 OR avg_storage_utilization < 25
+      recommended_action = 'Right-Sizing Candidate'
+    note: "Wrap with WHERE clause: WHERE recommended_action = 'Right-Sizing Candidate'"
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: CPU Column Not Found ---
+  - error: "Column 'avg_cpu_busy_pct' not found"
+    cause: "CPU table column name may vary across environments"
+    fix: "Call get_table_schema() first to verify exact column names in cpu_table"
+
+  # --- Error 2: Storage Column Not Found ---
+  - error: "Column 'perm_storage_used_gb' not found"
+    cause: "Storage table may use different naming convention"
+    fix: "Call get_table_schema() on storage_table to confirm column names"
+
+  # --- Error 3: Division By Zero ---
+  - error: "Division by zero in utilization calculation"
+    cause: "Storage capacity is zero or NULL"
+    fix: "Pattern already handles with NULLIFZERO in utilization formulas. Verify data quality in source tables."
+
+  # --- Error 4: No Rows Returned ---
+  - error: "No rows returned despite data existing"
+    cause: "Data coverage filter (50% threshold) excluding valid sites"
+    fix: "Remove or adjust HAVING clause: HAVING COUNT(...) >= {{.lookback_days}} * 0.5"
+
+  # --- Error 5: LAG Function Error ---
+  - error: "LAG function not supported in this context"
+    cause: "Growth trending query used outside of supported Teradata window function context"
+    fix: "Use separate CTE for window functions, then join results. See storage_only template for proper pattern."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Best Practices for Resource Utilization Analysis
+
+  **Data Quality**:
+  - Always use LEFT JOINs when one metric (CPU or storage) may be missing to preserve all customers
+  - Use NULLIFZERO for all division operations (utilization percentages, growth rates)
+  - Filter for active customers only (effective_end_date IS NULL) to exclude churned accounts
+  - Aggregate over 30+ days for stable utilization metrics, not single-day snapshots
+  - Include data quality metrics (days_measured) to assess analysis confidence
+
+  **Query Performance**:
+  - Create composite primary index on (site_id, log_dt) for optimal join performance
+  - Use COLLECT STATISTICS on site_id, log_dt, avg_cpu_busy_pct, perm_utilization_pct
+  - Materialize results into table for dashboard consumption (daily refresh pattern)
+  - LEFT JOINs allow flexibility when one metric unavailable, but INNER JOIN if both required
+
+  **Business Usage**:
+  - Sort by priority first, then utilization descending for actionable executive views
+  - Use CURRENT_DATE - N instead of specific dates for reusable queries
+  - Always include analysis_timestamp for audit trails and refresh tracking
+
+  **Capacity Thresholds**:
+  - CPU: Critical ≥90%, High ≥85%, Medium ≥70%, Optimal 50-85%
+  - Storage: Critical ≥95%, High ≥85%, Alert ≥75%, Optimal 60-85%
+  - I/O Wait: Issue >20%, Monitor >10%, Normal <10%
+
+  **Action Priorities**:
+  - **P1 Critical**: Immediate capacity expansion within 24-48 hours
+  - **P2 High**: Plan expansion within 1-2 weeks
+  - **P3 Medium**: Monitor closely for next 30 days
+  - **P4 Low**: Standard monitoring or right-sizing evaluation
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Customer Health Scoring ---
+  - customer_health_scoring
+
+  # --- Pattern 2: Aggregation ---
+  - aggregation
+
+  # --- Pattern 3: Timeseries ---
+  - timeseries
+# === RELATED_PATTERNS END ===

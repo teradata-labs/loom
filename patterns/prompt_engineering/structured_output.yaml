@@ -1,0 +1,659 @@
+# === METADATA START ===
+name: structured_output
+title: "Structured Output (JSON/XML)"
+description: |
+  Force Claude to return responses in strict JSON or XML format for programmatic parsing.
+  This pattern is essential for workflow automation, API integration, and multi-agent
+  coordination where you need predictable, machine-readable responses.
+
+  Structured output enables:
+  - Reliable parsing without regex hacks
+  - Type-safe data extraction
+  - Workflow coordination between agents
+  - API response formatting
+  - Database storage of results
+  - Dashboard and visualization integration
+
+  **UNIVERSAL COMPATIBILITY:**
+  Works across all backend types. Any agent response can be structured - SQL results,
+  API responses, analysis reports, recommendations, etc.
+
+  **KEY BENEFIT**: No more "extract JSON from markdown code blocks" brittleness.
+  Get clean, valid, parseable output every time.
+
+category: formatting
+difficulty: beginner
+backend_type: prompt_engineering
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Workflow Coordination ---
+  - Multi-agent workflow data passing
+
+  # --- Use Case 2: API Integration ---
+  - Format responses for REST API endpoints
+
+  # --- Use Case 3: Database Storage ---
+  - Store agent decisions in structured tables
+
+  # --- Use Case 4: Dashboard Display ---
+  - Feed data to dashboards and visualizations
+
+  # --- Use Case 5: Validation ---
+  - Validate agent outputs against schemas
+
+  # --- Use Case 6: ETL Pipelines ---
+  - Extract structured data for data pipelines
+
+  # --- Use Case 7: Testing ---
+  - Assert on specific fields in tests
+
+  # --- Use Case 8: Logging ---
+  - Structured logging for observability
+
+  # --- Use Case 9: Configuration ---
+  - Generate configuration files
+
+  # --- Use Case 10: Reports ---
+  - Generate machine-readable reports
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Task Description ---
+  - name: task_description
+    type: string
+    required: true
+    description: "What you want the agent to do"
+    example: "Analyze this SQL query for performance issues"
+
+  # --- Parameter 2: Schema ---
+  - name: schema
+    type: object
+    required: true
+    description: "JSON schema defining the expected output structure"
+    example: |
+      {
+        "type": "object",
+        "properties": {
+          "issues": {"type": "array"},
+          "severity": {"type": "string"},
+          "recommendations": {"type": "array"}
+        },
+        "required": ["issues", "severity", "recommendations"]
+      }
+
+  # --- Parameter 3: Format ---
+  - name: format
+    type: enum[json, xml]
+    required: false
+    default: "json"
+    description: "Output format (JSON or XML)"
+    example: "json"
+
+  # --- Parameter 4: Example ---
+  - name: example_output
+    type: string
+    required: false
+    description: "Optional example showing the desired output format"
+    example: |
+      {
+        "issues": ["Missing index on user_id", "SELECT * fetches all columns"],
+        "severity": "high",
+        "recommendations": ["Add index", "Specify columns"]
+      }
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === JSON_STRICT TEMPLATE ===
+  json_strict:
+    description: "Force strict JSON output with schema"
+    content: |
+      {{task_description}}
+
+      Return ONLY valid JSON. No markdown, no code blocks, no explanations.
+      Just the raw JSON object.
+
+      Required schema:
+      {{schema}}
+
+      JSON response:
+    required_parameters:
+      - task_description
+      - schema
+
+  # === JSON_WITH_EXAMPLE TEMPLATE ===
+  json_with_example:
+    description: "Show example output format"
+    content: |
+      {{task_description}}
+
+      Return your response in this EXACT JSON format:
+      {{example_output}}
+
+      Rules:
+      - Return ONLY valid JSON (no markdown, no code blocks)
+      - Match the structure exactly
+      - All fields are required
+
+      JSON response:
+    required_parameters:
+      - task_description
+      - example_output
+
+  # === JSON_TYPED TEMPLATE ===
+  json_typed:
+    description: "Specify types for each field"
+    content: |
+      {{task_description}}
+
+      Return JSON with these exact fields:
+
+      {
+        {{#each fields}}
+        "{{this.name}}": {{this.type}}{{#if this.description}} // {{this.description}}{{/if}}{{#unless @last}},{{/unless}}
+        {{/each}}
+      }
+
+      Return ONLY the JSON object, no other text.
+    required_parameters:
+      - task_description
+      - fields
+
+  # === XML_STRUCTURED TEMPLATE ===
+  xml_structured:
+    description: "Force XML output with schema"
+    content: |
+      {{task_description}}
+
+      Return ONLY valid XML. No markdown, no code blocks, no explanations.
+
+      Required structure:
+      <root>
+        {{#each elements}}
+        <{{this.name}}>{{this.type}}</{{this.name}}>
+        {{/each}}
+      </root>
+
+      XML response:
+    required_parameters:
+      - task_description
+      - elements
+
+  # === JSON_LIST TEMPLATE ===
+  json_list:
+    description: "Force JSON array output"
+    content: |
+      {{task_description}}
+
+      Return a JSON array where each element has this structure:
+      {{item_schema}}
+
+      Rules:
+      - Return ONLY a JSON array []
+      - No markdown or code blocks
+      - Each item must match the schema
+
+      JSON array:
+    required_parameters:
+      - task_description
+      - item_schema
+
+  # === JSON_WITH_METADATA TEMPLATE ===
+  json_with_metadata:
+    description: "Include reasoning/confidence with structured output"
+    content: |
+      {{task_description}}
+
+      Return JSON with:
+      1. Your analysis result
+      2. Confidence score (0.0-1.0)
+      3. Brief reasoning
+
+      Format:
+      {
+        "result": {<your structured result>},
+        "confidence": <float>,
+        "reasoning": "<1-2 sentences>"
+      }
+
+      JSON response:
+    required_parameters:
+      - task_description
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Query Analysis ---
+  - name: "SQL Query Analysis"
+    description: "Analyze query and return structured findings"
+    parameters:
+      task_description: |
+        Analyze this query:
+        SELECT * FROM users WHERE status = 'active' ORDER BY created_at DESC
+
+      schema: |
+        {
+          "issues": ["string"],
+          "severity": "low | medium | high",
+          "recommendations": ["string"],
+          "estimated_impact": "string"
+        }
+    expected_result: |
+      {
+        "issues": [
+          "SELECT * fetches all columns unnecessarily",
+          "No LIMIT clause on potentially large result set",
+          "ORDER BY without index may be slow"
+        ],
+        "severity": "medium",
+        "recommendations": [
+          "Specify only needed columns: SELECT id, name, email",
+          "Add LIMIT clause: LIMIT 100",
+          "Consider index on (status, created_at)"
+        ],
+        "estimated_impact": "Query time could improve from 2s to 200ms"
+      }
+
+  # --- Example 2: Classification ---
+  - name: "Support Ticket Classification"
+    description: "Classify support tickets into structured categories"
+    parameters:
+      task_description: |
+        Classify this support ticket:
+        "My login isn't working after the latest update. I keep getting error 500."
+
+      example_output: |
+        {
+          "category": "technical_issue",
+          "subcategory": "authentication",
+          "priority": "high",
+          "tags": ["login", "error_500", "post_update"],
+          "suggested_team": "engineering",
+          "estimated_resolution_time": "2_hours"
+        }
+    expected_result: |
+      {
+        "category": "technical_issue",
+        "subcategory": "authentication",
+        "priority": "high",
+        "tags": ["login", "error_500", "post_update"],
+        "suggested_team": "engineering",
+        "estimated_resolution_time": "2_hours"
+      }
+
+  # --- Example 3: Multi-Agent Workflow ---
+  - name: "Agent Handoff"
+    description: "Structure data for next agent in workflow"
+    parameters:
+      task_description: "Extract user intent and prepare for execution agent"
+      schema: |
+        {
+          "intent": "string",
+          "confidence": "float",
+          "entities": {
+            "table": "string",
+            "filters": ["object"],
+            "aggregations": ["string"]
+          },
+          "next_agent": "string",
+          "context": "object"
+        }
+    expected_result: |
+      {
+        "intent": "aggregate_query",
+        "confidence": 0.95,
+        "entities": {
+          "table": "sales",
+          "filters": [
+            {"field": "region", "operator": "=", "value": "west"},
+            {"field": "date", "operator": ">", "value": "2024-01-01"}
+          ],
+          "aggregations": ["SUM(revenue)", "COUNT(*)"]
+        },
+        "next_agent": "query_executor",
+        "context": {
+          "user_id": "user_123",
+          "session_id": "sess_456"
+        }
+      }
+
+  # --- Example 4: JSON Array ---
+  - name: "Generate Test Cases"
+    description: "Return array of test cases"
+    parameters:
+      task_description: "Generate test cases for this function: calculateDiscount(price, tier)"
+      item_schema: |
+        {
+          "input": {"price": "float", "tier": "string"},
+          "expected_output": "float",
+          "description": "string"
+        }
+    expected_result: |
+      [
+        {
+          "input": {"price": 100.0, "tier": "gold"},
+          "expected_output": 80.0,
+          "description": "Gold tier gets 20% discount"
+        },
+        {
+          "input": {"price": 100.0, "tier": "silver"},
+          "expected_output": 90.0,
+          "description": "Silver tier gets 10% discount"
+        },
+        {
+          "input": {"price": 100.0, "tier": "bronze"},
+          "expected_output": 95.0,
+          "description": "Bronze tier gets 5% discount"
+        },
+        {
+          "input": {"price": 0.0, "tier": "gold"},
+          "expected_output": 0.0,
+          "description": "Zero price edge case"
+        },
+        {
+          "input": {"price": -50.0, "tier": "gold"},
+          "expected_output": null,
+          "description": "Negative price should return error"
+        }
+      ]
+
+  # --- Example 5: XML Output ---
+  - name: "Configuration File Generation"
+    description: "Generate XML configuration"
+    parameters:
+      task_description: "Generate database configuration for production environment"
+      elements:
+        - name: "host"
+          type: "string"
+        - name: "port"
+          type: "integer"
+        - name: "database"
+          type: "string"
+        - name: "max_connections"
+          type: "integer"
+        - name: "timeout_seconds"
+          type: "integer"
+    expected_result: |
+      <database_config>
+        <host>prod-db.example.com</host>
+        <port>5432</port>
+        <database>analytics</database>
+        <max_connections>100</max_connections>
+        <timeout_seconds>30</timeout_seconds>
+      </database_config>
+
+  # --- Example 6: Structured Report ---
+  - name: "Data Quality Report"
+    description: "Generate structured data quality report"
+    parameters:
+      task_description: "Analyze data quality for users table"
+      schema: |
+        {
+          "table": "string",
+          "row_count": "integer",
+          "issues": [
+            {
+              "column": "string",
+              "issue_type": "string",
+              "severity": "string",
+              "affected_rows": "integer",
+              "percentage": "float"
+            }
+          ],
+          "overall_score": "float",
+          "recommendations": ["string"]
+        }
+    expected_result: |
+      {
+        "table": "users",
+        "row_count": 1000000,
+        "issues": [
+          {
+            "column": "email",
+            "issue_type": "null_values",
+            "severity": "high",
+            "affected_rows": 15000,
+            "percentage": 1.5
+          },
+          {
+            "column": "phone",
+            "issue_type": "invalid_format",
+            "severity": "medium",
+            "affected_rows": 8000,
+            "percentage": 0.8
+          }
+        ],
+        "overall_score": 0.92,
+        "recommendations": [
+          "Add NOT NULL constraint on email column",
+          "Validate phone format before insertion",
+          "Backfill missing emails from user profiles"
+        ]
+      }
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Returns Markdown ---
+  - error: "Output wrapped in markdown code blocks"
+    cause: "Didn't emphasize 'ONLY JSON, no markdown'"
+    solution: "Use json_strict template with explicit 'No markdown, no code blocks' instruction"
+
+  # --- Error 2: Invalid JSON ---
+  - error: "JSON syntax errors (trailing commas, unquoted keys)"
+    cause: "Schema not clear or example not provided"
+    solution: "Provide example_output showing exact format. Claude is very good at matching examples."
+
+  # --- Error 3: Extra Text ---
+  - error: "JSON surrounded by explanatory text"
+    cause: "Agent wants to be helpful and explain"
+    solution: "Add 'Return ONLY the JSON, no other text' and put it at the end of prompt (recency bias)"
+
+  # --- Error 4: Wrong Structure ---
+  - error: "JSON structure doesn't match schema"
+    cause: "Schema too complex or ambiguous"
+    solution: "Simplify schema or use json_with_example template showing exact format"
+
+  # --- Error 5: Missing Fields ---
+  - error: "Required fields are missing"
+    cause: "Schema didn't mark fields as required"
+    solution: "Explicitly list 'All fields are required' or mark in schema: '\"required\": [\"field1\", \"field2\"]'"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Structured Output Best Practices
+
+  ### 1. Be Extremely Explicit
+
+  **Don't assume** Claude knows you want pure JSON:
+  ```
+  ❌ "Return JSON with these fields..."
+  ✅ "Return ONLY valid JSON. No markdown. No code blocks. No explanations. Just the raw JSON."
+  ```
+
+  **Why**: Claude's default behavior is to be helpful and explain. You must override this.
+
+  ### 2. Show, Don't Tell
+
+  **Example beats schema**:
+  ```
+  ❌ Schema only: {"type": "object", "properties": {...}}
+  ✅ Example: {"issues": ["..."], "severity": "high"}
+  ```
+
+  **Why**: Claude learns better from concrete examples than abstract schemas.
+
+  ### 3. Template Recommendations by Use Case
+
+  **API Responses** → `json_strict`
+  - No room for errors in production APIs
+  - Schema validation required
+
+  **Workflow Handoffs** → `json_with_metadata`
+  - Next agent needs context and confidence
+  - Reasoning helps debugging
+
+  **Lists/Arrays** → `json_list`
+  - Explicit array format prevents wrapping in object
+  - Clearer for iteration
+
+  **Configuration** → `xml_structured`
+  - Some systems require XML
+  - Shows hierarchical structure well
+
+  ### 4. Validate Output in Code
+
+  Always validate structured output:
+
+  ```go
+  type QueryAnalysis struct {
+      Issues          []string `json:"issues"`
+      Severity        string   `json:"severity"`
+      Recommendations []string `json:"recommendations"`
+  }
+
+  var analysis QueryAnalysis
+  if err := json.Unmarshal([]byte(response), &analysis); err != nil {
+      // Handle invalid JSON
+      return fmt.Errorf("agent returned invalid JSON: %w", err)
+  }
+
+  // Validate fields
+  if analysis.Severity != "low" && analysis.Severity != "medium" && analysis.Severity != "high" {
+      return fmt.Errorf("invalid severity: %s", analysis.Severity)
+  }
+  ```
+
+  ### 5. Handle Failures Gracefully
+
+  Structured output can still fail:
+  - Markdown code blocks
+  - Trailing commas
+  - Extra explanatory text
+  - Wrong structure
+
+  **Recovery strategies**:
+  1. **Strip markdown**: Regex to extract JSON from code blocks
+  2. **Retry with correction**: "You returned invalid JSON. Try again with ONLY JSON."
+  3. **Parse loosely**: Try to extract structure even if malformed
+  4. **Fallback**: Have a lenient parser as backup
+
+  ### 6. Token Cost Considerations
+
+  Structured output overhead:
+  - **Schema description**: +50-200 tokens
+  - **Example output**: +100-500 tokens
+  - **Instructions**: +50-100 tokens
+
+  Total overhead: ~200-800 tokens per request
+
+  **Optimization**:
+  - Cache schema in agent ROM (not evicted)
+  - Reuse schemas across similar requests
+  - Use minimal examples (only what's needed)
+
+  ### 7. Testing Structured Outputs
+
+  **Test matrix**:
+  ```
+  Valid input → Valid JSON ✓
+  Edge case → Valid JSON ✓
+  Invalid input → Valid JSON with error field ✓
+  Complex input → Complete JSON (all fields) ✓
+  ```
+
+  **Validation tests**:
+  - JSON.parse() succeeds
+  - Schema validation passes
+  - All required fields present
+  - Field types correct
+  - No extra text surrounding JSON
+
+  ### 8. Common Patterns
+
+  **Error Handling**:
+  ```json
+  {
+    "success": true/false,
+    "result": {...} or null,
+    "error": null or {"code": "...", "message": "..."}
+  }
+  ```
+
+  **Pagination**:
+  ```json
+  {
+    "data": [...],
+    "pagination": {
+      "page": 1,
+      "per_page": 100,
+      "total": 1500
+    }
+  }
+  ```
+
+  **Confidence Scoring**:
+  ```json
+  {
+    "result": {...},
+    "confidence": 0.95,
+    "reasoning": "..."
+  }
+  ```
+
+  ### 9. Debugging Tips
+
+  **Problem**: Markdown code blocks
+  **Solution**: Add "No markdown" multiple times, put at end of prompt
+
+  **Problem**: Extra explanatory text
+  **Solution**: "Return ONLY the JSON, nothing else. Start your response with {"
+
+  **Problem**: Invalid JSON syntax
+  **Solution**: Provide exact example with json_with_example template
+
+  **Problem**: Missing fields
+  **Solution**: List all required fields explicitly
+
+  ### 10. Advanced Techniques
+
+  **Typed Schemas** (with Zod, JSON Schema, etc.):
+  ```typescript
+  const schema = z.object({
+    issues: z.array(z.string()),
+    severity: z.enum(["low", "medium", "high"]),
+    recommendations: z.array(z.string())
+  })
+  ```
+
+  **Streaming Structured Output**:
+  - Some models support streaming JSON
+  - Parse incrementally as tokens arrive
+  - Validate on completion
+
+  **Multi-Format Support**:
+  - Accept both JSON and XML
+  - Detect format from first character
+  - Parse accordingly
+
+  **Self-Repairing**:
+  - If JSON invalid, ask agent to fix it
+  - Show error message
+  - Request corrected version
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Few-shot Learning ---
+  - few_shot_learning
+
+  # --- Pattern 2: Chain of Thought ---
+  - chain_of_thought
+
+  # --- Pattern 3: Hallucination Prevention ---
+  - hallucination_prevention
+# === RELATED_PATTERNS END ===

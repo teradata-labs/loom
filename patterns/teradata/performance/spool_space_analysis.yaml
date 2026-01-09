@@ -1,0 +1,303 @@
+# === METADATA START ===
+name: spool_space_analysis
+title: "Spool Space Analysis"
+description: |
+  Monitor and analyze spool space usage in Teradata to identify queries consuming excessive spool.
+  Spool space is temporary workspace on AMPs used for:
+  - Intermediate query results
+  - Sorting operations
+  - Joining large tables
+  - Aggregation processing
+  - Redistribution of rows
+
+  **CRITICAL: Spool space exhaustion causes query failures.**
+  Symptoms of spool problems:
+  - "No more spool space" errors (2646)
+  - Queries that worked before now fail with larger datasets
+  - Session-level or system-level spool limits exceeded
+  - Queries stuck in "blocked" state waiting for spool
+
+  **REQUIREMENTS:**
+  Spool analysis requires DBQL (Database Query Log) enabled and SELECT on DBC tables.
+  Call get_tables() to verify access to DBC.QryLogV, DBC.ResUsageSpoolV before analysis.
+
+category: performance
+difficulty: intermediate
+teradata_function: DBQL
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Identify queries consuming excessive spool space
+  - Diagnose "No more spool space" errors (2646)
+  - Monitor spool usage trends over time
+  - Find sessions approaching spool limits
+  - Analyze spool usage by user/application
+  - Detect spool-intensive operations (sorts, joins)
+  - Optimize queries to reduce spool consumption
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: timeframe_hours
+    type: number
+    required: false
+    default: 24
+    description: "Hours of DBQL history to analyze"
+    example: "24"
+
+  - name: spool_threshold_gb
+    type: number
+    required: false
+    default: 100
+    description: "Spool usage threshold in GB for alerting"
+    example: "100"
+
+  - name: username
+    type: string
+    required: false
+    description: "Filter by specific user (optional)"
+    example: "analytics_user"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  top_spool_queries:
+    description: "Identify queries using most spool space"
+    sql: |
+      -- Top spool consumers from DBQL
+      SELECT
+        UserName,
+        QueryID,
+        StartTime,
+        CAST(MaxAmpCPUTime AS DECIMAL(18,2)) AS max_amp_cpu_sec,
+        CAST(MaxSpoolUsage / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS max_spool_gb,
+        CAST(TotalIOCount AS DECIMAL(18,0)) AS total_io,
+        StatementType,
+        SUBSTR(QueryText, 1, 200) AS query_preview
+      FROM DBC.QryLogV
+      WHERE LogDate >= CURRENT_DATE - {{timeframe_hours}}/24
+        AND MaxSpoolUsage > {{spool_threshold_gb}} * 1024.0 * 1024.0 * 1024.0
+        {{if .username}}AND UserName = '{{username}}'{{end}}
+      ORDER BY MaxSpoolUsage DESC
+      SAMPLE 100;
+
+  current_spool_usage:
+    description: "Monitor active sessions' spool usage"
+    sql: |
+      -- Real-time spool usage by session
+      SELECT
+        s.SessionNo,
+        s.UserName,
+        s.ClientID,
+        CAST(SUM(r.CurrentSpoolUsage) / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS current_spool_gb,
+        CAST(s.MaxSpool / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS spool_limit_gb,
+        CAST(SUM(r.CurrentSpoolUsage) * 100.0 / NULLIFZERO(s.MaxSpool) AS DECIMAL(5,2)) AS spool_pct_used,
+        s.StatementType,
+        s.QueryText
+      FROM DBC.SessionInfoV s
+      LEFT JOIN DBC.ResUsageSpoolV r ON s.SessionNo = r.SessionNo
+      WHERE s.StatementType IS NOT NULL
+      GROUP BY s.SessionNo, s.UserName, s.ClientID, s.MaxSpool, s.StatementType, s.QueryText
+      HAVING SUM(r.CurrentSpoolUsage) > 0
+      ORDER BY current_spool_gb DESC;
+
+  spool_by_user:
+    description: "Aggregate spool usage by user"
+    sql: |
+      -- Spool consumption by user over timeframe
+      SELECT
+        UserName,
+        COUNT(*) AS query_count,
+        CAST(AVG(MaxSpoolUsage) / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS avg_spool_gb,
+        CAST(MAX(MaxSpoolUsage) / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS max_spool_gb,
+        CAST(SUM(MaxSpoolUsage) / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS total_spool_gb,
+        SUM(CASE WHEN ErrorCode = 2646 THEN 1 ELSE 0 END) AS spool_errors
+      FROM DBC.QryLogV
+      WHERE LogDate >= CURRENT_DATE - {{timeframe_hours}}/24
+      GROUP BY UserName
+      ORDER BY total_spool_gb DESC;
+
+  spool_trends:
+    description: "Analyze spool usage trends over time"
+    sql: |
+      -- Daily spool usage trend
+      SELECT
+        CAST(StartTime AS DATE) AS query_date,
+        COUNT(*) AS query_count,
+        CAST(AVG(MaxSpoolUsage) / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS avg_spool_gb,
+        CAST(MAX(MaxSpoolUsage) / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS max_spool_gb,
+        COUNT(CASE WHEN MaxSpoolUsage > {{spool_threshold_gb}} * 1024.0 * 1024.0 * 1024.0 THEN 1 END) AS high_spool_queries,
+        SUM(CASE WHEN ErrorCode = 2646 THEN 1 ELSE 0 END) AS spool_errors
+      FROM DBC.QryLogV
+      WHERE LogDate >= CURRENT_DATE - {{timeframe_hours}}/24
+      GROUP BY query_date
+      ORDER BY query_date DESC;
+
+  spool_error_diagnosis:
+    description: "Analyze queries that hit spool limits"
+    sql: |
+      -- Queries that failed with spool errors
+      SELECT
+        UserName,
+        QueryID,
+        StartTime,
+        ErrorCode,
+        ErrorText,
+        CAST(MaxSpoolUsage / 1024.0 / 1024.0 / 1024.0 AS DECIMAL(18,2)) AS max_spool_gb,
+        StatementType,
+        SUBSTR(QueryText, 1, 500) AS query_text
+      FROM DBC.QryLogV
+      WHERE LogDate >= CURRENT_DATE - {{timeframe_hours}}/24
+        AND ErrorCode IN (2646, 2647, 2648)  -- Spool space errors
+        {{if .username}}AND UserName = '{{username}}'{{end}}
+      ORDER BY StartTime DESC;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Identify top spool consumers"
+    parameters:
+      timeframe_hours: 24
+      spool_threshold_gb: 50
+    expected_result: |
+      Top Spool Queries (Last 24 Hours):
+      1. UserName: etl_batch, QueryID: 12345, MaxSpool: 250 GB
+         Query: INSERT INTO fact_sales SELECT ... (large join)
+         Recommendation: Add WHERE filter, collect statistics
+
+      2. UserName: analyst_user, QueryID: 12346, MaxSpool: 180 GB
+         Query: SELECT DISTINCT customer_id FROM orders ...
+         Recommendation: Remove DISTINCT, use GROUP BY instead
+
+      3. UserName: report_service, QueryID: 12347, MaxSpool: 120 GB
+         Query: SELECT * FROM fact_table ORDER BY ...
+         Recommendation: Add SAMPLE clause, limit result set
+
+  - name: "Monitor active session spool usage"
+    parameters:
+      timeframe_hours: 1
+    expected_result: |
+      Current Active Sessions:
+      - Session 42: analytics_user, 45 GB / 100 GB limit (45% used)
+        Query: Running large aggregation
+        Status: Normal
+
+      - Session 87: etl_process, 95 GB / 100 GB limit (95% used)
+        Query: Joining 3 large fact tables
+        Status: ⚠️ WARNING - Approaching spool limit
+        Recommendation: Monitor closely, may need to kill session
+
+  - name: "Diagnose spool error"
+    parameters:
+      timeframe_hours: 24
+      username: "report_service"
+    expected_result: |
+      Spool Error Analysis for report_service:
+
+      Error 2646: "No more spool space in user"
+      Query: SELECT * FROM huge_table ORDER BY date DESC
+      Max Spool Used: 500 GB (exceeded 400 GB user limit)
+
+      Root Cause: Sorting entire table without SAMPLE
+
+      Solutions:
+      1. Add SAMPLE 10000 to limit result set
+      2. Add WHERE clause to filter data
+      3. Request spool limit increase from DBA
+      4. Paginate results instead of full sort
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Spool Space Analysis Best Practices
+
+  ### 1. Enable DBQL for Spool Monitoring
+  DBQL must be enabled to track spool usage:
+  ```sql
+  -- Check if DBQL is enabled
+  SELECT * FROM DBC.DBQLRulesV;
+
+  -- Enable DBQL (requires DBA)
+  BEGIN QUERY LOGGING WITH SQL, OBJECTS ON ALL;
+  ```
+
+  ### 2. Set Appropriate Spool Thresholds
+  **Session limits**: Per-user spool caps
+  **Query limits**: Max spool for single query
+  **System limits**: Total system spool available
+
+  Monitor queries approaching 80% of limits.
+
+  ### 3. Common Spool-Intensive Operations
+  Operations that consume excessive spool:
+  - **Cartesian joins** (missing join conditions)
+  - **Large sorts without indexes** (ORDER BY on huge tables)
+  - **DISTINCT on large datasets** (better: GROUP BY or EXISTS)
+  - **Product joins** (optimizer chose wrong join strategy)
+  - **Redistribution** (rows moving between AMPs)
+
+  ### 4. Quick Spool Reduction Techniques
+  ```sql
+  -- Bad: Full table sort
+  SELECT * FROM huge_table ORDER BY date DESC;
+
+  -- Good: Limited result set
+  SELECT * FROM huge_table WHERE date >= CURRENT_DATE - 7 ORDER BY date DESC SAMPLE 10000;
+  ```
+
+  ### 5. Use EXPLAIN to Predict Spool
+  ```sql
+  EXPLAIN SELECT * FROM table1 t1 JOIN table2 t2 ...;
+  -- Look for "Spool" steps in plan
+  -- High confidence estimates indicate heavy spool usage
+  ```
+
+  ### 6. Monitor Spool in Real-Time
+  Create monitoring query to track sessions:
+  ```sql
+  -- Alert if any session > 80% of spool limit
+  SELECT SessionNo, UserName,
+         CAST(SUM(CurrentSpoolUsage) * 100.0 / NULLIFZERO(MaxSpool) AS DECIMAL(5,2)) AS spool_pct
+  FROM DBC.SessionInfoV s
+  JOIN DBC.ResUsageSpoolV r ON s.SessionNo = r.SessionNo
+  GROUP BY SessionNo, UserName, MaxSpool
+  HAVING spool_pct > 80;
+  ```
+
+  ### 7. Killing Runaway Queries
+  If query consuming too much spool:
+  ```sql
+  -- Abort session (requires privilege)
+  ABORT SESSION 12345;
+  ```
+
+  ### 8. Memory Layers for Spool Tracking
+  - **Kernel Layer**: Cache current spool limits (user limits, system limits) from DBC.DBCInfoV
+  - **L1 Cache**: Keep recent high-spool queries (last 5-8 queries) to identify patterns
+  - **L2 Compressed**: Archive daily spool trends showing usage growth over time
+  - **Swap Layer**: Store complete spool history; use recall_conversation to compare current spool patterns against baseline from weeks ago
+  This enables identifying when spool usage degrades and correlating with query changes or data growth.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "No more spool space in user (2646)"
+    cause: "Query exceeded per-user spool limit"
+    solution: "Add filters, use SAMPLE, or request limit increase from DBA"
+
+  - error: "DBQL not enabled"
+    cause: "Query log not configured to track spool usage"
+    solution: "Contact DBA to enable DBQL: BEGIN QUERY LOGGING WITH SQL, OBJECTS ON ALL"
+
+  - error: "No access to DBC.QryLogV"
+    cause: "User lacks SELECT privilege on system tables"
+    solution: "Request SELECT privilege on DBC tables from DBA"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - pi_skew_detection  # Skewed PI causes excessive spool redistribution
+  - statistics_collection  # Missing stats → poor join plans → high spool
+  - query_optimization  # Optimized queries use less spool
+# === RELATED_PATTERNS END ===

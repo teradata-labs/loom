@@ -1,0 +1,202 @@
+# === METADATA START ===
+name: test_generation
+title: "Automated Test Case Generation"
+description: |
+  Generate comprehensive test cases for functions, SQL queries, and APIs. Covers happy path,
+  edge cases, error conditions, and boundary values. Supports table-driven tests, golden
+  files, and property-based testing patterns. Essential for development productivity.
+
+category: testing
+difficulty: intermediate
+backend_type: code
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Unit test creation for Go, Python, JavaScript
+  - SQL query test data generation
+  - API endpoint test cases
+  - Edge case identification
+  - Regression test suites
+  - Property-based test scenarios
+  - Integration test scaffolding
+  - Golden file test generation
+  - Mock data creation
+  - Test coverage improvement
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: code_or_function
+    type: string
+    required: true
+    description: "Function or code to generate tests for"
+    example: "func calculateDiscount(price float64, tier string) float64"
+
+  - name: test_framework
+    type: enum[go_testify, pytest, jest, junit]
+    required: false
+    default: "go_testify"
+    description: "Testing framework to use"
+    example: "go_testify"
+
+  - name: coverage_level
+    type: enum[basic, comprehensive, paranoid]
+    required: false
+    default: "comprehensive"
+    description: "Test coverage depth"
+    example: "comprehensive"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  go_unit_tests:
+    description: "Generate Go unit tests with testify"
+    content: |
+      Generate comprehensive unit tests for:
+
+      {{code_or_function}}
+
+      Requirements:
+      - Use testify/assert and testify/require packages
+      - Cover happy path, edge cases, error cases
+      - Use table-driven tests pattern
+      - Include test names that explain what's being tested
+      - Test nil/empty inputs where applicable
+
+      Example structure:
+      ```go
+      func TestFunctionName(t *testing.T) {
+          tests := []struct {
+              name     string
+              input    Type
+              expected Type
+              wantErr  bool
+          }{
+              // test cases
+          }
+
+          for _, tt := range tests {
+              t.Run(tt.name, func(t *testing.T) {
+                  // test body
+              })
+          }
+      }
+      ```
+    required_parameters:
+      - code_or_function
+
+  sql_test_data:
+    description: "Generate SQL test data and expected results"
+    content: |
+      Generate test data for this SQL query:
+
+      {{code_or_function}}
+
+      Requirements:
+      - Create INSERT statements for test tables
+      - Include edge cases (nulls, duplicates, boundaries)
+      - Add expected results as comments
+      - Cover both valid and invalid scenarios
+      - Provide setup and teardown SQL
+
+      Format:
+      ```sql
+      -- Setup
+      CREATE TABLE ...
+      INSERT INTO ...
+
+      -- Test Case 1: [description]
+      -- Expected: [result]
+      [query]
+
+      -- Teardown
+      DROP TABLE ...
+      ```
+    required_parameters:
+      - code_or_function
+
+  api_test_cases:
+    description: "Generate API endpoint test cases"
+    content: |
+      Generate test cases for API endpoint:
+
+      {{code_or_function}}
+
+      Cover:
+      1. Happy path (200 OK)
+      2. Invalid input (400 Bad Request)
+      3. Unauthorized (401)
+      4. Not found (404)
+      5. Server error handling (500)
+      6. Edge cases (empty body, large payload, special characters)
+
+      Format as curl commands or HTTP test framework code.
+    required_parameters:
+      - code_or_function
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Go Function Tests"
+    parameters:
+      code_or_function: |
+        func calculateDiscount(price float64, tier string) (float64, error) {
+            switch tier {
+            case "gold": return price * 0.8, nil
+            case "silver": return price * 0.9, nil
+            case "bronze": return price * 0.95, nil
+            default: return 0, fmt.Errorf("invalid tier: %s", tier)
+            }
+        }
+      test_framework: "go_testify"
+      coverage_level: "comprehensive"
+    expected_result: |
+      func TestCalculateDiscount(t *testing.T) {
+          tests := []struct {
+              name      string
+              price     float64
+              tier      string
+              expected  float64
+              wantErr   bool
+          }{
+              {"Gold tier 20% discount", 100.0, "gold", 80.0, false},
+              {"Silver tier 10% discount", 100.0, "silver", 90.0, false},
+              {"Bronze tier 5% discount", 100.0, "bronze", 95.0, false},
+              {"Invalid tier returns error", 100.0, "platinum", 0, true},
+              {"Zero price", 0.0, "gold", 0.0, false},
+              {"Negative price edge case", -50.0, "gold", -40.0, false},
+              {"Empty tier string", 100.0, "", 0, true},
+              {"Case sensitivity", 100.0, "GOLD", 0, true},
+          }
+
+          for _, tt := range tests {
+              t.Run(tt.name, func(t *testing.T) {
+                  result, err := calculateDiscount(tt.price, tt.tier)
+                  if tt.wantErr {
+                      require.Error(t, err)
+                  } else {
+                      require.NoError(t, err)
+                      assert.Equal(t, tt.expected, result)
+                  }
+              })
+          }
+      }
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Test Generation Best Practices
+
+  1. **Table-Driven Tests**: Cover multiple scenarios efficiently
+  2. **Test Names**: Descriptive names explain what's tested
+  3. **Edge Cases**: Nulls, empties, boundaries, negatives
+  4. **Error Paths**: Test error conditions, not just success
+  5. **Setup/Teardown**: Isolate tests, no shared state
+  6. **Assertions**: Use specific assertions (Equal vs NotNil)
+  7. **Mock External Deps**: Don't hit real databases/APIs in unit tests
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - code_generation
+  - documentation_generation

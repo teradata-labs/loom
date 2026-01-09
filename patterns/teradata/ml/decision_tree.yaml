@@ -1,0 +1,495 @@
+# === METADATA START ===
+name: decision_tree
+title: "Decision Tree Classification"
+description: |
+  Build interpretable classification models using decision trees. Decision trees split data
+  based on feature values to create a tree structure that predicts categorical outcomes.
+  They're highly interpretable and can handle both numeric and categorical features.
+
+  Decision trees excel at:
+  - Customer churn prediction
+  - Credit risk assessment
+  - Fraud detection
+  - Medical diagnosis
+  - Lead scoring
+  - Product recommendation
+
+category: ml
+difficulty: beginner
+teradata_function: DecisionTree
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Churn Prediction ---
+  - Customer churn prediction (will customer leave?)
+
+  # --- Use Case 2: Credit Approval ---
+  - Credit approval (approve or deny loan?)
+
+  # --- Use Case 3: Fraud Detection ---
+  - Fraud detection (fraudulent transaction?)
+
+  # --- Use Case 4: Customer Segmentation ---
+  - Customer segmentation (which segment?)
+
+  # --- Use Case 5: Email Response ---
+  - Email campaign response (will they click?)
+
+  # --- Use Case 6: Product Recommendation ---
+  - Product recommendation (which category to recommend?)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing training data"
+    example: "customer_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain features and categorical target
+    required: true
+    description: "Table with features and target variable"
+    example: "customer_churn_features"
+
+  # --- Parameter 3: Target Column ---
+  - name: target_column
+    type: string
+    # LLM-HINT: Categorical column to predict; check class balance first
+    required: true
+    description: "Categorical column to predict (dependent variable)"
+    example: "churned"
+
+  # --- Parameter 4: Feature Columns ---
+  - name: feature_columns
+    type: array[string]
+    # LLM-HINT: Predictor variables for classification; can be numeric or categorical
+    required: true
+    description: "Predictor columns (can be numeric or categorical)"
+    example: '["tenure_months", "monthly_charges", "contract_type", "customer_service_calls"]'
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used for tracking predictions per row (customer_id, user_id, etc.)
+    required: true
+    description: "Unique identifier for each row"
+    example: "customer_id"
+
+  # --- Parameter 6: Max Depth ---
+  - name: max_depth
+    type: integer
+    # LLM-HINT: Prevents overfitting; start with 10-12 (default: 12)
+    required: false
+    default: "12"
+    description: "Maximum tree depth (prevents overfitting)"
+    example: "10"
+
+  # --- Parameter 7: Min Node Size ---
+  - name: min_node_size
+    type: integer
+    # LLM-HINT: Minimum samples to split; higher prevents overfitting (default: 100)
+    required: false
+    default: "100"
+    description: "Minimum samples required to split a node"
+    example: "50"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CLASS_DISTRIBUTION TEMPLATE ===
+  # LLM-HINT: Run this first to detect class imbalance
+  class_distribution:
+    description: "Check target variable class balance before training"
+    sql: |
+      -- Check class distribution (important for imbalanced datasets)
+      SELECT
+        {{target_column}} as target_class,
+        COUNT(*) as count,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as percentage
+      FROM {{database}}.{{table}}
+      GROUP BY {{target_column}}
+      ORDER BY count DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+
+  # === TRAIN_MODEL TEMPLATE ===
+  # LLM-HINT: Trains decision tree classifier using DecisionTree; outputs to decision_tree_model table
+  train_model:
+    description: "Train decision tree classifier"
+    sql: |
+      -- Train decision tree model
+      SELECT *
+      FROM DecisionTree (
+        ON {{database}}.{{table}} AS InputTable
+        OUT TABLE OutputTable (decision_tree_model)
+        USING
+          ResponseColumn ('{{target_column}}')
+          InputColumns ({{feature_columns_quoted}})
+          IDColumn ('{{id_column}}')
+          MaxDepth ({{max_depth}})
+          MinNodeSize ({{min_node_size}})
+          Encode ('true')  -- Auto-encode categorical variables
+      ) AS dt;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - feature_columns_quoted
+      - id_column
+      - max_depth
+      - min_node_size
+
+  # === PREDICT TEMPLATE ===
+  # LLM-HINT: Apply trained model to test data; returns predicted class and confidence
+  predict:
+    description: "Apply trained model to make predictions"
+    sql: |
+      -- Make predictions on test/new data
+      SELECT
+        input.{{id_column}},
+        input.{{target_column}} as actual_class,
+        pred.prediction as predicted_class,
+        pred.confidence
+      FROM {{database}}.{{test_table}} input
+      JOIN DecisionTreePredict (
+        ON input AS InputTable
+        ON decision_tree_model AS Model
+        USING
+          IDColumn ('{{id_column}}')
+          Accumulate ('{{id_column}}', '{{target_column}}')
+      ) AS pred
+      ORDER BY pred.confidence DESC;
+    required_parameters:
+      - database
+      - test_table
+      - id_column
+      - target_column
+
+  # === MODEL_EVALUATION TEMPLATE ===
+  # LLM-HINT: Calculate accuracy, precision, recall, F1; requires predictions table from prior step
+  model_evaluation:
+    description: "Calculate accuracy, precision, recall, F1 score"
+    sql: |
+      -- Confusion matrix and classification metrics
+      WITH predictions AS (
+        SELECT
+          actual_class,
+          predicted_class,
+          CASE
+            WHEN actual_class = '{{positive_class}}' AND predicted_class = '{{positive_class}}' THEN 'TP'
+            WHEN actual_class = '{{positive_class}}' AND predicted_class <> '{{positive_class}}' THEN 'FN'
+            WHEN actual_class <> '{{positive_class}}' AND predicted_class = '{{positive_class}}' THEN 'FP'
+            ELSE 'TN'
+          END as classification
+        FROM {{database}}.{{predictions_table}}
+      ),
+      metrics AS (
+        SELECT
+          SUM(CASE WHEN classification = 'TP' THEN 1 ELSE 0 END) as true_positives,
+          SUM(CASE WHEN classification = 'FP' THEN 1 ELSE 0 END) as false_positives,
+          SUM(CASE WHEN classification = 'TN' THEN 1 ELSE 0 END) as true_negatives,
+          SUM(CASE WHEN classification = 'FN' THEN 1 ELSE 0 END) as false_negatives
+        FROM predictions
+      )
+      SELECT
+        -- Accuracy
+        CAST((true_positives + true_negatives) * 100.0 /
+          (true_positives + true_negatives + false_positives + false_negatives) AS DECIMAL(5,2))
+          as accuracy_pct,
+        -- Precision
+        CAST(true_positives * 100.0 / (true_positives + false_positives) AS DECIMAL(5,2))
+          as precision_pct,
+        -- Recall (Sensitivity)
+        CAST(true_positives * 100.0 / (true_positives + false_negatives) AS DECIMAL(5,2))
+          as recall_pct,
+        -- F1 Score
+        CAST(2.0 * (true_positives) /
+          (2.0 * true_positives + false_positives + false_negatives) AS DECIMAL(5,2))
+          as f1_score
+      FROM metrics;
+    required_parameters:
+      - database
+      - predictions_table
+      - positive_class
+
+  # === FEATURE_IMPORTANCE TEMPLATE ===
+  # LLM-HINT: Identifies most predictive features by importance score
+  feature_importance:
+    description: "Identify most important features in the model"
+    sql: |
+      -- Extract feature importance from model
+      -- Decision trees rank features by their contribution to splits
+      SELECT
+        feature_name,
+        importance_score,
+        RANK() OVER (ORDER BY importance_score DESC) as importance_rank
+      FROM decision_tree_model_features
+      WHERE model_id = '{{model_id}}'
+      ORDER BY importance_score DESC
+      LIMIT 10;
+    required_parameters:
+      - model_id
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Churn Prediction ---
+  - name: "Customer Churn Prediction"
+    description: "Predict which customers are likely to churn"
+    parameters:
+      database: "telecom"
+      table: "customer_data"
+      target_column: "churned"
+      feature_columns: ["tenure_months", "monthly_charges", "total_charges", "contract_type", "payment_method", "customer_service_calls"]
+      id_column: "customer_id"
+      max_depth: 10
+      min_node_size: 100
+    expected_result: |
+      Model accuracy: 85%
+
+      Top 3 predictive features:
+      1. customer_service_calls (importance: 0.42) - High calls predict churn
+      2. contract_type (importance: 0.28) - Month-to-month contracts churn more
+      3. tenure_months (importance: 0.18) - New customers more likely to churn
+
+      Decision rule example:
+      IF customer_service_calls > 5 AND contract_type = 'Month-to-Month'
+         THEN churn_probability = 85%
+
+      Can target high-risk customers with retention offers.
+
+  # --- Example 2: Credit Approval Decision ---
+  - name: "Credit Approval Decision"
+    description: "Approve or deny loan applications based on applicant profile"
+    parameters:
+      database: "lending"
+      table: "loan_applications"
+      target_column: "approved"
+      feature_columns: ["credit_score", "annual_income", "debt_to_income_ratio", "employment_length", "loan_purpose"]
+      id_column: "application_id"
+      max_depth: 8
+      min_node_size: 50
+    expected_result: |
+      Model accuracy: 88%
+      Precision: 90% (few false approvals)
+      Recall: 82% (catches most good candidates)
+
+      Key decision rules:
+      - IF credit_score > 700 AND debt_to_income < 0.4 → APPROVE
+      - IF credit_score < 600 → DENY
+      - IF 600 <= credit_score <= 700 → Check income and employment
+
+      Interpretable rules make it easy to explain decisions to regulators.
+
+  # --- Example 3: Fraud Detection ---
+  - name: "Fraud Detection"
+    description: "Flag potentially fraudulent transactions"
+    parameters:
+      database: "payments"
+      table: "transaction_features"
+      target_column: "is_fraud"
+      feature_columns: ["transaction_amount", "merchant_category", "time_since_last_txn", "distance_from_home", "device_type"]
+      id_column: "transaction_id"
+      max_depth: 12
+      min_node_size: 25
+    expected_result: |
+      Imbalanced classes: 1% fraud, 99% legitimate
+      Precision: 75% (many false positives acceptable to catch fraud)
+      Recall: 92% (catches most fraud)
+
+      High-risk patterns identified:
+      - Large transactions (>$5000) + new merchant + unusual time
+      - Foreign transactions + high velocity
+      - Mobile device + high amount
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Target Must Be Categorical ---
+  - error: "Target column must be categorical"
+    cause: "Decision trees are for classification, not regression"
+    solution: "Convert continuous target to categories (e.g., 'High'/'Medium'/'Low') or use DecisionTreeRegressor"
+
+  # --- Error 2: Overfitting ---
+  - error: "Tree is too deep / Overfitting"
+    cause: "MaxDepth too high or MinNodeSize too low"
+    solution: "Reduce MaxDepth to 8-12. Increase MinNodeSize to 50-100. Use cross-validation to tune"
+
+  # --- Error 3: Imbalanced Classes ---
+  - error: "Imbalanced classes"
+    cause: "One class has very few examples (e.g., 1% fraud)"
+    solution: "Use stratified sampling, adjust class weights, or oversample minority class. Consider RandomForest for better handling"
+
+  # --- Error 4: Categorical Encoding ---
+  - error: "Categorical features not encoded"
+    cause: "Non-numeric categorical values"
+    solution: "Set Encode('true') in USING clause. Teradata auto-encodes categoricals"
+
+  # --- Error 5: Training Performance ---
+  - error: "Training takes too long"
+    cause: "Too many rows or features"
+    solution: "Sample data for initial training. Remove low-importance features. Increase MinNodeSize"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Decision Tree Best Practices
+
+  ### 1. Data Preparation
+  **Check class balance:**
+  ```sql
+  SELECT target, COUNT(*) as count
+  FROM training_data
+  GROUP BY target
+  ```
+
+  **Handle imbalanced classes:**
+  - If minority class < 10%, consider:
+    - Oversampling minority class (duplicate rows)
+    - Undersampling majority class
+    - Using Random Forest instead (better for imbalance)
+    - Adjusting class weights
+
+  **Feature engineering:**
+  - Decision trees handle non-linear relationships
+  - Don't need to normalize/scale features
+  - Can include categorical features directly
+  - Consider binning continuous variables
+
+  ### 2. Hyperparameter Tuning
+  **MaxDepth:**
+  - Start with 10-12
+  - Deeper = more complex, risk of overfitting
+  - Shallower = simpler, may underfit
+  - Use validation set to tune
+
+  **MinNodeSize:**
+  - Start with 50-100
+  - Higher = simpler tree, prevents overfitting
+  - Lower = more complex splits
+  - Rule of thumb: 1-5% of training data size
+
+  **Pruning:**
+  - Consider pre-pruning (stop early with MinNodeSize)
+  - Post-pruning removes branches that don't improve validation accuracy
+
+  ### 3. Train/Test Split
+  **Always split your data:**
+  ```sql
+  -- Training set (70-80%)
+  WHERE event_date < '2024-10-01'
+
+  -- Test set (20-30%)
+  WHERE event_date >= '2024-10-01'
+  ```
+
+  **For time series data:**
+  - Train on past, test on future
+  - Never test on data from before training period
+
+  **Stratified split:**
+  - Ensure both train and test have similar class distributions
+  - Especially important for imbalanced classes
+
+  ### 4. Model Evaluation
+  **Don't just use accuracy:**
+  - Accuracy misleading for imbalanced data
+  - Use precision, recall, F1 score
+  - Consider business costs (false positive vs false negative)
+
+  **Confusion matrix:**
+  ```
+                  Predicted
+                  Yes    No
+  Actual  Yes     TP     FN
+          No      FP     TN
+  ```
+
+  **Metric selection:**
+  - **Precision** matters for: Spam detection (avoid false alarms)
+  - **Recall** matters for: Disease diagnosis (catch all cases)
+  - **F1 Score**: Balance of both
+
+  ### 5. Interpreting the Tree
+  **Feature importance:**
+  - Top features appear near root of tree
+  - These drive most predictions
+  - Can guide feature selection
+
+  **Decision rules:**
+  - Each path from root to leaf = decision rule
+  - Interpretable: "IF age > 50 AND income > 100K THEN approve"
+  - Great for regulatory compliance, explaining decisions
+
+  **Visualize the tree:**
+  - Export tree structure
+  - Visualize top levels
+  - Understand how model makes decisions
+
+  ### 6. Avoiding Overfitting
+  **Signs of overfitting:**
+  - 100% training accuracy but 60% test accuracy
+  - Very deep tree (depth > 15)
+  - Very small leaf nodes (< 10 samples)
+
+  **Prevention:**
+  - Set reasonable MaxDepth (8-12)
+  - Increase MinNodeSize (50-100)
+  - Use cross-validation
+  - Prune the tree
+  - Consider Random Forest (ensemble of trees)
+
+  ### 7. When to Use Decision Trees
+  ✅ **Good for:**
+  - Need interpretable models
+  - Mixed feature types (numeric + categorical)
+  - Non-linear relationships
+  - Quick baseline model
+  - Regulatory/compliance requirements
+
+  ❌ **Not ideal for:**
+  - Very high accuracy needed (use Random Forest, XGBoost)
+  - Stable predictions (small data changes = big tree changes)
+  - Extrapolation (doesn't predict outside training range)
+
+  ### 8. Production Deployment
+  **Save the model:**
+  ```sql
+  CREATE TABLE production_tree_model AS
+  SELECT * FROM decision_tree_model;
+  ```
+
+  **Batch scoring:**
+  - Use DecisionTreePredict for new data
+  - Monitor prediction distribution over time
+  - Retrain if performance degrades
+
+  **A/B testing:**
+  - Test new model against current in production
+  - Compare business metrics, not just accuracy
+  - Gradual rollout (e.g., 10% → 50% → 100%)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Random Forest ---
+  - random_forest
+
+  # --- Pattern 2: Logistic Regression ---
+  - logistic_regression
+
+  # --- Pattern 3: Gradient Boosting ---
+  - gradient_boosting
+
+  # --- Pattern 4: Naive Bayes ---
+  - naive_bayes
+# === RELATED_PATTERNS END ===

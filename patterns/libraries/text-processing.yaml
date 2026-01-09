@@ -1,0 +1,69 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: text-processing
+  version: 1.0.0
+  domain: text
+  description: "NLP patterns for sentiment analysis, summarization, and classification without external services. Pure Claude-based text processing."
+  labels:
+    vendor: anthropic
+    category: nlp
+    maturity: production
+
+spec:
+  entries:
+    - name: sentiment_analysis
+      description: "Multi-class sentiment detection (positive/negative/neutral) with confidence scores"
+      trigger_conditions:
+        - "user asks to analyze sentiment or tone"
+        - "classify customer feedback"
+        - "prioritize support tickets by sentiment"
+        - "monitor brand sentiment"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/text/sentiment-analysis.yaml
+
+        Key use cases:
+        - Customer feedback analysis
+        - Support ticket prioritization
+        - Product review classification
+        - Social media monitoring
+
+        Templates:
+        - three_class: Positive, Negative, Neutral
+        - five_point: 1-5 scale rating
+        - with_aspects: Multi-aspect sentiment
+      priority: 85
+      tags:
+        - sentiment
+        - classification
+        - nlp
+        - feedback
+
+    - name: summarization
+      description: "Text summarization - extractive (key sentences), abstractive (paraphrase), hierarchical (multi-level)"
+      trigger_conditions:
+        - "user asks to summarize text or documents"
+        - "create executive summary"
+        - "condense meeting notes"
+        - "tl;dr needed"
+      example: |
+        For detailed templates, parameters, and examples, see:
+        patterns/text/summarization.yaml
+
+        Key use cases:
+        - Long document summarization
+        - Meeting notes condensation
+        - Executive summaries
+        - Log file analysis
+
+        Templates:
+        - extractive: Extract key sentences
+        - abstractive: Paraphrase and condense
+        - hierarchical: Multi-level summaries
+      priority: 88
+      tags:
+        - summarization
+        - condensation
+        - tl;dr
+        - documents

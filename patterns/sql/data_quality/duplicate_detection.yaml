@@ -1,0 +1,701 @@
+# === METADATA START ===
+name: duplicate_detection
+title: "Duplicate Detection and Deduplication"
+description: |
+  Identify and handle duplicate records in datasets. Duplicates can arise from data collection
+  errors, merge operations, or system issues. Proper duplicate handling is critical for
+  data quality, analytics accuracy, and storage efficiency.
+
+  Types of duplicates:
+  - Exact duplicates: Identical across all columns
+  - Partial duplicates: Identical on key columns only
+  - Fuzzy duplicates: Similar but not identical (typos, formatting)
+  - Temporal duplicates: Same entity at different times
+
+  Deduplication strategies:
+  - Keep first/last occurrence
+  - Keep most complete record
+  - Merge duplicate information
+  - Flag for manual review
+
+category: data_quality
+difficulty: intermediate
+teradata_function: SQL_WINDOW_FUNCTIONS
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Customer data deduplication (merge CRM records)
+  - Product catalog cleanup (remove duplicate SKUs)
+  - Transaction deduplication (prevent double-counting)
+  - Email list cleaning (remove duplicate contacts)
+  - Log file deduplication (reduce storage)
+  - Master data management (golden record creation)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing table to analyze"
+    example: "customer_data"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below
+    required: true
+    description: "Table with potential duplicates"
+    example: "customers"
+
+  # --- Parameter 3: Key Columns ---
+  - name: key_columns
+    type: array[string]
+    # LLM-HINT: Columns that define uniqueness (e.g., email, phone)
+    required: true
+    description: "Columns that define uniqueness (e.g., email, phone)"
+    example: '["email", "phone"]'
+
+  # --- Parameter 4: Deduplication Strategy ---
+  - name: dedup_strategy
+    type: enum
+    required: false
+    default: "KEEP_FIRST"
+    description: "Strategy: KEEP_FIRST, KEEP_LAST, KEEP_MOST_COMPLETE"
+    example: "KEEP_FIRST"
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Primary identifier for tracking duplicate groups
+    required: true
+    description: "Primary identifier column"
+    example: "customer_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === EXACT_DUPLICATES TEMPLATE ===
+  # LLM-HINT: Finds rows identical across ALL columns using ROW_NUMBER
+  exact_duplicates:
+    description: "Find exact duplicate rows (identical across all columns)"
+    sql: |
+      -- Find exact duplicate rows
+      SELECT
+        *,
+        COUNT(*) OVER (PARTITION BY {{columns_hash}}) as duplicate_count,
+        ROW_NUMBER() OVER (PARTITION BY {{columns_hash}} ORDER BY {{id_column}}) as duplicate_rank
+      FROM {{database}}.{{table}}
+      QUALIFY duplicate_count > 1
+      ORDER BY {{columns_hash}}, duplicate_rank;
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - columns_hash
+
+  # === KEY_DUPLICATES TEMPLATE ===
+  # LLM-HINT: Finds duplicates based on key columns only (partial matches)
+  key_duplicates:
+    description: "Find duplicates based on key columns only"
+    sql: |
+      -- Duplicate detection based on key columns
+      WITH duplicate_groups AS (
+        SELECT
+          {{id_column}},
+          {{key_columns}},
+          COUNT(*) OVER (PARTITION BY {{key_columns}}) as duplicate_count,
+          ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{id_column}}) as duplicate_rank
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        {{id_column}},
+        {{key_columns}},
+        duplicate_count,
+        duplicate_rank,
+        CASE
+          WHEN duplicate_rank = 1 THEN 'Primary'
+          ELSE 'Duplicate'
+        END as record_status
+      FROM duplicate_groups
+      WHERE duplicate_count > 1
+      ORDER BY {{key_columns}}, duplicate_rank;
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - key_columns
+
+  # === DUPLICATE_SUMMARY TEMPLATE ===
+  # LLM-HINT: Provides high-level stats (how many duplicates, distribution)
+  duplicate_summary:
+    description: "High-level summary of duplicate patterns"
+    sql: |
+      -- Duplicate analysis summary
+      WITH duplicate_counts AS (
+        SELECT
+          COUNT(*) OVER (PARTITION BY {{key_columns}}) as duplicate_count
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        duplicate_count,
+        COUNT(*) as num_records,
+        CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) as percentage,
+        COUNT(*) * (duplicate_count - 1) as wasted_records
+      FROM duplicate_counts
+      GROUP BY duplicate_count
+      ORDER BY duplicate_count DESC;
+
+    required_parameters:
+      - database
+      - table
+      - key_columns
+
+  # === KEEP_FIRST TEMPLATE ===
+  # LLM-HINT: Deduplication strategy - keeps earliest occurrence by id_column
+  keep_first:
+    description: "Deduplication strategy: Keep first occurrence, mark rest as duplicates"
+    sql: |
+      -- Keep first occurrence based on key columns
+      SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{id_column}}) as row_rank,
+        CASE
+          WHEN ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{id_column}}) = 1
+          THEN 'Keep'
+          ELSE 'Remove'
+        END as dedup_action
+      FROM {{database}}.{{table}}
+      QUALIFY row_rank = 1;
+
+    required_parameters:
+      - database
+      - table
+      - key_columns
+      - id_column
+
+  # === KEEP_LAST TEMPLATE ===
+  # LLM-HINT: Keeps most recent occurrence based on timestamp_column
+  keep_last:
+    description: "Deduplication strategy: Keep last occurrence (most recent)"
+    sql: |
+      -- Keep last occurrence based on key columns
+      SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{timestamp_column}} DESC) as recency_rank,
+        CASE
+          WHEN ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{timestamp_column}} DESC) = 1
+          THEN 'Keep'
+          ELSE 'Remove'
+        END as dedup_action
+      FROM {{database}}.{{table}}
+      QUALIFY recency_rank = 1;
+
+    required_parameters:
+      - database
+      - table
+      - key_columns
+      - timestamp_column
+
+  # === KEEP_MOST_COMPLETE TEMPLATE ===
+  # LLM-HINT: Keeps record with fewest NULL values (most data)
+  keep_most_complete:
+    description: "Deduplication strategy: Keep record with most non-null values"
+    sql: |
+      -- Keep most complete record (fewest nulls)
+      WITH completeness_score AS (
+        SELECT
+          *,
+          -- Count non-null columns (adjust column list as needed)
+          (CASE WHEN {{column1}} IS NOT NULL THEN 1 ELSE 0 END +
+           CASE WHEN {{column2}} IS NOT NULL THEN 1 ELSE 0 END +
+           CASE WHEN {{column3}} IS NOT NULL THEN 1 ELSE 0 END) as completeness,
+          ROW_NUMBER() OVER (
+            PARTITION BY {{key_columns}}
+            ORDER BY
+              (CASE WHEN {{column1}} IS NOT NULL THEN 1 ELSE 0 END +
+               CASE WHEN {{column2}} IS NOT NULL THEN 1 ELSE 0 END +
+               CASE WHEN {{column3}} IS NOT NULL THEN 1 ELSE 0 END) DESC,
+              {{id_column}}
+          ) as completeness_rank
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        *,
+        CASE
+          WHEN completeness_rank = 1 THEN 'Keep (Most Complete)'
+          ELSE 'Remove'
+        END as dedup_action
+      FROM completeness_score
+      QUALIFY completeness_rank = 1;
+
+    required_parameters:
+      - database
+      - table
+      - key_columns
+      - id_column
+      - column1
+      - column2
+      - column3
+
+  # === FUZZY_DUPLICATES TEMPLATE ===
+  # LLM-HINT: Uses SOUNDEX and string similarity for fuzzy matching (typos)
+  fuzzy_duplicates:
+    description: "Find fuzzy duplicates using string similarity (Levenshtein, soundex)"
+    sql: |
+      -- Fuzzy duplicate detection using string similarity
+      WITH pairs AS (
+        SELECT
+          a.{{id_column}} as id1,
+          b.{{id_column}} as id2,
+          a.{{column}} as value1,
+          b.{{column}} as value2,
+          -- Levenshtein distance approximation
+          CASE
+            WHEN UPPER(a.{{column}}) = UPPER(b.{{column}}) THEN 1.0
+            WHEN SOUNDEX(a.{{column}}) = SOUNDEX(b.{{column}}) THEN 0.8
+            ELSE 0.0
+          END as similarity_score
+        FROM {{database}}.{{table}} a
+        JOIN {{database}}.{{table}} b
+          ON a.{{id_column}} < b.{{id_column}}
+        WHERE a.{{column}} IS NOT NULL
+          AND b.{{column}} IS NOT NULL
+      )
+      SELECT
+        id1,
+        id2,
+        value1,
+        value2,
+        similarity_score,
+        CASE
+          WHEN similarity_score >= 0.9 THEN 'Very Likely Duplicate'
+          WHEN similarity_score >= 0.7 THEN 'Likely Duplicate'
+          WHEN similarity_score >= 0.5 THEN 'Possible Duplicate'
+          ELSE 'Different'
+        END as match_quality
+      FROM pairs
+      WHERE similarity_score >= 0.5
+      ORDER BY similarity_score DESC;
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - column
+
+  # === MERGE_DUPLICATES TEMPLATE ===
+  # LLM-HINT: Merges duplicate records using COALESCE to fill gaps
+  merge_duplicates:
+    description: "Merge duplicate records by coalescing values from all duplicates"
+    sql: |
+      -- Merge duplicate records using COALESCE to fill gaps
+      WITH ranked_duplicates AS (
+        SELECT
+          *,
+          ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{id_column}}) as dup_rank
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        MIN({{id_column}}) as merged_id,
+        {{key_columns}},
+        -- Take first non-null value for each column
+        COALESCE(MAX(CASE WHEN {{column1}} IS NOT NULL THEN {{column1}} END)) as {{column1}}_merged,
+        COALESCE(MAX(CASE WHEN {{column2}} IS NOT NULL THEN {{column2}} END)) as {{column2}}_merged,
+        COALESCE(MAX(CASE WHEN {{column3}} IS NOT NULL THEN {{column3}} END)) as {{column3}}_merged,
+        COUNT(*) as num_records_merged
+      FROM ranked_duplicates
+      GROUP BY {{key_columns}};
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - key_columns
+      - column1
+      - column2
+      - column3
+
+  # === DUPLICATE_IMPACT TEMPLATE ===
+  # LLM-HINT: Assesses impact on metrics (e.g., inflated revenue from duplicates)
+  duplicate_impact:
+    description: "Assess impact of duplicates on metrics (e.g., inflated revenue)"
+    sql: |
+      -- Duplicate impact analysis
+      WITH duplicates_flagged AS (
+        SELECT
+          {{id_column}},
+          {{metric_column}},
+          CASE
+            WHEN ROW_NUMBER() OVER (PARTITION BY {{key_columns}} ORDER BY {{id_column}}) = 1
+            THEN 'Unique'
+            ELSE 'Duplicate'
+          END as record_type
+        FROM {{database}}.{{table}}
+      )
+      SELECT
+        record_type,
+        COUNT(*) as record_count,
+        SUM({{metric_column}}) as total_metric,
+        AVG({{metric_column}}) as avg_metric,
+        -- Impact if duplicates removed
+        CASE
+          WHEN record_type = 'Duplicate'
+          THEN SUM({{metric_column}})
+          ELSE 0
+        END as inflated_amount
+      FROM duplicates_flagged
+      GROUP BY record_type;
+
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - key_columns
+      - metric_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Email Deduplication ---
+  - name: "Customer Email Deduplication"
+    description: "Remove duplicate customer records based on email"
+    parameters:
+      database: "crm"
+      table: "customers"
+      key_columns: ["email"]
+      id_column: "customer_id"
+      dedup_strategy: "KEEP_FIRST"
+    expected_result: |
+      Duplicate Analysis:
+
+      Total customers: 100,000
+      Unique emails: 95,000
+      Duplicate records: 5,000 (5%)
+
+      Duplicate breakdown:
+      - 2 customers per email: 4,500 cases
+      - 3 customers per email: 400 cases
+      - 4+ customers per email: 100 cases
+
+      Deduplication strategy: Keep first
+      - Keep: 95,000 records (first occurrence)
+      - Remove: 5,000 records (duplicates)
+
+      After deduplication:
+      - Total: 95,000 customers (5% reduction)
+      - 100% unique emails
+      - Storage saved: ~200 MB
+
+      Action:
+      - Review duplicates with 4+ occurrences (may be data errors)
+      - Merge contact info from duplicates before deletion
+      - Update application to prevent duplicate emails
+
+  # --- Example 2: Transaction Deduplication ---
+  - name: "Transaction Deduplication"
+    description: "Prevent double-counting of duplicate transactions"
+    parameters:
+      database: "sales"
+      table: "transactions"
+      key_columns: ["transaction_id", "order_date", "customer_id", "amount"]
+      id_column: "record_id"
+      metric_column: "amount"
+    expected_result: |
+      Transaction Duplicate Impact:
+
+      Total transaction records: 1,000,000
+      Exact duplicates: 15,000 (1.5%)
+
+      Financial impact:
+      - Reported revenue: $50,000,000
+      - Duplicate revenue: $750,000 (1.5%)
+      - Actual revenue: $49,250,000
+
+      Duplicate causes:
+      - ETL job ran twice: 12,000 (80%)
+      - API retry duplicates: 2,000 (13%)
+      - Manual data import: 1,000 (7%)
+
+      Deduplication:
+      - Keep first occurrence per transaction_id
+      - Remove 15,000 duplicate records
+      - Adjust revenue reporting by -$750,000
+
+      Prevention:
+      - Add unique constraint on transaction_id
+      - Implement idempotency in ETL
+      - Add duplicate check in data pipeline
+
+  # --- Example 3: Product Catalog Fuzzy Deduplication ---
+  - name: "Product Catalog Fuzzy Deduplication"
+    description: "Find similar product names that may be duplicates"
+    parameters:
+      database: "inventory"
+      table: "products"
+      key_columns: ["product_name"]
+      id_column: "product_id"
+      column: "product_name"
+    expected_result: |
+      Fuzzy Duplicate Analysis:
+
+      Total products: 50,000
+      Potential fuzzy duplicates: 1,200 pairs
+
+      High confidence (similarity > 0.9):
+      - "iPhone 13 Pro" / "IPhone 13 Pro" (case)
+      - "Nike Air Max 90" / "Nike Air Max-90" (punctuation)
+      - 450 pairs → Manual review
+
+      Medium confidence (0.7 - 0.9):
+      - "Samsung Galaxy S21" / "Samsung Galaxy S21 5G"
+      - "Levi's 501 Jeans" / "Levis 501 Jeans"
+      - 600 pairs → Review with domain expert
+
+      Low confidence (0.5 - 0.7):
+      - "Apple Watch Series 7" / "Apple Watch Series 8"
+      - 150 pairs → Likely different products
+
+      Action:
+      - High confidence: Auto-merge with review
+      - Medium: Flag for product manager review
+      - Low: Keep separate
+      - Implement product name normalization
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Too Many Duplicates ---
+  - error: "Too many duplicates identified"
+    cause: "Key columns too restrictive (e.g., just 'name' when multiple Johns exist)"
+    solution: "Expand key columns to include distinguishing fields like birthdate, address, or phone."
+
+  # --- Error 2: Legitimate Records Flagged ---
+  - error: "Legitimate records marked as duplicates"
+    cause: "Normal variation treated as duplication (e.g., same person, multiple orders)"
+    solution: "Include timestamp or transaction ID in key columns. Distinguish entity duplicates from event duplicates."
+
+  # --- Error 3: Slow Fuzzy Matching ---
+  - error: "Fuzzy matching too slow"
+    cause: "Self-join on large table creates N² comparisons"
+    solution: "Use blocking (group by first letter, ZIP code) or approximate algorithms. Sample for validation."
+
+  # --- Error 4: Lost Data ---
+  - error: "Lost data after deduplication"
+    cause: "Discarded duplicates had unique information"
+    solution: "Merge strategy: coalesce all columns before deleting. Or flag instead of delete."
+
+  # --- Error 5: Non-Deterministic Results ---
+  - error: "Deduplication not idempotent"
+    cause: "ROW_NUMBER based on non-deterministic ordering"
+    solution: "Always include stable sort column (e.g., primary key) in ORDER BY to ensure consistent results."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Duplicate Detection Best Practices
+
+  ### 1. Define What "Duplicate" Means
+
+  **Exact duplicates:**
+  - All columns identical
+  - Rare in practice (except ETL errors)
+
+  **Key-based duplicates:**
+  - Match on business key (email, SSN, transaction_id)
+  - Most common type
+  - Define keys based on domain knowledge
+
+  **Fuzzy duplicates:**
+  - Similar but not identical
+  - Typos, formatting differences
+  - Requires string similarity or ML
+
+  ### 2. Investigate Root Causes
+
+  **Common duplicate sources:**
+  - ETL job ran multiple times
+  - Merge operations without deduplication
+  - User created multiple accounts
+  - API retries without idempotency
+  - Manual data imports
+
+  **Always ask:**
+  - Why do we have duplicates?
+  - Can we prevent at source?
+  - Is this a symptom of larger issue?
+
+  ### 3. Choose Appropriate Deduplication Strategy
+
+  **Keep first:**
+  - ✅ Simple and deterministic
+  - ✅ Preserves original data
+  - ❌ May keep incomplete record
+  - **Use when:** Order of insertion matters
+
+  **Keep last (most recent):**
+  - ✅ Keeps updated information
+  - ✅ Good for temporal data
+  - ❌ Requires timestamp
+  - **Use when:** Later = better data quality
+
+  **Keep most complete:**
+  - ✅ Maximizes information retention
+  - ✅ Handles partial records well
+  - ❌ More complex logic
+  - **Use when:** Records have varying completeness
+
+  **Merge all duplicates:**
+  - ✅ No data loss
+  - ✅ Creates "golden record"
+  - ❌ Complex and slow
+  - **Use when:** Master data management
+
+  ### 4. Flag Before Deleting
+
+  **Safer approach:**
+  ```sql
+  -- Add flag instead of DELETE
+  UPDATE table
+  SET is_duplicate = 1,
+      duplicate_of = <primary_id>
+  WHERE <duplicate_condition>;
+  ```
+
+  **Benefits:**
+  - Reversible
+  - Audit trail
+  - Can verify before permanent deletion
+
+  ### 5. Validate Deduplication Results
+
+  **Check:**
+  - Count before vs after
+  - Metric totals (revenue, count)
+  - Spot-check flagged duplicates
+  - Verify no false positives
+
+  **Test queries:**
+  ```sql
+  -- Before
+  SELECT COUNT(*), COUNT(DISTINCT key_columns) FROM table;
+
+  -- After
+  SELECT COUNT(*), COUNT(DISTINCT key_columns) FROM table;
+
+  -- Should be equal after deduplication
+  ```
+
+  ### 6. Handle Edge Cases
+
+  **Multiple equally valid records:**
+  - Same person, multiple addresses
+  - Not duplicates, but multiples
+  - Solution: Model as 1-to-many relationship
+
+  **Partial matches:**
+  - "Robert" vs "Bob"
+  - "555-1234" vs "555-1235" (typo)
+  - Solution: Fuzzy matching with manual review
+
+  **Temporal duplicates:**
+  - Same entity at different times
+  - Not duplicates if tracking history
+  - Solution: Add valid_from/valid_to dates
+
+  ### 7. Optimize Performance
+
+  **For large tables:**
+  - Use indexed key columns
+  - Partition by key for parallelism
+  - Sample for threshold tuning
+  - Batch process (don't scan entire table)
+
+  **Fuzzy matching optimization:**
+  - Blocking: Group by first_letter, zip_code
+  - Limit: Only compare within blocks
+  - Approximation: Soundex, metaphone faster than Levenshtein
+
+  ### 8. Merge Strategy
+
+  **When merging duplicates:**
+  ```sql
+  SELECT
+    key_columns,
+    COALESCE(MAX(email), MIN(email)) as email,
+    COALESCE(MAX(phone), MIN(phone)) as phone,
+    MAX(last_updated) as last_updated,
+    STRING_AGG(notes, '; ') as merged_notes
+  FROM duplicates
+  GROUP BY key_columns;
+  ```
+
+  **Merge rules:**
+  - Use COALESCE for scalar fields
+  - Use MAX/MIN with timestamp for temporal priority
+  - Concatenate text fields
+  - Sum numerical metrics
+
+  ### 9. Prevent Future Duplicates
+
+  **Database constraints:**
+  ```sql
+  ALTER TABLE customers
+  ADD CONSTRAINT unique_email UNIQUE (email);
+  ```
+
+  **Application logic:**
+  - Check for existing records before INSERT
+  - Use UPSERT (MERGE) instead of INSERT
+  - Implement idempotency keys for APIs
+
+  **Data validation:**
+  - Normalize before storage (trim, lowercase)
+  - Validate format (email, phone)
+  - Block duplicate submissions (rate limiting)
+
+  ### 10. Documentation and Monitoring
+
+  **Document:**
+  - What keys define uniqueness
+  - Deduplication strategy used
+  - Merge rules applied
+  - Date and count of deduplication
+
+  **Monitor:**
+  - Track duplicate % over time
+  - Alert if duplicate rate spikes
+  - Measure deduplication job performance
+  - Audit flagged duplicates
+
+  ### 11. Special Case: Time Series Duplicates
+
+  **For events/logs:**
+  - Duplicates may be legitimate repeated events
+  - Use event_id + timestamp as key
+  - Consider: Is this duplicate or recurring?
+
+  **Deduplication window:**
+  - Keep duplicates if > N seconds apart
+  - Remove only if within window (e.g., 1 minute)
+
+  ### 12. Master Data Management (MDM)
+
+  **Golden record creation:**
+  - Prioritize data sources (CRM > email > manual)
+  - Merge using source priority
+  - Track lineage (which duplicate contributed what)
+  - Maintain cross-reference table
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - data_profiling
+  - data_validation
+  - missing_value_analysis
+# === RELATED_PATTERNS END ===

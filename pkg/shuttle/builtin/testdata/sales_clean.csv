@@ -1,0 +1,11 @@
+customer_id,customer_name,amount,transaction_date,status
+1001,John Smith,1234.56,2024-01-15,A
+1002,Jane Doe,567.89,2024-01-16,A
+1003,Bob Johnson,9999.99,2024-01-17,P
+1004,Alice Williams,45.00,2024-01-18,C
+1005,Charlie Brown,2500.00,2024-01-19,A
+1006,Diana Prince,150.50,2024-01-20,P
+1007,Eve Anderson,750.25,2024-01-21,A
+1008,Frank Miller,3200.00,2024-01-22,C
+1009,Grace Lee,890.00,2024-01-23,A
+1010,Henry Wilson,1500.75,2024-01-24,P

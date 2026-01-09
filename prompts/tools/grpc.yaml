@@ -1,0 +1,23 @@
+name: tools
+namespace: loom.grpc
+prompts:
+  - id: grpc_call
+    content: |
+      Calls gRPC services using server reflection. No proto files needed!
+      Automatically discovers service methods and constructs requests.
+
+      Use this tool to:
+      - Call other microservices
+      - Query gRPC APIs
+      - Integrate with gRPC-based systems
+      - Test gRPC endpoints
+
+      The tool uses gRPC reflection to automatically understand the service schema.
+    tags:
+      - tool
+      - grpc
+      - api
+      - rpc
+    metadata:
+      version: "v1.0"
+      description: "gRPC client tool with reflection"

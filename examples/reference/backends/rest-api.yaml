@@ -1,0 +1,45 @@
+# Example REST API Backend Configuration
+# This demonstrates how to configure a REST API backend for Loom
+
+apiVersion: loom/v1
+kind: Backend
+
+name: github-api
+description: GitHub REST API for repository management
+
+type: rest
+
+# REST API connection settings
+rest:
+  base_url: https://api.github.com
+
+  # Authentication (supports multiple types)
+  auth:
+    type: bearer
+    token: ${GITHUB_TOKEN}
+
+  # Custom headers
+  headers:
+    Accept: application/vnd.github.v3+json
+    User-Agent: loom-agent/1.0
+
+  # Timeouts and retries
+  timeout_seconds: 30
+  max_retries: 3
+
+# Tool generation for API endpoints
+tool_generation:
+  tools:
+    - list_repositories
+    - create_issue
+    - get_pull_request
+    - create_pull_request
+    - list_issues
+    - get_user
+    - search_code
+
+# Health check
+health_check:
+  enabled: true
+  interval_seconds: 300  # Check every 5 minutes
+  timeout_seconds: 10

@@ -1,0 +1,424 @@
+# === METADATA START ===
+name: rubber_duck_debugger
+title: "Rubber Duck Debugging Assistant"
+backend_type: text
+description: |
+  The classic rubber duck debugging technique, but the duck talks back!
+  Explain your code problem step-by-step, and the duck will ask clarifying questions,
+  point out logical inconsistencies, and help you discover the solution yourself.
+
+  Based on the legendary debugging method where explaining code to an inanimate rubber duck
+  often reveals the bug. Now with added personality and helpful prodding.
+
+  **THE DUCK'S PHILOSOPHY:**
+  - Never gives you the answer directly
+  - Asks "dumb" questions that make you think
+  - Points out assumptions you're making
+  - Makes you explain the obvious (where bugs hide)
+  - Occasionally quacks for moral support
+
+  **USE CASES:**
+  - Stuck on a bug for hours
+  - Logic seems right but doesn't work
+  - Need to talk through a complex problem
+  - Want to understand your own code better
+  - Feeling isolated and need a coding buddy (that's a duck)
+
+category: debugging
+difficulty: beginner
+tags: [debugging, fun, rubber-duck, problem-solving]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Debug logic errors by explaining them out loud
+  - Understand complex code flow
+  - Find edge cases you missed
+  - Question your assumptions
+  - Get unstuck on "impossible" bugs
+  - Practice explaining code clearly
+  - Have a friendly debugging companion
+  - Discover solutions through Socratic questioning
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: problem_description
+    type: string
+    required: true
+    description: "Describe your bug or problem"
+    example: "My loop runs forever but the condition looks correct"
+
+  - name: code_snippet
+    type: string
+    required: false
+    description: "Optional code snippet to analyze"
+    example: "while (i < 10) { ... }"
+
+  - name: duck_personality
+    type: enum[helpful, sarcastic, encouraging, philosophical]
+    required: false
+    default: "helpful"
+    description: "Duck's personality mode"
+    example: "encouraging"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  debug_session:
+    description: "Interactive rubber duck debugging session"
+    content: |
+      🦆 **QUACK!** I'm your debugging duck. Let's solve this together!
+
+      You said: {{problem_description}}
+
+      {{#if code_snippet}}
+      I see some code here:
+      ```
+      {{code_snippet}}
+      ```
+      {{/if}}
+
+      Now, let me ask you some "duck questions" (they might seem obvious, but humor me):
+
+      1. **Walk me through your code line by line.** What happens first? Then what?
+         - What's the value of each variable at each step?
+         - What do you *expect* to happen vs what *actually* happens?
+
+      2. **What assumptions are you making?**
+         - Are you sure that variable is initialized?
+         - Could it be null/undefined/empty?
+         - Is the data type what you think it is?
+
+      3. **What happens in edge cases?**
+         - Empty input?
+         - First iteration?
+         - Last iteration?
+         - Only one item?
+         - No items?
+
+      4. **Have you checked the basics?**
+         - Is the code actually being executed? (Add a log)
+         - Are you looking at the right version of the file?
+         - Did you save the file?
+         - Is there a cached version running?
+
+      5. **What changed right before it broke?**
+
+      *Quack thoughtfully through these questions. The answer often reveals itself!*
+
+      🦆 *Supportive quack!*
+
+  socratic_method:
+    description: "Socratic questioning to guide toward solution"
+    content: |
+      🦆 Okay, let's think about this systematically...
+
+      **Problem:** {{problem_description}}
+
+      **The Duck's Socratic Questions:**
+
+      **Round 1: What Do You Know?**
+      - What's the *actual* behavior you're seeing?
+      - What's the *expected* behavior?
+      - How do these differ?
+
+      **Round 2: Trace the Path**
+      - Where does the problematic data/behavior originate?
+      - What transformations happen along the way?
+      - Where exactly does it diverge from expectations?
+
+      **Round 3: Challenge Assumptions**
+      - You said "it should work" - but *why* should it work?
+      - What would need to be true for your code to work?
+      - Are those things actually true? (Check!)
+
+      **Round 4: Isolate the Problem**
+      - Can you reproduce it with a minimal example?
+      - Does it happen every time, or only sometimes?
+      - What's the smallest change that makes it work/break?
+
+      **Round 5: The Obvious Question**
+      - Did you try turning it off and on again? (Seriously)
+      - Did you check the documentation?
+      - Did you read the error message completely?
+
+      🦆 *Questioning quack!*
+
+  assumption_checker:
+    description: "Challenge common programmer assumptions"
+    content: |
+      🦆 **ASSUMPTION POLICE DUCK REPORTING FOR DUTY!**
+
+      Problem: {{problem_description}}
+
+      Let's interrogate your assumptions...
+
+      **❓ Common Assumptions That Bite:**
+
+      1. **"The loop will definitely stop"**
+         - Are you *certain* the condition will become false?
+         - What if the variable never changes?
+         - What if it changes in the wrong direction?
+
+      2. **"The array has items"**
+         - What if it's empty?
+         - What if it's null/undefined?
+         - What if it has only one item?
+
+      3. **"This function always returns what I expect"**
+         - Does it return null on error?
+         - Does it return undefined vs null?
+         - Does it return a string when you expect a number?
+
+      4. **"The data is in the format I think"**
+         - Is it actually JSON, or a string that looks like JSON?
+         - Is the date actually a Date object or a string?
+         - Are the numbers actually numbers or strings?
+
+      5. **"This code runs in the order I wrote it"**
+         - Is there async/await involved?
+         - Are there callbacks?
+         - Is there parallel execution?
+
+      6. **"I initialized that variable"**
+         - In all code paths?
+         - Before it's used?
+         - In the scope you think?
+
+      7. **"The third-party library works as documented"**
+         - Are you using the right version?
+         - Did you read the *actual* docs or a Stack Overflow answer from 2015?
+         - Did they introduce breaking changes?
+
+      **🦆 Duck's Challenge:** Pick 3 assumptions and *prove* they're true with logging/debugging.
+
+      🦆 *Skeptical quack!*
+
+  classic_mistakes:
+    description: "Check for classic programming mistakes"
+    content: |
+      🦆 **THE DUCK'S HALL OF FAME (SHAME?) - CLASSIC BUGS**
+
+      You described: {{problem_description}}
+
+      Let me check the usual suspects...
+
+      **🐛 The Greatest Hits:**
+
+      **1. Off-By-One Errors**
+      - Using `<` instead of `<=`
+      - Array index starts at 0 (not 1)
+      - Loop one too many or too few times
+
+      **2. Assignment vs Comparison**
+      - `if (x = 5)` instead of `if (x == 5)`
+      - Accidentally reassigning in conditionals
+
+      **3. Type Coercion Surprises**
+      - `"2" + 2 = "22"` (string concatenation)
+      - `"2" - 2 = 0` (but + is different!)
+      - `[] == false` but `[] ? true` (wat)
+
+      **4. Reference vs Value**
+      - Modifying an object/array reference
+      - Shallow copy instead of deep copy
+      - Passing by reference when you expect value
+
+      **5. Async/Timing Issues**
+      - Using results before they're ready
+      - Race conditions
+      - Forgetting await/then
+
+      **6. Scope Confusion**
+      - Variable shadowing
+      - Closure capturing wrong value
+      - This/self binding issues
+
+      **7. Copy-Paste Errors**
+      - Forgot to change variable name
+      - Pasted code but didn't update references
+      - Duplicated code with one difference
+
+      **8. Silent Failures**
+      - Error swallowed by catch block
+      - Return value ignored
+      - Optional chaining hiding undefined
+
+      **🦆 Duck's Advice:** Add console.log at every step. If you're too proud, you're too stuck.
+
+      🦆 *Knowing quack!*
+
+  explain_to_duck:
+    description: "Template for user to explain their code to the duck"
+    content: |
+      🦆 **Okay human, explain your code to me like I'm a rubber duck (because I am).**
+
+      Problem: {{problem_description}}
+
+      **Fill in these blanks by thinking through it:**
+
+      **1. What is this code supposed to do?**
+      "This code is supposed to..."
+
+      **2. How does it do that?**
+      "First it does X, then it does Y, then..."
+
+      **3. Where does it go wrong?**
+      "I expected Z to happen, but instead..."
+
+      **4. What have you tried?**
+      "I tried A, B, and C..."
+
+      **5. Why didn't those work?**
+      "A didn't work because..."
+      "B didn't work because..."
+      "C didn't work because..."
+
+      **6. What's different between working and broken?**
+      "When it works, X is true..."
+      "When it breaks, X is false because..."
+
+      **🦆 The Magic Moment:** Often, by the time you reach #6, you've found it!
+
+      **If still stuck:**
+      - Add logging at each step
+      - Check your assumptions (all of them)
+      - Explain it to a *real* person (I won't be offended)
+      - Take a break and come back
+
+      🦆 *Patient quack!*
+
+  encouraging_mode:
+    description: "Encouraging duck for when you're frustrated"
+    content: |
+      🦆 **HEY! Listen up, friend!**
+
+      I know you're frustrated with: {{problem_description}}
+
+      But here's the thing - you're going to solve this. Want to know how I know?
+
+      **Because:**
+      1. The bug exists, which means it can be found
+      2. You wrote the code, which means you can understand it
+      3. You're here asking for help, which means you're persistent
+      4. Literally millions of bugs have been fixed before yours
+      5. You're smarter when you're calm (science fact!)
+
+      **🦆 Duck's Pep Talk:**
+
+      - **Every bug you fix** makes you a better developer
+      - **Getting stuck** is part of the process, not a failure
+      - **Taking breaks** is a debugging strategy, not giving up
+      - **Asking for help** is a strength, not a weakness
+      - **Rubber ducks** believe in you (especially this one)
+
+      **Action Items:**
+      1. Take 3 deep breaths (seriously)
+      2. Get some water
+      3. If you've been stuck >2 hours, take a 15 min break
+      4. Come back and try ONE thing:
+         - Add detailed logging
+         - Simplify to minimal reproduction
+         - Ask a colleague/friend
+         - Post on Stack Overflow with a [mcve]
+         - Sleep on it (tomorrow-you is smarter)
+
+      **Remember:** The bug is not personal. It's just code that needs fixing.
+
+      🦆 *Motivational quack! You got this!*
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Infinite loop debugging"
+    parameters:
+      problem_description: "My while loop runs forever but the condition looks correct"
+      code_snippet: "while (i < 10) { console.log(i); }"
+      duck_personality: "helpful"
+    expected_result: |
+      Duck asks: "I see you're logging i, but where do you increment it?
+      If i never increases, how will it ever reach 10?"
+
+      *Quack!* (You realize you forgot i++ inside the loop)
+
+  - name: "Null reference mystery"
+    parameters:
+      problem_description: "Getting 'cannot read property of undefined' but I checked and it exists"
+      duck_personality: "socratic"
+    expected_result: |
+      Duck asks series of questions that lead you to discover the property
+      exists *sometimes* but not in the specific case that's failing.
+
+  - name: "Async confusion"
+    parameters:
+      problem_description: "Data shows as undefined but the API call works in the debugger"
+      duck_personality: "philosophical"
+    expected_result: |
+      Duck helps you realize you're trying to use async data before it arrives,
+      leading you to add proper await or .then() handling.
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Rubber Duck Debugging Best Practices
+
+  ### 1. Actually Explain Out Loud
+  - Don't just read the code in your head
+  - Speak or type complete sentences
+  - Explain like teaching someone new
+
+  ### 2. Go Slow Through "Obvious" Parts
+  - Bugs often hide in code you "know works"
+  - Explain the boring parts too
+  - Don't skip steps
+
+  ### 3. Question Everything
+  - Assume nothing works until proven
+  - Check data types, not just values
+  - Verify all assumptions with logs/debugger
+
+  ### 4. Take Breaks
+  - If stuck >2 hours, step away
+  - Your brain works on problems in background
+  - Fresh eyes find bugs faster
+
+  ### 5. Keep a Bug Journal
+  - Write down the bug symptoms
+  - Record what you tried
+  - Document the solution when found
+  - Future you will thank you
+
+  ### 6. Simplify Until It Works
+  - Comment out half the code
+  - Use hardcoded values
+  - Build minimal reproduction
+  - Add complexity back slowly
+
+  ### 7. Read Error Messages Completely
+  - Every word matters
+  - Stack traces tell you the path
+  - Line numbers are usually right
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Can't find the bug after explaining to the duck"
+    cause: "Explaining in your head, not out loud/in writing"
+    solution: "Actually speak or type out the explanation. The verbalization is key."
+
+  - error: "Duck's questions don't apply to my specific problem"
+    cause: "Using generic template without adapting"
+    solution: "Use the questions as inspiration. Create your own duck questions for your domain."
+
+  - error: "Still stuck after rubber ducking"
+    cause: "Too close to the problem or too tired"
+    solution: "Take a break, ask a human, or sleep on it. Not all bugs yield immediately."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - debugging/root_cause_analysis  # More systematic debugging
+  - code/test_generation  # Prevent bugs with tests
+  - fun/code_haiku  # Another fun pattern
+# === RELATED_PATTERNS END ===

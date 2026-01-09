@@ -1,0 +1,175 @@
+# === METADATA START ===
+name: doc_generation
+title: "Automated Documentation Generation"
+description: |
+  Generate documentation from code - godoc comments, README files, API docs, and inline
+  comments. Maintains consistency, saves time, and ensures documentation stays in sync
+  with code. Supports multiple languages and documentation formats.
+
+category: documentation
+difficulty: beginner
+backend_type: code
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Godoc-style function documentation
+  - README.md generation
+  - API documentation
+  - Inline code comments
+  - Package documentation
+  - Usage examples
+  - Configuration docs
+  - Architecture documentation
+  - Migration guides
+  - Changelog generation
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: code
+    type: string
+    required: true
+    description: "Code to document"
+    example: "func ProcessOrder(order Order) error { ... }"
+
+  - name: doc_type
+    type: enum[godoc, readme, inline, api, package]
+    required: false
+    default: "godoc"
+    description: "Type of documentation to generate"
+    example: "godoc"
+
+  - name: include_examples
+    type: boolean
+    required: false
+    default: true
+    description: "Include usage examples"
+    example: "true"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  godoc:
+    description: "Generate Go documentation comments"
+    content: |
+      Generate godoc-style documentation for:
+
+      {{code}}
+
+      Include:
+      - Package description (if package-level)
+      - Function/method description (what it does)
+      - Parameter descriptions
+      - Return value descriptions
+      - Usage examples
+      - Notes about edge cases or performance
+
+      Follow godoc conventions:
+      - Start with function name
+      - Use complete sentences
+      - Provide examples in Example functions
+    required_parameters:
+      - code
+
+  readme:
+    description: "Generate comprehensive README.md"
+    content: |
+      Generate a README.md for this project:
+
+      Code: {{code}}
+      Purpose: {{purpose}}
+
+      Include sections:
+      # Project Name
+      Brief description
+
+      ## Installation
+      Step-by-step installation
+
+      ## Usage
+      Code examples showing main use cases
+
+      ## Configuration
+      Available options and defaults
+
+      ## API Reference (if applicable)
+      Key functions/endpoints
+
+      ## Contributing
+      How to contribute
+
+      ## License
+      License information
+    required_parameters:
+      - code
+
+  inline_comments:
+    description: "Add inline comments to complex code"
+    content: |
+      Add inline comments to explain this code:
+
+      {{code}}
+
+      Guidelines:
+      - Comment WHY, not WHAT (code shows what)
+      - Explain non-obvious logic
+      - Note edge cases or gotchas
+      - Keep comments concise
+      - Use // for Go, # for Python, etc.
+    required_parameters:
+      - code
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Go Function Documentation"
+    parameters:
+      code: |
+        func CalculateShipping(weight float64, destination string) (float64, error) {
+            if weight <= 0 {
+                return 0, errors.New("weight must be positive")
+            }
+            rate := getShippingRate(destination)
+            return weight * rate, nil
+        }
+      doc_type: "godoc"
+    expected_result: |
+      // CalculateShipping computes the shipping cost based on package weight and destination.
+      //
+      // The function multiplies the weight (in kg) by the destination-specific rate.
+      // Returns an error if weight is zero or negative.
+      //
+      // Parameters:
+      //   - weight: Package weight in kilograms (must be positive)
+      //   - destination: Destination country code (e.g., "US", "CA", "UK")
+      //
+      // Returns:
+      //   - Shipping cost in USD
+      //   - Error if weight is invalid or destination rate unavailable
+      //
+      // Example:
+      //   cost, err := CalculateShipping(2.5, "US")
+      //   if err != nil {
+      //       log.Fatal(err)
+      //   }
+      //   fmt.Printf("Shipping cost: $%.2f\n", cost)
+      func CalculateShipping(weight float64, destination string) (float64, error) {
+          ...
+      }
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Documentation Generation Best Practices
+
+  1. **Explain WHY, not WHAT**: Code shows what, docs explain why
+  2. **Keep Examples Runnable**: Test example code actually works
+  3. **Update with Code**: Regenerate docs when code changes
+  4. **Consistent Style**: Follow language conventions (godoc, JSDoc, etc.)
+  5. **Audience Awareness**: Adjust detail level for target audience
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - code_generation
+  - test_generation

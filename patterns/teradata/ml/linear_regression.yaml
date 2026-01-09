@@ -1,0 +1,415 @@
+# === METADATA START ===
+name: linear_regression
+title: "Linear Regression"
+description: |
+  Build linear regression models to predict continuous target variables based on one or more
+  predictor variables. The TD_LinReg function trains a linear model using least squares
+  optimization and returns model coefficients, statistics, and predictions.
+
+  Linear regression is used for:
+  - Sales forecasting
+  - Demand prediction
+  - Risk assessment
+  - Trend analysis
+  - Price optimization
+  - Resource planning
+
+category: ml
+difficulty: intermediate
+teradata_function: TD_LinReg
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  # --- Use Case 1: Sales Forecasting ---
+  - Sales and revenue forecasting
+
+  # --- Use Case 2: CLV Prediction ---
+  - Customer lifetime value prediction
+
+  # --- Use Case 3: Inventory Demand ---
+  - Inventory demand forecasting
+
+  # --- Use Case 4: Price Elasticity ---
+  - Price elasticity analysis
+
+  # --- Use Case 5: Marketing ROI ---
+  - Marketing ROI prediction
+
+  # --- Use Case 6: Resource Utilization ---
+  - Resource utilization forecasting
+
+  # --- Use Case 7: Real Estate ---
+  - Real estate price prediction
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training data table"
+    example: "analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates; must contain both features and target
+    required: true
+    description: "Table with training data (features and target)"
+    example: "sales_data"
+
+  # --- Parameter 3: Target Column ---
+  - name: target_column
+    type: string
+    # LLM-HINT: Continuous numeric column to predict (dependent variable); must have variance
+    required: true
+    description: "Column containing the dependent variable (what you're predicting)"
+    example: "monthly_revenue"
+
+  # --- Parameter 4: Feature Columns ---
+  - name: feature_columns
+    type: array[string]
+    # LLM-HINT: Independent variables for prediction; avoid highly correlated features
+    required: true
+    description: "Columns to use as predictors/independent variables"
+    example: '["marketing_spend", "season", "competitor_price"]'
+
+  # --- Parameter 5: Partition Column ---
+  - name: partition_column
+    type: string
+    # LLM-HINT: Optional grouping for separate models per category (region, product, segment)
+    required: false
+    description: "Column to partition by for separate models per group"
+    example: "region"
+
+  # --- Parameter 6: Intercept ---
+  - name: intercept
+    type: boolean
+    # LLM-HINT: Include y-intercept term (usually true unless model should pass through origin)
+    required: false
+    default: "true"
+    description: "Whether to include intercept term in the model"
+    example: "true"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === DATA_EXPLORATION TEMPLATE ===
+  # LLM-HINT: Run this first to validate data quality before training (check nulls, variance)
+  data_exploration:
+    description: "Explore data before building model - check distributions and correlations"
+    sql: |
+      -- Data exploration: Check feature distributions and basic stats
+      SELECT
+        COUNT(*) as row_count,
+        COUNT(DISTINCT {{partition_column}}) as partition_count,
+        -- Target variable stats
+        AVG({{target_column}}) as avg_target,
+        STDDEV_POP({{target_column}}) as stddev_target,
+        MIN({{target_column}}) as min_target,
+        MAX({{target_column}}) as max_target,
+        -- Check for nulls
+        SUM(CASE WHEN {{target_column}} IS NULL THEN 1 ELSE 0 END) as null_count_target
+      FROM {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+      - target_column
+
+  # === TRAIN_MODEL TEMPLATE ===
+  # LLM-HINT: Trains least squares model using TD_LinReg; outputs coefficients to model_table
+  train_model:
+    description: "Train linear regression model and get coefficients"
+    sql: |
+      -- Train linear regression model
+      -- NOTE: PartitionColumns is optional - only include if you need separate models per group
+      SELECT *
+      FROM TD_LinReg (
+        ON {{database}}.{{table}} AS InputTable
+        OUT TABLE OutputTable (model_table)
+        USING
+          TargetColumns ('{{target_column}}')
+          InputColumns ({{feature_columns_quoted}})
+          -- PartitionColumns ('{{partition_column}}')  -- Uncomment if partitioning needed
+          Intercept ({{intercept}})
+      ) AS dt;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - feature_columns_quoted
+
+  # === PREDICT TEMPLATE ===
+  # LLM-HINT: Apply trained model to new data; requires model_table from train_model step
+  predict:
+    description: "Apply trained model to make predictions on new data"
+    sql: |
+      -- Make predictions using trained model
+      SELECT
+        input.*,
+        prediction.prediction as predicted_{{target_column}}
+      FROM {{database}}.{{table}} input
+      JOIN TD_LinRegPredict (
+        ON input AS InputTable
+        ON model_table AS Model
+        USING
+          Accumulate ({{accumulate_columns}})
+      ) AS prediction
+      ORDER BY {{order_column}};
+    required_parameters:
+      - database
+      - table
+      - accumulate_columns
+      - order_column
+
+  # === MODEL_EVALUATION TEMPLATE ===
+  # LLM-HINT: Evaluates ARIMA model; requires forecast_results table from prior run
+  model_evaluation:
+    description: "Evaluate model performance with R-squared and error metrics"
+    sql: |
+      -- Calculate R-squared and error metrics
+      WITH predictions AS (
+        SELECT
+          actual,
+          predicted,
+          (actual - predicted) AS error,
+          POWER(actual - predicted, 2) AS squared_error
+        FROM {{database}}.{{predictions_table}}
+      ),
+      stats AS (
+        SELECT
+          AVG(actual) AS mean_actual,
+          STDDEV_POP(actual) AS stddev_actual,
+          SUM(squared_error) AS sse,
+          COUNT(*) AS n
+        FROM predictions
+      )
+      SELECT
+        -- Mean Absolute Error
+        AVG(ABS(error)) AS mae,
+        -- Root Mean Squared Error
+        SQRT(AVG(squared_error)) AS rmse,
+        -- R-squared
+        1 - (sse / (n * POWER(stddev_actual, 2))) AS r_squared,
+        -- Adjusted R-squared (requires number of features)
+        1 - ((1 - (1 - (sse / (n * POWER(stddev_actual, 2))))) *
+             ((n - 1) / (n - {{num_features}} - 1))) AS adjusted_r_squared
+      FROM predictions, stats;
+    required_parameters:
+      - database
+      - predictions_table
+      - num_features
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Monthly Revenue Forecasting ---
+  - name: "Monthly Revenue Forecasting"
+    description: "Predict monthly revenue based on marketing spend and seasonality"
+    parameters:
+      database: "sales_analytics"
+      table: "monthly_data"
+      target_column: "revenue"
+      feature_columns: ["marketing_spend", "season_index", "competitor_price"]
+      intercept: true
+    expected_result: |
+      Model coefficients:
+      - Intercept: 50000
+      - marketing_spend: 3.2 (for every $1 in marketing, revenue increases by $3.20)
+      - season_index: 15000 (seasonal effect)
+      - competitor_price: -500 (negative correlation with competitor pricing)
+
+      R-squared: 0.82 (model explains 82% of variance)
+
+      Use these coefficients to predict: revenue = 50000 + (3.2 * marketing_spend) + ...
+
+  # --- Example 2: Customer Lifetime Value Prediction ---
+  - name: "Customer Lifetime Value Prediction"
+    description: "Predict CLV based on customer attributes"
+    parameters:
+      database: "customer_analytics"
+      table: "customer_features"
+      target_column: "lifetime_value"
+      feature_columns: ["first_purchase_amount", "months_active", "engagement_score", "referrals"]
+      partition_column: "customer_segment"
+      intercept: true
+    expected_result: |
+      Separate models for each customer segment (Premium, Standard, Basic).
+
+      Premium segment coefficients:
+      - first_purchase_amount: 12.5 (strong predictor)
+      - months_active: 450
+      - engagement_score: 890
+      - referrals: 1200
+
+      Can score new customers using segment-specific models.
+
+  # --- Example 3: Real Estate Price Prediction ---
+  - name: "Real Estate Price Prediction"
+    description: "Predict house prices based on property features"
+    parameters:
+      database: "real_estate"
+      table: "listings"
+      target_column: "sale_price"
+      feature_columns: ["square_feet", "bedrooms", "bathrooms", "lot_size", "year_built"]
+      intercept: true
+    expected_result: |
+      Coefficients:
+      - square_feet: 180 ($180 per sq ft)
+      - bedrooms: 15000 ($15K per bedroom)
+      - bathrooms: 12000 ($12K per bathroom)
+      - lot_size: 5 ($5 per sq ft of lot)
+      - year_built: 800 (newer homes command premium)
+
+      R-squared: 0.75
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: NULL Values ---
+  - error: "Column contains NULL values"
+    cause: "Missing values in target or feature columns"
+    solution: "Remove rows with NULLs (WHERE {{target}} IS NOT NULL) or use imputation (COALESCE, median replacement)"
+
+  # --- Error 2: Multicollinearity ---
+  - error: "Multicollinearity detected"
+    cause: "Feature columns are highly correlated with each other"
+    solution: "Remove redundant features. Check correlation matrix and drop features with correlation > 0.9"
+
+  # --- Error 3: Insufficient Data ---
+  - error: "Insufficient training data"
+    cause: "Too few rows relative to number of features"
+    solution: "Need at least 10-20 rows per feature. Reduce features or gather more data"
+
+  # --- Error 4: Zero Variance ---
+  - error: "Target variable has zero variance"
+    cause: "All target values are the same"
+    solution: "Check target column - linear regression requires variance. Verify data quality"
+
+  # --- Error 5: Feature Scaling ---
+  - error: "Feature scaling issues"
+    cause: "Features have vastly different scales (e.g., 0-1 vs 0-1000000)"
+    solution: "Consider normalizing features: (value - mean) / stddev. Teradata handles this internally but extreme scales can cause numerical issues"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Linear Regression Best Practices
+
+  ### 1. Data Preparation
+  **Clean Your Data:**
+  - Remove or impute NULL values
+  - Handle outliers (consider removing extreme values or capping)
+  - Check for data quality issues (negative values where they shouldn't be, etc.)
+
+  **Feature Selection:**
+  - Use domain knowledge to select relevant features
+  - Avoid highly correlated features (multicollinearity)
+  - Consider feature engineering (interactions, polynomials)
+
+  ### 2. Exploratory Analysis
+  **Before modeling:**
+  ```sql
+  -- Check distributions
+  SELECT
+    feature_column,
+    AVG(feature_column) as mean,
+    STDDEV_POP(feature_column) as stddev,
+    MIN(feature_column) as min,
+    MAX(feature_column) as max
+  FROM table
+  ```
+
+  **Check correlations:**
+  - Strong correlation (> 0.7) between features = multicollinearity
+  - Features should correlate with target, not each other
+
+  ### 3. Model Training
+  **Split data into train/test sets:**
+  ```sql
+  -- Use WHERE clause to split by date or random sample
+  WHERE event_date < '2024-01-01'  -- Training
+  WHERE event_date >= '2024-01-01' -- Testing
+  ```
+
+  **Start simple:**
+  - Begin with a few key features
+  - Add complexity incrementally
+  - Compare R-squared as you add features
+
+  ### 4. Model Evaluation
+  **Key metrics:**
+  - **R-squared**: % of variance explained (0.7+ is generally good)
+  - **RMSE**: Average prediction error in target units
+  - **MAE**: Mean absolute error (easier to interpret)
+
+  **Visual inspection:**
+  - Plot predicted vs actual values
+  - Check residuals (should be randomly distributed)
+  - Look for patterns in errors (suggests missing features)
+
+  ### 5. Model Validation
+  **Test on holdout data:**
+  - Never evaluate on training data
+  - Use most recent data as test set for time series
+  - Check if R-squared holds on test set
+
+  **Cross-validation:**
+  - For small datasets, use k-fold cross-validation
+  - Train on k-1 folds, test on 1 fold, repeat
+
+  ### 6. Production Deployment
+  **Save model coefficients:**
+  ```sql
+  CREATE TABLE model_coefficients AS
+  SELECT * FROM model_output_table;
+  ```
+
+  **Scoring new data:**
+  - Apply same preprocessing as training data
+  - Use TD_LinRegPredict for batch scoring
+  - Monitor prediction accuracy over time
+
+  ### 7. Model Maintenance
+  **Regular retraining:**
+  - Retrain monthly/quarterly with fresh data
+  - Check if model performance degrades
+  - Update feature list based on business changes
+
+  **Monitor inputs:**
+  - Alert on unusual feature values
+  - Track feature drift (distributions changing)
+  - Set bounds on predictions (e.g., price can't be negative)
+
+  ### 8. Common Pitfalls to Avoid
+  ❌ Don't use categorical variables directly (use one-hot encoding or dummy variables)
+  ❌ Don't ignore outliers (they heavily influence the model)
+  ❌ Don't overfit (too many features for amount of data)
+  ❌ Don't extrapolate beyond training data range
+  ❌ Don't assume causation from correlation
+
+  ### 9. Memory Layers for ML Workflows
+  - **Kernel Layer**: Cache feature definitions and transformation logic for consistency across training runs
+  - **L1 Cache**: Keep model coefficients and recent predictions (last 3-5 models) for comparison
+  - **L2 Compressed**: Archive model performance summaries from earlier in the conversation
+  - **Swap Layer**: Store complete experiment history for long-running ML projects; use recall_conversation to retrieve baseline model metrics from previous sessions when comparing new approaches
+  This enables efficient model comparison and reproducible experiments across multi-week ML development cycles.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Logistic Regression ---
+  - logistic_regression
+
+  # --- Pattern 2: Decision Tree ---
+  - decision_tree
+
+  # --- Pattern 3: Polynomial Regression ---
+  - polynomial_regression
+
+  # --- Pattern 4: Ridge Regression ---
+  - ridge_regression
+# === RELATED_PATTERNS END ===

@@ -1,0 +1,48 @@
+# Loom Server Configuration with Manual TLS (Enterprise Mode)
+# This demonstrates TLS configuration with manually provided certificates
+
+server:
+  port: 9443
+  host: 0.0.0.0
+  enable_reflection: true
+  tls:
+    enabled: true
+    mode: manual
+    manual:
+      cert_file: /tmp/loom-tls-manual/server.crt
+      key_file: /tmp/loom-tls-manual/server.key
+      # ca_file: /path/to/ca.crt  # Optional, for mTLS
+
+llm:
+  provider: bedrock
+  bedrock_region: us-west-2
+  bedrock_profile: bedrock
+  bedrock_model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+database:
+  path: ./loom-tls-manual.db
+  driver: sqlite
+
+shared_memory:
+  enabled: true
+  max_memory_bytes: 1073741824  # 1GB
+  threshold_bytes: 102400       # 100KB
+  compression_threshold: 1048576 # 1MB
+  ttl_seconds: 3600              # 1 hour
+  disk_overflow_enabled: false
+
+observability:
+  enabled: false
+  provider: hawk
+  hawk_endpoint: ""
+
+logging:
+  level: info
+  format: text
+
+# No agents configured - will use default mock backend for TLS testing
+agents:
+  agents: {}

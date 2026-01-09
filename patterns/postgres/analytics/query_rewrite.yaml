@@ -1,0 +1,538 @@
+# === METADATA START ===
+name: query_rewrite
+title: "Query Rewrite Optimization"
+description: "Rewrites queries for better performance using equivalent but faster SQL patterns, transforming slow constructs into optimized alternatives"
+category: analytics
+difficulty: advanced
+backend_type: postgres
+priority: 85
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - "Transform slow queries to faster equivalents"
+  - "Optimize subquery performance"
+  - "Improve complex WHERE conditions"
+  - "Replace IN with EXISTS or JOIN"
+  - "Convert DISTINCT to GROUP BY"
+  - "Rewrite OR conditions for better index usage"
+  - "Eliminate correlated subqueries"
+  - "Improve query execution time by 2-100x"
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: original_query
+    type: string
+    required: true
+    description: "Original slow query to rewrite"
+    example: "SELECT * FROM orders WHERE user_id IN (SELECT id FROM users WHERE is_active = true)"
+
+  - name: rewrite_type
+    type: string
+    required: false
+    description: "Type of rewrite (in_to_exists, distinct_to_group, or_to_union, subquery_to_join)"
+    example: "in_to_exists"
+
+  - name: schema_name
+    type: string
+    required: false
+    description: "Schema name (defaults to public)"
+    default: "public"
+    example: "public"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  analysis: |
+    -- Query Rewrite Analysis
+    -- Original query: {{.original_query}}
+
+    -- Step 1: Analyze original query performance
+    EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
+    {{.original_query}};
+
+    -- Look for:
+    -- - SubPlan nodes (correlated subqueries - expensive!)
+    -- - Filter conditions with high row removal
+    -- - Sequential scans that could use indexes
+    -- - Sort operations
+    -- - High execution time
+
+    -- Step 2: Identify rewrite opportunities
+    -- Common patterns that benefit from rewriting:
+    -- 1. IN with subquery → EXISTS or JOIN
+    -- 2. NOT IN with subquery → NOT EXISTS or LEFT JOIN with NULL check
+    -- 3. DISTINCT → GROUP BY
+    -- 4. OR conditions → UNION (for index usage)
+    -- 5. Correlated subqueries → JOIN
+    -- 6. UNION → UNION ALL (if duplicates not possible)
+    -- 7. Scalar subqueries in SELECT → LEFT JOIN
+
+  rewrite_in_to_exists: |
+    -- Rewrite IN subquery to EXISTS (often 2-10x faster)
+
+    -- Bad: IN with subquery (materialized or repeated for each row)
+    SELECT *
+    FROM orders
+    WHERE user_id IN (
+      SELECT id FROM users WHERE is_active = true
+    );
+
+    -- Good: EXISTS (stops at first match, more efficient)
+    SELECT *
+    FROM orders o
+    WHERE EXISTS (
+      SELECT 1
+      FROM users u
+      WHERE u.id = o.user_id
+        AND u.is_active = true
+    );
+
+    -- Why EXISTS is faster:
+    -- 1. Stops scanning as soon as match found
+    -- 2. Better optimizer estimates
+    -- 3. Can use semi-join optimization
+    -- 4. Works well with correlated conditions
+
+    -- Alternative: JOIN (fastest if you need user columns)
+    SELECT o.*
+    FROM orders o
+    INNER JOIN users u ON o.user_id = u.id
+    WHERE u.is_active = true;
+
+  rewrite_not_in_to_not_exists: |
+    -- Rewrite NOT IN to NOT EXISTS (handles NULLs correctly)
+
+    -- Bad: NOT IN (returns no rows if subquery has NULLs!)
+    SELECT *
+    FROM orders
+    WHERE user_id NOT IN (
+      SELECT id FROM suspended_users
+    );
+
+    -- Good: NOT EXISTS (handles NULLs correctly)
+    SELECT *
+    FROM orders o
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM suspended_users s
+      WHERE s.id = o.user_id
+    );
+
+    -- Alternative: LEFT JOIN with NULL check
+    SELECT o.*
+    FROM orders o
+    LEFT JOIN suspended_users s ON o.user_id = s.id
+    WHERE s.id IS NULL;
+
+    -- Critical: NOT IN fails if subquery returns NULL
+    -- Always use NOT EXISTS or LEFT JOIN for safety
+
+  rewrite_distinct_to_group: |
+    -- Rewrite DISTINCT to GROUP BY (better optimization)
+
+    -- Bad: DISTINCT (generic deduplication)
+    SELECT DISTINCT category, status
+    FROM orders
+    WHERE created_at > '2024-01-01';
+
+    -- Good: GROUP BY (can use indexes, allows aggregates)
+    SELECT category, status
+    FROM orders
+    WHERE created_at > '2024-01-01'
+    GROUP BY category, status;
+
+    -- Benefits of GROUP BY:
+    -- 1. More explicit intent
+    -- 2. Can add aggregates (COUNT, SUM) without rewrite
+    -- 3. Better index usage
+    -- 4. More optimization opportunities
+
+    -- Example with aggregates:
+    SELECT
+      category,
+      status,
+      COUNT(*) AS count,
+      SUM(total_amount) AS total_revenue
+    FROM orders
+    WHERE created_at > '2024-01-01'
+    GROUP BY category, status;
+
+  rewrite_or_to_union: |
+    -- Rewrite OR conditions to UNION (better index usage)
+
+    -- Bad: OR prevents index usage on both columns
+    SELECT *
+    FROM orders
+    WHERE status = 'pending' OR created_at > '2024-01-01';
+
+    -- Good: UNION ALL allows index scan on each branch
+    SELECT *
+    FROM orders
+    WHERE status = 'pending'
+    UNION ALL
+    SELECT *
+    FROM orders
+    WHERE created_at > '2024-01-01'
+      AND status != 'pending';  -- Avoid duplicates
+
+    -- Or use UNION (automatically removes duplicates):
+    SELECT *
+    FROM orders
+    WHERE status = 'pending'
+    UNION
+    SELECT *
+    FROM orders
+    WHERE created_at > '2024-01-01';
+
+    -- When to use UNION:
+    -- - OR conditions on different columns
+    -- - Both columns have indexes
+    -- - High selectivity on each condition
+    -- - Large table (> 100K rows)
+
+    -- When to keep OR:
+    -- - Same column: WHERE status IN ('pending', 'processing')
+    -- - Small table (< 1K rows)
+    -- - Conditions not selective
+
+  rewrite_subquery_to_join: |
+    -- Rewrite correlated subqueries to JOIN (10-100x faster)
+
+    -- Bad: Correlated subquery (runs once per outer row!)
+    SELECT
+      o.id,
+      o.total,
+      (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS item_count,
+      (SELECT SUM(quantity) FROM order_items WHERE order_id = o.id) AS total_qty
+    FROM orders o
+    WHERE o.status = 'completed';
+
+    -- Good: JOIN with GROUP BY (runs once)
+    SELECT
+      o.id,
+      o.total,
+      COUNT(oi.id) AS item_count,
+      SUM(oi.quantity) AS total_qty
+    FROM orders o
+    LEFT JOIN order_items oi ON o.order_id = oi.order_id
+    WHERE o.status = 'completed'
+    GROUP BY o.id, o.total;
+
+    -- Benefits:
+    -- - Subquery runs N times (once per order)
+    -- - JOIN runs once with GROUP BY
+    -- - Can leverage indexes more effectively
+
+  rewrite_union_to_union_all: |
+    -- Replace UNION with UNION ALL when duplicates impossible
+
+    -- Bad: UNION (sorts and deduplicates even when unnecessary)
+    SELECT user_id, 'order' AS type FROM orders WHERE status = 'pending'
+    UNION
+    SELECT user_id, 'return' AS type FROM returns WHERE status = 'pending';
+
+    -- Good: UNION ALL (no deduplication overhead)
+    SELECT user_id, 'order' AS type FROM orders WHERE status = 'pending'
+    UNION ALL
+    SELECT user_id, 'return' AS type FROM returns WHERE status = 'pending';
+
+    -- Use UNION ALL when:
+    -- - Different tables that can't have duplicates
+    -- - Different type columns guarantee uniqueness
+    -- - You're aggregating results anyway (duplicates don't matter)
+
+    -- Use UNION when:
+    -- - Duplicates are possible and must be removed
+    -- - Semantically you need unique results
+
+  optimize_case_expressions: |
+    -- Simplify complex CASE expressions
+
+    -- Bad: Nested CASE in WHERE (repeated evaluation)
+    SELECT *
+    FROM orders
+    WHERE CASE
+      WHEN status = 'pending' THEN created_at > NOW() - INTERVAL '1 day'
+      WHEN status = 'processing' THEN created_at > NOW() - INTERVAL '7 days'
+      ELSE created_at > NOW() - INTERVAL '30 days'
+    END;
+
+    -- Good: Rewrite to simple conditions
+    SELECT *
+    FROM orders
+    WHERE
+      (status = 'pending' AND created_at > NOW() - INTERVAL '1 day')
+      OR (status = 'processing' AND created_at > NOW() - INTERVAL '7 days')
+      OR (status NOT IN ('pending', 'processing') AND created_at > NOW() - INTERVAL '30 days');
+
+    -- Better: Use indexes with partial indexes
+    -- Or even better: Create filtered indexes for common cases
+
+  verification: |
+    -- Verify rewritten query produces same results and better performance
+
+    -- Step 1: Compare results (ensure correctness)
+    WITH original AS (
+      {{.original_query}}
+    ),
+    rewritten AS (
+      {{.rewritten_query}}
+    )
+    SELECT
+      'Original' AS source, COUNT(*) AS row_count FROM original
+    UNION ALL
+    SELECT
+      'Rewritten' AS source, COUNT(*) AS row_count FROM rewritten;
+
+    -- Row counts must match!
+
+    -- Step 2: Compare execution plans
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{.original_query}};
+
+    EXPLAIN (ANALYZE, BUFFERS)
+    {{.rewritten_query}};
+
+    -- Compare:
+    -- - Execution time (should be 2-100x faster)
+    -- - Planning time
+    -- - Buffer usage (shared hit vs read)
+    -- - Query plan nodes (Index Scan vs Seq Scan)
+
+    -- Step 3: Test with production data volumes
+    -- Performance improvements scale with data size
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "IN to EXISTS conversion"
+    parameters:
+      original_query: "SELECT * FROM orders WHERE user_id IN (SELECT id FROM users WHERE is_active = true)"
+      rewrite_type: "in_to_exists"
+    expected_result: |
+      Original query (slow):
+      - Execution time: 850ms
+      - SubPlan materialization: 50ms
+      - Hash Semi Join: 800ms
+
+      Rewritten with EXISTS:
+      SELECT * FROM orders o
+      WHERE EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = o.user_id AND u.is_active = true
+      );
+
+      Performance improvement:
+      - Execution time: 95ms (9x faster)
+      - Semi Join with early termination
+      - Better optimizer estimates
+
+  - name: "NOT IN to NOT EXISTS (NULL safety)"
+    parameters:
+      original_query: "SELECT * FROM orders WHERE user_id NOT IN (SELECT id FROM suspended_users)"
+      rewrite_type: "not_in_to_not_exists"
+    expected_result: |
+      Problem: If suspended_users.id contains NULL, NOT IN returns 0 rows!
+
+      Safe rewrite with NOT EXISTS:
+      SELECT * FROM orders o
+      WHERE NOT EXISTS (
+        SELECT 1 FROM suspended_users s WHERE s.id = o.user_id
+      );
+
+      Or with LEFT JOIN:
+      SELECT o.*
+      FROM orders o
+      LEFT JOIN suspended_users s ON o.user_id = s.id
+      WHERE s.id IS NULL;
+
+      Both handle NULLs correctly.
+
+  - name: "Correlated subquery to JOIN"
+    parameters:
+      original_query: "SELECT o.id, (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS items FROM orders o"
+      rewrite_type: "subquery_to_join"
+    expected_result: |
+      Original query (very slow):
+      - Subquery runs once per order (100,000 times!)
+      - Execution time: 15,000ms
+
+      Rewritten with JOIN:
+      SELECT o.id, COUNT(oi.id) AS items
+      FROM orders o
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      GROUP BY o.id;
+
+      Performance improvement:
+      - Execution time: 350ms (43x faster)
+      - Single join operation with GROUP BY
+      - Leverages indexes on order_id
+
+  - name: "OR to UNION for index usage"
+    parameters:
+      original_query: "SELECT * FROM orders WHERE status = 'urgent' OR total_amount > 10000"
+      rewrite_type: "or_to_union"
+    expected_result: |
+      Original query:
+      - Sequential scan (OR prevents index usage on both columns)
+      - Execution time: 1,200ms
+
+      Rewritten with UNION:
+      SELECT * FROM orders WHERE status = 'urgent'
+      UNION
+      SELECT * FROM orders WHERE total_amount > 10000;
+
+      Performance improvement:
+      - Two index scans (one on status, one on total_amount)
+      - Execution time: 180ms (6.7x faster)
+      - UNION automatically handles duplicate removal
+
+  - name: "DISTINCT to GROUP BY"
+    parameters:
+      original_query: "SELECT DISTINCT category, brand FROM products WHERE price > 100"
+      rewrite_type: "distinct_to_group"
+    expected_result: |
+      Original with DISTINCT:
+      - HashAggregate node
+      - Execution time: 250ms
+
+      Rewritten with GROUP BY:
+      SELECT category, brand FROM products WHERE price > 100 GROUP BY category, brand;
+
+      Benefits:
+      - Can use composite index on (category, brand)
+      - Easy to add aggregates: COUNT(*), AVG(price)
+      - Execution time: 180ms (28% faster)
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Query Rewrite Best Practices
+
+  ### 1. Always Verify Correctness First
+  Before deploying rewritten query:
+  ```sql
+  -- Test results match exactly
+  SELECT COUNT(*) FROM (original_query) AS original;
+  SELECT COUNT(*) FROM (rewritten_query) AS rewritten;
+
+  -- Compare actual rows (use EXCEPT to find differences)
+  (original_query) EXCEPT (rewritten_query);
+  (rewritten_query) EXCEPT (original_query);
+  ```
+
+  ### 2. IN vs EXISTS vs JOIN
+  **Use EXISTS when:**
+  - Checking for existence (don't need columns from subquery)
+  - Subquery may return many rows
+  - Early termination beneficial
+
+  **Use JOIN when:**
+  - Need columns from both tables
+  - Subquery returns few rows per outer row
+  - Can add aggregates (COUNT, SUM)
+
+  **Avoid IN when:**
+  - Subquery returns many rows (use EXISTS)
+  - Subquery may have NULLs with NOT IN (use NOT EXISTS)
+
+  ### 3. NOT IN is Dangerous
+  ```sql
+  -- This returns NO ROWS if suspended_users has any NULL id!
+  SELECT * FROM orders
+  WHERE user_id NOT IN (SELECT id FROM suspended_users);
+
+  -- Always use NOT EXISTS instead
+  SELECT * FROM orders o
+  WHERE NOT EXISTS (
+    SELECT 1 FROM suspended_users s WHERE s.id = o.user_id
+  );
+  ```
+
+  ### 4. UNION vs UNION ALL
+  - **UNION**: Removes duplicates (expensive sort operation)
+  - **UNION ALL**: Keeps duplicates (fast concatenation)
+
+  Use UNION ALL when:
+  - Duplicates are impossible (different tables, different type columns)
+  - You'll aggregate results anyway (duplicates don't matter)
+  - Performance is critical
+
+  ### 5. Correlated Subqueries are Expensive
+  ```sql
+  -- Bad: Runs subquery N times
+  SELECT id, (SELECT COUNT(*) FROM items WHERE items.order_id = orders.id)
+  FROM orders;
+
+  -- Good: Runs once with JOIN
+  SELECT o.id, COUNT(i.id)
+  FROM orders o LEFT JOIN items i ON i.order_id = o.id
+  GROUP BY o.id;
+  ```
+
+  ### 6. OR Conditions Can Kill Index Usage
+  ```sql
+  -- Bad: Sequential scan (OR prevents index use)
+  WHERE column_a = 1 OR column_b = 2
+
+  -- Good: UNION with index scans
+  (SELECT ... WHERE column_a = 1)
+  UNION
+  (SELECT ... WHERE column_b = 2)
+  ```
+
+  But keep OR for same column:
+  ```sql
+  -- Good: Single index scan with IN
+  WHERE status IN ('pending', 'processing')
+  ```
+
+  ### 7. DISTINCT vs GROUP BY
+  - **DISTINCT**: Generic deduplication
+  - **GROUP BY**: Explicit grouping, allows aggregates
+
+  Always prefer GROUP BY - it's more explicit and flexible.
+
+  ### 8. Measure Before and After
+  ```sql
+  EXPLAIN (ANALYZE, BUFFERS) -- original query
+  EXPLAIN (ANALYZE, BUFFERS) -- rewritten query
+  ```
+
+  Look for:
+  - Execution time reduction (goal: 2x or more)
+  - Index usage vs sequential scans
+  - Buffer reads reduced
+  - Simpler query plan
+
+  ### 9. Test with Production Data Volumes
+  Query rewrites perform differently at scale:
+  - Small tables (< 1K rows): Keep simple queries
+  - Medium tables (1K - 100K): Most rewrites help
+  - Large tables (> 100K): Rewrites critical for performance
+
+  ### 10. Memory Layers for Query Optimization
+  - **Kernel Layer**: Cache table schemas, indexes, and statistics for query analysis
+  - **L1 Cache**: Keep recent query plans (original and rewritten) for the last 8-10 optimization cases
+  - **L2 Compressed**: Archive successful rewrite patterns and their performance improvements
+  - **Swap Layer**: Store complete query optimization history across sessions; use recall_conversation to reference similar optimization patterns from previous projects
+  This enables recognizing rewrite opportunities quickly and building a library of proven transformations.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - join_optimization
+  - distinct_elimination
+  - subquery_to_join
+  - missing_index_analysis
+# === RELATED_PATTERNS END ===
+
+validation:
+  rules:
+    - "Verify rewritten query returns same results (use EXCEPT)"
+    - "Measure performance improvement (aim for 2x+)"
+    - "Check execution plan shows better strategy"
+    - "Test with production data volumes"
+    - "Ensure NULL handling is correct"

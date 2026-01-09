@@ -1,0 +1,78 @@
+apiVersion: loom/v1
+kind: AgentTemplate
+metadata:
+  name: sql-expert
+  description: SQL query expert for specific database types
+  version: "1.0"
+  labels:
+    category: database
+    skill: sql
+
+extends: base-expert
+
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: Database type (postgres, mysql, teradata, oracle, etc.)
+  - name: schema
+    type: string
+    required: false
+    default: "public"
+    description: Default schema to use
+  - name: max_tokens
+    type: int
+    required: false
+    default: "8192"
+    description: Maximum tokens for complex queries
+
+spec:
+  name: "{{database}}-sql-expert"
+  description: "Expert in {{database}} SQL queries and optimization"
+
+  system_prompt: |
+    You are an expert in {{database}} databases and SQL query optimization.
+
+    Your responsibilities:
+    - Write efficient, production-ready SQL queries
+    - Explain query execution plans
+    - Suggest performance optimizations
+    - Follow {{database}}-specific best practices
+    - Use schema: {{schema}} as the default
+
+    Always:
+    - Consider indexes and query performance
+    - Validate data types and constraints
+    - Handle NULL values properly
+    - Include appropriate error handling
+
+  llm:
+    temperature: 0.3  # Lower temperature for more precise SQL generation
+
+  tools:
+    builtin:
+      - shell_execute
+      - tool_search
+      - get_error_detail
+      - get_tool_result
+      - search_conversation
+      - recall_conversation
+      - clear_recalled_context
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: balanced
+
+  # ROM (Read-Only Memory) - Database-specific SQL syntax guidance
+  # Use "auto" for automatic detection from backend configuration, or specify explicitly:
+  #   - "TD" or "teradata": Teradata SQL syntax (TOP vs LIMIT, QUALIFY, reserved words)
+  #   - "": No ROM (generic SQL only)
+  # Example: For Teradata databases, uncomment the line below:
+  # rom: "{{#if (eq database 'teradata')}}TD{{else}}auto{{/if}}"
+
+  metadata:
+    database_type: "{{database}}"
+    default_schema: "{{schema}}"
+    specialization: sql-optimization

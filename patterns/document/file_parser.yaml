@@ -1,0 +1,598 @@
+# === METADATA START ===
+name: file_parser
+title: "Document and File Parsing"
+backend_type: document
+description: |
+  Parse and extract content from various document formats including PDF, Word, Excel,
+  CSV, JSON, XML, and plain text. Handles encoding detection, metadata extraction,
+  and structure preservation.
+
+  **SUPPORTED FORMATS:**
+
+  **Text-based:**
+  - Plain text (TXT, MD, LOG)
+  - Structured text (CSV, TSV, JSON, XML, YAML)
+  - Markup (HTML, Markdown)
+
+  **Binary Documents:**
+  - PDF (text, tables, metadata)
+  - Microsoft Office (DOCX, XLSX, PPTX)
+  - OpenDocument (ODT, ODS, ODP)
+
+  **USE CASES:**
+  - Extract text from PDFs for analysis
+  - Parse CSV/Excel data into structured format
+  - Extract metadata from documents
+  - Convert documents to searchable text
+  - Extract tables and structured data
+  - Build document search indexes
+
+  **KEY CAPABILITIES:**
+  - Encoding detection (UTF-8, Latin-1, ASCII)
+  - File type detection (MIME type, magic bytes)
+  - Text extraction with layout preservation
+  - Table extraction from PDFs and spreadsheets
+  - Metadata extraction (author, date, title)
+  - Error handling for corrupt files
+
+category: document
+difficulty: intermediate
+tags: [parsing, extraction, pdf, excel, csv, document]
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Extract text from PDF documents
+  - Parse CSV and Excel files into structured data
+  - Build document search indexes
+  - Extract metadata for document management
+  - Convert documents to plain text for LLM processing
+  - Parse configuration files (JSON, YAML, XML)
+  - Extract tables from PDFs and spreadsheets
+  - Detect file types and encodings automatically
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: file_path
+    type: string
+    required: true
+    description: "Path to the file to parse"
+    example: "/path/to/document.pdf"
+
+  - name: output_format
+    type: string
+    required: false
+    description: "Desired output format (text, json, markdown)"
+    example: "json"
+    default: "text"
+
+  - name: extract_tables
+    type: boolean
+    required: false
+    description: "Whether to extract tables as structured data"
+    example: true
+    default: false
+
+  - name: extract_metadata
+    type: boolean
+    required: false
+    description: "Whether to extract document metadata"
+    example: true
+    default: false
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  file_type_detection:
+    description: "Detect file type using magic bytes and MIME types"
+    content: |
+      # File Type Detection (Python)
+
+      import mimetypes
+      import magic  # python-magic
+
+      def detect_file_type(file_path):
+          """Detect file type using magic bytes and MIME type"""
+          # Method 1: Using python-magic (reads file signature)
+          mime = magic.Magic(mime=True)
+          mime_type = mime.from_file(file_path)
+
+          # Method 2: Using extension-based detection (fallback)
+          guessed_type, _ = mimetypes.guess_type(file_path)
+
+          # Map MIME types to categories
+          file_types = {
+              'application/pdf': 'pdf',
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+              'text/plain': 'text',
+              'text/csv': 'csv',
+              'application/json': 'json',
+              'application/xml': 'xml',
+              'text/html': 'html',
+          }
+
+          return file_types.get(mime_type, 'unknown')
+
+      # Go implementation
+      import (
+          "net/http"
+          "os"
+      )
+
+      func detectFileType(filePath string) (string, error) {
+          file, err := os.Open(filePath)
+          if err != nil {
+              return "", err
+          }
+          defer file.Close()
+
+          // Read first 512 bytes for detection
+          buffer := make([]byte, 512)
+          _, err = file.Read(buffer)
+          if err != nil {
+              return "", err
+          }
+
+          // Detect MIME type
+          mimeType := http.DetectContentType(buffer)
+          return mimeType, nil
+      }
+
+  pdf_text_extraction:
+    description: "Extract text from PDF documents"
+    content: |
+      # PDF Text Extraction (Python)
+
+      import PyPDF2
+      import pdfplumber  # Better for tables and layout
+
+      def extract_text_pypdf2(pdf_path):
+          """Basic text extraction using PyPDF2"""
+          with open(pdf_path, 'rb') as file:
+              reader = PyPDF2.PdfReader(file)
+              text = []
+
+              for page in reader.pages:
+                  text.append(page.extract_text())
+
+              return '\n\n'.join(text)
+
+      def extract_text_with_layout(pdf_path):
+          """Extract text preserving layout using pdfplumber"""
+          with pdfplumber.open(pdf_path) as pdf:
+              text = []
+
+              for page in pdf.pages:
+                  text.append(page.extract_text())
+
+              return '\n\n'.join(text)
+
+      def extract_tables_from_pdf(pdf_path):
+          """Extract tables from PDF"""
+          with pdfplumber.open(pdf_path) as pdf:
+              all_tables = []
+
+              for page in pdf.pages:
+                  tables = page.extract_tables()
+                  for table in tables:
+                      all_tables.append(table)
+
+              return all_tables
+
+      # Example output
+      tables = extract_tables_from_pdf('report.pdf')
+      # Returns: [
+      #   [['Header1', 'Header2'], ['Value1', 'Value2'], ...],
+      #   [['Name', 'Score'], ['Alice', '95'], ...],
+      # ]
+
+  pdf_metadata_extraction:
+    description: "Extract metadata from PDF documents"
+    content: |
+      # PDF Metadata Extraction
+
+      import PyPDF2
+      from datetime import datetime
+
+      def extract_pdf_metadata(pdf_path):
+          """Extract metadata from PDF"""
+          with open(pdf_path, 'rb') as file:
+              reader = PyPDF2.PdfReader(file)
+              metadata = reader.metadata
+
+              return {
+                  'title': metadata.get('/Title', ''),
+                  'author': metadata.get('/Author', ''),
+                  'subject': metadata.get('/Subject', ''),
+                  'creator': metadata.get('/Creator', ''),
+                  'producer': metadata.get('/Producer', ''),
+                  'creation_date': metadata.get('/CreationDate', ''),
+                  'modification_date': metadata.get('/ModDate', ''),
+                  'page_count': len(reader.pages),
+              }
+
+      # Example output
+      metadata = extract_pdf_metadata('document.pdf')
+      # Returns: {
+      #     'title': 'Annual Report 2024',
+      #     'author': 'John Doe',
+      #     'page_count': 42,
+      #     'creation_date': 'D:20240115103000'
+      # }
+
+  excel_parsing:
+    description: "Parse Excel files into structured data"
+    content: |
+      # Excel Parsing (Python)
+
+      import openpyxl
+      import pandas as pd
+
+      def parse_excel_openpyxl(file_path, sheet_name=None):
+          """Parse Excel using openpyxl (low-level)"""
+          workbook = openpyxl.load_workbook(file_path)
+
+          if sheet_name:
+              sheet = workbook[sheet_name]
+          else:
+              sheet = workbook.active
+
+          # Extract data
+          data = []
+          for row in sheet.iter_rows(values_only=True):
+              data.append(row)
+
+          return data
+
+      def parse_excel_pandas(file_path, sheet_name=None):
+          """Parse Excel using pandas (high-level)"""
+          # Read all sheets or specific sheet
+          if sheet_name:
+              df = pd.read_excel(file_path, sheet_name=sheet_name)
+          else:
+              # Returns dict of DataFrames
+              dfs = pd.read_excel(file_path, sheet_name=None)
+              return dfs
+
+          # Convert to dict for JSON output
+          return df.to_dict(orient='records')
+
+      # Example output
+      data = parse_excel_pandas('sales.xlsx', sheet_name='Q1')
+      # Returns: [
+      #     {'Product': 'Widget A', 'Sales': 1000, 'Region': 'West'},
+      #     {'Product': 'Widget B', 'Sales': 1500, 'Region': 'East'},
+      # ]
+
+  csv_parsing:
+    description: "Parse CSV files with encoding detection"
+    content: |
+      # CSV Parsing with Encoding Detection
+
+      import csv
+      import chardet
+
+      def detect_encoding(file_path):
+          """Detect file encoding"""
+          with open(file_path, 'rb') as file:
+              raw_data = file.read(10000)  # Read first 10KB
+              result = chardet.detect(raw_data)
+              return result['encoding']
+
+      def parse_csv(file_path, delimiter=',', has_header=True):
+          """Parse CSV with automatic encoding detection"""
+          encoding = detect_encoding(file_path)
+
+          with open(file_path, 'r', encoding=encoding) as file:
+              if has_header:
+                  reader = csv.DictReader(file, delimiter=delimiter)
+                  return list(reader)
+              else:
+                  reader = csv.reader(file, delimiter=delimiter)
+                  return list(reader)
+
+      # Handle common issues
+      def parse_csv_robust(file_path):
+          """Parse CSV with error handling"""
+          try:
+              encoding = detect_encoding(file_path)
+          except:
+              encoding = 'utf-8'  # Fallback
+
+          # Try different delimiters
+          delimiters = [',', ';', '\t', '|']
+
+          for delimiter in delimiters:
+              try:
+                  with open(file_path, 'r', encoding=encoding) as file:
+                      sample = file.read(1024)
+                      if sample.count(delimiter) > 0:
+                          file.seek(0)
+                          reader = csv.DictReader(file, delimiter=delimiter)
+                          return list(reader)
+              except:
+                  continue
+
+          raise ValueError("Could not parse CSV with any known delimiter")
+
+  json_xml_parsing:
+    description: "Parse JSON and XML files"
+    content: |
+      # JSON and XML Parsing
+
+      import json
+      import xml.etree.ElementTree as ET
+      import yaml
+
+      def parse_json(file_path):
+          """Parse JSON file"""
+          with open(file_path, 'r', encoding='utf-8') as file:
+              return json.load(file)
+
+      def parse_xml(file_path):
+          """Parse XML file"""
+          tree = ET.parse(file_path)
+          root = tree.getroot()
+
+          def element_to_dict(element):
+              """Convert XML element to dict"""
+              result = {}
+
+              # Add attributes
+              if element.attrib:
+                  result.update(element.attrib)
+
+              # Add children
+              for child in element:
+                  child_data = element_to_dict(child)
+                  if child.tag in result:
+                      # Multiple elements with same tag
+                      if not isinstance(result[child.tag], list):
+                          result[child.tag] = [result[child.tag]]
+                      result[child.tag].append(child_data)
+                  else:
+                      result[child.tag] = child_data
+
+              # Add text content
+              if element.text and element.text.strip():
+                  if result:
+                      result['_text'] = element.text.strip()
+                  else:
+                      return element.text.strip()
+
+              return result
+
+          return element_to_dict(root)
+
+      def parse_yaml(file_path):
+          """Parse YAML file"""
+          with open(file_path, 'r', encoding='utf-8') as file:
+              return yaml.safe_load(file)
+
+  word_document_parsing:
+    description: "Parse Word documents (DOCX)"
+    content: |
+      # Word Document Parsing (Python)
+
+      from docx import Document
+
+      def parse_docx(file_path):
+          """Extract text from DOCX"""
+          doc = Document(file_path)
+
+          # Extract paragraphs
+          paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+
+          # Extract tables
+          tables = []
+          for table in doc.tables:
+              table_data = []
+              for row in table.rows:
+                  row_data = [cell.text for cell in row.cells]
+                  table_data.append(row_data)
+              tables.append(table_data)
+
+          return {
+              'paragraphs': paragraphs,
+              'tables': tables,
+              'text': '\n\n'.join(paragraphs)
+          }
+
+      def extract_docx_metadata(file_path):
+          """Extract metadata from DOCX"""
+          doc = Document(file_path)
+          core_props = doc.core_properties
+
+          return {
+              'title': core_props.title,
+              'author': core_props.author,
+              'subject': core_props.subject,
+              'created': core_props.created,
+              'modified': core_props.modified,
+              'keywords': core_props.keywords,
+          }
+
+  unified_parser:
+    description: "Unified parser that handles multiple formats"
+    content: |
+      # Unified Document Parser
+
+      class DocumentParser:
+          """Unified parser for multiple document formats"""
+
+          def parse(self, file_path, options=None):
+              """Parse document based on file type"""
+              options = options or {}
+
+              # Detect file type
+              file_type = self.detect_file_type(file_path)
+
+              # Route to appropriate parser
+              parsers = {
+                  'pdf': self.parse_pdf,
+                  'docx': self.parse_docx,
+                  'xlsx': self.parse_excel,
+                  'csv': self.parse_csv,
+                  'json': self.parse_json,
+                  'xml': self.parse_xml,
+                  'text': self.parse_text,
+              }
+
+              parser = parsers.get(file_type, self.parse_text)
+              return parser(file_path, options)
+
+          def parse_pdf(self, file_path, options):
+              """Parse PDF"""
+              result = {
+                  'file_type': 'pdf',
+                  'file_path': file_path,
+                  'text': extract_text_pypdf2(file_path),
+              }
+
+              if options.get('extract_tables'):
+                  result['tables'] = extract_tables_from_pdf(file_path)
+
+              if options.get('extract_metadata'):
+                  result['metadata'] = extract_pdf_metadata(file_path)
+
+              return result
+
+          # Similar methods for other formats...
+
+      # Usage
+      parser = DocumentParser()
+      result = parser.parse('report.pdf', {
+          'extract_tables': True,
+          'extract_metadata': True
+      })
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Parse PDF and extract text"
+    input_file: "annual_report.pdf"
+    code: |
+      from document_parser import DocumentParser
+
+      parser = DocumentParser()
+      result = parser.parse('annual_report.pdf')
+      print(result['text'])
+    output: |
+      Annual Report 2024
+
+      Executive Summary
+      This year we achieved record growth...
+
+      Financial Highlights
+      Revenue: $10M (+25% YoY)
+      Profit: $2M (+30% YoY)
+
+  - name: "Parse Excel and extract structured data"
+    input_file: "sales_data.xlsx"
+    code: |
+      import pandas as pd
+
+      df = pd.read_excel('sales_data.xlsx', sheet_name='Q1')
+      data = df.to_dict(orient='records')
+      print(data)
+    output: |
+      [
+        {'Product': 'Widget A', 'Sales': 1000, 'Region': 'West'},
+        {'Product': 'Widget B', 'Sales': 1500, 'Region': 'East'},
+        {'Product': 'Widget C', 'Sales': 800, 'Region': 'South'}
+      ]
+
+  - name: "Parse CSV with encoding detection"
+    input_file: "customers.csv"
+    code: |
+      import chardet
+      import csv
+
+      # Detect encoding
+      with open('customers.csv', 'rb') as f:
+          encoding = chardet.detect(f.read())['encoding']
+
+      # Parse with detected encoding
+      with open('customers.csv', 'r', encoding=encoding) as f:
+          reader = csv.DictReader(f)
+          data = list(reader)
+    output: |
+      [
+        {'name': 'John Doe', 'email': 'john@example.com', 'city': 'New York'},
+        {'name': 'Jane Smith', 'email': 'jane@example.com', 'city': 'London'}
+      ]
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Document Parsing Best Practices
+
+  ### 1. Always Detect Encoding
+  - Use chardet or similar for encoding detection
+  - Try UTF-8 first, fall back to detected encoding
+  - Handle encoding errors gracefully (replace or ignore)
+
+  ### 2. Handle Corrupt Files
+  - Wrap parsing in try-except blocks
+  - Return partial results if possible
+  - Log errors with file path for debugging
+
+  ### 3. Memory Considerations
+  - Stream large files (don't load entirely into memory)
+  - Use generators for CSV processing
+  - Extract text page-by-page for large PDFs
+
+  ### 4. Preserve Structure
+  - Maintain tables, lists, and formatting when possible
+  - Use appropriate output format (Markdown for structure)
+  - Extract metadata separately from content
+
+  ### 5. Performance Optimization
+  - Cache parsed results
+  - Use appropriate libraries (pandas for CSV, pdfplumber for PDF tables)
+  - Batch process multiple files in parallel
+
+  ### 6. Security
+  - Validate file types before parsing
+  - Sandbox PDF parsing (can execute JavaScript)
+  - Limit file size to prevent DoS
+  - Scan for malware before parsing
+
+  ### 7. Output Format
+  - Return structured data (JSON) for programmatic access
+  - Include metadata (file type, encoding, page count)
+  - Preserve table structure separately from text
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "UnicodeDecodeError when reading file"
+    cause: "File encoding doesn't match assumed encoding"
+    solution: "Use chardet to detect encoding automatically. Try UTF-8 first, then detected encoding, then Latin-1 as fallback."
+
+  - error: "Empty or garbage text from PDF"
+    cause: "PDF contains scanned images (no text layer) or uses non-standard fonts"
+    solution: "Use OCR (pytesseract, AWS Textract) for scanned PDFs. Check if PDF has text layer first."
+
+  - error: "Table extraction from PDF returns mangled data"
+    cause: "PDF table layout complex or uses images"
+    solution: "Use pdfplumber or camelot for better table extraction. For complex tables, use OCR + table detection."
+
+  - error: "CSV parsing fails with delimiter errors"
+    cause: "CSV uses non-standard delimiter or has inconsistent formatting"
+    solution: "Try multiple delimiters (comma, semicolon, tab, pipe). Use csv.Sniffer to auto-detect delimiter."
+
+  - error: "Large file crashes with out-of-memory error"
+    cause: "Loading entire file into memory"
+    solution: "Stream file processing. Use generators for CSV. Process PDF page-by-page. Use pandas chunksize parameter."
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - document/document_analyzer  # Analyze parsed document content
+  - text/text_extraction  # Advanced text extraction techniques
+  - vision/ocr  # OCR for scanned documents
+  - data_quality/data_validation  # Validate parsed data
+# === RELATED_PATTERNS END ===

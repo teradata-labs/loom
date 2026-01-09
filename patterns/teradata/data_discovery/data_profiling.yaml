@@ -1,0 +1,473 @@
+# === METADATA START ===
+name: data_profiling
+title: "Statistical Data Profiling Using Signatures"
+description: |
+  Extract comprehensive statistical profiles from column signatures using built-in signature functions.
+  Provides fast data profiling without full table scans.
+
+  **SIGNATURE FUNCTIONS AVAILABLE:**
+
+  **Basic Statistics**:
+  - **Population()**: Total number of values (including NULLs)
+  - **Null_Count()**: Number of NULL/missing values
+  - **Count_Estimate()**: Estimated distinct count (HyperLogLog)
+  - **DC_Estimate_Method()**: Whether estimate is EXACT or APPROXimate
+
+  **Data Type Detection**:
+  - **IsSurrogate()**: Detects synthetic/auto-increment keys
+  - **Type inspection**: From signature metadata
+
+  **Value Range Analysis**:
+  - **Min/Max values**: From signature metadata
+  - **Overlaps()**: Check if two columns have overlapping value ranges
+
+  **Distribution Export**:
+  - **Signature_to_JSON()**: Export full signature as JSON for inspection
+
+  **USE CASES:**
+  - Fast data profiling without table scans
+  - Data quality assessment
+  - Column metadata extraction
+  - Null analysis and completeness checks
+  - Cardinality analysis
+  - Synthetic key detection
+  - Data dictionary generation
+
+  **REQUIREMENTS:**
+  Requires SIGNATURES table populated by signature_generation pattern.
+  Uses UDFS profiling functions.
+
+category: data_discovery
+difficulty: beginner
+teradata_function: Count_Estimate, Population, Null_Count, IsSurrogate, Overlaps
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Generate data quality reports
+  - Assess column completeness (NULL percentages)
+  - Detect surrogate vs natural keys
+  - Analyze cardinality for indexing decisions
+  - Create automated data dictionaries
+  - Validate ETL transformations
+  - Identify low-cardinality domains
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: database
+    type: string
+    required: true
+    description: "Database to profile"
+    example: "semantic_data"
+
+  - name: table
+    type: string
+    required: false
+    description: "Specific table to profile (optional)"
+    example: "customers"
+
+  - name: null_threshold
+    type: number
+    required: false
+    default: 10.0
+    description: "Alert if null percentage exceeds this threshold"
+    example: "10.0"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  basic_profile:
+    description: "Extract basic statistical profile from signatures"
+    sql: |
+      -- Basic Data Profile
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+
+        -- Population statistics
+        UDFS.Population(SIG_DATA) AS population,
+        ROW_COUNT AS actual_row_count,
+        VALUE_COUNT AS non_null_count,
+        UDFS.Null_Count(SIG_DATA) AS null_count,
+
+        -- Null percentage
+        CAST(UDFS.Null_Count(SIG_DATA) AS DOUBLE PRECISION) * 100.0 /
+          NULLIFZERO(UDFS.Population(SIG_DATA)) AS null_pct,
+
+        -- Cardinality
+        UDFS.Count_Estimate(SIG_DATA) AS distinct_estimate,
+        UDFS.DC_Estimate_Method(SIG_DATA) AS estimate_method,
+
+        -- Keyness
+        CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+          NULLIFZERO(ROW_COUNT) AS keyness
+
+      FROM {{database}}.SIGNATURES
+      WHERE 1=1
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+      ORDER BY TABLE_NAME, COLUMN_NAME;
+
+  null_analysis:
+    description: "Identify columns with high null percentages"
+    sql: |
+      -- Null Analysis Report
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        ROW_COUNT AS total_rows,
+        VALUE_COUNT AS non_null_values,
+        UDFS.Null_Count(SIG_DATA) AS null_values,
+        CAST(UDFS.Null_Count(SIG_DATA) AS DOUBLE PRECISION) * 100.0 /
+          NULLIFZERO(UDFS.Population(SIG_DATA)) AS null_percentage,
+        CASE
+          WHEN UDFS.Null_Count(SIG_DATA) = 0 THEN 'COMPLETE'
+          WHEN UDFS.Null_Count(SIG_DATA) * 100.0 / UDFS.Population(SIG_DATA) <= {{null_threshold}} THEN 'ACCEPTABLE'
+          WHEN UDFS.Null_Count(SIG_DATA) * 100.0 / UDFS.Population(SIG_DATA) <= 50 THEN 'SPARSE'
+          ELSE 'VERY_SPARSE'
+        END AS completeness_rating
+      FROM {{database}}.SIGNATURES
+      WHERE UDFS.Null_Count(SIG_DATA) > 0
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+      ORDER BY null_percentage DESC;
+
+  cardinality_analysis:
+    description: "Analyze column cardinality for indexing decisions"
+    sql: |
+      -- Cardinality Analysis
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        ROW_COUNT,
+        UDFS.Count_Estimate(SIG_DATA) AS distinct_count,
+        CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+          NULLIFZERO(ROW_COUNT) AS keyness,
+        CASE
+          WHEN UDFS.Count_Estimate(SIG_DATA) = 1 THEN 'CONSTANT'
+          WHEN UDFS.Count_Estimate(SIG_DATA) BETWEEN 2 AND 10 THEN 'VERY_LOW'
+          WHEN UDFS.Count_Estimate(SIG_DATA) BETWEEN 11 AND 100 THEN 'LOW'
+          WHEN UDFS.Count_Estimate(SIG_DATA) BETWEEN 101 AND 1000 THEN 'MEDIUM'
+          WHEN UDFS.Count_Estimate(SIG_DATA) BETWEEN 1001 AND 10000 THEN 'HIGH'
+          ELSE 'VERY_HIGH'
+        END AS cardinality_class,
+        CASE
+          WHEN keyness >= 0.99 THEN 'UNIQUE_KEY'
+          WHEN keyness >= 0.90 THEN 'NEAR_UNIQUE'
+          WHEN keyness >= 0.50 THEN 'MEDIUM_DUPLICATION'
+          WHEN keyness >= 0.10 THEN 'HIGH_DUPLICATION'
+          ELSE 'VERY_HIGH_DUPLICATION'
+        END AS duplication_class
+      FROM {{database}}.SIGNATURES
+      WHERE VALUE_COUNT > 0
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+      ORDER BY ROW_COUNT DESC, keyness DESC;
+
+  surrogate_key_detection:
+    description: "Detect synthetic/auto-increment keys"
+    sql: |
+      -- Surrogate Key Detection
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        UDFS.Population(SIG_DATA) AS population,
+        UDFS.Count_Estimate(SIG_DATA) AS distinct_count,
+        UDFS.IsSurrogate(SIG_DATA) AS is_surrogate,
+        CASE
+          WHEN UDFS.IsSurrogate(SIG_DATA) = 1 THEN 'SYNTHETIC_KEY'
+          ELSE 'NATURAL_COLUMN'
+        END AS column_classification
+      FROM {{database}}.SIGNATURES
+      WHERE COLUMN_TYPE = 'I'  -- Integer columns only
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+      ORDER BY UDFS.IsSurrogate(SIG_DATA) DESC, TABLE_NAME;
+
+      -- IsSurrogate detection criteria:
+      -- 1. Column type is INTEGER
+      -- 2. Min value is 0 or 1
+      -- 3. (Max - Min) ≈ Distinct Count (sequential)
+      -- 4. No or minimal gaps in sequence
+
+  signature_json_export:
+    description: "Export signature as JSON for detailed inspection"
+    sql: |
+      -- Export signature details as JSON
+      SELECT
+        TABLE_NAME,
+        COLUMN_NAME,
+        COLUMN_TYPE,
+        UDFS.Signature_to_JSON(SIG_DATA) AS signature_json
+      FROM {{database}}.SIGNATURES
+      WHERE TABLE_NAME = '{{table}}'
+        {{if .column}}AND COLUMN_NAME = '{{column}}'{{end}};
+
+      -- JSON contains:
+      -- - type: Column type
+      -- - population: Total values
+      -- - null_count: NULLs
+      -- - distinct_estimate: Cardinality
+      -- - estimate_method: EXACT or APPROX
+      -- - min_value: Minimum value
+      -- - max_value: Maximum value
+      -- - sample: Frequency distribution or random sample
+      -- - hll_sketch: HyperLogLog data (base64)
+
+  overlaps_analysis:
+    description: "Check which columns have overlapping value ranges"
+    sql: |
+      -- Find columns with overlapping value ranges
+      SELECT
+        S1.TABLE_NAME AS table1,
+        S1.COLUMN_NAME AS column1,
+        S2.TABLE_NAME AS table2,
+        S2.COLUMN_NAME AS column2,
+        UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) AS overlap_score,
+        CASE
+          WHEN UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) > 0 THEN 'OVERLAPS'
+          WHEN UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) = 0 THEN 'ADJACENT'
+          ELSE 'DISJOINT'
+        END AS overlap_class
+      FROM {{database}}.SIGNATURES S1
+      CROSS JOIN {{database}}.SIGNATURES S2
+      WHERE S1.ID < S2.ID
+        AND S1.COLUMN_TYPE = S2.COLUMN_TYPE
+        {{if .table}}AND S1.TABLE_NAME = '{{table}}'{{end}}
+        AND UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) > 0
+      ORDER BY UDFS.Overlaps(S1.SIG_DATA, S2.SIG_DATA) DESC;
+
+  data_quality_summary:
+    description: "Generate data quality summary by table"
+    sql: |
+      -- Data Quality Summary per Table
+      SELECT
+        TABLE_NAME,
+        COUNT(*) AS total_columns,
+        COUNT(CASE WHEN UDFS.Null_Count(SIG_DATA) = 0 THEN 1 END) AS complete_columns,
+        COUNT(CASE WHEN UDFS.Null_Count(SIG_DATA) > 0 THEN 1 END) AS nullable_columns,
+        AVG(CAST(UDFS.Null_Count(SIG_DATA) AS DOUBLE PRECISION) * 100.0 /
+            NULLIFZERO(UDFS.Population(SIG_DATA))) AS avg_null_pct,
+        MAX(CAST(UDFS.Null_Count(SIG_DATA) AS DOUBLE PRECISION) * 100.0 /
+            NULLIFZERO(UDFS.Population(SIG_DATA))) AS max_null_pct,
+        AVG(CAST(UDFS.Count_Estimate(SIG_DATA) AS DOUBLE PRECISION) /
+            NULLIFZERO(ROW_COUNT)) AS avg_keyness
+      FROM {{database}}.SIGNATURES
+      WHERE VALUE_COUNT > 0
+        {{if .table}}AND TABLE_NAME = '{{table}}'{{end}}
+      GROUP BY TABLE_NAME
+      ORDER BY avg_null_pct DESC;
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Basic data profile for table"
+    parameters:
+      database: "semantic_data"
+      table: "customers"
+    expected_result: |
+      Data Profile: customers table
+
+      | COLUMN       | TYPE | POPULATION | NULL_CNT | NULL_PCT | DISTINCT | KEYNESS |
+      |--------------|------|------------|----------|----------|----------|---------|
+      | customer_id  | I    | 50000      | 0        | 0.0%     | 50000    | 1.000   |
+      | email        | CV   | 50000      | 0        | 0.0%     | 49876    | 0.998   |
+      | first_name   | CV   | 50000      | 124      | 0.2%     | 1243     | 0.025   |
+      | state        | CV   | 50000      | 450      | 0.9%     | 50       | 0.001   |
+      | signup_date  | DA   | 50000      | 0        | 0.0%     | 1825     | 0.037   |
+      | referral_src | CV   | 50000      | 12500    | 25.0%    | 8        | 0.0002  |
+
+      Key Insights:
+      - customer_id: Perfect unique key
+      - email: Near-unique (0.2% duplicates)
+      - first_name: Low completeness (0.2% nulls)
+      - state: Low cardinality domain (50 states)
+      - referral_src: Sparse (25% nulls), domain column
+
+  - name: "Null analysis report"
+    parameters:
+      database: "semantic_data"
+      null_threshold: 10.0
+    expected_result: |
+      Columns with High Null Percentages (> 10%):
+
+      | TABLE        | COLUMN         | TOTAL_ROWS | NULL_CNT | NULL_PCT | RATING      |
+      |--------------|----------------|------------|----------|----------|-------------|
+      | customers    | middle_initial | 50000      | 35000    | 70.0%    | VERY_SPARSE |
+      | orders       | discount_code  | 125000     | 68750    | 55.0%    | VERY_SPARSE |
+      | products     | discontinued_d | 5000       | 1750     | 35.0%    | SPARSE      |
+      | customers    | referral_src   | 50000      | 12500    | 25.0%    | SPARSE      |
+
+      Data Quality Issues:
+      - middle_initial: 70% missing (common for optional field)
+      - discount_code: 55% missing (only used in promotions)
+      - discontinued_d: 35% missing (only for discontinued products)
+
+  - name: "Cardinality analysis for indexing"
+    parameters:
+      database: "semantic_data"
+      table: "products"
+    expected_result: |
+      Cardinality Analysis: products table
+
+      | COLUMN       | DISTINCT | KEYNESS | CARD_CLASS | DUPL_CLASS       |
+      |--------------|----------|---------|------------|------------------|
+      | product_id   | 5000     | 1.000   | HIGH       | UNIQUE_KEY       |
+      | sku          | 4998     | 0.999   | HIGH       | NEAR_UNIQUE      |
+      | category     | 12       | 0.002   | LOW        | VERY_HIGH_DUPL   |
+      | brand        | 45       | 0.009   | LOW        | VERY_HIGH_DUPL   |
+      | price        | 234      | 0.047   | MEDIUM     | HIGH_DUPLICATION |
+
+      Indexing Recommendations:
+      - product_id: Primary index candidate (perfect uniqueness)
+      - sku: Secondary index candidate (near-unique)
+      - category: Good for partitioning (low cardinality)
+      - brand: Good for partitioning (low cardinality)
+      - price: Not recommended for indexing (high duplication)
+
+  - name: "Detect surrogate keys"
+    parameters:
+      database: "semantic_data"
+    expected_result: |
+      Surrogate Key Detection:
+
+      | TABLE      | COLUMN       | POPULATION | DISTINCT | IS_SURROGATE |
+      |------------|--------------|------------|----------|--------------|
+      | customers  | customer_id  | 50000      | 50000    | 1            |
+      | orders     | order_id     | 125000     | 125000   | 1            |
+      | products   | product_id   | 5000       | 5000     | 1            |
+      | employees  | employee_id  | 500        | 500      | 1            |
+      | products   | quantity     | 5000       | 243      | 0            |
+
+      Synthetic Keys Found:
+      - customer_id, order_id, product_id, employee_id: Auto-increment
+      - quantity: Natural integer (not surrogate)
+
+      Surrogate keys are likely IDENTITY or GENERATED columns.
+
+  - name: "Export signature as JSON"
+    parameters:
+      database: "semantic_data"
+      table: "products"
+      column: "category"
+    expected_result: |
+      Signature JSON: products.category
+
+      ```json
+      {
+        "type": "CV",
+        "population": 5000,
+        "null_count": 0,
+        "distinct_estimate": 12,
+        "estimate_method": "EXACT",
+        "min_value": "AUTOMOTIVE",
+        "max_value": "TOYS",
+        "sample": {
+          "ELECTRONICS": 1250,
+          "CLOTHING": 980,
+          "HOME": 875,
+          "TOYS": 620,
+          "AUTOMOTIVE": 510,
+          "BOOKS": 485,
+          "SPORTS": 280,
+          "... (12 total categories)"
+        },
+        "hll_sketch": "base64_encoded_data..."
+      }
+      ```
+
+      This JSON can be used for:
+      - External analysis tools
+      - Documentation generation
+      - API integration
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Data Profiling Best Practices
+
+  ### 1. Generate Signatures First
+  Data profiling requires SIGNATURES table:
+  ```sql
+  -- Run signature_generation pattern first
+  INSERT INTO SIGNATURES ...
+  ```
+
+  ### 2. Profile Before Schema Design
+  Use profiling to inform:
+  - Primary index choice (keyness analysis)
+  - Partitioning strategy (cardinality analysis)
+  - Index creation (cardinality + null analysis)
+  - Data type optimization (min/max range analysis)
+
+  ### 3. Monitor Data Quality Metrics
+  Track over time:
+  - Null percentages increasing?
+  - Cardinality changing?
+  - Keyness degrading?
+
+  ### 4. Use Estimate Method Appropriately
+  ```sql
+  UDFS.DC_Estimate_Method(SIG_DATA)
+  -- Returns: 'EXACT' or 'APPROX'
+  ```
+  - EXACT: Low-cardinality columns (< 10K distinct)
+  - APPROX: High-cardinality columns (HyperLogLog estimate)
+
+  ### 5. Null Analysis Thresholds
+  - 0%: Complete (ideal)
+  - 0-10%: Acceptable
+  - 10-30%: Investigate
+  - 30-70%: Sparse (data quality issue?)
+  - > 70%: Very sparse (column may be unnecessary)
+
+  ### 6. Cardinality Classes
+  - Constant (1): Always same value
+  - Very Low (2-10): Boolean, flag, status
+  - Low (11-100): Category, type, code
+  - Medium (101-1K): Subcategory, region
+  - High (1K-10K): Product, location
+  - Very High (> 10K): ID, name, description
+
+  ### 7. IsSurrogate Interpretation
+  IsSurrogate = 1 indicates:
+  - Integer type
+  - Starts at 0 or 1
+  - Sequential (few gaps)
+  - Likely auto-increment or IDENTITY column
+
+  ### 8. Memory Layers for Data Profiling
+  - **Kernel Layer**: Cache signature function results and data quality thresholds
+  - **L1 Cache**: Keep recent profiling results (last 5-8 tables) for quick reference
+  - **L2 Compressed**: Archive historical profiles showing data quality trends
+  - **Swap Layer**: Store complete profiling history; use recall_conversation to compare current data quality against baseline from months ago when data was initially loaded
+  This enables tracking data quality degradation and identifying when columns become more sparse or lose uniqueness.
+# === BEST_PRACTICES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Count_Estimate much different from actual COUNT(DISTINCT)"
+    cause: "HyperLogLog has ~1-2% error margin for high cardinality"
+    solution: "Use DC_Estimate_Method to check if EXACT or APPROX. For critical decisions, run actual COUNT(DISTINCT)"
+
+  - error: "IsSurrogate returns 0 for known auto-increment column"
+    cause: "Column has gaps or doesn't start at 0/1"
+    solution: "IsSurrogate requires nearly-sequential values. Check value distribution"
+
+  - error: "Null_Count doesn't match actual nulls"
+    cause: "Signature generated on sample, or data changed since generation"
+    solution: "Regenerate signatures to reflect current data"
+
+  - error: "Signature_to_JSON returns truncated sample"
+    cause: "High-cardinality column uses random sample, not full distribution"
+    solution: "This is expected behavior. Sample size limited to fit in 60KB signature"
+# === COMMON_ERRORS END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - signature_generation  # Must run first to create signatures
+  - key_detection  # Uses Population, Count_Estimate for keyness
+  - null_analysis  # Deep dive into null patterns
+  - cardinality_analysis  # Detailed cardinality investigation
+# === RELATED_PATTERNS END ===

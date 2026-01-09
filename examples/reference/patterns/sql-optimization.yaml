@@ -1,0 +1,149 @@
+# Example Pattern Library: SQL Optimization
+# This demonstrates how to define domain-specific knowledge patterns for SQL optimization
+
+apiVersion: loom/v1
+kind: PatternLibrary
+
+metadata:
+  name: sql-optimization
+  version: 1.0.0
+  domain: sql
+  description: Common SQL optimization patterns for improving query performance
+  labels:
+    category: performance
+    difficulty: intermediate
+    language: sql
+
+spec:
+  entries:
+    # Pattern 1: Avoid SELECT *
+    - name: avoid-select-star
+      description: Use explicit column lists instead of SELECT * for better performance and maintainability
+      trigger_conditions:
+        - "SELECT *"
+        - "select all columns"
+      template: "SELECT {{columns}} FROM {{table}} WHERE {{condition}}"
+      priority: 80
+      tags:
+        - performance
+        - best-practice
+        - maintainability
+
+    # Pattern 2: Use indexed columns in WHERE clauses
+    - name: use-indexed-columns
+      description: Filter on indexed columns to avoid full table scans
+      trigger_conditions:
+        - "slow query"
+        - "full table scan"
+        - "performance issue"
+      rule:
+        condition: "WHERE clause on non-indexed column"
+        action: "Add index on frequently filtered columns or rewrite query to use existing indexes"
+        rationale: "Indexed columns allow the database to quickly locate rows without scanning the entire table, dramatically improving query performance"
+      priority: 95
+      tags:
+        - performance
+        - indexing
+        - optimization
+
+    # Pattern 3: Limit result sets
+    - name: limit-result-sets
+      description: Use LIMIT/TOP to restrict the number of rows returned
+      trigger_conditions:
+        - "large result set"
+        - "returning too many rows"
+      example: |
+        -- Good: Limit results
+        SELECT id, name, created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT 100;
+
+        -- Bad: No limit (returns all rows)
+        SELECT id, name, created_at
+        FROM users
+        ORDER BY created_at DESC;
+      priority: 75
+      tags:
+        - performance
+        - best-practice
+
+    # Pattern 4: Use EXISTS instead of IN for large datasets
+    - name: exists-over-in
+      description: Use EXISTS instead of IN when checking for existence in large subqueries
+      trigger_conditions:
+        - "IN subquery"
+        - "slow subquery"
+      example: |
+        -- Good: Using EXISTS (more efficient for large datasets)
+        SELECT id, name
+        FROM customers c
+        WHERE EXISTS (
+          SELECT 1 FROM orders o WHERE o.customer_id = c.id
+        );
+
+        -- Less efficient: Using IN
+        SELECT id, name
+        FROM customers
+        WHERE id IN (SELECT customer_id FROM orders);
+      priority: 85
+      tags:
+        - performance
+        - subquery
+        - optimization
+
+    # Pattern 5: Avoid functions on indexed columns
+    - name: avoid-functions-on-indexes
+      description: Don't apply functions to indexed columns in WHERE clauses as it prevents index usage
+      trigger_conditions:
+        - "function on column"
+        - "index not used"
+      rule:
+        condition: "Function applied to indexed column in WHERE clause"
+        action: "Rewrite query to avoid functions on indexed columns, or create function-based index"
+        rationale: "Functions on columns prevent the optimizer from using indexes, forcing full table scans"
+      priority: 90
+      tags:
+        - performance
+        - indexing
+        - anti-pattern
+
+    # Pattern 6: Use UNION ALL instead of UNION when possible
+    - name: union-all-over-union
+      description: Use UNION ALL instead of UNION when duplicates are acceptable
+      trigger_conditions:
+        - "UNION query"
+        - "combining results"
+      template: |
+        SELECT {{columns}} FROM {{table1}}
+        UNION ALL
+        SELECT {{columns}} FROM {{table2}}
+      priority: 70
+      tags:
+        - performance
+        - set-operations
+
+    # Pattern 7: Batch operations
+    - name: batch-operations
+      description: Batch INSERT/UPDATE/DELETE operations instead of row-by-row processing
+      trigger_conditions:
+        - "multiple inserts"
+        - "loop"
+        - "row-by-row"
+      example: |
+        -- Good: Batch insert
+        INSERT INTO users (name, email)
+        VALUES
+          ('Alice', 'alice@example.com'),
+          ('Bob', 'bob@example.com'),
+          ('Carol', 'carol@example.com');
+
+        -- Bad: Multiple single inserts
+        INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com');
+        INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com');
+        INSERT INTO users (name, email) VALUES ('Carol', 'carol@example.com');
+      priority: 85
+      tags:
+        - performance
+        - bulk-operations
+        - best-practice

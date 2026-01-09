@@ -1,0 +1,236 @@
+name: metaagent_prompt_generation
+namespace: loom
+prompts:
+  - id: system_prompt_generation
+    content: |
+      Generate a task-oriented system prompt for an AI agent.
+
+      REQUIREMENTS ANALYSIS:
+      Intent: {{.intents}}
+      Domain: {{.domain}}
+      Complexity: {{.complexity}}
+
+      Domain Knowledge Needed: {{.domain_knowledge}}
+      Technical Knowledge Needed: {{.technical_knowledge}}
+
+      Expected Output Format: {{.output_format}}
+      Output Components: {{.output_components}}
+
+      Capabilities:
+      - {{.capabilities}}
+      {{.spawning_context}}{{.judge_context}}{{.learning_context}}
+
+      STRICT RULES (MUST FOLLOW):
+      1. DO NOT use "You are a..." or "As a..." (role-prompting is BANNED!)
+      2. DO NOT use "Imagine you are..." or "Pretend to be..." or "Act as..."
+      3. DO NOT be vague or generic - be specific to the requirements
+      4. DO start with the task description directly
+      5. DO include clear success criteria
+      6. DO specify exact output format
+
+      REQUIRED STRUCTURE:
+      The system prompt MUST have these sections:
+
+      1. TASK DESCRIPTION (2-3 sentences)
+         - What the agent should accomplish
+         - Direct and specific, no preamble
+
+      2. TASKS (numbered list)
+         - Specific, actionable tasks
+         - Each task should be measurable
+
+      3. DOMAIN CONTEXT (if applicable)
+         - Key domain concepts the agent needs
+         - Terminology and definitions
+
+      4. OUTPUT FORMAT (exact specification)
+         - Format: JSON, markdown, etc.
+         - Structure with examples if helpful
+         - Required fields/sections
+
+      5. SUCCESS CRITERIA
+         - How to measure task completion
+         - Quality requirements
+
+      6. CONSTRAINTS (if any)
+         - What to avoid
+         - Limitations
+
+      EXAMPLE OF GOOD PROMPT:
+      ---
+      Analyze customer churn patterns in the database.
+
+      Tasks:
+      1. Query customer activity to identify churn indicators
+      2. Calculate health scores based on engagement metrics
+      3. Find patterns preceding customer departure
+      4. Generate actionable retention recommendations
+
+      Domain Context:
+      - Churn: Customer stops using product within 90 days of last activity
+      - Health Score: 0-100 composite of engagement metrics
+      - Key signals: login frequency, feature usage, support tickets
+
+      Output Format:
+      Return analysis as JSON:
+      {
+        "at_risk_customers": [{"id": "...", "risk_score": 0.85, "factors": [...]}],
+        "patterns": [{"pattern": "...", "frequency": "...", "lead_time": "..."}],
+        "recommendations": [{"action": "...", "segment": "...", "impact": "..."}]
+      }
+
+      Success Criteria:
+      - Risk scores enable prioritized outreach
+      - Patterns backed by data (minimum 10 examples)
+      - Recommendations are actionable (who, what, when)
+      ---
+
+      Now generate a system prompt following this structure for the requirements above.
+
+      Output ONLY the system prompt text (no preamble, no explanation, just the prompt):
+    variables:
+      intents:
+        name: intents
+        type: 1
+        required: true
+        description: "Primary and secondary intents"
+      domain:
+        name: domain
+        type: 1
+        required: true
+        description: "Domain type"
+      complexity:
+        name: complexity
+        type: 1
+        required: true
+        description: "Complexity level"
+      domain_knowledge:
+        name: domain_knowledge
+        type: 1
+        required: false
+        default_value: "Not specified"
+        description: "Domain knowledge requirements"
+      technical_knowledge:
+        name: technical_knowledge
+        type: 1
+        required: false
+        default_value: "Not specified"
+        description: "Technical knowledge requirements"
+      output_format:
+        name: output_format
+        type: 1
+        required: false
+        default_value: "Not specified"
+        description: "Expected output format"
+      output_components:
+        name: output_components
+        type: 1
+        required: false
+        default_value: "Not specified"
+        description: "Output components"
+      capabilities:
+        name: capabilities
+        type: 1
+        required: true
+        description: "Agent capabilities list"
+      spawning_context:
+        name: spawning_context
+        type: 1
+        required: false
+        default_value: ""
+        description: "Optional spawning context"
+      judge_context:
+        name: judge_context
+        type: 1
+        required: false
+        default_value: ""
+        description: "Optional judge context"
+      learning_context:
+        name: learning_context
+        type: 1
+        required: false
+        default_value: ""
+        description: "Optional learning context"
+    tags:
+      - metaagent
+      - prompt
+      - generation
+    metadata:
+      version: "v1.0"
+      description: "System prompt generation template"
+
+  - id: spawning_context
+    content: |
+
+      SPAWNING CAPABILITY:
+      This agent can spawn sub-agents. Include in the prompt:
+      - When to spawn agents: {{.spawning_triggers}}
+      - Types of agents to spawn: {{.spawnable_agents}}
+      - How to coordinate spawned agents
+    variables:
+      spawning_triggers:
+        name: spawning_triggers
+        type: 1
+        required: true
+        description: "Comma-separated list of spawning triggers"
+      spawnable_agents:
+        name: spawnable_agents
+        type: 1
+        required: true
+        description: "Comma-separated list of spawnable agent types"
+    tags:
+      - metaagent
+      - spawning
+    metadata:
+      version: "v1.0"
+      description: "Spawning context template"
+
+  - id: judge_context
+    content: |
+
+      EVALUATION:
+      Agent outputs will be judged on: {{.judge_dimensions}}
+      Criticality: {{.judge_criticality}}
+      Include guidance on meeting evaluation criteria.
+    variables:
+      judge_dimensions:
+        name: judge_dimensions
+        type: 1
+        required: true
+        description: "Comma-separated list of judge dimensions"
+      judge_criticality:
+        name: judge_criticality
+        type: 1
+        required: true
+        description: "Judge criticality level"
+    tags:
+      - metaagent
+      - judge
+    metadata:
+      version: "v1.0"
+      description: "Judge context template"
+
+  - id: learning_context
+    content: |
+
+      SELF-IMPROVEMENT:
+      Agent should learn and improve on: {{.learning_goals}}
+      Autonomy level: {{.autonomy_level}}
+      Include guidance on tracking what works and what doesn't.
+    variables:
+      learning_goals:
+        name: learning_goals
+        type: 1
+        required: true
+        description: "Comma-separated list of learning goals"
+      autonomy_level:
+        name: autonomy_level
+        type: 1
+        required: true
+        description: "Autonomy level"
+    tags:
+      - metaagent
+      - learning
+    metadata:
+      version: "v1.0"
+      description: "Learning context template"
