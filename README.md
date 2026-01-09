@@ -60,7 +60,27 @@ Unlike prompt-engineering approaches, Loom uses **pattern-guided learning** wher
 - Go 1.25+
 - One of: Anthropic API key, AWS Bedrock access, Ollama installed, OpenAI API key, etc.
 
-### Installation
+### Automated Installation (Recommended)
+
+**Fastest way to get started** - The automated installer handles everything:
+
+```bash
+# Clone and run quickstart
+git clone https://github.com/teradata-labs/loom
+cd loom
+./quickstart.sh
+```
+
+The installer will:
+- ✓ Install prerequisites (Go, Just, Buf)
+- ✓ Build Loom binaries
+- ✓ Install patterns and documentation
+- ✓ Configure your LLM provider interactively
+- ✓ Set up web search API keys (optional)
+
+See [QUICKSTART.md](QUICKSTART.md) for detailed installation guide.
+
+### Manual Installation
 
 ```bash
 # Clone the repository
