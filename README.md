@@ -57,7 +57,7 @@ Unlike prompt-engineering approaches, Loom uses **pattern-guided learning** wher
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - One of: Anthropic API key, AWS Bedrock access, Ollama installed, OpenAI API key, etc.
 
 ### Installation
