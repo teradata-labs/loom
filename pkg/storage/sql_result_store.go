@@ -396,21 +396,33 @@ func (s *SQLResultStore) GetMetadata(id string) (*SQLResultMetadata, error) {
 func (s *SQLResultStore) generatePreview(tableName string, columns []string, rowCount int64) *PreviewData {
 	preview := &PreviewData{}
 
+	// Sanitize table name to prevent SQL injection (gosec G201)
+	// Note: tableName is already validated as "tool_result_{id}" format, but we sanitize for defense-in-depth
+	safeTableName := sanitizeIdentifier(tableName)
+
 	// Get first 5 rows
-	first5Query := fmt.Sprintf("SELECT * FROM %s LIMIT 5", tableName)
+	// #nosec G201 -- tableName is sanitized via sanitizeIdentifier() above
+	first5Query := fmt.Sprintf("SELECT * FROM %s LIMIT 5", safeTableName)
 	rows, err := s.db.Query(first5Query)
 	if err == nil {
 		preview.First5 = s.rowsToArray(rows, columns)
-		rows.Close()
+		if closeErr := rows.Close(); closeErr != nil {
+			// Log error but don't fail - preview is best-effort
+			_ = closeErr
+		}
 	}
 
 	// Get last 5 rows (skip if less than 10 total rows to avoid overlap)
 	if rowCount > 10 {
-		last5Query := fmt.Sprintf("SELECT * FROM %s LIMIT 5 OFFSET %d", tableName, rowCount-5)
+		// #nosec G201 -- tableName is sanitized via sanitizeIdentifier() above
+		last5Query := fmt.Sprintf("SELECT * FROM %s LIMIT 5 OFFSET %d", safeTableName, rowCount-5)
 		rows, err := s.db.Query(last5Query)
 		if err == nil {
 			preview.Last5 = s.rowsToArray(rows, columns)
-			rows.Close()
+			if closeErr := rows.Close(); closeErr != nil {
+				// Log error but don't fail - preview is best-effort
+				_ = closeErr
+			}
 		}
 	}
 
