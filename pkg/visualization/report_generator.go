@@ -276,8 +276,9 @@ func (rg *ReportGenerator) ExportHTML(report *Report) (string, error) {
 		safeConfig := strings.ReplaceAll(viz.EChartsConfig, "</script>", "<\\/script>")
 		safeConfig = strings.ReplaceAll(safeConfig, "</SCRIPT>", "<\\/SCRIPT>")
 		// Escape chartID for safe use in JavaScript string (prevent quote injection)
-		safeChartID := strings.ReplaceAll(chartID, "'", "\\'")
-		safeChartID = strings.ReplaceAll(safeChartID, "\\", "\\\\")
+		// CRITICAL: Escape backslashes BEFORE quotes to avoid double-escaping
+		safeChartID := strings.ReplaceAll(chartID, "\\", "\\\\")
+		safeChartID = strings.ReplaceAll(safeChartID, "'", "\\'")
 		sb.WriteString(fmt.Sprintf(`
             (function() {
                 var chartDom = document.getElementById('%s');
