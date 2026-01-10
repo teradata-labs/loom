@@ -1017,11 +1017,29 @@ func (m *sidebarCmp) updateCachedItems() {
 	// First, identify which agent IDs are workflow coordinators
 	// (they have sub-agents with ID pattern "coordinator-id:sub-agent-id")
 	coordinatorIDs := make(map[string]bool)
+	// Also track which agent names are used as workflow sub-agents
+	workflowSubAgentNames := make(map[string]bool)
+	// Track workflow prefixes (e.g., "vacation" from "vacation-planner")
+	workflowPrefixes := make(map[string]bool)
+
 	for _, agent := range m.agents {
 		if strings.Contains(agent.ID, ":") {
 			// Extract coordinator ID (part before colon)
 			parts := strings.SplitN(agent.ID, ":", 2)
 			coordinatorIDs[parts[0]] = true
+			// Track the sub-agent name (part after colon)
+			if len(parts) == 2 {
+				workflowSubAgentNames[parts[1]] = true
+			}
+		}
+	}
+
+	// Extract workflow prefixes from coordinator IDs
+	// e.g., "vacation-planner" -> "vacation"
+	for coordinatorID := range coordinatorIDs {
+		if idx := strings.LastIndex(coordinatorID, "-"); idx != -1 {
+			prefix := coordinatorID[:idx]
+			workflowPrefixes[prefix] = true
 		}
 	}
 
@@ -1053,8 +1071,39 @@ func (m *sidebarCmp) updateCachedItems() {
 			strings.Contains(strings.ToLower(agent.ID), "workflow")
 		isWeaver := agent.ID == "weaver"
 
-		// Regular agents: not weaver, not a sub-agent, not a coordinator, and no "workflow" in name
-		if !isWeaver && !isSubAgent && !isCoordinator && !hasWorkflowInName {
+		// Check if this agent's ID matches a workflow sub-agent name
+		// (e.g., standalone "vacation-activity-planner" should be hidden if "vacation-planner:activity-planner" exists)
+		isUsedInWorkflow := false
+		for subAgentName := range workflowSubAgentNames {
+			// Check if the agent ID ends with the sub-agent name
+			// This handles cases like "vacation-activity-planner" matching "activity-planner"
+			if strings.HasSuffix(agent.ID, subAgentName) || strings.HasSuffix(agent.ID, "-"+subAgentName) {
+				isUsedInWorkflow = true
+				if debugLog != nil {
+					debugLog.Printf("[DEBUG] Filtering out agent '%s' (id=%s) because it matches workflow sub-agent '%s'\n",
+						agent.Name, agent.ID, subAgentName)
+				}
+				break
+			}
+		}
+
+		// Also check if this is a coordinator/entrypoint agent for a workflow
+		// (e.g., "vacation-coordinator" should be hidden if there's a "vacation-planner" workflow)
+		if !isUsedInWorkflow && strings.Contains(strings.ToLower(agent.ID), "coordinator") {
+			for prefix := range workflowPrefixes {
+				if strings.HasPrefix(agent.ID, prefix+"-") {
+					isUsedInWorkflow = true
+					if debugLog != nil {
+						debugLog.Printf("[DEBUG] Filtering out coordinator agent '%s' (id=%s) because it's part of workflow with prefix '%s'\n",
+							agent.Name, agent.ID, prefix)
+					}
+					break
+				}
+			}
+		}
+
+		// Regular agents: not weaver, not a sub-agent, not a coordinator, no "workflow" in name, and not used in a workflow
+		if !isWeaver && !isSubAgent && !isCoordinator && !hasWorkflowInName && !isUsedInWorkflow {
 			m.regularAgents = append(m.regularAgents, agent)
 		}
 	}
@@ -1066,7 +1115,20 @@ func (m *sidebarCmp) updateCachedItems() {
 
 	// Debug: log cached agents AFTER filtering
 	if debugLog != nil {
-		debugLog.Printf("[DEBUG] After filtering: %d workflows, %d regular agents\n", len(m.workflowAgents), len(m.regularAgents))
+		debugLog.Printf("[DEBUG] After filtering: %d workflows, %d regular agents, %d workflow sub-agent names tracked, %d workflow prefixes\n",
+			len(m.workflowAgents), len(m.regularAgents), len(workflowSubAgentNames), len(workflowPrefixes))
+		if len(workflowPrefixes) > 0 {
+			debugLog.Printf("[DEBUG] Workflow prefixes (will hide coordinator agents with these prefixes):\n")
+			for prefix := range workflowPrefixes {
+				debugLog.Printf("  - %s\n", prefix)
+			}
+		}
+		if len(workflowSubAgentNames) > 0 {
+			debugLog.Printf("[DEBUG] Workflow sub-agent names (will hide matching standalone agents):\n")
+			for name := range workflowSubAgentNames {
+				debugLog.Printf("  - %s\n", name)
+			}
+		}
 		if len(m.workflowAgents) > 0 {
 			debugLog.Printf("[DEBUG] Workflow agents:\n")
 			for i, agent := range m.workflowAgents {

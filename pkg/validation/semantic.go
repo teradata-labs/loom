@@ -140,7 +140,7 @@ func validateOrchestrationSemantics(spec map[string]interface{}) ([]ValidationEr
 		pipeErrors, pipeWarnings := validatePipelinePattern(spec)
 		errors = append(errors, pipeErrors...)
 		warnings = append(warnings, pipeWarnings...)
-	// Add other patterns as needed
+		// Add other patterns as needed
 	}
 
 	return errors, warnings

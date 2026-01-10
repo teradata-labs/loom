@@ -308,7 +308,6 @@ func validateWorkflowStructure(content string) []ValidationError {
 	return errors
 }
 
-
 // validateOrchestrationWorkflowStructure validates structure for orchestration workflows.
 func validateOrchestrationWorkflowStructure(spec map[string]interface{}) []ValidationError {
 	var errors []ValidationError
