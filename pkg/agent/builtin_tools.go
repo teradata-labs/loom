@@ -686,9 +686,22 @@ func (t *QueryToolResultTool) convertAndQuery(ctx context.Context, ref *loomv1.D
 	// Store in SQL store (creates temporary table)
 	// Generate unique ID for temporary conversion
 	tempID := fmt.Sprintf("temp_%s_%d", ref.Id, time.Now().UnixNano())
+
+	// Convert []string columns to []interface{} for Store
+	columnsInterface := make([]interface{}, len(columns))
+	for i, col := range columns {
+		columnsInterface[i] = col
+	}
+
+	// Convert [][]interface{} rows to []interface{} for Store
+	rowsInterface := make([]interface{}, len(rows))
+	for i, row := range rows {
+		rowsInterface[i] = row
+	}
+
 	dataMap := map[string]interface{}{
-		"columns": columns,
-		"rows":    rows,
+		"columns": columnsInterface,
+		"rows":    rowsInterface,
 	}
 	dataRef, err := t.sqlStore.Store(tempID, dataMap)
 	if err != nil {
