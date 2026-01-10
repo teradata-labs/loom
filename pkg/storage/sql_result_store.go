@@ -46,6 +46,7 @@ type SQLResultMetadata struct {
 	RowCount    int64
 	ColumnCount int
 	Columns     []string
+	Preview     *PreviewData // Preview data (first 5 + last 5 rows)
 	StoredAt    time.Time
 	AccessedAt  time.Time
 	SizeBytes   int64
@@ -381,7 +382,72 @@ func (s *SQLResultStore) GetMetadata(id string) (*SQLResultMetadata, error) {
 	meta.StoredAt = time.Unix(storedAt, 0)
 	meta.AccessedAt = time.Unix(accessedAt, 0)
 
+	// Generate preview data (first 5 + last 5 rows)
+	meta.Preview = s.generatePreview(meta.TableName, meta.Columns, meta.RowCount)
+
+	// Update access time
+	_, _ = s.db.Exec(`UPDATE sql_result_metadata SET accessed_at = ? WHERE id = ?`,
+		time.Now().Unix(), id)
+
 	return &meta, nil
+}
+
+// generatePreview fetches first 5 and last 5 rows for preview.
+func (s *SQLResultStore) generatePreview(tableName string, columns []string, rowCount int64) *PreviewData {
+	preview := &PreviewData{}
+
+	// Sanitize table name to prevent SQL injection (gosec G201)
+	// Note: tableName is already validated as "tool_result_{id}" format, but we sanitize for defense-in-depth
+	safeTableName := sanitizeIdentifier(tableName)
+
+	// Get first 5 rows
+	// #nosec G201 -- tableName is sanitized via sanitizeIdentifier() above
+	first5Query := fmt.Sprintf("SELECT * FROM %s LIMIT 5", safeTableName)
+	rows, err := s.db.Query(first5Query)
+	if err == nil {
+		preview.First5 = s.rowsToArray(rows, columns)
+		if closeErr := rows.Close(); closeErr != nil {
+			// Log error but don't fail - preview is best-effort
+			_ = closeErr
+		}
+	}
+
+	// Get last 5 rows (skip if less than 10 total rows to avoid overlap)
+	if rowCount > 10 {
+		// #nosec G201 -- tableName is sanitized via sanitizeIdentifier() above
+		last5Query := fmt.Sprintf("SELECT * FROM %s LIMIT 5 OFFSET %d", safeTableName, rowCount-5)
+		rows, err := s.db.Query(last5Query)
+		if err == nil {
+			preview.Last5 = s.rowsToArray(rows, columns)
+			if closeErr := rows.Close(); closeErr != nil {
+				// Log error but don't fail - preview is best-effort
+				_ = closeErr
+			}
+		}
+	}
+
+	return preview
+}
+
+// rowsToArray converts SQL rows to []any for JSON serialization.
+func (s *SQLResultStore) rowsToArray(rows *sql.Rows, columns []string) []any {
+	result := []any{}
+
+	for rows.Next() {
+		values := make([]any, len(columns))
+		valuePtrs := make([]any, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+
+		result = append(result, values)
+	}
+
+	return result
 }
 
 // Delete removes a stored result.

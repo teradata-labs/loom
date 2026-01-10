@@ -136,11 +136,6 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
 	}
 
-	// Register built-in get_tool_result tool for retrieving large results
-	if a.sharedMemory != nil {
-		a.tools.Register(NewGetToolResultTool(a.sharedMemory))
-	}
-
 	// Initialize SQL result store for queryable large SQL results
 	// This allows filtering/aggregating SQL results without context blowout
 	sqlResultStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
@@ -152,8 +147,14 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		if a.executor != nil {
 			a.executor.SetSQLResultStore(sqlResultStore)
 		}
-		// Register query_tool_result tool
-		a.tools.Register(NewQueryToolResultTool(sqlResultStore))
+		// Register query_tool_result tool (v1.0.1: now accepts both SQL and memory stores)
+		a.tools.Register(NewQueryToolResultTool(sqlResultStore, a.sharedMemory))
+	}
+
+	// Register built-in get_tool_result tool for retrieving metadata
+	// v1.0.1: Now returns only metadata, accepts both memory and SQL stores
+	if a.sharedMemory != nil || sqlResultStore != nil {
+		a.tools.Register(NewGetToolResultTool(a.sharedMemory, sqlResultStore))
 	}
 	// If SQL store fails to initialize, just log and continue without it
 	// (SQL results will fall back to shared memory)
@@ -1762,8 +1763,9 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 
 	// Re-register GetToolResultTool with the new store
 	// This ensures the tool uses the correct store instance for retrievals
+	// v1.0.1: Pass both memory and SQL stores (SQL store passed as nil here, configured separately)
 	if sharedMemory != nil && a.tools != nil {
-		a.tools.Register(NewGetToolResultTool(sharedMemory))
+		a.tools.Register(NewGetToolResultTool(sharedMemory, nil))
 	}
 
 	// Update reference tracker with new store
@@ -1781,8 +1783,9 @@ func (a *Agent) SetSQLResultStore(sqlStore *storage.SQLResultStore) {
 	}
 
 	// Register query_tool_result tool if not already registered
+	// v1.0.1: Pass both SQL and memory stores
 	if sqlStore != nil && a.tools != nil {
-		a.tools.Register(NewQueryToolResultTool(sqlStore))
+		a.tools.Register(NewQueryToolResultTool(sqlStore, a.sharedMemory))
 	}
 }
 

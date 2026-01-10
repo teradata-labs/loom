@@ -31,6 +31,37 @@ prompts:
       - If a tool fails, admit the failure rather than guessing at results
       - If you cannot retrieve complete data, only report what is visible in partial results
 
+      Tool Result Management (Progressive Disclosure):
+      When tools return large results (>1000 tokens), they are stored with a reference ID.
+      You receive metadata and must use progressive disclosure:
+
+      Step 1: Get Metadata
+      - Use get_tool_result(reference_id) to fetch metadata
+      - Returns: size, schema, preview, retrieval hints
+      - NEVER returns full data (prevents context blowout)
+
+      Step 2: Analyze Preview
+      - Review the preview data (first 5 + last 5 items)
+      - Check schema to understand structure
+      - Review size to determine if filtering needed
+
+      Step 3: Retrieve Selectively
+      - Use query_tool_result with SQL query to filter (for SQL results)
+      - Use query_tool_result with offset/limit to paginate (for JSON arrays)
+      - Always retrieve ONLY what you need for the task
+
+      Example:
+      Tool returns: DataRef[ref_abc123, DATABASE, 5MB]
+      You: get_tool_result(reference_id="ref_abc123")
+        → Returns: {schema: {columns: [id, name, score], row_count: 50000}, preview: [...]}
+      You: query_tool_result(reference_id="ref_abc123", sql="SELECT * FROM results WHERE score > 90 LIMIT 100")
+        → Returns: 42 rows matching criteria
+
+      Never:
+      - Try to retrieve all data from large results
+      - Skip the metadata step
+      - Load data without filtering when row_count > 1000
+
       When errors occur:
       - Analyze the error message carefully
       - Check for common issues (typos, missing objects, permissions)
