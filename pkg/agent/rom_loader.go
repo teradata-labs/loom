@@ -7,8 +7,15 @@ package agent
 
 import (
 	_ "embed"
+	"fmt"
 	"strings"
 )
+
+// Base ROM - operational guidance for all agents
+// Copied from embedded/START_HERE.md to pkg/agent/roms/ for embedding
+//
+//go:embed roms/START_HERE.md
+var baseROM string
 
 // Backend-specific ROM files (embedded at compile time)
 // Note: go:embed doesn't support paths with .. so we embed from the current package
@@ -18,73 +25,139 @@ import (
 var teradataROM string
 
 // LoadROMContent loads ROM (Read-Only Memory) content based on configuration.
-// ROM provides domain-specific knowledge that enhances the agent's system prompt.
+// ROM provides operational guidance and optional domain-specific knowledge.
+//
+// Architecture:
+//   - Base ROM (START_HERE.md): Always included for all agents (14KB)
+//     Provides: tool discovery, communication patterns, artifacts, memory usage
+//   - Domain ROMs: Optional specialized knowledge (e.g., TD.rom for Teradata SQL)
+//     Automatically composed with base ROM using clear separators
 //
 // Parameters:
-//   - romID: ROM identifier from agent config ("TD", "teradata", "auto", or "")
+//   - romID: ROM identifier from agent config ("TD", "teradata", "auto", "none", or "")
 //   - backendPath: Backend path from agent metadata (for auto-detection)
 //
-// Returns ROM content (markdown format) or empty string if no ROM is configured.
+// Returns composed ROM content (markdown format).
 //
-// ROM Resolution Order:
-//  1. If romID == "" (explicitly empty): No ROM
-//  2. If romID == "TD" or "teradata": Load Teradata ROM
-//  3. If romID == "auto": Auto-detect from backend_path
-//     - backendPath contains "teradata" → Teradata ROM
-//     - backendPath contains "vantage" → Teradata ROM (Vantage is Teradata)
-//  4. Default: No ROM
+// ROM Composition Rules:
+//  1. Base ROM is ALWAYS included (operational guidance)
+//  2. Domain ROM is added if specified (with separator)
+//  3. Use romID="none" to opt-out of ALL ROMs (rare)
+//  4. Empty romID="" = base ROM only (no domain knowledge)
+//
+// Examples:
+//   romID=""         → Base ROM only (14KB)
+//   romID="TD"       → Base + Teradata ROM (14KB + 31KB = 45KB)
+//   romID="auto"     → Base + auto-detected domain ROM
+//   romID="none"     → No ROM at all (explicit opt-out)
 func LoadROMContent(romID string, backendPath string) string {
-	// Explicitly empty ROM
-	if romID == "" && backendPath == "" {
-		return ""
-	}
-
 	// Normalize ROM ID
 	romLower := strings.ToLower(strings.TrimSpace(romID))
 
-	// Explicit ROM selection
+	// Special opt-out: "none" returns empty string
+	if romLower == "none" {
+		return ""
+	}
+
+	// Start with base ROM (operational guidance for all agents)
+	content := baseROM
+
+	// Determine domain ROM
+	var domainROM string
+
+	// Explicit domain ROM selection
 	switch romLower {
 	case "td", "teradata":
-		return teradataROM
+		domainROM = teradataROM
+	case "auto":
+		// Auto-detect from backend path
+		domainROM = detectDomainROM(backendPath)
 	case "":
-		// Empty but have backend_path, try auto-detection
+		// Empty means base ROM only, try auto-detection
 		if backendPath != "" {
-			romLower = "auto"
-		} else {
-			return ""
+			domainROM = detectDomainROM(backendPath)
 		}
 	}
 
-	// Auto-detection based on backend path
-	if romLower == "auto" || romLower == "" {
-		backendLower := strings.ToLower(backendPath)
-		if strings.Contains(backendLower, "teradata") || strings.Contains(backendLower, "vantage") {
-			return teradataROM
-		}
-		// Add more backend detections here as new ROMs are added
-		// if strings.Contains(backendLower, "postgres") {
-		//     return postgresROM
-		// }
+	// Compose base + domain ROM with separator
+	if domainROM != "" {
+		content += "\n\n" + formatROMSeparator("DOMAIN-SPECIFIC KNOWLEDGE") + "\n\n" + domainROM
 	}
 
-	// No ROM found
+	return content
+}
+
+// detectDomainROM auto-detects domain ROM from backend path.
+func detectDomainROM(backendPath string) string {
+	if backendPath == "" {
+		return ""
+	}
+
+	backendLower := strings.ToLower(backendPath)
+
+	// Teradata detection
+	if strings.Contains(backendLower, "teradata") || strings.Contains(backendLower, "vantage") {
+		return teradataROM
+	}
+
+	// Add more backend detections here as new ROMs are added
+	// if strings.Contains(backendLower, "postgres") {
+	//     return postgresROM
+	// }
+
 	return ""
+}
+
+// formatROMSeparator creates a clear visual separator between ROM sections.
+func formatROMSeparator(title string) string {
+	line := strings.Repeat("=", 70)
+	return fmt.Sprintf("%s\n# %s\n%s", line, title, line)
 }
 
 // GetAvailableROMs returns a list of available ROM identifiers.
 // Useful for documentation and validation.
 func GetAvailableROMs() []string {
 	return []string{
-		"TD",       // Teradata SQL guidance (31KB)
+		"",         // Base ROM only (~14KB operational guidance)
+		"TD",       // Base + Teradata SQL guidance (~45KB total)
 		"teradata", // Alias for TD
-		"auto",     // Auto-detect from backend (default)
-		"",         // No ROM (empty)
+		"auto",     // Base + auto-detected domain ROM
+		"none",     // No ROM at all (explicit opt-out)
 	}
 }
 
-// GetROMSize returns the size of a ROM in bytes.
-// Returns 0 if ROM doesn't exist.
+// GetROMSize returns the total size of composed ROM in bytes.
+// Includes base ROM + domain ROM if applicable.
 func GetROMSize(romID string) int {
+	romLower := strings.ToLower(strings.TrimSpace(romID))
+
+	// Special case: "none" means no ROM
+	if romLower == "none" {
+		return 0
+	}
+
+	// Always include base ROM
+	totalSize := len(baseROM)
+
+	// Add domain ROM size if applicable
+	switch romLower {
+	case "td", "teradata":
+		totalSize += len(teradataROM)
+		// Add separator overhead (~150 bytes)
+		totalSize += 150
+	}
+
+	return totalSize
+}
+
+// GetBaseROMSize returns the size of the base ROM (START_HERE.md).
+func GetBaseROMSize() int {
+	return len(baseROM)
+}
+
+// GetDomainROMSize returns the size of a specific domain ROM.
+// Returns 0 if ROM doesn't exist.
+func GetDomainROMSize(romID string) int {
 	romLower := strings.ToLower(strings.TrimSpace(romID))
 	switch romLower {
 	case "td", "teradata":
