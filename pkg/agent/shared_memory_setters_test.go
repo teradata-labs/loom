@@ -175,8 +175,22 @@ func TestAgent_SetSharedMemory_Integration(t *testing.T) {
 	}
 	require.True(t, result.Success, "Tool should succeed")
 
-	// Verify data was retrieved correctly
-	retrieved, ok := result.Data.(string)
-	require.True(t, ok, "Data should be a string")
-	assert.Equal(t, string(largeData), retrieved, "Retrieved data should match original")
+	// BREAKING CHANGE: get_tool_result now returns metadata, not raw data
+	// Verify metadata structure was retrieved correctly
+	metadata, ok := result.Data.(map[string]interface{})
+	require.True(t, ok, "Data should be a metadata map after progressive disclosure refactor")
+
+	// Verify metadata contains expected fields
+	assert.Contains(t, metadata, "reference_id", "Metadata should contain reference_id")
+	assert.Contains(t, metadata, "content_type", "Metadata should contain content_type")
+	assert.Contains(t, metadata, "data_type", "Metadata should contain data_type")
+	assert.Contains(t, metadata, "size_bytes", "Metadata should contain size_bytes")
+
+	// Verify the reference_id matches
+	assert.Equal(t, refID, metadata["reference_id"], "Metadata reference_id should match original")
+
+	// Verify size is correct
+	if sizeBytes, ok := metadata["size_bytes"].(int64); ok {
+		assert.Equal(t, int64(len(largeData)), sizeBytes, "Metadata size should match original data size")
+	}
 }

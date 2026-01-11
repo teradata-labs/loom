@@ -234,6 +234,18 @@ func (s *SharedMemoryStore) Get(ref *loomv1.DataReference) ([]byte, error) {
 		return nil, fmt.Errorf("data not found: %s", ref.Id)
 	}
 
+	// Check if data has expired (active TTL enforcement)
+	// Note: TTL expiration doesn't check RefCount - expired data is gone regardless of usage
+	if time.Since(sharedData.AccessedAt) > s.ttl {
+		// Data has expired, remove it
+		s.lruList.Remove(sharedData.lruElement)
+		delete(s.data, sharedData.ID)
+		s.currentSize -= sharedData.Size
+		s.evictions.Add(1)
+		s.misses.Add(1)
+		return nil, fmt.Errorf("data expired: %s", ref.Id)
+	}
+
 	// Verify checksum if provided (skip verification if checksum is empty)
 	// This allows GetToolResultTool to retrieve data with minimal DataReference
 	if ref.Checksum != "" {
