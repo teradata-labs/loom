@@ -59,27 +59,40 @@ spec:
 
     ## ROM (Read-Only Memory) Configuration
 
-    ROM provides embedded domain-specific documentation (31KB) that augments the system prompt:
+    **IMPORTANT: All agents automatically receive base ROM (START_HERE.md, 14KB) with operational guidance.**
 
-    **When to use ROM:**
-    - SQL agents targeting Teradata databases (use "TD" or "teradata")
-    - Agents that need Teradata SQL syntax guidance (TOP vs LIMIT, QUALIFY, reserved words)
-    - Use "auto" for automatic detection from backend configuration
-    - Omit or use "" for agents that don't need domain-specific knowledge
+    ROM provides embedded domain-specific knowledge through automatic composition:
+    - **Base ROM (START_HERE.md)**: Always included for all agents (~14KB)
+      - Tool discovery patterns, agent communication, artifacts usage, memory management
+    - **Domain ROM**: Optional specialized knowledge composed with base ROM
+      - TD.rom (~31KB): Teradata SQL syntax, patterns, best practices
 
-    **ROM Options:**
-    - `rom: "TD"` or `rom: "teradata"` - Explicit Teradata SQL syntax guide
-    - `rom: "auto"` - Auto-detect from backend_path (checks for "teradata" or "vantage")
-    - `rom: ""` or omit field - No ROM (generic knowledge only)
+    **ROM Composition Architecture:**
+    - `rom: "TD"` or `rom: "teradata"` → Base ROM (14KB) + Teradata ROM (31KB) = 45KB total
+    - `rom: "auto"` → Base ROM + auto-detected domain ROM (from backend_path)
+    - `rom: ""` or omit field → Base ROM only (14KB operational guidance)
+    - `rom: "none"` → Explicit opt-out (no ROM at all, rare)
+
+    **When to specify ROM:**
+    - SQL agents targeting Teradata databases: use `rom: "TD"`
+    - Agents with backend configuration: use `rom: "auto"` for auto-detection
+    - Generic agents: omit field (will get base ROM automatically)
+    - Specialized agents without operational needs: use `rom: "none"` (rare)
 
     **Example usage:**
     ```yaml
     spec:
-      # For Teradata SQL agents
+      # Teradata SQL agent (base + TD)
       rom: "TD"
 
-      # For auto-detection based on backend
+      # Auto-detect from backend (base + detected)
       rom: "auto"
+
+      # Generic agent (base only) - can omit field
+      # rom: ""
+
+      # Explicit opt-out (no ROM)
+      # rom: "none"
     ```
 
     CRITICAL RULES:
@@ -112,4 +125,10 @@ spec:
     enable_self_correction: true
     max_context_tokens: 200000  # Make explicit
     reserved_output_tokens: 20000
-    
+    patterns:
+      enabled: true                 # Enable pattern-guided learning
+      use_llm_classifier: false     # Use keyword-based classifier (fast, no cost)
+      min_confidence: 0.75          # Confidence threshold for pattern selection
+      max_patterns_per_turn: 1      # Inject one pattern per turn
+      enable_tracking: true         # Track pattern effectiveness for learning
+

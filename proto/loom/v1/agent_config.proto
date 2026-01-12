@@ -207,6 +207,40 @@ message BehaviorConfig {
 
   // Maximum tool executions per conversation (default: 50)
   int32 max_tool_executions = 6;
+
+  // Pattern configuration for pattern-guided learning (optional)
+  PatternConfig patterns = 7;
+}
+
+// PatternConfig defines pattern-guided learning configuration
+// Patterns provide domain-specific templates and best practices for common tasks
+message PatternConfig {
+  // Enable pattern injection (default: true for v1.0.0)
+  // When enabled, the orchestrator automatically selects and injects relevant patterns
+  // into the LLM context based on user intent classification
+  bool enabled = 1;
+
+  // Minimum confidence threshold for pattern selection (0.0-1.0, default: 0.75)
+  // Patterns with confidence below this threshold will be skipped
+  // Higher values (0.8-0.9) reduce false positives but may miss relevant patterns
+  // Lower values (0.5-0.7) increase recall but may inject irrelevant patterns
+  float min_confidence = 2;
+
+  // Maximum patterns to inject per turn (default: 1)
+  // Higher values provide more context but increase token usage
+  // Recommended: 1-2 patterns to balance context and cost
+  int32 max_patterns_per_turn = 3;
+
+  // Enable pattern effectiveness tracking (default: true)
+  // When enabled, records pattern usage metrics to learning database
+  // Enables continuous learning and adaptive pattern selection
+  bool enable_tracking = 4;
+
+  // Use LLM-based intent classification (default: false, uses keyword-based)
+  // When enabled, uses LLM to classify user intent for more accurate pattern selection
+  // Trade-off: Higher accuracy (~90-95%) but adds ~300ms latency and ~$0.0001 cost per turn
+  // Recommended: Enable for production deployments where accuracy is critical
+  bool use_llm_classifier = 5;
 }
 
 // AgentTemplate defines a reusable agent template

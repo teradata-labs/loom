@@ -120,12 +120,22 @@ type MemoryCompressionBatchSizesYAML struct {
 
 // BehaviorConfigYAML represents behavior configuration in YAML
 type BehaviorConfigYAML struct {
-	MaxIterations      int      `yaml:"max_iterations"`
-	TimeoutSeconds     int      `yaml:"timeout_seconds"`
-	AllowCodeExecution bool     `yaml:"allow_code_execution"`
-	AllowedDomains     []string `yaml:"allowed_domains"`
-	MaxTurns           int      `yaml:"max_turns"`
-	MaxToolExecutions  int      `yaml:"max_tool_executions"`
+	MaxIterations      int                  `yaml:"max_iterations"`
+	TimeoutSeconds     int                  `yaml:"timeout_seconds"`
+	AllowCodeExecution bool                 `yaml:"allow_code_execution"`
+	AllowedDomains     []string             `yaml:"allowed_domains"`
+	MaxTurns           int                  `yaml:"max_turns"`
+	MaxToolExecutions  int                  `yaml:"max_tool_executions"`
+	Patterns           *PatternConfigYAML   `yaml:"patterns"`
+}
+
+// PatternConfigYAML represents pattern configuration in YAML
+type PatternConfigYAML struct {
+	Enabled            *bool    `yaml:"enabled"`
+	MinConfidence      *float64 `yaml:"min_confidence"`
+	MaxPatternsPerTurn *int     `yaml:"max_patterns_per_turn"`
+	EnableTracking     *bool    `yaml:"enable_tracking"`
+	UseLLMClassifier   *bool    `yaml:"use_llm_classifier"`
 }
 
 // LoadAgentConfig loads agent configuration from a YAML file and converts it to proto.
@@ -415,6 +425,33 @@ func yamlToProto(yaml *AgentConfigYAML) *loomv1.AgentConfig {
 		AllowedDomains:     yaml.Agent.Behavior.AllowedDomains,
 		MaxTurns:           int32(yaml.Agent.Behavior.MaxTurns),
 		MaxToolExecutions:  int32(yaml.Agent.Behavior.MaxToolExecutions),
+	}
+
+	// Parse pattern config if present
+	if yaml.Agent.Behavior.Patterns != nil {
+		pc := yaml.Agent.Behavior.Patterns
+		config.Behavior.Patterns = &loomv1.PatternConfig{
+			Enabled:            true, // default
+			MinConfidence:      0.75, // default
+			MaxPatternsPerTurn: 1,    // default
+			EnableTracking:     true, // default
+		}
+
+		if pc.Enabled != nil {
+			config.Behavior.Patterns.Enabled = *pc.Enabled
+		}
+		if pc.MinConfidence != nil {
+			config.Behavior.Patterns.MinConfidence = float32(*pc.MinConfidence)
+		}
+		if pc.MaxPatternsPerTurn != nil {
+			config.Behavior.Patterns.MaxPatternsPerTurn = int32(*pc.MaxPatternsPerTurn)
+		}
+		if pc.EnableTracking != nil {
+			config.Behavior.Patterns.EnableTracking = *pc.EnableTracking
+		}
+		if pc.UseLLMClassifier != nil {
+			config.Behavior.Patterns.UseLlmClassifier = *pc.UseLLMClassifier
+		}
 	}
 
 	// Set defaults for behavior

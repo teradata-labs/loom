@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -138,6 +139,27 @@ type Config struct {
 
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int
+
+	// PatternConfig controls pattern injection (nil = use defaults)
+	PatternConfig *PatternConfig
+}
+
+// PatternConfig holds pattern injection configuration
+type PatternConfig struct {
+	// Enabled controls whether pattern injection is active
+	Enabled bool
+
+	// MinConfidence is the minimum confidence threshold (0.0-1.0)
+	MinConfidence float64
+
+	// MaxPatternsPerTurn limits patterns injected per conversation turn
+	MaxPatternsPerTurn int
+
+	// EnableTracking enables pattern effectiveness metrics
+	EnableTracking bool
+
+	// UseLLMClassifier enables LLM-based intent classification (default: false, uses keyword-based)
+	UseLLMClassifier bool
 }
 
 // RetryConfig configures exponential backoff retry logic for LLM calls
@@ -174,6 +196,33 @@ func DefaultConfig() *Config {
 			Multiplier:   2.0,
 		},
 	}
+}
+
+// DefaultPatternConfig returns defaults for pattern injection (enabled by default)
+func DefaultPatternConfig() *PatternConfig {
+	return &PatternConfig{
+		Enabled:            true,  // Enabled by default for v1.0.0
+		MinConfidence:      0.75,  // High confidence only
+		MaxPatternsPerTurn: 1,     // Single pattern per turn
+		EnableTracking:     true,  // Track effectiveness
+	}
+}
+
+// ValidatePatternConfig validates pattern configuration
+func ValidatePatternConfig(cfg *PatternConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	if cfg.MinConfidence < 0.0 || cfg.MinConfidence > 1.0 {
+		return fmt.Errorf("min_confidence must be 0.0-1.0, got: %.2f", cfg.MinConfidence)
+	}
+
+	if cfg.MaxPatternsPerTurn < 0 || cfg.MaxPatternsPerTurn > 5 {
+		return fmt.Errorf("max_patterns_per_turn must be 0-5, got: %d", cfg.MaxPatternsPerTurn)
+	}
+
+	return nil
 }
 
 // Type aliases for backward compatibility with code that imports pkg/agent.

@@ -80,9 +80,21 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		opt(a)
 	}
 
+	// Initialize pattern config with defaults if not set
+	if a.config.PatternConfig == nil {
+		a.config.PatternConfig = DefaultPatternConfig()
+	}
+
 	// Initialize pattern orchestrator
 	patternLibrary := patterns.NewLibrary(nil, a.config.PatternsDir)
 	a.orchestrator = patterns.NewOrchestrator(patternLibrary)
+
+	// Initialize LLM classifier if configured
+	if a.config.PatternConfig.UseLLMClassifier && llmProvider != nil {
+		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmProvider)
+		llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
+		a.orchestrator.SetIntentClassifier(llmClassifier)
+	}
 
 	// Create executor with tool registry
 	// Note: Pass instrumented executor via SetExecutor() if you want tool tracing
@@ -312,6 +324,23 @@ func WithErrorStore(store ErrorStore) Option {
 func WithMessageQueue(queue *communication.MessageQueue) Option {
 	return func(a *Agent) {
 		a.messageQueue = queue
+	}
+}
+
+// WithPatternConfig sets pattern configuration.
+func WithPatternConfig(cfg *PatternConfig) Option {
+	return func(a *Agent) {
+		a.config.PatternConfig = cfg
+	}
+}
+
+// WithPatternInjection enables/disables pattern injection.
+func WithPatternInjection(enabled bool) Option {
+	return func(a *Agent) {
+		if a.config.PatternConfig == nil {
+			a.config.PatternConfig = DefaultPatternConfig()
+		}
+		a.config.PatternConfig.Enabled = enabled
 	}
 }
 
@@ -905,9 +934,108 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
 
+	// === PATTERN SELECTION INTEGRATION ===
+	var selectedPattern *patterns.Pattern
+	var patternConfidence float64
+
+	// Get pattern config (use defaults if not set)
+	patternConfig := a.config.PatternConfig
+	if patternConfig == nil {
+		patternConfig = DefaultPatternConfig()
+	}
+
+	// Only select patterns if enabled and prerequisites are met
+	if patternConfig.Enabled && a.orchestrator != nil && session != nil && a.backend != nil {
+		// Get most recent user message
+		messages := session.GetMessages()
+		var lastUserMessage string
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "user" {
+				lastUserMessage = messages[i].Content
+				break
+			}
+		}
+
+		if lastUserMessage != "" {
+			// Start pattern selection span
+			var patternSpan *observability.Span
+			if a.config.EnableTracing && a.tracer != nil {
+				_, patternSpan = a.tracer.StartSpan(ctx, "agent.pattern_selection")
+				defer a.tracer.EndSpan(patternSpan)			}
+
+			// Build context data
+			contextData := map[string]interface{}{
+				"backend_type": a.backend.Name(),
+				"session_id":   session.ID,
+			}
+
+			// Step 1: Classify intent
+			intent, intentConf := a.orchestrator.ClassifyIntent(lastUserMessage, contextData)
+
+			if patternSpan != nil {
+				patternSpan.SetAttribute("intent.category", string(intent))
+				patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
+			}
+
+			// Step 2: Recommend pattern (if intent confidence sufficient)
+			if intent != patterns.IntentUnknown && intentConf > 0.3 {
+				patternName, patternConf := a.orchestrator.RecommendPattern(lastUserMessage, intent)
+				patternConfidence = patternConf
+
+				if patternSpan != nil {
+					patternSpan.SetAttribute("pattern.name", patternName)
+					patternSpan.SetAttribute("pattern.confidence", fmt.Sprintf("%.2f", patternConf))
+				}
+
+				// Step 3: Load pattern if confidence threshold met
+				if patternName != "" && patternConf >= patternConfig.MinConfidence {
+					pattern, err := a.orchestrator.GetLibrary().Load(patternName)
+					if err == nil {
+						selectedPattern = pattern
+
+
+						// Format and inject pattern
+						formattedPattern := pattern.FormatForLLM()
+
+						// Inject into segmented memory
+						if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+							segMem.InjectPattern(formattedPattern, pattern.Name)
+
+							if patternSpan != nil {
+								tokenCount := a.tokenCounter.CountTokens(formattedPattern)
+								patternSpan.SetAttribute("pattern.tokens", tokenCount)
+								patternSpan.SetAttribute("pattern.injected", "true")
+							}
+						}
+
+						// Record metrics
+						if a.config.EnableTracing && a.tracer != nil {
+							a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
+								"pattern":    patternName,
+								"intent":     string(intent),
+								"confidence": fmt.Sprintf("%.0f", patternConf*100),
+							})
+						}
+					} else if patternSpan != nil {
+						patternSpan.RecordError(fmt.Errorf("pattern load failed: %w", err))
+					}
+				}
+			}
+
+			// Update progress with pattern info
+			if selectedPattern != nil {
+				emitProgress(ctx, StagePatternSelection, 15,
+					fmt.Sprintf("Selected pattern: %s (%.0f%% confidence)",
+						selectedPattern.Title, patternConfidence*100), "")
+			}
+		}
+	}
+	// === END PATTERN SELECTION ===
+
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
 		turnCount++
+		turnStartTime := time.Now()
 
 		// === FEATURE INTEGRATION: Token Budget Management ===
 		// Check token budget and enforce compression if needed (segmented memory only)
@@ -1227,6 +1355,56 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 		}
+
+		// === PATTERN EFFECTIVENESS TRACKING ===
+		// Track pattern usage after tool execution completes
+		if selectedPattern != nil && patternConfig.EnableTracking && len(allToolExecutions) > 0 {
+			// Get the most recent tool execution for this turn
+			lastExecution := allToolExecutions[len(allToolExecutions)-1]
+
+			// Determine success based on execution result
+			success := lastExecution.Error == nil && (lastExecution.Result == nil || lastExecution.Result.Success)
+
+			// Extract error type if failed
+			errorType := ""
+			if !success {
+				if lastExecution.Error != nil {
+					errorType = "execution_error"
+				} else if lastExecution.Result != nil && lastExecution.Result.Error != nil {
+					errorType = lastExecution.Result.Error.Code
+				}
+			}
+
+			// Calculate cost (rough estimate based on LLM usage)
+			costUSD := 0.0
+			if llmResp != nil && llmResp.Usage.InputTokens > 0 {
+				// Anthropic pricing (approximate): $3/million input, $15/million output
+				costUSD = float64(llmResp.Usage.InputTokens)*0.000003 +
+				          float64(llmResp.Usage.OutputTokens)*0.000015
+			}
+
+			// Calculate latency from turn start
+			latency := time.Since(turnStartTime)
+
+			// Extract LLM provider and model info
+			llmProvider := "anthropic" // Default
+			llmModel := "claude-sonnet-4-5"
+			// TODO: Extract actual provider/model from LLM provider interface when available
+
+			// Record pattern usage for effectiveness tracking
+			a.orchestrator.RecordPatternUsage(
+				ctx,
+				selectedPattern.Name,
+				a.config.Name,
+				success,
+				costUSD,
+				latency,
+				errorType,
+				llmProvider,
+				llmModel,
+			)
+		}
+		// === END PATTERN EFFECTIVENESS TRACKING ===
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results

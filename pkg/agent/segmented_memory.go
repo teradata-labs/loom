@@ -96,6 +96,10 @@ type SegmentedMemory struct {
 	// Semantic search
 	llmProvider LLMProvider // For reranking search results (optional)
 
+	// Pattern injection (optional)
+	patternContent string // Formatted pattern content for LLM context
+	patternName    string // Pattern name for tracking
+
 	// Configuration
 	maxL1Messages      int                // Max messages in L1 before compression (adaptive)
 	minL1Messages      int                // Minimum messages to keep in L1
@@ -679,8 +683,26 @@ func (sm *SegmentedMemory) updateTokenCount() {
 	sm.tokenBudget.Use(count)
 }
 
+// InjectPattern injects a formatted pattern into the message stream.
+// Pattern is added as system message after L2 summary, before promoted context.
+// This placement ensures pattern knowledge is available but doesn't override ROM or conversation history.
+func (sm *SegmentedMemory) InjectPattern(patternContent string, patternName string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.patternContent = patternContent
+	sm.patternName = patternName
+	sm.tokenCountDirty = true
+
+	if sm.tracer != nil {
+		sm.tracer.RecordMetric("patterns.injected", 1.0, map[string]string{
+			"pattern": patternName,
+		})
+	}
+}
+
 // GetMessagesForLLM builds the full message list for the LLM call.
-// Returns: ROM message + L2 summary message (if exists) + promoted context (if exists) + L1 messages.
+// Returns: ROM message + L2 summary message (if exists) + pattern (if injected) + promoted context (if exists) + L1 messages.
 // This is what gets sent to the LLM in Message format.
 func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 	sm.mu.RLock()
@@ -701,6 +723,14 @@ func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: "Previous conversation summary: " + sm.l2Summary,
+		})
+	}
+
+	// Add pattern as system message (if injected)
+	if sm.patternContent != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: fmt.Sprintf("# Relevant Pattern Guidance\n\n%s\n\nUse this pattern as guidance for tool selection and parameter construction.", sm.patternContent),
 		})
 	}
 

@@ -122,6 +122,12 @@ spec:
         max_tool_executions: 100     # REQUIRED: Tool call limit
         timeout_seconds: 600         # OPTIONAL: Per-message timeout
         enable_self_correction: true # OPTIONAL: Enable error recovery
+        patterns:                    # OPTIONAL: Pattern-guided learning
+          enabled: true              # Enable pattern injection
+          use_llm_classifier: false  # Use keyword-based (fast) or LLM-based (accurate)
+          min_confidence: 0.75       # Pattern confidence threshold (0.0-1.0)
+          max_patterns_per_turn: 1   # Patterns to inject per turn
+          enable_tracking: true      # Track pattern effectiveness
 
       # Observability - OPTIONAL
       observability:
@@ -159,3 +165,9 @@ spec:
     enable_self_correction: true
     max_context_tokens: 200000  # Make explicit
     reserved_output_tokens: 20000
+    patterns:
+      enabled: true                 # Enable pattern-guided learning
+      use_llm_classifier: false     # Use keyword-based classifier (fast, no cost)
+      min_confidence: 0.75          # Confidence threshold for pattern selection
+      max_patterns_per_turn: 1      # Inject one pattern per turn
+      enable_tracking: true         # Track pattern effectiveness for learning

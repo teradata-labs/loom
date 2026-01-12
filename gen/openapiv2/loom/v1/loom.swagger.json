@@ -3525,6 +3525,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Maximum tool executions per conversation (default: 50)"
+        },
+        "patterns": {
+          "$ref": "#/definitions/v1PatternConfig",
+          "title": "Pattern configuration for pattern-guided learning (optional)"
         }
       },
       "title": "BehaviorConfig defines agent behavior constraints"
@@ -5410,6 +5414,34 @@
         }
       },
       "description": "Pattern represents a domain knowledge pattern."
+    },
+    "v1PatternConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable pattern injection (default: true for v1.0.0)\nWhen enabled, the orchestrator automatically selects and injects relevant patterns\ninto the LLM context based on user intent classification"
+        },
+        "minConfidence": {
+          "type": "number",
+          "format": "float",
+          "title": "Minimum confidence threshold for pattern selection (0.0-1.0, default: 0.75)\nPatterns with confidence below this threshold will be skipped\nHigher values (0.8-0.9) reduce false positives but may miss relevant patterns\nLower values (0.5-0.7) increase recall but may inject irrelevant patterns"
+        },
+        "maxPatternsPerTurn": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum patterns to inject per turn (default: 1)\nHigher values provide more context but increase token usage\nRecommended: 1-2 patterns to balance context and cost"
+        },
+        "enableTracking": {
+          "type": "boolean",
+          "title": "Enable pattern effectiveness tracking (default: true)\nWhen enabled, records pattern usage metrics to learning database\nEnables continuous learning and adaptive pattern selection"
+        },
+        "useLlmClassifier": {
+          "type": "boolean",
+          "title": "Use LLM-based intent classification (default: false, uses keyword-based)\nWhen enabled, uses LLM to classify user intent for more accurate pattern selection\nTrade-off: Higher accuracy (~90-95%) but adds ~300ms latency and ~$0.0001 cost per turn\nRecommended: Enable for production deployments where accuracy is critical"
+        }
+      },
+      "title": "PatternConfig defines pattern-guided learning configuration\nPatterns provide domain-specific templates and best practices for common tasks"
     },
     "v1PatternExample": {
       "type": "object",

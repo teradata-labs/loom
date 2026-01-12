@@ -13,6 +13,11 @@
 // limitations under the License.
 package patterns
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Pattern represents a comprehensive execution pattern definition.
 // Patterns encapsulate domain knowledge for complex operations (SQL, REST APIs, document processing, etc.).
 // This is backend-agnostic - SQL patterns, REST API patterns, document patterns all use this structure.
@@ -41,6 +46,77 @@ type Pattern struct {
 
 	// Backend-specific function name (e.g., Teradata nPath, Postgres jsonb_path_query)
 	BackendFunction string `yaml:"backend_function,omitempty" json:"backend_function,omitempty"`
+}
+
+// FormatForLLM formats the pattern for LLM injection.
+// Returns concise, actionable representation optimized for token efficiency.
+// Target: <2000 tokens per pattern.
+func (p *Pattern) FormatForLLM() string {
+	var sb strings.Builder
+
+	// Header
+	sb.WriteString(fmt.Sprintf("## Pattern: %s\n\n", p.Title))
+	sb.WriteString(fmt.Sprintf("%s\n\n", p.Description))
+
+	// Use cases
+	if len(p.UseCases) > 0 {
+		sb.WriteString("**When to use:**\n")
+		for _, useCase := range p.UseCases {
+			sb.WriteString(fmt.Sprintf("- %s\n", useCase))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Parameters
+	if len(p.Parameters) > 0 {
+		sb.WriteString("**Required parameters:**\n")
+		for _, param := range p.Parameters {
+			sb.WriteString(fmt.Sprintf("- `%s` (%s): %s", param.Name, param.Type, param.Description))
+			if param.Required {
+				sb.WriteString(" [REQUIRED]")
+			}
+			if param.Example != "" {
+				sb.WriteString(fmt.Sprintf(" (e.g., %s)", param.Example))
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Templates (limit to 2 for token efficiency)
+	if len(p.Templates) > 0 {
+		sb.WriteString("**Implementation templates:**\n")
+		count := 0
+		for name, template := range p.Templates {
+			if count >= 2 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("### %s\n", name))
+			if template.Description != "" {
+				sb.WriteString(fmt.Sprintf("%s\n", template.Description))
+			}
+			sb.WriteString(fmt.Sprintf("```\n%s\n```\n\n", template.GetSQL()))
+			count++
+		}
+	}
+
+	// Best practices (critical for correctness)
+	if p.BestPractices != "" {
+		sb.WriteString("**Best practices:**\n")
+		sb.WriteString(fmt.Sprintf("%s\n\n", p.BestPractices))
+	}
+
+	// Common errors (help LLM avoid mistakes)
+	if len(p.CommonErrors) > 0 && len(p.CommonErrors) <= 3 {
+		sb.WriteString("**Common errors to avoid:**\n")
+		for _, err := range p.CommonErrors {
+			sb.WriteString(fmt.Sprintf("- Error: %s\n", err.Error))
+			sb.WriteString(fmt.Sprintf("  Solution: %s\n", err.Solution))
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }
 
 // Parameter defines a single parameter used in pattern templates.

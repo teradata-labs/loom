@@ -46,10 +46,11 @@ var teradataROM string
 //  4. Empty romID="" = base ROM only (no domain knowledge)
 //
 // Examples:
-//   romID=""         → Base ROM only (14KB)
-//   romID="TD"       → Base + Teradata ROM (14KB + 31KB = 45KB)
-//   romID="auto"     → Base + auto-detected domain ROM
-//   romID="none"     → No ROM at all (explicit opt-out)
+//
+//	romID=""         → Base ROM only (14KB)
+//	romID="TD"       → Base + Teradata ROM (14KB + 31KB = 45KB)
+//	romID="auto"     → Base + auto-detected domain ROM
+//	romID="none"     → No ROM at all (explicit opt-out)
 func LoadROMContent(romID string, backendPath string) string {
 	// Normalize ROM ID
 	romLower := strings.ToLower(strings.TrimSpace(romID))

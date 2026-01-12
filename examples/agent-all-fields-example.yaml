@@ -250,6 +250,12 @@ spec:
     max_tool_executions: 50            # OPTIONAL: Max tool calls (default: 50)
     enable_tracing: true               # OPTIONAL: Enable observability tracing
     enable_self_correction: true       # OPTIONAL: Allow self-correction loops
+    patterns:                          # OPTIONAL: Pattern-guided learning
+      enabled: true                    # Enable pattern injection (default: true)
+      use_llm_classifier: false        # Use LLM for intent classification (default: false, uses keyword-based)
+      min_confidence: 0.75             # Pattern confidence threshold 0.0-1.0 (default: 0.75)
+      max_patterns_per_turn: 1         # Max patterns per turn (default: 1)
+      enable_tracking: true            # Track pattern effectiveness (default: true)
 
   # ==========================================================================
   # EPHEMERAL AGENTS (optional - dynamic agent spawning)
