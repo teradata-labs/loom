@@ -31,6 +31,287 @@ Use tool_search with queries like:
 
 ---
 
+## 📦 Tool Result Management (Progressive Disclosure)
+
+**When tools return large results (>1000 tokens), they are stored with a reference ID instead of being returned directly.**
+
+This prevents context blowout - imagine a query returning 50,000 rows directly in your context window! Instead, you get a **DataRef** that you can inspect and query selectively.
+
+### The Problem
+
+```
+❌ BAD: Tool returns 50MB of data directly
+→ Context window explodes
+→ Agent can't process the response
+→ Conversation fails
+
+✅ GOOD: Tool returns DataRef[ref_abc123, DATABASE, 50MB]
+→ Agent inspects metadata (size, schema, preview)
+→ Agent queries only what's needed (100 rows)
+→ Context stays manageable
+```
+
+### The 3-Step Progressive Disclosure Workflow
+
+**Step 1: Get Metadata**
+
+When a tool returns a DataRef (e.g., `DataRef[ref_abc123, MEMORY, 3KB]`), your FIRST action is to inspect it:
+
+```
+get_tool_result(reference_id="ref_abc123")
+```
+
+**Returns:**
+```json
+{
+  "reference_id": "ref_abc123",
+  "data_type": "json_object",
+  "content_type": "application/json",
+  "size_bytes": 3744,
+  "estimated_tokens": 936,
+  "schema": {
+    "type": "object",
+    "fields": ["database_version", "tools_available", "connection_info"]
+  },
+  "preview": {
+    "database_version": "Teradata 17.20.00.08",
+    "tools_available": ["teradata_execute_query", "..."]
+  },
+  "retrieval_hints": [
+    "💡 Use query_tool_result(reference_id='ref_abc123') for full object"
+  ]
+}
+```
+
+**Step 2: Analyze Preview**
+
+- Check `data_type` to understand structure (json_object, json_array, csv, sql_result)
+- Review `schema` to see what fields/columns are available
+- Check `size_bytes` and `estimated_tokens` to gauge result size
+- Examine `preview` for first/last items
+- Read `retrieval_hints` for recommended query strategies
+
+**Step 3: Retrieve Selectively**
+
+Based on `data_type`, use the appropriate retrieval strategy:
+
+### Retrieval Strategies by Data Type
+
+#### 1. JSON Objects (Discovery Results, Metadata, Config)
+
+**When to use:** `data_type: "json_object"`
+
+**Pattern:** No parameters needed - returns full object
+```
+query_tool_result(reference_id="ref_abc123")
+```
+
+**Use cases:**
+- Discovery results (list of available tools)
+- Metadata (database version, connection info)
+- Configuration objects
+- Small structured data (<10KB typically)
+
+**Example:**
+```
+Tool: tool_search(query="teradata")
+  → Returns: DataRef[ref_abc123, MEMORY, 3KB]
+
+You: get_tool_result(reference_id="ref_abc123")
+  → Returns: {data_type: "json_object", preview: {...}, ...}
+
+You: query_tool_result(reference_id="ref_abc123")
+  → Returns: Complete discovery object with all tools
+```
+
+#### 2. JSON Arrays (Lists of Items)
+
+**When to use:** `data_type: "json_array"`
+
+**Pattern A: Simple Pagination**
+```
+query_tool_result(reference_id="ref_xyz789", offset=0, limit=100)
+```
+
+**Pattern B: SQL Filtering** (auto-converts to SQLite table)
+```
+query_tool_result(
+  reference_id="ref_xyz789",
+  sql="SELECT * FROM results WHERE score > 90 ORDER BY score DESC LIMIT 100"
+)
+```
+
+**Use cases:**
+- Lists of records/entities
+- Search results
+- Multi-row data exports
+- Any array of structured objects
+
+**Example:**
+```
+Tool: list_tables()
+  → Returns: DataRef[ref_xyz789, MEMORY, 500KB] (1000 tables)
+
+You: get_tool_result(reference_id="ref_xyz789")
+  → Returns: {data_type: "json_array", schema: {item_count: 1000}, preview: [...]}
+
+You: query_tool_result(
+       reference_id="ref_xyz789",
+       sql="SELECT * FROM results WHERE table_name LIKE 'CUSTOMER%' LIMIT 50"
+     )
+  → Returns: 12 tables matching criteria
+```
+
+#### 3. SQL Results (Database Query Results)
+
+**When to use:** `data_type: "sql_result"` or location: `DATABASE`
+
+**Pattern: SQL Queries**
+```
+query_tool_result(
+  reference_id="ref_sql456",
+  sql="SELECT * FROM results WHERE score > 90 LIMIT 100"
+)
+```
+
+**Use cases:**
+- Query results from databases
+- Large result sets (>10K rows)
+- Tabular data requiring aggregation
+
+**Example:**
+```
+Tool: teradata_execute_query(query="SELECT * FROM customers")
+  → Returns: DataRef[ref_sql456, DATABASE, 50MB] (100K rows)
+
+You: get_tool_result(reference_id="ref_sql456")
+  → Returns: {data_type: "sql_result", schema: {row_count: 100000, columns: [...]}, ...}
+
+You: query_tool_result(
+       reference_id="ref_sql456",
+       sql="SELECT customer_id, name FROM results WHERE status='ACTIVE' LIMIT 1000"
+     )
+  → Returns: 842 active customers
+```
+
+#### 4. CSV Data
+
+**When to use:** `content_type: "text/csv"` or `data_type: "csv"`
+
+**Pattern: SQL Queries** (auto-converts to SQLite table)
+```
+query_tool_result(
+  reference_id="ref_csv123",
+  sql="SELECT category, COUNT(*) as count FROM results GROUP BY category"
+)
+```
+
+**Use cases:**
+- CSV exports from tools
+- Tabular data files
+- Spreadsheet-like data
+
+### Critical Rules
+
+**DO:**
+- ✅ Always call `get_tool_result` FIRST to inspect metadata
+- ✅ Check `data_type` to determine retrieval strategy
+- ✅ Use filtering/pagination for large datasets (>1000 items)
+- ✅ Retrieve only what you need for the task
+- ✅ Read `retrieval_hints` for recommended approaches
+
+**DON'T:**
+- ❌ Try to retrieve ALL data from large results (>10K rows) without filtering
+- ❌ Skip the metadata inspection step
+- ❌ Use `offset`/`limit` on `json_object` types (not needed - just call with reference_id)
+- ❌ Assume data type without checking metadata
+- ❌ Ignore `size_bytes` and `estimated_tokens` warnings
+
+### Error Handling
+
+**Common errors and fixes:**
+
+```
+Error: "Must provide 'offset'/'limit' for pagination"
+Fix: You're calling query_tool_result on a json_array without parameters.
+     Add offset/limit OR use SQL filtering.
+
+Error: "Pagination only supports json_array, got json_object"
+Fix: You're trying to paginate a json_object.
+     Call query_tool_result(reference_id) with NO parameters.
+
+Error: "Query failed: no such column"
+Fix: Check metadata schema to see available columns.
+     Column names may differ from what you expect.
+
+Error: "Reference ref_xyz789 not found"
+Fix: DataRef may have expired (default TTL: 1 hour).
+     Re-run the original tool to get a fresh reference.
+```
+
+### Complete Example: Full Workflow
+
+```
+# User asks: "Find all Teradata tables with 'CUSTOMER' in the name"
+
+# Step 1: Discover available tools
+You: tool_search(query="teradata list")
+  → Returns: DataRef[ref_discovery, MEMORY, 4KB]
+
+# Step 2: Inspect discovery results (json_object - no params needed)
+You: get_tool_result(reference_id="ref_discovery")
+  → Returns: {data_type: "json_object", preview: {"tools": [...]}}
+
+You: query_tool_result(reference_id="ref_discovery")
+  → Returns: {tools: [{name: "teradata_list_tables", ...}, ...]}
+
+# Step 3: Call the list_tables tool
+You: teradata_list_tables(database="DBC")
+  → Returns: DataRef[ref_tables, MEMORY, 500KB] (2000 tables)
+
+# Step 4: Inspect table list (json_array - needs filtering)
+You: get_tool_result(reference_id="ref_tables")
+  → Returns: {
+       data_type: "json_array",
+       schema: {item_count: 2000, fields: ["table_name", "database", ...]},
+       preview: {first_5: [...], last_5: [...]},
+       retrieval_hints: ["Use SQL WHERE clause to filter"]
+     }
+
+# Step 5: Query with filter (SQL auto-conversion)
+You: query_tool_result(
+       reference_id="ref_tables",
+       sql="SELECT table_name, database FROM results WHERE table_name LIKE '%CUSTOMER%'"
+     )
+  → Returns: {rows: [
+       ["CUSTOMER_MASTER", "DBC"],
+       ["CUSTOMER_ORDERS", "SALES"],
+       ["CUSTOMER_PROFILES", "MARKETING"]
+     ], columns: ["table_name", "database"]}
+
+# Step 6: Present results to user
+You: "Found 3 tables with 'CUSTOMER' in the name:
+      - DBC.CUSTOMER_MASTER
+      - SALES.CUSTOMER_ORDERS
+      - MARKETING.CUSTOMER_PROFILES"
+```
+
+### Tools Reference
+
+**get_tool_result(reference_id)**
+- Retrieves METADATA ONLY (never full data)
+- Returns: data_type, size, schema, preview, hints
+- Fast, low-cost, always call this first
+
+**query_tool_result(reference_id, [sql], [offset], [limit])**
+- Retrieves ACTUAL DATA (filtered/paginated)
+- For json_object: No params needed
+- For json_array: Use offset/limit OR sql
+- For SQL results: Use sql queries
+- For CSV: Use sql queries (auto-converts)
+
+---
+
 ## 🔄 Agent-to-Agent Communication
 
 **Loom provides two communication modes: Point-to-Point and Pub-Sub, both with event-driven instant delivery.**
