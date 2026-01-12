@@ -426,6 +426,11 @@ For SQL results (DATABASE location):
 - Use SQL queries to filter/aggregate: sql="SELECT * FROM results WHERE score > 90"
 - Table name is always "results"
 
+For JSON objects (MEMORY/DISK location):
+- No parameters needed: query_tool_result(reference_id="ref_123")
+- Returns the complete object structure
+- Use for discovery results, metadata, and structured configuration
+
 For JSON arrays (MEMORY/DISK location):
 - Simple pagination: offset=0, limit=100
 - SQL queries: sql="SELECT * FROM results WHERE field > value" (auto-converts to SQLite table)
@@ -441,6 +446,7 @@ Auto-conversion to SQLite:
 - Use standard SQL syntax for filtering/aggregation
 
 Examples:
+- JSON object: query_tool_result(reference_id="ref_123")
 - SQL on JSON: query_tool_result(reference_id="ref_123", sql="SELECT * FROM results WHERE score > 90")
 - SQL on CSV: query_tool_result(reference_id="ref_123", sql="SELECT COUNT(*) FROM results GROUP BY category")
 - Pagination: query_tool_result(reference_id="ref_123", offset=0, limit=100)
@@ -616,6 +622,36 @@ func (t *QueryToolResultTool) queryMemoryData(ctx context.Context, refID string,
 	if _, hasOffset := input["offset"]; hasOffset {
 		// Simple pagination for JSON arrays
 		return t.paginateData(ref, meta, input)
+	}
+
+	// Handle json_object types - return full object (no pagination needed)
+	if meta.DataType == "json_object" {
+		data, err := t.memoryStore.Get(ref)
+		if err != nil {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "retrieval_failed",
+					Message: fmt.Sprintf("Failed to retrieve data: %v", err),
+				},
+			}, nil
+		}
+
+		var obj map[string]interface{}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "parse_failed",
+					Message: fmt.Sprintf("Failed to parse JSON object: %v", err),
+				},
+			}, nil
+		}
+
+		return &shuttle.Result{
+			Success: true,
+			Data:    obj,
+		}, nil
 	}
 
 	return &shuttle.Result{

@@ -407,3 +407,142 @@ func TestProgressiveDisclosure_MultipleQueries(t *testing.T) {
 	assert.Greater(t, len(rows2), 0)
 	assert.Len(t, rows3, 1) // COUNT returns single row
 }
+
+// TestProgressiveDisclosure_JSONObject tests that json_object types can be retrieved
+// without requiring offset/limit parameters
+func TestProgressiveDisclosure_JSONObject(t *testing.T) {
+	ctx := context.Background()
+
+	// Setup stores
+	sqlStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
+		DBPath:     ":memory:",
+		TTLSeconds: 3600,
+	})
+	require.NoError(t, err)
+	defer sqlStore.Close()
+
+	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
+		MaxMemoryBytes:       10 * 1024 * 1024,
+		CompressionThreshold: 1024 * 1024,
+		TTLSeconds:           3600,
+	})
+
+	// Setup tools
+	getMetadataTool := NewGetToolResultTool(memoryStore, sqlStore)
+	queryTool := NewQueryToolResultTool(sqlStore, memoryStore)
+
+	// Step 1: Store JSON object (simulating discovery results)
+	discoveryResult := map[string]any{
+		"database_version": "Teradata 17.20.00.08",
+		"tools_available": []string{
+			"teradata_execute_query",
+			"teradata_describe_table",
+			"teradata_sample_table",
+		},
+		"connection_info": map[string]any{
+			"host":     "localhost",
+			"port":     1025,
+			"database": "DBC",
+		},
+		"features": map[string]any{
+			"query_banding": true,
+			"temporal":      false,
+			"json":          true,
+		},
+	}
+	jsonData, err := json.Marshal(discoveryResult)
+	require.NoError(t, err)
+
+	ref, err := memoryStore.Store("discovery_result", jsonData, "application/json", nil)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.StorageLocation_STORAGE_LOCATION_MEMORY, ref.Location)
+
+	// Step 2: Agent calls get_tool_result to get metadata
+	metadataResult, err := getMetadataTool.Execute(ctx, map[string]any{
+		"reference_id": ref.Id,
+	})
+	require.NoError(t, err)
+	require.True(t, metadataResult.Success)
+
+	metadata, ok := metadataResult.Data.(map[string]any)
+	require.True(t, ok)
+
+	// Verify it's classified as json_object
+	assert.Equal(t, "json_object", metadata["data_type"])
+	assert.Equal(t, "application/json", metadata["content_type"])
+
+	// Step 3: Agent calls query_tool_result WITHOUT any parameters
+	// This should work for json_object types (no offset/limit needed)
+	queryResult, err := queryTool.Execute(ctx, map[string]any{
+		"reference_id": ref.Id,
+	})
+	require.NoError(t, err)
+
+	require.True(t, queryResult.Success, "query_tool_result should succeed for json_object without parameters")
+
+	// Verify full object is returned
+	resultData, ok := queryResult.Data.(map[string]any)
+	require.True(t, ok, "result should be a map")
+
+	// Check structure matches original
+	assert.Equal(t, "Teradata 17.20.00.08", resultData["database_version"])
+
+	toolsList, ok := resultData["tools_available"].([]interface{})
+	require.True(t, ok)
+	assert.Len(t, toolsList, 3)
+
+	connInfo, ok := resultData["connection_info"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "localhost", connInfo["host"])
+
+	features, ok := resultData["features"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, true, features["query_banding"])
+	assert.Equal(t, false, features["temporal"])
+}
+
+// TestProgressiveDisclosure_JSONObjectVsArray tests the distinction between
+// json_object and json_array handling
+func TestProgressiveDisclosure_JSONObjectVsArray(t *testing.T) {
+	ctx := context.Background()
+
+	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
+		MaxMemoryBytes:       10 * 1024 * 1024,
+		CompressionThreshold: 1024 * 1024,
+		TTLSeconds:           3600,
+	})
+
+	queryTool := NewQueryToolResultTool(nil, memoryStore)
+
+	// Test 1: JSON object should work without parameters
+	objData := map[string]any{"key": "value", "count": float64(42)}
+	objJSON, _ := json.Marshal(objData)
+	objRef, _ := memoryStore.Store("obj", objJSON, "application/json", nil)
+
+	objResult, err := queryTool.Execute(ctx, map[string]any{
+		"reference_id": objRef.Id,
+	})
+	require.NoError(t, err)
+	assert.True(t, objResult.Success, "json_object should work without parameters")
+
+	// Test 2: JSON array requires offset/limit or SQL
+	arrayData := []map[string]any{{"id": float64(1)}, {"id": float64(2)}}
+	arrayJSON, _ := json.Marshal(arrayData)
+	arrayRef, _ := memoryStore.Store("array", arrayJSON, "application/json", nil)
+
+	arrayResult, err := queryTool.Execute(ctx, map[string]any{
+		"reference_id": arrayRef.Id,
+	})
+	require.NoError(t, err)
+	assert.False(t, arrayResult.Success, "json_array should require parameters")
+	assert.Contains(t, arrayResult.Error.Message, "offset", "error should mention pagination requirement")
+
+	// Test 3: JSON array works with offset/limit
+	arrayResult2, err := queryTool.Execute(ctx, map[string]any{
+		"reference_id": arrayRef.Id,
+		"offset":       float64(0),
+		"limit":        float64(10),
+	})
+	require.NoError(t, err)
+	assert.True(t, arrayResult2.Success, "json_array should work with offset/limit")
+}

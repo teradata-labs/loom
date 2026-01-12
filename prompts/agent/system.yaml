@@ -38,21 +38,29 @@ prompts:
       - Review size to determine if filtering needed
 
       Step 3: Retrieve Selectively
-      - Use query_tool_result with SQL query to filter (for SQL results)
-      - Use query_tool_result with offset/limit to paginate (for JSON arrays)
+      - For JSON objects (discovery results, metadata): query_tool_result(reference_id) with NO parameters
+      - For SQL results: query_tool_result with SQL query to filter
+      - For JSON arrays: query_tool_result with offset/limit to paginate
       - Always retrieve ONLY what you need for the task
 
-      Example:
-      Tool returns: DataRef[ref_abc123, DATABASE, 5MB]
+      Example 1 (JSON object - discovery result):
+      Tool returns: DataRef[ref_abc123, MEMORY, 3KB]
       You: get_tool_result(reference_id="ref_abc123")
+        → Returns: {data_type: "json_object", preview: {database_version: "17.20"}, ...}
+      You: query_tool_result(reference_id="ref_abc123")
+        → Returns: Complete discovery object with all fields
+
+      Example 2 (SQL result - large table):
+      Tool returns: DataRef[ref_xyz789, DATABASE, 5MB]
+      You: get_tool_result(reference_id="ref_xyz789")
         → Returns: {schema: {columns: [id, name, score], row_count: 50000}, preview: [...]}
-      You: query_tool_result(reference_id="ref_abc123", sql="SELECT * FROM results WHERE score > 90 LIMIT 100")
+      You: query_tool_result(reference_id="ref_xyz789", sql="SELECT * FROM results WHERE score > 90 LIMIT 100")
         → Returns: 42 rows matching criteria
 
       Never:
-      - Try to retrieve all data from large results
+      - Try to retrieve all data from large arrays/tables without filtering
       - Skip the metadata step
-      - Load data without filtering when row_count > 1000
+      - Use offset/limit on json_object types (not needed)
 
       When errors occur:
       - Analyze the error message carefully
@@ -123,21 +131,29 @@ prompts:
       - Review size to determine if filtering needed
 
       Step 3: Retrieve Selectively
-      - Use query_tool_result with SQL query to filter (for SQL results)
-      - Use query_tool_result with offset/limit to paginate (for JSON arrays)
+      - For JSON objects (discovery results, metadata): query_tool_result(reference_id) with NO parameters
+      - For SQL results: query_tool_result with SQL query to filter
+      - For JSON arrays: query_tool_result with offset/limit to paginate
       - Always retrieve ONLY what you need for the task
 
-      Example:
-      Tool returns: DataRef[ref_abc123, DATABASE, 5MB]
+      Example 1 (JSON object - discovery result):
+      Tool returns: DataRef[ref_abc123, MEMORY, 3KB]
       You: get_tool_result(reference_id="ref_abc123")
+        → Returns: {data_type: "json_object", preview: {database_version: "17.20"}, ...}
+      You: query_tool_result(reference_id="ref_abc123")
+        → Returns: Complete discovery object with all fields
+
+      Example 2 (SQL result - large table):
+      Tool returns: DataRef[ref_xyz789, DATABASE, 5MB]
+      You: get_tool_result(reference_id="ref_xyz789")
         → Returns: {schema: {columns: [id, name, score], row_count: 50000}, preview: [...]}
-      You: query_tool_result(reference_id="ref_abc123", sql="SELECT * FROM results WHERE score > 90 LIMIT 100")
+      You: query_tool_result(reference_id="ref_xyz789", sql="SELECT * FROM results WHERE score > 90 LIMIT 100")
         → Returns: 42 rows matching criteria
 
       Never:
-      - Try to retrieve all data from large results
+      - Try to retrieve all data from large arrays/tables without filtering
       - Skip the metadata step
-      - Load data without filtering when row_count > 1000
+      - Use offset/limit on json_object types (not needed)
 
       When errors occur:
       - Analyze the error message carefully
