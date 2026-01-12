@@ -12,7 +12,8 @@ import (
 )
 
 // Base ROM - operational guidance for all agents
-// Copied from embedded/START_HERE.md to pkg/agent/roms/ for embedding
+// Single source of truth: pkg/agent/roms/START_HERE.md
+// Embedded into binary at compile time and deployed to ~/.loom/START_HERE.md
 //
 //go:embed roms/START_HERE.md
 var baseROM string
@@ -28,7 +29,7 @@ var teradataROM string
 // ROM provides operational guidance and optional domain-specific knowledge.
 //
 // Architecture:
-//   - Base ROM (START_HERE.md): Always included for all agents (14KB)
+//   - Base ROM (START_HERE.md): Always included for all agents (5KB)
 //     Provides: tool discovery, communication patterns, artifacts, memory usage
 //   - Domain ROMs: Optional specialized knowledge (e.g., TD.rom for Teradata SQL)
 //     Automatically composed with base ROM using clear separators
@@ -47,8 +48,8 @@ var teradataROM string
 //
 // Examples:
 //
-//	romID=""         → Base ROM only (14KB)
-//	romID="TD"       → Base + Teradata ROM (14KB + 31KB = 45KB)
+//	romID=""         → Base ROM only (5KB)
+//	romID="TD"       → Base + Teradata ROM (5KB + 11KB = 16KB)
 //	romID="auto"     → Base + auto-detected domain ROM
 //	romID="none"     → No ROM at all (explicit opt-out)
 func LoadROMContent(romID string, backendPath string) string {
@@ -119,8 +120,8 @@ func formatROMSeparator(title string) string {
 // Useful for documentation and validation.
 func GetAvailableROMs() []string {
 	return []string{
-		"",         // Base ROM only (~14KB operational guidance)
-		"TD",       // Base + Teradata SQL guidance (~45KB total)
+		"",         // Base ROM only (~5KB operational guidance)
+		"TD",       // Base + Teradata SQL guidance (~16KB total)
 		"teradata", // Alias for TD
 		"auto",     // Base + auto-detected domain ROM
 		"none",     // No ROM at all (explicit opt-out)
@@ -166,4 +167,12 @@ func GetDomainROMSize(romID string) int {
 	default:
 		return 0
 	}
+}
+
+// GetBaseROM returns the raw base ROM content (START_HERE.md).
+// This is the single source of truth for the base ROM, used by both:
+// - Agent ROM loading (via LoadROMContent)
+// - Deployment to ~/.loom/START_HERE.md (via embedded package)
+func GetBaseROM() []byte {
+	return []byte(baseROM)
 }
