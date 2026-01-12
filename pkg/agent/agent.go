@@ -155,6 +155,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		TTLSeconds: 3600, // 1 hour TTL
 	})
 	if err == nil {
+		// Store reference for later use (e.g., when SetSharedMemory() is called)
+		a.sqlResultStore = sqlResultStore
+
 		// Set on executor so SQL results go to queryable tables
 		if a.executor != nil {
 			a.executor.SetSQLResultStore(sqlResultStore)
@@ -354,6 +357,11 @@ func (a *Agent) RegisterTools(tools ...shuttle.Tool) {
 	for _, tool := range tools {
 		a.RegisterTool(tool)
 	}
+}
+
+// UnregisterTool unregisters a tool by name.
+func (a *Agent) UnregisterTool(name string) {
+	a.tools.Unregister(name)
 }
 
 // ToolCount returns the number of registered tools.
@@ -1464,6 +1472,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	}, nil
 }
 
+// contextWithValue wraps a Context to add a key-value pair while preserving the Context interface.
+type contextWithValue struct {
+	Context
+	key interface{}
+	val interface{}
+}
+
+// Value returns the value associated with this context for key, or delegates to parent.
+func (c *contextWithValue) Value(key interface{}) interface{} {
+	if key == c.key {
+		return c.val
+	}
+	return c.Context.Value(key)
+}
+
 // executeToolWithSelfCorrection wraps tool execution with optional circuit breaker.
 // If circuit breaker is enabled, provides failure isolation for tools.
 // If guardrails are enabled, tracks errors for error analysis.
@@ -1471,11 +1494,21 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 	var result *shuttle.Result
 	var err error
 
+	// CRITICAL FIX: Add session_id to context for tools that need it
+	// Tools like recall_conversation, search_conversation, and clear_recalled_context
+	// expect session_id to be available in context
+	// Wrap the context to add session_id while preserving the Context interface
+	ctxWithSession := &contextWithValue{
+		Context: ctx,
+		key:     "session_id",
+		val:     sessionID,
+	}
+
 	// Execute with circuit breaker if enabled
 	if a.circuitBreakers != nil {
 		breaker := a.circuitBreakers.GetBreaker(toolName)
 		cbErr := breaker.Execute(func() error {
-			result, err = a.executor.Execute(ctx, toolName, input)
+			result, err = a.executor.Execute(ctxWithSession, toolName, input)
 			return err
 		})
 
@@ -1485,7 +1518,7 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 		}
 	} else {
 		// No circuit breaker - execute directly
-		result, err = a.executor.Execute(ctx, toolName, input)
+		result, err = a.executor.Execute(ctxWithSession, toolName, input)
 	}
 
 	// If execution succeeded and guardrails enabled, clear error record
@@ -1617,6 +1650,13 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 		return "Tool execution failed"
 	}
 
+	// CRITICAL FIX: Pin DataReferences returned by tools (like tool_search)
+	// Tools may create their own references in SharedMemoryStore, and we need to pin them
+	// to prevent LRU eviction while the session is active
+	if result.DataReference != nil && a.refTracker != nil {
+		a.refTracker.PinForSession(sessionID, result.DataReference.Id)
+	}
+
 	// Format successful result with smart truncation
 	if result.Data != nil {
 		dataStr := fmt.Sprintf("%v", result.Data)
@@ -1635,9 +1675,10 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			}
 		}
 
-		// CRITICAL: Don't wrap get_tool_result output - it already retrieved data from shared memory
-		// Wrapping it again creates infinite recursion: get_tool_result → DataRef → get_tool_result → DataRef → ...
-		if tokenCount > maxInlineTokens && toolName != "get_tool_result" {
+		// CRITICAL: Don't wrap progressive disclosure tool outputs - they already retrieve data from shared memory
+		// Wrapping them again creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
+		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
+		if tokenCount > maxInlineTokens && toolName != "get_tool_result" && toolName != "query_tool_result" {
 			// Large result - store reference and provide summary
 
 			// Try shared memory first (fastest, in-process)
@@ -1943,7 +1984,14 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 	// This ensures the tool uses the correct store instance for retrievals
 	// v1.0.1: Pass both memory and SQL stores (SQL store passed as nil here, configured separately)
 	if sharedMemory != nil && a.tools != nil {
-		a.tools.Register(NewGetToolResultTool(sharedMemory, nil))
+		a.tools.Register(NewGetToolResultTool(sharedMemory, a.sqlResultStore))
+	}
+
+	// CRITICAL FIX: Re-register QueryToolResultTool with the new shared memory instance
+	// This fixes the bug where query_tool_result was using an old singleton store while
+	// tool_search was storing data in the new multi-agent server's shared memory
+	if sharedMemory != nil && a.sqlResultStore != nil && a.tools != nil {
+		a.tools.Register(NewQueryToolResultTool(a.sqlResultStore, sharedMemory))
 	}
 
 	// Update reference tracker with new store
@@ -1955,6 +2003,9 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 // SetSQLResultStore configures SQL result store for this agent.
 // This enables queryable storage for large SQL results, preventing context blowout.
 func (a *Agent) SetSQLResultStore(sqlStore *storage.SQLResultStore) {
+	// Store reference for later use
+	a.sqlResultStore = sqlStore
+
 	// Inject into tool executor so SQL results go to queryable tables
 	if a.executor != nil {
 		a.executor.SetSQLResultStore(sqlStore)
