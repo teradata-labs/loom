@@ -961,7 +961,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			var patternSpan *observability.Span
 			if a.config.EnableTracing && a.tracer != nil {
 				_, patternSpan = a.tracer.StartSpan(ctx, "agent.pattern_selection")
-				defer a.tracer.EndSpan(patternSpan)			}
+				defer a.tracer.EndSpan(patternSpan)
+			}
 
 			// Build context data
 			contextData := map[string]interface{}{
@@ -992,7 +993,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					pattern, err := a.orchestrator.GetLibrary().Load(patternName)
 					if err == nil {
 						selectedPattern = pattern
-
 
 						// Format and inject pattern
 						formattedPattern := pattern.FormatForLLM()
@@ -1380,7 +1380,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if llmResp != nil && llmResp.Usage.InputTokens > 0 {
 				// Anthropic pricing (approximate): $3/million input, $15/million output
 				costUSD = float64(llmResp.Usage.InputTokens)*0.000003 +
-				          float64(llmResp.Usage.OutputTokens)*0.000015
+					float64(llmResp.Usage.OutputTokens)*0.000015
 			}
 
 			// Calculate latency from turn start

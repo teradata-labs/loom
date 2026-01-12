@@ -120,13 +120,13 @@ type MemoryCompressionBatchSizesYAML struct {
 
 // BehaviorConfigYAML represents behavior configuration in YAML
 type BehaviorConfigYAML struct {
-	MaxIterations      int                  `yaml:"max_iterations"`
-	TimeoutSeconds     int                  `yaml:"timeout_seconds"`
-	AllowCodeExecution bool                 `yaml:"allow_code_execution"`
-	AllowedDomains     []string             `yaml:"allowed_domains"`
-	MaxTurns           int                  `yaml:"max_turns"`
-	MaxToolExecutions  int                  `yaml:"max_tool_executions"`
-	Patterns           *PatternConfigYAML   `yaml:"patterns"`
+	MaxIterations      int                `yaml:"max_iterations"`
+	TimeoutSeconds     int                `yaml:"timeout_seconds"`
+	AllowCodeExecution bool               `yaml:"allow_code_execution"`
+	AllowedDomains     []string           `yaml:"allowed_domains"`
+	MaxTurns           int                `yaml:"max_turns"`
+	MaxToolExecutions  int                `yaml:"max_tool_executions"`
+	Patterns           *PatternConfigYAML `yaml:"patterns"`
 }
 
 // PatternConfigYAML represents pattern configuration in YAML

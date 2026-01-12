@@ -1967,6 +1967,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		<-sigch
 		logger.Info("Shutting down gracefully...")
 
+		// Stop message queue monitor first (prevents new work from starting)
+		cancelMonitor()
+		logger.Info("Message queue monitor cancelled")
+
 		// Stop HTTP server
 		if httpSrv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2041,6 +2045,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}
 
+		// Stop MCP manager (close MCP server connections)
+		if mcpManager != nil {
+			if err := mcpManager.GetManager().Stop(); err != nil {
+				logger.Warn("Error stopping MCP manager", zap.Error(err))
+			} else {
+				logger.Info("MCP manager stopped")
+			}
+		}
+
 		// Stop TLS manager
 		if tlsManager != nil {
 			ctx := context.Background()
@@ -2049,7 +2062,21 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		grpcServer.GracefulStop()
+		// Graceful stop with timeout (30 seconds max)
+		// After timeout, force stop to prevent hanging indefinitely
+		done := make(chan struct{})
+		go func() {
+			grpcServer.GracefulStop()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			logger.Info("gRPC server stopped gracefully")
+		case <-time.After(30 * time.Second):
+			logger.Warn("gRPC server graceful stop timeout, forcing shutdown")
+			grpcServer.Stop() // Force stop
+		}
 	}()
 
 	if err := grpcServer.Serve(lis); err != nil {

@@ -201,10 +201,10 @@ func DefaultConfig() *Config {
 // DefaultPatternConfig returns defaults for pattern injection (enabled by default)
 func DefaultPatternConfig() *PatternConfig {
 	return &PatternConfig{
-		Enabled:            true,  // Enabled by default for v1.0.0
-		MinConfidence:      0.75,  // High confidence only
-		MaxPatternsPerTurn: 1,     // Single pattern per turn
-		EnableTracking:     true,  // Track effectiveness
+		Enabled:            true, // Enabled by default for v1.0.0
+		MinConfidence:      0.75, // High confidence only
+		MaxPatternsPerTurn: 1,    // Single pattern per turn
+		EnableTracking:     true, // Track effectiveness
 	}
 }
 

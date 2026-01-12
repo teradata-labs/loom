@@ -150,7 +150,7 @@ func TestLLMClassifier_CacheHit(t *testing.T) {
 	assert.Equal(t, 1, mock.callCount, "Second call should hit cache, not LLM")
 
 	// Different message - should hit LLM again
-	mock.defaultResponse =`{
+	mock.defaultResponse = `{
 		"intent": "analytics",
 		"confidence": 0.8,
 		"reasoning": "User wants aggregation"
