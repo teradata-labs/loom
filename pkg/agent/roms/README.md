@@ -2,14 +2,17 @@
 
 This directory contains Read-Only Memory (ROM) files that provide domain-specific knowledge to agents.
 
+**This is the single source of truth for all ROM files.**
+
 ## Files
 
-- **START_HERE.md** (14KB): Base ROM with operational guidance for all agents
+- **START_HERE.md** (5KB): Base ROM with operational guidance for all agents
   - Tool discovery patterns
+  - Progressive disclosure (tool result management)
   - Agent communication (send_message, receive_message, pub-sub)
   - Artifacts directory usage
   - Scratchpad patterns
-  - Source: `embedded/START_HERE.md` (copy kept in sync)
+  - **This file is the source of truth** - embedded into binary and deployed to ~/.loom/
 
 - **TD.rom** (31KB): Teradata SQL development guide
   - Teradata-specific SQL syntax
@@ -17,18 +20,16 @@ This directory contains Read-Only Memory (ROM) files that provide domain-specifi
   - Schema discovery workflows
   - Best practices for SQL generation
 
-## Keeping START_HERE.md in Sync
+## Editing ROM Files
 
-**IMPORTANT**: `START_HERE.md` in this directory is a copy of `embedded/START_HERE.md`.
+**To update operational guidance:**
+1. Edit `pkg/agent/roms/START_HERE.md` directly (this file)
+2. Rebuild: `just build`
+3. The updated ROM is automatically:
+   - Embedded into the binary (via go:embed in rom_loader.go)
+   - Deployed to ~/.loom/START_HERE.md (via embedded.GetStartHere())
 
-When updating operational guidance:
-1. Edit `embedded/START_HERE.md` (source of truth)
-2. Copy to `pkg/agent/roms/START_HERE.md` for embedding
-3. Or use: `cp embedded/START_HERE.md pkg/agent/roms/START_HERE.md`
-
-**Why two copies?**
-- `embedded/START_HERE.md`: Deployed to ~/.loom/ for user reference
-- `pkg/agent/roms/START_HERE.md`: Embedded in binary via go:embed (requires local path)
+**No copying required** - there is only one source file.
 
 ## ROM Composition
 

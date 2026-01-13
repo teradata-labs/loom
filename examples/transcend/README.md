@@ -321,7 +321,6 @@ All agents have access to:
 - `shell_execute` - Execute shell commands
 - `tool_search` - Discover available tools dynamically
 - `get_error_detail` - Get detailed error information
-- `get_tool_result` - Retrieve tool execution results
 - `search_conversation` - Search conversation history
 - `recall_conversation` - Recall specific conversation segments
 - `clear_recalled_context` - Clear recalled context

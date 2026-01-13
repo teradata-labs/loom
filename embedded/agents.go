@@ -5,6 +5,8 @@ package embedded
 
 import (
 	_ "embed"
+
+	"github.com/teradata-labs/loom/pkg/agent"
 )
 
 // WeaverYAML contains the default weaver agent configuration.
@@ -18,13 +20,9 @@ func GetWeaver() []byte {
 	return WeaverYAML
 }
 
-// StartHereMD contains the agent instructions and operational guidelines.
-// This file provides critical information for all agents running in the Loom framework.
-//
-//go:embed START_HERE.md
-var StartHereMD []byte
-
-// GetStartHere returns the embedded START_HERE.md content.
+// GetStartHere returns the base ROM (START_HERE.md) content.
+// This delegates to pkg/agent/rom_loader.go which is the single source of truth for ROM files.
+// The ROM is embedded from pkg/agent/roms/START_HERE.md at compile time.
 func GetStartHere() []byte {
-	return StartHereMD
+	return agent.GetBaseROM()
 }

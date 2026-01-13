@@ -22,11 +22,13 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -148,6 +150,12 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
 	}
 
+	// Register built-in record_finding tool for working memory
+	// This prevents hallucination by allowing agents to record verified findings
+	if a.memory != nil {
+		a.tools.Register(NewRecordFindingTool(a.memory))
+	}
+
 	// Initialize SQL result store for queryable large SQL results
 	// This allows filtering/aggregating SQL results without context blowout
 	sqlResultStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
@@ -166,11 +174,22 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.tools.Register(NewQueryToolResultTool(sqlResultStore, a.sharedMemory))
 	}
 
+	// Auto-register shell_execute tool (standard toolset)
+	// Uses LOOM_DATA_DIR as baseDir for consistent artifact/data management
+	a.tools.Register(builtin.NewShellExecuteTool(config.GetLoomDataDir()))
+
+	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
+	// Individual agents don't have access to the global tool registry during construction
+
 	// Register built-in get_tool_result tool for retrieving metadata
+	// EXPERIMENT: get_tool_result removed - inline metadata makes it unnecessary
+	// Inline metadata now includes preview, schema, size, and retrieval hints directly in tool responses.
+	// Agents should use query_tool_result for advanced querying (pagination, SQL filters).
+	//
 	// v1.0.1: Now returns only metadata, accepts both memory and SQL stores
-	if a.sharedMemory != nil || sqlResultStore != nil {
-		a.tools.Register(NewGetToolResultTool(a.sharedMemory, sqlResultStore))
-	}
+	// if a.sharedMemory != nil || sqlResultStore != nil {
+	// 	a.tools.Register(NewGetToolResultTool(a.sharedMemory, sqlResultStore))
+	// }
 	// If SQL store fails to initialize, just log and continue without it
 	// (SQL results will fall back to shared memory)
 
@@ -189,22 +208,24 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		}
 	}
 
-	// Register built-in swap layer tools for conversation recall
-	// These tools enable agents to access long-term conversation history
-	// Wrap with PromptAwareTool if prompts registry is available for externalized descriptions
-	recallTool := shuttle.Tool(NewRecallConversationTool(a.memory))
-	clearTool := shuttle.Tool(NewClearRecalledContextTool(a.memory))
-	searchTool := shuttle.Tool(NewSearchConversationTool(a.memory))
-
-	if a.prompts != nil {
-		recallTool = shuttle.NewPromptAwareTool(recallTool, a.prompts, "tools.memory.recall_conversation_description")
-		clearTool = shuttle.NewPromptAwareTool(clearTool, a.prompts, "tools.memory.clear_recalled_context_description")
-		searchTool = shuttle.NewPromptAwareTool(searchTool, a.prompts, "tools.memory.search_conversation_description")
-	}
-
-	a.tools.Register(recallTool)
-	a.tools.Register(clearTool)
-	a.tools.Register(searchTool)
+	// EXPERIMENT: Long-conversation tools disabled to test scratchpad + inline metadata approach
+	// These tools (recall_conversation, search_conversation, clear_recalled_context) previously
+	// enabled agents to access long-term conversation history from swap layer.
+	// Testing hypothesis: inline metadata + scratchpad may be more effective for multi-turn tasks.
+	//
+	// recallTool := shuttle.Tool(NewRecallConversationTool(a.memory))
+	// clearTool := shuttle.Tool(NewClearRecalledContextTool(a.memory))
+	// searchTool := shuttle.Tool(NewSearchConversationTool(a.memory))
+	//
+	// if a.prompts != nil {
+	// 	recallTool = shuttle.NewPromptAwareTool(recallTool, a.prompts, "tools.memory.recall_conversation_description")
+	// 	clearTool = shuttle.NewPromptAwareTool(clearTool, a.prompts, "tools.memory.clear_recalled_context_description")
+	// 	searchTool = shuttle.NewPromptAwareTool(searchTool, a.prompts, "tools.memory.search_conversation_description")
+	// }
+	//
+	// a.tools.Register(recallTool)
+	// a.tools.Register(clearTool)
+	// a.tools.Register(searchTool)
 
 	return a
 }
@@ -1713,7 +1734,15 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 						a.refTracker.PinForSession(sessionID, dataRef.Id)
 					}
 
-					// Extract summary info for inline display
+					// Get metadata to create rich inline summary (eliminates need for get_tool_result call)
+					meta, metaErr := a.sharedMemory.GetMetadata(dataRef)
+					if metaErr == nil && meta != nil {
+						// Format rich metadata inline (same as executor.go does)
+						richSummary := formatAgentSharedMemoryResult(meta, dataRef.Id, toolName)
+						return richSummary
+					}
+
+					// Fallback to basic summary if metadata unavailable
 					summary := extractDataSummary(result.Data, result.Metadata)
 					return fmt.Sprintf(`✓ %s
 
@@ -1743,8 +1772,87 @@ Token efficiency: %d tokens → ~50 tokens (%.1f%% reduction)`,
 	return "Success"
 }
 
-// extractDataSummary creates a concise summary of tool result data for inline display.
-// Returns metadata-driven summary (row count, columns, etc.) instead of dumping raw data.
+// formatAgentSharedMemoryResult creates a rich inline summary with metadata for agent context.
+// Similar to executor.formatSharedMemoryResultSummary but includes tool name context.
+// This eliminates the need for a separate get_tool_result call - agents get all context immediately.
+func formatAgentSharedMemoryResult(meta *storage.DataMetadata, id string, toolName string) string {
+	var summary strings.Builder
+
+	// Header with tool name, data type and size
+	summary.WriteString(fmt.Sprintf("✓ %s completed: Large %s stored in memory (%d bytes, ~%d tokens)\n\n",
+		toolName, meta.DataType, meta.SizeBytes, meta.EstimatedTokens))
+
+	// Preview section
+	if meta.Preview != nil && (len(meta.Preview.First5) > 0 || len(meta.Preview.Last5) > 0) {
+		summary.WriteString("📋 Preview:\n")
+		if len(meta.Preview.First5) > 0 {
+			previewJSON, _ := json.MarshalIndent(meta.Preview.First5, "", "  ")
+			summary.WriteString(fmt.Sprintf("First 5 items:\n%s\n", string(previewJSON)))
+		}
+		if len(meta.Preview.Last5) > 0 && meta.DataType == "json_array" {
+			previewJSON, _ := json.MarshalIndent(meta.Preview.Last5, "", "  ")
+			summary.WriteString(fmt.Sprintf("\nLast 5 items:\n%s\n", string(previewJSON)))
+		}
+		summary.WriteString("\n")
+	}
+
+	// Schema section (if available)
+	if meta.Schema != nil {
+		switch meta.DataType {
+		case "json_object":
+			if len(meta.Schema.Fields) > 0 {
+				fieldNames := make([]string, 0, len(meta.Schema.Fields))
+				for _, field := range meta.Schema.Fields {
+					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
+				}
+				summary.WriteString(fmt.Sprintf("📊 Schema: %d fields\n%s\n\n",
+					len(meta.Schema.Fields), strings.Join(fieldNames, ", ")))
+			}
+		case "json_array":
+			summary.WriteString(fmt.Sprintf("📊 Array: %d items\n", meta.Schema.ItemCount))
+			if len(meta.Schema.Fields) > 0 {
+				fieldNames := make([]string, 0, len(meta.Schema.Fields))
+				for _, field := range meta.Schema.Fields {
+					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
+				}
+				summary.WriteString(fmt.Sprintf("Item schema: %s\n\n", strings.Join(fieldNames, ", ")))
+			}
+		case "text":
+			summary.WriteString(fmt.Sprintf("📊 Text: %d lines\n\n", meta.Schema.ItemCount))
+		}
+	}
+
+	// Retrieval hints - how to access this data
+	summary.WriteString("💡 How to retrieve:\n")
+	switch meta.DataType {
+	case "json_object":
+		summary.WriteString(fmt.Sprintf("⚠️ This json_object is too large (%d bytes) for direct retrieval\n", meta.SizeBytes))
+		summary.WriteString("Use the preview and schema above to understand the structure\n")
+		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
+			summary.WriteString("Consider which specific fields you need from the object\n")
+		}
+
+	case "json_array":
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
+		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
+			summary.WriteString("⚠️ Large dataset - use filtering to avoid context overload\n")
+		}
+
+	case "text":
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
+		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
+			summary.WriteString(fmt.Sprintf("⚠️ Large file (%d lines) - paginate to avoid loading all at once\n", meta.Schema.ItemCount))
+		}
+
+	case "csv":
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
+		summary.WriteString("💡 CSV auto-converts to queryable SQLite table\n")
+	}
+
+	return summary.String()
+}
+
 func extractDataSummary(data interface{}, metadata map[string]interface{}) string {
 	var parts []string
 
@@ -1980,12 +2088,13 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 		a.memory.SetSharedMemory(sharedMemory)
 	}
 
+	// EXPERIMENT: get_tool_result removed - inline metadata makes it unnecessary
 	// Re-register GetToolResultTool with the new store
 	// This ensures the tool uses the correct store instance for retrievals
 	// v1.0.1: Pass both memory and SQL stores (SQL store passed as nil here, configured separately)
-	if sharedMemory != nil && a.tools != nil {
-		a.tools.Register(NewGetToolResultTool(sharedMemory, a.sqlResultStore))
-	}
+	// if sharedMemory != nil && a.tools != nil {
+	// 	a.tools.Register(NewGetToolResultTool(sharedMemory, a.sqlResultStore))
+	// }
 
 	// CRITICAL FIX: Re-register QueryToolResultTool with the new shared memory instance
 	// This fixes the bug where query_tool_result was using an old singleton store while

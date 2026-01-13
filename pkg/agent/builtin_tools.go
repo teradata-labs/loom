@@ -1015,3 +1015,213 @@ func (t *QueryToolResultTool) Backend() string {
 
 // Ensure QueryToolResultTool implements shuttle.Tool interface.
 var _ shuttle.Tool = (*QueryToolResultTool)(nil)
+
+// RecordFindingTool allows agents to record verified findings in working memory.
+// This prevents hallucination by maintaining structured facts discovered during analysis.
+//
+// Findings are stored in the SegmentedMemory Kernel layer and automatically injected
+// into LLM context as a "Verified Findings" summary, providing working memory across
+// tool executions.
+type RecordFindingTool struct {
+	memory *Memory // Agent's memory manager to access sessions
+}
+
+// NewRecordFindingTool creates a new RecordFindingTool.
+func NewRecordFindingTool(memory *Memory) *RecordFindingTool {
+	return &RecordFindingTool{
+		memory: memory,
+	}
+}
+
+// Name returns the tool name.
+func (t *RecordFindingTool) Name() string {
+	return "record_finding"
+}
+
+// Description returns the tool description for the LLM.
+func (t *RecordFindingTool) Description() string {
+	return `Record verified findings in working memory to prevent hallucination.
+
+Use this tool to store structured facts discovered during analysis. These findings are
+automatically injected into your context as a "Verified Findings" summary, providing
+working memory across tool executions.
+
+When to record findings:
+- After counting rows: record_finding(path="table_name.row_count", value=2195, category="statistic")
+- After schema discovery: record_finding(path="table_name.columns", value=["col1", "col2"], category="schema")
+- After null analysis: record_finding(path="table_name.column_name.null_rate", value=0.17, category="statistic", note="376 out of 2195 rows")
+- After finding patterns: record_finding(path="table_name.observation", value="All sites have unique site_id", category="observation")
+- After distribution analysis: record_finding(path="table_name.region.distribution", value={"Americas": 0.54, "EMEA": 0.27}, category="distribution")
+
+Path naming conventions:
+- Use hierarchical structure: "table.column.metric" or "table.metric"
+- Use snake_case for consistency
+- Examples: "customers.row_count", "orders.status.null_rate", "sales.region.distribution"
+
+Categories:
+- "statistic": Counts, percentages, aggregates (e.g., row counts, null rates, averages)
+- "schema": Table/column structures, data types, relationships
+- "observation": Patterns, anomalies, business insights
+- "distribution": Value distributions, frequency analysis, grouping results
+
+Input:
+- path (required): Hierarchical key for the finding (e.g., "table.column.metric")
+- value (required): The actual data (number, string, array, object)
+- category (optional): Type of finding ("statistic", "schema", "observation", "distribution")
+- note (optional): Additional context or explanation
+- source (optional): Tool call ID that produced this finding
+
+Examples:
+- record_finding(path="vantage_sites.row_count", value=2195, category="statistic")
+- record_finding(path="vantage_sites.columns", value=["site_id", "customer_id", "region"], category="schema")
+- record_finding(path="vantage_sites.customer_id.null_rate", value=0.17, category="statistic", note="376 out of 2195 rows")
+- record_finding(path="vantage_sites.site_id.uniqueness", value="100% unique - likely primary key", category="observation")
+- record_finding(path="vantage_sites.business_region.distribution", value={"Americas": 1183, "EMEA": 589, "APJ": 423}, category="distribution")`
+}
+
+// InputSchema returns the JSON schema for the tool input.
+func (t *RecordFindingTool) InputSchema() *shuttle.JSONSchema {
+	return &shuttle.JSONSchema{
+		Type: "object",
+		Properties: map[string]*shuttle.JSONSchema{
+			"path": {
+				Type:        "string",
+				Description: "Hierarchical key for the finding (e.g., 'table.column.metric')",
+			},
+			"value": {
+				Description: "The actual data (number, string, array, or object)",
+			},
+			"category": {
+				Type:        "string",
+				Description: "Type of finding: 'statistic', 'schema', 'observation', or 'distribution'",
+			},
+			"note": {
+				Type:        "string",
+				Description: "Optional additional context or explanation",
+			},
+			"source": {
+				Type:        "string",
+				Description: "Optional tool call ID that produced this finding",
+			},
+		},
+		Required: []string{"path", "value"},
+	}
+}
+
+// Execute records the finding in working memory.
+func (t *RecordFindingTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
+	// Extract session_id from context
+	sessionID, ok := ctx.Value("session_id").(string)
+	if !ok || sessionID == "" {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "no_session",
+				Message: "Session ID not found in context",
+			},
+		}, nil
+	}
+
+	// Get session from memory
+	session, exists := t.memory.GetSession(sessionID)
+	if !exists {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "session_not_found",
+				Message: fmt.Sprintf("Session %s not found", sessionID),
+			},
+		}, nil
+	}
+
+	// Get SegmentedMemory from session
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || segMem == nil {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "no_segmented_memory",
+				Message: "Session does not have segmented memory enabled",
+			},
+		}, nil
+	}
+
+	// Validate path
+	path, ok := input["path"].(string)
+	if !ok || path == "" {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "invalid_input",
+				Message: "path must be a non-empty string",
+			},
+		}, nil
+	}
+
+	// Validate value (required, can be any type)
+	value, hasValue := input["value"]
+	if !hasValue {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "invalid_input",
+				Message: "value is required",
+			},
+		}, nil
+	}
+
+	// Extract optional parameters
+	category := ""
+	if cat, ok := input["category"].(string); ok {
+		category = cat
+	}
+
+	note := ""
+	if n, ok := input["note"].(string); ok {
+		note = n
+	}
+
+	source := ""
+	if src, ok := input["source"].(string); ok {
+		source = src
+	}
+
+	// Validate category if provided
+	validCategories := map[string]bool{
+		"statistic":    true,
+		"schema":       true,
+		"observation":  true,
+		"distribution": true,
+	}
+	if category != "" && !validCategories[category] {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "invalid_input",
+				Message:    fmt.Sprintf("Invalid category '%s'. Must be one of: statistic, schema, observation, distribution", category),
+				Suggestion: "Use 'statistic' for counts/percentages, 'schema' for structure, 'observation' for patterns, 'distribution' for value distributions",
+			},
+		}, nil
+	}
+
+	// Record finding in session's segmented memory
+	segMem.RecordFinding(path, value, category, note, source)
+
+	return &shuttle.Result{
+		Success: true,
+		Data: map[string]interface{}{
+			"recorded": true,
+			"path":     path,
+			"category": category,
+		},
+	}, nil
+}
+
+// Backend returns the backend type this tool requires.
+// Empty string means backend-agnostic (works with any agent).
+func (t *RecordFindingTool) Backend() string {
+	return "" // Backend-agnostic built-in tool
+}
+
+// Ensure RecordFindingTool implements shuttle.Tool interface.
+var _ shuttle.Tool = (*RecordFindingTool)(nil)

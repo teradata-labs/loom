@@ -1039,9 +1039,9 @@ func TestToolFiltering(t *testing.T) {
 		Builtin: []string{
 			"shell_execute",
 			// Note: tool_search requires ToolRegistry to be configured (not in basic test setup)
-			"get_tool_result",
 			"query_tool_result",
-			"recall_conversation",
+			// Note: get_tool_result removed - inline metadata makes it unnecessary
+			// Note: recall_conversation removed in scratchpad experiment
 		},
 	}
 
@@ -1061,10 +1061,10 @@ func TestToolFiltering(t *testing.T) {
 
 	// Verify only specified tools are registered
 	expectedTools := map[string]bool{
-		"shell_execute":       true,
-		"get_tool_result":     true,
-		"query_tool_result":   true,
-		"recall_conversation": true,
+		"shell_execute":     true,
+		"query_tool_result": true,
+		// get_tool_result removed - inline metadata makes it unnecessary
+		// recall_conversation removed in scratchpad experiment
 	}
 
 	// Check that all expected tools are present

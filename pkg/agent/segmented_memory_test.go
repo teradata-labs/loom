@@ -606,3 +606,175 @@ func BenchmarkSegmentedMemory_ConcurrentAccess(b *testing.B) {
 		}
 	})
 }
+
+// TestRecordFinding tests recording findings in working memory
+func TestRecordFinding(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	// Record a statistic finding
+	sm.RecordFinding("test_table.row_count", 2195, "statistic", "Total rows in test_table", "tool_call_123")
+
+	// Retrieve the finding
+	finding, ok := sm.GetFinding("test_table.row_count")
+	require.True(t, ok, "Finding should exist")
+	assert.Equal(t, "test_table.row_count", finding.Path)
+	assert.Equal(t, 2195, finding.Value)
+	assert.Equal(t, "statistic", finding.Category)
+	assert.Equal(t, "Total rows in test_table", finding.Note)
+	assert.Equal(t, "tool_call_123", finding.Source)
+	assert.False(t, finding.Timestamp.IsZero())
+}
+
+// TestRecordFinding_MultipleCategories tests recording findings of different categories
+func TestRecordFinding_MultipleCategories(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	// Record findings of different categories
+	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")
+	sm.RecordFinding("table.columns", []string{"id", "name", "age"}, "schema", "", "")
+	sm.RecordFinding("table.observation", "All IDs are unique", "observation", "", "")
+	sm.RecordFinding("table.region.distribution", map[string]int{"US": 500, "EU": 300, "APAC": 200}, "distribution", "", "")
+
+	// Verify all findings
+	allFindings := sm.GetAllFindings()
+	assert.Equal(t, 4, len(allFindings))
+
+	// Check categories
+	assert.Equal(t, "statistic", allFindings["table.row_count"].Category)
+	assert.Equal(t, "schema", allFindings["table.columns"].Category)
+	assert.Equal(t, "observation", allFindings["table.observation"].Category)
+	assert.Equal(t, "distribution", allFindings["table.region.distribution"].Category)
+}
+
+// TestGetFindingsSummary tests the formatted summary generation
+func TestGetFindingsSummary(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	// Record various findings
+	sm.RecordFinding("vantage_sites.row_count", 2195, "statistic", "", "")
+	sm.RecordFinding("vantage_sites.site_id.null_rate", 0.0, "statistic", "No nulls", "")
+	sm.RecordFinding("vantage_sites.columns", []string{"site_id", "customer_id", "region"}, "schema", "", "")
+	sm.RecordFinding("vantage_sites.site_id.uniqueness", "100% unique - likely primary key", "observation", "", "")
+
+	// Get summary
+	summary := sm.GetFindingsSummary()
+
+	// Verify summary contains expected sections
+	assert.Contains(t, summary, "## Verified Findings (Working Memory)")
+	assert.Contains(t, summary, "### Statistics:")
+	assert.Contains(t, summary, "### Schema Discovered:")
+	assert.Contains(t, summary, "### Key Observations:")
+
+	// Verify specific findings appear
+	assert.Contains(t, summary, "vantage_sites.row_count")
+	assert.Contains(t, summary, "2195")
+	// Observations show the value only, not the path
+	assert.Contains(t, summary, "100% unique - likely primary key")
+}
+
+// TestGetFindingsSummary_Empty tests summary when no findings exist
+func TestGetFindingsSummary_Empty(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	summary := sm.GetFindingsSummary()
+	assert.Empty(t, summary, "Summary should be empty when no findings exist")
+}
+
+// TestClearFindings tests clearing all findings
+func TestClearFindings(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	// Record some findings
+	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")
+	sm.RecordFinding("table.columns", []string{"a", "b"}, "schema", "", "")
+
+	// Verify findings exist
+	allFindings := sm.GetAllFindings()
+	assert.Equal(t, 2, len(allFindings))
+
+	// Clear findings
+	sm.ClearFindings()
+
+	// Verify findings are cleared
+	allFindings = sm.GetAllFindings()
+	assert.Equal(t, 0, len(allFindings))
+
+	// Verify summary is empty
+	summary := sm.GetFindingsSummary()
+	assert.Empty(t, summary)
+}
+
+// TestFindingsMaxLimit tests that findings respect maxFindings limit
+func TestFindingsMaxLimit(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+	sm.maxFindings = 5 // Set low limit for testing
+
+	// Try to record more than maxFindings
+	for i := 0; i < 10; i++ {
+		sm.RecordFinding(fmt.Sprintf("finding_%d", i), i, "statistic", "", "")
+	}
+
+	// Should only have maxFindings recorded
+	allFindings := sm.GetAllFindings()
+	assert.LessOrEqual(t, len(allFindings), 5, "Should not exceed maxFindings limit")
+}
+
+// TestFindingsInjectionIntoContext tests that findings are injected into GetMessagesForLLM
+func TestFindingsInjectionIntoContext(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	// Add a user message
+	sm.AddMessage(Message{Role: "user", Content: "Analyze data"})
+
+	// Record findings
+	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")
+
+	// Get messages for LLM
+	messages := sm.GetMessagesForLLM()
+
+	// Find the findings summary in messages
+	foundSummary := false
+	for _, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "Verified Findings") {
+			foundSummary = true
+			assert.Contains(t, msg.Content, "table.row_count")
+			assert.Contains(t, msg.Content, "1000")
+			break
+		}
+	}
+
+	assert.True(t, foundSummary, "Findings summary should be injected into context")
+}
+
+// TestConcurrentFindingsAccess tests thread-safe access to findings
+func TestConcurrentFindingsAccess(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 100000, 10000)
+
+	var wg sync.WaitGroup
+	numGoroutines := 10
+
+	// Concurrent writes
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			sm.RecordFinding(fmt.Sprintf("finding_%d", id), id*100, "statistic", "", "")
+		}(i)
+	}
+
+	// Concurrent reads
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = sm.GetAllFindings()
+			_ = sm.GetFindingsSummary()
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify findings were recorded
+	allFindings := sm.GetAllFindings()
+	assert.Greater(t, len(allFindings), 0, "Should have recorded some findings")
+}

@@ -38,6 +38,18 @@ const (
 	LayerSwap   MemoryLayer = "swap"   // Cold: Long-term storage (database-backed)
 )
 
+// Finding represents a structured piece of information discovered during analysis.
+// Findings are stored in the Kernel layer to provide working memory for agents,
+// preventing hallucination by maintaining verified facts from tool executions.
+type Finding struct {
+	Path      string      `json:"path"`      // Hierarchical key: "table.statistics.row_count"
+	Value     interface{} `json:"value"`     // The actual data: numbers, strings, arrays, objects
+	Category  string      `json:"category"`  // Type: "statistic", "schema", "observation", "distribution"
+	Note      string      `json:"note"`      // Optional explanation/context
+	Timestamp time.Time   `json:"timestamp"` // When recorded
+	Source    string      `json:"source"`    // Which tool_call_id produced this (optional)
+}
+
 // SegmentedMemory manages context using a tiered memory hierarchy.
 //
 // Architecture:
@@ -62,6 +74,8 @@ type SegmentedMemory struct {
 	schemaCache     map[string]string    // Cached schema discoveries
 	schemaAccessLog map[string]time.Time // LRU tracking for schema cache
 	maxSchemas      int                  // Maximum schemas to cache (default: 10)
+	findingsCache   map[string]Finding   // Verified findings from tool executions (working memory)
+	maxFindings     int                  // Maximum findings to cache (default: 100)
 
 	// L1 Cache (hot - recent messages)
 	l1Messages []Message // Last N messages (configurable, default: 10)
@@ -161,7 +175,9 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		toolResults:        make([]CachedToolResult, 0),
 		schemaCache:        make(map[string]string),
 		schemaAccessLog:    make(map[string]time.Time),
-		maxSchemas:         10, // Max 10 schemas cached
+		maxSchemas:         10,                   // Max 10 schemas cached
+		findingsCache:      make(map[string]Finding), // Working memory for verified findings
+		maxFindings:        100,                  // Max 100 findings cached
 		l1Messages:         make([]Message, 0),
 		promotedContext:    make([]Message, 0),
 		sessionStore:       nil,   // Set via SetSessionStore
@@ -522,6 +538,142 @@ func (sm *SegmentedMemory) GetSchema(key string) (string, bool) {
 	return schema, ok
 }
 
+// RecordFinding stores a verified finding in the kernel layer for working memory.
+// This prevents hallucination by maintaining structured facts discovered during analysis.
+// If maxFindings is exceeded, this is a no-op (findings are transient, not critical).
+func (sm *SegmentedMemory) RecordFinding(path string, value interface{}, category, note, source string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Check limit (soft limit - don't evict, just stop recording new ones)
+	if len(sm.findingsCache) >= sm.maxFindings {
+		return // Silently drop new findings when cache is full
+	}
+
+	finding := Finding{
+		Path:      path,
+		Value:     value,
+		Category:  category,
+		Note:      note,
+		Timestamp: time.Now(),
+		Source:    source,
+	}
+
+	sm.findingsCache[path] = finding
+	sm.tokenCountDirty = true // Findings summary will affect token count
+}
+
+// GetFinding retrieves a specific finding by path.
+func (sm *SegmentedMemory) GetFinding(path string) (Finding, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	finding, ok := sm.findingsCache[path]
+	return finding, ok
+}
+
+// GetAllFindings returns all recorded findings.
+func (sm *SegmentedMemory) GetAllFindings() map[string]Finding {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// Return a copy to avoid external mutation
+	findings := make(map[string]Finding, len(sm.findingsCache))
+	for k, v := range sm.findingsCache {
+		findings[k] = v
+	}
+	return findings
+}
+
+// GetFindingsSummary generates a formatted markdown summary of all findings (thread-safe).
+// This summary is injected into the LLM context to provide verified working memory.
+func (sm *SegmentedMemory) GetFindingsSummary() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	return sm.getFindingsSummaryUnlocked()
+}
+
+// getFindingsSummaryUnlocked is the internal implementation (must be called with lock held).
+func (sm *SegmentedMemory) getFindingsSummaryUnlocked() string {
+	if len(sm.findingsCache) == 0 {
+		return ""
+	}
+
+	// Group findings by category
+	byCategory := make(map[string][]Finding)
+	for _, finding := range sm.findingsCache {
+		byCategory[finding.Category] = append(byCategory[finding.Category], finding)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Verified Findings (Working Memory)\n\n")
+
+	// Statistics
+	if stats := byCategory["statistic"]; len(stats) > 0 {
+		sb.WriteString("### Statistics:\n")
+		for _, s := range stats {
+			sb.WriteString(fmt.Sprintf("- **%s**: %v", s.Path, s.Value))
+			if s.Note != "" {
+				sb.WriteString(fmt.Sprintf(" (%s)", s.Note))
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Schema
+	if schemas := byCategory["schema"]; len(schemas) > 0 {
+		sb.WriteString("### Schema Discovered:\n")
+		for _, s := range schemas {
+			// Format arrays nicely
+			if arr, ok := s.Value.([]interface{}); ok {
+				formatted := make([]string, len(arr))
+				for i, v := range arr {
+					formatted[i] = fmt.Sprintf("%v", v)
+				}
+				sb.WriteString(fmt.Sprintf("- **%s**: [%s]\n", s.Path, strings.Join(formatted, ", ")))
+			} else {
+				sb.WriteString(fmt.Sprintf("- **%s**: %v\n", s.Path, s.Value))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Distribution
+	if dists := byCategory["distribution"]; len(dists) > 0 {
+		sb.WriteString("### Data Distribution:\n")
+		for _, d := range dists {
+			sb.WriteString(fmt.Sprintf("- **%s**: %v\n", d.Path, d.Value))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Observations
+	if obs := byCategory["observation"]; len(obs) > 0 {
+		sb.WriteString("### Key Observations:\n")
+		for _, o := range obs {
+			sb.WriteString(fmt.Sprintf("- %v", o.Value))
+			if o.Note != "" {
+				sb.WriteString(fmt.Sprintf(" (%s)", o.Note))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// ClearFindings removes all findings from working memory.
+// Useful for starting fresh analysis or cleaning up between tasks.
+func (sm *SegmentedMemory) ClearFindings() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sm.findingsCache = make(map[string]Finding)
+	sm.tokenCountDirty = true
+}
+
 // GetMessages returns all L1 messages for building conversation context.
 func (sm *SegmentedMemory) GetMessages() []Message {
 	sm.mu.RLock()
@@ -731,6 +883,16 @@ func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: fmt.Sprintf("# Relevant Pattern Guidance\n\n%s\n\nUse this pattern as guidance for tool selection and parameter construction.", sm.patternContent),
+		})
+	}
+
+	// Add findings summary as system message (if any findings exist)
+	// This provides verified working memory to prevent hallucination
+	// Note: getFindingsSummaryUnlocked() must be called with lock already held
+	if findingsSummary := sm.getFindingsSummaryUnlocked(); findingsSummary != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: findingsSummary,
 		})
 	}
 

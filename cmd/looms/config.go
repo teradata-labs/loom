@@ -315,6 +315,7 @@ type ObservabilityConfig struct {
 type LoggingConfig struct {
 	Level  string `mapstructure:"level"`  // debug, info, warn, error
 	Format string `mapstructure:"format"` // text, json
+	File   string `mapstructure:"file"`   // File path for log output (optional, defaults to stdout/stderr)
 }
 
 // AgentsConfig holds configuration for multiple agents (for no-code deployment).

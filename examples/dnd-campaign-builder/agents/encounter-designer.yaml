@@ -88,7 +88,6 @@ spec:
     - shell_execute
     - tool_search
     - get_error_detail
-    - get_tool_result
     - query_tool_result
     - search_conversation
     - recall_conversation

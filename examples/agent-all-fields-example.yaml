@@ -155,7 +155,6 @@ spec:
       # Discovery and introspection
       - tool_search                    # Search available tools
       - get_error_detail               # Get detailed error info
-      - get_tool_result                # Retrieve tool execution results
     - query_tool_result
 
       # Memory and context management

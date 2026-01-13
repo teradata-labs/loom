@@ -36,6 +36,7 @@ observability:
 logging:
   level: info
   format: text
+  file: ""  # Optional: specify a file path like "/var/log/loom/looms.log" or "$HOME/.loom/logs/looms.log"
 
 # Tool permissions configuration
 tools:

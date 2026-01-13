@@ -33,13 +33,12 @@ spec:
     3. **Tool Selection**: Give all agents a standard toolset:
        - shell_execute
        - tool_search
-       - get_error_detail
-       - get_tool_result
-      - query_tool_result
-       - search_conversation
-       - recall_conversation
-       - clear_recalled_context
+       - get_error_details
+       - query_tool_result
        This toolset empowers woven agents to discover other tools, useful information, and to manage context.
+       Note: get_tool_result removed - inline metadata in tool responses makes it unnecessary.
+       Note: Long-conversation tools (recall_conversation, search_conversation, clear_recalled_context) have been removed.
+       Agents should use scratchpad for multi-turn task tracking instead.
        If necessary for a workflow, you must give them the required communication tools, also, so they can discover each other. However,
        ONLY assign shared_memory_read and shared_memory_write if absolutely necessary.  Instead, encourage agents in a workflow to use the /archives directory.
     4. **Best Practices**: Apply agent design principles and memory optimization
@@ -109,9 +108,9 @@ spec:
 
   tools:
     - shell_execute
-    - search_conversation
-    - recall_conversation
-    - clear_recalled_context
+    - tool_search
+    - get_error_details
+    - query_tool_result
 
   memory:
     type: sqlite

@@ -260,11 +260,100 @@ func (e *Executor) handleLargeResult(result *Result) error {
 		return fmt.Errorf("failed to store in shared memory: %w", err)
 	}
 
-	// Replace data with reference and brief summary
+	// Get metadata to create rich inline summary (like we do for SQL results)
+	meta, err := e.sharedMemory.GetMetadata(ref)
+	if err != nil {
+		// Fallback to simple message if metadata unavailable
+		result.DataReference = ref
+		result.Data = fmt.Sprintf("[Large data stored in shared memory: %s]", storage.RefToString(ref))
+		return nil
+	}
+
+	// Replace data with reference and rich metadata summary
 	result.DataReference = ref
-	result.Data = fmt.Sprintf("[Large data stored in shared memory: %s]", storage.RefToString(ref))
+	result.Data = formatSharedMemoryResultSummary(meta, id)
 
 	return nil
+}
+
+// formatSharedMemoryResultSummary creates a rich inline summary with metadata.
+// This eliminates the need for a separate get_tool_result call - agents get all context immediately.
+func formatSharedMemoryResultSummary(meta *storage.DataMetadata, id string) string {
+	var summary strings.Builder
+
+	// Header with data type and size
+	summary.WriteString(fmt.Sprintf("✓ Large %s stored in memory: %d bytes (~%d tokens)\n\n",
+		meta.DataType, meta.SizeBytes, meta.EstimatedTokens))
+
+	// Preview section
+	if meta.Preview != nil && (len(meta.Preview.First5) > 0 || len(meta.Preview.Last5) > 0) {
+		summary.WriteString("📋 Preview:\n")
+		if len(meta.Preview.First5) > 0 {
+			previewJSON, _ := json.MarshalIndent(meta.Preview.First5, "", "  ")
+			summary.WriteString(fmt.Sprintf("First 5 items:\n%s\n", string(previewJSON)))
+		}
+		if len(meta.Preview.Last5) > 0 && meta.DataType == "json_array" {
+			previewJSON, _ := json.MarshalIndent(meta.Preview.Last5, "", "  ")
+			summary.WriteString(fmt.Sprintf("\nLast 5 items:\n%s\n", string(previewJSON)))
+		}
+		summary.WriteString("\n")
+	}
+
+	// Schema section (if available)
+	if meta.Schema != nil {
+		switch meta.DataType {
+		case "json_object":
+			if len(meta.Schema.Fields) > 0 {
+				fieldNames := make([]string, 0, len(meta.Schema.Fields))
+				for _, field := range meta.Schema.Fields {
+					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
+				}
+				summary.WriteString(fmt.Sprintf("📊 Schema: %d fields\n%s\n\n",
+					len(meta.Schema.Fields), strings.Join(fieldNames, ", ")))
+			}
+		case "json_array":
+			summary.WriteString(fmt.Sprintf("📊 Array: %d items\n", meta.Schema.ItemCount))
+			if len(meta.Schema.Fields) > 0 {
+				fieldNames := make([]string, 0, len(meta.Schema.Fields))
+				for _, field := range meta.Schema.Fields {
+					fieldNames = append(fieldNames, fmt.Sprintf("%s (%s)", field.Name, field.Type))
+				}
+				summary.WriteString(fmt.Sprintf("Item schema: %s\n\n", strings.Join(fieldNames, ", ")))
+			}
+		case "text":
+			summary.WriteString(fmt.Sprintf("📊 Text: %d lines\n\n", meta.Schema.ItemCount))
+		}
+	}
+
+	// Retrieval hints - how to access this data
+	summary.WriteString("💡 How to retrieve:\n")
+	switch meta.DataType {
+	case "json_object":
+		summary.WriteString(fmt.Sprintf("⚠️ This json_object is too large (%d bytes) for direct retrieval\n", meta.SizeBytes))
+		summary.WriteString("Use the preview and schema above to understand the structure\n")
+		if meta.Schema != nil && len(meta.Schema.Fields) > 0 {
+			summary.WriteString("Consider which specific fields you need from the object\n")
+		}
+
+	case "json_array":
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
+		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
+			summary.WriteString("⚠️ Large dataset - use filtering to avoid context overload\n")
+		}
+
+	case "text":
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', offset=0, limit=100)\n", id))
+		if meta.Schema != nil && meta.Schema.ItemCount > 1000 {
+			summary.WriteString(fmt.Sprintf("⚠️ Large file (%d lines) - paginate to avoid loading all at once\n", meta.Schema.ItemCount))
+		}
+
+	case "csv":
+		summary.WriteString(fmt.Sprintf("query_tool_result(reference_id='%s', sql='SELECT * FROM results WHERE ...')\n", id))
+		summary.WriteString("💡 CSV auto-converts to queryable SQLite table\n")
+	}
+
+	return summary.String()
 }
 
 // ListAvailableTools returns all tools available in the executor's registry.
