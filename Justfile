@@ -150,18 +150,9 @@ install-docs:
     echo "Installing documentation to $LOOM_DIR/documentation..."
     mkdir -p "$LOOM_DIR/documentation"
     # Copy entire docs directory (architecture, guides, reference, etc.)
-    if [ -d "website/content/en/docs" ]; then
-        rsync -av --delete website/content/en/docs/ "$LOOM_DIR/documentation/"
+    if [ -d "docs" ]; then
+        rsync -av --delete docs/ "$LOOM_DIR/documentation/"
         echo "   ✅ All documentation copied"
-    fi
-    # Copy styleguide files if they exist
-    if [ -f "pkg/visualization/styleguide_client.go" ]; then
-        cp pkg/visualization/styleguide_client.go "$LOOM_DIR/documentation/"
-        echo "   ✅ Styleguide client copied"
-    fi
-    if [ -f "website/StyleGuide.tsx" ]; then
-        cp website/StyleGuide.tsx "$LOOM_DIR/documentation/"
-        echo "   ✅ StyleGuide.tsx copied"
     fi
     echo "✅ Documentation installed to $LOOM_DIR/documentation"
     echo "   Total files: $(find "$LOOM_DIR/documentation" -name '*.md' 2>/dev/null | wc -l) markdown files"
@@ -196,83 +187,6 @@ build-all: build-server build-tui build-standalone
     @echo "✅ All build variants complete!"
     @ls -lh bin/
 
-# Build Hugo documentation site
-docs-build:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "📚 Building Hugo documentation..."
-    if ! command -v hugo &> /dev/null; then
-        echo "❌ Hugo not found. Install with: brew install hugo"
-        exit 1
-    fi
-    # Use absolute path for destination
-    DEST="$(pwd)/cmd/looms/docs/public"
-    hugo -s website --minify --destination="$DEST"
-    if [ -d "$DEST" ]; then
-        SIZE=$(du -sh "$DEST" 2>/dev/null | cut -f1 || echo "unknown")
-        echo "✅ Docs built to cmd/looms/docs/public ($SIZE)"
-    else
-        echo "❌ Error: Hugo build succeeded but output directory not found"
-        exit 1
-    fi
-
-# Serve docs locally with live reload (development)
-docs-serve:
-    #!/usr/bin/env bash
-    if ! command -v hugo &> /dev/null; then
-        echo "❌ Hugo not found. Install with: brew install hugo"
-        exit 1
-    fi
-    cd website && hugo server -D --bind 0.0.0.0
-
-# Build server with embedded documentation
-build-server-with-docs: proto docs-build
-    @echo "Building Loom server with embedded docs (looms)..."
-    @mkdir -p bin
-    GOWORK=off go build -tags fts5 -o bin/looms ./cmd/looms
-    @rm -rf cmd/looms/docs/public
-    @echo "✅ Server binary with embedded docs: bin/looms"
-    @echo "   Run 'bin/looms docs' to view documentation"
-
-# Clean built docs
-docs-clean:
-    @rm -rf cmd/looms/docs/public website/public website/resources
-    @echo "✅ Cleaned built documentation"
-
-# Development workflow: Build docs, build binary with edit mode, and serve
-docs-dev:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    # Kill any running looms-dev instances
-    pkill -9 -f "looms-dev docs" 2>/dev/null || true
-    echo "🧹 Killed existing looms-dev instances"
-
-    # Build docs
-    echo "📚 Building Hugo documentation..."
-    if ! command -v hugo &> /dev/null; then
-        echo "❌ Hugo not found. Install with: brew install hugo"
-        exit 1
-    fi
-    DEST="$(pwd)/cmd/looms/docs/public"
-    hugo -s website --minify --destination="$DEST" > /dev/null
-    SIZE=$(du -sh "$DEST" 2>/dev/null | cut -f1)
-    echo "✅ Docs built ($SIZE)"
-
-    # Build binary with embedded docs
-    echo "🔨 Building looms-dev binary..."
-    GOWORK=off go build -tags fts5 -o bin/looms-dev ./cmd/looms
-    echo "✅ Binary built ($(ls -lh bin/looms-dev | awk '{print $5}'))"
-
-    # Start docs server with dev mode
-    echo ""
-    echo "🚀 Starting docs server with edit mode..."
-    echo "   URL: http://localhost:6060"
-    echo "   Press Ctrl+C to stop"
-    echo ""
-    ./bin/looms-dev docs --dev-mode
-
-# Build example agents
 build-examples:
     @echo "Building example agents..."
     @mkdir -p bin
