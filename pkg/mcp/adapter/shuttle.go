@@ -98,9 +98,9 @@ type TruncationConfig struct {
 type MCPToolAdapter struct {
 	client       *client.Client
 	tool         protocol.Tool
-	serverName   string                   // Used as backend identifier
-	truncation   TruncationConfig         // Result truncation settings
-	sqlStore     *storage.SQLResultStore  // For storing large SQL results
+	serverName   string                     // Used as backend identifier
+	truncation   TruncationConfig           // Result truncation settings
+	sqlStore     *storage.SQLResultStore    // For storing large SQL results
 	sharedMemory *storage.SharedMemoryStore // For storing other large data
 }
 
@@ -290,12 +290,12 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 					DataReference:   ref,
 					ExecutionTimeMs: executionTime,
 					Metadata: map[string]interface{}{
-						"mcp_server":     a.serverName,
-						"tool_name":      a.tool.Name,
-						"sql_result":     true,
-						"rows":           len(sqlData["rows"].([]interface{})),
-						"columns":        len(sqlData["columns"].([]interface{})),
-						"stored_in_sql":  true,
+						"mcp_server":    a.serverName,
+						"tool_name":     a.tool.Name,
+						"sql_result":    true,
+						"rows":          len(sqlData["rows"].([]interface{})),
+						"columns":       len(sqlData["columns"].([]interface{})),
+						"stored_in_sql": true,
 					},
 					Data: fmt.Sprintf("✓ Query returned %d rows (%d columns). Use query_tool_result to filter/paginate.",
 						len(sqlData["rows"].([]interface{})), len(sqlData["columns"].([]interface{}))),
@@ -591,7 +591,7 @@ func normalizeParametersToCamelCase(params map[string]interface{}) map[string]in
 func (a *MCPToolAdapter) detectAndExtractSQLResult(data interface{}) (map[string]interface{}, bool) {
 	// SQL results from MCP tools typically come as text with embedded JSON
 	// Format: "✓ SQL executed successfully\n\nOutput:\n{\"columns\":[...],\"rows\":[[...]]}"
-	
+
 	str, ok := data.(string)
 	if !ok {
 		return nil, false

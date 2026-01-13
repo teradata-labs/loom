@@ -175,9 +175,9 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		toolResults:        make([]CachedToolResult, 0),
 		schemaCache:        make(map[string]string),
 		schemaAccessLog:    make(map[string]time.Time),
-		maxSchemas:         10,                   // Max 10 schemas cached
+		maxSchemas:         10,                       // Max 10 schemas cached
 		findingsCache:      make(map[string]Finding), // Working memory for verified findings
-		maxFindings:        100,                  // Max 100 findings cached
+		maxFindings:        100,                      // Max 100 findings cached
 		l1Messages:         make([]Message, 0),
 		promotedContext:    make([]Message, 0),
 		sessionStore:       nil,   // Set via SetSessionStore

@@ -180,7 +180,9 @@ func TestNormalizeSchema_BedrockCompliance(t *testing.T) {
 	// Marshal and check JSON
 	jsonBytes, _ := json.Marshal(normalized)
 	var result map[string]interface{}
-	json.Unmarshal(jsonBytes, &result)
+	if err := json.Unmarshal(jsonBytes, &result); err != nil {
+		t.Fatalf("Failed to unmarshal JSON: %v", err)
+	}
 
 	// Navigate to nested properties
 	props := result["properties"].(map[string]interface{})
