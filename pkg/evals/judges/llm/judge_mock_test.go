@@ -1,3 +1,4 @@
+//go:build !promptio
 // Copyright 2026 Teradata Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -266,25 +267,23 @@ func TestCallJudgeLLM_CredentialDetection(t *testing.T) {
 	t.Skip("Provider credential detection is now handled at provider initialization, not in judge")
 }
 
-// TestJudgeEvalRun_WithMockProvider tests judge with mock provider
-func TestJudgeEvalRun_WithMockProvider(t *testing.T) {
+// TestJudge_WithMockProvider tests judge with mock provider
+func TestJudge_WithMockProvider(t *testing.T) {
 	judge, err := NewJudge(&Config{Provider: &mockLLMProvider{}})
 	if err != nil {
 		t.Fatalf("NewJudge failed: %v", err)
 	}
 	ctx := context.Background()
 
-	run := &core.EvalRun{
-		ID:              "test-run-123",
-		Query:           "SELECT 1",
-		Response:        "Success",
-		Success:         true,
-		ExecutionTimeMS: 100,
-		Model:           "claude-3-5-sonnet",
-		Timestamp:       time.Now().Unix(),
+	evidence := &Evidence{
+		Query:         "SELECT 1",
+		Response:      "Success",
+		Success:       true,
+		ExecutionTime: 100,
+		Model:         "claude-3-5-sonnet",
 	}
 
-	verdict, err := judge.JudgeEvalRun(ctx, run)
+	verdict, err := judge.Judge(ctx, evidence)
 
 	// Should succeed with mock provider
 	if err != nil {
@@ -307,13 +306,12 @@ func TestJudgeEvalRun_WithMockProvider(t *testing.T) {
 	t.Logf("Verdict: %+v", verdict)
 }
 
-// TestVerdictToJudgeVerdict_Conversion tests the conversion function
-func TestVerdictToJudgeVerdict_AllFields(t *testing.T) {
+// TestVerdict_AllFields tests that all verdict fields work correctly
+func TestVerdict_AllFields(t *testing.T) {
 	now := time.Now().Unix()
 
 	verdict := &Verdict{
 		ID:                 "verdict-123",
-		EvalRunID:          "run-456",
 		JudgeModel:         "claude-sonnet-4-5-20250929",
 		FactualAccuracy:    85,
 		HallucinationScore: 10,
@@ -325,41 +323,35 @@ func TestVerdictToJudgeVerdict_AllFields(t *testing.T) {
 		CreatedAt:          now,
 	}
 
-	// Convert to JudgeVerdict (which is same type in pkg/core)
-	jv := VerdictToJudgeVerdict(verdict)
-
-	// Verify all fields copied correctly
-	if jv.ID != verdict.ID {
-		t.Errorf("ID mismatch: expected %s, got %s", verdict.ID, jv.ID)
+	// Verify all fields are set correctly
+	if verdict.ID != "verdict-123" {
+		t.Errorf("ID mismatch: expected verdict-123, got %s", verdict.ID)
 	}
-	if jv.EvalRunID != verdict.EvalRunID {
-		t.Errorf("EvalRunID mismatch")
-	}
-	if jv.JudgeModel != verdict.JudgeModel {
+	if verdict.JudgeModel != "claude-sonnet-4-5-20250929" {
 		t.Errorf("JudgeModel mismatch")
 	}
-	if jv.FactualAccuracy != verdict.FactualAccuracy {
+	if verdict.FactualAccuracy != 85 {
 		t.Errorf("FactualAccuracy mismatch")
 	}
-	if jv.HallucinationScore != verdict.HallucinationScore {
+	if verdict.HallucinationScore != 10 {
 		t.Errorf("HallucinationScore mismatch")
 	}
-	if jv.QueryQuality != verdict.QueryQuality {
+	if verdict.QueryQuality != 90 {
 		t.Errorf("QueryQuality mismatch")
 	}
-	if jv.Completeness != verdict.Completeness {
+	if verdict.Completeness != 88 {
 		t.Errorf("Completeness mismatch")
 	}
-	if jv.Verdict != verdict.Verdict {
+	if verdict.Verdict != "PASS" {
 		t.Errorf("Verdict mismatch")
 	}
-	if jv.Reasoning != verdict.Reasoning {
+	if verdict.Reasoning != "Well executed query with accurate results" {
 		t.Errorf("Reasoning mismatch")
 	}
-	if len(jv.Issues) != len(verdict.Issues) {
-		t.Errorf("Issues length mismatch")
+	if len(verdict.Issues) != 1 {
+		t.Errorf("Issues length mismatch: expected 1, got %d", len(verdict.Issues))
 	}
-	if jv.CreatedAt != verdict.CreatedAt {
+	if verdict.CreatedAt != now {
 		t.Errorf("CreatedAt mismatch")
 	}
 }

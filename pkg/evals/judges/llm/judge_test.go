@@ -202,7 +202,7 @@ func TestParseJudgeVerdict(t *testing.T) {
 	}
 }
 
-func TestJudgeEvalRun(t *testing.T) {
+func TestJudge(t *testing.T) {
 	// Skip if no API key available
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
@@ -219,31 +219,26 @@ func TestJudgeEvalRun(t *testing.T) {
 		t.Fatalf("NewJudge failed: %v", err)
 	}
 
-	// Create a simple eval run
-	run := &core.EvalRun{
-		ID:              "test-run-1",
-		Query:           "SELECT DATABASE",
-		Response:        "The database is: test_db",
-		Success:         true,
-		ExecutionTimeMS: 100,
-		Model:           "claude-3-5-sonnet",
-		Timestamp:       time.Now().Unix(),
+	// Create test evidence
+	evidence := &Evidence{
+		Query:         "SELECT DATABASE",
+		Response:      "The database is: test_db",
+		Success:       true,
+		ExecutionTime: 100,
+		Model:         "claude-3-5-sonnet",
 	}
 
 	ctx := context.Background()
 
 	// This will make a real API call
-	verdict, err := judge.JudgeEvalRun(ctx, run)
+	verdict, err := judge.Judge(ctx, evidence)
 	if err != nil {
-		t.Fatalf("JudgeEvalRun failed: %v", err)
+		t.Fatalf("Judge failed: %v", err)
 	}
 
 	// Verify verdict structure
 	if verdict.ID == "" {
 		t.Error("Verdict missing ID")
-	}
-	if verdict.EvalRunID != run.ID {
-		t.Errorf("Expected EvalRunID=%s, got %s", run.ID, verdict.EvalRunID)
 	}
 	if verdict.JudgeModel != cfg.Provider.Model() {
 		t.Errorf("Expected JudgeModel=%s, got %s", cfg.Provider.Model(), verdict.JudgeModel)
@@ -261,11 +256,10 @@ func TestJudgeEvalRun(t *testing.T) {
 		verdict.Verdict, verdict.FactualAccuracy, verdict.HallucinationScore)
 }
 
-func TestVerdictConversion(t *testing.T) {
-	// Test VerdictToJudgeVerdict conversion
+func TestVerdictStructure(t *testing.T) {
+	// Test that verdict has all expected fields
 	verdict := &Verdict{
 		ID:                 "test-id",
-		EvalRunID:          "run-id",
 		JudgeModel:         "claude-sonnet-4-5-20250929",
 		FactualAccuracy:    85,
 		HallucinationScore: 10,
@@ -277,16 +271,18 @@ func TestVerdictConversion(t *testing.T) {
 		CreatedAt:          time.Now().Unix(),
 	}
 
-	converted := VerdictToJudgeVerdict(verdict)
-
-	if converted.ID != verdict.ID {
-		t.Errorf("ID mismatch: expected %s, got %s", verdict.ID, converted.ID)
+	// Verify all fields are set correctly
+	if verdict.ID != "test-id" {
+		t.Errorf("ID mismatch: expected test-id, got %s", verdict.ID)
 	}
-	if converted.FactualAccuracy != verdict.FactualAccuracy {
+	if verdict.FactualAccuracy != 85 {
 		t.Errorf("FactualAccuracy mismatch")
 	}
-	if len(converted.Issues) != len(verdict.Issues) {
+	if len(verdict.Issues) != 1 {
 		t.Errorf("Issues length mismatch")
+	}
+	if verdict.Verdict != "PASS" {
+		t.Errorf("Verdict mismatch")
 	}
 }
 
