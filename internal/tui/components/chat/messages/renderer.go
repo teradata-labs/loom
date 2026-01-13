@@ -1270,7 +1270,15 @@ func (v *toolCallCmp) renderToolError() string {
 	t := styles.CurrentTheme()
 	err := strings.ReplaceAll(v.result.Content, "\n", " ")
 	errTag := t.S().Base.Padding(0, 1).Background(t.Red).Foreground(t.White).Render("ERROR")
-	err = fmt.Sprintf("%s %s", errTag, t.S().Base.Foreground(t.FgHalfMuted).Render(v.fit(err, v.textWidth()-2-lipgloss.Width(errTag))))
+
+	// Wrap error message instead of truncating to show full error
+	maxWidth := v.textWidth() - 2 - lipgloss.Width(errTag)
+	wrappedErr := lipgloss.NewStyle().
+		Width(maxWidth).
+		Foreground(t.FgHalfMuted).
+		Render(err)
+
+	err = fmt.Sprintf("%s %s", errTag, wrappedErr)
 	return err
 }
 
