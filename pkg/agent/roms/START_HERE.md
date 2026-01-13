@@ -54,6 +54,92 @@ When tools return >1000 tokens, you get inline metadata:
 
 ---
 
+## 🧠 Working Memory (Preventing Hallucination)
+
+**CRITICAL:** Record verified facts as you discover them.
+
+### Why This Matters
+
+Chaining multiple tool calls silently causes you to lose track of findings when generating final reports. This leads to fabricated data.
+
+**Bad pattern (causes hallucination):**
+```
+1. Query executes → 2195 rows
+2. [EMPTY RESPONSE - no narration]
+3. Query executes → 17% nulls
+4. [EMPTY RESPONSE - no narration]
+5. User asks for report
+6. You fabricate data because findings are outside context window
+```
+
+**Good pattern (prevents hallucination):**
+```
+1. Query executes → 2195 rows
+2. "I found 2,195 rows. Recording this..."
+3. record_finding(path="table.row_count", value=2195, category="statistic")
+4. Query executes → 17% nulls
+5. "17% null rate. Recording..."
+6. record_finding(path="table.column.null_rate", value=0.17, category="statistic")
+7. User asks for report
+8. You reference "Verified Findings" in context with exact numbers
+```
+
+### Using record_finding
+
+**After every successful tool execution, do TWO things:**
+
+1. **Narrate what you found** (explanatory text)
+2. **Record the finding** (structured storage)
+
+**Examples by category:**
+
+```python
+# Statistics (counts, percentages, aggregates)
+record_finding(
+    path="vantage_sites.row_count",
+    value=2195,
+    category="statistic"
+)
+
+# Schema (structure, columns, types)
+record_finding(
+    path="vantage_sites.columns",
+    value=["site_id", "customer_id", "region"],
+    category="schema"
+)
+
+# Observations (patterns, insights)
+record_finding(
+    path="vantage_sites.site_id.uniqueness",
+    value="100% unique - likely primary key",
+    category="observation"
+)
+
+# Distribution (value frequencies)
+record_finding(
+    path="vantage_sites.region.distribution",
+    value={"Americas": 1183, "EMEA": 589, "APJ": 423},
+    category="distribution"
+)
+```
+
+**Path naming conventions:**
+- Hierarchical: `table.column.metric` or `table.metric`
+- Use snake_case
+- Examples: `customers.row_count`, `orders.status.null_rate`
+
+**What happens:**
+Recorded findings are automatically injected into your context as a "Verified Findings" summary. This provides structured working memory across tool executions.
+
+### Rules
+
+1. **Never chain tool calls silently** - Always provide explanatory text between tool executions
+2. **Record key findings immediately** - Don't wait until the end
+3. **Reference verified findings** - When generating reports, cite findings from working memory
+4. **Schema validation** - Verify column names exist before querying
+
+---
+
 ## 🔄 Agent Communication
 
 ### Workflow Agent IDs
@@ -175,6 +261,11 @@ clear_scratchpad()
 **Discovery:**
 - `tool_search(query="keyword")` → Find tools
 
+**Working Memory:**
+- Narrate findings after every tool execution
+- `record_finding(path, value, category)` → Store verified facts
+- Categories: "statistic", "schema", "observation", "distribution"
+
 **Large results:**
 - Check inline metadata (preview, schema, size)
 - `query_tool_result(ref, ...)` → Retrieve with filtering
@@ -195,11 +286,13 @@ clear_scratchpad()
 
 ## ⚠️ Common Mistakes
 
-1. **Not discovering tools** → Use tool_search first
-2. **Trying to retrieve all data** → Use filtering/pagination
-3. **Wrong agent IDs in workflows** → Use full `workflow:agent` format
-4. **Polling for messages** → Event-driven, just call receive_message once
-5. **Using scratchpad for sharing** → Use artifacts instead
+1. **Chaining tool calls silently** → Narrate findings and use record_finding after each execution
+2. **Not discovering tools** → Use tool_search first
+3. **Fabricating data in reports** → Reference verified findings from working memory
+4. **Trying to retrieve all data** → Use filtering/pagination
+5. **Wrong agent IDs in workflows** → Use full `workflow:agent` format
+6. **Polling for messages** → Event-driven, just call receive_message once
+7. **Using scratchpad for sharing** → Use artifacts instead
 
 ---
 
