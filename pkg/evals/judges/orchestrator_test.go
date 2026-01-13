@@ -1021,7 +1021,7 @@ func TestOrchestrator_HawkExport_ExportToHawkTrue(t *testing.T) {
 	defer mockServer.Close()
 
 	// Create Hawk exporter
-	exporter, err := observability.NewHawkJudgeExporter(&observability.HawkJudgeExporterConfig{
+	exporter, err := observability.NewLLMJudgeExporter(&observability.HawkJudgeExporterConfig{
 		Endpoint:      mockServer.URL,
 		APIKey:        "test-api-key",
 		BatchSize:     10,
@@ -1108,7 +1108,7 @@ func TestOrchestrator_HawkExport_ExportToHawkFalse(t *testing.T) {
 	defer mockServer.Close()
 
 	// Create Hawk exporter
-	exporter, err := observability.NewHawkJudgeExporter(&observability.HawkJudgeExporterConfig{
+	exporter, err := observability.NewLLMJudgeExporter(&observability.HawkJudgeExporterConfig{
 		Endpoint:      mockServer.URL,
 		APIKey:        "test-api-key",
 		BatchSize:     10,

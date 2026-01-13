@@ -31,18 +31,19 @@ just build-promptio    # Promptio only
 **What it enables**:
 - `observability.HawkTracer` - Export traces to Hawk service
 - `observability.EmbeddedHawkTracer` - Embedded trace storage (memory/SQLite)
-- `observability.HawkJudgeExporter` - Export judge verdicts to Hawk
+- `observability.HawkJudgeExporter` - Export judge verdicts to Hawk for observability
 - `pkg/evals.ExportToHawk()` - Eval result export
 
 **When to use**:
 - You want to export observability traces to Hawk
 - You need embedded trace storage for debugging
-- You're using the evaluation system with Hawk integration
+- You want to export judge evaluation results to Hawk for analysis
 
 **Without this tag**:
 - All Hawk functions return errors: "hawk support not compiled in"
 - Falls back to `observability.NoOpTracer` (no overhead)
-- Full functionality works, just without observability
+- **Judge evaluation works fully** - judges are built-in, only export functionality requires this tag
+- Full agent and evaluation functionality works, just without observability export
 
 **Dependencies required**:
 - `github.com/Teradata-TIO/hawk` - Hawk SDK

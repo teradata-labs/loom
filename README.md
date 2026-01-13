@@ -185,8 +185,6 @@ Additional collaboration patterns in `pkg/collaboration/`:
 
 ### Judge Evaluation System
 
-> **Note**: The judge evaluation system requires Hawk. Build with `just build-full` or `-tags hawk` to enable this feature. The `looms eval` and `looms judge` commands are only available when built with Hawk support.
-
 Multi-judge evaluation with configurable aggregation strategies (Phases 7-11 complete):
 
 ```bash

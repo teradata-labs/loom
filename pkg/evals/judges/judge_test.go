@@ -208,7 +208,7 @@ func TestAgentJudge_BuildEvaluationPrompt(t *testing.T) {
 	assert.Contains(t, prompt, "Verdict (PASS/FAIL/PARTIAL)")
 }
 
-func TestHawkJudge_Getters(t *testing.T) {
+func TestLLMJudge_Getters(t *testing.T) {
 	// Note: We can't test Evaluate() without Hawk library,
 	// but we can test the getters and constructor validation
 
@@ -225,7 +225,7 @@ func TestHawkJudge_Getters(t *testing.T) {
 	// Create mock LLM provider for HawkJudge
 	mockLLM := &mockLLMProvider{model: "claude-3-5-sonnet"}
 
-	judge, err := NewHawkJudge(mockLLM, config, nil)
+	judge, err := NewLLMJudge(mockLLM, config, nil)
 	require.NoError(t, err)
 	require.NotNil(t, judge)
 
@@ -252,7 +252,7 @@ func TestHawkJudge_Getters(t *testing.T) {
 	assert.Equal(t, loomv1.JudgeDimension_JUDGE_DIMENSION_SAFETY, dimensions[0])
 }
 
-func TestHawkJudge_Defaults(t *testing.T) {
+func TestLLMJudge_Defaults(t *testing.T) {
 	config := &loomv1.JudgeConfig{
 		Name: "Test Hawk Judge",
 		// Weight, MinPassingScore, Criticality, Dimensions not set
@@ -260,7 +260,7 @@ func TestHawkJudge_Defaults(t *testing.T) {
 
 	mockLLM := &mockLLMProvider{model: "claude-3-5-sonnet"}
 
-	judge, err := NewHawkJudge(mockLLM, config, nil)
+	judge, err := NewLLMJudge(mockLLM, config, nil)
 	require.NoError(t, err)
 
 	// Test default weight
@@ -282,7 +282,7 @@ func TestHawkJudge_Defaults(t *testing.T) {
 	assert.Contains(t, criteria, "completeness")
 }
 
-func TestNewHawkJudge_Validation(t *testing.T) {
+func TestNewLLMJudge_Validation(t *testing.T) {
 	tests := []struct {
 		name        string
 		llmProvider types.LLMProvider // Use interface type to properly test nil
@@ -317,7 +317,7 @@ func TestNewHawkJudge_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			judge, err := NewHawkJudge(tt.llmProvider, tt.config, nil)
+			judge, err := NewLLMJudge(tt.llmProvider, tt.config, nil)
 
 			if tt.expectErr != "" {
 				require.Error(t, err)
@@ -331,7 +331,7 @@ func TestNewHawkJudge_Validation(t *testing.T) {
 	}
 }
 
-func TestHawkJudge_IDGeneration(t *testing.T) {
+func TestLLMJudge_IDGeneration(t *testing.T) {
 	config := &loomv1.JudgeConfig{
 		Name: "Test Judge",
 		// Id not set - should be auto-generated
@@ -339,10 +339,10 @@ func TestHawkJudge_IDGeneration(t *testing.T) {
 
 	mockLLM := &mockLLMProvider{model: "test"}
 
-	judge1, err := NewHawkJudge(mockLLM, config, nil)
+	judge1, err := NewLLMJudge(mockLLM, config, nil)
 	require.NoError(t, err)
 
-	judge2, err := NewHawkJudge(mockLLM, config, nil)
+	judge2, err := NewLLMJudge(mockLLM, config, nil)
 	require.NoError(t, err)
 
 	// Auto-generated IDs should be different

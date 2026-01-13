@@ -11,8 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//go:build hawk
-
 // Copyright © 2026 Teradata Corporation - All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,10 +24,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	hawkcore "github.com/teradata-labs/hawk/pkg/core"
-	hawkjudge "github.com/teradata-labs/hawk/pkg/core/judge"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	llmjudge "github.com/teradata-labs/loom/pkg/evals/judges/llm"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -63,19 +60,19 @@ type Judge interface {
 	Config() *loomv1.JudgeConfig
 }
 
-// HawkJudge wraps Hawk's embedded judge library for LLM-as-a-judge evaluation.
-// This implementation uses Hawk's single-judge capability and maps it to Loom's
-// multi-judge framework.
-type HawkJudge struct {
+// LLMJudge provides LLM-as-a-judge evaluation for Loom's multi-judge framework.
+// This implementation uses a simple LLM-based evaluation and maps it to Loom's
+// multi-judge framework with dimensions, criticality, and aggregation.
+type LLMJudge struct {
 	id          string
-	hawkJudge   *hawkjudge.Judge
+	llmJudge    *llmjudge.Judge
 	config      *loomv1.JudgeConfig
 	tracer      observability.Tracer
 	llmProvider types.LLMProvider
 }
 
-// NewHawkJudge creates a new judge using Hawk's embedded library.
-func NewHawkJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tracer observability.Tracer) (*HawkJudge, error) {
+// NewLLMJudge creates a new LLM-based judge.
+func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tracer observability.Tracer) (*LLMJudge, error) {
 	if llmProvider == nil {
 		return nil, fmt.Errorf("LLM provider required")
 	}
@@ -102,12 +99,12 @@ func NewHawkJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tra
 		config.Criticality = loomv1.JudgeCriticality_JUDGE_CRITICALITY_CRITICAL
 	}
 
-	// Create Hawk judge instance
-	hawkJudge, err := hawkjudge.NewJudge(&hawkjudge.Config{
+	// Create LLM judge instance
+	judge, err := llmjudge.NewJudge(&llmjudge.Config{
 		Provider: llmProvider,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Hawk judge: %w", err)
+		return nil, fmt.Errorf("failed to create LLM judge: %w", err)
 	}
 
 	id := config.Id
@@ -119,9 +116,9 @@ func NewHawkJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tra
 		tracer = observability.NewNoOpTracer()
 	}
 
-	return &HawkJudge{
+	return &LLMJudge{
 		id:          id,
-		hawkJudge:   hawkJudge,
+		llmJudge:    judge,
 		config:      config,
 		tracer:      tracer,
 		llmProvider: llmProvider,
@@ -129,17 +126,17 @@ func NewHawkJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tra
 }
 
 // ID returns the judge identifier
-func (h *HawkJudge) ID() string {
+func (h *LLMJudge) ID() string {
 	return h.id
 }
 
 // Name returns the judge name
-func (h *HawkJudge) Name() string {
+func (h *LLMJudge) Name() string {
 	return h.config.Name
 }
 
 // Criteria returns the evaluation criteria
-func (h *HawkJudge) Criteria() []string {
+func (h *LLMJudge) Criteria() []string {
 	if h.config.Criteria != "" {
 		return []string{h.config.Criteria}
 	}
@@ -147,17 +144,17 @@ func (h *HawkJudge) Criteria() []string {
 }
 
 // Weight returns the aggregation weight
-func (h *HawkJudge) Weight() float64 {
+func (h *LLMJudge) Weight() float64 {
 	return h.config.Weight
 }
 
 // Criticality returns the judge criticality level
-func (h *HawkJudge) Criticality() loomv1.JudgeCriticality {
+func (h *LLMJudge) Criticality() loomv1.JudgeCriticality {
 	return h.config.Criticality
 }
 
 // Dimensions returns the dimensions this judge evaluates
-func (h *HawkJudge) Dimensions() []loomv1.JudgeDimension {
+func (h *LLMJudge) Dimensions() []loomv1.JudgeDimension {
 	if len(h.config.Dimensions) > 0 {
 		return h.config.Dimensions
 	}
@@ -166,12 +163,12 @@ func (h *HawkJudge) Dimensions() []loomv1.JudgeDimension {
 }
 
 // Config returns the judge configuration
-func (h *HawkJudge) Config() *loomv1.JudgeConfig {
+func (h *LLMJudge) Config() *loomv1.JudgeConfig {
 	return h.config
 }
 
 // Evaluate performs the evaluation using Hawk's judge
-func (h *HawkJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationContext) (*loomv1.JudgeResult, error) {
+func (h *LLMJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationContext) (*loomv1.JudgeResult, error) {
 	// Start tracing
 	ctx, span := h.tracer.StartSpan(ctx, observability.SpanJudgeEvaluation)
 	defer h.tracer.EndSpan(span)
@@ -184,18 +181,17 @@ func (h *HawkJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationCont
 
 	startTime := time.Now()
 
-	// Create EvalRun for Hawk judge
-	evalRun := &hawkcore.EvalRun{
-		ID:              evalCtx.TraceId,
-		Query:           evalCtx.Prompt,
-		Response:        evalCtx.Response,
-		Success:         true,
-		ExecutionTimeMS: evalCtx.LatencyMs,
-		Model:           h.llmProvider.Model(),
+	// Create evidence for LLM judge
+	evidence := &llmjudge.Evidence{
+		Query:         evalCtx.Prompt,
+		Response:      evalCtx.Response,
+		Success:       true,
+		ExecutionTime: evalCtx.LatencyMs,
+		Model:         h.llmProvider.Model(),
 	}
 
-	// Call Hawk judge
-	verdict, err := h.hawkJudge.JudgeEvalRun(ctx, evalRun)
+	// Call LLM judge
+	verdict, err := h.llmJudge.Judge(ctx, evidence)
 	if err != nil {
 		return &loomv1.JudgeResult{
 			JudgeId:   h.ID(),
@@ -203,10 +199,10 @@ func (h *HawkJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationCont
 			Error:     err.Error(),
 			Verdict:   "FAIL",
 			JudgedAt:  timestamppb.Now(),
-		}, fmt.Errorf("hawk judge failed: %w", err)
+		}, fmt.Errorf("LLM judge failed: %w", err)
 	}
 
-	// Convert Hawk verdict to Loom JudgeResult
+	// Convert verdict to Loom JudgeResult
 	result := h.convertVerdictToResult(verdict, evalCtx)
 	result.ExecutionTimeMs = time.Since(startTime).Milliseconds()
 	result.CostUsd = evalCtx.CostUsd
@@ -214,9 +210,9 @@ func (h *HawkJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationCont
 	return result, nil
 }
 
-// convertVerdictToResult converts Hawk's Verdict to Loom's JudgeResult
-func (h *HawkJudge) convertVerdictToResult(verdict *hawkjudge.Verdict, evalCtx *loomv1.EvaluationContext) *loomv1.JudgeResult {
-	// Calculate overall score from Hawk's 4 dimensions
+// convertVerdictToResult converts LLM judge Verdict to Loom's JudgeResult
+func (h *LLMJudge) convertVerdictToResult(verdict *llmjudge.Verdict, evalCtx *loomv1.EvaluationContext) *loomv1.JudgeResult {
+	// Calculate overall score from 4 dimensions
 	// Lower hallucination is better, so invert it
 	overallScore := (float64(verdict.FactualAccuracy) +
 		(100.0 - float64(verdict.HallucinationScore)) +

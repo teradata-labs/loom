@@ -15,7 +15,6 @@ require (
 	charm.land/bubbletea/v2 v2.0.0-rc.2.0.20251216153312-819e2e89c62e
 	charm.land/lipgloss/v2 v2.0.0-beta.3.0.20251205162909-7869489d8971
 	github.com/MakeNowJust/heredoc v1.0.0
-	github.com/teradata-labs/hawk v0.0.0-00010101000000-000000000000 // optional: build with -tags hawk
 	github.com/teradata-labs/promptio v0.6.1 // optional: build with -tags promptio
 	github.com/alecthomas/chroma/v2 v2.21.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0

@@ -105,7 +105,7 @@ func TestCustomDimensionValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockProvider := &customDimTestLLMProvider{}
 
-			_, err := NewHawkJudge(mockProvider, tt.config, observability.NewNoOpTracer())
+			_, err := NewLLMJudge(mockProvider, tt.config, observability.NewNoOpTracer())
 
 			if tt.expectError {
 				if err == nil {
@@ -173,7 +173,7 @@ func TestCustomDimensionScoring(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockProvider := &customDimTestLLMProvider{}
 
-			judge, err := NewHawkJudge(mockProvider, tt.config, observability.NewNoOpTracer())
+			judge, err := NewLLMJudge(mockProvider, tt.config, observability.NewNoOpTracer())
 			if err != nil {
 				t.Fatalf("failed to create judge: %v", err)
 			}
@@ -217,7 +217,7 @@ func TestOrchestratorWithCustomDimensions(t *testing.T) {
 		Criticality:                loomv1.JudgeCriticality_JUDGE_CRITICALITY_CRITICAL,
 	}
 
-	teradataJudge, err := NewHawkJudge(mockProvider, teradataConfig, tracer)
+	teradataJudge, err := NewLLMJudge(mockProvider, teradataConfig, tracer)
 	if err != nil {
 		t.Fatalf("failed to create teradata judge: %v", err)
 	}
