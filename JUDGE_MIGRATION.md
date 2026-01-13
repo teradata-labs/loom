@@ -2,7 +2,7 @@
 
 **Date:** 2026-01-13
 **Branch:** `judge-integration`
-**Status:** ✅ Complete (minor test updates needed)
+**Status:** ✅ Complete
 
 ## Summary
 
@@ -106,22 +106,17 @@ loom/pkg/evals/judges/
 
 ## Known Issues
 
-### Test Files Need Minor Updates
+~~### Test Files Need Minor Updates~~ ✅ **FIXED**
 
-**Issue:** Test files use old Hawk API:
-```go
-// Old API (removed)
-verdict, err := judge.JudgeEvalRun(ctx, &core.EvalRun{...})
+~~**Issue:** Test files use old Hawk API~~ **RESOLVED**
 
-// New API (use this)
-verdict, err := judge.Judge(ctx, &llm.Evidence{...})
-```
-
-**Files needing updates:**
-- `pkg/evals/judges/llm/judge_test.go` (minor)
-- `pkg/evals/judges/llm/judge_mock_test.go` (minor)
-
-**Status:** Non-blocking. Main code compiles and works. Tests are easily fixable.
+**Fix Applied (Commit 5e07d28):**
+- Updated all test files to use new `Judge(Evidence)` API
+- Removed references to `JudgeEvalRun(core.EvalRun)`
+- Removed tests for deleted `VerdictToJudgeVerdict` function
+- Removed `EvalRunID` field references
+- Added `//go:build !promptio` tag to `judge_mock_test.go`
+- All tests now pass: `go test -tags fts5 ./pkg/evals/judges/llm/... -v` ✅
 
 ## Testing
 
@@ -135,19 +130,22 @@ just build
 ./bin/looms judge evaluate --help
 ```
 
-### What Needs Work
+### What's Verified
 ```bash
-# Test files need API updates
-go test ./pkg/evals/judges/llm/...  # Fails (fixable)
+# Tests pass successfully
+go test -tags fts5 ./pkg/evals/judges/llm/... -v  # ✅ PASS (14 tests)
+
+# Binary builds successfully
+go build -tags fts5 -o bin/looms ./cmd/looms  # ✅ Success
 ```
 
 ## Next Steps
 
 1. ✅ **Migration complete** - Code committed to `judge-integration` branch
-2. ⚠️ **Update test files** - Replace old API calls (15 min fix)
+2. ✅ **Update test files** - All tests now pass
 3. ⚠️ **Update documentation** - README, BUILD_TAGS.md
 4. 📝 **Verify end-to-end** - Run actual judge evaluation
-5. 🚀 **Merge to main** - After tests pass
+5. 🚀 **Merge to main** - Ready when approved
 
 ## Rollback Plan
 
