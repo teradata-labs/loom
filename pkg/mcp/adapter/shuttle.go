@@ -199,15 +199,19 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 		}
 	}
 
+	// Normalize schema to ensure JSON Schema draft 2020-12 compliance
+	// This is critical for Bedrock which strictly validates schemas
+	normalized := shuttle.NormalizeSchema(&shuttleSchema)
+
 	// Debug logging to see what MCP provides and what we convert to
 	if os.Getenv("LOOM_DEBUG_BEDROCK_TOOLS") == "1" {
 		mcpJSON, _ := json.MarshalIndent(a.tool.InputSchema, "", "  ")
-		shuttleJSON, _ := json.MarshalIndent(&shuttleSchema, "", "  ")
-		fmt.Printf("[MCP] Tool: %s\nOriginal schema:\n%s\nConverted:\n%s\n\n",
-			a.tool.Name, string(mcpJSON), string(shuttleJSON))
+		normalizedJSON, _ := json.MarshalIndent(normalized, "", "  ")
+		fmt.Printf("[MCP] Tool: %s\nOriginal schema:\n%s\nNormalized:\n%s\n\n",
+			a.tool.Name, string(mcpJSON), string(normalizedJSON))
 	}
 
-	return &shuttleSchema
+	return normalized
 }
 
 // Execute implements shuttle.Tool
