@@ -49,12 +49,32 @@ case "$OS" in
         PKG_MANAGER="cargo"
         ;;
     MINGW*|MSYS*|CYGWIN*)
-        echo -e "${RED}Error: Windows is not supported by this installer${NC}"
-        echo "Windows users: Please install dependencies manually"
-        echo "  - Install Go: https://go.dev/dl/"
-        echo "  - Install Just: https://github.com/casey/just#installation"
-        echo "  - Install Buf: https://buf.build/docs/installation"
-        exit 1
+        echo -e "${BLUE}Windows detected - redirecting to PowerShell installer...${NC}"
+        echo ""
+
+        # Check if quickstart.ps1 exists
+        if [ ! -f "$SCRIPT_DIR/quickstart.ps1" ]; then
+            echo -e "${RED}Error: quickstart.ps1 not found in $SCRIPT_DIR${NC}"
+            exit 1
+        fi
+
+        # Run PowerShell script
+        echo -e "${BLUE}Running: powershell.exe -ExecutionPolicy Bypass -File quickstart.ps1${NC}"
+        echo ""
+
+        # Try powershell.exe (Windows 10+) or pwsh.exe (PowerShell 7+)
+        if command -v pwsh.exe &> /dev/null; then
+            pwsh.exe -ExecutionPolicy Bypass -File "$SCRIPT_DIR/quickstart.ps1"
+        elif command -v powershell.exe &> /dev/null; then
+            powershell.exe -ExecutionPolicy Bypass -File "$SCRIPT_DIR/quickstart.ps1"
+        else
+            echo -e "${RED}Error: PowerShell not found${NC}"
+            echo "Please run quickstart.ps1 directly in PowerShell:"
+            echo "  powershell.exe -ExecutionPolicy Bypass -File quickstart.ps1"
+            exit 1
+        fi
+
+        exit $?
         ;;
     *)
         echo -e "${RED}Error: Unsupported operating system: $OS${NC}"
