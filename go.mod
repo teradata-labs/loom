@@ -26,7 +26,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.3
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
 	github.com/disintegration/imageorient v0.0.0-20180920195336-8147d86e83ec
-	github.com/docker/docker v27.5.0+incompatible
+	github.com/docker/docker v28.0.0+incompatible
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-acme/lego/v4 v4.28.1
 	github.com/go-sql-driver/mysql v1.9.3
