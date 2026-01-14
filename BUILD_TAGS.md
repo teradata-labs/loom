@@ -1,6 +1,6 @@
 # Build Tags for Optional Dependencies
 
-Loom can be built with or without optional dependencies (Hawk and Promptio) using Go build tags.
+Loom can be built with or without optional dependencies (Hawk) using Go build tags.
 
 ## Quick Start
 
@@ -13,13 +13,12 @@ go build ./cmd/looms    # Direct go build
 **Build with all features**:
 ```bash
 just build-full
-go build -tags "hawk,promptio" ./cmd/looms
+go build -tags "hawk" ./cmd/looms
 ```
 
-**Build with specific features**:
+**Build with Hawk**:
 ```bash
-just build-hawk        # Hawk only
-just build-promptio    # Promptio only
+just build-hawk        # Hawk observability
 ```
 
 ---
@@ -48,23 +47,6 @@ just build-promptio    # Promptio only
 **Dependencies required**:
 - `github.com/Teradata-TIO/hawk` - Hawk SDK
 
-### `promptio` - Promptio Prompt Management
-
-**What it enables**:
-- `prompts.PromptioRegistry` - Load prompts from Promptio library
-
-**When to use**:
-- You're using Promptio for prompt version control
-- You want centralized prompt management
-
-**Without this tag**:
-- PromptioRegistry functions return errors
-- Falls back to `prompts.FileRegistry` or hardcoded prompts
-- Full agent functionality works with alternative prompt sources
-
-**Dependencies required**:
-- `github.com/Teradata-TIO/promptio` - Promptio SDK
-
 ---
 
 ## Build Target Reference
@@ -73,9 +55,8 @@ just build-promptio    # Promptio only
 |---------|------|-------------|----------|
 | `just build` | `fts5` | Minimal build (default) | Production deployment, no external services |
 | `just build-minimal` | `fts5` | Same as `build` | Explicit minimal build |
-| `just build-hawk` | `fts5,hawk` | With Hawk only | Observability without Promptio |
-| `just build-promptio` | `fts5,promptio` | With Promptio only | Prompt management without Hawk |
-| `just build-full` | `fts5,hawk,promptio` | All features | Full development environment |
+| `just build-hawk` | `fts5,hawk` | With Hawk | Observability enabled |
+| `just build-full` | `fts5,hawk` | All features | Full development environment |
 
 **Note**: The `fts5` tag is always included for SQLite FTS5 support (required for session storage).
 
@@ -92,11 +73,8 @@ go build -tags fts5 -o bin/looms ./cmd/looms
 # With Hawk
 go build -tags fts5,hawk -o bin/looms ./cmd/looms
 
-# With Promptio
-go build -tags fts5,promptio -o bin/looms ./cmd/looms
-
-# With all features
-go build -tags "fts5,hawk,promptio" -o bin/looms ./cmd/looms
+# With all features (same as hawk)
+go build -tags "fts5,hawk" -o bin/looms ./cmd/looms
 ```
 
 ---
@@ -112,11 +90,8 @@ go test -tags fts5 ./...
 # Hawk tests
 go test -tags "fts5,hawk" ./pkg/observability/...
 
-# Promptio tests
-go test -tags "fts5,promptio" ./pkg/prompts/...
-
 # All features
-go test -tags "fts5,hawk,promptio" ./...
+go test -tags "fts5,hawk" ./...
 ```
 
 ---
@@ -133,16 +108,6 @@ tracer, err := observability.NewHawkTracer(config)
 tracer = observability.NewNoOpTracer()
 ```
 
-### Without Promptio Tag
-
-```go
-registry := prompts.NewPromptioRegistry("./prompts")
-prompt, err := registry.Get(ctx, "system", vars)
-// Returns: "", "promptio support not compiled in (rebuild with -tags promptio)"
-
-// Server automatically falls back to FileRegistry or hardcoded prompts
-```
-
 ---
 
 ## Dependency Management
@@ -155,9 +120,6 @@ The optional dependencies remain in `go.mod` for convenience:
 require (
     // Optional: Only needed when building with -tags hawk
     github.com/Teradata-TIO/hawk v0.0.0-00010101000000-000000000000
-
-    // Optional: Only needed when building with -tags promptio
-    github.com/Teradata-TIO/promptio v0.6.1
 )
 ```
 
@@ -169,7 +131,6 @@ If you don't have the dependencies locally and only want the minimal build:
    ```bash
    go mod edit -dropreplace github.com/Teradata-TIO/hawk
    go mod edit -droprequire github.com/Teradata-TIO/hawk
-   go mod edit -droprequire github.com/Teradata-TIO/promptio
    go mod tidy
    ```
 
@@ -181,7 +142,6 @@ If you don't have the dependencies locally and only want the minimal build:
 3. **To restore full features later**:
    ```bash
    go get github.com/Teradata-TIO/hawk@latest
-   go get github.com/Teradata-TIO/promptio@latest
    ```
 
 ---
@@ -200,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        build: [minimal, hawk, promptio, full]
+        build: [minimal, hawk, full]
     steps:
       - uses: actions/checkout@v3
 
@@ -223,8 +183,7 @@ Approximate sizes (as of Jan 2026):
 |-------|-------|------|-------|
 | Minimal | 105 MB | 39 MB | No optional deps |
 | +Hawk | 106 MB | 39 MB | +Hawk SDK (~1MB) |
-| +Promptio | 106 MB | 40 MB | +Promptio SDK (~1MB) |
-| Full | 106 MB | 40 MB | Both deps |
+| Full | 106 MB | 39 MB | Same as +Hawk |
 
 ---
 
@@ -245,13 +204,12 @@ Approximate sizes (as of Jan 2026):
 2. Configure observability to use `mode: none` or `mode: embedded`
 3. Don't set `HAWK_ENDPOINT` (server will use NoOpTracer automatically)
 
-### Import cycle with hawk/promptio
+### Import cycle with hawk
 
-**Cause**: Trying to import Hawk/Promptio packages directly.
+**Cause**: Trying to import Hawk packages directly.
 
 **Fix**: Don't import these packages directly in application code. Use the interfaces:
 - `observability.Tracer` (not `hawk.Tracer`)
-- `prompts.PromptRegistry` (not `promptio.Registry`)
 
 ---
 
@@ -259,7 +217,7 @@ Approximate sizes (as of Jan 2026):
 
 1. **Default to minimal builds**: Ship minimal binaries by default, let users opt-in to features
 
-2. **Test all combinations**: Use CI matrix to test minimal, hawk, promptio, and full builds
+2. **Test all combinations**: Use CI matrix to test minimal, hawk, and full builds
 
 3. **Graceful degradation**: Always handle missing features gracefully:
    ```go
@@ -271,7 +229,7 @@ Approximate sizes (as of Jan 2026):
 
 4. **Document requirements**: Clearly document which features require which tags
 
-5. **Keep stubs updated**: When adding new Hawk/Promptio methods, update the stub files
+5. **Keep stubs updated**: When adding new Hawk methods, update the stub files
 
 ---
 
@@ -280,8 +238,6 @@ Approximate sizes (as of Jan 2026):
 - `pkg/observability/hawk.go` - Real Hawk implementation (`//go:build hawk`)
 - `pkg/observability/hawk_stub.go` - Stub implementation (`//go:build !hawk`)
 - `pkg/observability/hawk_types.go` - Shared types (`//go:build !hawk`)
-- `pkg/prompts/promptio_registry.go` - Real Promptio implementation (`//go:build promptio`)
-- `pkg/prompts/promptio_stub.go` - Stub implementation (`//go:build !promptio`)
 
 ---
 

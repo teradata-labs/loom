@@ -477,11 +477,10 @@ See [Architecture Guide](docs/architecture/) for detailed design.
 
 ## Related Projects
 
-**Optional Integrations** (build with `-tags hawk,promptio`):
+**Optional Integrations** (build with `-tags hawk`):
 - **[Hawk](https://github.com/teradata-labs/hawk)** - Evaluation platform for LLM agents with metrics and analytics
-- **[Promptio](https://github.com/teradata-labs/promptio)** - Version-controlled prompt management
 
-> **Note**: Hawk and Promptio are optional dependencies behind build tags. Loom works fully without them.
+> **Note**: Hawk is an optional dependency behind a build tag. Loom works fully without it.
 
 ---
 

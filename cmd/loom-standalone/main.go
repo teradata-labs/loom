@@ -197,8 +197,9 @@ func startEmbeddedServer(port int, llmProvider, llmAPIKey, llmModel string, temp
 	// Create mock backend
 	backend := &mockBackend{}
 
-	// Create promptio registry
-	promptRegistry := prompts.NewPromptioRegistry("./prompts")
+	// Create file registry for prompts
+	promptRegistry := prompts.NewFileRegistry("./prompts")
+	_ = promptRegistry.Reload(context.Background()) // Best effort load
 
 	// Create agent
 	ag := agent.NewAgent(

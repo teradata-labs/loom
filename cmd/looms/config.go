@@ -383,29 +383,17 @@ type MCPServerConfig struct {
 
 // PromptsConfig holds configuration for PromptRegistry integration.
 type PromptsConfig struct {
-	// Source is the prompt source type: "file" (default) | "promptio-library" | "promptio-service"
+	// Source is the prompt source type: "file" (default)
 	Source string `mapstructure:"source"`
 
 	// FileDir is the directory for file-based prompts (FileRegistry)
 	FileDir string `mapstructure:"file_dir"`
-
-	// PromptioDir is the directory for promptio library integration (PromptioRegistry)
-	PromptioDir string `mapstructure:"promptio_dir"`
-
-	// ServiceEndpoint is the gRPC endpoint for PromptioServiceRegistry (future)
-	ServiceEndpoint string `mapstructure:"service_endpoint"`
-
-	// ServiceAPIKey is the API key for PromptioServiceRegistry (from keyring)
-	ServiceAPIKey string `mapstructure:"service_api_key"`
 
 	// CacheSize is the maximum number of prompts to cache
 	CacheSize int `mapstructure:"cache_size"`
 
 	// EnableReload enables hot-reload for prompts
 	EnableReload bool `mapstructure:"enable_reload"`
-
-	// ROMSource is the source for ROM content: "embedded" (default) | "promptio" (future)
-	ROMSource string `mapstructure:"rom_source"`
 }
 
 // ToolsConfig holds configuration for builtin tools.
@@ -659,14 +647,11 @@ func setDefaults() {
 	}
 
 	// Prompts defaults
-	// Use promptio-library as default (matches prompts/*.yaml format in repo)
-	// FileRegistry uses different format (--- frontmatter ---) for legacy compatibility
-	viper.SetDefault("prompts.source", "promptio-library")
+	// Use file-based registry as default
+	viper.SetDefault("prompts.source", "file")
 	viper.SetDefault("prompts.file_dir", "./prompts")
-	viper.SetDefault("prompts.promptio_dir", "./prompts")
 	viper.SetDefault("prompts.cache_size", 1000)
 	viper.SetDefault("prompts.enable_reload", true)
-	viper.SetDefault("prompts.rom_source", "embedded")
 
 	// Tools defaults
 	viper.SetDefault("tools.web_search.default_provider", "tavily")
