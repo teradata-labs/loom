@@ -107,18 +107,21 @@ jobs:
         run: |
           $installer = Get-Content packaging/windows/winget/Teradata.Loom.installer.yaml -Raw
 
-          # winget requires UPPERCASE SHA256 hashes - check for any lowercase hex letters
-          if ($installer -match 'InstallerSha256:[^\n]*[a-f]') {
-            throw "SHA256 hash must be UPPERCASE in winget manifests (found lowercase letters)"
-          }
+          # Count total InstallerSha256 lines
+          $totalHashLines = ([regex]::Matches($installer, 'InstallerSha256:')).Count
 
           # Check for valid UPPERCASE hex hashes (64 chars)
-          $hashes = [regex]::Matches($installer, 'InstallerSha256:\s+([A-F0-9]{64})')
-          if ($hashes.Count -lt 2) {
-            throw "Expected 2 SHA256 hashes in installer manifest, found $($hashes.Count)"
+          $validHashes = [regex]::Matches($installer, 'InstallerSha256:\s+([A-F0-9]{64})')
+
+          if ($validHashes.Count -eq 0) {
+            throw "No valid SHA256 hashes found in installer manifest"
           }
 
-          Write-Host "✓ All SHA256 hashes are properly formatted (UPPERCASE)"
+          if ($validHashes.Count -ne $totalHashLines) {
+            throw "Found $totalHashLines InstallerSha256 entries but only $($validHashes.Count) are valid UPPERCASE 64-char hex strings. All hashes must be UPPERCASE."
+          }
+
+          Write-Host "✓ All $($validHashes.Count) SHA256 hashes are properly formatted (UPPERCASE, 64 characters)"
 
   validate-chocolatey:
     name: Validate Chocolatey Package
