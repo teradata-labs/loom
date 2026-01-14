@@ -1,5 +1,8 @@
 name: Build and Publish Chocolatey Package
 
+permissions:
+  contents: read
+
 on:
   # Run on release tags (v1.0.1, v1.0.2, etc.)
   push:
