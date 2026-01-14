@@ -66,11 +66,22 @@ Unlike prompt-engineering approaches, Loom uses **pattern-guided learning** wher
 
 **Fastest way to get started** - The automated installer handles everything:
 
+#### macOS / Linux
+
 ```bash
 # Clone and run quickstart
 git clone https://github.com/teradata-labs/loom
 cd loom
 ./quickstart.sh
+```
+
+#### Windows
+
+```powershell
+# Clone and run quickstart (PowerShell)
+git clone https://github.com/teradata-labs/loom
+cd loom
+.\quickstart.ps1
 ```
 
 The installer will:
@@ -80,7 +91,7 @@ The installer will:
 - ✓ Configure your LLM provider interactively
 - ✓ Set up web search API keys (optional)
 
-See [QUICKSTART.md](QUICKSTART.md) for detailed installation guide.
+See [QUICKSTART.md](QUICKSTART.md) for detailed installation guide (macOS/Linux) or [docs/installation/WINDOWS.md](docs/installation/WINDOWS.md) for Windows.
 
 ### Manual Installation
 
@@ -125,6 +136,36 @@ go install github.com/teradata-labs/loom/cmd/looms@v1.0.0
 # Note: You'll need to manually install patterns for the weaver to work
 just install-patterns
 ```
+
+### Windows Package Managers (Coming Soon)
+
+Once published, Windows users will be able to install via package managers:
+
+```powershell
+# Scoop (developer-friendly)
+scoop install loom-server
+
+# winget (Microsoft official - Windows 10/11)
+winget install Teradata.Loom
+
+# Chocolatey (most popular)
+choco install loom
+```
+
+**Current Status**: Package manifests are ready in `packaging/windows/`. See [docs/installation/WINDOWS.md](docs/installation/WINDOWS.md) for manual installation.
+
+### macOS Package Manager (Coming Soon)
+
+```bash
+# Homebrew (once tap is published)
+brew tap teradata-labs/loom
+brew install loom loom-server
+
+# Or install directly from URL
+brew install https://raw.githubusercontent.com/teradata-labs/loom/main/packaging/macos/homebrew/loom-server.rb
+```
+
+**Current Status**: Formulas are ready in `packaging/macos/homebrew/`. Use automated installer or manual build for now.
 
 ### Quick Start
 
