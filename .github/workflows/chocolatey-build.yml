@@ -1,13 +1,19 @@
-name: Build Chocolatey Package
+name: Build and Publish Chocolatey Package
 
 on:
-  workflow_dispatch:
+  # Run on release tags (v1.0.1, v1.0.2, etc.)
   push:
-    branches:
-      - chocolatey-package-build
-    paths:
-      - 'packaging/windows/chocolatey/**'
-      - '.github/workflows/chocolatey-build.yml'
+    tags:
+      - 'v*.*.*'
+
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to Chocolatey (requires API key secret)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-and-test:
@@ -147,20 +153,64 @@ jobs:
           $nupkg = Get-ChildItem -Filter "*.nupkg" | Select-Object -First 1
 
           Write-Host ""
-          Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "============================================================" -ForegroundColor Cyan
           Write-Host "  Chocolatey Package Built Successfully!" -ForegroundColor Green
-          Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "============================================================" -ForegroundColor Cyan
           Write-Host ""
           Write-Host "Package: $($nupkg.Name)"
           Write-Host "Size: $([math]::Round($nupkg.Length / 1KB, 2)) KB"
           Write-Host ""
-          Write-Host "Next Steps:" -ForegroundColor Yellow
-          Write-Host "  1. Download the artifact from this workflow run"
-          Write-Host "  2. Go to https://community.chocolatey.org/packages/upload"
-          Write-Host "  3. Upload the .nupkg file"
-          Write-Host "  4. Wait for human moderator review (24-72 hours)"
+
+  publish:
+    name: Publish to Chocolatey
+    needs: build-and-test
+    runs-on: windows-latest
+    # Only publish on release tags or manual trigger with publish=true
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: chocolatey-package
+
+      - name: Verify API key is configured
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrEmpty("${{ secrets.CHOCOLATEY_API_KEY }}")) {
+            throw "CHOCOLATEY_API_KEY secret is not configured. Go to Settings > Secrets > Actions to add it."
+          }
+          Write-Host "OK: API key is configured"
+
+      - name: Push to Chocolatey
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          $nupkg = Get-ChildItem -Filter "*.nupkg" | Select-Object -First 1
+
+          if (!$nupkg) {
+            throw "No .nupkg file found"
+          }
+
+          Write-Host "Publishing $($nupkg.Name) to Chocolatey..."
           Write-Host ""
-          Write-Host "Or push via command line:" -ForegroundColor Yellow
-          Write-Host "  choco apikey --key YOUR-API-KEY --source https://push.chocolatey.org/"
-          Write-Host "  choco push $($nupkg.Name) --source https://push.chocolatey.org/"
+
+          # Set API key
+          choco apikey --key $env:CHOCO_API_KEY --source https://push.chocolatey.org/
+
+          # Push package
+          choco push $nupkg.Name --source https://push.chocolatey.org/
+
+          Write-Host ""
+          Write-Host "============================================================" -ForegroundColor Green
+          Write-Host "  Package submitted to Chocolatey!" -ForegroundColor Green
+          Write-Host "============================================================" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "Next steps:" -ForegroundColor Yellow
+          Write-Host "  1. Human moderators will review (24-72 hours)"
+          Write-Host "  2. They may leave comments/feedback"
+          Write-Host "  3. Once approved, users can: choco install loom"
+          Write-Host ""
+          Write-Host "Track status at:" -ForegroundColor Cyan
+          Write-Host "  https://community.chocolatey.org/packages/loom"
           Write-Host ""

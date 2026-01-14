@@ -1,16 +1,21 @@
 name: Validate Package Manifests
 
 on:
+  # Validate on pull requests
   pull_request:
     paths:
       - 'packaging/**'
       - '.github/workflows/validate-packages.yml'
+
+  # Validate on pushes to main (but not release tags)
   push:
     branches:
       - main
     paths:
       - 'packaging/**'
       - '.github/workflows/validate-packages.yml'
+    tags-ignore:
+      - 'v*'
 
 jobs:
   validate-scoop:
