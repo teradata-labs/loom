@@ -131,7 +131,7 @@ type DockerConfig struct {
 
 // TUIConfig holds terminal UI client configuration.
 type TUIConfig struct {
-	// ServerAddr is the default server address to connect to (default: localhost:9090)
+	// ServerAddr is the default server address to connect to (default: localhost:60051)
 	ServerAddr string `mapstructure:"server_addr"`
 
 	// HTTPAddr is the HTTP server address for SSE streaming (default: localhost:8080)
@@ -605,7 +605,7 @@ func LoadConfig(cfgFile string) (*Config, error) {
 // setDefaults sets default configuration values.
 func setDefaults() {
 	// Server defaults
-	viper.SetDefault("server.port", 9090)
+	viper.SetDefault("server.port", 60051)
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.enable_reflection", true)
 
@@ -710,7 +710,7 @@ func setDefaults() {
 	// Socket paths are detected at runtime if not configured
 
 	// TUI defaults
-	viper.SetDefault("tui.server_addr", "localhost:9090")
+	viper.SetDefault("tui.server_addr", "localhost:60051")
 	viper.SetDefault("tui.http_addr", "localhost:5006")
 	viper.SetDefault("tui.theme", "auto")
 
@@ -1037,7 +1037,7 @@ func GenerateExampleConfig() string {
 # Priority: CLI flags > config file > environment variables > defaults
 
 server:
-  port: 9090
+  port: 60051
   host: 0.0.0.0
   enable_reflection: true
 

@@ -2,7 +2,7 @@
 # This demonstrates secure CORS settings for production environments
 
 server:
-  port: 9090
+  port: 60051
   host: "0.0.0.0"
   http_port: 5006  # HTTP/REST+SSE+Swagger UI port
 
