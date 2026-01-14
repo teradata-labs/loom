@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.human
+---
 prompts:
   - id: contact_human
     content: |

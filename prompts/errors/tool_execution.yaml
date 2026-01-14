@@ -1,5 +1,7 @@
+---
 name: errors
 namespace: loom.tool_execution
+---
 prompts:
   - id: timeout
     content: |

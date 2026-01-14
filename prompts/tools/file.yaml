@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.file
+---
 prompts:
   - id: file_read
     content: |

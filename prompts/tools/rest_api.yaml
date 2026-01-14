@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.rest_api
+---
 prompts:
   - id: http_request
     content: |

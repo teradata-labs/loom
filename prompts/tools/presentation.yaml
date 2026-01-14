@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.presentation
+---
 prompts:
   - id: top_n_query
     content: |

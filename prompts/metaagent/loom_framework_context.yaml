@@ -1,5 +1,7 @@
+---
 name: metaagent_loom_context
 namespace: loom
+---
 prompts:
   # Shared Loom framework context for all weaver sub-agents
   - id: framework_overview

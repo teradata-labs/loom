@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.communication
+---
 prompts:
   - id: send_message
     content: |

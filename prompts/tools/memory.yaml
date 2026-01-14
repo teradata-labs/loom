@@ -1,5 +1,7 @@
+---
 name: memory_tools
 namespace: loom
+---
 prompts:
   - id: recall_conversation_description
     content: |

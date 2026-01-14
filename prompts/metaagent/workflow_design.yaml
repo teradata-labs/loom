@@ -1,5 +1,7 @@
+---
 name: metaagent_workflow_design
 namespace: loom
+---
 prompts:
   - id: design_workflow
     content: |

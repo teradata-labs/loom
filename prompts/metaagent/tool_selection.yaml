@@ -1,5 +1,7 @@
+---
 name: metaagent_tool_selection
 namespace: loom
+---
 prompts:
   - id: select_tools
     content: |

@@ -1,5 +1,7 @@
+---
 name: metaagent_prompt_generation
 namespace: loom
+---
 prompts:
   - id: system_prompt_generation
     content: |

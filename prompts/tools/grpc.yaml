@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.grpc
+---
 prompts:
   - id: grpc_call
     content: |

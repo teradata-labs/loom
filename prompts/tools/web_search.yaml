@@ -1,5 +1,7 @@
+---
 name: tools
 namespace: loom.web
+---
 prompts:
   - id: web_search
     content: |

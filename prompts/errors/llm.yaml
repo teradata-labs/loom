@@ -1,5 +1,7 @@
+---
 name: errors
 namespace: loom.llm
+---
 prompts:
   - id: rate_limit
     content: |

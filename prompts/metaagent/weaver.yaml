@@ -1,5 +1,7 @@
+---
 name: metaagent_weaver
 namespace: loom
+---
 prompts:
   - id: agent_system_prompt
     content: |

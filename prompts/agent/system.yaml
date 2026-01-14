@@ -1,5 +1,7 @@
+---
 name: agent
 namespace: loom
+---
 prompts:
   - id: system
     content: |

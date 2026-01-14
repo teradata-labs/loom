@@ -1,5 +1,7 @@
+---
 name: metaagent_anti_patterns
 namespace: loom
+---
 prompts:
   # Anti-patterns for prompt validation - stored as data, loaded as list
   - id: role_prompting_patterns

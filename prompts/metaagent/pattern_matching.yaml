@@ -1,5 +1,7 @@
+---
 name: metaagent_pattern_matching
 namespace: loom
+---
 prompts:
   - id: select_patterns
     content: |

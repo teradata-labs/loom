@@ -1,5 +1,7 @@
+---
 name: errors
 namespace: loom.validation
+---
 prompts:
   - id: mcp_server_name_required
     content: |

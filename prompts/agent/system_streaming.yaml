@@ -1,5 +1,7 @@
+---
 name: agent
 namespace: loom
+---
 prompts:
   - id: system_with_streaming
     content: |

@@ -1,5 +1,7 @@
+---
 name: metaagent_analysis
 namespace: loom
+---
 prompts:
   - id: deep_analysis
     content: |
