@@ -188,11 +188,49 @@ Write-Host ""
 
 Push-Location $ScriptDir
 try {
-    # Build using just
-    & just build
+    # Generate proto files
+    Write-Info "Generating proto files..."
+    & buf generate
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "buf generate failed"
+        exit 1
+    }
 
+    # Generate weaver.yaml from template
+    Write-Info "Generating weaver.yaml from template..."
+    & go run ./cmd/generate-weaver
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to generate weaver.yaml"
+        exit 1
+    }
+
+    # Create bin directory
+    New-Item -ItemType Directory -Force -Path "$ScriptDir\bin" | Out-Null
+
+    # Build looms server
+    Write-Info "Building Loom server (looms.exe)..."
+    $env:GOWORK = "off"
+    & go build -tags fts5 -o "$ScriptDir\bin\looms.exe" ./cmd/looms
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to build looms.exe"
+        exit 1
+    }
+
+    # Build loom TUI client
+    Write-Info "Building Loom TUI client (loom.exe)..."
+    & go build -tags fts5 -o "$ScriptDir\bin\loom.exe" ./cmd/loom
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to build loom.exe"
+        exit 1
+    }
+
+    # Verify binaries exist
     if (-not (Test-Path "$ScriptDir\bin\looms.exe")) {
         Write-Error "Build failed - bin\looms.exe not found"
+        exit 1
+    }
+    if (-not (Test-Path "$ScriptDir\bin\loom.exe")) {
+        Write-Error "Build failed - bin\loom.exe not found"
         exit 1
     }
 
