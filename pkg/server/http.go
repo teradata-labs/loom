@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -20,16 +21,46 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// CORSConfig holds CORS configuration
+type CORSConfig struct {
+	Enabled          bool
+	AllowedOrigins   []string
+	AllowedMethods   []string
+	AllowedHeaders   []string
+	ExposedHeaders   []string
+	AllowCredentials bool
+	MaxAge           int
+}
+
+// DefaultCORSConfig returns a permissive CORS configuration
+func DefaultCORSConfig() CORSConfig {
+	return CORSConfig{
+		Enabled:          true,
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+		AllowedHeaders:   []string{"*"},
+		ExposedHeaders:   []string{"Content-Length", "Content-Type"},
+		AllowCredentials: false,
+		MaxAge:           86400, // 24 hours
+	}
+}
+
 // HTTPServer wraps gRPC server with HTTP/REST+SSE endpoints
 type HTTPServer struct {
 	grpcServer *MultiAgentServer
 	httpServer *http.Server
 	logger     *zap.Logger
 	grpcAddr   string
+	corsConfig CORSConfig
 }
 
 // NewHTTPServer creates an HTTP server that proxies to gRPC
 func NewHTTPServer(grpcServer *MultiAgentServer, httpAddr, grpcAddr string, logger *zap.Logger) *HTTPServer {
+	return NewHTTPServerWithCORS(grpcServer, httpAddr, grpcAddr, logger, DefaultCORSConfig())
+}
+
+// NewHTTPServerWithCORS creates an HTTP server with custom CORS configuration
+func NewHTTPServerWithCORS(grpcServer *MultiAgentServer, httpAddr, grpcAddr string, logger *zap.Logger, corsConfig CORSConfig) *HTTPServer {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -38,6 +69,7 @@ func NewHTTPServer(grpcServer *MultiAgentServer, httpAddr, grpcAddr string, logg
 		grpcServer: grpcServer,
 		logger:     logger,
 		grpcAddr:   grpcAddr,
+		corsConfig: corsConfig,
 		httpServer: &http.Server{
 			Addr:         httpAddr,
 			ReadTimeout:  30 * time.Second,
@@ -70,13 +102,24 @@ func (h *HTTPServer) Start(ctx context.Context) error {
 		_, _ = w.Write([]byte(`{"status":"healthy"}`))
 	})
 
+	// Swagger UI endpoint
+	rootMux.HandleFunc("/swagger-ui", h.handleSwaggerUI)
+	rootMux.HandleFunc("/swagger-ui/", h.handleSwaggerUI)
+	rootMux.HandleFunc("/openapi.json", h.handleOpenAPISpec)
+
 	// SSE endpoint for streaming (custom handler)
 	rootMux.HandleFunc("/v1/weave:stream", h.handleStreamWeaveSSE)
 
 	// All other endpoints use grpc-gateway
 	rootMux.Handle("/", mux)
 
-	h.httpServer.Handler = rootMux
+	// Wrap with CORS middleware if enabled
+	var handler http.Handler = rootMux
+	if h.corsConfig.Enabled {
+		handler = h.corsMiddleware(rootMux)
+	}
+
+	h.httpServer.Handler = handler
 
 	// Start server
 	h.logger.Info("Starting HTTP server", zap.String("addr", h.httpServer.Addr))
@@ -91,6 +134,152 @@ func (h *HTTPServer) Start(ctx context.Context) error {
 func (h *HTTPServer) Stop(ctx context.Context) error {
 	h.logger.Info("Stopping HTTP server")
 	return h.httpServer.Shutdown(ctx)
+}
+
+// corsMiddleware adds CORS headers to HTTP responses
+func (h *HTTPServer) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+
+		// Check if origin is allowed
+		allowedOrigin := h.getAllowedOrigin(origin)
+		if allowedOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		}
+
+		// Set other CORS headers
+		if h.corsConfig.AllowCredentials {
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		if len(h.corsConfig.AllowedMethods) > 0 {
+			methods := ""
+			for i, method := range h.corsConfig.AllowedMethods {
+				if i > 0 {
+					methods += ", "
+				}
+				methods += method
+			}
+			w.Header().Set("Access-Control-Allow-Methods", methods)
+		}
+
+		if len(h.corsConfig.AllowedHeaders) > 0 {
+			headers := ""
+			for i, header := range h.corsConfig.AllowedHeaders {
+				if i > 0 {
+					headers += ", "
+				}
+				headers += header
+			}
+			w.Header().Set("Access-Control-Allow-Headers", headers)
+		}
+
+		if len(h.corsConfig.ExposedHeaders) > 0 {
+			headers := ""
+			for i, header := range h.corsConfig.ExposedHeaders {
+				if i > 0 {
+					headers += ", "
+				}
+				headers += header
+			}
+			w.Header().Set("Access-Control-Expose-Headers", headers)
+		}
+
+		if h.corsConfig.MaxAge > 0 {
+			w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", h.corsConfig.MaxAge))
+		}
+
+		// Handle preflight OPTIONS requests
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Call next handler
+		next.ServeHTTP(w, r)
+	})
+}
+
+// getAllowedOrigin checks if the origin is allowed and returns it, or empty string if not
+func (h *HTTPServer) getAllowedOrigin(origin string) string {
+	if origin == "" {
+		return ""
+	}
+
+	// Check if wildcard is allowed
+	for _, allowed := range h.corsConfig.AllowedOrigins {
+		if allowed == "*" {
+			return "*"
+		}
+		if allowed == origin {
+			return origin
+		}
+	}
+
+	return ""
+}
+
+// handleSwaggerUI serves the Swagger UI interface
+func (h *HTTPServer) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
+	html := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Loom API Documentation</title>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
+    <style>
+        html { box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }
+        *, *:before, *:after { box-sizing: inherit; }
+        body { margin: 0; padding: 0; }
+    </style>
+</head>
+<body>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+    <script>
+        window.onload = function() {
+            const ui = SwaggerUIBundle({
+                url: "/openapi.json",
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                plugins: [
+                    SwaggerUIBundle.plugins.DownloadUrl
+                ],
+                layout: "StandaloneLayout"
+            });
+            window.ui = ui;
+        };
+    </script>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(html))
+}
+
+// handleOpenAPISpec serves the OpenAPI specification
+func (h *HTTPServer) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	// Serve the main loom.swagger.json file
+	// In a production setup, this could be embedded or read from disk
+	specPath := "gen/openapiv2/loom/v1/loom.swagger.json"
+
+	// Try to read the spec file
+	spec, err := os.ReadFile(specPath)
+	if err != nil {
+		h.logger.Error("Failed to read OpenAPI spec", zap.Error(err))
+		http.Error(w, "OpenAPI spec not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(spec)
 }
 
 // handleStreamWeaveSSE handles SSE streaming for /v1/weave:stream

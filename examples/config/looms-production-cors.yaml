@@ -1,0 +1,70 @@
+# Example production CORS configuration for Loom Server
+# This demonstrates secure CORS settings for production environments
+
+server:
+  port: 9090
+  host: "0.0.0.0"
+  http_port: 8080
+
+  # Secure CORS configuration for production
+  cors:
+    enabled: true
+
+    # CRITICAL: Specify exact allowed origins - NEVER use ["*"] in production!
+    # Only list the domains that should be able to access your API
+    allowed_origins:
+      - "https://yourdomain.com"
+      - "https://app.yourdomain.com"
+      - "https://www.yourdomain.com"
+
+    # Restrict methods to only what's needed
+    allowed_methods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+
+    # Restrict headers to only what's needed
+    # Common headers for authenticated APIs:
+    allowed_headers:
+      - "Content-Type"
+      - "Authorization"
+      - "X-Request-ID"
+
+    # Headers to expose in responses
+    exposed_headers:
+      - "Content-Length"
+      - "Content-Type"
+      - "X-Request-ID"
+
+    # Enable credentials if using cookies or Authorization headers
+    # NOTE: This REQUIRES specific origins (cannot use wildcard)
+    allow_credentials: true
+
+    # Preflight cache duration (24 hours)
+    max_age: 86400
+
+# TLS is recommended for production
+  tls:
+    enabled: true
+    mode: "letsencrypt"  # or "manual" with your own certs
+    letsencrypt:
+      domains:
+        - "api.yourdomain.com"
+      email: "admin@yourdomain.com"
+      staging: false
+
+# Other production settings...
+observability:
+  enabled: true
+  hawk_endpoint: "https://hawk.yourdomain.com"
+
+logging:
+  level: "info"
+  format: "json"
+
+tools:
+  permissions:
+    yolo: false  # Require approval in production
+    require_approval: true

@@ -149,6 +149,24 @@ type ServerConfig struct {
 	EnableReflection bool                `mapstructure:"enable_reflection"`
 	TLS              TLSConfig           `mapstructure:"tls"`
 	Clarification    ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
+	CORS             CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
+}
+
+// CORSServerConfig holds CORS configuration for HTTP endpoints.
+//
+// SECURITY WARNING: The default configuration uses wildcard origins (["*"]) which is
+// ONLY appropriate for development environments or purely public APIs. For production:
+//   - Set allowed_origins to specific domains: ["https://yourdomain.com"]
+//   - NEVER use ["*"] with allow_credentials: true (browser will reject it)
+//   - Consider using environment-based configuration
+type CORSServerConfig struct {
+	Enabled          bool     `mapstructure:"enabled"`           // Enable CORS (default: true)
+	AllowedOrigins   []string `mapstructure:"allowed_origins"`   // Allowed origins (default: ["*"] - INSECURE for production!)
+	AllowedMethods   []string `mapstructure:"allowed_methods"`   // Allowed HTTP methods (default: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
+	AllowedHeaders   []string `mapstructure:"allowed_headers"`   // Allowed headers (default: ["*"])
+	ExposedHeaders   []string `mapstructure:"exposed_headers"`   // Exposed headers (default: ["Content-Length", "Content-Type"])
+	AllowCredentials bool     `mapstructure:"allow_credentials"` // Allow credentials (default: false - cannot be true with wildcard origins)
+	MaxAge           int      `mapstructure:"max_age"`           // Max age in seconds for preflight cache (default: 86400)
 }
 
 // ClarificationConfig holds configuration for clarification question timeouts
@@ -594,6 +612,17 @@ func setDefaults() {
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
 	viper.SetDefault("server.clarification.channel_send_timeout_ms", 100)
+
+	// CORS defaults (permissive for development, MUST be configured for production)
+	// SECURITY WARNING: Defaults to wildcard origins for best DX - change in production!
+	// Set LOOM_CORS_ORIGINS env var or server.cors.allowed_origins in config for production.
+	viper.SetDefault("server.cors.enabled", true)
+	viper.SetDefault("server.cors.allowed_origins", []string{"*"}) // INSECURE for production!
+	viper.SetDefault("server.cors.allowed_methods", []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"})
+	viper.SetDefault("server.cors.allowed_headers", []string{"*"})
+	viper.SetDefault("server.cors.exposed_headers", []string{"Content-Length", "Content-Type"})
+	viper.SetDefault("server.cors.allow_credentials", false) // MUST be false with wildcard origins
+	viper.SetDefault("server.cors.max_age", 86400)           // 24 hours
 
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")

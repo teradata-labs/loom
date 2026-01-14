@@ -1937,7 +1937,46 @@ func runServe(cmd *cobra.Command, args []string) {
 	var httpSrv *server.HTTPServer
 	if config.Server.HTTPPort > 0 {
 		httpAddr := fmt.Sprintf("%s:%d", config.Server.Host, config.Server.HTTPPort)
-		httpSrv = server.NewHTTPServer(loomService, httpAddr, addr, logger)
+
+		// Convert config CORS settings to server CORS config
+		corsConfig := server.CORSConfig{
+			Enabled:          config.Server.CORS.Enabled,
+			AllowedOrigins:   config.Server.CORS.AllowedOrigins,
+			AllowedMethods:   config.Server.CORS.AllowedMethods,
+			AllowedHeaders:   config.Server.CORS.AllowedHeaders,
+			ExposedHeaders:   config.Server.CORS.ExposedHeaders,
+			AllowCredentials: config.Server.CORS.AllowCredentials,
+			MaxAge:           config.Server.CORS.MaxAge,
+		}
+
+		// Validate CORS configuration
+		if corsConfig.Enabled {
+			hasWildcard := false
+			for _, origin := range corsConfig.AllowedOrigins {
+				if origin == "*" {
+					hasWildcard = true
+					break
+				}
+			}
+
+			// Security validation: wildcard + credentials is invalid
+			if hasWildcard && corsConfig.AllowCredentials {
+				logger.Fatal("CORS configuration error: cannot use wildcard origins with allow_credentials=true",
+					zap.Strings("allowed_origins", corsConfig.AllowedOrigins),
+					zap.Bool("allow_credentials", corsConfig.AllowCredentials))
+			}
+
+			// Security warning for production
+			if hasWildcard {
+				logger.Warn("CORS configured with wildcard origins - this is INSECURE for production!",
+					zap.String("recommendation", "Set server.cors.allowed_origins to specific domains in production"))
+			} else {
+				logger.Info("CORS enabled with restricted origins",
+					zap.Strings("allowed_origins", corsConfig.AllowedOrigins))
+			}
+		}
+
+		httpSrv = server.NewHTTPServerWithCORS(loomService, httpAddr, addr, logger, corsConfig)
 
 		go func() {
 			logger.Info("Starting HTTP/SSE server", zap.String("address", httpAddr))
