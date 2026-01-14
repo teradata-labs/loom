@@ -75,7 +75,7 @@ jobs:
             go build -tags fts5,standalone -o ./bin/loom-standalone ./cmd/loom-standalone
             ```
 
-            **Note**: Binaries are built without optional dependencies (Hawk/Promptio). To build with all features, use `-tags "fts5,hawk,promptio"` instead.
+            **Note**: Binaries are built without optional dependencies (Hawk). To build with all features, use `-tags "fts5,hawk"` instead.
 
             ## Features
 

@@ -79,11 +79,6 @@ func NewJudge(cfg *Config) (*Judge, error) {
 		provider: cfg.Provider,
 	}
 
-	// Initialize promptio manager if available (only with -tags promptio)
-	if err := j.initPromptManager(cfg.PromptsFS); err != nil {
-		return nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
-	}
-
 	return j, nil
 }
 
@@ -117,20 +112,8 @@ func (j *Judge) Judge(ctx context.Context, evidence *Evidence) (*Verdict, error)
 }
 
 // buildJudgePrompt constructs the evaluation prompt
-// Uses promptio templates when built with -tags promptio, otherwise uses hardcoded prompt
+// Uses hardcoded prompt template
 func (j *Judge) buildJudgePrompt(evidence *Evidence) string {
-	// Try promptio rendering (only available with -tags promptio)
-	content, err := j.tryPromptioRender("judge.eval_run", map[string]interface{}{
-		"query":             evidence.Query,
-		"success":           evidence.Success,
-		"response":          evidence.Response,
-		"error_message":     evidence.ErrorMessage,
-		"execution_time_ms": evidence.ExecutionTime,
-		"model":             evidence.Model,
-	})
-	if err == nil {
-		return content
-	}
 
 	// Fall back to hardcoded prompt (always available)
 	return j.buildJudgePromptHardcoded(evidence)

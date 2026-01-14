@@ -9,6 +9,8 @@ A Go framework for building autonomous LLM agent threads with **natural language
 
 **Version**: v1.0.0
 
+> **Note**: Loom is in active development. Expect frequent updates, new features, and improvements. The API is stabilizing but may have minor changes as we refine the framework based on user feedback.
+
 **Quality Metrics** (verified 2026-01-08):
 - 2252+ test functions across 244 test files
 - 73 packages with test coverage
@@ -477,11 +479,10 @@ See [Architecture Guide](docs/architecture/) for detailed design.
 
 ## Related Projects
 
-**Optional Integrations** (build with `-tags hawk,promptio`):
+**Optional Integrations** (build with `-tags hawk`):
 - **[Hawk](https://github.com/teradata-labs/hawk)** - Evaluation platform for LLM agents with metrics and analytics
-- **[Promptio](https://github.com/teradata-labs/promptio)** - Version-controlled prompt management
 
-> **Note**: Hawk and Promptio are optional dependencies behind build tags. Loom works fully without them.
+> **Note**: Hawk is an optional dependency behind a build tag. Loom works fully without it.
 
 ---
 

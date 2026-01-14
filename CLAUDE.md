@@ -13,7 +13,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 2. **Proto is law**: All APIs defined in proto first, then implementation follows
 3. **Race detector always**: Run `go test -tags fts5 -race ./...` before every commit
 4. **Observability by design**: Every operation traced to hawk
-5. **Patterns not prompts**: Domain knowledge in YAML, loaded from promptio
+5. **Patterns not prompts**: Domain knowledge in YAML files
 6. **Pluggable backends**: SQL databases, REST APIs, documents - all via ExecutionBackend interface
 7. **Honesty in documentation**: Verify features exist before documenting them. No marketing speak.
 8. **No role prompting**: Never use "You are a [role]..." or "As a [role]..." in prompts. Be direct and task-oriented. Bad: "You are a SQL expert. Analyze this query." Good: "Analyze this SQL query for performance issues."
@@ -44,7 +44,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
    - 📋 Planned (not yet started)
 3. **Separate Implemented vs Planned**: Never mix completed and planned features in same section
 4. **Include version context**: README has "Version: v0.1.0 Alpha" badge
-5. **Note dependencies**: Document internal dependencies (Hawk, Promptio) clearly
+5. **Note dependencies**: Document internal dependencies (Hawk) clearly
 6. **Specify limitations**: "File backend supported; SQL/API coming soon" not "all backends supported"
 
 **GOOD EXAMPLES:**
@@ -57,13 +57,13 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 - ❌ "Hot reload - patterns and prompts reload automatically" (only agent config works)
 - ❌ "One-command scaffolding for all backends" (only file backend works)
 - ❌ "Comprehensive pattern library" (library is empty)
-- ❌ "Zero external dependencies" (requires Hawk/Promptio)
+- ❌ "Zero external dependencies" (Hawk is optional)
 
 ### README.md Structure Requirements
 
 **The README.md MUST maintain:**
 1. Version badge at top: `**Version:** v0.2.0`
-2. Dependency note about Hawk/Promptio requirement
+2. Dependency note about Hawk (optional dependency)
 3. Features split into "✅ Implemented" and "📋 Planned" sections
 4. Accurate LLM provider info (Anthropic, Bedrock, Ollama implemented; Azure/Vertex AI planned)
 5. Accurate feature claims verified against codebase
@@ -139,7 +139,7 @@ buf format -w       # Format proto files
 
 ### Code
 1. ❌ **Don't skip race detector** - Always use `-race` flag
-2. ❌ **Don't hardcode prompts** - Use promptio registry
+2. ❌ **Don't hardcode prompts** - Use FileRegistry for prompt management
 3. ❌ **Don't skip tracing** - Instrument all LLM calls and tool executions
 4. ❌ **Don't change proto without buf lint** - Keep it clean
 5. ❌ **Don't break backwards compatibility** - Use `buf breaking`
@@ -164,7 +164,7 @@ cmd/                 # Binaries (loom, loom-server, loom-mcp)
 
 ### Naming Conventions
 - Interfaces: `ExecutionBackend`, `Tracer`, `PromptRegistry`
-- Implementations: `HawkTracer`, `PromptioRegistry`, `TeradataBackend`
+- Implementations: `HawkTracer`, `FileRegistry`, `TeradataBackend`
 - Tests: `*_test.go` with table-driven patterns
 
 ### Imports
@@ -213,7 +213,7 @@ go test -race -count=50 ./pkg/agent  # Extensive testing
 - `website/content/en/docs/concepts/architecture.md` - System design deep dive
 - `website/content/en/docs/development/TODO.md` - Implementation checklist
 - `website/content/en/docs/guides/integration/observability.md` - Hawk integration details
-- `website/content/en/docs/guides/integration/prompt-management.md` - Promptio integration details
+- `website/content/en/docs/guides/integration/prompt-management.md` - Prompt management with FileRegistry
 - `website/content/en/docs/guides/llm-providers/` - LLM provider guides
 
 **IMPORTANT**: Always edit documentation in `website/content/en/docs/`
@@ -222,7 +222,7 @@ go test -race -count=50 ./pkg/agent  # Extensive testing
 1. Does this need a proto definition first?
 2. Will this code run concurrently? (If yes, use -race)
 3. Should this be traced to hawk?
-4. Should this use a prompt from promptio?
+4. Should this use a prompt from FileRegistry?
 5. Is this backend-specific or framework-generic?
 
 ---

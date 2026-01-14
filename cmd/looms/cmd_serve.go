@@ -130,15 +130,8 @@ func createPromptRegistry(config *Config, logger *zap.Logger) (prompts.PromptReg
 		}
 		return registry, nil
 
-	case "promptio-library":
-		logger.Info("Using PromptioRegistry for prompts", zap.String("dir", config.Prompts.PromptioDir))
-		return prompts.NewPromptioRegistry(config.Prompts.PromptioDir), nil
-
-	case "promptio-service":
-		return nil, fmt.Errorf("PromptioServiceRegistry not yet implemented (planned for v0.8.0)")
-
 	default:
-		return nil, fmt.Errorf("unknown prompts.source: %s (must be 'file', 'promptio-library', or 'promptio-service')", config.Prompts.Source)
+		return nil, fmt.Errorf("unknown prompts.source: %s (must be 'file')", config.Prompts.Source)
 	}
 }
 

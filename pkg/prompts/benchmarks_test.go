@@ -71,48 +71,6 @@ prompts:
 	}
 }
 
-// BenchmarkPromptioRegistry_Get measures prompt loading from PromptioRegistry
-func BenchmarkPromptioRegistry_Get(b *testing.B) {
-	// Create test directory
-	tempDir := b.TempDir()
-	promptsDir := filepath.Join(tempDir, "prompts", "agent")
-	if err := os.MkdirAll(promptsDir, 0755); err != nil {
-		b.Fatalf("Failed to create test directory: %v", err)
-	}
-
-	// Write test prompt
-	promptContent := `name: agent
-namespace: loom
-prompts:
-  - id: system
-    content: |
-      Help users with {{.backend_type}}.
-    variables:
-      backend_type:
-        type: 1
-        required: true
-    tags:
-      - agent
-`
-	if err := os.WriteFile(filepath.Join(promptsDir, "system.yaml"), []byte(promptContent), 0644); err != nil {
-		b.Fatalf("Failed to write test prompt: %v", err)
-	}
-
-	registry := NewPromptioRegistry(filepath.Join(tempDir, "prompts"))
-
-	vars := map[string]interface{}{
-		"backend_type": "teradata",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := registry.Get(context.Background(), "agent.system", vars)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 // BenchmarkFileRegistry_GetWithVariant measures variant loading performance
 func BenchmarkFileRegistry_GetWithVariant(b *testing.B) {
 	// Create test directory

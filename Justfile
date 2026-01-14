@@ -109,31 +109,23 @@ build-hawk: proto
     GOWORK=off go build -tags fts5,hawk -o bin/loom-hawk ./cmd/loom
     @echo "✅ Hawk-enabled binaries: bin/looms-hawk, bin/loom-hawk"
 
-# Build with Promptio support (prompt management)
-build-promptio: proto
-    @echo "Building Loom with Promptio support..."
-    @mkdir -p bin
-    GOWORK=off go build -tags fts5,promptio -o bin/looms-promptio ./cmd/looms
-    GOWORK=off go build -tags fts5,promptio -o bin/loom-promptio ./cmd/loom
-    @echo "✅ Promptio-enabled binaries: bin/looms-promptio, bin/loom-promptio"
-
-# Build with all features (Promptio - judge is now built-in)
+# Build with all features (judge is now built-in)
 build-full: proto
-    @echo "Building Loom with all features (built-in judge + Promptio)..."
+    @echo "Building Loom with all features (built-in judge)..."
     @mkdir -p bin
-    GOWORK=off go build -tags fts5,promptio -o bin/looms-full ./cmd/looms
-    GOWORK=off go build -tags fts5,promptio -o bin/loom-full ./cmd/loom
+    GOWORK=off go build -tags fts5 -o bin/looms-full ./cmd/looms
+    GOWORK=off go build -tags fts5 -o bin/loom-full ./cmd/loom
     @echo "✅ Full-featured binaries: bin/looms-full, bin/loom-full"
     @echo "Note: Judge functionality is now built-in (no longer requires Hawk)"
 
-# Build minimal (no Promptio) - default - judge still included
+# Build minimal - default - judge still included
 build-minimal: proto
-    @echo "Building Loom (built-in judge, no Promptio)..."
+    @echo "Building Loom (built-in judge)..."
     @mkdir -p bin
     GOWORK=off go build -tags fts5 -o bin/looms-minimal ./cmd/looms
     GOWORK=off go build -tags fts5 -o bin/loom-minimal ./cmd/loom
     @echo "✅ Minimal binaries: bin/looms-minimal, bin/loom-minimal"
-    @echo "Note: Judge functionality is built-in (uses hardcoded prompts without Promptio)"
+    @echo "Note: Judge functionality is built-in"
     @echo "This binary includes both server and TUI - no separate server needed!"
 
 # Install patterns to $LOOM_DATA_DIR/patterns (defaults to ~/.loom/patterns)

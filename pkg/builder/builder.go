@@ -48,8 +48,8 @@ type AgentBuilder struct {
 
 	// Prompts configuration (priority: promptsRegistry > promptsSource > promptsDir)
 	promptsRegistry prompts.PromptRegistry // Direct registry injection (highest priority)
-	promptsSource   string                 // "file" | "promptio"
-	promptsDir      string                 // Directory for file/promptio loaders
+	promptsSource   string                 // "file"
+	promptsDir      string                 // Directory for file loaders
 
 	guardrails bool
 	breakers   bool
@@ -321,13 +321,6 @@ func (b *AgentBuilder) WithPromptsFile(dir string) *AgentBuilder {
 	return b
 }
 
-// WithPromptsPromptio uses PromptioRegistry for prompts (promptio library integration).
-func (b *AgentBuilder) WithPromptsPromptio(dir string) *AgentBuilder {
-	b.promptsDir = dir
-	b.promptsSource = "promptio"
-	return b
-}
-
 // WithPromptsRegistry directly injects a PromptRegistry (custom implementation).
 func (b *AgentBuilder) WithPromptsRegistry(registry prompts.PromptRegistry) *AgentBuilder {
 	b.promptsRegistry = registry
@@ -383,10 +376,6 @@ func (b *AgentBuilder) Build() (*agent.Agent, error) {
 	if b.promptsRegistry != nil {
 		// Direct registry injection (highest priority)
 		opts = append(opts, agent.WithPrompts(b.promptsRegistry))
-	} else if b.promptsSource == "promptio" {
-		// PromptioRegistry (library integration)
-		registry := prompts.NewPromptioRegistry(b.promptsDir)
-		opts = append(opts, agent.WithPrompts(registry))
 	} else if b.promptsSource == "file" || b.promptsDir != "" {
 		// FileRegistry (file-based loading)
 		registry := prompts.NewFileRegistry(b.promptsDir)
