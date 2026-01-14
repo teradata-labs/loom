@@ -1,0 +1,224 @@
+name: Publish to winget
+
+permissions:
+  contents: read
+
+on:
+  # Run on release tags
+  push:
+    tags:
+      - 'v*.*.*'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.2)'
+        required: true
+        type: string
+
+jobs:
+  submit-to-winget:
+    name: Submit PR to winget-pkgs
+    runs-on: windows-latest
+    steps:
+      - name: Checkout loom repo
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ github.event.inputs.version }}"
+          } else {
+            $version = "$env:GITHUB_REF" -replace 'refs/tags/v', ''
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Publishing version: $version"
+
+      - name: Verify release exists
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+
+          # Check if release exists
+          $release = gh release view "v$version" --repo ${{ github.repository }} --json assets 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Error: Release v$version does not exist"
+          }
+
+          # Verify binaries exist
+          $urls = @(
+            "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-amd64.exe.zip",
+            "https://github.com/${{ github.repository }}/releases/download/v$version/looms-windows-amd64.exe.zip"
+          )
+
+          foreach ($url in $urls) {
+            Write-Host "Checking $url..."
+            try {
+              $response = Invoke-WebRequest -Uri $url -Method Head -ErrorAction Stop
+            } catch {
+              throw "Error: Binary not found at $url"
+            }
+          }
+
+          Write-Host "All release binaries verified"
+
+      - name: Calculate SHA256 hashes
+        id: hashes
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+
+          # Download and hash loom
+          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-amd64.exe.zip" -OutFile loom.zip
+          $loomHash = (Get-FileHash loom.zip -Algorithm SHA256).Hash
+
+          # Download and hash looms
+          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v$version/looms-windows-amd64.exe.zip" -OutFile looms.zip
+          $loomsHash = (Get-FileHash looms.zip -Algorithm SHA256).Hash
+
+          "loom_hash=$loomHash" >> $env:GITHUB_OUTPUT
+          "looms_hash=$loomsHash" >> $env:GITHUB_OUTPUT
+
+          Write-Host "loom hash: $loomHash"
+          Write-Host "looms hash: $loomsHash"
+
+      - name: Install wingetcreate
+        shell: pwsh
+        run: |
+          Write-Host "Installing wingetcreate..."
+          Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" -OutFile wingetcreate.exe
+
+      - name: Fork and clone winget-pkgs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if fork exists, if not create it
+          $forkExists = gh repo view "${{ github.actor }}/winget-pkgs" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Forking microsoft/winget-pkgs..."
+            gh repo fork microsoft/winget-pkgs --clone=false
+            Start-Sleep -Seconds 10
+          }
+
+          # Clone the fork
+          gh repo clone "${{ github.actor }}/winget-pkgs" winget-pkgs
+          cd winget-pkgs
+
+          # Add upstream
+          git remote add upstream https://github.com/microsoft/winget-pkgs.git
+          git fetch upstream
+
+          # Sync with upstream master
+          git checkout master
+          git merge upstream/master
+          git push origin master
+
+      - name: Update manifests with wingetcreate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $loomHash = "${{ steps.hashes.outputs.loom_hash }}"
+          $loomsHash = "${{ steps.hashes.outputs.looms_hash }}"
+
+          cd winget-pkgs
+
+          # Create branch
+          $branch = "teradata-loom-$version"
+          git checkout -b $branch
+
+          # Create manifest directory
+          $manifestDir = "manifests/t/Teradata/Loom/$version"
+          New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
+
+          # Use wingetcreate to update manifests
+          ..\wingetcreate.exe update `
+            --id Teradata.Loom `
+            --version $version `
+            --urls "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-amd64.exe.zip" "https://github.com/${{ github.repository }}/releases/download/v$version/looms-windows-amd64.exe.zip" `
+            --submit `
+            --token $env:GH_TOKEN
+
+          Write-Host "✅ wingetcreate submitted PR successfully"
+
+      - name: Alternative - Manual PR creation (if wingetcreate submit fails)
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $loomHash = "${{ steps.hashes.outputs.loom_hash }}"
+          $loomsHash = "${{ steps.hashes.outputs.looms_hash }}"
+
+          cd winget-pkgs
+
+          $branch = "teradata-loom-$version"
+          git checkout -b $branch 2>$null || git checkout $branch
+
+          # Create manifests directory
+          $manifestDir = "manifests/t/Teradata/Loom/$version"
+          New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
+
+          # Copy and update manifests from packaging directory
+          Copy-Item ..\packaging\windows\winget\*.yaml $manifestDir\
+
+          # Update version in version manifest
+          $versionFile = "$manifestDir\Teradata.Loom.yaml"
+          (Get-Content $versionFile) -replace 'PackageVersion:.*', "PackageVersion: $version" | Set-Content $versionFile
+
+          # Update hashes in installer manifest
+          $installerFile = "$manifestDir\Teradata.Loom.installer.yaml"
+          $content = Get-Content $installerFile -Raw
+          $content = $content -replace 'InstallerSha256: [A-F0-9]{64}', "InstallerSha256: $loomHash", 1
+          $content = $content -replace 'InstallerSha256: [A-F0-9]{64}', "InstallerSha256: $loomsHash"
+          $content | Set-Content $installerFile
+
+          # Commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifests/
+          git commit -m "New version: Teradata.Loom version $version"
+
+          # Push to fork
+          git push origin $branch
+
+          # Create PR
+          gh pr create `
+            --repo microsoft/winget-pkgs `
+            --title "New version: Teradata.Loom version $version" `
+            --body "Updates Teradata.Loom to version $version
+
+          ## Changes
+          - Update to v$version
+          - Update SHA256 hashes for both installers
+
+          ## Verification
+          - Release: https://github.com/teradata-labs/loom/releases/tag/v$version
+          - Binaries verified and hashes calculated from official release
+
+          Automated PR from GitHub Actions.
+
+          @microsoft-github-policy-service agree" `
+            --head "${{ github.actor }}:$branch" `
+            --base master
+
+          Write-Host "✅ Manual PR created successfully"
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          Write-Host "✅ winget PR submitted successfully!"
+          Write-Host ""
+          Write-Host "Version: $version"
+          Write-Host "Check PR status at: https://github.com/microsoft/winget-pkgs/pulls"
+          Write-Host ""
+          Write-Host "Note: Microsoft's CLA bot may comment - you've already signed the CLA, so it will auto-verify."
