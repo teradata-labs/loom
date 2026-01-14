@@ -7,23 +7,17 @@ class Loom < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/teradata-labs/loom/releases/download/v1.0.1/loom-darwin-arm64.tar.gz"
-      sha256 ""  # Update with actual SHA256
+      sha256 "50f9715a2310427c4419d942dd45450ea026321a8aee462df72becb65643f46a"
     else
       url "https://github.com/teradata-labs/loom/releases/download/v1.0.1/loom-darwin-amd64.tar.gz"
-      sha256 ""  # Update with actual SHA256
+      sha256 "e4cd3476253bad48fd4cae3a4071510dccd26f98c9fbb92f118dab479bf73d9b"
     end
-  end
-
-  on_linux do
-    url "https://github.com/teradata-labs/loom/releases/download/v1.0.1/loom-linux-amd64.tar.gz"
-    sha256 ""  # Update with actual SHA256
   end
 
   def install
     # Install binary
     bin.install "loom-darwin-arm64" => "loom" if Hardware::CPU.arm?
     bin.install "loom-darwin-amd64" => "loom" if Hardware::CPU.intel?
-    bin.install "loom-linux-amd64" => "loom" if OS.linux?
 
     # Create Loom data directory
     loom_dir = "#{Dir.home}/.loom"

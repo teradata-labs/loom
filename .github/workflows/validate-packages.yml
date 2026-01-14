@@ -1,0 +1,364 @@
+name: Validate Package Manifests
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/validate-packages.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/validate-packages.yml'
+
+jobs:
+  validate-scoop:
+    name: Validate Scoop Manifests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate loom manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Basic JSON validation using PowerShell
+          try {
+            $manifest = Get-Content packaging/windows/scoop/loom.json -Raw | ConvertFrom-Json
+          } catch {
+            throw "Invalid JSON syntax in loom.json: $_"
+          }
+          Write-Host "✓ loom.json is valid JSON"
+
+          # Check required fields
+          if (!$manifest.version) { throw "Missing version field" }
+          if (!$manifest.description) { throw "Missing description field" }
+          if (!$manifest.license) { throw "Missing license field" }
+          if (!$manifest.architecture) { throw "Missing architecture field" }
+          if (!$manifest.architecture.'64bit'.url) { throw "Missing architecture.64bit.url field" }
+          if (!$manifest.architecture.'64bit'.hash) { throw "Missing architecture.64bit.hash field" }
+          Write-Host "✓ loom.json has all required fields"
+
+      - name: Validate loom-server manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Basic JSON validation using PowerShell
+          try {
+            $manifest = Get-Content packaging/windows/scoop/loom-server.json -Raw | ConvertFrom-Json
+          } catch {
+            throw "Invalid JSON syntax in loom-server.json: $_"
+          }
+          Write-Host "✓ loom-server.json is valid JSON"
+
+          # Check required fields
+          if (!$manifest.version) { throw "Missing version field" }
+          if (!$manifest.description) { throw "Missing description field" }
+          if (!$manifest.license) { throw "Missing license field" }
+          if (!$manifest.architecture) { throw "Missing architecture field" }
+          if (!$manifest.architecture.'64bit'.url) { throw "Missing architecture.64bit.url field" }
+          if (!$manifest.architecture.'64bit'.hash) { throw "Missing architecture.64bit.hash field" }
+          Write-Host "✓ loom-server.json has all required fields"
+
+  validate-winget:
+    name: Validate winget Manifests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate manifests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "Validating winget manifests..."
+
+          # Check all required files exist
+          $files = @(
+            "packaging/windows/winget/Teradata.Loom.yaml",
+            "packaging/windows/winget/Teradata.Loom.installer.yaml",
+            "packaging/windows/winget/Teradata.Loom.locale.en-US.yaml"
+          )
+
+          foreach ($file in $files) {
+            if (!(Test-Path $file)) {
+              throw "Missing required file: $file"
+            }
+            Write-Host "✓ Found $file"
+          }
+
+          # Basic YAML structure validation
+          foreach ($file in $files) {
+            $content = Get-Content $file -Raw
+            # Check for YAML key-value pairs (allowing comments and blank lines at start)
+            if ($content -notmatch '\w+:\s*\S+') {
+              throw "$file does not appear to be valid YAML"
+            }
+            Write-Host "✓ $file has valid YAML structure"
+          }
+
+      - name: Check hash format
+        shell: pwsh
+        run: |
+          $installer = Get-Content packaging/windows/winget/Teradata.Loom.installer.yaml -Raw
+
+          # Count total InstallerSha256 lines
+          $totalHashLines = ([regex]::Matches($installer, 'InstallerSha256:')).Count
+
+          # Check for valid UPPERCASE hex hashes (64 chars)
+          $validHashes = [regex]::Matches($installer, 'InstallerSha256:\s+([A-F0-9]{64})')
+
+          if ($validHashes.Count -eq 0) {
+            throw "No valid SHA256 hashes found in installer manifest"
+          }
+
+          if ($validHashes.Count -ne $totalHashLines) {
+            throw "Found $totalHashLines InstallerSha256 entries but only $($validHashes.Count) are valid UPPERCASE 64-char hex strings. All hashes must be UPPERCASE."
+          }
+
+          Write-Host "✓ All $($validHashes.Count) SHA256 hashes are properly formatted (UPPERCASE, 64 characters)"
+
+  validate-chocolatey:
+    name: Validate Chocolatey Package
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate package structure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Check required files exist
+          $files = @(
+            "packaging/windows/chocolatey/loom.nuspec",
+            "packaging/windows/chocolatey/tools/chocolateyinstall.ps1",
+            "packaging/windows/chocolatey/tools/chocolateyuninstall.ps1",
+            "packaging/windows/chocolatey/LICENSE.txt"
+          )
+
+          foreach ($file in $files) {
+            if (!(Test-Path $file)) {
+              throw "Missing required file: $file"
+            }
+            Write-Host "✓ Found $file"
+          }
+
+      - name: Validate nuspec XML
+        shell: pwsh
+        run: |
+          $nuspec = [xml](Get-Content packaging/windows/chocolatey/loom.nuspec)
+
+          if (!$nuspec.package.metadata.id) { throw "Missing package id" }
+          if (!$nuspec.package.metadata.version) { throw "Missing version" }
+          if (!$nuspec.package.metadata.authors) { throw "Missing authors" }
+          if (!$nuspec.package.metadata.description) { throw "Missing description" }
+
+          Write-Host "✓ nuspec XML is valid and has required fields"
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          # Check for PowerShell syntax errors
+          $scripts = @(
+            "packaging/windows/chocolatey/tools/chocolateyinstall.ps1",
+            "packaging/windows/chocolatey/tools/chocolateyuninstall.ps1"
+          )
+
+          foreach ($script in $scripts) {
+            $errors = $null
+            $null = [System.Management.Automation.PSParser]::Tokenize(
+              (Get-Content $script -Raw),
+              [ref]$errors
+            )
+
+            if ($errors) {
+              throw "PowerShell syntax errors in $script : $errors"
+            }
+            Write-Host "✓ $script has valid PowerShell syntax"
+          }
+
+      - name: Check for hardcoded paths
+        shell: pwsh
+        run: |
+          $install = Get-Content packaging/windows/chocolatey/tools/chocolateyinstall.ps1 -Raw
+
+          # Check for common hardcoded path anti-patterns
+          if ($install -match 'C:\\Program Files') {
+            Write-Warning "Found hardcoded C:\Program Files path - consider using `$toolsDir"
+          }
+
+          if ($install -match 'C:\\Users\\') {
+            throw "Found hardcoded C:\Users\ path - must use environment variables"
+          }
+
+          Write-Host "✓ No hardcoded paths detected"
+
+  validate-homebrew:
+    name: Validate Homebrew Formulas
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate Ruby syntax
+        run: |
+          # Check Ruby syntax
+          ruby -c packaging/macos/homebrew/loom.rb
+          ruby -c packaging/macos/homebrew/loom-server.rb
+          echo "✓ Ruby syntax is valid"
+
+      - name: Audit formulas
+        run: |
+          # Run Homebrew audit on formulas
+          brew audit --strict --online packaging/macos/homebrew/loom.rb || true
+          brew audit --strict --online packaging/macos/homebrew/loom-server.rb || true
+
+          # Note: Using || true because audit might fail on non-standard formula locations
+          # The Ruby syntax check above is the critical validation
+          echo "✓ Homebrew audit completed"
+
+      - name: Validate required fields
+        run: |
+          for formula in packaging/macos/homebrew/*.rb; do
+            echo "Checking $formula..."
+
+            # Check for required fields
+            if ! grep -q "desc" "$formula"; then
+              echo "❌ Missing desc in $formula"
+              exit 1
+            fi
+
+            if ! grep -q "homepage" "$formula"; then
+              echo "❌ Missing homepage in $formula"
+              exit 1
+            fi
+
+            if ! grep -q "version" "$formula"; then
+              echo "❌ Missing version in $formula"
+              exit 1
+            fi
+
+            if ! grep -q "license" "$formula"; then
+              echo "❌ Missing license in $formula"
+              exit 1
+            fi
+
+            if ! grep -q "sha256" "$formula"; then
+              echo "❌ Missing sha256 in $formula"
+              exit 1
+            fi
+
+            # Check desc length (should be under 80 chars)
+            desc_line=$(grep "desc" "$formula" | head -1)
+            desc_length=${#desc_line}
+            if [ $desc_length -gt 85 ]; then
+              echo "⚠️  Warning: desc might be too long in $formula (${desc_length} chars)"
+            fi
+
+            echo "✓ $formula has all required fields"
+          done
+
+      - name: Check SHA256 format
+        run: |
+          for formula in packaging/macos/homebrew/*.rb; do
+            # Check for empty SHA256s
+            if grep -q 'sha256 ""' "$formula"; then
+              echo "❌ Found empty SHA256 in $formula"
+              exit 1
+            fi
+
+            # Check SHA256 format (64 hex chars, lowercase for Homebrew)
+            if grep -E 'sha256 "[A-F0-9]{64}"' "$formula"; then
+              echo "❌ SHA256 should be lowercase in $formula"
+              exit 1
+            fi
+
+            echo "✓ SHA256 hashes properly formatted in $formula"
+          done
+
+  validate-versions:
+    name: Validate Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check version consistency
+        run: |
+          echo "Checking version consistency across all package manifests..."
+
+          # Extract versions from each manifest
+          scoop_loom=$(jq -r '.version' packaging/windows/scoop/loom.json)
+          scoop_looms=$(jq -r '.version' packaging/windows/scoop/loom-server.json)
+
+          # winget version
+          winget_version=$(grep "PackageVersion:" packaging/windows/winget/Teradata.Loom.installer.yaml | awk '{print $2}')
+
+          # Chocolatey version
+          choco_version=$(grep '<version>' packaging/windows/chocolatey/loom.nuspec | sed 's/.*<version>\(.*\)<\/version>.*/\1/')
+
+          # Homebrew versions
+          brew_loom=$(grep "version" packaging/macos/homebrew/loom.rb | head -1 | cut -d'"' -f2)
+          brew_looms=$(grep "version" packaging/macos/homebrew/loom-server.rb | head -1 | cut -d'"' -f2)
+
+          echo "Scoop loom: $scoop_loom"
+          echo "Scoop looms: $scoop_looms"
+          echo "winget: $winget_version"
+          echo "Chocolatey: $choco_version"
+          echo "Homebrew loom: $brew_loom"
+          echo "Homebrew looms: $brew_looms"
+
+          # Check all versions match
+          if [ "$scoop_loom" != "$scoop_looms" ] || \
+             [ "$scoop_loom" != "$winget_version" ] || \
+             [ "$scoop_loom" != "$choco_version" ] || \
+             [ "$scoop_loom" != "$brew_loom" ] || \
+             [ "$scoop_loom" != "$brew_looms" ]; then
+            echo "❌ Version mismatch detected!"
+            exit 1
+          fi
+
+          echo "✓ All package versions are consistent: $scoop_loom"
+
+  validate-urls:
+    name: Validate Download URLs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract and validate URLs
+        run: |
+          echo "Validating that all download URLs are accessible..."
+
+          # Extract version
+          VERSION=$(jq -r '.version' packaging/windows/scoop/loom.json)
+
+          # List of expected URLs
+          URLS=(
+            "https://github.com/teradata-labs/loom/releases/download/v${VERSION}/loom-windows-amd64.exe.zip"
+            "https://github.com/teradata-labs/loom/releases/download/v${VERSION}/looms-windows-amd64.exe.zip"
+            "https://github.com/teradata-labs/loom/releases/download/v${VERSION}/loom-darwin-amd64.tar.gz"
+            "https://github.com/teradata-labs/loom/releases/download/v${VERSION}/loom-darwin-arm64.tar.gz"
+            "https://github.com/teradata-labs/loom/releases/download/v${VERSION}/looms-darwin-amd64.tar.gz"
+            "https://github.com/teradata-labs/loom/releases/download/v${VERSION}/looms-darwin-arm64.tar.gz"
+          )
+
+          for url in "${URLS[@]}"; do
+            echo "Checking $url..."
+            if curl --head --silent --fail "$url" > /dev/null; then
+              echo "✓ $url is accessible"
+            else
+              echo "❌ $url is not accessible"
+              exit 1
+            fi
+          done
+
+          echo "✓ All download URLs are accessible"

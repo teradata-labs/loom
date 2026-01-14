@@ -8,7 +8,7 @@ $packageArgs = @{
   packageName   = $packageName
   unzipLocation = $toolsDir
   url64bit      = "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip"
-  checksum64    = ''
+  checksum64    = '2e6a7d0c6fe69dc5fd0d461c226352fed694ee0f157a3c024e0b318fc105cf0e'
   checksumType64= 'sha256'
 }
 
@@ -16,7 +16,7 @@ $packageArgs = @{
 Install-ChocolateyZipPackage @packageArgs
 
 $packageArgs['url64bit'] = "https://github.com/teradata-labs/loom/releases/download/v$version/looms-windows-amd64.exe.zip"
-$packageArgs['checksum64'] = ''
+$packageArgs['checksum64'] = '3c538793746f2255a16e3e74f2377a7ee9a7126003bfc1b5ea14d6644aed1f6f'
 
 # Download and extract looms server
 Install-ChocolateyZipPackage @packageArgs
