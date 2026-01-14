@@ -133,7 +133,7 @@ just install-patterns
 export ANTHROPIC_API_KEY="your-key"  # or configure Bedrock/Ollama/OpenAI
 
 # 2. Start the Loom server
-looms serve  # gRPC on :9090, HTTP/REST on :5006
+looms serve  # gRPC on :60051, HTTP/REST on :5006
 
 # 3. Access Swagger UI for API docs
 open http://localhost:5006/swagger-ui
