@@ -205,9 +205,10 @@ func DefaultConfig() *Config {
 func DefaultPatternConfig() *PatternConfig {
 	return &PatternConfig{
 		Enabled:            true, // Enabled by default for v1.0.0
-		MinConfidence:      0.75, // High confidence only
+		MinConfidence:      0.50, // Balanced confidence threshold (was 0.75)
 		MaxPatternsPerTurn: 1,    // Single pattern per turn
 		EnableTracking:     true, // Track effectiveness
+		UseLLMClassifier:   true, // Use LLM-based intent classifier (more accurate than keyword matching)
 	}
 }
 

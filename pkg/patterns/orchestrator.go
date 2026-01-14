@@ -229,30 +229,68 @@ func (o *Orchestrator) RecommendPattern(userMessage string, intent IntentCategor
 
 	scored := make([]scoredPattern, 0)
 
+	// Tokenize user message for better matching
+	keywords := strings.FieldsFunc(messageLower, func(r rune) bool {
+		return r == ' ' || r == ',' || r == ';' || r == '-' || r == '_'
+	})
+
+	// Filter stop words
+	stopWords := map[string]bool{
+		"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
+		"be": true, "by": true, "for": true, "from": true, "has": true, "in": true,
+		"is": true, "it": true, "of": true, "on": true, "that": true, "the": true,
+		"to": true, "was": true, "will": true, "with": true,
+	}
+
+	filteredKeywords := make([]string, 0, len(keywords))
+	for _, kw := range keywords {
+		if !stopWords[kw] && len(kw) > 2 {
+			filteredKeywords = append(filteredKeywords, kw)
+		}
+	}
+
 	for _, summary := range searchResults {
 		score := 0.0
 
-		// Boost if category matches intent
-		if matchesIntent(summary.Category, intent) {
-			score += 0.4
+		// Build searchable text
+		searchText := strings.ToLower(fmt.Sprintf("%s %s %s %s",
+			summary.Name, summary.Title, summary.Description, summary.BackendFunction))
+
+		for _, useCase := range summary.UseCases {
+			searchText += " " + strings.ToLower(useCase)
 		}
 
-		// Boost if use cases mention keywords
-		for _, useCase := range summary.UseCases {
-			if strings.Contains(strings.ToLower(useCase), messageLower) {
-				score += 0.3
-				break
+		// Boost if category matches intent (strong signal)
+		if matchesIntent(summary.Category, intent) {
+			score += 0.5
+		}
+
+		// Count keyword matches in searchable text
+		keywordMatches := 0
+		for _, keyword := range filteredKeywords {
+			if strings.Contains(searchText, keyword) {
+				keywordMatches++
 			}
 		}
 
-		// Boost if title matches keywords
-		if strings.Contains(strings.ToLower(summary.Title), messageLower) {
+		// Score based on percentage of keywords matched
+		if len(filteredKeywords) > 0 {
+			matchRate := float64(keywordMatches) / float64(len(filteredKeywords))
+			score += matchRate * 0.5 // Up to 0.5 points for keyword matching
+		}
+
+		// Bonus for exact name match
+		if strings.Contains(summary.Name, messageLower) {
 			score += 0.2
 		}
 
-		// Boost if description matches keywords
-		if strings.Contains(strings.ToLower(summary.Description), messageLower) {
-			score += 0.1
+		// Bonus for title match
+		titleLower := strings.ToLower(summary.Title)
+		for _, keyword := range filteredKeywords {
+			if strings.Contains(titleLower, keyword) {
+				score += 0.1
+				break
+			}
 		}
 
 		if score > 0 {

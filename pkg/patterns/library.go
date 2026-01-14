@@ -45,6 +45,9 @@ type Library struct {
 	// Pattern search paths within embedded FS or filesystem
 	searchPaths []string
 
+	// Path cache: pattern name -> relative path (populated during indexing)
+	pathCache map[string]string
+
 	// Observability
 	tracer observability.Tracer
 }
@@ -58,6 +61,7 @@ func NewLibrary(embeddedFS *embed.FS, patternsDir string) *Library {
 		patternCache: make(map[string]*Pattern),
 		embeddedFS:   embeddedFS,
 		patternsDir:  patternsDir,
+		pathCache:    make(map[string]string),
 		searchPaths: []string{
 			"analytics",
 			"ml",
@@ -72,6 +76,21 @@ func NewLibrary(embeddedFS *embed.FS, patternsDir string) *Library {
 			"debugging",
 			"vision",
 			"evaluation",
+			// Nested vendor directories
+			"teradata/analytics",
+			"teradata/ml",
+			"teradata/timeseries",
+			"teradata/data_quality",
+			"teradata/data_loading",
+			"teradata/data_modeling",
+			"teradata/code_migration",
+			"teradata/data_discovery",
+			"teradata/text",
+			"teradata/performance",
+			"postgres/analytics",
+			"sql/timeseries",
+			"sql/data_quality",
+			"sql/text",
 		},
 		tracer: observability.NewNoOpTracer(),
 	}
@@ -98,6 +117,7 @@ func (lib *Library) Load(name string) (*Pattern, error) {
 	// Check cache first
 	lib.mu.RLock()
 	cached, found := lib.patternCache[name]
+	cachedPath := lib.pathCache[name]
 	lib.mu.RUnlock()
 
 	if found {
@@ -112,6 +132,51 @@ func (lib *Library) Load(name string) (*Pattern, error) {
 			"source":    "cache",
 		})
 		return cached, nil
+	}
+
+	// Try path cache first (populated during indexing)
+	if cachedPath != "" {
+		if lib.embeddedFS != nil {
+			data, err := lib.embeddedFS.ReadFile(cachedPath)
+			if err == nil {
+				pattern, err := lib.parsePattern(data, name, cachedPath)
+				if err == nil {
+					lib.cachePattern(name, pattern)
+					duration := time.Since(startTime)
+					if span != nil {
+						span.SetAttribute("cache.hit", "false")
+						span.SetAttribute("source", "embedded_path_cache")
+						span.SetAttribute("duration_ms", fmt.Sprintf("%.2f", duration.Seconds()*1000))
+					}
+					lib.tracer.RecordMetric("patterns.library.load", 1.0, map[string]string{
+						"cache_hit": "false",
+						"source":    "embedded_path_cache",
+					})
+					return pattern, nil
+				}
+			}
+		}
+		if lib.patternsDir != "" {
+			fullPath := filepath.Join(lib.patternsDir, cachedPath)
+			data, err := os.ReadFile(fullPath)
+			if err == nil {
+				pattern, err := lib.parsePattern(data, name, cachedPath)
+				if err == nil {
+					lib.cachePattern(name, pattern)
+					duration := time.Since(startTime)
+					if span != nil {
+						span.SetAttribute("cache.hit", "false")
+						span.SetAttribute("source", "filesystem_path_cache")
+						span.SetAttribute("duration_ms", fmt.Sprintf("%.2f", duration.Seconds()*1000))
+					}
+					lib.tracer.RecordMetric("patterns.library.load", 1.0, map[string]string{
+						"cache_hit": "false",
+						"source":    "filesystem_path_cache",
+					})
+					return pattern, nil
+				}
+			}
+		}
 	}
 
 	// Try loading from embedded FS first
@@ -191,12 +256,12 @@ func (lib *Library) loadFromEmbedded(name string) (*Pattern, error) {
 	for _, path := range possiblePaths {
 		data, err := lib.embeddedFS.ReadFile(path)
 		if err == nil {
-			var pattern Pattern
-			if err := yaml.Unmarshal(data, &pattern); err != nil {
+			pattern, err := lib.parsePattern(data, name, path)
+			if err != nil {
 				if span != nil {
-					span.RecordError(fmt.Errorf("failed to parse pattern %s: %w", name, err))
+					span.RecordError(err)
 				}
-				return nil, fmt.Errorf("failed to parse pattern %s: %w", name, err)
+				return nil, err
 			}
 			duration := time.Since(startTime)
 			if span != nil {
@@ -207,7 +272,7 @@ func (lib *Library) loadFromEmbedded(name string) (*Pattern, error) {
 			lib.tracer.RecordMetric("patterns.library.load_embedded", 1.0, map[string]string{
 				"success": "true",
 			})
-			return &pattern, nil
+			return pattern, nil
 		}
 	}
 
@@ -246,12 +311,17 @@ func (lib *Library) loadFromFilesystem(name string) (*Pattern, error) {
 	for _, path := range possiblePaths {
 		data, err := os.ReadFile(path)
 		if err == nil {
-			var pattern Pattern
-			if err := yaml.Unmarshal(data, &pattern); err != nil {
+			relPath := path
+			if lib.patternsDir != "" && strings.HasPrefix(path, lib.patternsDir) {
+				relPath = strings.TrimPrefix(path, lib.patternsDir)
+				relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+			}
+			pattern, err := lib.parsePattern(data, name, relPath)
+			if err != nil {
 				if span != nil {
-					span.RecordError(fmt.Errorf("failed to parse pattern %s: %w", name, err))
+					span.RecordError(err)
 				}
-				return nil, fmt.Errorf("failed to parse pattern %s: %w", name, err)
+				return nil, err
 			}
 			duration := time.Since(startTime)
 			if span != nil {
@@ -262,7 +332,7 @@ func (lib *Library) loadFromFilesystem(name string) (*Pattern, error) {
 			lib.tracer.RecordMetric("patterns.library.load_filesystem", 1.0, map[string]string{
 				"success": "true",
 			})
-			return &pattern, nil
+			return pattern, nil
 		}
 	}
 
@@ -276,6 +346,21 @@ func (lib *Library) loadFromFilesystem(name string) (*Pattern, error) {
 	})
 
 	return nil, fmt.Errorf("pattern not found in filesystem: %s", name)
+}
+
+// parsePattern parses a pattern from YAML data and caches its path.
+func (lib *Library) parsePattern(data []byte, name string, relPath string) (*Pattern, error) {
+	var pattern Pattern
+	if err := yaml.Unmarshal(data, &pattern); err != nil {
+		return nil, fmt.Errorf("failed to parse pattern %s: %w", name, err)
+	}
+
+	// Cache the path for future loads
+	lib.mu.Lock()
+	lib.pathCache[name] = relPath
+	lib.mu.Unlock()
+
+	return &pattern, nil
 }
 
 // cachePattern stores a pattern in the cache.
@@ -366,6 +451,12 @@ func (lib *Library) indexEmbedded() []PatternSummary {
 		}
 
 		name := strings.TrimSuffix(filepath.Base(path), ".yaml")
+
+		// Cache the path for this pattern
+		lib.mu.Lock()
+		lib.pathCache[name] = path
+		lib.mu.Unlock()
+
 		pattern, loadErr := lib.Load(name)
 		if loadErr != nil {
 			return nil // Skip patterns that fail to load
@@ -397,6 +488,19 @@ func (lib *Library) indexFilesystem() []PatternSummary {
 		}
 
 		name := strings.TrimSuffix(filepath.Base(path), ".yaml")
+
+		// Compute relative path from patternsDir
+		relPath := path
+		if lib.patternsDir != "" && strings.HasPrefix(path, lib.patternsDir) {
+			relPath = strings.TrimPrefix(path, lib.patternsDir)
+			relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+		}
+
+		// Cache the path for this pattern
+		lib.mu.Lock()
+		lib.pathCache[name] = relPath
+		lib.mu.Unlock()
+
 		pattern, loadErr := lib.Load(name)
 		if loadErr != nil {
 			return nil // Skip patterns that fail to load
@@ -576,6 +680,7 @@ func (lib *Library) FilterByDifficulty(difficulty string) []PatternSummary {
 }
 
 // Search performs free-text search across pattern metadata.
+// Tokenizes the query and matches individual keywords for better recall.
 func (lib *Library) Search(query string) []PatternSummary {
 	startTime := time.Now()
 	_, span := lib.tracer.StartSpan(context.Background(), "patterns.library.search")
@@ -604,26 +709,58 @@ func (lib *Library) Search(query string) []PatternSummary {
 	results := make([]PatternSummary, 0)
 	queryLower := strings.ToLower(query)
 
+	// Tokenize query into keywords (split on whitespace and common separators)
+	keywords := strings.FieldsFunc(queryLower, func(r rune) bool {
+		return r == ' ' || r == ',' || r == ';' || r == '-' || r == '_'
+	})
+
+	// Filter out common stop words
+	stopWords := map[string]bool{
+		"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
+		"be": true, "by": true, "for": true, "from": true, "has": true, "he": true,
+		"in": true, "is": true, "it": true, "its": true, "of": true, "on": true,
+		"that": true, "the": true, "to": true, "was": true, "will": true, "with": true,
+	}
+
+	filteredKeywords := make([]string, 0, len(keywords))
+	for _, kw := range keywords {
+		if !stopWords[kw] && len(kw) > 2 { // Skip stop words and very short terms
+			filteredKeywords = append(filteredKeywords, kw)
+		}
+	}
+
 	if span != nil {
 		span.SetAttribute("search.total_patterns", fmt.Sprintf("%d", len(all)))
+		span.SetAttribute("search.keywords", strings.Join(filteredKeywords, ","))
+		span.SetAttribute("search.keyword_count", fmt.Sprintf("%d", len(filteredKeywords)))
+	}
+
+	// If no useful keywords after filtering, fall back to original query
+	if len(filteredKeywords) == 0 {
+		filteredKeywords = []string{queryLower}
 	}
 
 	for _, p := range all {
-		// Search in name, title, description, function name
-		if strings.Contains(strings.ToLower(p.Name), queryLower) ||
-			strings.Contains(strings.ToLower(p.Title), queryLower) ||
-			strings.Contains(strings.ToLower(p.Description), queryLower) ||
-			strings.Contains(strings.ToLower(p.BackendFunction), queryLower) {
-			results = append(results, p)
-			continue
+		// Build searchable text from pattern metadata
+		searchText := strings.ToLower(fmt.Sprintf("%s %s %s %s",
+			p.Name, p.Title, p.Description, p.BackendFunction))
+
+		// Add use cases to searchable text
+		for _, useCase := range p.UseCases {
+			searchText += " " + strings.ToLower(useCase)
 		}
 
-		// Search in use cases
-		for _, useCase := range p.UseCases {
-			if strings.Contains(strings.ToLower(useCase), queryLower) {
-				results = append(results, p)
-				break
+		// Count keyword matches
+		matchCount := 0
+		for _, keyword := range filteredKeywords {
+			if strings.Contains(searchText, keyword) {
+				matchCount++
 			}
+		}
+
+		// Pattern matches if it contains any of the keywords
+		if matchCount > 0 {
+			results = append(results, p)
 		}
 	}
 
@@ -653,6 +790,7 @@ func (lib *Library) ClearCache() {
 	indexSize := len(lib.patternIndex)
 
 	lib.patternCache = make(map[string]*Pattern)
+	lib.pathCache = make(map[string]string)
 	lib.patternIndex = nil
 	lib.indexInitialized = false
 	lib.mu.Unlock()
