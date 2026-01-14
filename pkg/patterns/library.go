@@ -159,7 +159,14 @@ func (lib *Library) Load(name string) (*Pattern, error) {
 		}
 		if lib.patternsDir != "" {
 			fullPath := filepath.Join(lib.patternsDir, cachedPath)
-			data, err := os.ReadFile(fullPath)
+			// Validate path is within patternsDir (prevent path traversal)
+			cleanPath := filepath.Clean(fullPath)
+			cleanBase := filepath.Clean(lib.patternsDir)
+			if !strings.HasPrefix(cleanPath, cleanBase) {
+				return nil, fmt.Errorf("pattern path outside patterns directory: %s", name)
+			}
+			// #nosec G304 -- Path validated to be within patternsDir
+			data, err := os.ReadFile(cleanPath)
 			if err == nil {
 				pattern, err := lib.parsePattern(data, name, cachedPath)
 				if err == nil {
