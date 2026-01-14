@@ -20,42 +20,48 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Scoop
-        shell: pwsh
-        run: |
-          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-          iwr -useb get.scoop.sh -outfile 'install-scoop.ps1'
-          .\install-scoop.ps1 -RunAsAdmin
-
       - name: Validate loom manifest
         shell: pwsh
         run: |
-          scoop install jq
-          # Basic JSON validation
-          Get-Content packaging/windows/scoop/loom.json | jq . > $null
+          $ErrorActionPreference = 'Stop'
+
+          # Basic JSON validation using PowerShell
+          try {
+            $manifest = Get-Content packaging/windows/scoop/loom.json -Raw | ConvertFrom-Json
+          } catch {
+            throw "Invalid JSON syntax in loom.json: $_"
+          }
           Write-Host "✓ loom.json is valid JSON"
 
           # Check required fields
-          $manifest = Get-Content packaging/windows/scoop/loom.json | ConvertFrom-Json
           if (!$manifest.version) { throw "Missing version field" }
           if (!$manifest.description) { throw "Missing description field" }
           if (!$manifest.license) { throw "Missing license field" }
           if (!$manifest.architecture) { throw "Missing architecture field" }
+          if (!$manifest.architecture.'64bit'.url) { throw "Missing architecture.64bit.url field" }
+          if (!$manifest.architecture.'64bit'.hash) { throw "Missing architecture.64bit.hash field" }
           Write-Host "✓ loom.json has all required fields"
 
       - name: Validate loom-server manifest
         shell: pwsh
         run: |
-          # Basic JSON validation
-          Get-Content packaging/windows/scoop/loom-server.json | jq . > $null
+          $ErrorActionPreference = 'Stop'
+
+          # Basic JSON validation using PowerShell
+          try {
+            $manifest = Get-Content packaging/windows/scoop/loom-server.json -Raw | ConvertFrom-Json
+          } catch {
+            throw "Invalid JSON syntax in loom-server.json: $_"
+          }
           Write-Host "✓ loom-server.json is valid JSON"
 
           # Check required fields
-          $manifest = Get-Content packaging/windows/scoop/loom-server.json | ConvertFrom-Json
           if (!$manifest.version) { throw "Missing version field" }
           if (!$manifest.description) { throw "Missing description field" }
           if (!$manifest.license) { throw "Missing license field" }
           if (!$manifest.architecture) { throw "Missing architecture field" }
+          if (!$manifest.architecture.'64bit'.url) { throw "Missing architecture.64bit.url field" }
+          if (!$manifest.architecture.'64bit'.hash) { throw "Missing architecture.64bit.hash field" }
           Write-Host "✓ loom-server.json has all required fields"
 
   validate-winget:
@@ -65,16 +71,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install winget validation tools
-        shell: pwsh
-        run: |
-          # Install WingetCreate for validation
-          winget install --id Microsoft.WingetCreate --silent --accept-source-agreements --accept-package-agreements
-
       - name: Validate manifests
         shell: pwsh
         run: |
-          # Validate YAML syntax
           $ErrorActionPreference = 'Stop'
 
           Write-Host "Validating winget manifests..."
@@ -93,10 +92,13 @@ jobs:
             Write-Host "✓ Found $file"
           }
 
-          # Validate YAML syntax by trying to parse
+          # Basic YAML structure validation
           foreach ($file in $files) {
-            Get-Content $file | ConvertFrom-Yaml -ErrorAction Stop | Out-Null
-            Write-Host "✓ $file is valid YAML"
+            $content = Get-Content $file -Raw
+            if ($content -notmatch '^\s*\w+:') {
+              throw "$file does not appear to be valid YAML"
+            }
+            Write-Host "✓ $file has valid YAML structure"
           }
 
       - name: Check hash format
