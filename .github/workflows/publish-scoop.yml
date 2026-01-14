@@ -1,0 +1,213 @@
+name: Publish to Scoop
+
+permissions:
+  contents: read
+
+on:
+  # Run on release tags
+  push:
+    tags:
+      - 'v*.*.*'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.2)'
+        required: true
+        type: string
+
+jobs:
+  submit-to-scoop:
+    name: Submit PR to Scoop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout loom repo
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION"
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Check if release exists
+          if ! gh release view "v$VERSION" --repo ${{ github.repository }}; then
+            echo "Error: Release v$VERSION does not exist"
+            exit 1
+          fi
+
+          # Verify binaries exist
+          URLS=(
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-windows-amd64.exe.zip"
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-windows-amd64.exe.zip"
+          )
+
+          for url in "${URLS[@]}"; do
+            echo "Checking $url..."
+            if ! curl --head --silent --fail "$url" > /dev/null; then
+              echo "Error: Binary not found at $url"
+              exit 1
+            fi
+          done
+
+          echo "All release binaries verified"
+
+      - name: Calculate SHA256 hashes
+        id: hashes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Download and hash loom
+          curl -L -o loom.zip "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-windows-amd64.exe.zip"
+          LOOM_HASH=$(sha256sum loom.zip | awk '{print $1}')
+
+          # Download and hash looms
+          curl -L -o looms.zip "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-windows-amd64.exe.zip"
+          LOOMS_HASH=$(sha256sum looms.zip | awk '{print $1}')
+
+          echo "loom_hash=$LOOM_HASH" >> $GITHUB_OUTPUT
+          echo "looms_hash=$LOOMS_HASH" >> $GITHUB_OUTPUT
+
+          echo "loom hash: $LOOM_HASH"
+          echo "looms hash: $LOOMS_HASH"
+
+      - name: Update Scoop manifests
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          LOOM_HASH="${{ steps.hashes.outputs.loom_hash }}"
+          LOOMS_HASH="${{ steps.hashes.outputs.looms_hash }}"
+
+          # Update loom.json
+          cat > /tmp/loom.json <<EOF
+          {
+              "version": "$VERSION",
+              "description": "LLM agent framework with natural language agent creation",
+              "homepage": "https://github.com/teradata-labs/loom",
+              "license": "Apache-2.0",
+              "architecture": {
+                  "64bit": {
+                      "url": "https://github.com/teradata-labs/loom/releases/download/v$VERSION/loom-windows-amd64.exe.zip",
+                      "hash": "$LOOM_HASH",
+                      "extract_dir": ""
+                  }
+              },
+              "bin": "loom-windows-amd64.exe",
+              "checkver": {
+                  "github": "https://github.com/teradata-labs/loom"
+              },
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/teradata-labs/loom/releases/download/v\$version/loom-windows-amd64.exe.zip"
+                      }
+                  }
+              },
+              "notes": [
+                  "Loom TUI client installed successfully!",
+                  "",
+                  "To install the Loom server as well:",
+                  "  scoop install loom-server",
+                  "",
+                  "Documentation: https://github.com/teradata-labs/loom#readme"
+              ]
+          }
+          EOF
+
+          # Update loom-server.json (using packaging file as template, just update version and hashes)
+          jq --arg ver "$VERSION" \
+             --arg hash "$LOOMS_HASH" \
+             '.version = $ver | .architecture."64bit".hash = $hash' \
+             packaging/windows/scoop/loom-server.json > /tmp/loom-server.json
+
+      - name: Fork and clone Scoop Main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if fork exists, if not create it
+          if ! gh repo view ${{ github.actor }}/Main &>/dev/null; then
+            echo "Forking ScoopInstaller/Main..."
+            gh repo fork ScoopInstaller/Main --clone=false
+            sleep 5  # Wait for fork to be ready
+          fi
+
+          # Clone the fork
+          gh repo clone ${{ github.actor }}/Main scoop-main
+          cd scoop-main
+
+          # Add upstream
+          git remote add upstream https://github.com/ScoopInstaller/Main.git
+          git fetch upstream
+
+          # Sync with upstream main
+          git checkout main
+          git merge upstream/main
+          git push origin main
+
+      - name: Create update branch and commit
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd scoop-main
+
+          # Create branch
+          BRANCH="loom-${VERSION}"
+          git checkout -b "$BRANCH"
+
+          # Copy updated manifests
+          cp /tmp/loom.json bucket/loom.json
+          cp /tmp/loom-server.json bucket/loom-server.json
+
+          # Commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/loom.json bucket/loom-server.json
+          git commit -m "loom: Update to version $VERSION"
+
+          # Push to fork
+          git push origin "$BRANCH"
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="loom-${VERSION}"
+
+          cd scoop-main
+
+          gh pr create \
+            --repo ScoopInstaller/Main \
+            --title "loom: Update to version $VERSION" \
+            --body "Updates Loom to version $VERSION
+
+          ## Changes
+          - Update loom to v$VERSION
+          - Update loom-server to v$VERSION
+          - Update SHA256 hashes
+
+          ## Verification
+          - Release: https://github.com/teradata-labs/loom/releases/tag/v$VERSION
+          - Binaries verified and hashes calculated from official release
+
+          Automated PR from GitHub Actions." \
+            --head "${{ github.actor }}:$BRANCH" \
+            --base main
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "✅ Scoop PR submitted successfully!"
+          echo ""
+          echo "Version: $VERSION"
+          echo "Check PR status at: https://github.com/ScoopInstaller/Main/pulls"
