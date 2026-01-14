@@ -758,14 +758,18 @@ Write-Host ""
 $StepNum = 1
 
 # If Ollama, show start instructions
-if ($LLMChoice -eq "9" -and $ConfigureLLM -eq "y") {
+if ((Get-Variable -Name "LLMChoice" -ErrorAction SilentlyContinue) -and $LLMChoice -eq "9" -and $ConfigureLLM -eq "y") {
     Write-ColorOutput "$StepNum. Start Ollama (required for local inference):" "Cyan"
     Write-Host ""
     Write-Info "   In a terminal window:"
     Write-Info "   ollama serve"
     Write-Host ""
     Write-Info "   Make sure your models are pulled:"
-    Write-Info "   ollama pull $OllamaModel"
+    if (Get-Variable -Name "OllamaModel" -ErrorAction SilentlyContinue) {
+        Write-Info "   ollama pull $OllamaModel"
+    } else {
+        Write-Info "   ollama pull llama3.1:8b"
+    }
     Write-Host ""
     $StepNum++
 }
