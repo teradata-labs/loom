@@ -50,42 +50,31 @@ jobs:
             throw "Error: Release v$version does not exist"
           }
 
-          # Verify binaries exist
-          $urls = @(
-            "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-amd64.exe.zip",
-            "https://github.com/${{ github.repository }}/releases/download/v$version/looms-windows-amd64.exe.zip"
-          )
+          # Verify combined binary exists
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-x64.zip"
 
-          foreach ($url in $urls) {
-            Write-Host "Checking $url..."
-            try {
-              $response = Invoke-WebRequest -Uri $url -Method Head -ErrorAction Stop
-            } catch {
-              throw "Error: Binary not found at $url"
-            }
+          Write-Host "Checking $url..."
+          try {
+            $response = Invoke-WebRequest -Uri $url -Method Head -ErrorAction Stop
+          } catch {
+            throw "Error: Combined package not found at $url"
           }
 
-          Write-Host "All release binaries verified"
+          Write-Host "Combined package verified"
 
-      - name: Calculate SHA256 hashes
+      - name: Calculate SHA256 hash
         id: hashes
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
 
-          # Download and hash loom
-          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-amd64.exe.zip" -OutFile loom.zip
-          $loomHash = (Get-FileHash loom.zip -Algorithm SHA256).Hash
+          # Download and hash combined package
+          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-x64.zip" -OutFile loom-combined.zip
+          $combinedHash = (Get-FileHash loom-combined.zip -Algorithm SHA256).Hash
 
-          # Download and hash looms
-          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v$version/looms-windows-amd64.exe.zip" -OutFile looms.zip
-          $loomsHash = (Get-FileHash looms.zip -Algorithm SHA256).Hash
+          "combined_hash=$combinedHash" >> $env:GITHUB_OUTPUT
 
-          "loom_hash=$loomHash" >> $env:GITHUB_OUTPUT
-          "looms_hash=$loomsHash" >> $env:GITHUB_OUTPUT
-
-          Write-Host "loom hash: $loomHash"
-          Write-Host "looms hash: $loomsHash"
+          Write-Host "Combined package hash: $combinedHash"
 
       - name: Install wingetcreate
         shell: pwsh
@@ -125,8 +114,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $loomHash = "${{ steps.hashes.outputs.loom_hash }}"
-          $loomsHash = "${{ steps.hashes.outputs.looms_hash }}"
+          $combinedHash = "${{ steps.hashes.outputs.combined_hash }}"
 
           cd winget-pkgs
 
@@ -142,7 +130,7 @@ jobs:
           ..\wingetcreate.exe update `
             --id Teradata.Loom `
             --version $version `
-            --urls "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-amd64.exe.zip" "https://github.com/${{ github.repository }}/releases/download/v$version/looms-windows-amd64.exe.zip" `
+            --urls "https://github.com/${{ github.repository }}/releases/download/v$version/loom-windows-x64.zip" `
             --submit `
             --token $env:GH_TOKEN
 
@@ -155,8 +143,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $loomHash = "${{ steps.hashes.outputs.loom_hash }}"
-          $loomsHash = "${{ steps.hashes.outputs.looms_hash }}"
+          $combinedHash = "${{ steps.hashes.outputs.combined_hash }}"
 
           cd winget-pkgs
 
@@ -174,11 +161,10 @@ jobs:
           $versionFile = "$manifestDir\Teradata.Loom.yaml"
           (Get-Content $versionFile) -replace 'PackageVersion:.*', "PackageVersion: $version" | Set-Content $versionFile
 
-          # Update hashes in installer manifest
+          # Update hash in installer manifest
           $installerFile = "$manifestDir\Teradata.Loom.installer.yaml"
           $content = Get-Content $installerFile -Raw
-          $content = $content -replace 'InstallerSha256: [A-F0-9]{64}', "InstallerSha256: $loomHash", 1
-          $content = $content -replace 'InstallerSha256: [A-F0-9]{64}', "InstallerSha256: $loomsHash"
+          $content = $content -replace 'InstallerSha256: .*', "InstallerSha256: $combinedHash"
           $content | Set-Content $installerFile
 
           # Commit

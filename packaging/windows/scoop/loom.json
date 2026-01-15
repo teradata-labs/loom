@@ -1,12 +1,12 @@
 {
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "LLM agent framework with natural language agent creation, pattern-guided learning, and multi-agent orchestration",
     "homepage": "https://github.com/teradata-labs/loom",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.1/loom-windows-amd64.exe.zip",
-            "hash": "2e6a7d0c6fe69dc5fd0d461c226352fed694ee0f157a3c024e0b318fc105cf0e",
+            "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.2/loom-windows-amd64.exe.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
             "extract_dir": ""
         }
     },

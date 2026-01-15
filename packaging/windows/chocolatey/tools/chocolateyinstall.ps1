@@ -2,13 +2,13 @@ $ErrorActionPreference = 'Stop'
 
 $packageName = 'loom'
 $toolsDir = "$(Split-Path -parent $MyInvocation.MyCommand.Definition)"
-$version = '1.0.1'
+$version = '1.0.2'
 
 $packageArgs = @{
   packageName   = $packageName
   unzipLocation = $toolsDir
   url64bit      = "https://github.com/teradata-labs/loom/releases/download/v$version/loom-windows-amd64.exe.zip"
-  checksum64    = '2e6a7d0c6fe69dc5fd0d461c226352fed694ee0f157a3c024e0b318fc105cf0e'
+  checksum64    = '0000000000000000000000000000000000000000000000000000000000000000'
   checksumType64= 'sha256'
 }
 
@@ -16,7 +16,7 @@ $packageArgs = @{
 Install-ChocolateyZipPackage @packageArgs
 
 $packageArgs['url64bit'] = "https://github.com/teradata-labs/loom/releases/download/v$version/looms-windows-amd64.exe.zip"
-$packageArgs['checksum64'] = '3c538793746f2255a16e3e74f2377a7ee9a7126003bfc1b5ea14d6644aed1f6f'
+$packageArgs['checksum64'] = '0000000000000000000000000000000000000000000000000000000000000000'
 
 # Download and extract looms server
 Install-ChocolateyZipPackage @packageArgs

@@ -115,6 +115,13 @@ jobs:
         run: |
           $installer = Get-Content packaging/windows/winget/Teradata.Loom.installer.yaml -Raw
 
+          # Check for placeholder hashes (all zeros) - skip validation for unreleased versions
+          if ($installer -match 'InstallerSha256:\s+0{64}') {
+            Write-Host "⚠️  Placeholder hash detected - skipping validation for unreleased version"
+            Write-Host "✓ Hashes will be validated when release is created"
+            exit 0
+          }
+
           # Count total InstallerSha256 lines
           $totalHashLines = ([regex]::Matches($installer, 'InstallerSha256:')).Count
 
@@ -282,8 +289,15 @@ jobs:
               exit 1
             fi
 
-            # Check SHA256 format (64 hex chars, lowercase for Homebrew)
-            if grep -E 'sha256 "[A-F0-9]{64}"' "$formula"; then
+            # Skip validation for placeholder hashes (all zeros)
+            if grep -q 'sha256 "0000000000000000000000000000000000000000000000000000000000000000"' "$formula"; then
+              echo "⚠️  Placeholder hash detected in $formula - skipping format check"
+              continue
+            fi
+
+            # Check SHA256 format (64 hex chars, must be lowercase for Homebrew)
+            # Look for actual uppercase hex letters A-F (not digits)
+            if grep -E 'sha256 ".*[A-F].*"' "$formula"; then
               echo "❌ SHA256 should be lowercase in $formula"
               exit 1
             fi
@@ -348,6 +362,13 @@ jobs:
 
           # Extract version
           VERSION=$(jq -r '.version' packaging/windows/scoop/loom.json)
+
+          # Check if we're using placeholder hashes (all zeros) - skip URL validation for unreleased versions
+          if grep -q '"hash": "0000000000000000000000000000000000000000000000000000000000000000"' packaging/windows/scoop/loom.json; then
+            echo "⚠️  Placeholder hashes detected - skipping URL validation for unreleased version v${VERSION}"
+            echo "✓ URLs will be validated when release is created"
+            exit 0
+          fi
 
           # List of expected URLs
           URLS=(

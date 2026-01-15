@@ -1,0 +1,208 @@
+name: Publish to Homebrew Tap
+
+permissions:
+  contents: read
+
+on:
+  # Run on release tags
+  push:
+    tags:
+      - 'v*.*.*'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.2)'
+        required: true
+        type: string
+
+jobs:
+  submit-to-homebrew-tap:
+    name: Update Homebrew Tap
+    runs-on: macos-latest
+    steps:
+      - name: Checkout loom repo
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION"
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Check if release exists
+          if ! gh release view "v$VERSION" --repo ${{ github.repository }}; then
+            echo "Error: Release v$VERSION does not exist"
+            exit 1
+          fi
+
+          # Verify binaries exist
+          URLS=(
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-darwin-amd64.tar.gz"
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-darwin-arm64.tar.gz"
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-amd64.tar.gz"
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-arm64.tar.gz"
+          )
+
+          for url in "${URLS[@]}"; do
+            echo "Checking $url..."
+            if ! curl --head --silent --fail "$url" > /dev/null; then
+              echo "Error: Binary not found at $url"
+              exit 1
+            fi
+          done
+
+          echo "All release binaries verified"
+
+      - name: Calculate SHA256 hashes
+        id: hashes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Download and hash loom binaries
+          curl -L -o loom-amd64.tar.gz "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-darwin-amd64.tar.gz"
+          LOOM_AMD64_HASH=$(shasum -a 256 loom-amd64.tar.gz | awk '{print $1}')
+
+          curl -L -o loom-arm64.tar.gz "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/loom-darwin-arm64.tar.gz"
+          LOOM_ARM64_HASH=$(shasum -a 256 loom-arm64.tar.gz | awk '{print $1}')
+
+          # Download and hash looms binaries
+          curl -L -o looms-amd64.tar.gz "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-amd64.tar.gz"
+          LOOMS_AMD64_HASH=$(shasum -a 256 looms-amd64.tar.gz | awk '{print $1}')
+
+          curl -L -o looms-arm64.tar.gz "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/looms-darwin-arm64.tar.gz"
+          LOOMS_ARM64_HASH=$(shasum -a 256 looms-arm64.tar.gz | awk '{print $1}')
+
+          echo "loom_amd64_hash=$LOOM_AMD64_HASH" >> $GITHUB_OUTPUT
+          echo "loom_arm64_hash=$LOOM_ARM64_HASH" >> $GITHUB_OUTPUT
+          echo "looms_amd64_hash=$LOOMS_AMD64_HASH" >> $GITHUB_OUTPUT
+          echo "looms_arm64_hash=$LOOMS_ARM64_HASH" >> $GITHUB_OUTPUT
+
+          echo "loom-darwin-amd64 hash: $LOOM_AMD64_HASH"
+          echo "loom-darwin-arm64 hash: $LOOM_ARM64_HASH"
+          echo "looms-darwin-amd64 hash: $LOOMS_AMD64_HASH"
+          echo "looms-darwin-arm64 hash: $LOOMS_ARM64_HASH"
+
+      - name: Fork and clone homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if fork exists, if not create it
+          if ! gh repo view ${{ github.actor }}/homebrew-tap &>/dev/null; then
+            echo "Forking teradata-labs/homebrew-tap..."
+            gh repo fork teradata-labs/homebrew-tap --clone=false
+            sleep 5  # Wait for fork to be ready
+          fi
+
+          # Clone the fork
+          gh repo clone ${{ github.actor }}/homebrew-tap homebrew-tap
+          cd homebrew-tap
+
+          # Add upstream
+          git remote add upstream https://github.com/teradata-labs/homebrew-tap.git
+          git fetch upstream
+
+          # Sync with upstream main
+          git checkout main
+          git merge upstream/main
+          git push origin main
+
+      - name: Update formulas
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          LOOM_AMD64_HASH="${{ steps.hashes.outputs.loom_amd64_hash }}"
+          LOOM_ARM64_HASH="${{ steps.hashes.outputs.loom_arm64_hash }}"
+          LOOMS_AMD64_HASH="${{ steps.hashes.outputs.looms_amd64_hash }}"
+          LOOMS_ARM64_HASH="${{ steps.hashes.outputs.looms_arm64_hash }}"
+
+          cd homebrew-tap
+
+          # Update loom.rb
+          sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/loom.rb
+          sed -i '' "s|releases/download/v[0-9.]*/loom-darwin-arm64.tar.gz|releases/download/v$VERSION/loom-darwin-arm64.tar.gz|" Formula/loom.rb
+          sed -i '' "s|releases/download/v[0-9.]*/loom-darwin-amd64.tar.gz|releases/download/v$VERSION/loom-darwin-amd64.tar.gz|" Formula/loom.rb
+
+          # Update SHA256 for arm64
+          sed -i '' "/loom-darwin-arm64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOM_ARM64_HASH\"/" Formula/loom.rb
+          # Update SHA256 for amd64
+          sed -i '' "/loom-darwin-amd64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOM_AMD64_HASH\"/" Formula/loom.rb
+
+          # Update loom-server.rb
+          sed -i '' "s/version \".*\"/version \"$VERSION\"/" Formula/loom-server.rb
+          sed -i '' "s|releases/download/v[0-9.]*/looms-darwin-arm64.tar.gz|releases/download/v$VERSION/looms-darwin-arm64.tar.gz|" Formula/loom-server.rb
+          sed -i '' "s|releases/download/v[0-9.]*/looms-darwin-amd64.tar.gz|releases/download/v$VERSION/looms-darwin-amd64.tar.gz|" Formula/loom-server.rb
+
+          # Update SHA256 for arm64
+          sed -i '' "/looms-darwin-arm64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOMS_ARM64_HASH\"/" Formula/loom-server.rb
+          # Update SHA256 for amd64
+          sed -i '' "/looms-darwin-amd64.tar.gz/,/sha256/s/sha256 \".*\"/sha256 \"$LOOMS_AMD64_HASH\"/" Formula/loom-server.rb
+
+          echo "Updated formulas:"
+          cat Formula/loom.rb | grep -A 2 "version\|url\|sha256"
+          echo "---"
+          cat Formula/loom-server.rb | grep -A 2 "version\|url\|sha256"
+
+      - name: Create update branch and commit
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd homebrew-tap
+
+          # Create branch
+          BRANCH="loom-${VERSION}"
+          git checkout -b "$BRANCH"
+
+          # Commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/loom.rb Formula/loom-server.rb
+          git commit -m "loom: Update to version $VERSION"
+
+          # Push to fork
+          git push origin "$BRANCH"
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="loom-${VERSION}"
+
+          cd homebrew-tap
+
+          gh pr create \
+            --repo teradata-labs/homebrew-tap \
+            --title "loom: Update to version $VERSION" \
+            --body "Updates Loom formulas to version $VERSION
+
+          ## Changes
+          - Update loom to v$VERSION
+          - Update loom-server to v$VERSION
+          - Update SHA256 hashes for all architectures
+
+          ## Verification
+          - Release: https://github.com/teradata-labs/loom/releases/tag/v$VERSION
+          - Binaries verified and hashes calculated from official release
+
+          Automated PR from GitHub Actions." \
+            --head "${{ github.actor }}:$BRANCH" \
+            --base main
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "✅ Homebrew Tap PR submitted successfully!"
+          echo ""
+          echo "Version: $VERSION"
+          echo "Check PR status at: https://github.com/teradata-labs/homebrew-tap/pulls"
