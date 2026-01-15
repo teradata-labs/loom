@@ -147,7 +147,8 @@ jobs:
           gh repo clone ${{ github.actor }}/Extras scoop-extras
           cd scoop-extras
 
-          # Add upstream
+          # Add upstream (remove first if it exists)
+          git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/ScoopInstaller/Extras.git
           git fetch upstream
 
