@@ -105,6 +105,9 @@ jobs:
           cd homebrew-tap
           git checkout main
 
+          # Configure git to use the GitHub token
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
       - name: Update formulas
         run: |
           VERSION="${{ steps.version.outputs.version }}"
