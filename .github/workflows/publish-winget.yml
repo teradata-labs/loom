@@ -99,8 +99,11 @@ jobs:
           gh repo clone "${{ github.actor }}/winget-pkgs" winget-pkgs
           cd winget-pkgs
 
+          # Configure git to use the PAT token for authentication
+          git config --global url."https://x-access-token:$($env:GH_TOKEN)@github.com/".insteadOf "https://github.com/"
+
           # Add upstream (remove first if it exists)
-          git remote remove upstream 2>/dev/null || true
+          git remote remove upstream 2>$null
           git remote add upstream https://github.com/microsoft/winget-pkgs.git
           git fetch upstream
 
