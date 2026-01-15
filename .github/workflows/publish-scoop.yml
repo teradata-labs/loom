@@ -57,7 +57,7 @@ jobs:
 
           for url in "${URLS[@]}"; do
             echo "Checking $url..."
-            if ! curl --head --silent --fail "$url" > /dev/null; then
+            if ! curl --head --silent --fail -L "$url" > /dev/null; then
               echo "Error: Binary not found at $url"
               exit 1
             fi
