@@ -222,3 +222,51 @@ jobs:
             ${{ matrix.output }}.zip.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-combined-windows-package:
+    name: Create Combined Windows Package
+    needs: build-binaries
+    runs-on: windows-latest
+    steps:
+      - name: Wait for release assets to be available
+        shell: pwsh
+        run: Start-Sleep -Seconds 10
+
+      - name: Download loom Windows binary
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: loom-windows-amd64.exe.zip
+
+      - name: Download looms Windows binary
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: looms-windows-amd64.exe.zip
+
+      - name: Extract binaries
+        run: |
+          Expand-Archive -Path loom-windows-amd64.exe.zip -DestinationPath . -Force
+          Expand-Archive -Path looms-windows-amd64.exe.zip -DestinationPath . -Force
+
+      - name: Create combined package
+        run: |
+          New-Item -ItemType Directory -Path loom-package -Force
+          Copy-Item loom-windows-amd64.exe loom-package/
+          Copy-Item looms-windows-amd64.exe loom-package/
+          7z a loom-windows-x64.zip loom-package/*
+
+      - name: Generate SHA256
+        run: |
+          Get-FileHash loom-windows-x64.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash > loom-windows-x64.zip.sha256
+          Write-Host "Combined package SHA256:"
+          Get-Content loom-windows-x64.zip.sha256
+
+      - name: Upload combined package
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            loom-windows-x64.zip
+            loom-windows-x64.zip.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -131,34 +131,34 @@ jobs:
              '.version = $ver | .architecture."64bit".hash = $hash' \
              packaging/windows/scoop/loom-server.json > /tmp/loom-server.json
 
-      - name: Fork and clone Scoop Main
+      - name: Fork and clone Scoop Extras
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Check if fork exists, if not create it
-          if ! gh repo view ${{ github.actor }}/Main &>/dev/null; then
-            echo "Forking ScoopInstaller/Main..."
-            gh repo fork ScoopInstaller/Main --clone=false
+          if ! gh repo view ${{ github.actor }}/Extras &>/dev/null; then
+            echo "Forking ScoopInstaller/Extras..."
+            gh repo fork ScoopInstaller/Extras --clone=false
             sleep 5  # Wait for fork to be ready
           fi
 
           # Clone the fork
-          gh repo clone ${{ github.actor }}/Main scoop-main
-          cd scoop-main
+          gh repo clone ${{ github.actor }}/Extras scoop-extras
+          cd scoop-extras
 
           # Add upstream
-          git remote add upstream https://github.com/ScoopInstaller/Main.git
+          git remote add upstream https://github.com/ScoopInstaller/Extras.git
           git fetch upstream
 
-          # Sync with upstream main
-          git checkout main
-          git merge upstream/main
-          git push origin main
+          # Sync with upstream master
+          git checkout master
+          git merge upstream/master
+          git push origin master
 
       - name: Create update branch and commit
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          cd scoop-main
+          cd scoop-extras
 
           # Create branch
           BRANCH="loom-${VERSION}"
@@ -184,10 +184,10 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           BRANCH="loom-${VERSION}"
 
-          cd scoop-main
+          cd scoop-extras
 
           gh pr create \
-            --repo ScoopInstaller/Main \
+            --repo ScoopInstaller/Extras \
             --title "loom: Update to version $VERSION" \
             --body "Updates Loom to version $VERSION
 
@@ -202,12 +202,12 @@ jobs:
 
           Automated PR from GitHub Actions." \
             --head "${{ github.actor }}:$BRANCH" \
-            --base main
+            --base master
 
       - name: Summary
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          echo "✅ Scoop PR submitted successfully!"
+          echo "✅ Scoop Extras PR submitted successfully!"
           echo ""
           echo "Version: $VERSION"
-          echo "Check PR status at: https://github.com/ScoopInstaller/Main/pulls"
+          echo "Check PR status at: https://github.com/ScoopInstaller/Extras/pulls"
