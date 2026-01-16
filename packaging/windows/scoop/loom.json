@@ -6,8 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.2/loom-windows-amd64.exe.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
-            "extract_dir": ""
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
         }
     },
     "bin": "loom-windows-amd64.exe",
