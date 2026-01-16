@@ -166,7 +166,7 @@ jobs:
 
           gh pr create \
             --repo ScoopInstaller/Extras \
-            --title "loom: Update to version $VERSION" \
+            --title "loom@$VERSION, loom-server@$VERSION: Update to version $VERSION" \
             --body "Updates Loom to version $VERSION
 
           ## Changes
