@@ -1,20 +1,30 @@
-name: Publish to Scoop
+name: Publish to Scoop (DISABLED)
 
 permissions:
   contents: read
 
+# DISABLED - Scoop workflow is disabled
+# Uncomment the 'on:' section below to re-enable
 on:
-  # Run when release is published (after release workflow completes)
-  release:
-    types: [published]
-
-  # Manual trigger
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to publish (e.g., 1.0.2)'
-        required: true
+      enabled:
+        description: 'Workflow is disabled. Set to manual trigger only if needed.'
+        required: false
         type: string
+
+# on:
+#   # Run when release is published (after release workflow completes)
+#   release:
+#     types: [published]
+#
+#   # Manual trigger
+#   workflow_dispatch:
+#     inputs:
+#       version:
+#         description: 'Version to publish (e.g., 1.0.2)'
+#         required: true
+#         type: string
 
 jobs:
   submit-to-scoop:
