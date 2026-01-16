@@ -143,31 +143,105 @@ jobs:
           echo "---"
           cat Formula/loom-server.rb | grep -A 2 "version\|url\|sha256"
 
-      - name: Create update branch and commit
+      - name: Create update branch and commit via API
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="loom-${VERSION}"
+
           cd homebrew-tap
 
-          # Create branch (delete if exists)
-          BRANCH="loom-${VERSION}"
-          git push origin --delete "$BRANCH" 2>/dev/null || true
-          git checkout -b "$BRANCH"
+          # Get current main branch SHA
+          MAIN_SHA=$(git rev-parse main)
+          echo "Main branch SHA: $MAIN_SHA"
 
-          # Configure git for signed commits
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Read updated file contents
+          LOOM_CONTENT=$(cat Formula/loom.rb | base64)
+          LOOMS_CONTENT=$(cat Formula/loom-server.rb | base64)
 
-          # Import GitHub's web-flow GPG key for signing
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 --decode | gpg --import --batch --yes
-          git config user.signingkey "${{ secrets.GPG_KEY_ID }}"
-          git config commit.gpgsign true
+          # Create/update branch via API
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/refs \
+            -f "ref=refs/heads/${BRANCH}" \
+            -f "sha=${MAIN_SHA}" \
+            2>/dev/null || \
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/refs/heads/${BRANCH} \
+            -f "sha=${MAIN_SHA}" \
+            -F "force=true"
 
-          # Commit with signature
-          git add Formula/loom.rb Formula/loom-server.rb
-          git commit -S -m "loom: Update to version $VERSION"
+          # Get current tree
+          TREE_SHA=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/trees/${MAIN_SHA} \
+            --jq '.sha')
 
-          # Push to homebrew-tap
-          git push origin "$BRANCH"
+          # Create blobs for updated files
+          LOOM_BLOB=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/blobs \
+            -f "content=${LOOM_CONTENT}" \
+            -f "encoding=base64" \
+            --jq '.sha')
+
+          LOOMS_BLOB=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/blobs \
+            -f "content=${LOOMS_CONTENT}" \
+            -f "encoding=base64" \
+            --jq '.sha')
+
+          # Create new tree with updated files
+          NEW_TREE=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/trees \
+            -f "base_tree=${TREE_SHA}" \
+            -f "tree[][path]=Formula/loom.rb" \
+            -f "tree[][mode]=100644" \
+            -f "tree[][type]=blob" \
+            -f "tree[][sha]=${LOOM_BLOB}" \
+            -f "tree[][path]=Formula/loom-server.rb" \
+            -f "tree[][mode]=100644" \
+            -f "tree[][type]=blob" \
+            -f "tree[][sha]=${LOOMS_BLOB}" \
+            --jq '.sha')
+
+          # Create commit via API (GitHub will sign it automatically)
+          COMMIT_SHA=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/commits \
+            -f "message=loom: Update to version ${VERSION}" \
+            -f "tree=${NEW_TREE}" \
+            -f "parents[]=${MAIN_SHA}" \
+            --jq '.sha')
+
+          echo "Created commit: $COMMIT_SHA"
+
+          # Update branch reference to point to new commit
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/teradata-labs/homebrew-tap/git/refs/heads/${BRANCH} \
+            -f "sha=${COMMIT_SHA}"
+
+          echo "Branch ${BRANCH} updated with signed commit"
 
       - name: Create Pull Request
         env:
