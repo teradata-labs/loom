@@ -143,7 +143,7 @@ jobs:
           Write-Host "Note: User data in $env:USERPROFILE\.loom is preserved (expected)"
 
       - name: Upload Chocolatey package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: chocolatey-package
           path: packaging/windows/chocolatey/*.nupkg
