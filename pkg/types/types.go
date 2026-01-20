@@ -299,10 +299,16 @@ func (s *Session) GetMessages() []Message {
 
 // MessageCount returns the total number of messages in the session.
 // Thread-safe via RLock.
-func (s *Session) MessageCount() int {
+// Returns int32 capped at MaxInt32 to prevent overflow when used in proto messages.
+func (s *Session) MessageCount() int32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.Messages)
+
+	count := len(s.Messages)
+	if count > 2147483647 { // math.MaxInt32
+		return 2147483647
+	}
+	return int32(count)
 }
 
 // ExecutionStage represents the current stage of agent execution.

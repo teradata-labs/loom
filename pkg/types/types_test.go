@@ -23,7 +23,7 @@ func TestSession_MessageCount(t *testing.T) {
 	tests := []struct {
 		name     string
 		messages []Message
-		want     int
+		want     int32
 	}{
 		{
 			name:     "empty session",
