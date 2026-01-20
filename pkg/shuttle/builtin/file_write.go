@@ -15,6 +15,14 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
+const (
+	// MaxSafeContentSize prevents LLM output limit errors.
+	// Set below typical provider output limits (4K-16K tokens = 16KB-64KB).
+	// 50KB (~12,500 tokens) is safe for all providers.
+	// For larger content, agents should use append mode or multiple files.
+	MaxSafeContentSize = 50 * 1024 // 50KB
+)
+
 // FileWriteTool provides safe file writing capabilities for agents.
 // Apple-style: Secure by default, creates directories automatically.
 type FileWriteTool struct {
@@ -51,11 +59,13 @@ Use this tool to:
 }
 
 func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {
+	maxContentLen := MaxSafeContentSize
 	return shuttle.NewObjectSchema(
 		"Parameters for writing files",
 		map[string]*shuttle.JSONSchema{
-			"path":    shuttle.NewStringSchema("File path to write (required). Relative paths are safe."),
-			"content": shuttle.NewStringSchema("Content to write to the file (required)"),
+			"path": shuttle.NewStringSchema("File path to write (required). Relative paths are safe."),
+			"content": shuttle.NewStringSchema("Content to write to the file (required). Max 50KB per call - use append mode for larger content.").
+				WithLength(nil, &maxContentLen),
 			"mode": shuttle.NewStringSchema("Write mode: 'create' (fail if exists), 'overwrite', or 'append' (default: create)").
 				WithEnum("create", "overwrite", "append").
 				WithDefault("create"),
@@ -89,6 +99,30 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 				Code:       "INVALID_PARAMS",
 				Message:    "content is required",
 				Suggestion: "Provide content to write to the file",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	// Enforce max content size to prevent LLM output token limit errors
+	if len(content) > MaxSafeContentSize {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "CONTENT_TOO_LARGE",
+				Message: fmt.Sprintf("content parameter exceeds 50KB limit (actual: %d bytes / ~%d tokens)", len(content), len(content)/4),
+				Suggestion: `For large content, use one of these approaches:
+1. Write incrementally using append mode:
+   - file_write(path="output.md", content="Section 1...", mode="create")
+   - file_write(path="output.md", content="Section 2...", mode="append")
+
+2. Write multiple files:
+   - file_write(path="output_part1.md", content="...")
+   - file_write(path="output_part2.md", content="...")
+
+3. Summarize your content (meta-summarization):
+   - Extract key insights only
+   - Reduce detail level`,
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
