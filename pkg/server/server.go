@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"time"
 
@@ -698,13 +699,22 @@ func (s *Server) RequestToolPermission(ctx context.Context, req *loomv1.ToolPerm
 
 // ConvertSession converts an agent.Session to proto format.
 func ConvertSession(s *agent.Session) *loomv1.Session {
+	// Safe int to int32 conversion with overflow protection
+	msgCount := s.MessageCount()
+	var conversationCount int32
+	if msgCount > math.MaxInt32 {
+		conversationCount = math.MaxInt32
+	} else {
+		conversationCount = int32(msgCount)
+	}
+
 	return &loomv1.Session{
 		Id:                s.ID,
 		CreatedAt:         s.CreatedAt.Unix(),
 		UpdatedAt:         s.UpdatedAt.Unix(),
 		State:             "active",
 		TotalCostUsd:      s.TotalCostUSD,
-		ConversationCount: int32(s.MessageCount()),
+		ConversationCount: conversationCount,
 	}
 }
 
