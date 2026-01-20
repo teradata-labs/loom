@@ -23,8 +23,13 @@ mcp:
     PYTHONPATH: ./mcp_servers/python
     LOG_LEVEL: info
 
-  # Transport type: "stdio" (default), "http", or "sse"
+  # Transport type: "stdio" (recommended for local servers)
+  # Other options: "http" (legacy), "sse" (legacy), "streamable-http" (modern remote)
   transport: stdio
+
+  # Enable this server (default: false for safety)
+  # Set to true to activate this MCP server
+  enabled: true
 
   # Working directory for the subprocess (optional)
   working_dir: ./mcp_servers/python
@@ -39,7 +44,18 @@ capabilities:
 
 # Notes:
 # - stdio transport uses stdin/stdout for JSON-RPC communication
-# - http/sse transport requires the 'url' field instead of command/args
+# - Best for local servers that run as subprocesses
+# - Provides process isolation and automatic lifecycle management
 # - The MCP server must implement the Model Context Protocol specification
 # - Tools are discovered automatically via MCP's tools/list endpoint
 # - Each tool becomes available as a backend operation
+#
+# Transport Options:
+# - stdio: Local subprocess communication (recommended for local servers)
+# - streamable-http: Remote HTTP servers with sessions (recommended for remote)
+# - http/sse: Legacy remote transports (deprecated, use streamable-http)
+#
+# For remote servers:
+# - Use streamable-http transport (see mcp-streamable-http.yaml)
+# - Remove command/args/env/working_dir fields
+# - Add url, enabled, enable_sessions, enable_resumption fields

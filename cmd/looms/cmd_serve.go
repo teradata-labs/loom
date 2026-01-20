@@ -358,9 +358,17 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Export config values to environment variables for tools
 	exportConfigToEnv(config)
 
-	// Create production logger with INFO level (stack traces only for ERROR level)
+	// Create production logger (stack traces only for ERROR level)
 	zapConfig := zap.NewProductionConfig()
-	zapConfig.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+
+	// Parse and set log level from config
+	logLevel := zap.InfoLevel // default
+	if config.Logging.Level != "" {
+		if err := logLevel.UnmarshalText([]byte(config.Logging.Level)); err != nil {
+			log.Printf("Invalid log level %q, using INFO: %v", config.Logging.Level, err)
+		}
+	}
+	zapConfig.Level = zap.NewAtomicLevelAt(logLevel)
 
 	// Configure log output file if specified
 	if config.Logging.File != "" {
@@ -2210,12 +2218,36 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 	}
 
 	for serverName, serverConfig := range config.MCP.Servers {
+		logger.Debug("Processing MCP server from config",
+			zap.String("name", serverName),
+			zap.String("transport", serverConfig.Transport),
+			zap.String("url", serverConfig.URL),
+			zap.Bool("enabled_in_config", serverConfig.Enabled))
+
+		// Default transport to stdio if not specified
+		transport := serverConfig.Transport
+		if transport == "" {
+			transport = "stdio"
+		}
+
+		// Default to enabled if not explicitly set in config
+		enabled := serverConfig.Enabled
+		// In Go, bool defaults to false, so we treat unset as true
+		// Only disable if explicitly set to false in config
+		// Since we can't distinguish between unset and false in bool,
+		// we just use the value as-is (true = enabled, false = disabled)
+		// For backwards compatibility, servers without "enabled" field will be false
+		// but the config loader should set defaults
+
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
-			Command:   serverConfig.Command,
-			Args:      serverConfig.Args,
-			Env:       serverConfig.Env,
-			Transport: "stdio", // Use stdio transport
-			Enabled:   true,    // Enable the server
+			Command:          serverConfig.Command,
+			Args:             serverConfig.Args,
+			Env:              serverConfig.Env,
+			Transport:        transport,
+			URL:              serverConfig.URL,
+			EnableSessions:   serverConfig.EnableSessions,
+			EnableResumption: serverConfig.EnableResumption,
+			Enabled:          enabled,
 			ToolFilter: manager.ToolFilter{
 				All: true, // Register all tools from this server
 			},

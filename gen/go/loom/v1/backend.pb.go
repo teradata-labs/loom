@@ -524,14 +524,18 @@ type MCPConnection struct {
 	Args []string `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
 	// Environment variables
 	Env map[string]string `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Transport type: "stdio", "http", "sse"
+	// Transport type: "stdio", "http", "sse", "streamable-http"
 	Transport string `protobuf:"bytes,4,opt,name=transport,proto3" json:"transport,omitempty"`
-	// URL for HTTP/SSE transport (required if transport is http/sse)
+	// URL for HTTP/SSE transport (required if transport is http/sse/streamable-http)
 	Url string `protobuf:"bytes,5,opt,name=url,proto3" json:"url,omitempty"`
 	// Working directory for subprocess (optional)
-	WorkingDir    string `protobuf:"bytes,6,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	WorkingDir string `protobuf:"bytes,6,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	// Enable session management (for streamable-http transport)
+	EnableSessions bool `protobuf:"varint,7,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
+	// Enable stream resumption (for streamable-http transport)
+	EnableResumption bool `protobuf:"varint,8,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *MCPConnection) Reset() {
@@ -604,6 +608,20 @@ func (x *MCPConnection) GetWorkingDir() string {
 		return x.WorkingDir
 	}
 	return ""
+}
+
+func (x *MCPConnection) GetEnableSessions() bool {
+	if x != nil {
+		return x.EnableSessions
+	}
+	return false
+}
+
+func (x *MCPConnection) GetEnableResumption() bool {
+	if x != nil {
+		return x.EnableResumption
+	}
+	return false
 }
 
 type AuthConfig struct {
@@ -924,7 +942,7 @@ const file_loom_v1_backend_proto_rawDesc = "" +
 	"\x0ftimeout_seconds\x18\x05 \x01(\x05R\x0etimeoutSeconds\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf9\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
 	"\rMCPConnection\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x121\n" +
@@ -932,7 +950,9 @@ const file_loom_v1_backend_proto_rawDesc = "" +
 	"\ttransport\x18\x04 \x01(\tR\ttransport\x12\x10\n" +
 	"\x03url\x18\x05 \x01(\tR\x03url\x12\x1f\n" +
 	"\vworking_dir\x18\x06 \x01(\tR\n" +
-	"workingDir\x1a6\n" +
+	"workingDir\x12'\n" +
+	"\x0fenable_sessions\x18\a \x01(\bR\x0eenableSessions\x12+\n" +
+	"\x11enable_resumption\x18\b \x01(\bR\x10enableResumption\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8f\x01\n" +

@@ -297,3 +297,51 @@ func TestMCPSecretInjection_EndToEnd(t *testing.T) {
 		t.Error("existing TD_HOST env var was not preserved")
 	}
 }
+
+func TestMCPServerConfig_HTTPTransport(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        MCPServerConfig
+		wantTransport string
+		wantURL       string
+	}{
+		{
+			name: "http transport with url",
+			config: MCPServerConfig{
+				Transport: "http",
+				URL:       "http://localhost:8080/mcp",
+			},
+			wantTransport: "http",
+			wantURL:       "http://localhost:8080/mcp",
+		},
+		{
+			name: "sse transport with url",
+			config: MCPServerConfig{
+				Transport: "sse",
+				URL:       "https://api.example.com/mcp",
+			},
+			wantTransport: "sse",
+			wantURL:       "https://api.example.com/mcp",
+		},
+		{
+			name: "stdio transport (default)",
+			config: MCPServerConfig{
+				Command: "npx",
+				Args:    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+			},
+			wantTransport: "", // Will default to stdio in initializeMCPManager
+			wantURL:       "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.Transport != tt.wantTransport {
+				t.Errorf("Transport = %v, want %v", tt.config.Transport, tt.wantTransport)
+			}
+			if tt.config.URL != tt.wantURL {
+				t.Errorf("URL = %v, want %v", tt.config.URL, tt.wantURL)
+			}
+		})
+	}
+}

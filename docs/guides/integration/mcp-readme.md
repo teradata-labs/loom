@@ -98,7 +98,116 @@ mcp:
         TD_USER: myuser
         TD_HOST: myhost.teradata.com
       transport: stdio
+      enabled: true  # Set to true to activate this server
 ```
+
+### Transport Types
+
+Loom supports three MCP transport types:
+
+#### 1. stdio (Local Servers)
+✅ **Recommended for local servers**
+
+Runs MCP servers as subprocesses, communicating via stdin/stdout.
+
+```yaml
+mcp:
+  servers:
+    local-tools:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+      transport: stdio
+      enabled: true
+```
+
+**Use stdio when:**
+- Running MCP servers locally
+- Need process isolation
+- Want automatic lifecycle management
+
+#### 2. streamable-http (Remote Servers - Modern)
+✅ **Recommended for remote servers**
+
+Modern MCP transport (2025-03-26 spec) with session management and stream resumption.
+
+```yaml
+mcp:
+  servers:
+    remote-api:
+      transport: streamable-http
+      url: https://api.example.com/mcp
+      enabled: true
+      enable_sessions: true    # Session IDs for state management
+      enable_resumption: true  # Fault tolerance with event replay
+```
+
+**Use streamable-http when:**
+- Connecting to remote MCP servers
+- Need session management (Mcp-Session-Id headers)
+- Want fault tolerance with stream resumption
+- Deploying in production environments
+
+**Features:**
+- Single unified endpoint
+- Session management via `Mcp-Session-Id` headers
+- Stream resumption with `Last-Event-ID`
+- Better error handling (HTTP 404 for expired sessions)
+
+#### 3. http/sse (Remote Servers - Legacy)
+⚠️ **Deprecated - Use streamable-http instead**
+
+Legacy HTTP/SSE transport for backwards compatibility.
+
+```yaml
+mcp:
+  servers:
+    legacy-server:
+      transport: http  # or "sse"
+      url: http://legacy-server.example.com:8080/mcp
+      enabled: true
+```
+
+**Migration to streamable-http:**
+```yaml
+# Before (legacy)
+transport: http
+url: http://server.example.com/mcp
+
+# After (modern)
+transport: streamable-http
+url: http://server.example.com/mcp
+enabled: true
+enable_sessions: true
+enable_resumption: true
+```
+
+### Enabling/Disabling Servers
+
+Control which MCP servers start:
+
+```yaml
+mcp:
+  servers:
+    production-db:
+      # ... config ...
+      enabled: true   # Server will start
+
+    development-db:
+      # ... config ...
+      enabled: false  # Server will NOT start
+```
+
+CLI commands:
+```bash
+# Enable a server
+looms config set mcp.servers.myserver.enabled true
+
+# Disable a server
+looms config set mcp.servers.myserver.enabled false
+```
+
+> **Note:** Servers default to disabled (`enabled: false`) for safety.
+> You must explicitly set `enabled: true` for each server you want to use.
 
 
 ## Common Tasks

@@ -181,12 +181,15 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 
 	// Build server config
 	serverConfig := manager.ServerConfig{
-		Command:    req.Command,
-		Args:       req.Args,
-		Env:        req.Env,
-		Transport:  req.Transport,
-		Enabled:    req.Enabled,
-		ToolFilter: toolFilter,
+		Command:          req.Command,
+		Args:             req.Args,
+		Env:              req.Env,
+		Transport:        req.Transport,
+		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
+		EnableSessions:   req.EnableSessions,
+		EnableResumption: req.EnableResumption,
+		Enabled:          req.Enabled,
+		ToolFilter:       toolFilter,
 	}
 
 	// If auto_start, try to start server FIRST to validate it works
@@ -349,12 +352,15 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 
 	// Build server config
 	serverConfig := manager.ServerConfig{
-		Command:    req.Command,
-		Args:       req.Args,
-		Env:        req.Env,
-		Transport:  req.Transport,
-		Enabled:    req.Enabled,
-		ToolFilter: toolFilter,
+		Command:          req.Command,
+		Args:             req.Args,
+		Env:              req.Env,
+		Transport:        req.Transport,
+		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
+		EnableSessions:   req.EnableSessions,
+		EnableResumption: req.EnableResumption,
+		Enabled:          req.Enabled,
+		ToolFilter:       toolFilter,
 	}
 
 	// If restart requested and server is running

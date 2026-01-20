@@ -155,11 +155,16 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 		Params:  paramsJSON,
 	}
 
+	c.logger.Debug("Sending initialize request")
+
 	// Send request
 	resp, err := c.sendRequest(ctx, req)
 	if err != nil {
+		c.logger.Error("Initialize request failed", zap.Error(err))
 		return fmt.Errorf("initialize failed: %w", err)
 	}
+
+	c.logger.Debug("Received initialize response")
 
 	// Parse result
 	var result protocol.InitializeResult
@@ -188,6 +193,28 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 		zap.Bool("resources", result.Capabilities.Resources != nil),
 		zap.Bool("prompts", result.Capabilities.Prompts != nil),
 	)
+
+	// Send initialized notification per MCP spec
+	// This completes the handshake and tells the server the client is ready
+	// Notifications are JSON-RPC requests without an ID
+	notification := &protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		Method:  "notifications/initialized",
+		// ID is omitted for notifications
+	}
+
+	notificationJSON, err := json.Marshal(notification)
+	if err != nil {
+		return fmt.Errorf("failed to marshal initialized notification: %w", err)
+	}
+
+	c.logger.Debug("Sending initialized notification")
+
+	if err := c.transport.Send(ctx, notificationJSON); err != nil {
+		return fmt.Errorf("failed to send initialized notification: %w", err)
+	}
+
+	c.logger.Debug("Initialized notification sent")
 
 	return nil
 }
@@ -288,16 +315,32 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	c.logger.Debug("Sending request via transport",
+		zap.String("method", req.Method),
+		zap.String("id", reqIDStr))
+
 	// Send request
 	if err := c.transport.Send(ctx, reqJSON); err != nil {
+		c.logger.Error("Failed to send request via transport",
+			zap.String("method", req.Method),
+			zap.Error(err))
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
+
+	c.logger.Debug("Request sent, waiting for response",
+		zap.String("method", req.Method),
+		zap.String("id", reqIDStr))
 
 	// Wait for response with timeout
 	select {
 	case <-ctx.Done():
+		c.logger.Debug("Context cancelled while waiting for response",
+			zap.String("method", req.Method))
 		return nil, ctx.Err()
 	case resp := <-respChan:
+		c.logger.Debug("Received response",
+			zap.String("method", req.Method),
+			zap.String("id", reqIDStr))
 		if resp.Error != nil {
 			return nil, resp.Error
 		}
