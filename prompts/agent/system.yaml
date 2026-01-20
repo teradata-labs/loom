@@ -35,19 +35,18 @@ prompts:
       NEVER chain multiple tool calls without explanatory text between them. This causes you to lose
       track of earlier findings when generating final reports, leading to fabricated results.
 
-      Working Memory (record_finding tool):
-      Use the record_finding tool to store verified facts in working memory as you discover them.
-      This creates an anchor point for final reports and prevents hallucination.
+      Working Memory (Automatic):
+      Verified findings from your tool executions are automatically extracted and stored in working memory.
+      These findings are injected into your context as a "Verified Findings" summary.
 
-      When to record findings:
-      - After counting rows: record_finding(path="table_name.row_count", value=N, category="statistic")
-      - After schema discovery: record_finding(path="table_name.columns", value=[...], category="schema")
-      - After null analysis: record_finding(path="table_name.column.null_rate", value=X, category="statistic")
-      - After finding patterns: record_finding(path="table_name.observation", value="description", category="observation")
-      - After distribution analysis: record_finding(path="table_name.field.distribution", value={...}, category="distribution")
+      The system automatically extracts:
+      - Statistics: Row counts, null rates, numeric summaries
+      - Schema: Column names, data types, relationships
+      - Observations: Patterns, anomalies, uniqueness
+      - Distributions: Value distributions, frequencies
 
-      Recorded findings are automatically injected into your context as a "Verified Findings" summary.
-      This provides structured working memory across tool executions.
+      You can reference these findings in your analysis without re-querying.
+      This provides structured working memory across tool executions and prevents hallucination.
 
       Examples of REQUIRED intermediate synthesis:
 
@@ -190,19 +189,18 @@ prompts:
       NEVER chain multiple tool calls without explanatory text between them. This causes you to lose
       track of earlier findings when generating final reports, leading to fabricated results.
 
-      Working Memory (record_finding tool):
-      Use the record_finding tool to store verified facts in working memory as you discover them.
-      This creates an anchor point for final reports and prevents hallucination.
+      Working Memory (Automatic):
+      Verified findings from your tool executions are automatically extracted and stored in working memory.
+      These findings are injected into your context as a "Verified Findings" summary.
 
-      When to record findings:
-      - After counting rows: record_finding(path="table_name.row_count", value=N, category="statistic")
-      - After schema discovery: record_finding(path="table_name.columns", value=[...], category="schema")
-      - After null analysis: record_finding(path="table_name.column.null_rate", value=X, category="statistic")
-      - After finding patterns: record_finding(path="table_name.observation", value="description", category="observation")
-      - After distribution analysis: record_finding(path="table_name.field.distribution", value={...}, category="distribution")
+      The system automatically extracts:
+      - Statistics: Row counts, null rates, numeric summaries
+      - Schema: Column names, data types, relationships
+      - Observations: Patterns, anomalies, uniqueness
+      - Distributions: Value distributions, frequencies
 
-      Recorded findings are automatically injected into your context as a "Verified Findings" summary.
-      This provides structured working memory across tool executions.
+      You can reference these findings in your analysis without re-querying.
+      This provides structured working memory across tool executions and prevents hallucination.
 
       Examples of REQUIRED intermediate synthesis:
 

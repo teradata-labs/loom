@@ -47,6 +47,21 @@ message AgentConfig {
   //   - "": No ROM (empty system prompt only)
   // If not specified, defaults to "auto" which detects ROM from backend path
   string rom = 10;
+
+  // Automatic finding extraction configuration
+  // When enabled, the agent automatically extracts structured findings from tool results
+  // using LLM-based semantic analysis. This replaces the manual record_finding tool.
+  bool enable_finding_extraction = 11; // Default: true
+
+  // Number of tool executions between automatic finding extractions (default: 3)
+  // Lower values extract more frequently (higher quality, higher cost)
+  // Higher values extract less frequently (lower cost, may miss patterns)
+  int32 extraction_cadence = 12;
+
+  // Maximum number of findings to keep in cache (default: 50)
+  // Oldest findings are evicted using LRU when limit is reached
+  // Lower values save tokens, higher values preserve more context
+  int32 max_findings = 13;
 }
 
 // LLMConfig configures the language model provider and parameters

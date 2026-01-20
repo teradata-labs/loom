@@ -3156,6 +3156,20 @@
         "rom": {
           "type": "string",
           "title": "ROM (Read-Only Memory) identifier for domain-specific knowledge\nOptions:\n  - \"TD\" or \"teradata\": Load Teradata SQL guidance (embedded TD.rom)\n  - \"auto\": Auto-detect based on backend configuration (default)\n  - \"\": No ROM (empty system prompt only)\nIf not specified, defaults to \"auto\" which detects ROM from backend path"
+        },
+        "enableFindingExtraction": {
+          "type": "boolean",
+          "description": "Automatic finding extraction configuration\nWhen enabled, the agent automatically extracts structured findings from tool results\nusing LLM-based semantic analysis. This replaces the manual record_finding tool.\n\nDefault: true"
+        },
+        "extractionCadence": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of tool executions between automatic finding extractions (default: 3)\nLower values extract more frequently (higher quality, higher cost)\nHigher values extract less frequently (lower cost, may miss patterns)"
+        },
+        "maxFindings": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum number of findings to keep in cache (default: 50)\nOldest findings are evicted using LRU when limit is reached\nLower values save tokens, higher values preserve more context"
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."

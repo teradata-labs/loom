@@ -183,7 +183,19 @@ type AgentConfig struct {
 	//   - "": No ROM (empty system prompt only)
 	//
 	// If not specified, defaults to "auto" which detects ROM from backend path
-	Rom           string `protobuf:"bytes,10,opt,name=rom,proto3" json:"rom,omitempty"`
+	Rom string `protobuf:"bytes,10,opt,name=rom,proto3" json:"rom,omitempty"`
+	// Automatic finding extraction configuration
+	// When enabled, the agent automatically extracts structured findings from tool results
+	// using LLM-based semantic analysis. This replaces the manual record_finding tool.
+	EnableFindingExtraction bool `protobuf:"varint,11,opt,name=enable_finding_extraction,json=enableFindingExtraction,proto3" json:"enable_finding_extraction,omitempty"` // Default: true
+	// Number of tool executions between automatic finding extractions (default: 3)
+	// Lower values extract more frequently (higher quality, higher cost)
+	// Higher values extract less frequently (lower cost, may miss patterns)
+	ExtractionCadence int32 `protobuf:"varint,12,opt,name=extraction_cadence,json=extractionCadence,proto3" json:"extraction_cadence,omitempty"`
+	// Maximum number of findings to keep in cache (default: 50)
+	// Oldest findings are evicted using LRU when limit is reached
+	// Lower values save tokens, higher values preserve more context
+	MaxFindings   int32 `protobuf:"varint,13,opt,name=max_findings,json=maxFindings,proto3" json:"max_findings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -286,6 +298,27 @@ func (x *AgentConfig) GetRom() string {
 		return x.Rom
 	}
 	return ""
+}
+
+func (x *AgentConfig) GetEnableFindingExtraction() bool {
+	if x != nil {
+		return x.EnableFindingExtraction
+	}
+	return false
+}
+
+func (x *AgentConfig) GetExtractionCadence() int32 {
+	if x != nil {
+		return x.ExtractionCadence
+	}
+	return 0
+}
+
+func (x *AgentConfig) GetMaxFindings() int32 {
+	if x != nil {
+		return x.MaxFindings
+	}
+	return 0
 }
 
 // LLMConfig configures the language model provider and parameters
@@ -1393,7 +1426,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\xf7\x03\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\x85\x05\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1405,7 +1438,10 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\bmetadata\x18\b \x03(\v2\".loom.v1.AgentConfig.MetadataEntryR\bmetadata\x12H\n" +
 	"\x10ephemeral_agents\x18\t \x03(\v2\x1d.loom.v1.EphemeralAgentPolicyR\x0fephemeralAgents\x12\x10\n" +
 	"\x03rom\x18\n" +
-	" \x01(\tR\x03rom\x1a;\n" +
+	" \x01(\tR\x03rom\x12:\n" +
+	"\x19enable_finding_extraction\x18\v \x01(\bR\x17enableFindingExtraction\x12-\n" +
+	"\x12extraction_cadence\x18\f \x01(\x05R\x11extractionCadence\x12!\n" +
+	"\fmax_findings\x18\r \x01(\x05R\vmaxFindings\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb3\x02\n" +

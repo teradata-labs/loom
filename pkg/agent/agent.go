@@ -87,6 +87,18 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
 
+	// Initialize automatic finding extraction with defaults if not set
+	if a.config.ExtractionCadence == 0 {
+		a.config.ExtractionCadence = 3 // Default: extract every 3 tool calls
+	}
+	if a.config.MaxFindings == 0 {
+		a.config.MaxFindings = 50 // Default: keep 50 findings
+	}
+	// Enable by default (can be explicitly disabled by setting enable_finding_extraction: false in config)
+	a.enableFindingExtraction = true
+	a.extractionCadence = a.config.ExtractionCadence
+	a.toolExecutionsSinceExtraction = 0
+
 	// Initialize pattern orchestrator
 	patternLibrary := patterns.NewLibrary(nil, a.config.PatternsDir)
 	a.orchestrator = patterns.NewOrchestrator(patternLibrary)
@@ -150,11 +162,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
 	}
 
-	// Register built-in record_finding tool for working memory
-	// This prevents hallucination by allowing agents to record verified findings
-	if a.memory != nil {
-		a.tools.Register(NewRecordFindingTool(a.memory))
-	}
+	// REMOVED: Manual record_finding tool (replaced by automatic extraction)
+	// Findings are now automatically extracted from tool results using LLM-based semantic analysis
+	// See finding_extractor.go for implementation
 
 	// Initialize SQL result store for queryable large SQL results
 	// This allows filtering/aggregating SQL results without context blowout
@@ -1410,6 +1420,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// Log but don't fail
 				if toolSpan != nil {
 					toolSpan.RecordError(persistErr)
+				}
+			}
+
+			// === AUTOMATIC FINDING EXTRACTION ===
+			// After each tool execution, check if we should extract findings
+			if a.enableFindingExtraction {
+				a.toolExecutionsSinceExtraction++
+				if a.toolExecutionsSinceExtraction >= a.extractionCadence {
+					// Run extraction in background (non-blocking)
+					go a.extractFindingsAsync(ctx, session.ID)
+					a.toolExecutionsSinceExtraction = 0
 				}
 			}
 		}

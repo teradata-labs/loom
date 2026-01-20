@@ -185,6 +185,65 @@ func analyzeJSONArray(data []byte) (*SchemaInfo, *PreviewData) {
 	return schema, preview
 }
 
+// truncateObjectForPreview creates a truncated copy of an object for preview display.
+// Limits the number of fields shown and truncates long values to prevent massive previews.
+func truncateObjectForPreview(obj map[string]any, maxFields int, maxValueLen int) map[string]any {
+	if obj == nil {
+		return nil
+	}
+
+	truncated := make(map[string]any)
+	count := 0
+
+	for key, value := range obj {
+		if count >= maxFields {
+			truncated["..."] = fmt.Sprintf("(%d more fields)", len(obj)-maxFields)
+			break
+		}
+
+		// Truncate the value based on its type
+		truncated[key] = truncateValue(value, maxValueLen)
+		count++
+	}
+
+	return truncated
+}
+
+// truncateValue truncates a value to a maximum length for preview display.
+func truncateValue(value any, maxLen int) any {
+	switch v := value.(type) {
+	case string:
+		if len(v) > maxLen {
+			return v[:maxLen] + "... (truncated)"
+		}
+		return v
+
+	case []any:
+		// For arrays, show first 3 items only
+		if len(v) > 3 {
+			truncated := make([]any, 3)
+			for i := 0; i < 3; i++ {
+				truncated[i] = truncateValue(v[i], maxLen)
+			}
+			return append(truncated, fmt.Sprintf("... (%d more items)", len(v)-3))
+		}
+		// Truncate each item in small arrays
+		truncated := make([]any, len(v))
+		for i, item := range v {
+			truncated[i] = truncateValue(item, maxLen)
+		}
+		return truncated
+
+	case map[string]any:
+		// For nested objects, recursively truncate (max 5 fields, 100 char values)
+		return truncateObjectForPreview(v, 5, 100)
+
+	default:
+		// Numbers, booleans, null - return as is
+		return v
+	}
+}
+
 // analyzeJSONObject analyzes JSON object structure.
 func analyzeJSONObject(data []byte) (*SchemaInfo, *PreviewData) {
 	var obj map[string]any
@@ -198,8 +257,12 @@ func analyzeJSONObject(data []byte) (*SchemaInfo, *PreviewData) {
 		SampleItem: obj,
 	}
 
+	// CRITICAL FIX: Truncate object preview to prevent 1MB+ previews from accumulating in conversation
+	// Only show first 10 fields with values truncated to 200 chars max
+	truncatedObj := truncateObjectForPreview(obj, 10, 200)
+
 	preview := &PreviewData{
-		First5: []any{obj},
+		First5: []any{truncatedObj},
 	}
 
 	return schema, preview

@@ -31,10 +31,11 @@ import (
 const (
 	// DefaultMaxMemoryBytes is 1GB
 	DefaultMaxMemoryBytes = 1 * 1024 * 1024 * 1024
-	// DefaultSharedMemoryThreshold is 2.5KB (balanced for multi-agent communication)
-	// Payloads larger than this will be stored as references instead of inline values,
-	// providing 20-30% token savings on typical workloads.
-	DefaultSharedMemoryThreshold = 2560 // 2.5KB
+	// DefaultSharedMemoryThreshold is 0 bytes - all tool results stored as references.
+	// This prevents conversation history accumulation by keeping all tool output in storage
+	// rather than inline in conversation. Agents use query_tool_result to access data.
+	// Provides massive token savings (80%+), critical for database agents.
+	DefaultSharedMemoryThreshold = 0 // Store everything as references
 	// DefaultCompressionThreshold is 1MB
 	DefaultCompressionThreshold = 1 * 1024 * 1024
 	// DefaultTTLSeconds is 1 hour

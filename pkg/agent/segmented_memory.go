@@ -177,7 +177,7 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		schemaAccessLog:    make(map[string]time.Time),
 		maxSchemas:         10,                       // Max 10 schemas cached
 		findingsCache:      make(map[string]Finding), // Working memory for verified findings
-		maxFindings:        100,                      // Max 100 findings cached
+		maxFindings:        50,                       // Max 50 findings cached (LRU eviction)
 		l1Messages:         make([]Message, 0),
 		promotedContext:    make([]Message, 0),
 		sessionStore:       nil,   // Set via SetSessionStore
@@ -540,16 +540,31 @@ func (sm *SegmentedMemory) GetSchema(key string) (string, bool) {
 
 // RecordFinding stores a verified finding in the kernel layer for working memory.
 // This prevents hallucination by maintaining structured facts discovered during analysis.
-// If maxFindings is exceeded, this is a no-op (findings are transient, not critical).
+// If maxFindings is exceeded, LRU eviction removes the oldest finding.
 func (sm *SegmentedMemory) RecordFinding(path string, value interface{}, category, note, source string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Check limit (soft limit - don't evict, just stop recording new ones)
-	if len(sm.findingsCache) >= sm.maxFindings {
-		return // Silently drop new findings when cache is full
+	// If cache is full and this is a new path, evict oldest finding (LRU)
+	if _, exists := sm.findingsCache[path]; !exists && len(sm.findingsCache) >= sm.maxFindings {
+		// Find the oldest finding
+		var oldestPath string
+		var oldestTime time.Time
+		first := true
+		for p, f := range sm.findingsCache {
+			if first || f.Timestamp.Before(oldestTime) {
+				oldestPath = p
+				oldestTime = f.Timestamp
+				first = false
+			}
+		}
+		// Remove the oldest finding
+		if oldestPath != "" {
+			delete(sm.findingsCache, oldestPath)
+		}
 	}
 
+	// Add or update the finding
 	finding := Finding{
 		Path:      path,
 		Value:     value,

@@ -66,7 +66,7 @@ func NewExecutor(registry *Registry) *Executor {
 // SetSharedMemory configures shared memory for large result handling.
 func (e *Executor) SetSharedMemory(sharedMemory *storage.SharedMemoryStore, threshold int64) {
 	e.sharedMemory = sharedMemory
-	if threshold > 0 {
+	if threshold >= 0 {
 		e.threshold = threshold
 	}
 }
@@ -245,8 +245,8 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 		// (executor timing is authoritative)
 		result.ExecutionTimeMs = duration.Milliseconds()
 
-		// Handle large results EXCEPT for get_tool_result which retrieves large data
-		// Wrapping get_tool_result output creates infinite recursion: get_tool_result → DataRef → get_tool_result → DataRef → ...
+		// Handle large results EXCEPT for get_tool_result (deprecated) which retrieves large data
+		// query_tool_result output SHOULD be wrapped to prevent context overflow
 		if tool.Name() != "get_tool_result" {
 			if err := e.handleLargeResult(result); err != nil {
 				// Log error but don't fail execution

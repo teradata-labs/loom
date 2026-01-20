@@ -97,6 +97,11 @@ type Agent struct {
 
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
+
+	// Automatic finding extraction
+	enableFindingExtraction         bool // Whether automatic extraction is enabled
+	extractionCadence               int  // Number of tool executions between extractions
+	toolExecutionsSinceExtraction   int  // Counter for tool executions since last extraction
 }
 
 // Config holds agent configuration.
@@ -145,6 +150,11 @@ type Config struct {
 
 	// PatternConfig controls pattern injection (nil = use defaults)
 	PatternConfig *PatternConfig
+
+	// Automatic finding extraction configuration
+	EnableFindingExtraction bool // Whether to enable automatic finding extraction (default: true)
+	ExtractionCadence       int  // Number of tool executions between extractions (default: 3)
+	MaxFindings             int  // Maximum findings to keep in cache (default: 50)
 }
 
 // PatternConfig holds pattern injection configuration
