@@ -405,6 +405,9 @@ type MCPServerConfig struct {
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `mapstructure:"enable_resumption"`
 
+	// Enabled controls whether this server should be started (default: true)
+	Enabled bool `mapstructure:"enabled"`
+
 	// WorkingDir is the working directory for the MCP server process (optional)
 	WorkingDir string `mapstructure:"working_dir"`
 }
