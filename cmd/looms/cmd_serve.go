@@ -2217,12 +2217,14 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		}
 
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
-			Command:   serverConfig.Command,
-			Args:      serverConfig.Args,
-			Env:       serverConfig.Env,
-			Transport: transport,
-			URL:       serverConfig.URL,
-			Enabled:   true, // Enable the server
+			Command:          serverConfig.Command,
+			Args:             serverConfig.Args,
+			Env:              serverConfig.Env,
+			Transport:        transport,
+			URL:              serverConfig.URL,
+			EnableSessions:   serverConfig.EnableSessions,
+			EnableResumption: serverConfig.EnableResumption,
+			Enabled:          true, // Enable the server
 			ToolFilter: manager.ToolFilter{
 				All: true, // Register all tools from this server
 			},

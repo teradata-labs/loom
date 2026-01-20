@@ -393,10 +393,17 @@ type MCPServerConfig struct {
 	Env map[string]string `mapstructure:"env"`
 
 	// Transport is the communication transport (default: "stdio")
+	// Options: "stdio", "http", "sse", "streamable-http"
 	Transport string `mapstructure:"transport"`
 
-	// URL is the server URL (required for http/sse transport)
+	// URL is the server URL (required for http/sse/streamable-http transport)
 	URL string `mapstructure:"url"`
+
+	// EnableSessions enables session management (for streamable-http transport)
+	EnableSessions bool `mapstructure:"enable_sessions"`
+
+	// EnableResumption enables stream resumption (for streamable-http transport)
+	EnableResumption bool `mapstructure:"enable_resumption"`
 
 	// WorkingDir is the working directory for the MCP server process (optional)
 	WorkingDir string `mapstructure:"working_dir"`

@@ -2989,6 +2989,14 @@
         "url": {
           "type": "string",
           "title": "Server URL (required for http/sse transport)"
+        },
+        "enableSessions": {
+          "type": "boolean",
+          "title": "Enable session management (for streamable-http transport)"
+        },
+        "enableResumption": {
+          "type": "boolean",
+          "title": "Enable stream resumption (for streamable-http transport)"
         }
       },
       "description": "UpdateMCPServerRequest updates an MCP server."
@@ -3093,6 +3101,14 @@
         "url": {
           "type": "string",
           "title": "Server URL (required for http/sse transport)"
+        },
+        "enableSessions": {
+          "type": "boolean",
+          "title": "Enable session management (for streamable-http transport)"
+        },
+        "enableResumption": {
+          "type": "boolean",
+          "title": "Enable stream resumption (for streamable-http transport)"
         }
       },
       "description": "AddMCPServerRequest adds a new MCP server."
@@ -7103,6 +7119,14 @@
         "url": {
           "type": "string",
           "title": "Server URL (required for http/sse transport)"
+        },
+        "enableSessions": {
+          "type": "boolean",
+          "title": "Enable session management (for streamable-http transport)"
+        },
+        "enableResumption": {
+          "type": "boolean",
+          "title": "Enable stream resumption (for streamable-http transport)"
         }
       },
       "description": "TestMCPServerConnectionRequest tests an MCP server configuration."

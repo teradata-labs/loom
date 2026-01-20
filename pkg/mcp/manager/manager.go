@@ -112,14 +112,22 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 			Env:     config.Env,
 			Logger:  m.logger.With(zap.String("server", name)),
 		})
+	case "streamable-http":
+		// Streamable HTTP transport (MCP 2025-03-26 spec)
+		trans, err = transport.NewStreamableHTTPTransport(transport.StreamableHTTPConfig{
+			Endpoint:         config.URL,
+			EnableSessions:   config.EnableSessions,
+			EnableResumption: config.EnableResumption,
+			Logger:           m.logger.With(zap.String("server", name)),
+		})
 	case "http", "sse":
-		// HTTP/SSE transport (sse is alias for backwards compatibility)
+		// Legacy HTTP/SSE transport (deprecated, backwards compatibility)
 		trans, err = transport.NewHTTPTransport(transport.HTTPConfig{
 			Endpoint: config.URL,
 			Logger:   m.logger.With(zap.String("server", name)),
 		})
 	default:
-		return fmt.Errorf("unsupported transport: %s (supported: stdio, http, sse)", config.Transport)
+		return fmt.Errorf("unsupported transport: %s (supported: stdio, http, sse, streamable-http)", config.Transport)
 	}
 
 	if err != nil {

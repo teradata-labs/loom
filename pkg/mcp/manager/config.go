@@ -47,11 +47,17 @@ type ServerConfig struct {
 	// ToolFilter controls which tools are registered from this server
 	ToolFilter ToolFilter `yaml:"tools" json:"tools"`
 
-	// Transport specifies the transport type ("stdio" or "sse")
+	// Transport specifies the transport type ("stdio", "http", "sse", or "streamable-http")
 	Transport string `yaml:"transport" json:"transport"`
 
-	// URL is the server URL (for SSE transport)
+	// URL is the server URL (for HTTP/SSE/streamable-http transport)
 	URL string `yaml:"url" json:"url"`
+
+	// EnableSessions enables session management (for streamable-http transport)
+	EnableSessions bool `yaml:"enable_sessions" json:"enable_sessions"`
+
+	// EnableResumption enables stream resumption (for streamable-http transport)
+	EnableResumption bool `yaml:"enable_resumption" json:"enable_resumption"`
 
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
@@ -118,12 +124,12 @@ func (s *ServerConfig) Validate() error {
 		if s.Command == "" {
 			return fmt.Errorf("command required for stdio transport")
 		}
-	case "http", "sse":
+	case "http", "sse", "streamable-http":
 		if s.URL == "" {
-			return fmt.Errorf("url required for http/sse transport")
+			return fmt.Errorf("url required for http/sse/streamable-http transport")
 		}
 	default:
-		return fmt.Errorf("invalid transport: %s (must be 'stdio', 'http', or 'sse')", s.Transport)
+		return fmt.Errorf("invalid transport: %s (must be 'stdio', 'http', 'sse', or 'streamable-http')", s.Transport)
 	}
 
 	return nil

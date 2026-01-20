@@ -79,14 +79,20 @@ message MCPConnection {
   // Environment variables
   map<string, string> env = 3;
 
-  // Transport type: "stdio", "http", "sse"
+  // Transport type: "stdio", "http", "sse", "streamable-http"
   string transport = 4;
 
-  // URL for HTTP/SSE transport (required if transport is http/sse)
+  // URL for HTTP/SSE transport (required if transport is http/sse/streamable-http)
   string url = 5;
 
   // Working directory for subprocess (optional)
   string working_dir = 6;
+
+  // Enable session management (for streamable-http transport)
+  bool enable_sessions = 7;
+
+  // Enable stream resumption (for streamable-http transport)
+  bool enable_resumption = 8;
 }
 
 message AuthConfig {

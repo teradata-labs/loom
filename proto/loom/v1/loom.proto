@@ -2115,6 +2115,12 @@ message AddMCPServerRequest {
 
   // Server URL (required for http/sse transport)
   string url = 10;
+
+  // Enable session management (for streamable-http transport)
+  bool enable_sessions = 11;
+
+  // Enable stream resumption (for streamable-http transport)
+  bool enable_resumption = 12;
 }
 
 // AddMCPServerResponse confirms MCP server addition.
@@ -2163,6 +2169,12 @@ message UpdateMCPServerRequest {
 
   // Server URL (required for http/sse transport)
   string url = 11;
+
+  // Enable session management (for streamable-http transport)
+  bool enable_sessions = 12;
+
+  // Enable stream resumption (for streamable-http transport)
+  bool enable_resumption = 13;
 }
 
 // DeleteMCPServerRequest deletes an MCP server.
@@ -2241,6 +2253,12 @@ message TestMCPServerConnectionRequest {
 
   // Server URL (required for http/sse transport)
   string url = 8;
+
+  // Enable session management (for streamable-http transport)
+  bool enable_sessions = 9;
+
+  // Enable stream resumption (for streamable-http transport)
+  bool enable_resumption = 10;
 }
 
 // TestMCPServerConnectionResponse returns test results.

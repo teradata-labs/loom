@@ -7686,9 +7686,13 @@ type AddMCPServerRequest struct {
 	// Tool filter configuration
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,9,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
 	// Server URL (required for http/sse transport)
-	Url           string `protobuf:"bytes,10,opt,name=url,proto3" json:"url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Url string `protobuf:"bytes,10,opt,name=url,proto3" json:"url,omitempty"`
+	// Enable session management (for streamable-http transport)
+	EnableSessions bool `protobuf:"varint,11,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
+	// Enable stream resumption (for streamable-http transport)
+	EnableResumption bool `protobuf:"varint,12,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AddMCPServerRequest) Reset() {
@@ -7791,6 +7795,20 @@ func (x *AddMCPServerRequest) GetUrl() string {
 	return ""
 }
 
+func (x *AddMCPServerRequest) GetEnableSessions() bool {
+	if x != nil {
+		return x.EnableSessions
+	}
+	return false
+}
+
+func (x *AddMCPServerRequest) GetEnableResumption() bool {
+	if x != nil {
+		return x.EnableResumption
+	}
+	return false
+}
+
 // AddMCPServerResponse confirms MCP server addition.
 type AddMCPServerResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -7879,9 +7897,13 @@ type UpdateMCPServerRequest struct {
 	// Timeout in seconds for restart operation (default: 1 second)
 	TimeoutSeconds int32 `protobuf:"varint,10,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 	// Server URL (required for http/sse transport)
-	Url           string `protobuf:"bytes,11,opt,name=url,proto3" json:"url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Url string `protobuf:"bytes,11,opt,name=url,proto3" json:"url,omitempty"`
+	// Enable session management (for streamable-http transport)
+	EnableSessions bool `protobuf:"varint,12,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
+	// Enable stream resumption (for streamable-http transport)
+	EnableResumption bool `protobuf:"varint,13,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UpdateMCPServerRequest) Reset() {
@@ -7989,6 +8011,20 @@ func (x *UpdateMCPServerRequest) GetUrl() string {
 		return x.Url
 	}
 	return ""
+}
+
+func (x *UpdateMCPServerRequest) GetEnableSessions() bool {
+	if x != nil {
+		return x.EnableSessions
+	}
+	return false
+}
+
+func (x *UpdateMCPServerRequest) GetEnableResumption() bool {
+	if x != nil {
+		return x.EnableResumption
+	}
+	return false
 }
 
 // DeleteMCPServerRequest deletes an MCP server.
@@ -8330,9 +8366,13 @@ type TestMCPServerConnectionRequest struct {
 	// Timeout for connection test in seconds (default: 10)
 	TimeoutSeconds int32 `protobuf:"varint,7,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 	// Server URL (required for http/sse transport)
-	Url           string `protobuf:"bytes,8,opt,name=url,proto3" json:"url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Url string `protobuf:"bytes,8,opt,name=url,proto3" json:"url,omitempty"`
+	// Enable session management (for streamable-http transport)
+	EnableSessions bool `protobuf:"varint,9,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
+	// Enable stream resumption (for streamable-http transport)
+	EnableResumption bool `protobuf:"varint,10,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TestMCPServerConnectionRequest) Reset() {
@@ -8419,6 +8459,20 @@ func (x *TestMCPServerConnectionRequest) GetUrl() string {
 		return x.Url
 	}
 	return ""
+}
+
+func (x *TestMCPServerConnectionRequest) GetEnableSessions() bool {
+	if x != nil {
+		return x.EnableSessions
+	}
+	return false
+}
+
+func (x *TestMCPServerConnectionRequest) GetEnableResumption() bool {
+	if x != nil {
+		return x.EnableResumption
+	}
+	return false
 }
 
 // TestMCPServerConnectionResponse returns test results.
@@ -10256,7 +10310,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x10ToolFilterConfig\x12\x10\n" +
 	"\x03all\x18\x01 \x01(\bR\x03all\x12\x18\n" +
 	"\ainclude\x18\x02 \x03(\tR\ainclude\x12\x18\n" +
-	"\aexclude\x18\x03 \x03(\tR\aexclude\"\x8e\x03\n" +
+	"\aexclude\x18\x03 \x03(\tR\aexclude\"\xe4\x03\n" +
 	"\x13AddMCPServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12\x1c\n" +
@@ -10271,14 +10325,16 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\vtool_filter\x18\t \x01(\v2\x19.loom.v1.ToolFilterConfigR\n" +
 	"toolFilter\x12\x10\n" +
 	"\x03url\x18\n" +
-	" \x01(\tR\x03url\x1a6\n" +
+	" \x01(\tR\x03url\x12'\n" +
+	"\x0fenable_sessions\x18\v \x01(\bR\x0eenableSessions\x12+\n" +
+	"\x11enable_resumption\x18\f \x01(\bR\x10enableResumption\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"z\n" +
 	"\x14AddMCPServerResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12.\n" +
-	"\x06server\x18\x03 \x01(\v2\x16.loom.v1.MCPServerInfoR\x06server\"\xd9\x03\n" +
+	"\x06server\x18\x03 \x01(\v2\x16.loom.v1.MCPServerInfoR\x06server\"\xaf\x04\n" +
 	"\x16UpdateMCPServerRequest\x12\x1f\n" +
 	"\vserver_name\x18\x01 \x01(\tR\n" +
 	"serverName\x12\x18\n" +
@@ -10294,7 +10350,9 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"toolFilter\x12'\n" +
 	"\x0ftimeout_seconds\x18\n" +
 	" \x01(\x05R\x0etimeoutSeconds\x12\x10\n" +
-	"\x03url\x18\v \x01(\tR\x03url\x1a6\n" +
+	"\x03url\x18\v \x01(\tR\x03url\x12'\n" +
+	"\x0fenable_sessions\x18\f \x01(\bR\x0eenableSessions\x12+\n" +
+	"\x11enable_resumption\x18\r \x01(\bR\x10enableResumption\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
@@ -10320,7 +10378,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x14last_check_timestamp\x18\x02 \x01(\x03R\x12lastCheckTimestamp\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1d\n" +
 	"\n" +
-	"latency_ms\x18\x04 \x01(\x03R\tlatencyMs\"\x80\x03\n" +
+	"latency_ms\x18\x04 \x01(\x03R\tlatencyMs\"\xd6\x03\n" +
 	"\x1eTestMCPServerConnectionRequest\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x12\n" +
@@ -10331,7 +10389,10 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\vtool_filter\x18\x06 \x01(\v2\x19.loom.v1.ToolFilterConfigR\n" +
 	"toolFilter\x12'\n" +
 	"\x0ftimeout_seconds\x18\a \x01(\x05R\x0etimeoutSeconds\x12\x10\n" +
-	"\x03url\x18\b \x01(\tR\x03url\x1a6\n" +
+	"\x03url\x18\b \x01(\tR\x03url\x12'\n" +
+	"\x0fenable_sessions\x18\t \x01(\bR\x0eenableSessions\x12+\n" +
+	"\x11enable_resumption\x18\n" +
+	" \x01(\bR\x10enableResumption\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcd\x01\n" +

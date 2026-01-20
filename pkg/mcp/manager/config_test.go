@@ -60,6 +60,36 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid streamable-http config",
+			config: Config{
+				Servers: map[string]ServerConfig{
+					"modern-remote": {
+						Enabled:          true,
+						Transport:        "streamable-http",
+						URL:              "https://api.example.com/mcp",
+						EnableSessions:   true,
+						EnableResumption: true,
+					},
+				},
+				ClientInfo: ClientInfo{Name: "test", Version: "0.1.0"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "streamable-http missing url",
+			config: Config{
+				Servers: map[string]ServerConfig{
+					"bad": {
+						Enabled:   true,
+						Transport: "streamable-http",
+					},
+				},
+				ClientInfo: ClientInfo{Name: "test", Version: "0.1.0"},
+			},
+			wantErr: true,
+			errMsg:  "url required",
+		},
+		{
 			name: "no servers (allowed for dynamic addition)",
 			config: Config{
 				Servers:    map[string]ServerConfig{},
