@@ -2,13 +2,16 @@
 # This demonstrates the modern MCP transport (2025-03-26 spec) with
 # session management and stream resumption support.
 #
+# ✅ RECOMMENDED: This is the modern MCP transport
+# For legacy servers, see mcp-http.yaml
+#
 # Usage: Reference this file in your looms.yaml agent configuration
 
 apiVersion: loom/v1
 kind: Backend
 name: mcp-streamable-http-backend
 type: mcp
-description: MCP backend using streamable-http transport
+description: MCP backend using streamable-http transport (modern)
 
 # MCP configuration for streamable-http transport
 mcp:
@@ -18,6 +21,10 @@ mcp:
 
   # URL endpoint for the MCP server (single unified endpoint)
   url: https://api.example.com/mcp
+
+  # Enable this server (default: false for safety)
+  # Set to true to activate this MCP server
+  enabled: true
 
   # Enable session management (recommended for streamable-http)
   # Server returns Mcp-Session-Id header during initialization
