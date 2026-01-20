@@ -194,6 +194,28 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 		zap.Bool("prompts", result.Capabilities.Prompts != nil),
 	)
 
+	// Send initialized notification per MCP spec
+	// This completes the handshake and tells the server the client is ready
+	// Notifications are JSON-RPC requests without an ID
+	notification := &protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		Method:  "notifications/initialized",
+		// ID is omitted for notifications
+	}
+
+	notificationJSON, err := json.Marshal(notification)
+	if err != nil {
+		return fmt.Errorf("failed to marshal initialized notification: %w", err)
+	}
+
+	c.logger.Debug("Sending initialized notification")
+
+	if err := c.transport.Send(ctx, notificationJSON); err != nil {
+		return fmt.Errorf("failed to send initialized notification: %w", err)
+	}
+
+	c.logger.Debug("Initialized notification sent")
+
 	return nil
 }
 
