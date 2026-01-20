@@ -1,0 +1,41 @@
+name: Version Consistency Check
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  check-version-drift:
+    name: Check Version Drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Verify version consistency
+        run: |
+          echo "Checking version consistency across all files..."
+          go run ./cmd/version-manager verify
+
+          if [ $? -ne 0 ]; then
+            echo ""
+            echo "::error::Version drift detected!"
+            echo "::error::Run 'just version-sync' locally to fix version inconsistencies."
+            exit 1
+          fi
+
+          echo "✅ All files have consistent versions!"
+
+      - name: Show current version
+        if: always()
+        run: |
+          VERSION=$(go run ./cmd/version-manager show)
+          echo "Current canonical version: $VERSION"

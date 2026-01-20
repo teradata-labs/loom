@@ -18,6 +18,38 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Verify version matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          FILE_VERSION=$(cat VERSION)
+
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) doesn't match VERSION file ($FILE_VERSION)"
+            echo "::error::Run 'just set-version $TAG_VERSION' to fix this."
+            exit 1
+          fi
+
+          echo "✅ Tag version matches VERSION file: $TAG_VERSION"
+
+      - name: Verify all files have consistent versions
+        run: |
+          echo "Verifying version consistency across all files..."
+          go run ./cmd/version-manager verify
+
+          if [ $? -ne 0 ]; then
+            echo ""
+            echo "::error::Version drift detected in release!"
+            echo "::error::All files must have consistent versions before release."
+            exit 1
+          fi
+
+          echo "✅ All files have consistent versions!"
+
       - name: Generate changelog
         id: changelog
         run: |

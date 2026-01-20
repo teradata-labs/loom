@@ -411,11 +411,45 @@ dev: proto test
 ci: proto-lint lint test build
     @echo "✅ CI checks passed!"
 
-# Update version across all files
+# ============================================================================
+# Version Management
+# ============================================================================
+
+# Show current version from VERSION file
+version-show:
+    @go run ./cmd/version-manager show
+
+# Verify all files have consistent versions
+version-verify:
+    @echo "Checking version consistency..."
+    @go run ./cmd/version-manager verify
+
+# Bump major version (X.0.0)
+bump-major:
+    @echo "Bumping major version..."
+    @go run ./cmd/version-manager bump major --commit --tag
+    @echo "✅ Version bumped. Review: git show HEAD"
+
+# Bump minor version (x.X.0)
+bump-minor:
+    @echo "Bumping minor version..."
+    @go run ./cmd/version-manager bump minor --commit --tag
+    @echo "✅ Version bumped. Review: git show HEAD"
+
+# Bump patch version (x.x.X)
+bump-patch:
+    @echo "Bumping patch version..."
+    @go run ./cmd/version-manager bump patch --commit --tag
+    @echo "✅ Version bumped. Review: git show HEAD"
+
+# Set specific version (updates all 20+ files)
 set-version VERSION:
-    @echo "Updating version to {{VERSION}}"
-    echo "{{VERSION}}" > VERSION
-    sed -i.bak 's/var Version = ".*"/var Version = "{{VERSION}}"/' internal/version/version.go
-    sed -i.bak 's/\*\*Version\*\*: v.*/\*\*Version\*\*: v{{VERSION}}/' README.md CLAUDE.md
-    sed -i.bak 's/Version: v.*/Version: v{{VERSION}}/' website/content/en/_index.md
-    @echo "✅ Version updated. Review changes with 'git diff'"
+    @echo "Setting version to {{VERSION}}..."
+    @go run ./cmd/version-manager set {{VERSION}} --commit
+    @echo "✅ Version set. Review: git show HEAD"
+
+# Sync all files to canonical VERSION (fix drift)
+version-sync:
+    @echo "Syncing all files to canonical version..."
+    @go run ./cmd/version-manager sync --commit
+    @echo "✅ All files synced. Review: git show HEAD"

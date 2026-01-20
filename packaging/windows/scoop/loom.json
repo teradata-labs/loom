@@ -1,16 +1,10 @@
 {
-    "version": "1.0.2",
-    "description": "LLM agent framework with natural language agent creation, pattern-guided learning, and multi-agent orchestration",
-    "homepage": "https://github.com/teradata-labs/loom",
-    "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.2/loom-windows-amd64.exe.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.2/loom-windows-amd64.exe.zip"
         }
     },
-    "bin": "loom-windows-amd64.exe",
-    "checkver": "github",
     "autoupdate": {
         "architecture": {
             "64bit": {
@@ -18,6 +12,11 @@
             }
         }
     },
+    "bin": "loom-windows-amd64.exe",
+    "checkver": "github",
+    "description": "LLM agent framework with natural language agent creation, pattern-guided learning, and multi-agent orchestration",
+    "homepage": "https://github.com/teradata-labs/loom",
+    "license": "Apache-2.0",
     "notes": [
         "Loom TUI client installed successfully!",
         "",
@@ -33,5 +32,6 @@
         "  git clone https://github.com/teradata-labs/loom",
         "  cd loom",
         "  .\\quickstart.ps1"
-    ]
+    ],
+    "version": "1.0.2"
 }

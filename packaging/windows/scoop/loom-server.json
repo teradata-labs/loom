@@ -1,16 +1,10 @@
 {
-    "version": "1.0.2",
-    "description": "Loom agent server with multi-agent orchestration and gRPC/HTTP APIs",
-    "homepage": "https://github.com/teradata-labs/loom",
-    "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.2/looms-windows-amd64.exe.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "url": "https://github.com/teradata-labs/loom/releases/download/v1.0.2/looms-windows-amd64.exe.zip"
         }
     },
-    "bin": "looms-windows-amd64.exe",
-    "checkver": "github",
     "autoupdate": {
         "architecture": {
             "64bit": {
@@ -18,6 +12,30 @@
             }
         }
     },
+    "bin": "looms-windows-amd64.exe",
+    "checkver": "github",
+    "description": "Loom agent server with multi-agent orchestration and gRPC/HTTP APIs",
+    "homepage": "https://github.com/teradata-labs/loom",
+    "license": "Apache-2.0",
+    "notes": [
+        "Loom server (looms) installed successfully!",
+        "",
+        "Patterns installed to: $env:USERPROFILE\\.loom\\patterns",
+        "",
+        "Next steps:",
+        "  1. Configure an LLM provider:",
+        "     looms-windows-amd64 config set llm.provider anthropic",
+        "     looms-windows-amd64 config set-key anthropic_api_key",
+        "",
+        "  2. Start the server:",
+        "     looms-windows-amd64 serve",
+        "",
+        "  3. Connect with the TUI client:",
+        "     scoop install loom",
+        "     loom-windows-amd64 --thread weaver",
+        "",
+        "Documentation: https://github.com/teradata-labs/loom#readme"
+    ],
     "post_install": [
         "Write-Host 'Creating Loom data directory...' -ForegroundColor Green",
         "New-Item -ItemType Directory -Force -Path \"$env:USERPROFILE\\.loom\" | Out-Null",
@@ -43,23 +61,5 @@
         "Write-Host 'Setting environment variables...' -ForegroundColor Green",
         "[Environment]::SetEnvironmentVariable('LOOM_DATA_DIR', \"$env:USERPROFILE\\.loom\", 'User')"
     ],
-    "notes": [
-        "Loom server (looms) installed successfully!",
-        "",
-        "Patterns installed to: $env:USERPROFILE\\.loom\\patterns",
-        "",
-        "Next steps:",
-        "  1. Configure an LLM provider:",
-        "     looms-windows-amd64 config set llm.provider anthropic",
-        "     looms-windows-amd64 config set-key anthropic_api_key",
-        "",
-        "  2. Start the server:",
-        "     looms-windows-amd64 serve",
-        "",
-        "  3. Connect with the TUI client:",
-        "     scoop install loom",
-        "     loom-windows-amd64 --thread weaver",
-        "",
-        "Documentation: https://github.com/teradata-labs/loom#readme"
-    ]
+    "version": "1.0.2"
 }

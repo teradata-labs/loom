@@ -1,75 +1,7 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
-    <id>loom</id>
     <version>1.0.2</version>
-    <packageSourceUrl>https://github.com/teradata-labs/loom/tree/main/chocolatey</packageSourceUrl>
-    <owners>Teradata Labs</owners>
-    <title>Loom AI Agent Framework</title>
-    <authors>Teradata Labs</authors>
-    <projectUrl>https://github.com/teradata-labs/loom</projectUrl>
-    <iconUrl>https://raw.githubusercontent.com/teradata-labs/loom/main/docs/logo.png</iconUrl>
-    <licenseUrl>https://github.com/teradata-labs/loom/blob/main/LICENSE</licenseUrl>
-    <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <projectSourceUrl>https://github.com/teradata-labs/loom</projectSourceUrl>
-    <docsUrl>https://github.com/teradata-labs/loom#readme</docsUrl>
-    <bugTrackerUrl>https://github.com/teradata-labs/loom/issues</bugTrackerUrl>
-    <tags>loom ai llm agents anthropic claude openai golang framework multi-agent orchestration automation</tags>
-    <summary>LLM agent framework with natural language agent creation and multi-agent orchestration</summary>
-    <description><![CDATA[
-# Loom AI Agent Framework
-
-A Go framework for building autonomous LLM agent threads with natural language agent creation, pattern-guided learning, and multi-agent orchestration.
-
-## Features
-
-- **Natural Language Creation**: Describe what you need, get a working agent in ~30 seconds
-- **Judge Evaluation System**: Multi-judge evaluation with 6 aggregation strategies
-- **Learning Agents**: Self-improving agents with DSPy integration
-- **Multi-Agent Orchestration**: 6 workflow patterns (Pipeline, Parallel, Fork-Join, Debate, Conditional, Swarm)
-- **Pattern Library**: 90 reusable YAML patterns across 16 domains
-- **8 LLM Providers**: Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral, Gemini, HuggingFace
-- **Multi-Modal**: Vision analysis and document parsing
-
-## What's Included
-
-This package installs both:
-- `loom` - TUI client for connecting to agents
-- `looms` - Multi-agent server with gRPC/HTTP APIs
-
-Patterns are automatically downloaded and installed to `$env:USERPROFILE\.loom\patterns\`.
-
-## Quick Start
-
-After installation:
-
-```powershell
-# Configure LLM provider
-looms config set llm.provider anthropic
-looms config set-key anthropic_api_key
-
-# Start the server
-looms serve
-
-# In another terminal, create an agent
-loom --thread weaver
-```
-
-Then describe what you need:
-```
-"Create a code review assistant that checks for security issues"
-```
-
-## Documentation
-
-- GitHub: https://github.com/teradata-labs/loom
-- Quickstart: https://github.com/teradata-labs/loom#quick-start
-- Documentation: https://github.com/teradata-labs/loom/tree/main/docs
-    ]]></description>
     <releaseNotes>https://github.com/teradata-labs/loom/releases/tag/v1.0.2</releaseNotes>
   </metadata>
-  <files>
-    <file src="tools\**" target="tools" />
-    <file src="LICENSE.txt" target="LICENSE.txt" />
-  </files>
 </package>

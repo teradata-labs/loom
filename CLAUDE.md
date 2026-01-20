@@ -3,7 +3,7 @@
 ## Overview
 Loom is an LLM agent framework that provides **autonomous agent creation with pattern-guided learning, self-correction, self-improvement, and complete observability**.
 
-**Version**: v1.0.0
+**Version**: v1.0.2
 **Status**: Beta - Feature Complete, API Stabilizing
 **Quality**: 2252+ test functions across 244 test files, 0 race conditions
 
@@ -104,6 +104,60 @@ just race-check     # Extensive race detection (50 runs)
 just build          # Build all binaries
 just check          # Lint + test + build
 ```
+
+## Version Management
+
+Loom uses semantic versioning (MAJOR.MINOR.PATCH). The VERSION file is the single source of truth.
+
+### Releasing a New Version
+
+```bash
+# Patch release (bug fixes)
+just bump-patch
+
+# Minor release (new features)
+just bump-minor
+
+# Major release (breaking changes)
+just bump-major
+```
+
+All bump commands automatically:
+1. Update 20+ files (VERSION, version.go, packaging, docs)
+2. Create commit: "Bump version to vX.Y.Z"
+3. Create git tag: vX.Y.Z
+
+Push to trigger release: `git push origin main --tags`
+
+### Checking Version Consistency
+
+```bash
+# Show current version
+just version-show
+
+# Verify all files have consistent versions
+just version-verify
+
+# Fix any drift detected
+just version-sync
+```
+
+### Files Automatically Updated
+
+The version manager updates 20+ files across the codebase:
+- VERSION (canonical)
+- internal/version/version.go
+- Homebrew formulas (loom.rb, loom-server.rb)
+- Chocolatey package (loom.nuspec)
+- Scoop manifests (loom.json, loom-server.json)
+- Winget manifests (installer.yaml, locale.yaml)
+- Documentation (README.md, CLAUDE.md)
+
+### CI/CD Integration
+
+Version consistency is automatically checked in:
+- **PR checks**: Validates no version drift before merge
+- **Release workflow**: Verifies tag matches VERSION file
 
 ## Testing Requirements
 
