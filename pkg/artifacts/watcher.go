@@ -281,6 +281,9 @@ func (w *Watcher) handleCreate(ctx context.Context, path string, span *observabi
 		return
 	}
 
+	// Extract session ID from path
+	sessionID := ExtractSessionIDFromPath(path)
+
 	// Create artifact metadata
 	now := time.Now()
 	artifact := &Artifact{
@@ -295,6 +298,7 @@ func (w *Watcher) handleCreate(ctx context.Context, path string, span *observabi
 		UpdatedAt:   now,
 		Tags:        result.Tags,
 		Metadata:    result.Metadata,
+		SessionID:   sessionID,
 	}
 
 	// Index in database
@@ -324,9 +328,12 @@ func (w *Watcher) handleCreate(ctx context.Context, path string, span *observabi
 func (w *Watcher) handleModify(ctx context.Context, path string, span *observability.Span) {
 	w.logger.Info("Artifact modified", zap.String("path", path))
 
+	// Extract session ID from path
+	sessionID := ExtractSessionIDFromPath(path)
+
 	// Get existing artifact by path
 	filename := filepath.Base(path)
-	existing, err := w.store.GetByName(ctx, filename)
+	existing, err := w.store.GetByName(ctx, filename, sessionID)
 	if err != nil {
 		// If not found, treat as create
 		w.handleCreate(ctx, path, span)
@@ -380,9 +387,12 @@ func (w *Watcher) handleModify(ctx context.Context, path string, span *observabi
 func (w *Watcher) handleDelete(ctx context.Context, path string, span *observability.Span) {
 	w.logger.Debug("Artifact file removed", zap.String("path", path))
 
+	// Extract session ID from path
+	sessionID := ExtractSessionIDFromPath(path)
+
 	// Get existing artifact by path
 	filename := filepath.Base(path)
-	existing, err := w.store.GetByName(ctx, filename)
+	existing, err := w.store.GetByName(ctx, filename, sessionID)
 	if err != nil {
 		// Artifact not indexed yet - this can happen if file was deleted quickly
 		// after creation, or if it was never a tracked artifact. Not an error.

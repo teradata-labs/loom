@@ -40,6 +40,16 @@ func TestSearchFTS5_BasicQuery(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "basic-query-session"
 
+	// Create session first (required for foreign key constraint)
+	session := &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	err = store.SaveSession(ctx, session)
+	require.NoError(t, err)
+
 	// Add messages with different content
 	messages := []Message{
 		{Role: "user", Content: "How do I optimize database queries?", Timestamp: time.Now()},
@@ -86,6 +96,23 @@ func TestSearchFTS5_SessionFiltering(t *testing.T) {
 	session1 := "session-1"
 	session2 := "session-2"
 
+	// Create sessions first (required for foreign key constraint)
+	err = store.SaveSession(ctx, &Session{
+		ID:        session1,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	err = store.SaveSession(ctx, &Session{
+		ID:        session2,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
 	msg1 := Message{Role: "user", Content: "Database query optimization techniques", Timestamp: time.Now()}
 	msg2 := Message{Role: "user", Content: "Database performance tuning guide", Timestamp: time.Now()}
 
@@ -115,6 +142,15 @@ func TestSearchFTS5_BM25Ranking(t *testing.T) {
 
 	ctx := context.Background()
 	sessionID := "ranking-session"
+
+	// Create session first (required for foreign key constraint)
+	err = store.SaveSession(ctx, &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
 
 	// Add messages with varying relevance to "SQL performance"
 	messages := []Message{
@@ -177,6 +213,15 @@ func TestSearchFTS5_NoResults(t *testing.T) {
 
 	ctx := context.Background()
 	sessionID := "no-results-session"
+
+	// Create session first (required for foreign key constraint)
+	err = store.SaveSession(ctx, &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
 
 	// Add a message
 	msg := Message{Role: "user", Content: "Database optimization techniques", Timestamp: time.Now()}

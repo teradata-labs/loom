@@ -39,6 +39,16 @@ func TestSwapLayerEviction(t *testing.T) {
 	// Create session
 	sessionID := "test-session-eviction"
 
+	// Create session in database first (required for foreign key constraint)
+	ctx := context.Background()
+	err = store.SaveSession(ctx, &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
 	// Create segmented memory with small L2 limit
 	sm := NewSegmentedMemory("System prompt", 200000, 20000)
 	sm.SetSessionStore(store, sessionID)
@@ -66,7 +76,6 @@ func TestSwapLayerEviction(t *testing.T) {
 	assert.LessOrEqual(t, tokenCount, sm.maxL2Tokens, "L2 should not exceed max tokens after eviction")
 
 	// Verify snapshot was saved to database
-	ctx := context.Background()
 	snapshots, err := store.LoadMemorySnapshots(ctx, sessionID, "l2_summary", 0)
 	require.NoError(t, err)
 	assert.Greater(t, len(snapshots), 0, "Expected snapshots in database")
@@ -88,6 +97,16 @@ func TestSwapLayerRetrieval(t *testing.T) {
 
 	// Save some messages directly to database
 	ctx := context.Background()
+
+	// Create session first (required for foreign key constraint)
+	err = store.SaveSession(ctx, &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
 	messages := []Message{
 		{Role: "user", Content: "Message 1", Timestamp: time.Now()},
 		{Role: "assistant", Content: "Response 1", Timestamp: time.Now()},
@@ -136,12 +155,21 @@ func TestSwapLayerPromotion(t *testing.T) {
 
 	sessionID := "test-session-promotion"
 
+	// Create session first (required for foreign key constraint)
+	ctx := context.Background()
+	err = store.SaveSession(ctx, &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
 	// Create segmented memory with swap
 	sm := NewSegmentedMemory("System prompt", 200000, 20000)
 	sm.SetSessionStore(store, sessionID)
 
 	// Save and retrieve messages
-	ctx := context.Background()
 	messages := []Message{
 		{Role: "user", Content: "Old message 1", Timestamp: time.Now()},
 		{Role: "assistant", Content: "Old response 1", Timestamp: time.Now()},
@@ -330,6 +358,16 @@ func TestSwapLayerL2Snapshots(t *testing.T) {
 
 	sessionID := "test-session-snapshots"
 
+	// Create session first (required for foreign key constraint)
+	ctx := context.Background()
+	err = store.SaveSession(ctx, &Session{
+		ID:        sessionID,
+		Context:   make(map[string]interface{}),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
 	// Create segmented memory with small L2 limit to trigger multiple evictions
 	sm := NewSegmentedMemory("System prompt", 200000, 20000)
 	sm.SetSessionStore(store, sessionID)
@@ -345,7 +383,6 @@ func TestSwapLayerL2Snapshots(t *testing.T) {
 	}
 
 	// Retrieve L2 snapshots
-	ctx := context.Background()
 	snapshots, err := sm.RetrieveL2Snapshots(ctx, 0) // All snapshots
 	require.NoError(t, err)
 

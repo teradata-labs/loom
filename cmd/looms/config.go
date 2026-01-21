@@ -106,6 +106,15 @@ type ArtifactsConfig struct {
 
 	// HotReload enables hot-reload for artifact directory (default: true)
 	HotReload bool `mapstructure:"hot_reload"`
+
+	// SessionNamespacing enables session-based artifact organization (default: true)
+	SessionNamespacing bool `mapstructure:"session_namespacing"`
+
+	// TempCleanupEnabled enables automatic cleanup of temp directory (default: true)
+	TempCleanupEnabled bool `mapstructure:"temp_cleanup_enabled"`
+
+	// TempCleanupAgeDays is the age in days for temp artifact cleanup (default: 7)
+	TempCleanupAgeDays int `mapstructure:"temp_cleanup_age_days"`
 }
 
 // DockerConfig holds Docker daemon configuration.
@@ -437,6 +446,9 @@ type ToolsConfig struct {
 
 	// Executor holds tool executor configuration
 	Executor ToolExecutorConfig `mapstructure:"executor"`
+
+	// ShellExecute holds shell_execute tool configuration
+	ShellExecute ShellExecuteConfig `mapstructure:"shell_execute"`
 }
 
 // ToolExecutorConfig holds tool executor settings.
@@ -452,6 +464,19 @@ type ToolExecutorConfig struct {
 
 	// ConcurrentLimit is the maximum concurrent tool executions (default: 10)
 	ConcurrentLimit int `mapstructure:"concurrent_limit"`
+}
+
+// ShellExecuteConfig holds shell_execute tool configuration.
+type ShellExecuteConfig struct {
+	// RestrictWrites enforces write restrictions to session directories (default: true)
+	RestrictWrites bool `mapstructure:"restrict_writes"`
+
+	// RestrictReads controls read access restrictions (default: "session")
+	// Values: "session" (current session only), "all_sessions" (all sessions + docs)
+	RestrictReads string `mapstructure:"restrict_reads"`
+
+	// EnablePathValidation enables path traversal validation (default: true)
+	EnablePathValidation bool `mapstructure:"enable_path_validation"`
 }
 
 // ToolPermissionsConfig holds tool permission settings.
@@ -745,6 +770,14 @@ func setDefaults() {
 	viper.SetDefault("artifacts.auto_cleanup", false)               // Manual cleanup
 	viper.SetDefault("artifacts.soft_delete_days", 30)              // 30-day recovery window
 	viper.SetDefault("artifacts.hot_reload", true)                  // Enable hot-reload
+	viper.SetDefault("artifacts.session_namespacing", true)         // Enable session-based organization
+	viper.SetDefault("artifacts.temp_cleanup_enabled", true)        // Enable temp cleanup
+	viper.SetDefault("artifacts.temp_cleanup_age_days", 7)          // 7-day cleanup for temp artifacts
+
+	// Shell execute tool defaults
+	viper.SetDefault("tools.shell_execute.restrict_writes", true)        // Enforce write restrictions
+	viper.SetDefault("tools.shell_execute.restrict_reads", "session")    // Session-only reads by default
+	viper.SetDefault("tools.shell_execute.enable_path_validation", true) // Enable path validation
 }
 
 // SecretMapping defines how to load a secret from keyring into the config.

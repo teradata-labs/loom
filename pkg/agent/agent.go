@@ -27,6 +27,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
@@ -610,6 +611,9 @@ func (a *Agent) getErrorMessage(category string, errorType string, vars map[stri
 // Chat processes a user message and returns a response.
 // This is the main entry point for conversational interaction.
 func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) (*Response, error) {
+	// Inject session ID into context for tool access
+	ctx = session.WithSessionID(ctx, sessionID)
+
 	// Start trace span with detailed attributes
 	var span *observability.Span
 	startTime := time.Now()
@@ -789,6 +793,9 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 // The progressCallback will be called at key execution stages to report progress.
 // This is used by StreamWeave to provide real-time feedback to clients.
 func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMessage string, progressCallback ProgressCallback) (*Response, error) {
+	// Inject session ID into context for tool access
+	ctx = session.WithSessionID(ctx, sessionID)
+
 	// Start trace span if enabled
 	var span *observability.Span
 	if a.config.EnableTracing {

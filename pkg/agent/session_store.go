@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -187,7 +189,9 @@ func (s *SessionStore) initSchema() error {
 		access_count INTEGER DEFAULT 0,
 		tags TEXT,
 		metadata_json TEXT,
-		deleted_at INTEGER
+		deleted_at INTEGER,
+		session_id TEXT,
+		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 	);
 
 	-- Artifacts indexes
@@ -196,6 +200,7 @@ func (s *SessionStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_artifacts_content_type ON artifacts(content_type);
 	CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_artifacts_deleted ON artifacts(deleted_at);
+	CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 
 	-- FTS5 virtual table for artifact search
 	CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts5 USING fts5(
@@ -281,6 +286,30 @@ func (s *SessionStore) initSchema() error {
 				if span != nil {
 					span.SetAttribute(fmt.Sprintf("migration_applied_%s", columnName), "true")
 				}
+			}
+		}
+	}
+
+	// Migration: Add session_id column to artifacts table for session-based namespacing
+	checkQuery = `SELECT COUNT(*) FROM pragma_table_info('artifacts') WHERE name='session_id'`
+	if err := s.db.QueryRowContext(ctx, checkQuery).Scan(&columnCount); err == nil && columnCount == 0 {
+		// Add session_id column (nullable for backward compatibility)
+		migration := `ALTER TABLE artifacts ADD COLUMN session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE`
+		if _, err := s.db.ExecContext(ctx, migration); err != nil {
+			// Log but don't fail - column might already exist from another process
+			if span != nil {
+				span.RecordError(fmt.Errorf("migration warning (non-fatal) for session_id: %w", err))
+			}
+		} else {
+			// Create index on session_id
+			indexMigration := `CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id)`
+			if _, err := s.db.ExecContext(ctx, indexMigration); err != nil {
+				if span != nil {
+					span.RecordError(fmt.Errorf("migration warning (non-fatal) for session_id index: %w", err))
+				}
+			}
+			if span != nil {
+				span.SetAttribute("migration_applied_artifacts_session_id", "true")
 			}
 		}
 	}
@@ -965,7 +994,7 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 	span.SetAttribute("session_id", sessionID)
 
 	s.mu.Lock()
-	// CASCADE delete will remove messages and tool executions
+	// CASCADE delete will remove messages, tool executions, and artifacts
 	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", sessionID)
 	if err != nil {
 		s.mu.Unlock()
@@ -977,6 +1006,19 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 	hooks := make([]SessionCleanupHook, len(s.cleanupHooks))
 	copy(hooks, s.cleanupHooks)
 	s.mu.Unlock()
+
+	// Clean up session artifact directory from filesystem
+	// Database CASCADE handles artifact table rows
+	loomDataDir := config.GetLoomDataDir()
+	if loomDataDir != "" {
+		sessionDir := filepath.Join(loomDataDir, "artifacts", "sessions", sessionID)
+		if err := os.RemoveAll(sessionDir); err != nil {
+			// Log error but don't fail deletion - database cleanup succeeded
+			span.SetAttribute("artifact_cleanup_error", err.Error())
+		} else {
+			span.SetAttribute("artifact_directory_removed", sessionDir)
+		}
+	}
 
 	// Execute cleanup hooks after successful deletion
 	// These run outside the lock to prevent deadlocks and improve concurrency
