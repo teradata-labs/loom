@@ -131,7 +131,8 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 
 	t.logger.Debug("Sending POST request",
 		zap.String("endpoint", t.endpoint),
-		zap.ByteString("message", message))
+		zap.Int("message_size", len(message)),
+		zap.Bool("has_session", t.sessionMgr.HasSession()))
 
 	// Send request
 	resp, err := t.client.Do(req)
@@ -158,9 +159,10 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 
 	// Handle response based on Content-Type
 	contentType := resp.Header.Get("Content-Type")
-	t.logger.Debug("Received response",
+	t.logger.Debug("Received HTTP response",
 		zap.String("content-type", contentType),
-		zap.Int("status", resp.StatusCode))
+		zap.Int("status", resp.StatusCode),
+		zap.Bool("started", started))
 
 	switch {
 	case contentType == "text/event-stream":
@@ -185,8 +187,18 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		if err != nil {
 			return fmt.Errorf("failed to read response: %w", err)
 		}
+		t.logger.Debug("Read JSON response data", zap.Int("bytes", len(data)))
+
+		// Skip empty JSON responses (HTTP acknowledgments for notifications)
+		// Empty responses with 202 Accepted are valid acknowledgments per MCP spec
+		if len(data) == 0 {
+			t.logger.Debug("Skipping empty JSON response (notification acknowledgment)")
+			return nil
+		}
+
 		select {
 		case t.messages <- data:
+			t.logger.Debug("JSON response sent to channel")
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -199,16 +211,13 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 
 // Receive implements Transport by receiving the next message.
 func (t *StreamableHTTPTransport) Receive(ctx context.Context) ([]byte, error) {
-	t.logger.Debug("Waiting for message from transport")
 	select {
 	case <-ctx.Done():
-		t.logger.Debug("Context cancelled while waiting for message")
 		return nil, ctx.Err()
 	case err := <-t.errors:
-		t.logger.Debug("Received error from transport", zap.Error(err))
 		return nil, err
 	case msg := <-t.messages:
-		t.logger.Debug("Received message from transport", zap.ByteString("message", msg))
+		t.logger.Debug("Received message from transport", zap.Int("size", len(msg)))
 		return msg, nil
 	}
 }
@@ -265,8 +274,11 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 				}
 				// Check if error is due to closed body (normal for single-response streams)
 				errMsg := err.Error()
-				if errMsg == "http: read on closed response body" || errMsg == "read on closed response body" {
-					t.logger.Debug("SSE stream closed by server")
+				// Use strings.Contains to catch variations of the error message
+				if errMsg == "http: read on closed response body" ||
+					errMsg == "read on closed response body" ||
+					(errMsg != "" && (bytes.Contains([]byte(errMsg), []byte("read on closed")) || bytes.Contains([]byte(errMsg), []byte("closed response body")))) {
+					t.logger.Debug("SSE stream closed by server", zap.String("error", errMsg))
 					return
 				}
 				t.logger.Warn("SSE stream error", zap.Error(err))
@@ -275,6 +287,12 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 				default:
 				}
 				return
+			}
+
+			// Skip empty events (no data)
+			if len(event.Data) == 0 {
+				t.logger.Debug("Skipping empty SSE event")
+				continue
 			}
 
 			// Store event for resumption
