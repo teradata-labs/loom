@@ -100,6 +100,16 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // startServer initializes a single MCP server connection.
 func (m *Manager) startServer(ctx context.Context, name string, config ServerConfig) error {
+	// Add default timeout for the entire server startup if not specified
+	// This prevents hanging on unreachable servers
+	startCtx := ctx
+	if config.Timeout == "" {
+		// Default 30 second timeout for server startup
+		var cancel context.CancelFunc
+		startCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+
 	// Create transport
 	var trans transport.Transport
 	var err error
@@ -140,15 +150,15 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		Logger:    m.logger.With(zap.String("server", name)),
 	})
 
-	// Initialize with timeout
-	initCtx := ctx
+	// Initialize with timeout (use config timeout if specified, otherwise use startCtx which has default timeout)
+	initCtx := startCtx
 	if config.Timeout != "" {
 		timeout, err := time.ParseDuration(config.Timeout)
 		if err != nil {
 			return fmt.Errorf("invalid timeout: %w", err)
 		}
 		var cancel context.CancelFunc
-		initCtx, cancel = context.WithTimeout(ctx, timeout)
+		initCtx, cancel = context.WithTimeout(startCtx, timeout)
 		defer cancel()
 	}
 

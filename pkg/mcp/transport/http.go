@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/r3labs/sse/v2"
 	"go.uber.org/zap"
@@ -76,14 +77,7 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 		logger:     logger,
 	}
 
-	// Subscribe to SSE events
-	err := sseClient.SubscribeWithContext(context.Background(), "message", func(msg *sse.Event) {
-		t.events <- msg.Data
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to subscribe to SSE: %w", err)
-	}
-
+	// Setup disconnect handler
 	sseClient.OnDisconnect(func(c *sse.Client) {
 		t.logger.Warn("SSE disconnected")
 		select {
@@ -92,7 +86,34 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 		}
 	})
 
-	logger.Info("HTTP/SSE transport connected", zap.String("endpoint", config.Endpoint))
+	// Subscribe to SSE events asynchronously with timeout
+	// This prevents blocking if the server is unreachable
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		logger.Debug("Attempting SSE subscription", zap.String("endpoint", config.Endpoint+config.SSEPath))
+
+		err := sseClient.SubscribeWithContext(ctx, "message", func(msg *sse.Event) {
+			select {
+			case t.events <- msg.Data:
+			case <-ctx.Done():
+				return
+			}
+		})
+
+		if err != nil {
+			logger.Warn("Failed to subscribe to SSE (will retry on first message)",
+				zap.String("endpoint", config.Endpoint),
+				zap.Error(err))
+			// Don't send to errors channel - let it fail on first actual use
+			// This allows the server to start even if this MCP server is down
+		} else {
+			logger.Info("HTTP/SSE transport connected", zap.String("endpoint", config.Endpoint))
+		}
+	}()
+
+	logger.Debug("HTTP/SSE transport created (connecting in background)", zap.String("endpoint", config.Endpoint))
 
 	return t, nil
 }
@@ -132,9 +153,15 @@ func (h *HTTPTransport) Receive(ctx context.Context) ([]byte, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case err := <-h.errors:
+	case err, ok := <-h.errors:
+		if !ok {
+			return nil, io.EOF // Channel closed
+		}
 		return nil, err
-	case data := <-h.events:
+	case data, ok := <-h.events:
+		if !ok {
+			return nil, io.EOF // Channel closed
+		}
 		return data, nil
 	}
 }

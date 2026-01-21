@@ -47,15 +47,23 @@ func NewSSEParser(r io.Reader) *SSEParser {
 func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 	event := &SSEEvent{}
 	var dataLines []string
+	var hasFields bool // Track if we've seen any fields
 
 	for {
 		line, err := p.reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF && len(dataLines) > 0 {
-				// Process partial event before EOF
-				event.Data = []byte(strings.Join(dataLines, "\n"))
-				return event, nil
+			if err == io.EOF {
+				// If we have data, return the partial event
+				if len(dataLines) > 0 {
+					event.Data = []byte(strings.Join(dataLines, "\n"))
+					return event, nil
+				}
+				// If we've seen fields (id, event), return the event even without data
+				if hasFields {
+					return event, nil
+				}
 			}
+			// No data and no fields seen, return error
 			return nil, err
 		}
 
@@ -64,7 +72,7 @@ func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 
 		// Empty line terminates event
 		if line == "" {
-			if len(dataLines) > 0 {
+			if len(dataLines) > 0 || hasFields {
 				event.Data = []byte(strings.Join(dataLines, "\n"))
 				return event, nil
 			}
@@ -92,10 +100,8 @@ func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 		case "id":
 			event.ID = value
 		case "event":
-			// We expect "message" events, ignore others
-			if value != "message" && value != "" {
-				// Non-message events can be ignored or logged
-			}
+			// We expect "message" events, silently ignore others
+			// (no action needed)
 		case "data":
 			dataLines = append(dataLines, value)
 		}

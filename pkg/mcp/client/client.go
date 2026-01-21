@@ -351,11 +351,13 @@ func (c *Client) sendRequest(ctx context.Context, req *protocol.Request) (*proto
 // receiveLoop receives messages from transport
 func (c *Client) receiveLoop() {
 	defer c.wg.Done()
+	c.logger.Debug("receiveLoop started")
 
 	for {
 		// Check if context is cancelled
 		select {
 		case <-c.ctx.Done():
+			c.logger.Debug("receiveLoop: context cancelled")
 			return
 		default:
 		}
@@ -366,9 +368,16 @@ func (c *Client) receiveLoop() {
 			// Check for normal shutdown conditions
 			if c.ctx.Err() != nil || errors.Is(err, io.EOF) {
 				// Context cancelled or connection closed - normal shutdown
+				c.logger.Debug("receiveLoop: normal shutdown", zap.Error(err))
 				return
 			}
 			c.logger.Error("failed to receive message", zap.Error(err))
+			continue
+		}
+
+		// Skip empty messages
+		if len(data) == 0 {
+			c.logger.Debug("receiveLoop: skipping empty message")
 			continue
 		}
 
