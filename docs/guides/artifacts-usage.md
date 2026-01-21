@@ -1,919 +1,758 @@
-
 # Artifact Management Usage Guide
 
-**Version**: v1.0.0
+**Version**: v1.0.2
 **Status**: ✅ Implemented
+**Last Updated**: 2026-01-21
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Architecture](#architecture)
+  - [Session-Based Organization](#session-based-organization)
+  - [Artifacts vs Scratchpad](#artifacts-vs-scratchpad)
+  - [Directory Structure](#directory-structure)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-- [Common Tasks](#common-tasks)
-  - [Upload an Artifact](#upload-an-artifact)
+- [CLI Commands](#cli-commands)
   - [List Artifacts](#list-artifacts)
   - [Search Artifacts](#search-artifacts)
-  - [Read Artifact Content](#read-artifact-content)
-  - [Filter by Tags](#filter-by-tags)
-  - [Upload Archive Files](#upload-archive-files)
-- [Using Artifact Tools in Agents](#using-artifact-tools-in-agents)
-  - [List Tool](#list-tool)
-  - [Search Tool](#search-tool)
-  - [Get Tool](#get-tool)
-  - [Read Tool](#read-tool)
-  - [Write Tool](#write-tool)
+  - [Show Artifact Details](#show-artifact-details)
+  - [Upload Artifacts](#upload-artifacts)
+  - [Download Artifacts](#download-artifacts)
+  - [Delete Artifacts](#delete-artifacts)
+  - [View Statistics](#view-statistics)
+- [Agent Tools](#agent-tools)
+  - [Workspace Tool](#workspace-tool)
+  - [Shell Execute Tool](#shell-execute-tool)
+- [Common Tasks](#common-tasks)
+  - [Working with Session Artifacts](#working-with-session-artifacts)
+  - [Using Scratchpad for Notes](#using-scratchpad-for-notes)
+  - [Searching Across Artifacts](#searching-across-artifacts)
+  - [Managing User Artifacts](#managing-user-artifacts)
 - [Examples](#examples)
-  - [Example 1: Upload and Search CSV File](#example-1-upload-and-search-csv-file)
-  - [Example 2: Agent-Generated Report](#example-2-agent-generated-report)
-  - [Example 3: Archive Handling](#example-3-archive-handling)
-- [Hot-Reload Behavior](#hot-reload-behavior)
+  - [Example 1: Agent Generates Report](#example-1-agent-generates-report)
+  - [Example 2: Multi-Session Data Analysis](#example-2-multi-session-data-analysis)
+  - [Example 3: Scratchpad for Ephemeral Notes](#example-3-scratchpad-for-ephemeral-notes)
+  - [Example 4: Session Cleanup](#example-4-session-cleanup)
 - [Troubleshooting](#troubleshooting)
 - [Next Steps](#next-steps)
 
-
 ## Overview
 
-Artifact Management provides centralized storage for files that agents need to access or generate. All artifacts are stored in `~/.loom/artifacts/` with automatic metadata extraction and full-text search.
+Artifact Management provides **session-aware file storage** for agents and users. Every artifact is automatically organized by session, enabling:
 
-**What you can do:**
-- Upload files via TUI or drop them in `~/.loom/artifacts/`
-- Search artifacts using natural language queries
-- Let agents read and write artifacts during conversations
-- Archive support (ZIP, TAR, TAR.GZ) - stored as-is, no auto-extraction
+- **Automatic organization** - Related artifacts grouped by session
+- **Isolation** - Sessions cannot access each other's artifacts
+- **Cleanup** - Delete session → artifacts automatically removed (CASCADE)
+- **Search** - Full-text search with SQLite FTS5 + BM25 ranking
+- **Dual storage** - Indexed artifacts vs ephemeral scratchpad
+
+**What changed in v1.0.2:**
+- ✅ Session-based directory structure
+- ✅ Automatic CASCADE cleanup on session deletion
+- ✅ Unified `workspace` tool (replaced 5+ separate tools)
+- ✅ Scratchpad for ephemeral notes
+- ✅ Shell sandboxing to session directories
+- ✅ New `loom artifacts` CLI commands
+
+## Architecture
+
+### Session-Based Organization
+
+Every artifact is associated with a **session ID**. When an agent creates an artifact, it's automatically saved to that session's directory:
+
+```
+~/.loom/artifacts/sessions/<session-id>/agent/<filename>
+```
+
+**Benefits:**
+- No path management needed by agents - just use filenames
+- Related artifacts automatically grouped
+- Delete session → all artifacts deleted automatically
+- Session isolation prevents cross-contamination
+
+### Artifacts vs Scratchpad
+
+| Feature | Artifacts | Scratchpad |
+|---------|-----------|------------|
+| **Purpose** | Data files, results, outputs | Notes, scratch work, drafts |
+| **Indexing** | SQLite + FTS5 search | Filesystem only |
+| **Persistence** | Permanent (until session deleted) | Ephemeral (session-only) |
+| **Searchable** | Yes (FTS5 full-text search) | No |
+| **Metadata** | Full (tags, purpose, checksums) | Minimal (filename only) |
+| **Use case** | CSV files, reports, generated code | Brainstorming, temp calculations |
+
+**Directory paths:**
+- Artifacts: `~/.loom/artifacts/sessions/<session-id>/agent/<filename>`
+- Scratchpad: `~/.loom/artifacts/sessions/<session-id>/scratchpad/<filename>`
+
+### Directory Structure
+
+```
+~/.loom/artifacts/
+├── user/                          # User-uploaded artifacts (no session)
+│   ├── data.csv
+│   └── report.pdf
+├── sessions/                      # Session-namespaced artifacts
+│   ├── <session-id-1>/
+│   │   ├── agent/                # Agent-generated artifacts (indexed)
+│   │   │   ├── analysis.txt
+│   │   │   └── output.json
+│   │   └── scratchpad/           # Ephemeral notes (not indexed)
+│   │       └── notes.md
+│   └── <session-id-2>/
+│       └── agent/
+│           └── result.txt
+└── temp/                          # Fallback for no-session context
+    └── <uuid>.tmp
+```
 
 ## Prerequisites
 
-- Loom v1.0.0+
-- FTS5-enabled SQLite (included if you built with `just build`)
-- Running Loom server or TUI client
+- Loom v1.0.2+
+- FTS5-enabled SQLite (included with `just build`)
+- Running Loom server (`looms serve`)
 
-Check your installation:
+**Verify installation:**
 
 ```bash
+# Check Loom version
+loom --version  # Should show v1.0.2 or later
+
 # Verify artifacts directory exists
 ls -la ~/.loom/artifacts/
 
-# Verify loom.db has artifacts table
-sqlite3 ~/.loom/loom.db "SELECT COUNT(*) FROM artifacts;"
+# Verify SQLite has artifacts table with session_id column
+sqlite3 ~/.loom/loom.db "PRAGMA table_info(artifacts);" | grep session_id
+```
+
+Expected output:
+```
+16|session_id|TEXT|0||0
 ```
 
 ## Quick Start
 
-Upload a file and search for it:
+**Upload and search an artifact:**
 
 ```bash
-# Start Loom TUI
-bin/loom
+# Upload a file
+loom artifacts upload ~/data.csv --purpose "Q4 sales data" --tags sales,csv
 
-# In the TUI, type:
-> /upload data.csv
+# Search for it
+loom artifacts search "sales data"
 
-# Agent can now search for it:
-> "Find CSV files about sales"
+# View details
+loom artifacts show data.csv
 ```
 
-The artifact system automatically:
-- Detects content type (`text/csv`)
-- Computes SHA-256 checksum
-- Infers tags (`["csv", "data", "tabular"]`)
-- Indexes for full-text search
-
-
-## Common Tasks
-
-### Upload an Artifact
-
-**Via TUI**:
+**Agent usage:**
 
 ```bash
-bin/loom
+# Start a session
+loom --thread sql-agent
 
-> /upload ~/Downloads/sales_report.csv
+# Agent creates artifact
+> "Analyze this data and save results to results.txt"
+
+# Agent can read it later
+> "Read results.txt and summarize key findings"
 ```
 
-Expected output:
-```
-Uploading sales_report.csv...
-✓ Artifact uploaded successfully
-  ID: 550e8400-e29b-41d4-a716-446655440000
-  Name: sales_report.csv
-  Size: 1.2 MB
-  Type: text/csv
-  Tags: csv, data, tabular, sales, report
-  Checksum: a3c2f1e9b...
-```
-
-**Via Filesystem (Hot-Reload)**:
-
-```bash
-# Copy file to artifacts directory
-cp ~/Documents/config.yaml ~/.loom/artifacts/
-
-# Wait 500ms (debounce period)
-# File automatically indexed
-```
-
-Expected log output:
-```
-INFO  Artifact hot-reload started  directory=~/.loom/artifacts debounce_ms=500
-INFO  New artifact detected  path=~/.loom/artifacts/config.yaml
-INFO  Artifact indexed  id=660e8400-... name=config.yaml content_type=application/x-yaml size_bytes=2048
-```
+## CLI Commands
 
 ### List Artifacts
 
-**List all artifacts**:
+List all artifacts with optional filtering:
 
-In conversation with agent:
-```
-User: "Show me all artifacts"
+```bash
+# List all artifacts
+loom artifacts list
 
-Agent uses list_artifacts tool with no filters.
-```
+# Filter by source
+loom artifacts list --source user
+loom artifacts list --source agent
 
-Expected response:
-```json
-{
-  "artifacts": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "sales_report.csv",
-      "source": "user",
-      "content_type": "text/csv",
-      "size_bytes": 1258291,
-      "created_at": "2025-01-15T10:30:00Z",
-      "tags": ["csv", "data", "tabular", "sales", "report"]
-    },
-    {
-      "id": "660e8400-e29b-41d4-a716-446655440001",
-      "name": "config.yaml",
-      "source": "user",
-      "content_type": "application/x-yaml",
-      "size_bytes": 2048,
-      "created_at": "2025-01-15T10:35:00Z",
-      "tags": ["yaml", "config", "structured"]
-    }
-  ],
-  "count": 2
-}
+# Filter by content type
+loom artifacts list --content-type "text/csv"
+
+# Filter by tags
+loom artifacts list --tags sql,report
+
+# Include soft-deleted artifacts
+loom artifacts list --include-deleted
+
+# Pagination
+loom artifacts list --limit 50 --offset 100
 ```
 
-**List with content type filter**:
-
+**Example output:**
 ```
-User: "Show me all CSV files"
+ID                        NAME                           SOURCE          CONTENT TYPE    SIZE
+-----------------------------------------------------------------------------------------------
+acf3abbb-6249-4d0e-9f0c  test-artifact.txt              user            text/plain;     23 B
+73b8b126-bbf9-4e15-aad1  analysis.csv                   agent           text/csv        1.2 KB
+be77d98b-f66c-480e-9a89  report.txt                     agent           text/plain      350 B
 
-Agent uses list_artifacts with content_type="text/csv"
+Showing 3 of 3 artifact(s)
 ```
 
 ### Search Artifacts
 
-**Full-text search**:
-
-```
-User: "Find files about sales"
-
-Agent uses search_artifacts with query="sales"
-```
-
-Expected response:
-```json
-{
-  "results": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "sales_report.csv",
-      "source": "user",
-      "content_type": "text/csv",
-      "size_bytes": 1258291,
-      "purpose": "Q4 sales analysis",
-      "tags": ["csv", "data", "sales", "report"]
-    }
-  ],
-  "count": 1,
-  "query": "sales"
-}
-```
-
-**Note**: Search uses SQLite FTS5 with BM25 ranking. Results ranked by relevance (matches in name, purpose, and tags).
-
-### Read Artifact Content
-
-**Read text file**:
-
-```
-User: "Read the config.yaml file"
-
-Agent uses read_artifact with name="config.yaml"
-```
-
-Expected response:
-```json
-{
-  "artifact_id": "660e8400-e29b-41d4-a716-446655440001",
-  "artifact_name": "config.yaml",
-  "content_type": "application/x-yaml",
-  "size_bytes": 2048,
-  "encoding": "text",
-  "content": "version: 1.0\nserver:\n  host: localhost\n  port: 8080\n..."
-}
-```
-
-**Read binary file (base64 encoded)**:
-
-```
-User: "Read the logo.png file"
-
-Agent uses read_artifact with name="logo.png"
-```
-
-Expected response:
-```json
-{
-  "artifact_id": "770e8400-e29b-41d4-a716-446655440002",
-  "artifact_name": "logo.png",
-  "content_type": "image/png",
-  "size_bytes": 45812,
-  "encoding": "base64",
-  "content": "iVBORw0KGgoAAAANSUhEUgAA..."
-}
-```
-
-**Side effect**: Reading an artifact increments `access_count` and updates `last_accessed_at` timestamp.
-
-### Filter by Tags
-
-**Filter by single tag**:
-
-```
-User: "Show me all config files"
-
-Agent uses list_artifacts with tags=["config"]
-```
-
-**Filter by multiple tags (AND logic)**:
-
-```
-User: "Show me CSV files that are reports"
-
-Agent uses list_artifacts with tags=["csv", "report"]
-```
-
-**Note**: Multiple tags use AND logic (artifact must have ALL specified tags).
-
-### Upload Archive Files
-
-**Supported formats**: ZIP, TAR, TAR.GZ, TGZ, GZ
-
-**Upload archive via TUI**:
+Full-text search with FTS5 + BM25 ranking:
 
 ```bash
-> /upload backup.tar.gz
+# Simple search
+loom artifacts search "sales report"
+
+# Boolean operators
+loom artifacts search "excel AND quarterly"
+
+# Limit results
+loom artifacts search --limit 50 "csv data"
 ```
 
-Expected output:
+**Example output:**
 ```
-Uploading backup.tar.gz...
-✓ Artifact uploaded successfully
-  ID: 880e8400-e29b-41d4-a716-446655440003
-  Name: backup.tar.gz
-  Size: 5.3 MB
-  Type: application/gzip
-  Tags: archive, compressed, backup
-  Checksum: b4d3e2f1a...
+ID                        NAME                           SOURCE          PURPOSE
+-----------------------------------------------------------------------------------------------
+be77d98b-f66c-480e-9a89  sales-report.txt               agent           Q4 sales analysis
+acf3abbb-6249-4d0e-9f0c  sales-data.csv                 user            Sales data for analysis
 
-Note: Archive stored as-is. Use tar/unzip to extract if needed.
+Found 2 artifact(s) matching: sales report
 ```
 
-**Important**: Archives are NOT automatically extracted. This prevents security issues (zip slip attacks) and unpredictable disk usage.
+### Show Artifact Details
 
-**To extract manually**:
+Display full metadata for an artifact:
 
 ```bash
-cd ~/.loom/artifacts/
+# By name
+loom artifacts show data.csv
 
-# Extract tar.gz
-tar -xzf backup.tar.gz
-
-# Extract zip
-unzip archive.zip
-
-# Extracted files will be auto-indexed by hot-reload watcher
+# By ID
+loom artifacts show acf3abbb-6249-4d0e-9f0c-f1b501d19924
 ```
 
-**Error: Cannot upload directory**:
+**Example output:**
+```
+ID: acf3abbb-6249-4d0e-9f0c-f1b501d19924
+Name: data.csv
+Path: /Users/you/.loom/artifacts/sessions/sess_abc123/agent/data.csv
+Source: agent
+Purpose: Q4 sales analysis
+Content Type: text/csv
+Size: 1.2 KB (1234 bytes)
+Checksum: 42dc0e959923a7683972e22142271d4f892cd8399c2d357857f6e941fdb9f6d2
+Created: 2026-01-21T15:30:00-08:00 (2 hours ago)
+Updated: 2026-01-21T15:30:00-08:00 (2 hours ago)
+Access Count: 5
+Tags: csv, data, sales
+```
+
+### Upload Artifacts
+
+Upload files with purpose and tags:
 
 ```bash
-> /upload ~/Documents/project/
+# Basic upload
+loom artifacts upload ~/data.csv
+
+# With metadata
+loom artifacts upload report.pdf --purpose "Q4 sales report" --tags quarterly,sales,2024
+
+# Multiple files (via archive)
+tar -czf mydata.tar.gz mydata/
+loom artifacts upload mydata.tar.gz --purpose "Data dump" --tags archive,backup
 ```
 
-Expected error:
+**Example output:**
 ```
-Error: cannot upload directory: ~/Documents/project/
-To upload multiple files, create a tar/zip archive first:
-  tar -czf project.tar.gz ~/Documents/project/
-Then upload: /upload project.tar.gz
+Uploaded artifact: data.csv
+  ID: acf3abbb-6249-4d0e-9f0c-f1b501d19924
+  Size: 1.2 KB
+  Content Type: text/csv
+  Tags: csv, data, tabular
 ```
 
+### Download Artifacts
 
-## Using Artifact Tools in Agents
+Download artifact content to a file:
 
-Agents have access to 5 artifact management tools. These tools are automatically registered when the server starts.
+```bash
+# Download by name (uses original filename)
+loom artifacts download data.csv
 
-### List Tool
+# Download by ID with custom output path
+loom artifacts download acf3abbb-6249-4d0e-9f0c-f1b501d19924 --output ~/Downloads/backup.csv
 
-**Tool**: `list_artifacts`
-
-**Purpose**: Discover available artifacts with optional filtering.
-
-**Parameters**:
-- `source` (optional): Filter by source (`"user"`, `"generated"`, `"agent"`)
-- `content_type` (optional): Filter by MIME type (e.g., `"text/csv"`)
-- `tags` (optional): Array of tags (all must match)
-- `limit` (optional): Max results (default: 50)
-
-**Example usage**:
-
+# Download to specific location
+loom artifacts download report.pdf --output ~/Documents/q4-report.pdf
 ```
-User: "What CSV files do we have?"
 
-Agent generates tool call:
+**Example output:**
+```
+Downloaded artifact to: data.csv
+  Size: 1.2 KB
+```
+
+### Delete Artifacts
+
+Soft or hard delete artifacts:
+
+```bash
+# Soft delete (30-day recovery window)
+loom artifacts delete data.csv
+
+# Hard delete (permanent, cannot be recovered)
+loom artifacts delete old-data.csv --hard
+```
+
+**Example output:**
+```
+Soft deleted artifact: data.csv (can be recovered within 30 days)
+```
+
+### View Statistics
+
+Show storage statistics:
+
+```bash
+loom artifacts stats
+```
+
+**Example output:**
+```
+Artifact Storage Statistics
+==================================================
+Total Files:     42
+Total Size:      15.3 MB (16040960 bytes)
+User Files:      8
+Generated Files: 34
+Deleted Files:   3 (soft-deleted, recoverable)
+```
+
+## Agent Tools
+
+### Workspace Tool
+
+**Unified interface for artifacts and scratchpad.** Replaces 5+ separate tools with one session-aware tool.
+
+**Actions:**
+- `write` - Create artifact or scratchpad entry
+- `read` - Read artifact or scratchpad entry
+- `list` - List artifacts or scratchpad entries
+- `search` - Search artifacts (FTS5 full-text)
+- `delete` - Delete artifact or scratchpad entry
+
+**Parameters:**
+```json
 {
-  "tool": "list_artifacts",
-  "parameters": {
-    "content_type": "text/csv",
-    "limit": 10
-  }
+  "action": "write|read|list|search|delete",
+  "scope": "artifact|scratchpad",  // Default: "artifact"
+  "filename": "data.csv",
+  "content": "...",
+  "purpose": "Analysis results",
+  "tags": ["analysis", "sql"]
 }
-
-Response: JSON array of artifact summaries
 ```
 
-### Search Tool
+**Examples:**
 
-**Tool**: `search_artifacts`
-
-**Purpose**: Full-text search across artifact names, purposes, and tags.
-
-**Parameters**:
-- `query` (required): Search query (e.g., `"sales report"`)
-- `limit` (optional): Max results (default: 20)
-
-**Example usage**:
-
-```
-User: "Find anything related to Q4 performance"
-
-Agent generates tool call:
-{
-  "tool": "search_artifacts",
-  "parameters": {
-    "query": "Q4 performance",
-    "limit": 5
-  }
-}
-
-Response: JSON array ranked by relevance (BM25)
+**Write artifact (indexed, searchable):**
+```javascript
+workspace({
+  action: "write",
+  scope: "artifact",
+  filename: "analysis.txt",
+  content: "Key findings: ...",
+  purpose: "Analysis results",
+  tags: ["analysis", "sql"]
+})
 ```
 
-**Query syntax**:
-- `"sales"` - Simple term match
-- `"sales report"` - OR match (either term)
-- `"\"sales report\""` - Exact phrase match
-- `"sales AND report"` - Both terms required
-- `"sale*"` - Prefix match (sales, salesman, etc.)
-
-### Get Tool
-
-**Tool**: `get_artifact`
-
-**Purpose**: Retrieve detailed metadata for a specific artifact.
-
-**Parameters**:
-- `id` (optional): Artifact UUID
-- `name` (optional): Artifact filename (one of id/name required)
-
-**Example usage**:
-
-```
-User: "Show me details about config.yaml"
-
-Agent generates tool call:
-{
-  "tool": "get_artifact",
-  "parameters": {
-    "name": "config.yaml"
-  }
-}
-
-Response: Full metadata (checksum, access_count, timestamps, etc.)
+**Write to scratchpad (ephemeral, not indexed):**
+```javascript
+workspace({
+  action: "write",
+  scope: "scratchpad",
+  filename: "notes.md",
+  content: "Brainstorming ideas..."
+})
 ```
 
-### Read Tool
-
-**Tool**: `read_artifact`
-
-**Purpose**: Read file content with automatic encoding detection.
-
-**Parameters**:
-- `id` (optional): Artifact UUID
-- `name` (optional): Artifact filename (one of id/name required)
-- `encoding` (optional): `"text"` or `"base64"` (auto-detected if not specified)
-- `max_size_mb` (optional): Size limit in MB (default: 10)
-
-**Example usage**:
-
-```
-User: "What's in the sales_report.csv file?"
-
-Agent generates tool call:
-{
-  "tool": "read_artifact",
-  "parameters": {
-    "name": "sales_report.csv",
-    "max_size_mb": 10
-  }
-}
-
-Response: File content as text (CSV is text, so encoding="text")
+**List artifacts:**
+```javascript
+workspace({
+  action: "list",
+  scope: "artifact"
+})
 ```
 
-**Size limits**:
-- Default: 10MB max
-- Configurable per request
-- Prevents OOM from large files
-
-**Side effects**:
-- Increments `access_count`
-- Updates `last_accessed_at` timestamp
-
-### Write Tool
-
-**Tool**: `write_artifact`
-
-**Purpose**: Create new artifact from generated content.
-
-**Parameters**:
-- `name` (required): Filename (e.g., `"report.csv"`)
-- `content` (required): File content (text or base64)
-- `encoding` (optional): `"text"` or `"base64"` (default: `"text"`)
-- `purpose` (optional): Description of artifact purpose
-- `tags` (optional): Array of custom tags
-- `overwrite` (optional): Replace existing file (default: `false`)
-
-**Example usage**:
-
-```
-User: "Generate a summary report and save it"
-
-Agent generates content, then:
-{
-  "tool": "write_artifact",
-  "parameters": {
-    "name": "summary_report.md",
-    "content": "# Summary Report\n\n## Key Findings\n...",
-    "purpose": "Q4 performance summary",
-    "tags": ["report", "summary", "Q4"],
-    "overwrite": false
-  }
-}
-
-Response: Artifact ID, checksum, auto-inferred tags
+**Search artifacts:**
+```javascript
+workspace({
+  action: "search",
+  query: "sales report"
+})
 ```
 
-**Auto-inferred tags**: System automatically adds tags based on content type and filename patterns.
-
-**Overwrite protection**:
+**Read artifact:**
+```javascript
+workspace({
+  action: "read",
+  filename: "data.csv"
+})
 ```
-Agent tries to write existing file without overwrite=true:
-Error: "artifact already exists: report.csv (use overwrite=true to replace)"
+
+### Shell Execute Tool
+
+**Session-aware shell execution with path restrictions.**
+
+**Features:**
+- Default working directory: Session artifact directory
+- Read access: Session artifacts + scratchpad + documentation
+- Write access: Only session directories (artifacts, scratchpad)
+- Automatic path validation - commands outside session boundaries are blocked
+
+**Environment variables available:**
+```bash
+$LOOM_DATA_DIR             # ~/.loom/
+$SESSION_ARTIFACT_DIR      # ~/.loom/artifacts/sessions/<session>/agent/
+$SESSION_SCRATCHPAD_DIR    # ~/.loom/artifacts/sessions/<session>/scratchpad/
 ```
 
+**Examples:**
+
+**Read artifact in current session:**
+```bash
+shell_execute(command="cat data.csv")  # ✅ Works (in session dir)
+```
+
+**Write to session artifact dir:**
+```bash
+shell_execute(command="echo 'results' > analysis.txt")  # ✅ Works
+```
+
+**Write to scratchpad:**
+```bash
+shell_execute(command="echo 'notes' > $SESSION_SCRATCHPAD_DIR/notes.md")  # ✅ Works
+```
+
+**Read documentation (always allowed):**
+```bash
+shell_execute(command="cat $LOOM_DATA_DIR/documentation/guides.md")  # ✅ Works
+```
+
+**Attempt to access other session (blocked):**
+```bash
+shell_execute(command="cat ../other-session/data.csv")  # ❌ Blocked
+```
+
+**Attempt to write outside session (blocked):**
+```bash
+shell_execute(command="echo 'test' > /tmp/file.txt")  # ❌ Blocked
+```
+
+## Common Tasks
+
+### Working with Session Artifacts
+
+**Start a session and create artifacts:**
+
+```bash
+# Start session with agent
+loom --thread data-analyst
+
+# Agent creates artifact
+> "Analyze this data and save results to analysis.txt"
+
+# Agent uses workspace tool:
+# workspace({action: "write", filename: "analysis.txt", content: "..."})
+
+# List artifacts in current session
+> "List all artifacts in this session"
+
+# Agent uses workspace tool:
+# workspace({action: "list"})
+
+# Results are automatically in:
+# ~/.loom/artifacts/sessions/<session-id>/agent/analysis.txt
+```
+
+### Using Scratchpad for Notes
+
+**Keep ephemeral notes that don't need indexing:**
+
+```bash
+# Start session
+loom --thread brainstorm-agent
+
+# Agent keeps notes in scratchpad
+> "Keep track of ideas we discuss in scratchpad"
+
+# Agent uses workspace tool:
+# workspace({action: "write", scope: "scratchpad", filename: "ideas.md", content: "..."})
+
+# Scratchpad not indexed - faster writes, no search clutter
+# File at: ~/.loom/artifacts/sessions/<session-id>/scratchpad/ideas.md
+```
+
+### Searching Across Artifacts
+
+**Find artifacts using FTS5 full-text search:**
+
+```bash
+# Search from CLI
+loom artifacts search "sales report Q4"
+
+# Search from agent conversation
+> "Search for all CSV files about sales"
+
+# Agent uses workspace tool:
+# workspace({action: "search", query: "sales CSV"})
+```
+
+### Managing User Artifacts
+
+**Upload files for agents to use:**
+
+```bash
+# Upload file for agent access
+loom artifacts upload ~/customer-data.csv --purpose "Customer analysis" --tags customers,data
+
+# Start session
+loom --thread data-analyst
+
+# Agent can now find and use it
+> "Find customer data files and analyze them"
+
+# Agent uses workspace tool to search and read:
+# workspace({action: "search", query: "customer data"})
+# workspace({action: "read", filename: "customer-data.csv"})
+```
 
 ## Examples
 
-### Example 1: Upload and Search CSV File
+### Example 1: Agent Generates Report
 
-**Scenario**: Upload a sales dataset and search for it.
-
-**Step 1: Upload via TUI**
+**Scenario:** Agent analyzes data and generates a report artifact.
 
 ```bash
-bin/loom
+# Start session
+loom --thread sql-analyst --session my-analysis
 
-> /upload ~/Downloads/q4_sales.csv
+# Agent conversation
+User: "Analyze sales trends and generate a report"
+
+Agent: "I'll analyze the sales data and create a comprehensive report."
+# Agent internally uses:
+# workspace({
+#   action: "write",
+#   filename: "sales-trend-report.md",
+#   content: "# Sales Trend Analysis\n\n## Key Findings\n...",
+#   purpose: "Q4 sales trend analysis",
+#   tags: ["sales", "analysis", "report"]
+# })
+
+Agent: "Report saved to sales-trend-report.md"
+
+# Verify artifact exists
+loom artifacts show sales-trend-report.md
+
+# Download for review
+loom artifacts download sales-trend-report.md --output ~/Downloads/report.md
 ```
 
-Output:
-```
-Uploading q4_sales.csv...
-✓ Artifact uploaded successfully
-  ID: 990e8400-e29b-41d4-a716-446655440004
-  Name: q4_sales.csv
-  Size: 2.5 MB
-  Type: text/csv
-  Tags: csv, data, tabular, sales
-  Checksum: c5f4g3h2i...
-```
+**Result:** Artifact at `~/.loom/artifacts/sessions/my-analysis/agent/sales-trend-report.md`
 
-**Step 2: Search for it**
+### Example 2: Multi-Session Data Analysis
 
-```
-User: "Find the Q4 sales data"
-
-Agent: I found the Q4 sales file.
-
-Tool call:
-{
-  "tool": "search_artifacts",
-  "parameters": {
-    "query": "Q4 sales",
-    "limit": 5
-  }
-}
-
-Response:
-{
-  "results": [
-    {
-      "id": "990e8400-e29b-41d4-a716-446655440004",
-      "name": "q4_sales.csv",
-      "source": "user",
-      "content_type": "text/csv",
-      "size_bytes": 2621440,
-      "tags": ["csv", "data", "tabular", "sales"]
-    }
-  ],
-  "count": 1
-}
-```
-
-**Step 3: Read CSV content**
-
-```
-User: "Show me the first few rows"
-
-Agent: Here are the first rows from q4_sales.csv:
-
-Tool call:
-{
-  "tool": "read_artifact",
-  "parameters": {
-    "name": "q4_sales.csv",
-    "max_size_mb": 10
-  }
-}
-
-Response:
-{
-  "artifact_name": "q4_sales.csv",
-  "content_type": "text/csv",
-  "encoding": "text",
-  "content": "date,product,quantity,revenue\n2024-10-01,Widget A,150,4500\n2024-10-01,Widget B,200,8000\n..."
-}
-
-Agent: The CSV contains 4 columns (date, product, quantity, revenue) with sales data from Q4 2024.
-```
-
-### Example 2: Agent-Generated Report
-
-**Scenario**: Agent analyzes data and saves a markdown report.
-
-**Step 1: Agent generates report**
-
-```
-User: "Analyze the sales data and create a summary report"
-
-Agent: I'll analyze the sales data and generate a report.
-
-Tool call 1 (read data):
-{
-  "tool": "read_artifact",
-  "parameters": {
-    "name": "q4_sales.csv"
-  }
-}
-
-Agent processes data...
-
-Tool call 2 (write report):
-{
-  "tool": "write_artifact",
-  "parameters": {
-    "name": "q4_sales_summary.md",
-    "content": "# Q4 Sales Summary\n\n## Total Revenue: $1.2M\n\n### Top Products:\n1. Widget B - $400K\n2. Widget A - $350K\n3. Widget C - $250K\n\n### Trends:\n- Sales increased 15% month-over-month\n- Widget B showing strong growth\n- December peak: $450K\n",
-    "purpose": "Q4 sales analysis summary",
-    "tags": ["report", "summary", "sales", "Q4"],
-    "overwrite": false
-  }
-}
-
-Response:
-{
-  "success": true,
-  "artifact_id": "aa0e8400-e29b-41d4-a716-446655440005",
-  "name": "q4_sales_summary.md",
-  "content_type": "text/markdown",
-  "size_bytes": 342,
-  "checksum": "d6g5h4i3j...",
-  "tags": ["report", "summary", "sales", "Q4", "markdown", "documentation"]
-}
-
-Agent: I've created a summary report saved as q4_sales_summary.md. The report shows total revenue of $1.2M with Widget B as the top product.
-```
-
-**Step 2: User reads generated report**
+**Scenario:** Run multiple analysis sessions, each with isolated artifacts.
 
 ```bash
-# Via CLI
-cat ~/.loom/artifacts/q4_sales_summary.md
+# Session 1: Q3 analysis
+loom --thread data-analyst --session q3-analysis
+> "Analyze Q3 sales and save to q3-results.csv"
+# Creates: ~/.loom/artifacts/sessions/q3-analysis/agent/q3-results.csv
 
-# Or in next conversation
-User: "Show me the summary report you created"
+# Session 2: Q4 analysis (isolated from Q3)
+loom --thread data-analyst --session q4-analysis
+> "Analyze Q4 sales and save to q4-results.csv"
+# Creates: ~/.loom/artifacts/sessions/q4-analysis/agent/q4-results.csv
 
-Agent: [reads and displays q4_sales_summary.md content]
+# List artifacts per session
+loom artifacts list  # Shows artifacts from current session only
+
+# Search across all artifacts
+loom artifacts search "Q3 OR Q4"  # Finds both
 ```
 
-### Example 3: Archive Handling
+**Result:** Each session has isolated artifacts, but all searchable.
 
-**Scenario**: Upload and extract a backup archive.
+### Example 3: Scratchpad for Ephemeral Notes
 
-**Step 1: Create archive**
+**Scenario:** Agent keeps temporary notes during problem-solving.
 
 ```bash
-cd ~/Documents/project/
-tar -czf project_backup.tar.gz src/ config/ data/
+loom --thread debug-agent
+
+User: "Debug this issue and track your thought process"
+
+Agent: "I'll keep notes in scratchpad while debugging."
+# Agent uses:
+# workspace({
+#   action: "write",
+#   scope: "scratchpad",
+#   filename: "debug-notes.md",
+#   content: "## Hypothesis 1\n- Checking database connection..."
+# })
+
+Agent: "Found root cause. Creating final report."
+# Agent uses:
+# workspace({
+#   action: "write",
+#   scope: "artifact",
+#   filename: "bug-report.md",
+#   content: "# Bug Report\n\nRoot cause: Connection timeout..."
+# })
+
+Agent: "Bug report saved to bug-report.md (searchable), debug notes in scratchpad (not indexed)"
 ```
 
-**Step 2: Upload archive**
+**Result:**
+- Searchable: `~/.loom/artifacts/sessions/<session>/agent/bug-report.md`
+- Not searchable: `~/.loom/artifacts/sessions/<session>/scratchpad/debug-notes.md`
+
+### Example 4: Session Cleanup
+
+**Scenario:** Delete a session and verify artifacts are removed.
 
 ```bash
-bin/loom
+# Create session with artifacts
+loom --thread test-agent --session temp-session
+> "Create test files: test1.txt, test2.txt, test3.txt"
 
-> /upload ~/Documents/project_backup.tar.gz
+# Verify artifacts exist
+loom artifacts list  # Shows 3 files
+
+# Delete session
+loom sessions delete temp-session
+
+# Verify artifacts are gone (CASCADE delete)
+ls ~/.loom/artifacts/sessions/temp-session/  # Directory removed
+
+# Database records also removed (foreign key CASCADE)
+sqlite3 ~/.loom/loom.db "SELECT COUNT(*) FROM artifacts WHERE session_id='temp-session';"
+# Returns: 0
 ```
 
-Output:
-```
-Uploading project_backup.tar.gz...
-✓ Artifact uploaded successfully
-  ID: bb0e8400-e29b-41d4-a716-446655440006
-  Name: project_backup.tar.gz
-  Size: 15.7 MB
-  Type: application/gzip
-  Tags: archive, compressed, project, backup
-  Checksum: e7h6i5j4k...
-
-Note: Archive stored as-is. Extract manually if needed.
-```
-
-**Step 3: Extract manually**
-
-```bash
-cd ~/.loom/artifacts/
-tar -xzf project_backup.tar.gz
-
-# Files extracted:
-# src/main.go
-# src/util.go
-# config/app.yaml
-# data/sample.csv
-```
-
-**Step 4: Hot-reload indexes extracted files**
-
-Expected logs:
-```
-INFO  New artifact detected  path=~/.loom/artifacts/src/main.go
-INFO  Artifact indexed  id=cc0e8400-... name=main.go content_type=text/x-go
-INFO  New artifact detected  path=~/.loom/artifacts/config/app.yaml
-INFO  Artifact indexed  id=dd0e8400-... name=app.yaml content_type=application/x-yaml
-INFO  New artifact detected  path=~/.loom/artifacts/data/sample.csv
-INFO  Artifact indexed  id=ee0e8400-... name=sample.csv content_type=text/csv
-```
-
-**Step 5: Search extracted files**
-
-```
-User: "Show me all the files from the project backup"
-
-Agent: I found 4 files from the backup:
-
-Tool call:
-{
-  "tool": "search_artifacts",
-  "parameters": {
-    "query": "project backup",
-    "limit": 20
-  }
-}
-
-Response: [Lists extracted files + original archive]
-```
-
-
-## Hot-Reload Behavior
-
-The artifact watcher monitors `~/.loom/artifacts/` for file changes and automatically indexes new or modified files.
-
-**Configuration** (server startup):
-
-```go
-watcherConfig := artifacts.WatcherConfig{
-    Enabled:    true,         // Enable hot-reload
-    DebounceMs: 500,          // Wait 500ms after last change
-    Logger:     logger,
-}
-```
-
-**Event types**:
-
-1. **CREATE**: New file dropped into directory
-   - Triggers: `Analyzer.Analyze()` → `store.Index()`
-   - Source: Set to `"user"`
-
-2. **WRITE**: Existing file modified
-   - Triggers: Re-analyze → `store.Update()`
-   - Updates: `size_bytes`, `checksum`, `updated_at`
-
-3. **REMOVE**: File deleted from filesystem
-   - Triggers: `store.Delete(soft=true)`
-   - Result: `deleted_at` timestamp set (soft delete)
-
-**Debouncing**:
-
-```
-Editor auto-save behavior:
-  t=0ms:   Write #1 → Timer started (500ms)
-  t=50ms:  Write #2 → Timer canceled, restarted
-  t=100ms: Write #3 → Timer canceled, restarted
-  t=150ms: Write #4 → Timer canceled, restarted
-  ...
-  t=600ms: Timer fires → Index once
-
-Result: 10+ rapid writes → 1 index operation
-```
-
-**Trade-off**: 500ms delay before indexing, but reduces CPU usage and database writes.
-
-**Ignored files**:
-- Hidden files (`.filename`)
-- Directories
-- `metadata.json` (reserved)
-
+**Result:** Session deletion automatically removes all associated artifacts.
 
 ## Troubleshooting
 
-### No Artifacts Directory
+### Artifact Not Found
 
-**Problem**: `~/.loom/artifacts/` does not exist.
+**Symptom:** `artifact not found: <filename>`
 
-**Solution**:
+**Cause:** Artifact is in a different session or was deleted.
 
+**Solution:**
 ```bash
-mkdir -p ~/.loom/artifacts
+# Search across all sessions
+loom artifacts search "<filename>"
+
+# List with deleted artifacts
+loom artifacts list --include-deleted
+
+# Check if session was deleted
+loom sessions list
 ```
 
-The directory is automatically created when you:
-- Upload first artifact via TUI
-- Start server with hot-reload enabled
-- Call any artifact tool
+### Permission Denied Writing Files
 
-### Upload Fails: "Cannot upload directory"
+**Symptom:** `permission denied` when agent tries to write files
 
-**Problem**: Tried to upload a directory instead of a file.
+**Cause:** Shell commands restricted to session directories.
 
-**Error**:
-```
-Error: cannot upload directory: ~/Documents/project/
-To upload multiple files, create a tar/zip archive first:
-  tar -czf project.tar.gz ~/Documents/project/
-Then upload: /upload project.tar.gz
-```
-
-**Solution**:
-
+**Solution:**
 ```bash
-# Create archive
-cd ~/Documents/
-tar -czf project.tar.gz project/
+# Use workspace tool instead of shell commands
+# ❌ shell_execute("echo 'data' > /tmp/file.txt")  # Blocked
 
-# Upload archive
-bin/loom
-> /upload ~/Documents/project.tar.gz
+# ✅ workspace({action: "write", filename: "file.txt", content: "data"})
 ```
 
-### Search Returns No Results
+### Artifacts Not Searchable
 
-**Problem**: Search query returns empty results despite file existing.
+**Symptom:** Artifact exists but doesn't show up in search
 
-**Debugging**:
+**Cause:** File is in scratchpad (not indexed) or search index needs update.
 
+**Solution:**
 ```bash
-# Check if artifact is indexed
-sqlite3 ~/.loom/loom.db "SELECT name, tags FROM artifacts WHERE deleted_at IS NULL;"
+# Check if file is in scratchpad
+ls ~/.loom/artifacts/sessions/<session>/scratchpad/
 
-# Check FTS5 index
-sqlite3 ~/.loom/loom.db "SELECT * FROM artifacts_fts5 WHERE artifacts_fts5 MATCH 'your_query';"
+# Move to artifacts scope (agents should use workspace tool)
+# workspace({action: "write", scope: "artifact", filename: "...", content: "..."})
+
+# Verify FTS5 index
+sqlite3 ~/.loom/loom.db "SELECT * FROM artifacts_fts5 WHERE name MATCH '<filename>';"
 ```
 
-**Common causes**:
-1. File not indexed yet (wait 500ms for hot-reload)
-2. Query terms don't match name/purpose/tags
-3. File soft-deleted (check `deleted_at` column)
+### Session Directory Not Created
 
-**Solution**:
-- Wait for hot-reload debounce period
-- Use broader search terms
-- Use `list_artifacts` with filters instead
+**Symptom:** Agent can't create artifacts, directory missing
 
-### Read Artifact: "Artifact too large"
+**Cause:** Session ID not propagated to tools.
 
-**Problem**: File exceeds `max_size_mb` limit.
-
-**Error**:
-```
-Error: artifact too large: 52428800 bytes (max: 10 MB)
-```
-
-**Solution**:
-
-Increase `max_size_mb` parameter:
-
-```
-Agent tool call:
-{
-  "tool": "read_artifact",
-  "parameters": {
-    "name": "large_file.csv",
-    "max_size_mb": 50
-  }
-}
-```
-
-**Caution**: Very large files (>100MB) may cause memory issues. Consider streaming or chunking for production use.
-
-### Write Artifact: "Artifact already exists"
-
-**Problem**: Tried to create artifact with existing name.
-
-**Error**:
-```
-Error: artifact already exists: report.csv (use overwrite=true to replace)
-```
-
-**Solution**:
-
-Set `overwrite=true`:
-
-```
-{
-  "tool": "write_artifact",
-  "parameters": {
-    "name": "report.csv",
-    "content": "...",
-    "overwrite": true
-  }
-}
-```
-
-**Side effect**: Existing artifact is hard-deleted (file + database row removed) before writing new file.
-
-### Hot-Reload Not Working
-
-**Problem**: Files dropped into `~/.loom/artifacts/` are not indexed.
-
-**Debugging**:
-
-1. Check if hot-reload is enabled:
+**Solution:**
 ```bash
-# Look for this log at server startup
-grep "Artifact hot-reload started" ~/.loom/logs/server.log
+# Verify session is active
+loom sessions list
+
+# Check server logs
+looms serve  # Look for "context propagation" errors
+
+# Restart server with fresh session
+looms serve &
+loom --thread agent-name --session new-session
 ```
 
-2. Check for watcher errors:
+### Disk Space Issues
+
+**Symptom:** Upload fails with disk space error
+
+**Cause:** Artifact storage full.
+
+**Solution:**
 ```bash
-grep "Artifact watcher error" ~/.loom/logs/server.log
+# Check storage usage
+loom artifacts stats
+
+# Clean up old sessions
+loom sessions list
+loom sessions delete <old-session-id>
+
+# Hard delete soft-deleted artifacts
+loom artifacts list --include-deleted
+loom artifacts delete <artifact-id> --hard
+
+# Check disk space
+df -h ~/.loom/
 ```
-
-**Common causes**:
-1. Hot-reload disabled in config (`Enabled: false`)
-2. fsnotify limit reached (Linux only, check `ulimit -n`)
-3. Network filesystem (NFS, SMB) - fsnotify unreliable
-
-**Solution**:
-- Ensure `WatcherConfig.Enabled = true`
-- Increase file descriptor limit (Linux): `ulimit -n 8192`
-- Use local filesystem for `~/.loom/artifacts/`
-
 
 ## Next Steps
 
-- **Architecture Details**: See [Artifact Management Architecture](../architecture/artifacts.md) for design rationale and performance characteristics
-- **Agent Integration**: See [Zero-Code Implementation Guide](./zero-code-implementation-guide.md) for configuring agents with artifact tools
-- **Pattern Library**: Combine artifacts with patterns for domain-specific workflows (e.g., SQL analysis, data transformation)
-- **MCP Integration**: Expose artifact management via Model Context Protocol for Claude Desktop, Zed, etc.
+- **[Artifact Architecture](../architecture/artifacts.md)** - Deep dive into implementation details
+- **[Session Management](sessions.md)** - Managing conversation sessions
+- **[Agent Configuration](agent-configuration.md)** - Configuring agent tools and permissions
+- **[Multi-Agent Workflows](multi-agent-usage.md)** - Sharing artifacts between agents
+- **[Shell Execute Guide](shell-execute.md)** - Advanced shell command usage with session sandboxing
 
-**Related Guides**:
-- [Weaver Usage](./weaver-usage.md) - Generate agents that use artifact tools
-- [Pattern Library Guide](./pattern-library-guide.md) - Domain-specific artifact processing patterns
+---
+
+**Documentation Version:** v1.0.2
+**Last Updated:** 2026-01-21
+**Verified:** ✅ All commands tested and working
