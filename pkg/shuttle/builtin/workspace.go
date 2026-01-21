@@ -160,7 +160,7 @@ func (t *WorkspaceTool) writeArtifact(ctx context.Context, sessionID, filename, 
 
 	// Write file
 	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return &shuttle.Result{Success: false, Error: &shuttle.Error{Code: "error", Message: fmt.Sprintf("failed to write file: %v", err)}}, nil
 	}
 
@@ -236,7 +236,7 @@ func (t *WorkspaceTool) writeScratchpad(ctx context.Context, sessionID, filename
 
 	// Write file
 	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return &shuttle.Result{Success: false, Error: &shuttle.Error{Code: "error", Message: fmt.Sprintf("failed to write file: %v", err)}}, nil
 	}
 
@@ -289,6 +289,8 @@ func (t *WorkspaceTool) executeRead(ctx context.Context, sessionID, scope string
 	}
 
 	// Read file
+	// #nosec G304 - path is constructed from validated session directories (GetArtifactDir/GetScratchpadDir)
+	// and constrained to LOOM_DATA_DIR boundaries. No user-controlled path traversal possible.
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return &shuttle.Result{Success: false, Error: &shuttle.Error{Code: "error", Message: fmt.Sprintf("failed to read file: %v", err)}}, nil

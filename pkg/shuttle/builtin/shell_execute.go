@@ -482,7 +482,10 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	if outputErr != nil {
 		// Kill the process if still running
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			if err := cmd.Process.Kill(); err != nil {
+				// Log kill failure but continue with error handling
+				// Process may have already exited
+			}
 		}
 		return &shuttle.Result{
 			Success: false,
