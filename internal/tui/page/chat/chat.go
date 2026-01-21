@@ -569,9 +569,9 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		return p, nil
 
 	case sidebar.PatternFileSelectedMsg:
-		// Open pattern file in viewer dialog
+		// Open pattern file in editor dialog
 		return p, util.CmdHandler(dialogs.OpenDialogMsg{
-			Model: pattern.NewPatternViewerDialog(msg.FilePath),
+			Model: pattern.NewPatternEditorDialog(msg.FilePath),
 		})
 
 	case sidebar.MCPServerSelectedMsg:
