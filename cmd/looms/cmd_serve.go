@@ -1696,6 +1696,17 @@ func runServe(cmd *cobra.Command, args []string) {
 			zap.Bool("auto_promote", config.Communication.AutoPromote.Enabled),
 			zap.Int64("threshold_kb", config.Communication.AutoPromote.Threshold/1024),
 			zap.Int("gc_interval_sec", config.Communication.GC.Interval))
+
+		// Register communication tools with all loaded agents
+		// This ensures agents loaded from YAML configs get pub/sub tools
+		logger.Info("Registering communication tools with loaded agents...")
+		for agentID, ag := range agents {
+			commTools := builtin.CommunicationTools(queue, bus, sharedMemComm, agentID)
+			ag.RegisterTools(commTools...)
+			logger.Info("  Communication tools registered",
+				zap.String("agent", agentID),
+				zap.Int("num_tools", len(commTools)))
+		}
 	}
 
 	// Enable reflection if configured

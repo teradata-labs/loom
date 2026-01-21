@@ -71,7 +71,8 @@ func ByName(name string) shuttle.Tool {
 }
 
 // Names returns the names of all builtin tools.
-// Note: spawn_agent is NOT included as it's a metaagent tool to avoid import cycles.
+// Note: spawn_agent is NOT included - it requires per-agent context (session ID, spawn handler)
+// and must be created via NewSpawnAgentTool() when setting up agents.
 func Names() []string {
 	return []string{
 		"http_request",
