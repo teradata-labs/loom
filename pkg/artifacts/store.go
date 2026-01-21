@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,6 +59,7 @@ type Artifact struct {
 	Tags           []string
 	Metadata       map[string]string
 	DeletedAt      *time.Time
+	SessionID      string // Session this artifact belongs to (nullable for backward compatibility)
 }
 
 // Filter defines filtering options for listing artifacts.
@@ -72,6 +74,7 @@ type Filter struct {
 	IncludeDeleted bool
 	Limit          int
 	Offset         int
+	SessionID      *string // Filter by session (nullable)
 }
 
 // Stats holds artifact storage statistics.
@@ -83,6 +86,87 @@ type Stats struct {
 	DeletedFiles   int
 }
 
+// GetArtifactDir returns the artifact directory for a given context.
+// Directory structure:
+//   - No session + user: ~/.loom/artifacts/user/
+//   - No session + generated/agent: ~/.loom/artifacts/temp/
+//   - Session + user: ~/.loom/artifacts/sessions/<session-id>/user/
+//   - Session + generated/agent: ~/.loom/artifacts/sessions/<session-id>/agent/
+func GetArtifactDir(sessionID string, source SourceType) (string, error) {
+	baseDir := config.GetLoomDataDir()
+	artifactsDir := filepath.Join(baseDir, "artifacts")
+
+	if sessionID == "" {
+		// User artifacts without session
+		if source == SourceUser {
+			return filepath.Join(artifactsDir, "user"), nil
+		}
+		// Generated artifacts without session (legacy or temp)
+		return filepath.Join(artifactsDir, "temp"), nil
+	}
+
+	// Session-based artifacts
+	sessionDir := filepath.Join(artifactsDir, "sessions", sessionID)
+
+	switch source {
+	case SourceUser:
+		return filepath.Join(sessionDir, "user"), nil
+	case SourceAgent, SourceGenerated:
+		return filepath.Join(sessionDir, "agent"), nil
+	default:
+		return sessionDir, nil
+	}
+}
+
+// GetScratchpadDir returns the scratchpad directory for a session.
+// Scratchpad is ephemeral storage for notes and scratch work, not indexed.
+func GetScratchpadDir(sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("session ID is required for scratchpad")
+	}
+	baseDir := config.GetLoomDataDir()
+	return filepath.Join(baseDir, "artifacts", "sessions", sessionID, "scratchpad"), nil
+}
+
+// EnsureArtifactDir creates artifact directory if it doesn't exist.
+func EnsureArtifactDir(sessionID string, source SourceType) error {
+	dir, err := GetArtifactDir(sessionID, source)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0750)
+}
+
+// EnsureScratchpadDir creates scratchpad directory if it doesn't exist.
+func EnsureScratchpadDir(sessionID string) error {
+	dir, err := GetScratchpadDir(sessionID)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0750)
+}
+
+// ExtractSessionIDFromPath attempts to extract session ID from an artifact path.
+// Returns empty string if path is not session-based.
+// Example path: ~/.loom/artifacts/sessions/<session-id>/agent/file.csv
+func ExtractSessionIDFromPath(path string) string {
+	// Normalize path and convert to forward slashes for consistent parsing
+	path = filepath.ToSlash(filepath.Clean(path))
+
+	// Split path by forward slash (works cross-platform after ToSlash)
+	parts := strings.Split(path, "/")
+
+	// Look for "sessions" directory followed by session ID
+	for i, part := range parts {
+		if part == "sessions" && i+1 < len(parts) {
+			// Next part should be the session ID
+			return parts[i+1]
+		}
+	}
+
+	return ""
+}
+
 // ArtifactStore defines the interface for artifact storage operations.
 type ArtifactStore interface {
 	// Index adds or updates an artifact in the catalog.
@@ -91,14 +175,16 @@ type ArtifactStore interface {
 	// Get retrieves artifact metadata by ID.
 	Get(ctx context.Context, id string) (*Artifact, error)
 
-	// GetByName retrieves artifact by file name.
-	GetByName(ctx context.Context, name string) (*Artifact, error)
+	// GetByName retrieves artifact by file name within a session.
+	// If sessionID is empty, searches in user artifacts (backward compatibility).
+	GetByName(ctx context.Context, name string, sessionID string) (*Artifact, error)
 
 	// List returns all artifacts matching filters.
 	List(ctx context.Context, filter *Filter) ([]*Artifact, error)
 
 	// Search performs FTS5 full-text search.
-	Search(ctx context.Context, query string, limit int) ([]*Artifact, error)
+	// If sessionID is non-empty, results are scoped to that session.
+	Search(ctx context.Context, query string, sessionID string, limit int) ([]*Artifact, error)
 
 	// Update updates artifact metadata.
 	Update(ctx context.Context, artifact *Artifact) error
@@ -196,8 +282,8 @@ func (s *SQLiteStore) Index(ctx context.Context, artifact *Artifact) error {
 		INSERT INTO artifacts (
 			id, name, path, source, source_agent_id, purpose, content_type,
 			size_bytes, checksum, created_at, updated_at, last_accessed_at,
-			access_count, tags, metadata_json, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			access_count, tags, metadata_json, deleted_at, session_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			path = excluded.path,
@@ -212,7 +298,8 @@ func (s *SQLiteStore) Index(ctx context.Context, artifact *Artifact) error {
 			access_count = excluded.access_count,
 			tags = excluded.tags,
 			metadata_json = excluded.metadata_json,
-			deleted_at = excluded.deleted_at
+			deleted_at = excluded.deleted_at,
+			session_id = excluded.session_id
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
@@ -232,6 +319,7 @@ func (s *SQLiteStore) Index(ctx context.Context, artifact *Artifact) error {
 		string(tagsJSON),
 		string(metadataJSON),
 		deletedAt,
+		nullString(artifact.SessionID),
 	)
 	if err != nil {
 		if s.tracer != nil {
@@ -259,7 +347,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Artifact, error) {
 	query := `
 		SELECT id, name, path, source, source_agent_id, purpose, content_type,
 			size_bytes, checksum, created_at, updated_at, last_accessed_at,
-			access_count, tags, metadata_json, deleted_at
+			access_count, tags, metadata_json, deleted_at, session_id
 		FROM artifacts
 		WHERE id = ? AND deleted_at IS NULL
 	`
@@ -288,7 +376,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Artifact, error) {
 }
 
 // GetByName retrieves an artifact by name.
-func (s *SQLiteStore) GetByName(ctx context.Context, name string) (*Artifact, error) {
+func (s *SQLiteStore) GetByName(ctx context.Context, name string, sessionID string) (*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -297,19 +385,32 @@ func (s *SQLiteStore) GetByName(ctx context.Context, name string) (*Artifact, er
 		ctx, span = s.tracer.StartSpan(ctx, "artifacts.get_by_name")
 		defer s.tracer.EndSpan(span)
 		span.SetAttribute("artifact.name", name)
+		span.SetAttribute("session_id", sessionID)
 	}
 
+	// Query with optional session filtering
 	query := `
 		SELECT id, name, path, source, source_agent_id, purpose, content_type,
 			size_bytes, checksum, created_at, updated_at, last_accessed_at,
-			access_count, tags, metadata_json, deleted_at
+			access_count, tags, metadata_json, deleted_at, session_id
 		FROM artifacts
 		WHERE name = ? AND deleted_at IS NULL
-		ORDER BY created_at DESC
-		LIMIT 1
 	`
 
-	artifact, err := s.scanArtifact(ctx, s.db.QueryRowContext(ctx, query, name))
+	args := []interface{}{name}
+
+	// Add session filter if provided
+	if sessionID != "" {
+		query += " AND session_id = ?"
+		args = append(args, sessionID)
+	} else {
+		// Backward compatibility: if no session ID, search in user artifacts or temp
+		query += " AND (session_id IS NULL OR session_id = '')"
+	}
+
+	query += " ORDER BY created_at DESC LIMIT 1"
+
+	artifact, err := s.scanArtifact(ctx, s.db.QueryRowContext(ctx, query, args...))
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("artifact not found: %s", name)
 	}
@@ -338,7 +439,7 @@ func (s *SQLiteStore) List(ctx context.Context, filter *Filter) ([]*Artifact, er
 	query := `
 		SELECT id, name, path, source, source_agent_id, purpose, content_type,
 			size_bytes, checksum, created_at, updated_at, last_accessed_at,
-			access_count, tags, metadata_json, deleted_at
+			access_count, tags, metadata_json, deleted_at, session_id
 		FROM artifacts
 		WHERE 1=1
 	`
@@ -346,6 +447,10 @@ func (s *SQLiteStore) List(ctx context.Context, filter *Filter) ([]*Artifact, er
 
 	// Apply filters
 	if filter != nil {
+		if filter.SessionID != nil {
+			query += " AND session_id = ?"
+			args = append(args, *filter.SessionID)
+		}
 		if filter.Source != nil {
 			query += " AND source = ?"
 			args = append(args, string(*filter.Source))
@@ -426,7 +531,7 @@ func (s *SQLiteStore) List(ctx context.Context, filter *Filter) ([]*Artifact, er
 }
 
 // Search performs FTS5 full-text search on artifacts.
-func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]*Artifact, error) {
+func (s *SQLiteStore) Search(ctx context.Context, query string, sessionID string, limit int) ([]*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -435,6 +540,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]*A
 		ctx, span = s.tracer.StartSpan(ctx, "artifacts.search")
 		defer s.tracer.EndSpan(span)
 		span.SetAttribute("query", query)
+		span.SetAttribute("session_id", sessionID)
 		span.SetAttribute("limit", limit)
 	}
 
@@ -442,19 +548,28 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]*A
 		limit = 20
 	}
 
-	// FTS5 search query
+	// FTS5 search query with optional session filtering
 	searchQuery := `
 		SELECT a.id, a.name, a.path, a.source, a.source_agent_id, a.purpose,
 			a.content_type, a.size_bytes, a.checksum, a.created_at, a.updated_at,
-			a.last_accessed_at, a.access_count, a.tags, a.metadata_json, a.deleted_at
+			a.last_accessed_at, a.access_count, a.tags, a.metadata_json, a.deleted_at, a.session_id
 		FROM artifacts a
 		INNER JOIN artifacts_fts5 fts ON a.id = fts.artifact_id
 		WHERE artifacts_fts5 MATCH ?
-		ORDER BY rank
-		LIMIT ?
 	`
 
-	rows, err := s.db.QueryContext(ctx, searchQuery, query, limit)
+	args := []interface{}{query}
+
+	// Add session filter if provided
+	if sessionID != "" {
+		searchQuery += " AND a.session_id = ?"
+		args = append(args, sessionID)
+	}
+
+	searchQuery += " ORDER BY rank LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, searchQuery, args...)
 	if err != nil {
 		if s.tracer != nil {
 			span.RecordError(err)
@@ -662,7 +777,7 @@ func (s *SQLiteStore) Close() error {
 func (s *SQLiteStore) scanArtifact(ctx context.Context, row *sql.Row) (*Artifact, error) {
 	var (
 		id, name, path, source, contentType, checksum string
-		sourceAgentID, purpose                        sql.NullString
+		sourceAgentID, purpose, sessionID             sql.NullString
 		sizeBytes, createdAt, updatedAt               int64
 		lastAccessedAt, deletedAt                     sql.NullInt64
 		accessCount                                   int
@@ -672,7 +787,7 @@ func (s *SQLiteStore) scanArtifact(ctx context.Context, row *sql.Row) (*Artifact
 	err := row.Scan(
 		&id, &name, &path, &source, &sourceAgentID, &purpose, &contentType,
 		&sizeBytes, &checksum, &createdAt, &updatedAt, &lastAccessedAt,
-		&accessCount, &tagsJSON, &metadataJSON, &deletedAt,
+		&accessCount, &tagsJSON, &metadataJSON, &deletedAt, &sessionID,
 	)
 	if err != nil {
 		return nil, err
@@ -681,7 +796,7 @@ func (s *SQLiteStore) scanArtifact(ctx context.Context, row *sql.Row) (*Artifact
 	return s.buildArtifact(
 		id, name, path, source, sourceAgentID, purpose, contentType,
 		sizeBytes, createdAt, updatedAt, checksum, lastAccessedAt, deletedAt,
-		accessCount, tagsJSON, metadataJSON,
+		accessCount, tagsJSON, metadataJSON, sessionID,
 	)
 }
 
@@ -689,7 +804,7 @@ func (s *SQLiteStore) scanArtifact(ctx context.Context, row *sql.Row) (*Artifact
 func (s *SQLiteStore) scanArtifactFromRows(rows *sql.Rows) (*Artifact, error) {
 	var (
 		id, name, path, source, contentType, checksum string
-		sourceAgentID, purpose                        sql.NullString
+		sourceAgentID, purpose, sessionID             sql.NullString
 		sizeBytes, createdAt, updatedAt               int64
 		lastAccessedAt, deletedAt                     sql.NullInt64
 		accessCount                                   int
@@ -699,7 +814,7 @@ func (s *SQLiteStore) scanArtifactFromRows(rows *sql.Rows) (*Artifact, error) {
 	err := rows.Scan(
 		&id, &name, &path, &source, &sourceAgentID, &purpose, &contentType,
 		&sizeBytes, &checksum, &createdAt, &updatedAt, &lastAccessedAt,
-		&accessCount, &tagsJSON, &metadataJSON, &deletedAt,
+		&accessCount, &tagsJSON, &metadataJSON, &deletedAt, &sessionID,
 	)
 	if err != nil {
 		return nil, err
@@ -708,7 +823,7 @@ func (s *SQLiteStore) scanArtifactFromRows(rows *sql.Rows) (*Artifact, error) {
 	return s.buildArtifact(
 		id, name, path, source, sourceAgentID, purpose, contentType,
 		sizeBytes, createdAt, updatedAt, checksum, lastAccessedAt, deletedAt,
-		accessCount, tagsJSON, metadataJSON,
+		accessCount, tagsJSON, metadataJSON, sessionID,
 	)
 }
 
@@ -722,6 +837,7 @@ func (s *SQLiteStore) buildArtifact(
 	lastAccessedAt, deletedAt sql.NullInt64,
 	accessCount int,
 	tagsJSON, metadataJSON string,
+	sessionID sql.NullString,
 ) (*Artifact, error) {
 	// Deserialize tags
 	var tags []string
@@ -759,6 +875,9 @@ func (s *SQLiteStore) buildArtifact(
 	}
 	if purpose.Valid {
 		artifact.Purpose = purpose.String
+	}
+	if sessionID.Valid {
+		artifact.SessionID = sessionID.String
 	}
 	if lastAccessedAt.Valid {
 		t := time.Unix(lastAccessedAt.Int64, 0)

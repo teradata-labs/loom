@@ -16,6 +16,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/session"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -82,7 +83,9 @@ func (s *MultiAgentServer) GetArtifact(ctx context.Context, req *loomv1.GetArtif
 	if req.Id != "" {
 		art, err = s.artifactStore.Get(ctx, req.Id)
 	} else if req.Name != "" {
-		art, err = s.artifactStore.GetByName(ctx, req.Name)
+		// Extract session ID from context for scoped lookup
+		sessionID := session.SessionIDFromContext(ctx)
+		art, err = s.artifactStore.GetByName(ctx, req.Name, sessionID)
 	} else {
 		return nil, status.Error(codes.InvalidArgument, "either id or name must be provided")
 	}
@@ -355,7 +358,9 @@ func (s *MultiAgentServer) SearchArtifacts(ctx context.Context, req *loomv1.Sear
 		limit = 20
 	}
 
-	artifactList, err := s.artifactStore.Search(ctx, req.Query, limit)
+	// Extract session ID from context for scoped search
+	sessionID := session.SessionIDFromContext(ctx)
+	artifactList, err := s.artifactStore.Search(ctx, req.Query, sessionID, limit)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to search artifacts: %v", err)
 	}

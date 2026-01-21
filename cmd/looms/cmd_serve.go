@@ -1018,6 +1018,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				ag.RegisterTool(shellTool)
 				logger.Info("    Auto-registered shell_execute tool")
 
+				// Always register workspace tool for session-scoped file management
+				workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+				ag.RegisterTool(workspaceTool)
+				logger.Info("    Auto-registered workspace tool")
+
 				// Register builtin tools if specified
 				if cfg.Tools != nil && len(cfg.Tools.Builtin) > 0 {
 					logger.Info("    Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
@@ -1828,6 +1833,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			shellTool := builtin.NewShellExecuteTool("")
 			newAgent.RegisterTool(shellTool)
 			logger.Info("  Auto-registered shell_execute tool")
+
+			// Always register workspace tool for session-scoped file management
+			workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+			newAgent.RegisterTool(workspaceTool)
+			logger.Info("  Auto-registered workspace tool")
 
 			// Register builtin tools if specified
 			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {

@@ -18,6 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/validation"
 )
@@ -35,19 +38,43 @@ const (
 
 // ShellExecuteTool provides cross-platform shell command execution.
 // Supports Unix (bash/sh) and Windows (PowerShell/cmd).
+// With session-based path restrictions for security.
 type ShellExecuteTool struct {
-	baseDir string // Base directory for resolving relative paths
+	baseDir        string // Base directory for resolving relative paths
+	loomDataDir    string // LOOM_DATA_DIR for boundary checking
+	restrictWrites bool   // Enforce write restrictions (default: true)
+	restrictReads  string // Read restriction level: "session" or "all_sessions"
 }
 
 // NewShellExecuteTool creates a new shell execution tool.
 // If baseDir is empty, uses current working directory.
+// Defaults: restrictWrites=true, restrictReads="session"
 func NewShellExecuteTool(baseDir string) *ShellExecuteTool {
 	if baseDir == "" {
 		baseDir, _ = os.Getwd()
 	}
 	return &ShellExecuteTool{
-		baseDir: baseDir,
+		baseDir:        baseDir,
+		loomDataDir:    os.Getenv("LOOM_DATA_DIR"), // Will be set from config in agent initialization
+		restrictWrites: true,                       // Default to restricted writes
+		restrictReads:  "session",                  // Default to session-only reads
 	}
+}
+
+// SetLoomDataDir sets the LOOM_DATA_DIR for path validation.
+// This is typically called after tool creation to configure it.
+func (t *ShellExecuteTool) SetLoomDataDir(dir string) {
+	t.loomDataDir = dir
+}
+
+// SetRestrictWrites enables or disables write restrictions.
+func (t *ShellExecuteTool) SetRestrictWrites(restrict bool) {
+	t.restrictWrites = restrict
+}
+
+// SetRestrictReads sets the read restriction level ("session" or "all_sessions").
+func (t *ShellExecuteTool) SetRestrictReads(level string) {
+	t.restrictReads = level
 }
 
 func (t *ShellExecuteTool) Name() string {
@@ -102,6 +129,15 @@ func (t *ShellExecuteTool) InputSchema() *shuttle.JSONSchema {
 func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	start := time.Now()
 
+	// Extract session ID from context for path restrictions
+	sessionID := session.SessionIDFromContext(ctx)
+
+	// Determine LOOM_DATA_DIR (from environment or config)
+	loomDataDir := t.loomDataDir
+	if loomDataDir == "" {
+		loomDataDir = config.GetLoomDataDir()
+	}
+
 	// Extract and validate command
 	command, ok := params["command"].(string)
 	if !ok || command == "" {
@@ -116,10 +152,19 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}, nil
 	}
 
-	// Extract optional parameters
+	// Determine working directory
+	// Priority: 1) explicit working_dir param, 2) session artifact dir, 3) baseDir
 	workingDir := t.baseDir
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
 		workingDir = wd
+	} else if sessionID != "" {
+		// Default to session artifact directory if session exists
+		if sessionArtifactDir, err := artifacts.GetArtifactDir(sessionID, artifacts.SourceAgent); err == nil {
+			// Ensure directory exists
+			if err := artifacts.EnsureArtifactDir(sessionID, artifacts.SourceAgent); err == nil {
+				workingDir = sessionArtifactDir
+			}
+		}
 	}
 
 	timeoutSeconds := DefaultShellTimeout
@@ -194,6 +239,41 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}, nil
 	}
 
+	// Session-based path restrictions
+	if loomDataDir != "" && sessionID != "" {
+		// Ensure working directory is within LOOM_DATA_DIR
+		absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
+		absLoomDataDir, _ := filepath.Abs(loomDataDir)
+
+		if !strings.HasPrefix(absWorkingDir, absLoomDataDir) {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:       "PATH_RESTRICTED",
+					Message:    fmt.Sprintf("Working directory outside LOOM_DATA_DIR: %s", cleanWorkingDir),
+					Suggestion: "Execute commands within your session workspace or LOOM_DATA_DIR",
+				},
+				ExecutionTimeMs: time.Since(start).Milliseconds(),
+			}, nil
+		}
+
+		// If write restrictions enabled, ensure working directory is in session
+		if t.restrictWrites {
+			sessionDir := filepath.Join(loomDataDir, "artifacts", "sessions", sessionID)
+			if !strings.HasPrefix(absWorkingDir, sessionDir) {
+				return &shuttle.Result{
+					Success: false,
+					Error: &shuttle.Error{
+						Code:       "WRITE_RESTRICTED",
+						Message:    fmt.Sprintf("Write operations restricted to session directories: %s", cleanWorkingDir),
+						Suggestion: fmt.Sprintf("Use working directory within session: %s", sessionDir),
+					},
+					ExecutionTimeMs: time.Since(start).Milliseconds(),
+				}, nil
+			}
+		}
+	}
+
 	// Detect shell binary
 	shellBinary, shellArgs, actualShellType, err := detectShell(shellType, command)
 	if err != nil {
@@ -217,6 +297,22 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	filteredEnv := filterSensitiveEnvVars(envVars)
 	for k, v := range filteredEnv {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Add session-specific environment variables if session exists
+	if sessionID != "" && loomDataDir != "" {
+		cmd.Env = append(cmd.Env,
+			fmt.Sprintf("LOOM_DATA_DIR=%s", loomDataDir),
+			fmt.Sprintf("SESSION_ID=%s", sessionID),
+		)
+
+		// Add session artifact and scratchpad directories
+		if sessionArtifactDir, err := artifacts.GetArtifactDir(sessionID, artifacts.SourceAgent); err == nil {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("SESSION_ARTIFACT_DIR=%s", sessionArtifactDir))
+		}
+		if scratchpadDir, err := artifacts.GetScratchpadDir(sessionID); err == nil {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("SESSION_SCRATCHPAD_DIR=%s", scratchpadDir))
+		}
 	}
 
 	// Capture stdout and stderr
@@ -330,9 +426,9 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		timedOut = true
 		if cmd.Process != nil {
 			// Try SIGKILL for forceful termination
-			cmd.Process.Signal(os.Kill)
+			_ = cmd.Process.Signal(os.Kill) // Ignore error - process may have already exited
 			// Also call Kill() as backup
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill() // Ignore error - process may have already exited
 		}
 		// Wait for Wait() to return after kill (brief timeout)
 		select {
@@ -358,9 +454,9 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		timedOut = true
 		if cmd.Process != nil {
 			// Try SIGKILL for forceful termination
-			cmd.Process.Signal(os.Kill)
+			_ = cmd.Process.Signal(os.Kill) // Ignore error - process may have already exited
 			// Also call Kill() as backup
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill() // Ignore error - process may have already exited
 		}
 		// Wait for Wait() to return after kill (brief timeout)
 		select {
@@ -387,7 +483,10 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	if outputErr != nil {
 		// Kill the process if still running
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			if err := cmd.Process.Kill(); err != nil {
+				// Log kill failure but continue with error handling
+				// Process may have already exited
+			}
 		}
 		return &shuttle.Result{
 			Success: false,

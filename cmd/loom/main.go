@@ -75,6 +75,7 @@ Support:
 	rootCmd.AddCommand(chatCmd)
 	rootCmd.AddCommand(agentsCmd)
 	rootCmd.AddCommand(sessionsCmd)
+	rootCmd.AddCommand(artifactsCmd)
 	rootCmd.AddCommand(mcpCmd)
 }
 

@@ -74,10 +74,16 @@ func TestMemory_GetOrCreateSessionWithAgent_WithStore(t *testing.T) {
 
 	memory := NewMemoryWithStore(store)
 
+	// Create parent session first (required for foreign key constraint)
+	parentSession := memory.GetOrCreateSessionWithAgent("parent-1", "", "")
+
 	// Test: Create new session and verify it's persisted
 	session1 := memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "parent-1")
 	assert.Equal(t, "agent-1", session1.AgentID)
 	assert.Equal(t, "parent-1", session1.ParentSessionID)
+
+	// Verify parent session exists
+	assert.NotNil(t, parentSession)
 
 	// Verify persisted to database
 	loadedSession, err := store.LoadSession(context.Background(), "session-1")
@@ -88,6 +94,9 @@ func TestMemory_GetOrCreateSessionWithAgent_WithStore(t *testing.T) {
 	// Test: Update metadata on existing session and verify persistence
 	session2 := memory.GetOrCreateSessionWithAgent("session-2", "", "")
 	assert.Equal(t, "", session2.AgentID)
+
+	// Create parent-2 session first (required for foreign key constraint)
+	_ = memory.GetOrCreateSessionWithAgent("parent-2", "", "")
 
 	session3 := memory.GetOrCreateSessionWithAgent("session-2", "agent-2", "parent-2")
 	assert.Equal(t, "agent-2", session3.AgentID)

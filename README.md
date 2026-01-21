@@ -368,35 +368,58 @@ Tri-modal inter-agent communication:
 
 ### Artifact Management
 
-Centralized file storage system for agents managing datasets, documents, and generated files:
+Session-aware file storage system for agents managing datasets, documents, and generated files:
 
 **Features:**
-- Full-text search with SQLite FTS5
-- Automatic content type detection and metadata extraction
-- Archive support (zip, tar, tar.gz) - archives are stored as-is
-- Soft/hard delete with statistics tracking
-- Tag-based organization and filtering
+- **Session-based organization** - Artifacts automatically namespaced by session with CASCADE cleanup
+- **Full-text search** with SQLite FTS5 + BM25 ranking
+- **Workspace tool** - Unified interface for artifacts (indexed) and scratchpad (ephemeral notes)
+- **Automatic metadata extraction** - Content type, tags, checksums computed on upload
+- **Archive support** - ZIP, TAR, TAR.GZ stored as-is (no auto-extraction for security)
+- **Soft/hard delete** with 30-day recovery window
+- **Shell sandboxing** - Commands restricted to session directories
 
-**Usage:**
-```bash
-# Upload a file
-looms artifacts upload ./data.csv --tags data,customer
-
-# Upload an archive (directories not supported - create archive first)
-tar -czf mydata.tar.gz ./mydata/
-looms artifacts upload mydata.tar.gz
-
-# Search artifacts
-looms artifacts search "customer data"
-
-# List all artifacts
-looms artifacts list
-
-# Get artifact content
-looms artifacts get <artifact-id>
+**Directory Structure:**
+```
+~/.loom/artifacts/
+├── sessions/<session-id>/
+│   ├── agent/          # Agent-generated artifacts (indexed)
+│   └── scratchpad/     # Ephemeral notes (not indexed)
+└── user/               # User-uploaded artifacts (no session)
 ```
 
-**Note:** Directory uploads are not supported. To upload multiple files, create a tar/zip archive first.
+**CLI Commands:**
+```bash
+# List artifacts with filtering
+loom artifacts list --source user --tags sql,report
+
+# Search with FTS5 full-text search
+loom artifacts search "sales report" --limit 50
+
+# Show detailed metadata
+loom artifacts show data.csv
+
+# Upload with purpose and tags
+loom artifacts upload ~/data.csv --purpose "Q4 sales" --tags excel,sales
+
+# Download artifact content
+loom artifacts download data.csv --output ~/backup.csv
+
+# Soft delete (30-day recovery)
+loom artifacts delete old-file.csv
+
+# Hard delete (permanent)
+loom artifacts delete old-file.csv --hard
+
+# Show storage statistics
+loom artifacts stats
+```
+
+**Agent Tools:**
+- `workspace` (write/read/list/search/delete) - Session-scoped file management
+- `shell_execute` - Session-aware with path restrictions
+
+**Note:** Artifacts are automatically cleaned up when sessions are deleted (CASCADE).
 
 ### MCP Protocol
 
