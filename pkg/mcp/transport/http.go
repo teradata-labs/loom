@@ -69,12 +69,14 @@ func NewHTTPTransport(config HTTPConfig) (*HTTPTransport, error) {
 	}
 
 	t := &HTTPTransport{
-		endpoint:   config.Endpoint,
-		sseClient:  sseClient,
-		httpClient: &http.Client{},
-		events:     make(chan []byte, 100),
-		errors:     make(chan error, 1),
-		logger:     logger,
+		endpoint:  config.Endpoint,
+		sseClient: sseClient,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second, // Prevent hanging on unreachable servers
+		},
+		events: make(chan []byte, 100),
+		errors: make(chan error, 1),
+		logger: logger,
 	}
 
 	// Setup disconnect handler

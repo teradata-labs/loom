@@ -104,9 +104,9 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 	// This prevents hanging on unreachable servers
 	startCtx := ctx
 	if config.Timeout == "" {
-		// Default 30 second timeout for server startup
+		// Default 15 second timeout for server startup
 		var cancel context.CancelFunc
-		startCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		startCtx, cancel = context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 	}
 
