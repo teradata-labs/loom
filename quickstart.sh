@@ -279,8 +279,8 @@ echo ""
 # Install documentation
 echo "Installing documentation to $DATA_DIR/documentation..."
 mkdir -p "$DATA_DIR/documentation"
-if [ -d "$SCRIPT_DIR/website/content/en/docs" ]; then
-    rsync -av --delete "$SCRIPT_DIR/website/content/en/docs/" "$DATA_DIR/documentation/"
+if [ -d "$SCRIPT_DIR/docs" ]; then
+    rsync -av --delete "$SCRIPT_DIR/docs/" "$DATA_DIR/documentation/"
     DOC_COUNT=$(find "$DATA_DIR/documentation" -name '*.md' | wc -l | tr -d ' ')
     echo -e "${GREEN}✓ Installed $DOC_COUNT documentation files to $DATA_DIR/documentation${NC}"
 else

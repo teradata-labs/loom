@@ -450,13 +450,13 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Scratchpad directory initialized", zap.String("path", scratchpadDir))
 
-	// Copy documentation from website/content/en/docs to loom data directory
+	// Copy documentation from docs to loom data directory
 	docsDestDir := filepath.Join(loomDataDir, "documentation")
 	// Try to find the docs source directory (might be in current dir or parent dir)
 	var docsSourceDir string
 	possiblePaths := []string{
-		filepath.Join("website", "content", "en", "docs"),
-		filepath.Join("..", "website", "content", "en", "docs"),
+		"docs",
+		filepath.Join("..", "docs"),
 	}
 	for _, path := range possiblePaths {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {

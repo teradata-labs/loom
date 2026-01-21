@@ -273,8 +273,8 @@ try {
     $DocsDir = "$DataDir\documentation"
     New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null
 
-    if (Test-Path "$ScriptDir\website\content\en\docs") {
-        Copy-Item -Path "$ScriptDir\website\content\en\docs\*" -Destination $DocsDir -Recurse -Force
+    if (Test-Path "$ScriptDir\docs") {
+        Copy-Item -Path "$ScriptDir\docs\*" -Destination $DocsDir -Recurse -Force
         $DocCount = (Get-ChildItem -Path $DocsDir -Filter "*.md" -Recurse).Count
         Write-Success "Installed $DocCount documentation files to $DocsDir"
     } else {

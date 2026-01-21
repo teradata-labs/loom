@@ -263,14 +263,12 @@ go test -race -count=50 ./pkg/agent  # Extensive testing
 ```
 
 ### Key Documentation
-- `website/content/en/docs/_index.md` - Documentation home
-- `website/content/en/docs/concepts/architecture.md` - System design deep dive
-- `website/content/en/docs/development/TODO.md` - Implementation checklist
-- `website/content/en/docs/guides/integration/observability.md` - Hawk integration details
-- `website/content/en/docs/guides/integration/prompt-management.md` - Prompt management with FileRegistry
-- `website/content/en/docs/guides/llm-providers/` - LLM provider guides
+- `docs/_index.md` - Documentation home
+- `docs/architecture/` - System design and architecture documentation
+- `docs/guides/` - User guides and tutorials
+- `docs/reference/` - API and CLI reference documentation
 
-**IMPORTANT**: Always edit documentation in `website/content/en/docs/`
+**IMPORTANT**: Always edit documentation in `docs/`
 
 ## Questions to Ask Before Implementing
 1. Does this need a proto definition first?
@@ -284,6 +282,6 @@ go test -race -count=50 ./pkg/agent  # Extensive testing
 **Remember**:
 - Proto is law. Race detector is mandatory. Observability is not optional.
 - **Documentation honesty is non-negotiable.** Verify features exist before claiming them.
-- **Documentation lives in `website/content/en/docs/`** (NOT `docs-archived/`)
-- Commit often, use checklists, write honest docs in the website directory (YOLO mode)
+- **Documentation lives in `docs/`** (top-level docs directory)
+- Commit often, use checklists, write honest docs in the docs directory (YOLO mode)
 - run just check enough to not build up tech debt.
