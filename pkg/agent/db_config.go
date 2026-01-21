@@ -96,7 +96,7 @@ func OpenDB(config DBConfig) (*sql.DB, error) {
 	// Enable foreign keys for CASCADE operations
 	// This must be set for each connection as it defaults to OFF in SQLite
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close()
+		_ = db.Close() // Ignore close error in error path
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
