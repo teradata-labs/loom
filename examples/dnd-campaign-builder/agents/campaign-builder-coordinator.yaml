@@ -4,10 +4,11 @@ metadata:
   name: dnd-coordinator
   version: "2.0.0"
   description: "Coordinates D&D campaign creation workflow and user interactions (event-driven)"
+  role: coordinator
+  workflow: dnd-campaign-workflow
   labels:
     domain: gaming
     category: coordinator
-    workflow: dnd-campaign
 
 spec:
   system_prompt: |

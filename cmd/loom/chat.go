@@ -115,68 +115,71 @@ func runChatCommand(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), chatTimeout)
 	defer cancel()
 
-	// Send message and handle response
-	if chatStream {
-		if err := streamChat(ctx, c, message); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		if err := syncChat(ctx, c, message); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+	// Send message and handle response (always use StreamWeave)
+	if err := streamChat(ctx, c, message); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func streamChat(ctx context.Context, c *client.Client, message string) error {
 	var lastMessage string
+	var totalTokens int32
 
 	err := c.StreamWeave(ctx, message, sessionID, agentID, func(progress *loomv1.WeaveProgress) {
-		switch progress.Stage {
-		case loomv1.ExecutionStage_EXECUTION_STAGE_PATTERN_SELECTION:
-			fmt.Fprintf(os.Stderr, "[Pattern Selection: %s]\n", progress.Message)
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_SCHEMA_DISCOVERY:
-			fmt.Fprintf(os.Stderr, "[Schema Discovery: %s]\n", progress.Message)
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_LLM_GENERATION:
-			// Show LLM generation progress
-			if progress.Message != "" {
-				fmt.Fprintf(os.Stderr, "[LLM: %s]\n", progress.Message)
-			}
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_TOOL_EXECUTION:
-			// Show tool execution
-			if progress.ToolName != "" {
-				fmt.Fprintf(os.Stderr, "[Executing Tool: %s]\n", progress.ToolName)
-			}
-			if progress.Message != "" {
-				fmt.Fprintf(os.Stderr, "  %s\n", progress.Message)
-			}
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_HUMAN_IN_THE_LOOP:
-			// Human input required
-			fmt.Fprintf(os.Stderr, "[Waiting for human input: %s]\n", progress.Message)
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_GUARDRAIL_CHECK:
-			fmt.Fprintf(os.Stderr, "[Guardrail Check: %s]\n", progress.Message)
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_SELF_CORRECTION:
-			fmt.Fprintf(os.Stderr, "[Self-Correction: %s]\n", progress.Message)
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED:
-			// Response completed - message contains the final response
-			lastMessage = progress.Message
-
-		case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
-			// Error occurred
-			fmt.Fprintf(os.Stderr, "[Failed: %s]\n", progress.Message)
+		// Capture running token count
+		if progress.TokenCount > 0 {
+			totalTokens = progress.TokenCount
 		}
 
-		// Show progress percentage if available
-		if progress.Progress > 0 && progress.Progress < 100 {
-			fmt.Fprintf(os.Stderr, "[Progress: %d%%]\n", progress.Progress)
+		// Only show progress if --stream flag is set
+		if chatStream {
+			switch progress.Stage {
+			case loomv1.ExecutionStage_EXECUTION_STAGE_PATTERN_SELECTION:
+				fmt.Fprintf(os.Stderr, "[Pattern Selection: %s]\n", progress.Message)
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_SCHEMA_DISCOVERY:
+				fmt.Fprintf(os.Stderr, "[Schema Discovery: %s]\n", progress.Message)
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_LLM_GENERATION:
+				// Show LLM generation progress
+				if progress.Message != "" {
+					fmt.Fprintf(os.Stderr, "[LLM: %s]\n", progress.Message)
+				}
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_TOOL_EXECUTION:
+				// Show tool execution
+				if progress.ToolName != "" {
+					fmt.Fprintf(os.Stderr, "[Executing Tool: %s]\n", progress.ToolName)
+				}
+				if progress.Message != "" {
+					fmt.Fprintf(os.Stderr, "  %s\n", progress.Message)
+				}
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_HUMAN_IN_THE_LOOP:
+				// Human input required
+				fmt.Fprintf(os.Stderr, "[Waiting for human input: %s]\n", progress.Message)
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_GUARDRAIL_CHECK:
+				fmt.Fprintf(os.Stderr, "[Guardrail Check: %s]\n", progress.Message)
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_SELF_CORRECTION:
+				fmt.Fprintf(os.Stderr, "[Self-Correction: %s]\n", progress.Message)
+
+			case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
+				// Error occurred
+				fmt.Fprintf(os.Stderr, "[Failed: %s]\n", progress.Message)
+			}
+
+			// Show progress percentage if available
+			if progress.Progress > 0 && progress.Progress < 100 {
+				fmt.Fprintf(os.Stderr, "[Progress: %d%%]\n", progress.Progress)
+			}
+		}
+
+		// Always capture the final message
+		if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+			lastMessage = progress.Message
 		}
 	})
 
@@ -189,42 +192,16 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 		fmt.Println(lastMessage)
 	}
 
-	return nil
-}
-
-func syncChat(ctx context.Context, c *client.Client, message string) error {
-	resp, err := c.Weave(ctx, message, sessionID, agentID)
-	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
+	// Print session info to stderr if user provided session ID
+	if sessionID != "" {
+		fmt.Fprintf(os.Stderr, "\n[Session: %s]\n", sessionID)
 	}
 
-	// Print response text
-	fmt.Println(resp.Text)
-
-	// Print session info to stderr if available
-	if resp.SessionId != "" {
-		fmt.Fprintf(os.Stderr, "\n[Session: %s]\n", resp.SessionId)
-	}
-
-	// Print cost info if available
-	if resp.Cost != nil && resp.Cost.TotalCostUsd > 0 {
-		costInfo := ""
-		if resp.Cost.LlmCost != nil {
-			costInfo = fmt.Sprintf(" | Tokens: %d", resp.Cost.LlmCost.TotalTokens)
-		}
-		fmt.Fprintf(os.Stderr, "[Cost: $%.6f%s]\n", resp.Cost.TotalCostUsd, costInfo)
-	}
-
-	// Print execution result info if available
-	if resp.Result != nil {
-		if resp.Result.RowCount > 0 {
-			fmt.Fprintf(os.Stderr, "[Result: %d rows", resp.Result.RowCount)
-			if resp.Result.BytesScanned > 0 {
-				fmt.Fprintf(os.Stderr, " | %d bytes scanned", resp.Result.BytesScanned)
-			}
-			fmt.Fprintf(os.Stderr, "]\n")
-		}
+	// Print token count if available
+	if totalTokens > 0 {
+		fmt.Fprintf(os.Stderr, "[Cost: $0.000000 | Tokens: %d]\n", totalTokens)
 	}
 
 	return nil
 }
+

@@ -4,6 +4,8 @@ metadata:
   name: vacation-coordinator
   version: "1.0.0"
   description: "Coordinates vacation planning workflow by gathering user preferences and orchestrating weather analysis and destination recommendations"
+  role: coordinator
+  workflow: vacation-planning-workflow
   labels:
     domain: travel
     category: coordinator
