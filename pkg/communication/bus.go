@@ -555,6 +555,18 @@ func (b *MessageBus) GetNotificationChannel(subscriptionID string) (chan struct{
 	return nil, false
 }
 
+// GetSubscription returns a subscription by ID.
+func (b *MessageBus) GetSubscription(subscriptionID string) *Subscription {
+	if b.closed.Load() {
+		return nil
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	return b.subscriptions[subscriptionID]
+}
+
 // UnregisterNotificationChannel removes a notification channel for a subscription.
 func (b *MessageBus) UnregisterNotificationChannel(subscriptionID string) {
 	if b.closed.Load() {

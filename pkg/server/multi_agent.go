@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -112,6 +113,13 @@ type workflowSubAgentContext struct {
 	cancelFunc          context.CancelFunc
 	lastChecked         time.Time
 	consecutiveFailures int // Track failures for exponential backoff
+
+	// Broadcast bus auto-injection fields
+	broadcastNotifyChan chan struct{}      // Aggregated notification signal
+	broadcastCancelFunc context.CancelFunc // Cancel function for broadcast goroutine
+	subscriptionIDs     []string           // Subscription IDs for cleanup
+	subscriptionTopics  []string           // Topic names for logging
+	notifyChannels      []chan struct{}    // Per-subscription notification channels
 }
 
 // spawnedAgentContext tracks a spawned sub-agent for lifecycle management
@@ -977,7 +985,245 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		go s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
 	}
 
+	// NEW: Detect if coordinator has subscribed to any topics (for broadcast auto-injection)
+	if s.messageBus != nil {
+		coordinatorSubscriptions := s.messageBus.GetSubscriptionsByAgent(coordinatorID)
+
+		if len(coordinatorSubscriptions) > 0 {
+			s.logger.Info("Enabling broadcast auto-injection for coordinator",
+				zap.String("coordinator", coordinatorID),
+				zap.Int("subscription_count", len(coordinatorSubscriptions)))
+
+			// Register notification channels for each subscription
+			var subscriptionIDs, subscriptionTopics []string
+			var notifyChannels []chan struct{}
+
+			for _, sub := range coordinatorSubscriptions {
+				notifyChan := make(chan struct{}, 10)
+				s.messageBus.RegisterNotificationChannel(sub.ID, notifyChan)
+
+				subscriptionIDs = append(subscriptionIDs, sub.ID)
+				subscriptionTopics = append(subscriptionTopics, sub.Topic)
+				notifyChannels = append(notifyChannels, notifyChan)
+			}
+
+			// Update context with broadcast fields
+			var broadcastCtx context.Context
+			s.workflowSubAgentsMu.Lock()
+			if ctx, exists := s.workflowSubAgents[coordinatorKey]; exists {
+				ctx.subscriptionIDs = subscriptionIDs
+				ctx.subscriptionTopics = subscriptionTopics
+				ctx.notifyChannels = notifyChannels
+
+				var broadcastCancel context.CancelFunc
+				broadcastCtx, broadcastCancel = context.WithCancel(context.Background())
+				ctx.broadcastCancelFunc = broadcastCancel
+				ctx.broadcastNotifyChan = make(chan struct{}, 10)
+			}
+			s.workflowSubAgentsMu.Unlock()
+
+			// Start broadcast notification goroutine
+			go s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
+				coordinatorAgent, sessionID, coordinatorID)
+		}
+	}
+
 	return nil
+}
+
+// runCoordinatorBroadcastHandler is an event-driven notification handler for broadcast messages.
+// It monitors multiple subscription notification channels and processes broadcast messages
+// when they arrive, injecting them into the coordinator's conversation.
+func (s *MultiAgentServer) runCoordinatorBroadcastHandler(
+	ctx context.Context,
+	coordinatorKey string,
+	coordinatorAgent *agent.Agent,
+	sessionID string,
+	coordinatorID string,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("Broadcast handler panic",
+				zap.String("coordinator", coordinatorID),
+				zap.Any("panic", r))
+		}
+		s.logger.Info("Broadcast handler stopped",
+			zap.String("coordinator", coordinatorID))
+	}()
+
+	for {
+		// Get notification channels from context
+		s.workflowSubAgentsMu.RLock()
+		workflowCtx, exists := s.workflowSubAgents[coordinatorKey]
+		if !exists {
+			s.workflowSubAgentsMu.RUnlock()
+			return
+		}
+		notifyChannels := workflowCtx.notifyChannels
+		subscriptionIDs := workflowCtx.subscriptionIDs
+		s.workflowSubAgentsMu.RUnlock()
+
+		if len(notifyChannels) == 0 {
+			return
+		}
+
+		// Build dynamic select cases (context + notification channels)
+		cases := make([]reflect.SelectCase, len(notifyChannels)+1)
+		cases[0] = reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(ctx.Done()),
+		}
+		for i, ch := range notifyChannels {
+			cases[i+1] = reflect.SelectCase{
+				Dir:  reflect.SelectRecv,
+				Chan: reflect.ValueOf(ch),
+			}
+		}
+
+		// Wait for notification
+		chosen, _, _ := reflect.Select(cases)
+		if chosen == 0 {
+			return // Context canceled
+		}
+
+		// Log which subscription triggered
+		if chosen > 0 && chosen <= len(subscriptionIDs) {
+			s.logger.Debug("Broadcast notification received",
+				zap.String("coordinator", coordinatorID),
+				zap.String("subscription_id", subscriptionIDs[chosen-1]))
+		}
+
+		// Process messages from all subscriptions
+		s.processCoordinatorBroadcastMessages(ctx, coordinatorKey,
+			coordinatorAgent, sessionID, coordinatorID)
+	}
+}
+
+// processCoordinatorBroadcastMessages drains broadcast messages from all coordinator
+// subscriptions and injects them into the coordinator's conversation.
+func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
+	ctx context.Context,
+	coordinatorKey string,
+	coordinatorAgent *agent.Agent,
+	sessionID string,
+	coordinatorID string,
+) {
+	// Get subscription IDs
+	s.workflowSubAgentsMu.RLock()
+	workflowCtx, exists := s.workflowSubAgents[coordinatorKey]
+	if !exists {
+		s.workflowSubAgentsMu.RUnlock()
+		return
+	}
+	subscriptionIDs := workflowCtx.subscriptionIDs
+	s.workflowSubAgentsMu.RUnlock()
+
+	// Get subscription objects
+	var subscriptions []*communication.Subscription
+	for _, subID := range subscriptionIDs {
+		if sub := s.messageBus.GetSubscription(subID); sub != nil {
+			subscriptions = append(subscriptions, sub)
+		}
+	}
+
+	// Non-blocking drain from all subscription channels
+	type BroadcastMessage struct {
+		msg   *loomv1.BusMessage
+		topic string
+	}
+	var messages []BroadcastMessage
+
+	for _, sub := range subscriptions {
+		for {
+			select {
+			case msg := <-sub.Channel:
+				messages = append(messages, BroadcastMessage{msg, sub.Topic})
+			default:
+				goto nextSubscription
+			}
+		}
+	nextSubscription:
+	}
+
+	if len(messages) == 0 {
+		s.logger.Debug("No broadcast messages to process",
+			zap.String("coordinator", coordinatorID))
+		return
+	}
+
+	s.logger.Info("Processing broadcast messages for coordinator",
+		zap.String("coordinator", coordinatorID),
+		zap.Int("message_count", len(messages)))
+
+	// Inject each message
+	for _, busMsg := range messages {
+		msg := busMsg.msg
+
+		// Skip self-messages
+		if msg.FromAgent == coordinatorID {
+			s.logger.Debug("Skipping self-message",
+				zap.String("coordinator", coordinatorID),
+				zap.String("message_id", msg.Id))
+			continue
+		}
+
+		// Extract content
+		var content string
+		if msg.Payload != nil {
+			if value := msg.Payload.GetValue(); value != nil {
+				content = string(value)
+			} else if ref := msg.Payload.GetReference(); ref != nil {
+				content = fmt.Sprintf("[Reference: %s]", ref.Id)
+			}
+		}
+		if content == "" {
+			content = "[Empty message]"
+		}
+
+		// Format with topic and sender
+		injectedPrompt := fmt.Sprintf(
+			"[BROADCAST on topic '%s' FROM %s]:\n\n%s",
+			busMsg.topic, msg.FromAgent, content)
+
+		s.logger.Info("Injecting broadcast message into coordinator session",
+			zap.String("coordinator", coordinatorID),
+			zap.String("from_agent", msg.FromAgent),
+			zap.String("topic", busMsg.topic),
+			zap.Int("content_length", len(content)))
+
+		// Acquire semaphore with timeout
+		select {
+		case s.llmSemaphore <- struct{}{}:
+			// Acquired
+		case <-time.After(30 * time.Second):
+			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
+				zap.String("coordinator", coordinatorID))
+			continue
+		case <-ctx.Done():
+			s.logger.Info("Context canceled while waiting for semaphore",
+				zap.String("coordinator", coordinatorID))
+			return
+		}
+
+		// Inject message
+		_, err := coordinatorAgent.Chat(context.Background(), sessionID, injectedPrompt)
+
+		// Release semaphore
+		<-s.llmSemaphore
+
+		if err != nil {
+			s.logger.Warn("Failed to inject broadcast message",
+				zap.String("coordinator", coordinatorID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", busMsg.topic),
+				zap.Error(err))
+		} else {
+			s.logger.Info("Successfully injected broadcast message",
+				zap.String("coordinator", coordinatorID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", busMsg.topic))
+		}
+	}
 }
 
 // StartMessageQueueMonitor starts a background goroutine that monitors the message queue
@@ -1000,9 +1246,21 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 			defer s.workflowSubAgentsMu.Unlock()
 
 			for agentID, subAgentCtx := range s.workflowSubAgents {
-				// Cancel goroutines
+				// Cancel MessageQueue goroutine
 				if subAgentCtx.cancelFunc != nil {
 					subAgentCtx.cancelFunc()
+				}
+
+				// Cancel Broadcast goroutine
+				if subAgentCtx.broadcastCancelFunc != nil {
+					subAgentCtx.broadcastCancelFunc()
+				}
+
+				// Unregister broadcast notification channels
+				if s.messageBus != nil && len(subAgentCtx.subscriptionIDs) > 0 {
+					for _, subID := range subAgentCtx.subscriptionIDs {
+						s.messageBus.UnregisterNotificationChannel(subID)
+					}
 				}
 
 				// Unregister from message queue
