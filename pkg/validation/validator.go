@@ -421,13 +421,25 @@ func validatePatternSpecificFields(spec map[string]interface{}, patternType stri
 			})
 		}
 		if agentIds, hasAgentIds := spec["agent_ids"]; !hasAgentIds {
-			errors = append(errors, ValidationError{
-				Level:    LevelStructure,
-				Field:    "spec.agent_ids",
-				Message:  "Missing required field for fork-join pattern",
-				Expected: "agent_ids: [agent1, agent2]",
-				Fix:      "Add 'agent_ids: [bug-detector, perf-analyzer]' under spec",
-			})
+			// Check if they mistakenly used 'agents' instead of 'agent_ids'
+			if _, hasAgents := spec["agents"]; hasAgents {
+				errors = append(errors, ValidationError{
+					Level:    LevelStructure,
+					Field:    "spec.agents",
+					Message:  "INCORRECT FIELD: fork-join uses 'agent_ids' not 'agents'",
+					Got:      "agents: [...]",
+					Expected: "agent_ids: [agent1, agent2]",
+					Fix:      "Rename 'agents:' to 'agent_ids:' - fork-join requires agent_ids",
+				})
+			} else {
+				errors = append(errors, ValidationError{
+					Level:    LevelStructure,
+					Field:    "spec.agent_ids",
+					Message:  "Missing required field for fork-join pattern",
+					Expected: "agent_ids: [agent1, agent2]",
+					Fix:      "Add 'agent_ids: [bug-detector, perf-analyzer]' under spec",
+				})
+			}
 		} else if agentList, ok := agentIds.([]interface{}); ok && len(agentList) == 0 {
 			errors = append(errors, ValidationError{
 				Level:    LevelStructure,
