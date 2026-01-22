@@ -133,6 +133,23 @@ func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) (
 		go func(branchIdx int, id string) {
 			defer wg.Done()
 
+			// Acquire LLM semaphore to limit concurrent LLM calls
+			if e.orchestrator.llmSemaphore != nil {
+				e.orchestrator.logger.Debug("Fork-join branch acquiring LLM semaphore",
+					zap.String("agent_id", id),
+					zap.Int("branch", branchIdx+1))
+				e.orchestrator.llmSemaphore <- struct{}{}
+				defer func() {
+					<-e.orchestrator.llmSemaphore
+					e.orchestrator.logger.Debug("Fork-join branch released LLM semaphore",
+						zap.String("agent_id", id),
+						zap.Int("branch", branchIdx+1))
+				}()
+				e.orchestrator.logger.Debug("Fork-join branch acquired LLM semaphore",
+					zap.String("agent_id", id),
+					zap.Int("branch", branchIdx+1))
+			}
+
 			// Create branch span
 			branchCtx, branchSpan := e.orchestrator.tracer.StartSpan(ctx, fmt.Sprintf("fork_join.branch.%d", branchIdx+1))
 			if branchSpan != nil {

@@ -303,6 +303,12 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		zap.Bool("message_bus", true),
 		zap.Bool("shared_memory", true))
 
+	// Create LLM concurrency semaphore to prevent rate limiting
+	llmConcurrencyLimit := 2
+	llmSemaphore := make(chan struct{}, llmConcurrencyLimit)
+	logger.Info("LLM concurrency limit configured for workflow execution",
+		zap.Int("limit", llmConcurrencyLimit))
+
 	// Create orchestrator with registry and communication infrastructure
 	orchestrator := orchestration.NewOrchestrator(orchestration.Config{
 		Registry:     registry,
@@ -311,6 +317,7 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		LLMProvider:  llmProvider,
 		MessageBus:   messageBus,
 		SharedMemory: sharedMemory,
+		LLMSemaphore: llmSemaphore,
 	})
 
 	// Load all agent configs from the directory first
