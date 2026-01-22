@@ -15,12 +15,17 @@ spec:
   merge_strategy: concatenate
   timeout_seconds: 1800
 
-  agent_ids:
-    - sast-analyzer
-    - dast-analyzer
-    - threat-modeler
-    - dependency-scanner
-    - compliance-auditor
+  tasks:
+    - agent_id: sast-analyzer
+      prompt: "Perform static application security testing (SAST) analysis"
+    - agent_id: dast-analyzer
+      prompt: "Perform dynamic application security testing (DAST) analysis"
+    - agent_id: threat-modeler
+      prompt: "Create threat model using STRIDE methodology"
+    - agent_id: dependency-scanner
+      prompt: "Scan dependencies for known vulnerabilities"
+    - agent_id: compliance-auditor
+      prompt: "Audit for security compliance (OWASP Top 10, GDPR)"
 
 # Agent configs used (from $LOOM_DATA_DIR/agents/):
 # - sast-analyzer.yaml: Static Application Security Testing specialist for code analysis

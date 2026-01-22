@@ -312,6 +312,48 @@ func validateWorkflowStructure(content string) []ValidationError {
 func validateOrchestrationWorkflowStructure(spec map[string]interface{}) []ValidationError {
 	var errors []ValidationError
 
+	// CRITICAL: Check for deprecated fields first (common mistakes from old docs/LLM hallucinations)
+
+	// 1. Deprecated workflow_type field (was never valid, likely LLM hallucination)
+	if _, hasDeprecated := spec["workflow_type"]; hasDeprecated {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "spec.workflow_type",
+			Message:  "DEPRECATED: 'workflow_type' field is not valid",
+			Got:      "workflow_type",
+			Expected: "type (or pattern for old format)",
+			Fix:      "Replace 'spec.workflow_type: fork-join' with 'spec.type: fork-join'",
+		})
+	}
+
+	// 2. Deprecated aggregation field (renamed to merge_strategy)
+	if _, hasAggregation := spec["aggregation"]; hasAggregation {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "spec.aggregation",
+			Message:  "DEPRECATED: 'aggregation' field renamed to 'merge_strategy'",
+			Got:      "aggregation",
+			Expected: "merge_strategy",
+			Fix:      "Replace 'spec.aggregation: collect_all' with 'spec.merge_strategy: concatenate'",
+		})
+	}
+
+	// 3. Incorrectly nested stages field (stages should be directly under spec for pipeline, not under a parent object)
+	if stages, hasStages := spec["stages"]; hasStages {
+		// Stages is only valid for pipeline pattern and should be a list directly under spec
+		// NOT under spec.workflow_type.stages or similar nested structure
+		if _, isMap := stages.(map[string]interface{}); isMap {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.stages",
+				Message:  "DEPRECATED: 'stages' should not be a nested object",
+				Got:      "map/object (nested structure)",
+				Expected: "array of stage definitions (for pipeline pattern only)",
+				Fix:      "For pipeline: use 'spec.stages: [{agent_id: ..., prompt_template: ...}]' directly under spec",
+			})
+		}
+	}
+
 	// Check for pattern or type field
 	hasPattern := false
 	patternValue := ""
@@ -331,7 +373,7 @@ func validateOrchestrationWorkflowStructure(spec map[string]interface{}) []Valid
 			Field:    "spec.pattern or spec.type",
 			Message:  "Missing required field for orchestration workflow",
 			Expected: "One of: pattern or type",
-			Fix:      "Add 'pattern: debate' or 'type: fork-join' under spec",
+			Fix:      "Add 'type: fork-join' under spec (preferred) or 'pattern: pipeline' (old format)",
 		})
 		return errors
 	}
@@ -354,6 +396,133 @@ func validateOrchestrationWorkflowStructure(spec map[string]interface{}) []Valid
 			Expected: fmt.Sprintf("One of: %v", validPatterns),
 			Fix:      "Use a supported orchestration pattern",
 		})
+	}
+
+	// Pattern-specific validation
+	errors = append(errors, validatePatternSpecificFields(spec, patternValue)...)
+
+	return errors
+}
+
+// validatePatternSpecificFields validates fields specific to each pattern type.
+func validatePatternSpecificFields(spec map[string]interface{}, patternType string) []ValidationError {
+	var errors []ValidationError
+
+	switch patternType {
+	case "fork-join":
+		// fork-join requires: prompt, agent_ids, optional merge_strategy
+		if _, hasPrompt := spec["prompt"]; !hasPrompt {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.prompt",
+				Message:  "Missing required field for fork-join pattern",
+				Expected: "prompt: string (same prompt sent to all agents)",
+				Fix:      "Add 'prompt: \"Analyze this code\"' under spec",
+			})
+		}
+		if agentIds, hasAgentIds := spec["agent_ids"]; !hasAgentIds {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.agent_ids",
+				Message:  "Missing required field for fork-join pattern",
+				Expected: "agent_ids: [agent1, agent2]",
+				Fix:      "Add 'agent_ids: [bug-detector, perf-analyzer]' under spec",
+			})
+		} else if agentList, ok := agentIds.([]interface{}); ok && len(agentList) == 0 {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.agent_ids",
+				Message:  "agent_ids cannot be empty",
+				Expected: "At least one agent ID",
+				Fix:      "Add agent IDs to the list",
+			})
+		}
+
+	case "pipeline":
+		// pipeline requires: initial_prompt, stages
+		if _, hasInitialPrompt := spec["initial_prompt"]; !hasInitialPrompt {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.initial_prompt",
+				Message:  "Missing required field for pipeline pattern",
+				Expected: "initial_prompt: string",
+				Fix:      "Add 'initial_prompt: \"Design auth system\"' under spec",
+			})
+		}
+		if stages, hasStages := spec["stages"]; !hasStages {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.stages",
+				Message:  "Missing required field for pipeline pattern",
+				Expected: "stages: [{agent_id: ..., prompt_template: ...}]",
+				Fix:      "Add 'stages:' array under spec with stage definitions",
+			})
+		} else if stagesList, ok := stages.([]interface{}); !ok {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.stages",
+				Message:  "stages must be an array",
+				Expected: "Array of stage definitions",
+				Fix:      "Change stages to array format: [{agent_id: spec-writer, prompt_template: ...}]",
+			})
+		} else if len(stagesList) == 0 {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.stages",
+				Message:  "stages cannot be empty",
+				Expected: "At least one stage",
+				Fix:      "Add at least one stage to the stages array",
+			})
+		}
+
+	case "parallel":
+		// parallel requires: tasks (array with agent_id and prompt)
+		if tasks, hasTasks := spec["tasks"]; !hasTasks {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.tasks",
+				Message:  "Missing required field for parallel pattern",
+				Expected: "tasks: [{agent_id: ..., prompt: ...}]",
+				Fix:      "Add 'tasks:' array under spec",
+			})
+		} else if taskList, ok := tasks.([]interface{}); ok && len(taskList) == 0 {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.tasks",
+				Message:  "tasks cannot be empty",
+				Expected: "At least one task",
+				Fix:      "Add at least one task to the tasks array",
+			})
+		}
+
+	case "debate":
+		// debate requires: topic, agent_ids
+		if _, hasTopic := spec["topic"]; !hasTopic {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.topic",
+				Message:  "Missing required field for debate pattern",
+				Expected: "topic: string",
+				Fix:      "Add 'topic: \"Should we use microservices?\"' under spec",
+			})
+		}
+		if agentIds, hasAgentIds := spec["agent_ids"]; !hasAgentIds {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.agent_ids",
+				Message:  "Missing required field for debate pattern",
+				Expected: "agent_ids: [agent1, agent2]",
+				Fix:      "Add 'agent_ids: [architect, pragmatist]' under spec",
+			})
+		} else if agentList, ok := agentIds.([]interface{}); ok && len(agentList) < 2 {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.agent_ids",
+				Message:  "debate requires at least 2 agents",
+				Expected: "At least 2 agent IDs",
+				Fix:      "Add at least 2 agents for debate",
+			})
+		}
 	}
 
 	return errors

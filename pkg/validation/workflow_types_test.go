@@ -28,17 +28,11 @@ metadata:
   description: Test debate workflow
 spec:
   pattern: debate
-  agents:
-    - id: agent1
-      name: Debater 1
-      role: debater
-      system_prompt: You are debater 1
-    - id: agent2
-      name: Debater 2
-      role: debater
-      system_prompt: You are debater 2
-  config:
-    rounds: 3
+  topic: "Should we use microservices?"
+  agent_ids:
+    - agent1
+    - agent2
+  rounds: 3
 `,
 			shouldPass:  true,
 			description: "Valid debate orchestration workflow",
@@ -68,11 +62,12 @@ metadata:
   name: test-pipeline
 spec:
   type: pipeline
+  initial_prompt: "Design an authentication system"
   stages:
-    - id: stage1
-      agent_id: agent1
-    - id: stage2
-      agent_id: agent2
+    - agent_id: agent1
+      prompt_template: "Write spec: {{previous}}"
+    - agent_id: agent2
+      prompt_template: "Implement: {{previous}}"
 `,
 			shouldPass:  true,
 			description: "Valid pipeline orchestration workflow",
@@ -256,15 +251,11 @@ metadata:
   name: test-debate
 spec:
   pattern: debate
-  agents:
-    - id: agent1
-      role: debater
-      system_prompt: Test
-    - id: agent2
-      role: debater
-      system_prompt: Test
-  config:
-    rounds: 2
+  topic: "Test debate topic"
+  agent_ids:
+    - agent1
+    - agent2
+  rounds: 2
 `,
 			shouldValid: true,
 		},

@@ -222,17 +222,36 @@ func validateDebatePattern(spec map[string]interface{}) ([]ValidationError, []Va
 	var errors []ValidationError
 	var warnings []ValidationWarning
 
-	// Check for agents with debater role
+	// Check for agents (either inline definitions or agent_ids references)
+	// New format uses agent_ids (flat array of strings), old format uses agents (array of objects with roles)
+	agentIds, hasAgentIds := spec["agent_ids"].([]interface{})
 	agents, hasAgents := spec["agents"].([]interface{})
-	if !hasAgents || len(agents) < 2 {
-		errors = append(errors, ValidationError{
-			Level:    LevelSemantic,
-			Field:    "spec.agents",
-			Message:  "Debate pattern requires at least 2 agents with debater role",
-			Expected: "Array with at least 2 agent definitions",
-			Fix:      "Add at least 2 agents with role: debater",
-		})
+
+	if hasAgentIds {
+		// New format: agent_ids should have at least 2 entries (already checked in structure validation)
+		// Semantic validation: just ensure we have enough debaters (we can't validate roles without loading agent files)
+		if len(agentIds) < 2 {
+			errors = append(errors, ValidationError{
+				Level:    LevelSemantic,
+				Field:    "spec.agent_ids",
+				Message:  "Debate pattern requires at least 2 agents",
+				Expected: "Array with at least 2 agent IDs",
+				Fix:      "Add at least 2 agent IDs to agent_ids array",
+			})
+		}
+	} else if hasAgents {
+		// Old format: inline agent definitions with roles
+		if len(agents) < 2 {
+			errors = append(errors, ValidationError{
+				Level:    LevelSemantic,
+				Field:    "spec.agents",
+				Message:  "Debate pattern requires at least 2 agents with debater role",
+				Expected: "Array with at least 2 agent definitions",
+				Fix:      "Add at least 2 agents with role: debater",
+			})
+		}
 	}
+	// If neither format is present, it was already caught in structure validation
 
 	// Check for rounds config
 	if config, ok := spec["config"].(map[string]interface{}); ok {
