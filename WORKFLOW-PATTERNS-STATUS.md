@@ -1,8 +1,28 @@
 # Loom Workflow Patterns - Status and Testing
 
+## ⚠️ Critical Finding: Inline Agents Not Supported (Jan 22, 2026)
+
+**Status**: Orchestration patterns **work** but **require pre-existing agents** in `~/.loom/agents/` directory.
+
+**Issue**: CLI doesn't support inline agent definitions yet, despite documentation suggesting it should work (see `workflow-all-fields-example.yaml:372-399`).
+
+**Tested**: ✅ Fork-join pattern works successfully with existing agents (`creative`, `analyst`)
+- Duration: 6.36s | Cost: $0.036 | 2 LLM calls in parallel | Results merged correctly
+
+**Limitation**: All 6 orchestration pattern examples have inline agent definitions but reference non-existent agent IDs, causing CLI errors:
+```
+❌ Failed to create agent api-architect: agent configuration not found: api-architect
+```
+
+**Workaround**: Create agent YAML files in `~/.loom/agents/` OR modify examples to use existing agents.
+
+**See**: `ORCHESTRATION-PATTERNS-FINDINGS.md` for detailed analysis and recommendations.
+
+---
+
 ## ✅ Orchestration Pattern Format Fixed (Jan 22, 2026)
 
-**Issue:** Examples in `examples/reference/workflows/` used `spec.pattern` (old format), but the implementation expects `spec.type` (new format).
+**Issue:** Examples used `spec.pattern` (old format), but implementation expects `spec.type` (new format).
 
 **Fix Applied:** All 6 orchestration pattern examples updated to use `spec.type` format (commit e832632).
 
@@ -286,61 +306,94 @@ spec:
 
 ## Summary
 
-| Pattern | Type | Status | Example | Format Fixed |
-|---------|------|--------|---------|--------------|
-| Pub-Sub | Communication | ✅ Working | dungeon-crawl, brainstorm-session | N/A |
-| Hub-and-Spoke | Communication | ✅ Working | dnd-campaign, vacation-planner | N/A |
-| Pipeline | Orchestration | ✅ Format Fixed | feature-pipeline.yaml | ✅ Yes |
-| Fork-Join | Orchestration | ✅ Format Fixed | code-review.yaml | ✅ Yes |
-| Parallel | Orchestration | ✅ Format Fixed | doc-generation.yaml | ✅ Yes |
-| Debate | Orchestration | ✅ Format Fixed | architecture-debate.yaml | ✅ Yes |
-| Conditional | Orchestration | ✅ Format Fixed | complexity-routing.yaml | ✅ Yes |
-| Swarm | Orchestration | ✅ Format Fixed | technology-swarm.yaml | ✅ Yes |
+| Pattern | Type | Status | Example | CLI Status |
+|---------|------|--------|---------|------------|
+| Pub-Sub | Communication | ✅ Tested & Working | dungeon-crawl, brainstorm-session | ✅ Works |
+| Hub-and-Spoke | Communication | ✅ Tested & Working | dnd-campaign, vacation-planner | ✅ Works |
+| Pipeline | Orchestration | ⚠️ Format Fixed | feature-pipeline.yaml | ⚠️ Needs agent configs |
+| Fork-Join | Orchestration | ✅ Tested & Working | code-review.yaml | ✅ Works (with existing agents) |
+| Parallel | Orchestration | ⚠️ Format Fixed | doc-generation.yaml | ⚠️ Needs agent configs |
+| Debate | Orchestration | ⚠️ Format Fixed | architecture-debate.yaml | ⚠️ Needs agent configs |
+| Conditional | Orchestration | ⚠️ Format Fixed | complexity-routing.yaml | ⚠️ Needs agent configs |
+| Swarm | Orchestration | ⚠️ Format Fixed | technology-swarm.yaml | ⚠️ Needs agent configs |
 
 ## Testing Status
 
-### ✅ Communication Patterns - Tested and Working (2/8)
+### ✅ Communication Patterns - Fully Working (2/8)
 1. Pub-Sub pattern - Tested successfully Jan 22, 2026
 2. Hub-and-Spoke pattern - Tested successfully Jan 22, 2026
 
-### ✅ Orchestration Patterns - Format Fixed (6/8)
-1. Pipeline pattern - Fixed Jan 22, 2026 (commit e832632)
-2. Fork-Join pattern - Fixed Jan 22, 2026 (commit e832632)
-3. Parallel pattern - Fixed Jan 22, 2026 (commit e832632)
-4. Debate pattern - Fixed Jan 22, 2026 (commit e832632)
-5. Conditional pattern - Fixed Jan 22, 2026 (commit e832632)
-6. Swarm pattern - Fixed Jan 22, 2026 (commit e832632)
+### ✅ Orchestration Patterns - Infrastructure Working (1/6 tested)
+1. **Fork-Join** - ✅ Tested successfully with existing agents (Jan 22, 2026)
+   - Test: `test-fork-join-simple.yaml` using `creative` and `analyst` agents
+   - Duration: 6.36s | Cost: $0.036 | 2 parallel LLM calls
+   - Status: **WORKING** when using pre-existing agents
 
-**Status:** All orchestration pattern examples now use correct `spec.type` format. Ready for CLI execution testing with `looms workflow run`.
+### ⚠️ Orchestration Patterns - Format Fixed, Need Agent Configs (5/6)
+2. Pipeline pattern - Format fixed (commit e832632) - Needs agent configs
+3. Parallel pattern - Format fixed (commit e832632) - Needs agent configs
+4. Debate pattern - Format fixed (commit e832632) - Needs agent configs
+5. Conditional pattern - Format fixed (commit e832632) - Needs agent configs
+6. Swarm pattern - Format fixed (commit e832632) - Needs agent configs
+
+**Status:** Orchestration pattern execution works but CLI doesn't support inline agent definitions yet. Examples need either:
+- Agent configs created in `~/.loom/agents/` for referenced agent IDs, OR
+- CLI enhancement to support inline agents (see `ORCHESTRATION-PATTERNS-FINDINGS.md`)
 
 ## Next Steps
 
-1. ✅ **Communication patterns** - Fully working and tested (Jan 22, 2026)
+### ✅ Completed (Jan 22, 2026)
+1. Communication patterns tested - Fully working
+2. Orchestration patterns format fix - All 6 examples now use `spec.type` format (commit e832632)
+3. Fork-join pattern tested with existing agents - Working successfully
+4. Documented CLI limitation - Inline agents not supported (see `ORCHESTRATION-PATTERNS-FINDINGS.md`)
 
-2. ✅ **Orchestration patterns format fix** - Complete (Jan 22, 2026, commit e832632):
-   - **Fixed:** All 6 orchestration pattern examples now use `spec.type` format
-   - **Files updated:**
-     - `examples/reference/workflows/feature-pipeline.yaml` → `type: pipeline`
-     - `examples/reference/workflows/code-review.yaml` → `type: fork_join`
-     - `examples/reference/workflows/doc-generation.yaml` → `type: parallel`
-     - `examples/reference/workflows/security-analysis.yaml` → `type: parallel`
-     - `examples/reference/workflows/architecture-debate.yaml` → `type: debate`
-     - `examples/reference/workflows/complexity-routing.yaml` → `type: conditional`
-     - `examples/reference/workflows/technology-swarm.yaml` → `type: swarm`
+### 🔄 Current Blockers
 
-3. **TODO: Test orchestration patterns with CLI**
-   ```bash
-   # Test each pattern with workflow run command:
-   looms workflow run examples/reference/workflows/feature-pipeline.yaml
-   looms workflow run examples/reference/workflows/code-review.yaml --prompt "$(cat test-file.go)"
-   looms workflow run examples/reference/workflows/doc-generation.yaml
-   # ... etc for all 6 patterns
-   ```
+**Issue**: CLI doesn't support inline agent definitions yet
 
-4. **TODO: Document orchestration pattern execution results**
-   - Create test cases for each pattern
-   - Document any CLI usage patterns
-   - Update status file with test results
+**Impact**: All 6 orchestration pattern examples reference non-existent agent IDs and can't run without:
+1. Creating agent configs in `~/.loom/agents/` for each referenced agent, OR
+2. Implementing inline agent support in CLI (`cmd_workflow.go`)
+
+### 🎯 Recommended Next Actions
+
+**Option A: Quick Fix (Workaround)**
+- Create agent YAML files in `~/.loom/agents/` for agents referenced in examples:
+  - `api-architect`, `backend-developer`, `test-engineer` (pipeline)
+  - `quality`, `security`, `performance` (fork-join)
+  - `api-documenter`, `technical-writer`, `example-creator` (parallel)
+  - etc.
+- Allows immediate testing of all orchestration patterns
+
+**Option B: Proper Fix (Implement Missing Feature)**
+- Modify `cmd_workflow.go` to support inline agent definitions
+- Parse `spec.agents` array before calling `registry.CreateAgent()`
+- Create agents dynamically from inline definitions
+- Aligns with documented behavior in `workflow-all-fields-example.yaml:372-399`
+- Code location: `cmd_workflow.go:325-407`
+
+**Option C: Simplify Examples**
+- Update examples to reference existing agents (`creative`, `analyst`, `dm`, etc.)
+- Add note that inline agents require agent configs
+- Less ideal for demonstration purposes
+
+### 📋 Testing Checklist
+
+- [x] Communication patterns (pub-sub, hub-and-spoke)
+- [x] Fork-join with existing agents
+- [ ] Pipeline with existing/created agents
+- [ ] Parallel with existing/created agents
+- [ ] Debate with existing/created agents
+- [ ] Conditional with existing/created agents
+- [ ] Swarm with existing/created agents
+- [ ] Test inline agent support after implementation
+
+### 📚 Related Documentation
+
+- `ORCHESTRATION-PATTERNS-FINDINGS.md` - Detailed test results and recommendations
+- `examples/workflow-all-fields-example.yaml` - Complete workflow format reference
+- `test-fork-join-simple.yaml` - Working example using existing agents
 
 ## Recent Changes
 
