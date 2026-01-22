@@ -55,6 +55,8 @@ type K8sStyleAgentConfig struct {
 		Name        string                 `yaml:"name"`
 		Version     string                 `yaml:"version"`
 		Description string                 `yaml:"description"`
+		Role        string                 `yaml:"role"`
+		Workflow    string                 `yaml:"workflow"`
 		Labels      map[string]interface{} `yaml:"labels"`
 	} `yaml:"metadata"`
 	Spec struct {
@@ -299,6 +301,12 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	legacy.Agent.Metadata = make(map[string]interface{})
 	if k8s.Metadata.Version != "" {
 		legacy.Agent.Metadata["version"] = k8s.Metadata.Version
+	}
+	if k8s.Metadata.Role != "" {
+		legacy.Agent.Metadata["role"] = k8s.Metadata.Role
+	}
+	if k8s.Metadata.Workflow != "" {
+		legacy.Agent.Metadata["workflow"] = k8s.Metadata.Workflow
 	}
 	for k, v := range k8s.Metadata.Labels {
 		legacy.Agent.Metadata[k] = v

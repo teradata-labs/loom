@@ -102,6 +102,21 @@ type Agent struct {
 	enableFindingExtraction       bool // Whether automatic extraction is enabled
 	extractionCadence             int  // Number of tool executions between extractions
 	toolExecutionsSinceExtraction int  // Counter for tool executions since last extraction
+
+	// Workflow communication context (injected dynamically for workflow agents)
+	workflowCommContext *WorkflowCommunicationContext
+}
+
+// WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
+type WorkflowCommunicationContext struct {
+	// Subscribed topics for pub-sub communication
+	SubscribedTopics []string
+
+	// Available agents for point-to-point communication (workflow:agent format)
+	AvailableAgents []string
+
+	// Workflow name (for constructing agent IDs)
+	WorkflowName string
 }
 
 // Config holds agent configuration.

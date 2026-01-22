@@ -870,6 +870,45 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					}
 				}
 			}
+
+			// SPAWN SUB-AGENTS: Parse agents list from workflow and spawn them
+			if agentsInterface, ok := workflowConfig.Spec["agents"]; ok {
+				if agentsList, ok := agentsInterface.([]interface{}); ok {
+					s.logger.Info("Spawning workflow sub-agents from workflow definition",
+						zap.String("workflow", workflowName),
+						zap.Int("num_agents", len(agentsList)))
+
+					for _, agentInterface := range agentsList {
+						if agentMap, ok := agentInterface.(map[string]interface{}); ok {
+							agentName, _ := agentMap["agent"].(string)
+							roleName, _ := agentMap["name"].(string)
+
+							if agentName == "" {
+								continue // Skip if no agent name specified
+							}
+
+							// Skip the coordinator itself (entrypoint)
+							if roleName == "coordinator" || agentName == coordinatorID {
+								continue
+							}
+
+							// Construct workflow-prefixed agent ID
+							subAgentID := fmt.Sprintf("%s:%s", workflowName, agentName)
+
+							s.logger.Info("Spawning workflow sub-agent",
+								zap.String("sub_agent_id", subAgentID),
+								zap.String("agent_name", agentName))
+
+							// Spawn the sub-agent (will auto-register with message queue if it exists)
+							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID); err != nil {
+								s.logger.Warn("Failed to spawn workflow sub-agent",
+									zap.String("sub_agent_id", subAgentID),
+									zap.Error(err))
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -892,6 +931,28 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Info("Found workflow sub-agents",
 		zap.String("workflow", workflowName),
 		zap.Strings("sub_agents", subAgentIDs))
+
+	// Inject workflow communication context into coordinator
+	coordinatorCommCtx := &agent.WorkflowCommunicationContext{
+		WorkflowName: workflowName,
+	}
+
+	// Add subscribed topics (pub-sub)
+	if workflowTopic != "" {
+		coordinatorCommCtx.SubscribedTopics = []string{workflowTopic}
+	}
+
+	// Add available agents for point-to-point communication
+	if len(subAgentIDs) > 0 {
+		coordinatorCommCtx.AvailableAgents = subAgentIDs
+	}
+
+	coordinatorAgent.SetWorkflowCommunicationContext(coordinatorCommCtx)
+
+	s.logger.Info("Injected workflow communication context into coordinator",
+		zap.String("coordinator", coordinatorID),
+		zap.Strings("subscribed_topics", coordinatorCommCtx.SubscribedTopics),
+		zap.Strings("available_agents", coordinatorCommCtx.AvailableAgents))
 
 	// Register coordinator for event-driven message notifications
 	coordinatorNotifyChan := make(chan struct{}, 10)
@@ -1062,6 +1123,30 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		if s.messageQueue != nil {
 			s.messageQueue.RegisterNotificationChannel(subAgentID, notifyChan)
 		}
+
+		// Inject workflow communication context into sub-agent
+		commCtx := &agent.WorkflowCommunicationContext{
+			WorkflowName: workflowName,
+		}
+
+		// Add subscribed topics (pub-sub)
+		if workflowTopic != "" {
+			commCtx.SubscribedTopics = []string{workflowTopic}
+		}
+
+		// Add available agents for point-to-point communication
+		// Include all sub-agents except self
+		var availableAgents []string
+		for _, otherSubAgentID := range subAgentIDs {
+			if otherSubAgentID != subAgentID {
+				availableAgents = append(availableAgents, otherSubAgentID)
+			}
+		}
+		if len(availableAgents) > 0 {
+			commCtx.AvailableAgents = availableAgents
+		}
+
+		subAgent.SetWorkflowCommunicationContext(commCtx)
 
 		// Start sub-agent with notification channel (pass subAgentKey for deregistration)
 		go s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
@@ -1600,15 +1685,25 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 		return fmt.Errorf("invalid workflow agent ID format: %s", agentID)
 	}
 	workflowName := parts[0]
+	baseAgentName := parts[1]
 
 	s.logger.Info("Auto-spawning workflow sub-agent",
 		zap.String("agent", agentID),
-		zap.String("workflow", workflowName))
+		zap.String("workflow", workflowName),
+		zap.String("base_agent", baseAgentName))
 
-	// Get the agent from registry
+	// Try to get the agent from registry using the workflow-prefixed ID first
 	subAgent, _, err := s.getAgent(agentID)
 	if err != nil {
-		return fmt.Errorf("failed to get agent: %w", err)
+		// If not found with workflow prefix, try the base agent name
+		s.logger.Debug("Agent not found with workflow prefix, trying base name",
+			zap.String("workflow_prefixed", agentID),
+			zap.String("base_name", baseAgentName))
+
+		subAgent, _, err = s.getAgent(baseAgentName)
+		if err != nil {
+			return fmt.Errorf("failed to get agent (tried both '%s' and '%s'): %w", agentID, baseAgentName, err)
+		}
 	}
 
 	// Generate unique session ID for this sub-agent

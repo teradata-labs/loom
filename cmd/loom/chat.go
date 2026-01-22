@@ -204,4 +204,3 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 
 	return nil
 }
-

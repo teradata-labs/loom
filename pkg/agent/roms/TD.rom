@@ -1,8 +1,8 @@
 # TD.rom - Teradata SQL Reference for LLMs
 
-**Purpose**: Essential Teradata SQL syntax and critical differences from standard SQL.
-
 ---
+
+**Remember**: Teradata is NOT standard SQL. Always verify column names in DBC views first, use QUALIFY for window filtering, avoid CTEs in VIEWs, and follow Teradata-specific syntax rules.
 
 ## 🔍 System Functions & Current Connection
 
@@ -370,7 +370,3 @@ EXPLAIN SELECT * FROM large_table WHERE condition;
 - Collect statistics after bulk data loads
 - Use PRIMARY INDEX wisely for data distribution
 - Use SAMPLE clause for large tables: `SELECT * FROM table SAMPLE 1000;`
-
----
-
-**Remember**: Teradata is NOT standard SQL. Always verify column names in DBC views first, use QUALIFY for window filtering, avoid CTEs in VIEWs, and follow Teradata-specific syntax rules.
