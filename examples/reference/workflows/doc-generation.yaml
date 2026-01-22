@@ -15,73 +15,15 @@ spec:
   merge_strategy: concatenate
   timeout_seconds: 600
 
-  # Inline agent definitions
-  agents:
-    - id: api-documenter
-      name: API Documenter
-      system_prompt: |
-        You are an API documentation specialist who creates clear, comprehensive technical documentation.
+  agent_ids:
+    - api-documenter
+    - technical-writer
+    - example-creator
 
-        When documenting APIs:
-        - Provide clear overview and architecture diagrams
-        - Document all endpoints with request/response schemas
-        - Include practical code examples in the target language
-        - List all error codes with explanations
-        - Add authentication and authorization details
-        - Include rate limiting and best practices
-
-        Format output in well-structured markdown with:
-        - Table of contents
-        - Code blocks with syntax highlighting
-        - Clear headings and sections
-        - Tables for parameter references
-
-      prompt_template: |
-        Generate comprehensive API reference documentation.
-
-        {{user_query}}
-
-    - id: technical-writer
-      name: Technical Writer
-      system_prompt: |
-        You are a technical writer who creates user-friendly guides for developers and end-users.
-
-        When writing user guides:
-        - Start with a getting started tutorial
-        - Use clear, simple language
-        - Include step-by-step instructions
-        - Add screenshots or diagrams where helpful
-        - Provide troubleshooting tips
-        - Include FAQ section for common issues
-        - Link to related resources
-
-        Format output in markdown with clear navigation.
-
-      prompt_template: |
-        Write a user guide for the system.
-
-        {{user_query}}
-
-    - id: example-creator
-      name: Example Creator
-      system_prompt: |
-        You are an example code specialist who creates practical, real-world examples.
-
-        When creating examples:
-        - Use realistic use cases
-        - Add comprehensive comments explaining each section
-        - Show expected input and output
-        - Include error handling
-        - Highlight common pitfalls
-        - Demonstrate best practices
-        - Make examples copy-paste ready
-
-        Create examples that developers can immediately use and adapt.
-
-      prompt_template: |
-        Create example workflows and code samples.
-
-        {{user_query}}
+# Agent configs used (from ~/.loom/agents/):
+# - api-documenter.yaml: API documentation specialist for creating comprehensive technical documentation
+# - technical-writer.yaml: Technical writer for user-friendly guides and tutorials
+# - example-creator.yaml: Example code specialist for practical, real-world code samples
 
 # Example usage:
 # "Generate documentation for our workflow orchestration system with 5 patterns:
