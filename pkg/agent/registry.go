@@ -19,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
@@ -59,6 +60,11 @@ type Registry struct {
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 	sharedMemory interface{}            // SharedMemoryStore for large tool result storage
 	onReload     ReloadCallback         // Callback when config changes
+
+	// Agent dependencies (injected by server)
+	errorStore        ErrorStore                 // For error tracking and retrieval
+	permissionChecker *shuttle.PermissionChecker // For permission validation
+	artifactStore     interface{}                // artifacts.Store for workspace tool
 }
 
 // AgentInstanceInfo tracks runtime information about an agent instance
@@ -83,6 +89,11 @@ type RegistryConfig struct {
 	Tracer       observability.Tracer
 	SessionStore *SessionStore          // For persistent agent session traces
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
+
+	// Agent dependencies (injected by server)
+	ErrorStore        ErrorStore                 // For error tracking and retrieval
+	PermissionChecker *shuttle.PermissionChecker // For permission validation
+	ArtifactStore     interface{}                // artifacts.Store for workspace tool
 
 	// Database encryption (opt-in for enterprise deployments)
 	EncryptDatabase bool   // Enable SQLCipher encryption
@@ -127,19 +138,22 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 	}
 
 	r := &Registry{
-		configDir:    config.ConfigDir,
-		db:           db,
-		agents:       make(map[string]*Agent),
-		configs:      make(map[string]*loomv1.AgentConfig),
-		agentInfo:    make(map[string]*AgentInstanceInfo),
-		agentsByName: make(map[string]string),
-		logger:       config.Logger,
-		watcher:      watcher,
-		mcpMgr:       config.MCPManager,
-		llmProvider:  config.LLMProvider,
-		tracer:       config.Tracer,
-		sessionStore: config.SessionStore,
-		toolRegistry: config.ToolRegistry,
+		configDir:         config.ConfigDir,
+		db:                db,
+		agents:            make(map[string]*Agent),
+		configs:           make(map[string]*loomv1.AgentConfig),
+		agentInfo:         make(map[string]*AgentInstanceInfo),
+		agentsByName:      make(map[string]string),
+		logger:            config.Logger,
+		watcher:           watcher,
+		mcpMgr:            config.MCPManager,
+		llmProvider:       config.LLMProvider,
+		tracer:            config.Tracer,
+		sessionStore:      config.SessionStore,
+		toolRegistry:      config.ToolRegistry,
+		errorStore:        config.ErrorStore,
+		permissionChecker: config.PermissionChecker,
+		artifactStore:     config.ArtifactStore,
 	}
 
 	// Load existing agents from database to restore GUIDs
@@ -191,12 +205,55 @@ func (r *Registry) LoadAgents(ctx context.Context) error {
 
 		r.mu.Lock()
 		r.configs[config.Name] = config
-		r.mu.Unlock()
 
-		r.logger.Info("Loaded agent config",
-			zap.String("name", config.Name),
-			zap.String("provider", config.Llm.Provider),
-			zap.String("model", config.Llm.Model))
+		// Ensure agent has a GUID in the database
+		// Check if agent already exists (loaded from DB)
+		existingGUID, exists := r.agentsByName[config.Name]
+		if exists {
+			// Agent exists, update config in database
+			info := r.agentInfo[existingGUID]
+			info.UpdatedAt = time.Now()
+			r.mu.Unlock()
+			if err := r.persistAgentInfo(info, config); err != nil {
+				r.logger.Warn("Failed to update agent config in database",
+					zap.String("name", config.Name),
+					zap.String("id", existingGUID),
+					zap.Error(err))
+			} else {
+				r.logger.Info("Updated agent config",
+					zap.String("name", config.Name),
+					zap.String("id", existingGUID),
+					zap.String("provider", config.Llm.Provider),
+					zap.String("model", config.Llm.Model))
+			}
+		} else {
+			// Agent doesn't exist, create new entry with GUID
+			agentID := uuid.New().String()
+			info := &AgentInstanceInfo{
+				ID:        agentID,
+				Name:      config.Name,
+				Status:    "loaded", // Config loaded but agent not yet instantiated
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			r.agentInfo[agentID] = info
+			r.agentsByName[config.Name] = agentID
+			r.mu.Unlock()
+
+			if err := r.persistAgentInfo(info, config); err != nil {
+				r.logger.Warn("Failed to persist agent info",
+					zap.String("name", config.Name),
+					zap.String("id", agentID),
+					zap.Error(err))
+			} else {
+				r.logger.Info("Loaded agent config",
+					zap.String("name", config.Name),
+					zap.String("id", agentID),
+					zap.String("provider", config.Llm.Provider),
+					zap.String("model", config.Llm.Model))
+			}
+		}
+		// Note: Lock released above in both branches
 	}
 
 	// Load workflows
@@ -296,15 +353,34 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 
 	r.logger.Info("Creating agent", zap.String("name", name))
 
+	// Build agent - it gets an ephemeral UUID from NewAgent
 	agent, err := r.buildAgent(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build agent: %w", err)
 	}
 
-	// Generate stable GUID for agent
-	agentID := uuid.New().String()
+	// Check if agent exists in DB (has stable GUID)
+	r.mu.RLock()
+	existingGUID, hasStableGUID := r.agentsByName[name]
+	r.mu.RUnlock()
 
-	// Create agent info with GUID
+	var agentID string
+	if hasStableGUID {
+		// Use stable GUID from database - override ephemeral UUID
+		agentID = existingGUID
+		agent.setID(agentID)
+		r.logger.Info("Using existing stable GUID",
+			zap.String("name", name),
+			zap.String("id", agentID))
+	} else {
+		// New agent - use UUID from NewAgent as stable GUID
+		agentID = agent.GetID()
+		r.logger.Info("Assigned new stable GUID",
+			zap.String("name", name),
+			zap.String("id", agentID))
+	}
+
+	// Create agent info with stable GUID
 	info := &AgentInstanceInfo{
 		ID:        agentID,
 		Name:      name,
@@ -439,12 +515,49 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, WithSharedMemory(r.sharedMemory))
 	}
 
+	// Inject server dependencies if available
+	if r.errorStore != nil {
+		opts = append(opts, WithErrorStore(r.errorStore))
+	}
+
+	if r.permissionChecker != nil {
+		opts = append(opts, WithPermissionChecker(r.permissionChecker))
+	}
+
 	// Create agent with configuration
 	agent := NewAgent(
 		nil, // Backend optional with MCP tools
 		llmProvider,
 		opts...,
 	)
+
+	// Register workspace tool if artifactStore is available
+	if r.artifactStore != nil {
+		// Type assert to artifacts.ArtifactStore
+		if artifactStore, ok := r.artifactStore.(artifacts.ArtifactStore); ok {
+			workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+			agent.RegisterTool(workspaceTool)
+			r.logger.Debug("Registered workspace tool",
+				zap.String("agent", config.Name))
+		} else {
+			r.logger.Warn("artifactStore does not implement artifacts.ArtifactStore interface",
+				zap.String("agent", config.Name))
+		}
+	}
+
+	// Always register shell_execute tool (standard toolset)
+	// For weaver, use LOOM_DATA_DIR; for others, use current dir
+	shellTool := builtin.NewShellExecuteTool("")
+	if config.Name == "weaver" {
+		shellTool = builtin.NewShellExecuteTool(r.configDir)
+		r.logger.Debug("Registered shell_execute tool with LOOM_DATA_DIR",
+			zap.String("agent", config.Name),
+			zap.String("baseDir", r.configDir))
+	} else {
+		r.logger.Debug("Registered shell_execute tool",
+			zap.String("agent", config.Name))
+	}
+	agent.RegisterTool(shellTool)
 
 	// Register MCP tools if configured
 	if config.Tools != nil && len(config.Tools.Mcp) > 0 && r.mcpMgr != nil {
@@ -954,14 +1067,7 @@ func (r *Registry) GetAgent(ctx context.Context, name string) (*Agent, error) {
 // Ephemeral agents receive stable GUIDs for tracking and observability,
 // but are NOT persisted to the database since they're temporary.
 func (r *Registry) CreateEphemeralAgent(ctx context.Context, role string) (*Agent, error) {
-	// Generate stable GUID for ephemeral agent
-	agentID := uuid.New().String()
 	agentName := fmt.Sprintf("ephemeral-%s", role)
-
-	r.logger.Info("Creating ephemeral agent",
-		zap.String("role", role),
-		zap.String("id", agentID),
-		zap.String("name", agentName))
 
 	// For now, create a basic agent with the default LLM provider
 	// TODO: Look up role-specific ephemeral policies from configs
@@ -972,13 +1078,21 @@ func (r *Registry) CreateEphemeralAgent(ctx context.Context, role string) (*Agen
 		return nil, fmt.Errorf("cannot create ephemeral agent: no LLM provider configured")
 	}
 
-	// Create basic agent
+	// Create basic agent - it gets an ephemeral UUID from NewAgent
 	agent := NewAgent(
 		nil, // Backend optional
 		r.llmProvider,
 		WithName(agentName),
 		WithDescription(fmt.Sprintf("Ephemeral agent for role: %s", role)),
 	)
+
+	// Ephemeral agents keep their NewAgent UUID (not persisted to DB)
+	agentID := agent.GetID()
+
+	r.logger.Info("Creating ephemeral agent",
+		zap.String("role", role),
+		zap.String("id", agentID),
+		zap.String("name", agentName))
 
 	// Track ephemeral agent in memory (not persisted to DB)
 	// This allows GetAgentInfo to work with ephemeral agents
@@ -1446,11 +1560,12 @@ func (r *Registry) persistAgentInfo(info *AgentInstanceInfo, config *loomv1.Agen
 		return fmt.Errorf("failed to marshal agent config: %w", err)
 	}
 
+	// Use INSERT ... ON CONFLICT(name) to handle name-based upserts
+	// This preserves GUID stability: if agent name exists, keep its GUID
 	query := `
 		INSERT INTO agents (id, name, config_json, status, created_at, updated_at, active_sessions, total_messages)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			name = excluded.name,
+		ON CONFLICT(name) DO UPDATE SET
 			config_json = excluded.config_json,
 			status = excluded.status,
 			updated_at = excluded.updated_at
@@ -1538,7 +1653,7 @@ func initRegistryDB(db *sql.DB) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS agents (
 		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
+		name TEXT NOT NULL UNIQUE,
 		config_json TEXT NOT NULL,
 		status TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
@@ -1548,7 +1663,6 @@ func initRegistryDB(db *sql.DB) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
-	CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
 	`
 
 	_, err := db.Exec(schema)

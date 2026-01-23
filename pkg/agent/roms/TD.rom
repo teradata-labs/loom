@@ -1,372 +1,158 @@
-# TD.rom - Teradata SQL Reference for LLMs
+# TD.rom - Teradata SQL Reference
+
+**CRITICAL**: Teradata SQL is NOT standard SQL. Always use Teradata-specific syntax.
 
 ---
 
-**Remember**: Teradata is NOT standard SQL. Always verify column names in DBC views first, use QUALIFY for window filtering, avoid CTEs in VIEWs, and follow Teradata-specific syntax rules.
+## 🚨 Teradata SQL Syntax (Non-Negotiable)
 
-## 🔍 System Functions & Current Connection
+### Row Limiting
+❌ WRONG: SELECT * FROM table LIMIT 10;
+✅ CORRECT: SELECT TOP 10 * FROM table;
 
-### Query Current Context
-```sql
--- Get current user
-SELECT USER;
--- Returns: current_username (e.g., 'dbc', 'td_user')
+### Type Casting
+❌ WRONG: column::INTEGER
+✅ CORRECT: CAST(column AS INTEGER)
 
--- Get current database
-SELECT DATABASE;
--- Returns: current_database_name (e.g., 'sales', 'analytics')
+### String Concatenation
+❌ WRONG: CONCAT(first, ' ', last)
+✅ CORRECT: first || ' ' || last
 
--- Get session ID
-SELECT SESSION;
--- Returns: session_number (e.g., 1234567890123456)
+### Date Arithmetic
+❌ WRONG: date + INTERVAL 7 DAY
+✅ CORRECT: date + INTERVAL '7' DAY  -- Note: number in quotes!
 
--- Get system timestamp
-SELECT CURRENT_TIMESTAMP;
-SELECT CURRENT_DATE;
-SELECT CURRENT_TIME;
-```
-
-### Database and System Information
-```sql
--- List all databases
-SELECT DatabaseName, CreatorName, OwnerName, PermSpace, SpoolSpace
-FROM DBC.DatabasesV
-ORDER BY DatabaseName;
-
--- Get Teradata version
-SELECT InfoData
-FROM DBC.DBCInfoV
-WHERE InfoKey = 'VERSION';
-
--- List tables in current database
-SELECT TableName, TableKind, CreatorName, CreateTimeStamp
-FROM DBC.TablesV
-WHERE DatabaseName = DATABASE
-ORDER BY TableName;
-
--- Check user permissions
-SELECT DatabaseName, TableName, AccessRight
-FROM DBC.AllRightsV
-WHERE UserName = USER
-ORDER BY DatabaseName, TableName;
-
--- Active sessions
-SELECT SessionNo, UserName, DefaultDatabase, LogonDate, LogonTime
-FROM DBC.SessionInfoV
-WHERE UserName = USER;
-
--- Column metadata for a table
-SELECT ColumnName, ColumnType, ColumnLength, Nullable, DefaultValue
-FROM DBC.ColumnsV
-WHERE DatabaseName = 'your_database'
-  AND TableName = 'your_table'
-ORDER BY ColumnId;
-```
-
-**CRITICAL**: Column names in DBC views are case-sensitive. Always use exact casing: `UserName`, `DatabaseName`, `TableName` (not lowercase).
+### CTEs in VIEWs
+❌ WRONG: CREATE VIEW v AS WITH cte AS (...) SELECT * FROM cte;
+-- Error: Teradata does NOT support CTEs in VIEW definitions
+✅ CORRECT: CREATE VIEW v AS SELECT * FROM (subquery) AS derived;
+-- CTEs work fine in stored procedures and standalone queries
 
 ---
 
-## 🚨 CRITICAL: Teradata SQL Syntax ONLY
+## 🔑 QUALIFY Clause (Teradata-Specific)
 
-**MANDATORY RULE: All SQL MUST use Teradata syntax exclusively.**
+QUALIFY filters window function results WITHOUT subqueries. UNIQUE to Teradata.
 
-### ❌ PROHIBITED Syntax
-
-| Prohibited | Teradata Alternative | Example |
-|------------|---------------------|---------|
-| `LIMIT n` | `TOP n` (before SELECT list) | `SELECT TOP 10 * FROM table` |
-| `::` casting | `CAST(x AS type)` | `CAST(column AS INTEGER)` |
-| `CONCAT()` | `\|\|` operator | `first \|\| ' ' \|\| last` |
-| `DISTINCT ON` | `QUALIFY ROW_NUMBER() = 1` | See QUALIFY section |
-| `ROWNUM` | `ROW_NUMBER() OVER()` | Window functions |
-| CTEs in VIEWs | Derived tables/subqueries | `CREATE VIEW AS SELECT FROM (...)` |
-| `DATE_ADD()` | `date + INTERVAL '7' DAY` | Note quotes around number |
-
-### ✅ REQUIRED Teradata Syntax
-
-#### Row Limiting
-```sql
--- ❌ WRONG - MySQL/PostgreSQL
-SELECT * FROM orders LIMIT 10;
-
--- ✅ CORRECT - Teradata (TOP before columns)
-SELECT TOP 10 * FROM orders;
-
--- TOP with ORDER BY
-SELECT TOP 100 customer_id, order_date, amount
-FROM orders
-ORDER BY order_date DESC;
-```
-
-#### String Concatenation
-```sql
--- ❌ WRONG - MySQL CONCAT()
-SELECT CONCAT(first, ' ', last) FROM users;
-
--- ✅ CORRECT - Teradata || operator
-SELECT first || ' ' || last AS full_name FROM users;
-
--- With NULL handling
-SELECT COALESCE(first, '') || ' ' || COALESCE(last, '') AS full_name FROM users;
-```
-
-#### Date Arithmetic
-```sql
--- ❌ WRONG - MySQL DATE_ADD
-SELECT DATE_ADD(order_date, INTERVAL 7 DAY);
-
--- ✅ CORRECT - Teradata (note quotes around number)
-SELECT order_date + INTERVAL '7' DAY;
-SELECT order_date - INTERVAL '1' MONTH;
-SELECT ADD_MONTHS(order_date, 3);
-SELECT MONTHS_BETWEEN(end_date, start_date);
-
--- Date extraction
-SELECT EXTRACT(YEAR FROM order_date);
-SELECT EXTRACT(MONTH FROM order_date);
-SELECT EXTRACT(DAY FROM order_date);
-```
-
-#### Type Conversion
-```sql
--- ❌ WRONG - PostgreSQL :: operator
-SELECT column::INTEGER FROM table;
-
--- ✅ CORRECT - CAST function
-SELECT CAST(column AS INTEGER) FROM table;
-SELECT CAST(amount AS DECIMAL(10,2)) FROM orders;
-SELECT CAST(order_date AS VARCHAR(20)) FROM orders;
-
--- Teradata-specific functions
-SELECT ZEROIFNULL(amount) FROM orders;  -- NULL → 0
-SELECT NULLIFZERO(amount) FROM orders;  -- 0 → NULL
-```
-
-#### CTEs in VIEWs
-```sql
--- ❌ WRONG - Teradata does NOT support CTEs in VIEWs
-CREATE VIEW my_view AS
-WITH cte AS (SELECT * FROM table1)
-SELECT * FROM cte;
--- Error: Syntax error, WITH not allowed in view definitions
-
--- ✅ CORRECT - Use derived table in VIEW
-CREATE VIEW my_view AS
+❌ SLOWER (standard SQL):
 SELECT * FROM (
-  SELECT col1, col2 FROM table1 WHERE condition
-) AS derived_table;
-
--- ✅ CTEs work fine in standalone queries and stored procedures
-WITH cte AS (SELECT * FROM table1 WHERE condition)
-SELECT * FROM cte;
-```
-
-#### Table Operations
-```sql
--- View and procedure replacement (not CREATE OR REPLACE)
-REPLACE VIEW view_name AS SELECT ...;
-REPLACE PROCEDURE proc_name AS ...;
-
--- Table types
-CREATE MULTISET TABLE ...  -- Allows duplicates (default)
-CREATE SET TABLE ...        -- No duplicates (enforced)
-
--- Global temp tables (session-scoped)
-CREATE GLOBAL TEMPORARY TABLE temp_results (
-  customer_id INTEGER,
-  total DECIMAL(10,2)
-) ON COMMIT PRESERVE ROWS;
-```
-
----
-
-## 🔑 QUALIFY Clause (Teradata-Specific Power Feature)
-
-QUALIFY filters window function results WITHOUT subqueries. This is **unique to Teradata** - use it!
-
-```sql
--- ❌ SLOWER - Standard SQL subquery approach
-SELECT * FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date DESC) as rn
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY date DESC) AS rn
     FROM orders
 ) WHERE rn = 1;
 
--- ✅ FASTER - Teradata QUALIFY (no subquery needed)
-SELECT *
-FROM orders
-QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date DESC) = 1;
+✅ FASTER (Teradata QUALIFY):
+SELECT * FROM orders
+QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY date DESC) = 1;
 
--- More examples
-SELECT product_id, sale_date, amount
-FROM sales
-QUALIFY RANK() OVER (PARTITION BY product_id ORDER BY amount DESC) <= 5;
--- Gets top 5 sales per product
-
-SELECT *
-FROM events
-QUALIFY COUNT(*) OVER (PARTITION BY user_id) > 10;
--- Users with more than 10 events
-
--- Complex window filtering
-SELECT customer_id, order_date, amount,
-       SUM(amount) OVER (PARTITION BY customer_id ORDER BY order_date) AS running_total
-FROM orders
-QUALIFY SUM(amount) OVER (PARTITION BY customer_id ORDER BY order_date) > 1000;
--- Customers whose cumulative orders exceed $1000
-```
+Use for: ROW_NUMBER(), RANK(), DENSE_RANK(), COUNT() OVER(), SUM() OVER()
 
 ---
 
-## ⚠️ Reserved Words (Must NOT Use as Aliases)
+## ⚠️ Reserved Words (Cannot Use as Aliases)
 
-These reserved words cause errors if used as column/table aliases:
+| Reserved | Use Instead |
+|----------|-------------|
+| DATE | event_date, record_date |
+| TIME | event_time, log_time |
+| USER | username, user_id |
+| VALUE | metric_value, data_value |
+| LEVEL | tree_level, depth_level |
+| COUNT | row_count, record_count |
+| TIMESTAMP | event_ts, created_ts |
+| INDEX | idx, position_idx |
 
-| Reserved Word | Use Instead |
-|---------------|-------------|
-| `USER` | `user_name`, `user_id`, `username` |
-| `DATABASE` | `db_name`, `database_name` |
-| `SESSION` | `session_id`, `session_num` |
-| `DATE` | `event_date`, `record_date` |
-| `TIME` | `event_time`, `log_time` |
-| `TIMESTAMP` | `event_ts`, `created_ts` |
-| `VALUE` | `metric_value`, `data_value` |
-| `COUNT` | `record_count`, `row_count` |
-| `LEVEL` | `tree_level`, `depth_level` |
-| `INDEX` | `idx`, `position_idx` |
-
-```sql
--- ❌ WRONG - USER is reserved
-SELECT employee_id AS USER FROM employees;
-SELECT order_date AS DATE FROM orders;
-
--- ✅ CORRECT - Use non-reserved aliases
-SELECT employee_id AS username FROM employees;
-SELECT order_date AS order_date FROM orders;
-```
-
-**When querying system tables, always verify exact column names in DBC.ColumnsV first!**
+❌ WRONG: SELECT USER AS USER FROM sessions;  -- Error 3707
+✅ CORRECT: SELECT USER AS username FROM sessions;
 
 ---
 
-## 📊 Table Types & Capabilities
-
-Always check table type before generating DML/DDL operations!
+## 📊 Table Types & Operations
 
 | Type | Code | SELECT | INSERT | UPDATE | DELETE | Notes |
 |------|------|--------|--------|--------|--------|-------|
-| **Table** | T | ✅ | ✅ | ✅ | ✅ | Full DML support |
-| **View** | V | ✅ | ❌ | ❌ | ❌ | Read-only |
-| **Join Index** | O | ✅ | ❌ | ❌ | ❌ | Pre-computed joins, read-only |
-| **Hash Index** | H | ✅ | ❌ | ❌ | ❌ | Performance index, read-only |
-| **Foreign Table** | F | ✅ | ❌ | ❌ | ❌ | External data, read-only |
-| **Global Temp** | G | ✅ | ✅ | ✅ | ✅ | Session-scoped, no ALTER |
-| **Queue Table** | Q | ✅ | ✅ | ❌ | ✅ | INSERT=enqueue, DELETE=dequeue |
-| **Stored Procedure** | P | ❌ | ❌ | ❌ | ❌ | Use CALL to execute |
-| **Macro** | M | ❌ | ❌ | ❌ | ❌ | Use EXEC to execute |
+| Table | T | ✅ | ✅ | ✅ | ✅ | Full DML |
+| View | V | ✅ | ❌ | ❌ | ❌ | Read-only |
+| Join Index | O | ✅ | ❌ | ❌ | ❌ | Pre-computed joins |
+| Hash Index | H | ✅ | ❌ | ❌ | ❌ | Performance index |
+| Global Temp | G | ✅ | ✅ | ✅ | ✅ | Session-scoped |
+| Stored Procedure | P | ❌ | ❌ | ❌ | ❌ | Use CALL |
+| Macro | M | ❌ | ❌ | ❌ | ❌ | Use EXEC |
 
-```sql
--- Check table type before operations
-SELECT TableName, TableKind,
-  CASE TableKind
-    WHEN 'T' THEN 'Table'
-    WHEN 'V' THEN 'View'
-    WHEN 'O' THEN 'Join Index'
-    WHEN 'G' THEN 'Global Temp'
-    WHEN 'P' THEN 'Stored Procedure'
-    WHEN 'M' THEN 'Macro'
-    ELSE TableKind
-  END AS TableType
-FROM DBC.TablesV
-WHERE DatabaseName = 'your_database'
-  AND TableName = 'your_table';
-
--- ❌ WRONG - Cannot INSERT into a view
-INSERT INTO customer_view VALUES (1, 'John');
-
--- ✅ CORRECT - INSERT into base table
-INSERT INTO customer_table VALUES (1, 'John');
-
--- ❌ WRONG - Cannot SELECT from stored procedure
-SELECT * FROM calculate_metrics;
-
--- ✅ CORRECT - Use CALL to execute
-CALL calculate_metrics();
-```
+Check table type before operations:
+SELECT TableName, TableKind FROM DBC.TablesV WHERE DatabaseName = 'db' AND TableName = 'table';
 
 ---
 
-## 🚨 Common Errors & Fixes
+## 🔍 DBC Metadata Views (Case-Sensitive!)
+
+**CRITICAL**: Column names are case-sensitive. Always use exact casing.
+
+DBC.DatabasesV    -- Database info (PermSpace, SpoolSpace)
+DBC.TablesV       -- Table metadata (TableKind, CreateTimeStamp)
+DBC.ColumnsV      -- Column definitions (ColumnType, Nullable)
+DBC.IndicesV      -- Index information (IndexType, UniqueFlag)
+DBC.AllRightsV    -- User permissions (AccessRight)
+DBC.SessionInfoV  -- Active sessions (UserName, DefaultDatabase)
+DBC.DBCInfoV      -- System info (VERSION, RELEASE)
+
+Example:
+SELECT DatabaseName, TableName, TableKind FROM DBC.TablesV WHERE DatabaseName = DATABASE;
+-- Note: DatabaseName, TableName, TableKind (not lowercase)
+
+---
+
+## 🚨 Common Teradata Errors
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "Column not found" | Assumed column name | Query DBC.ColumnsV for exact names |
-| "Invalid syntax near LIMIT" | MySQL syntax | Use `SELECT TOP n` |
-| "Reserved keyword" | Used USER/DATE/VALUE as alias | Use non-reserved names |
-| "Syntax error near WITH" | CTE in VIEW definition | Use derived table instead |
-| "Cannot INSERT into view" | Querying view, not table | Check DBC.TablesV.TableKind, use base table |
-| "3707: Syntax error" | Column/alias name is reserved | Rename or quote with double quotes |
-
-### SQL Syntax Error 3707 Example
-```sql
--- Error 3707: Syntax error, expected something like a name
--- between the 'AS' keyword and the 'current_user' keyword.
-
--- ❌ WRONG - current_user is reserved
-SELECT DATABASE AS current_database,
-       USER AS current_user,
-       SESSION AS session_id;
-
--- ✅ CORRECT - Use non-reserved aliases
-SELECT DATABASE AS db_name,
-       USER AS username,
-       SESSION AS sess_id;
-
--- OR quote reserved words (not recommended)
-SELECT USER AS "current_user";
-```
+| "Invalid syntax near LIMIT" | MySQL syntax | Use SELECT TOP n |
+| "Syntax error near WITH" | CTE in VIEW | Use subquery/derived table |
+| "Reserved keyword" (3707) | Used DATE/USER/VALUE | Use non-reserved alias |
+| "Column not found" | Assumed column name | Check exact name in DBC.ColumnsV |
 
 ---
 
-## 🔗 Key Metadata Views (Case-Sensitive!)
+## 🔧 System Functions
 
-```sql
-DBC.DatabasesV      -- Database information (PermSpace, SpoolSpace, etc.)
-DBC.TablesV         -- Table metadata (TableKind, CreateTimeStamp, etc.)
-DBC.ColumnsV        -- Column definitions (ColumnType, Nullable, etc.)
-DBC.IndicesV        -- Index information (IndexType, UniqueFlag, etc.)
-DBC.AllRightsV      -- User permissions (AccessRight, GrantAuthority, etc.)
-DBC.SessionInfoV    -- Active sessions (UserName, DefaultDatabase, etc.)
-DBC.DBCInfoV        -- System information (VERSION, RELEASE, etc.)
-```
-
-**Always use exact casing**: `DatabaseName`, `TableName`, `UserName`, `ColumnName` (not lowercase).
+USER           -- Current username
+DATABASE       -- Current database
+SESSION        -- Session ID
+CURRENT_DATE   -- Today's date
+CURRENT_TIMESTAMP  -- Current timestamp
 
 ---
 
-## 💡 Query Optimization Patterns
+## 📅 Teradata Date/Time Functions
 
-### Statistics Collection
-```sql
--- Collect statistics on frequently filtered columns
-COLLECT STATISTICS ON database.table COLUMN (column_name);
+ADD_MONTHS(date, n)          -- Add months to date
+MONTHS_BETWEEN(date1, date2) -- Difference in months
+EXTRACT(YEAR FROM date)      -- Extract year/month/day
+date + INTERVAL '7' DAY      -- Add days (note quotes)
+date - INTERVAL '1' MONTH    -- Subtract months
 
--- Multi-column statistics for join optimization
-COLLECT STATISTICS ON database.table COLUMN (col1, col2);
+---
 
--- Index statistics
-COLLECT STATISTICS ON database.table INDEX (index_name);
-```
+## 🔤 Teradata String Functions
 
-### Query Plan Analysis
-```sql
--- Get query execution plan (doesn't execute, just analyzes)
-EXPLAIN SELECT * FROM large_table WHERE condition;
-```
+string1 || string2           -- Concatenation
+SUBSTR(string, start, len)   -- Substring (not SUBSTRING)
+POSITION('x' IN string)      -- Find position
+TRIM(string)                 -- Remove whitespace
+INDEX(string, 'substring')   -- Find substring
 
-### Performance Tips
-- Add WHERE clauses to limit rows scanned
-- Use QUALIFY instead of subqueries for window function filtering
-- Collect statistics after bulk data loads
-- Use PRIMARY INDEX wisely for data distribution
-- Use SAMPLE clause for large tables: `SELECT * FROM table SAMPLE 1000;`
+---
+
+## 💡 Table Operations
+
+REPLACE VIEW view_name AS ...     -- Not: CREATE OR REPLACE VIEW
+REPLACE PROCEDURE proc AS ...     -- Not: CREATE OR REPLACE PROCEDURE
+CREATE MULTISET TABLE ...         -- Allows duplicates (default)
+CREATE SET TABLE ...              -- No duplicates
+
+---
+
+## Performance Tips (Teradata-Specific)
+
+COLLECT STATISTICS ON table COLUMN (col);  -- After bulk loads
+EXPLAIN SELECT ...;                         -- Check query plan
+SELECT * FROM large_table SAMPLE 1000;      -- Sample for profiling

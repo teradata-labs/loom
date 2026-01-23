@@ -39,9 +39,9 @@ func TestLoadROMContent_BaseAndTD(t *testing.T) {
 	if len(content) == 0 {
 		t.Fatal("Composed ROM should not be empty")
 	}
-	// Should be larger than base alone (START_HERE ~2KB + TD ~11KB = ~13KB)
-	if len(content) < 8000 {
-		t.Fatalf("Base + TD ROM should be ~13KB, got %d bytes", len(content))
+	// Should be larger than base alone (START_HERE ~2KB + TD ~5KB = ~7KB)
+	if len(content) < 6000 {
+		t.Fatalf("Base + TD ROM should be ~7KB, got %d bytes", len(content))
 	}
 	// Should contain base ROM
 	if !strings.Contains(content, "START HERE") {
@@ -65,8 +65,8 @@ func TestLoadROMContent_AutoDetect(t *testing.T) {
 		t.Fatal("Auto-detected ROM should not be empty")
 	}
 	// Should detect Teradata and compose
-	if len(content) < 10000 {
-		t.Fatalf("Auto-detected should give base + TD ROM (~19KB), got %d bytes", len(content))
+	if len(content) < 6000 {
+		t.Fatalf("Auto-detected should give base + TD ROM (~7KB), got %d bytes", len(content))
 	}
 	// Should contain both base and domain content
 	if !strings.Contains(content, "START HERE") {
@@ -85,8 +85,8 @@ func TestLoadROMContent_AutoDetectNoMatch(t *testing.T) {
 		t.Fatal("Should still return base ROM")
 	}
 	// Should only have base ROM (no postgres ROM exists yet)
-	if len(content) > 10000 {
-		t.Fatalf("Base-only ROM should be ~8KB, got %d bytes (might have unexpected domain ROM)", len(content))
+	if len(content) > 4000 {
+		t.Fatalf("Base-only ROM should be ~2KB, got %d bytes (might have unexpected domain ROM)", len(content))
 	}
 	// Should contain base content
 	if !strings.Contains(content, "START HERE") {
@@ -136,7 +136,7 @@ func TestGetROMSize_BaseOnly(t *testing.T) {
 	if size == 0 {
 		t.Fatal("Base ROM size should not be 0")
 	}
-	// Base ROM now ~2KB (simplified to essential guidance only)
+	// Base ROM now ~2KB (consolidated to remove duplication with system.yaml)
 	if size < 1500 {
 		t.Fatalf("Base ROM should be ~2KB, got %d bytes", size)
 	}
@@ -149,9 +149,9 @@ func TestGetROMSize_Composed(t *testing.T) {
 	if size == 0 {
 		t.Fatal("Composed ROM size should not be 0")
 	}
-	// Base ROM (2KB) + TD ROM (11KB) + separator = ~13KB
-	if size < 8000 {
-		t.Fatalf("Base + TD ROM should be ~13KB, got %d bytes", size)
+	// Base ROM (2KB) + TD ROM (5KB) + separator = ~7KB
+	if size < 6000 {
+		t.Fatalf("Base + TD ROM should be ~7KB, got %d bytes", size)
 	}
 	t.Logf("Composed ROM size: %d bytes", size)
 }
@@ -169,7 +169,7 @@ func TestGetBaseROMSize(t *testing.T) {
 	if size == 0 {
 		t.Fatal("Base ROM size should not be 0")
 	}
-	// Base ROM now ~2KB (simplified to essential guidance only)
+	// Base ROM now ~2KB (consolidated to remove duplication with system.yaml)
 	if size < 1500 {
 		t.Fatalf("Base ROM should be ~2KB, got %d bytes", size)
 	}
@@ -182,12 +182,12 @@ func TestGetDomainROMSize(t *testing.T) {
 	if size == 0 {
 		t.Fatal("TD domain ROM size should not be 0")
 	}
-	// ROM was optimized from 31KB to ~11KB
-	if size < 10000 {
-		t.Fatalf("TD domain ROM should be ~11KB, got %d bytes", size)
+	// ROM was consolidated from 31KB to ~5KB (removed duplication with system.yaml)
+	if size < 4000 {
+		t.Fatalf("TD domain ROM should be ~5KB, got %d bytes", size)
 	}
-	if size > 15000 {
-		t.Fatalf("TD domain ROM should be ~11KB (optimized), got %d bytes - did someone expand it?", size)
+	if size > 10000 {
+		t.Fatalf("TD domain ROM should be ~5KB (consolidated), got %d bytes - did someone expand it?", size)
 	}
 	t.Logf("TD domain ROM size: %d bytes", size)
 }

@@ -1,873 +1,158 @@
-# TD.md - Teradata SQL Development Guide for LLMs
+# TD.rom - Teradata SQL Reference
 
-**Purpose**: This document provides essential Teradata SQL syntax, patterns, and best practices for AI assistants working with Teradata databases through the td-terminal system.
-
----
-
-## 🎯 Core Principles
-
-1. **Always discover schema first** - Call `get_table_schema` before writing SQL
-2. **Validate column existence** - Never assume column names, always check
-3. **Use pattern library** - Call `get_sql_pattern` for complex analytics (nPath, ML, time series)
-4. **Sample before filtering** - Call `get_column_sample` to see actual values before writing WHERE clauses
-5. **Explain before executing** - For expensive queries, call `explain_sql` first to check cost
-6. **Don't over-iterate** - Get it right on first/second attempt, not sixth
+**CRITICAL**: Teradata SQL is NOT standard SQL. Always use Teradata-specific syntax.
 
 ---
 
-## 🚨 CRITICAL: Teradata SQL Syntax ONLY
-
-**MANDATORY RULE: All SQL code MUST use Teradata syntax exclusively.**
-
-This is a non-negotiable requirement. Teradata has unique SQL syntax that differs from PostgreSQL, MySQL, SQL Server, Oracle, and even ANSI SQL in many ways. Generating SQL for other platforms will cause errors, performance issues, or incorrect results.
-
-### ❌ PROHIBITED Syntax (Will Cause Errors)
-
-| What's Prohibited | Why | Common Mistake |
-|-------------------|-----|----------------|
-| PostgreSQL syntax | Different functions, operators | `DISTINCT ON`, `::` casting |
-| MySQL syntax | Different string handling | `CONCAT()`, `LIMIT` |
-| SQL Server syntax | Different date handling | `TOP n` position varies |
-| Oracle syntax | Different pseudo-columns | `ROWNUM`, `DUAL` |
-| ANSI features not in TD | Teradata extends/differs | Some window frame specs |
-| **CTEs in VIEWs** | Teradata does NOT support | `CREATE VIEW AS WITH...` |
-| Reserved words as aliases | Ambiguous parsing | `DATE`, `TIME`, `USER`, `VALUE`, `LEVEL` |
-
-**CTEs (WITH clauses) Rules:**
-- ❌ **NEVER** use CTEs inside VIEW definitions - Teradata does not support this
-- ✅ **ALLOWED** in stored procedures - CTEs improve readability
-- ✅ **ALLOWED** in standalone queries - CTEs work fine outside views
-
-```sql
--- ❌ WRONG - CTE in VIEW (Teradata does NOT support this!)
-CREATE VIEW my_view AS
-WITH cte AS (SELECT * FROM table1)
-SELECT * FROM cte;
--- Error: Syntax error: WITH not allowed in view definitions
-
--- ✅ CORRECT - Use subquery/derived table in VIEW
-CREATE VIEW my_view AS
-SELECT * FROM (SELECT * FROM table1) AS derived;
-
--- ✅ CORRECT - CTE in standalone query (works fine)
-WITH cte AS (SELECT * FROM table1)
-SELECT * FROM cte;
-
--- ✅ CORRECT - CTE in stored procedure (encouraged for readability)
-REPLACE PROCEDURE my_proc()
-BEGIN
-    WITH cte AS (SELECT * FROM table1)
-    SELECT * FROM cte;
-END;
-```
-
-### ✅ REQUIRED Teradata Syntax
-
-**Use these Teradata-specific constructs:**
-
-#### Core Functions
-```sql
--- Type conversion
-CAST(column AS INTEGER)           -- Not: column::int (PostgreSQL)
-COALESCE(col1, col2, 'default')   -- Standard but verify syntax
-ZEROIFNULL(numeric_column)        -- Teradata-specific: NULL → 0
-NULLIFZERO(numeric_column)        -- Teradata-specific: 0 → NULL
-```
-
-#### Date/Time Functions
-```sql
--- Date arithmetic
-ADD_MONTHS(date_column, 3)        -- Not: date + INTERVAL '3 months'
-MONTHS_BETWEEN(date1, date2)      -- Teradata function
-EXTRACT(MONTH FROM date_column)   -- Standard EXTRACT works
-CURRENT_DATE                      -- Today's date
-CURRENT_TIMESTAMP                 -- Current timestamp
-
--- Date intervals (Teradata style)
-date_column + INTERVAL '7' DAY    -- Note: number in quotes
-date_column - INTERVAL '1' MONTH
-```
-
-#### String Functions
-```sql
--- String manipulation
-SUBSTR(string, start, length)     -- Not: SUBSTRING with FROM/FOR
-POSITION('x' IN string)           -- Find character position
-TRIM(string)                      -- Remove whitespace
-TRIM(BOTH 'x' FROM string)        -- Remove specific character
-INDEX(string, 'substring')        -- Find substring (Teradata-specific)
-string1 || string2                -- Concatenation (Not: CONCAT())
-```
-
-#### Table Types
-```sql
--- Teradata table defaults
-CREATE MULTISET TABLE ...         -- Allows duplicates (default)
-CREATE SET TABLE ...              -- No duplicates (enforced)
-
--- View replacement
-REPLACE VIEW view_name AS ...     -- Not: CREATE OR REPLACE VIEW
-REPLACE PROCEDURE proc AS ...     -- Not: CREATE OR REPLACE PROCEDURE
-```
-
-#### Window Functions with QUALIFY
-```sql
--- QUALIFY is Teradata's power feature - USE IT!
-SELECT customer_id, order_date, amount
-FROM orders
-QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date DESC) = 1;
--- Filters window function results directly (no subquery needed)
-
--- ❌ WRONG - Using subquery approach
-SELECT * FROM (
-    SELECT *, ROW_NUMBER() OVER (...) AS rn
-    FROM orders
-) WHERE rn = 1;
-
--- ✅ BETTER - Use QUALIFY
-SELECT * FROM orders
-QUALIFY ROW_NUMBER() OVER (...) = 1;
-```
-
-### ⚠️ Reserved Words to Avoid as Aliases
-
-These words are reserved in Teradata and **must not** be used as table/column aliases:
-
-| Reserved Word | Use Instead |
-|---------------|-------------|
-| `DATE` | `metric_date`, `event_date`, `record_date` |
-| `TIME` | `event_time`, `log_time`, `record_time` |
-| `USER` | `user_name`, `user_id`, `username` |
-| `VALUE` | `metric_value`, `cpu_value`, `data_value` |
-| `LEVEL` | `tree_level`, `depth_level`, `hierarchy_level` |
-| `COUNT` | `record_count`, `row_count`, `total_count` |
-| `TIMESTAMP` | `event_ts`, `created_ts`, `record_timestamp` |
-| `INDEX` | `idx`, `position_idx`, `array_index` |
-
-```sql
--- ❌ WRONG - Reserved word as alias
-SELECT SUM(amount) AS value FROM orders;
--- Error or ambiguous parsing
-
--- ✅ CORRECT - Descriptive, non-reserved alias
-SELECT SUM(amount) AS order_value FROM orders;
-```
-
-### 🔍 SQL Validation Checklist
-
-**Before generating ANY SQL, verify:**
-
-1. [ ] **No CTEs in VIEWs** - Use derived tables/subqueries instead
-2. [ ] **No vendor-specific syntax** - No `::`, `LIMIT`, `DISTINCT ON`, `ROWNUM`
-3. [ ] **All aliases non-reserved** - Check DATE, TIME, USER, VALUE, LEVEL, etc.
-4. [ ] **Teradata functions used** - CAST, SUBSTR, INDEX, ADD_MONTHS, etc.
-5. [ ] **QUALIFY for window filtering** - Not subquery with WHERE rn = 1
-6. [ ] **Proper date intervals** - `INTERVAL '7' DAY` not `INTERVAL 7 DAY`
-7. [ ] **String concat with ||** - Not CONCAT() function
-8. [ ] **Verified against TD 17.x+** - Check Teradata documentation for edge cases
-
-### 📊 COLLECT STATISTICS Recommendations
-
-For query performance optimization, suggest statistics collection:
-
-```sql
--- Collect statistics on commonly filtered columns
-COLLECT STATISTICS ON database.table COLUMN (column_name);
-
--- Collect statistics on index columns
-COLLECT STATISTICS ON database.table INDEX (index_name);
-
--- Multi-column statistics for join optimization
-COLLECT STATISTICS ON database.table COLUMN (col1, col2);
-```
-
-**Recommend COLLECT STATISTICS when:**
-- Query EXPLAIN shows "no statistics" warnings
-- Join performance is unexpectedly slow
-- Filters on columns with skewed distributions
-- After bulk data loads
-
----
-
-## 🎯 Query Iteration Discipline
-
-**Balance quality with efficiency**. Each tool call costs tokens and time.
-
-### When to Iterate
-- **Error correction**: Syntax errors, logic errors, permission errors
-- **Performance optimization**: EXPLAIN shows high cost, need to optimize
-- **Results validation**: Verify query returns expected data structure
-
-### When NOT to Iterate
-- **Cosmetic formatting**: Query succeeded and returns valid results
-- **"Trying different approaches"**: First success is sufficient
-- **Minor improvements**: ROUND vs CAST vs FORMAT - pick one on first attempt
-
-### Efficiency Guidelines
-1. **One-shot accuracy**: Use ROUND/CAST/FORMAT on first attempt if dealing with decimals
-2. **Stop after success**: If query executes successfully and returns valid results, stop iterating
-3. **Cost awareness**: Balance query quality with execution time and token cost
-
-**Remember**: Good enough on first attempt beats perfect on sixth attempt.
-
----
-
-## 📊 Available Tools (Priority Order)
-
-### 1. Schema Discovery Tools (Use FIRST)
-- `get_table_schema(database, table)` - Returns columns, types, nullability
-- `get_column_sample(database, table, column, limit=20)` - Shows actual data values
-- `get_tables(database)` - Lists all tables in a database
-
-### 2. SQL Pattern Library (Use for Complex Analytics)
-- `get_sql_pattern(pattern_name)` - Retrieves SQL templates with embedded guidance
-- `suggest_npath_symbols(database, table, event_column)` - Auto-discovers symbols for sequence analysis
-
-**Available patterns**: npath, sessionize, funnel_analysis, linear_regression, kmeans, moving_average, data_quality_profile, outlier_detection, duplicate_detection, completeness_check, referential_integrity
-
-### 3. Execution Tools (Use LAST)
-- `explain_sql(sql)` - Returns query plan and cost estimate (check before running expensive queries)
-- `execute_sql(sql, wrap_with_credentials=true)` - Executes SQL with auto-injected credentials
-- `validate_sql(sql)` - Syntax check only (doesn't execute)
-
----
-
-## ⚠️ Critical Teradata SQL Differences from Standard SQL
-
-### Column Name Casing
-```sql
--- ❌ WRONG - Column names are case-sensitive in Teradata
-SELECT username FROM dbc.users;
-
--- ✅ CORRECT - Always check actual column names first
-SELECT UserName FROM dbc.users;  -- After confirming via get_table_schema
-```
-
-### Metadata Tables
-```sql
--- Primary metadata views (case-sensitive table names):
-DBC.DatabasesV      -- Database info
-DBC.TablesV         -- Table metadata
-DBC.ColumnsV        -- Column definitions
-DBC.IndicesV        -- Index information
-
--- Always use fully-qualified names: DBC.TablesV (not dbc.tablesv)
-```
-
-### Table Types and Capabilities
-
-Teradata supports many different object types, each with specific capabilities. Understanding these is **CRITICAL** for generating valid SQL.
-
-**🔑 Key Principle**: Always check table type before generating DML/DDL operations!
-
-#### Object Types and Operations
-
-| Type | TableKind | SELECT | INSERT | UPDATE | DELETE | ALTER | DROP | Special Notes |
-|------|-----------|--------|--------|--------|--------|-------|------|--------------|
-| **Table** | T | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Full DML/DDL support |
-| **View** | V | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Read-only (some views allow limited DML) |
-| **Join Index** | O | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Pre-computed joins, read-only |
-| **Hash Index** | H | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Performance optimization, read-only |
-| **Foreign Table** | F | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | External data sources (read-only) |
-| **Global Temp** | G | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Session-scoped, no ALTER |
-| **Queue Table** | Q | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | Message queues (INSERT to enqueue, DELETE to dequeue) |
-| **Error Table** | E | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Load error logging, read-only |
-| **Stored Procedure** | P | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Use CALL to execute |
-| **Macro** | M | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Use EXEC to execute |
-| **Trigger** | R | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Event-driven logic |
-
-#### Common Mistakes to Avoid
-
-```sql
--- ❌ WRONG - Attempting INSERT on a view
-INSERT INTO customer_view (id, name) VALUES (1, 'John');
--- Error: Views are typically read-only
-
--- ✅ CORRECT - INSERT into the base table
-INSERT INTO customer_table (id, name) VALUES (1, 'John');
-
--- ❌ WRONG - Attempting UPDATE on a join index
-UPDATE sales_summary_ji SET total = 1000 WHERE id = 1;
--- Error: Join indexes are read-only
-
--- ✅ CORRECT - Use SELECT only
-SELECT * FROM sales_summary_ji WHERE region = 'East';
-
--- ❌ WRONG - Attempting SELECT on a stored procedure
-SELECT * FROM calculate_metrics;
--- Error: Stored procedures are executable, not selectable
-
--- ✅ CORRECT - Use CALL to execute
-CALL calculate_metrics();
-
--- ❌ WRONG - Attempting INSERT on an error table
-INSERT INTO load_errors_et (error_code, message) VALUES (1, 'Error');
--- Error: Error tables are managed by the system
-
--- ✅ CORRECT - Query errors after a load operation
-SELECT * FROM load_errors_et WHERE error_code = 2616;
-```
-
-#### How to Check Table Type
-
-```sql
--- Query DBC.TablesV to see table types
-SELECT TableName, TableKind,
-  CASE TableKind
-    WHEN 'T' THEN 'Table'
-    WHEN 'V' THEN 'View'
-    WHEN 'O' THEN 'Join Index'
-    WHEN 'F' THEN 'Foreign Table'
-    WHEN 'G' THEN 'Global Temp'
-    WHEN 'Q' THEN 'Queue Table'
-    WHEN 'E' THEN 'Error Table'
-    WHEN 'M' THEN 'Macro'
-    WHEN 'P' THEN 'Stored Procedure'
-    ELSE TableKind
-  END AS TableType
-FROM DBC.TablesV
-WHERE DatabaseName = 'your_database';
-```
-
-#### Decision Logic for Agents
-
-When an agent retrieves tables using `get_tables`, the response includes:
-- **table_type**: Human-readable type (e.g., "Foreign Table")
-- **table_kind_code**: Raw code from DBC.TablesV (e.g., "F")
-- **capabilities**: List of allowed operations
-
-**Before generating SQL:**
-1. Check the table type/capabilities
-2. Validate the requested operation is allowed
-3. If not allowed, inform the user or choose an alternative approach
-
-Example:
-```
-User: "Insert data into customer_summary"
-Agent checks: customer_summary is a Join Index (type 'O')
-Agent response: "customer_summary is a join index and cannot accept INSERT operations.
-Would you like to insert into the base tables (customers, orders) instead?"
-```
-
-### LIMIT vs TOP
-```sql
--- ❌ WRONG - MySQL/PostgreSQL syntax
-SELECT * FROM table LIMIT 10;
-
--- ✅ CORRECT - Teradata syntax (note position)
-SELECT TOP 10 * FROM table;
-```
+## 🚨 Teradata SQL Syntax (Non-Negotiable)
+
+### Row Limiting
+❌ WRONG: SELECT * FROM table LIMIT 10;
+✅ CORRECT: SELECT TOP 10 * FROM table;
+
+### Type Casting
+❌ WRONG: column::INTEGER
+✅ CORRECT: CAST(column AS INTEGER)
 
 ### String Concatenation
-```sql
--- ❌ WRONG - MySQL syntax
-SELECT CONCAT(first, ' ', last) FROM users;
+❌ WRONG: CONCAT(first, ' ', last)
+✅ CORRECT: first || ' ' || last
 
--- ✅ CORRECT - Teradata uses || operator
-SELECT first || ' ' || last FROM users;
-```
+### Date Arithmetic
+❌ WRONG: date + INTERVAL 7 DAY
+✅ CORRECT: date + INTERVAL '7' DAY  -- Note: number in quotes!
 
-### Date Functions
-```sql
--- ❌ WRONG - MySQL syntax
-SELECT DATE_ADD(order_date, INTERVAL 7 DAY);
-
--- ✅ CORRECT - Teradata syntax
-SELECT order_date + INTERVAL '7' DAY;
-```
-
-### QUALIFY Clause (Teradata-Specific Power Feature)
-```sql
--- Teradata supports QUALIFY for filtering window functions
--- This is UNIQUE to Teradata - use it!
-SELECT
-    customer_id,
-    order_date,
-    amount,
-    ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date DESC) as rn
-FROM orders
-QUALIFY rn = 1;  -- Keep only most recent order per customer
-```
-
-### Reserved Keywords
-```sql
--- Common reserved words that need quoting:
--- User, Exit, Count, Date, Time, Timestamp
--- Always check if a column name is reserved
-
--- ❌ WRONG
-SELECT User FROM sessions;
-
--- ✅ CORRECT
-SELECT "User" FROM sessions;  -- Or better: rename column to username
-```
+### CTEs in VIEWs
+❌ WRONG: CREATE VIEW v AS WITH cte AS (...) SELECT * FROM cte;
+-- Error: Teradata does NOT support CTEs in VIEW definitions
+✅ CORRECT: CREATE VIEW v AS SELECT * FROM (subquery) AS derived;
+-- CTEs work fine in stored procedures and standalone queries
 
 ---
 
-## 🏢 Teradata Platform Context (Brief)
+## 🔑 QUALIFY Clause (Teradata-Specific)
 
-Teradata has two main platforms with different compute models:
-- **VantageCloud Lake**: Cloud-native, elastic compute (POG/COG), pay-per-use DPU billing
-- **VantageCloud Enterprise**: Traditional capacity-based, fixed TCore allocation
+QUALIFY filters window function results WITHOUT subqueries. UNIQUE to Teradata.
 
-**For SQL Development**: Platform differences rarely affect SQL syntax. Key considerations:
-- Lake uses object storage (S3) for cold data, block storage (EBS) for hot data
-- Enterprise uses single storage tier with manual archival
-
-**Resource Optimization**: When generating analytics queries, consider:
-- CPU utilization (optimal: 50-85%)
-- Storage utilization (optimal: 60-85%)
-- Data lifecycle (hot vs cold data access patterns)
-
----
-
-## 🔍 Schema Discovery Workflow (ALWAYS Follow This)
-
-```text
-User Request: "Show me revenue by customer"
-
-Step 1: Discover tables
-  → get_tables(database="sales")
-  → Returns: ["customers", "orders", "line_items"]
-
-Step 2: Check schema
-  → get_table_schema(database="sales", table="orders")
-  → Returns: columns=[customer_id, order_id, order_date, total_amount, ...]
-
-Step 3: Sample values (if filtering)
-  → get_column_sample(database="sales", table="orders", column="status")
-  → Returns: [("COMPLETED", 450), ("PENDING", 23), ("CANCELLED", 12)]
-
-Step 4: Write SQL using EXACT column names discovered
-  → execute_sql("SELECT customer_id, SUM(total_amount) FROM sales.orders WHERE status = 'COMPLETED' GROUP BY customer_id")
-```
-
-**Never skip schema discovery!** Teradata column names vary by version and installation.
-
----
-
-## 🎨 Pattern Library Usage
-
-### ⚠️ CRITICAL: nPath Query Best Practices
-
-**ALWAYS check event distribution BEFORE running nPath queries!**
-
-Common mistake: Writing nPath queries without knowing event frequencies, leading to zero results.
-
-```text
-❌ BAD WORKFLOW:
-User: "Find users who LOGIN → ACCOUNT SUMMARY → FUNDS TRANSFER"
-Agent: *Writes nPath query blindly*
-Result: 0 rows (because table only has 3 LOGIN events out of 1M+ events!)
-
-✅ GOOD WORKFLOW:
-User: "Find users who LOGIN → ACCOUNT SUMMARY → FUNDS TRANSFER"
-
-Step 1: Check event distribution FIRST
-  → suggest_npath_symbols(database="sales", table="web_clicks", event_column="page")
-  → Returns: LOGIN (3), ACCOUNT SUMMARY (319,314), FUNDS TRANSFER (158,019)
-  → ⚠️ Warning: LOGIN has only 3 events - pattern will likely return 0 results
-
-Step 2: Adapt query based on distribution
-  → If key symbol has <100 events, consider simplifying pattern
-  → Try: ACCOUNT SUMMARY → FUNDS TRANSFER (drops rare LOGIN event)
-  → Result: 51,372 paths found!
-
-Step 3: Provide business insights
-  → "16% conversion rate (51,372 paths / 319,314 account views)"
-  → "Average time between steps: ~2-4 minutes"
-```
-
-**Key Rules**:
-1. **Always** call `suggest_npath_symbols` before writing nPath SQL
-2. If any symbol has <100 occurrences, warn the user and suggest simplifying the pattern
-3. Start with 2-step patterns (A → B) before adding complexity (A → B → C)
-4. Test with more common events first, then add rare events if needed
-5. Provide conversion rates and metrics in your analysis (e.g., "2.07% escalation rate")
-
-### When to Use Patterns - Decision Tree
-
-**Quick Analysis by Keywords**:
-
-1. **SEQUENCE/JOURNEY** ("then", "after", "path", "journey") → npath, funnel_analysis, sessionize
-2. **PREDICTION/ML** ("predict", "classify", "segment", "cluster") → linear_regression, kmeans, decision_tree
-3. **DATA QUALITY** ("quality", "duplicate", "null", "anomaly", "outlier") → data_profiling, duplicate_detection, outlier_detection
-4. **TIME SERIES** ("trend", "smooth", "seasonal", "forecast") → moving_average, arima
-
-**Pattern Selection Quick Reference**
-
-| User Says...                                  | Pattern to Use           | Why                                          |
-|-----------------------------------------------|--------------------------|----------------------------------------------|
-| "who viewed then purchased"                   | npath                    | Sequence with specific order                 |
-| "conversion rate signup → purchase"           | funnel_analysis          | Multi-step drop-off analysis                 |
-| "group clicks into 30-min sessions"           | sessionize               | Time-based event grouping                    |
-| "predict churn based on usage"                | logistic_regression      | Binary classification (yes/no)               |
-| "segment customers by behavior"               | kmeans                   | Unsupervised clustering                      |
-| "find duplicate orders"                       | duplicate_detection      | Exact or fuzzy matching                      |
-| "what % of emails are missing"                | missing_value_analysis   | NULL/completeness checking                   |
-| "flag unusual transaction amounts"            | outlier_detection        | Statistical anomaly detection                |
-| "smooth daily sales data"                     | moving_average           | Time series noise reduction                  |
-| "which channel drives most conversions"       | attribution              | Multi-touch attribution modeling             |
-
-### Pattern Workflow
-```text
-User: "Find users who viewed a product then added to cart then purchased"
-
-Step 1: Identify pattern type → Sequence analysis (nPath)
-
-Step 2: Get pattern documentation
-  → get_sql_pattern("npath")
-  → Returns: templates, parameters, examples, syntax rules
-
-Step 3: Discover symbols
-  → suggest_npath_symbols(database="events", table="user_events", event_column="event_type")
-  → Returns: [("VIEW", 1500), ("ADD_TO_CART", 400), ("PURCHASE", 150)]
-
-Step 4: Generate SQL using pattern template + discovered symbols
-  → Use template with symbols: V=VIEW, A=ADD_TO_CART, P=PURCHASE
-  → Pattern: 'V.A.P' (viewed, then added, then purchased)
-```
-
----
-
-## 🚨 Common Errors & Self-Correction
-
-### Error: "Column not found"
-**Cause**: Assumed column name without checking schema
-**Fix**: Call `get_table_schema` first, use EXACT column names returned
-
-### Error: "Invalid syntax near LIMIT"
-**Cause**: Used MySQL syntax instead of Teradata
-**Fix**: Use `SELECT TOP N` instead of `LIMIT N`
-
-### Error: "Reserved keyword in SQL"
-**Cause**: Column name like "User", "Date", "Count" used without quotes
-**Fix**: Use double quotes: `"User"` or rename in query: `UserName AS user_name`
-
-### Error: "Pattern symbol not found in data"
-**Cause**: Used symbol that doesn't match actual event values
-**Fix**: Call `get_column_sample` or `suggest_npath_symbols` to see actual values
-
-### Error: "nPath returns 0 rows" or "very few results"
-**Cause**: One or more symbols in pattern have very low frequency in data
-**Fix**:
-1. Call `suggest_npath_symbols` to check event distribution
-2. Remove or replace rare events (< 100 occurrences)
-3. Start with simpler 2-step patterns before adding complexity
-4. Example: If LOGIN has 3 events but ACCOUNT_SUMMARY has 300K, drop LOGIN from pattern
-
-### Error: "Cannot run GROUP BY on join index"
-**Cause**: Querying a JOIN INDEX instead of a regular table
-**Fix**:
-1. JOIN indexes have query limitations (no aggregations, limited WHERE clauses)
-2. Use `get_table_schema` to check if object is a JOIN INDEX
-3. For aggregations, query the underlying base table instead
-4. Or use SAMPLE clause to get representative data: `SELECT * FROM join_index SAMPLE 1000`
-
-### Error: "Query timeout" or "Spool space exceeded"
-**Cause**: Query too expensive
-**Fix**: Call `explain_sql` first to check cost, add WHERE clauses to reduce data
-
----
-
-## 📥 Bulk Data Loading Best Practices
-
-### Use tdload for Large Inserts (Not INSERT Statements)
-
-**Performance Comparison** (1000 rows):
-- INSERT statements: ~15 rows/sec (65 seconds)
-- tdload: ~10,000+ rows/sec (<1 second)
-
-**When to Use Each Method**:
-
-```text
-INSERT Statements (Slow):
-✅ Small datasets (< 100 rows)
-✅ One-off data entry
-✅ Testing and development
-❌ Bulk loads (> 1000 rows)
-❌ Production ETL pipelines
-
-tdload (Fast):
-✅ Bulk data loads (> 1000 rows)
-✅ Production ETL pipelines
-✅ Loading CSV/data files
-✅ High-volume data ingestion
-❌ Single row inserts
-```
-
-**tdload Example**:
-```bash
-# Create CSV file
-cat > data.csv << EOF
-id,name,amount
-1,Alice,100.50
-2,Bob,250.00
-EOF
-
-# Load using tdload (via tool)
-load_csv_file(
-    database="sales",
-    table="orders",
-    file_path="/path/to/data.csv",
-    delimiter=",",
-    skip_header=true
-)
-```
-
-**Key Insight for LLMs**:
-If a user asks to load > 1000 rows, recommend using tdload/CSV import rather than generating thousands of INSERT statements. The export→edit→import workflow is much faster than individual INSERTs.
-
-## 💡 Query Optimization Guidelines
-
-### Always Add WHERE Clauses
-```sql
--- ❌ BAD - Scans entire table
-SELECT * FROM orders;
-
--- ✅ GOOD - Filters early
-SELECT * FROM orders WHERE order_date >= CURRENT_DATE - 30;
-```
-
-### Use QUALIFY Instead of Subqueries
-```sql
--- ❌ SLOWER - Subquery approach
+❌ SLOWER (standard SQL):
 SELECT * FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date DESC) as rn
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY date DESC) AS rn
     FROM orders
 ) WHERE rn = 1;
 
--- ✅ FASTER - QUALIFY (Teradata-specific)
+✅ FASTER (Teradata QUALIFY):
 SELECT * FROM orders
-QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date DESC) = 1;
-```
+QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY date DESC) = 1;
 
-### Check Explain Before Running
-```sql
--- For queries scanning >1M rows, check cost first
-explain_sql("SELECT * FROM large_table WHERE ...")
--- If estimated_rows > 10M or has_full_table_scan=true, optimize further
-```
-
-### Circuit Breaker Workarounds
-
-**Context**: MCP tools may implement circuit breakers that block expensive SELECT queries to prevent resource exhaustion.
-
-#### Workaround 1: EXPLAIN Queries (Always Free)
-```sql
--- ✅ EXPLAIN queries bypass circuit breaker (no data returned, just query plan)
-explain_sql("SELECT * FROM massive_table WHERE ...")
--- Use this to validate syntax and check cost BEFORE actual execution
-```
-
-**Why it works**: EXPLAIN analyzes query plans without touching data - lightweight operation that circuit breakers allow.
-
-#### Workaround 2: VOLATILE TABLES (DDL Bypass)
-```sql
--- ✅ VOLATILE TABLES use DDL (CREATE) instead of DML (SELECT)
--- Circuit breakers typically only block SELECT operations
-CREATE VOLATILE TABLE query_results AS (
-    SELECT * FROM large_table WHERE condition
-) WITH DATA ON COMMIT PRESERVE ROWS;
-
--- Then query the volatile table (small, fast, no circuit breaker)
-SELECT * FROM query_results;
-
--- Auto-cleanup: VOLATILE tables drop automatically when session ends
-```
-
-**When to use VOLATILE TABLES**:
-- Query triggers circuit breaker (heavy SELECT blocked)
-- Need intermediate results stored temporarily
-- Multiple queries will use same result set
-- Session-scoped caching required
-
-**Example workflow**:
-```sql
--- Instead of: SELECT * FROM 100M_row_table  ← Circuit breaker blocks this
--- Use this pattern:
-
--- Step 1: Create volatile table (DDL operation, bypasses circuit breaker)
-CREATE VOLATILE TABLE temp_results AS (
-    SELECT customer_id, SUM(amount) as total
-    FROM large_transaction_table
-    WHERE order_date >= CURRENT_DATE - 30
-    GROUP BY customer_id
-) WITH DATA ON COMMIT PRESERVE ROWS;
-
--- Step 2: Query volatile table (small, fast, no issues)
-SELECT TOP 10 * FROM temp_results ORDER BY total DESC;
-```
-
-**Trade-offs**:
-- ✅ Bypasses circuit breaker for heavy queries
-- ✅ Auto-cleanup (session-scoped)
-- ✅ Reusable results for multiple queries
-- ❌ Uses spool space (check available space first)
-- ❌ Requires CREATE TABLE permission (validate with write permission checks)
+Use for: ROW_NUMBER(), RANK(), DENSE_RANK(), COUNT() OVER(), SUM() OVER()
 
 ---
 
-## 🎯 Response Format for Users
+## ⚠️ Reserved Words (Cannot Use as Aliases)
 
-### Good Response Pattern
-```text
-✅ Tool: get_table_schema(database="sales", table="orders")
-   Result: Found columns: order_id, customer_id, order_date, amount
+| Reserved | Use Instead |
+|----------|-------------|
+| DATE | event_date, record_date |
+| TIME | event_time, log_time |
+| USER | username, user_id |
+| VALUE | metric_value, data_value |
+| LEVEL | tree_level, depth_level |
+| COUNT | row_count, record_count |
+| TIMESTAMP | event_ts, created_ts |
+| INDEX | idx, position_idx |
 
-✅ Tool: execute_sql("SELECT customer_id, SUM(amount) FROM sales.orders GROUP BY customer_id")
-   Result: 1,234 rows returned
-
-📊 Summary: Found revenue by customer. Top customer: customer_123 with $45,678 in revenue.
-```
-
-### Bad Response Pattern
-```text
-❌ Just executing SQL without explaining steps
-❌ Assuming column names without checking
-❌ Using wrong SQL syntax (LIMIT instead of TOP)
-❌ Not sampling values before filtering
-```
+❌ WRONG: SELECT USER AS USER FROM sessions;  -- Error 3707
+✅ CORRECT: SELECT USER AS username FROM sessions;
 
 ---
 
-## 🔧 Tool Execution Best Practices
+## 📊 Table Types & Operations
 
-### 1. Always explain reasoning
-```text
-"I'll use get_table_schema to discover the exact column names in the orders table,
-since Teradata column names are case-sensitive and vary by installation."
-```
+| Type | Code | SELECT | INSERT | UPDATE | DELETE | Notes |
+|------|------|--------|--------|--------|--------|-------|
+| Table | T | ✅ | ✅ | ✅ | ✅ | Full DML |
+| View | V | ✅ | ❌ | ❌ | ❌ | Read-only |
+| Join Index | O | ✅ | ❌ | ❌ | ❌ | Pre-computed joins |
+| Hash Index | H | ✅ | ❌ | ❌ | ❌ | Performance index |
+| Global Temp | G | ✅ | ✅ | ✅ | ✅ | Session-scoped |
+| Stored Procedure | P | ❌ | ❌ | ❌ | ❌ | Use CALL |
+| Macro | M | ❌ | ❌ | ❌ | ❌ | Use EXEC |
 
-### 2. Show tool results briefly
-```text
-"Schema shows: order_id (INT), customer_id (INT), order_date (DATE), amount (DECIMAL)"
-```
-
-### 3. Handle errors gracefully
-```text
-"The query failed with 'column not found'. Let me check the schema again to find
-the correct column name."
-```
-
-### 4. Chain tools logically
-```text
-Schema discovery → Sample values → SQL generation → Explain (if large) → Execute
-```
+Check table type before operations:
+SELECT TableName, TableKind FROM DBC.TablesV WHERE DatabaseName = 'db' AND TableName = 'table';
 
 ---
 
-## 📚 Pattern Library Reference
+## 🔍 DBC Metadata Views (Case-Sensitive!)
 
-### Analytics Patterns
-- `npath` - Sequence pattern matching (A then B then C)
-- `sessionize` - Group events into sessions
-- `funnel_analysis` - Multi-step conversion analysis
-- `moving_average` - Time series smoothing
+**CRITICAL**: Column names are case-sensitive. Always use exact casing.
 
-### Machine Learning Patterns
-- `linear_regression` - Predictive modeling
-- `kmeans` - Clustering analysis
-- `decision_tree` - Classification
+DBC.DatabasesV    -- Database info (PermSpace, SpoolSpace)
+DBC.TablesV       -- Table metadata (TableKind, CreateTimeStamp)
+DBC.ColumnsV      -- Column definitions (ColumnType, Nullable)
+DBC.IndicesV      -- Index information (IndexType, UniqueFlag)
+DBC.AllRightsV    -- User permissions (AccessRight)
+DBC.SessionInfoV  -- Active sessions (UserName, DefaultDatabase)
+DBC.DBCInfoV      -- System info (VERSION, RELEASE)
 
-### Data Quality Patterns
-- `data_quality_profile` - Column statistics and distribution
-- `outlier_detection` - Identify anomalies
-- `duplicate_detection` - Find duplicate records
-- `completeness_check` - NULL value analysis
-- `referential_integrity` - Foreign key validation
+Example:
+SELECT DatabaseName, TableName, TableKind FROM DBC.TablesV WHERE DatabaseName = DATABASE;
+-- Note: DatabaseName, TableName, TableKind (not lowercase)
 
 ---
 
-## 🎓 Training Examples
+## 🚨 Common Teradata Errors
 
-### Example 1: Basic Query
-```text
-User: "Show me all customers"
-
-Agent reasoning:
-1. Need to find customers table → get_tables("database_name")
-2. Check schema → get_table_schema("database_name", "customers")
-3. Execute → execute_sql("SELECT TOP 100 * FROM database_name.customers")
-
-Key: Used TOP instead of LIMIT, checked schema first
-```
-
-### Example 2: Sequence Analysis (Real-World)
-```text
-User: "Find users who went from LOGIN → ACCOUNT SUMMARY → FUNDS TRANSFER"
-
-Agent reasoning:
-1. This is sequence analysis → get_sql_pattern("npath")
-
-2. Check event distribution FIRST (CRITICAL!)
-   → suggest_npath_symbols("your_database", "web_clicks", "page")
-   → Returns: LOGIN (3), ACCOUNT SUMMARY (319,314), FUNDS TRANSFER (158,019)
-   → ⚠️ WARNING: LOGIN has only 3 events - pattern will likely fail
-
-3. Adapt query strategy (rare event detected)
-   → Drop rare LOGIN event, focus on common flow
-   → New pattern: ACCOUNT SUMMARY → FUNDS TRANSFER
-   → Pattern: 'A.F' where A = ACCOUNT SUMMARY, F = FUNDS TRANSFER
-   → Mode: NONOVERLAPPING
-
-4. Execute and analyze results
-   → Found: 51,372 users (16% conversion rate)
-   → Average time: 2-4 minutes between steps
-
-5. Explain to user with business insights
-   → "I simplified the pattern because LOGIN events are rare (only 3 in dataset)"
-   → "16% of users who view account summary then transfer funds"
-   → "Consider adding transfer prompts on account page to increase conversion"
-
-Key: Checked distribution first, adapted for rare events, provided conversion rates
-```
-
-### Example 3: Error Recovery
-```text
-User: "Show me user names"
-
-Agent attempt 1:
-  → execute_sql("SELECT username FROM users")
-  → ERROR: Column 'username' not found
-
-Agent recovery:
-  → get_table_schema("db", "users")
-  → Schema shows column is "UserName" (capital N)
-  → execute_sql("SELECT UserName FROM users")
-  → SUCCESS
-
-Key: Checked schema after error, used exact column name
-```
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "Invalid syntax near LIMIT" | MySQL syntax | Use SELECT TOP n |
+| "Syntax error near WITH" | CTE in VIEW | Use subquery/derived table |
+| "Reserved keyword" (3707) | Used DATE/USER/VALUE | Use non-reserved alias |
+| "Column not found" | Assumed column name | Check exact name in DBC.ColumnsV |
 
 ---
 
-## 🔐 Security & Best Practices
+## 🔧 System Functions
 
-1. **Never log sensitive data** - Passwords, tokens are auto-redacted
-2. **Always use wrap_with_credentials=true** - Let system inject credentials securely
-3. **Validate before executing** - Use `validate_sql` for user-provided SQL
-4. **Limit result sets** - Always use TOP/WHERE to avoid overwhelming responses
-5. **Explain expensive queries** - Check cost before running queries that scan >1M rows
-
----
-
-## 📝 Summary Checklist
-
-Before executing ANY SQL:
-- [ ] Called `get_table_schema` to discover column names
-- [ ] Used exact column names (case-sensitive)
-- [ ] Used Teradata syntax (TOP not LIMIT, || for concat)
-- [ ] Checked for reserved keywords
-- [ ] Added WHERE clause to limit data
-- [ ] Called `explain_sql` if query might be expensive
-
-Before using patterns:
-- [ ] Called `get_sql_pattern` to get template
-- [ ] Called `get_column_sample` or `suggest_npath_symbols` to discover values
-- [ ] Followed pattern's embedded syntax rules
-- [ ] Validated symbol definitions match actual data
+USER           -- Current username
+DATABASE       -- Current database
+SESSION        -- Session ID
+CURRENT_DATE   -- Today's date
+CURRENT_TIMESTAMP  -- Current timestamp
 
 ---
 
-**Remember**: Teradata is NOT standard SQL. Always check schema first, use pattern library for complex analytics, and follow Teradata-specific syntax rules.
+## 📅 Teradata Date/Time Functions
+
+ADD_MONTHS(date, n)          -- Add months to date
+MONTHS_BETWEEN(date1, date2) -- Difference in months
+EXTRACT(YEAR FROM date)      -- Extract year/month/day
+date + INTERVAL '7' DAY      -- Add days (note quotes)
+date - INTERVAL '1' MONTH    -- Subtract months
+
+---
+
+## 🔤 Teradata String Functions
+
+string1 || string2           -- Concatenation
+SUBSTR(string, start, len)   -- Substring (not SUBSTRING)
+POSITION('x' IN string)      -- Find position
+TRIM(string)                 -- Remove whitespace
+INDEX(string, 'substring')   -- Find substring
+
+---
+
+## 💡 Table Operations
+
+REPLACE VIEW view_name AS ...     -- Not: CREATE OR REPLACE VIEW
+REPLACE PROCEDURE proc AS ...     -- Not: CREATE OR REPLACE PROCEDURE
+CREATE MULTISET TABLE ...         -- Allows duplicates (default)
+CREATE SET TABLE ...              -- No duplicates
+
+---
+
+## Performance Tips (Teradata-Specific)
+
+COLLECT STATISTICS ON table COLUMN (col);  -- After bulk loads
+EXPLAIN SELECT ...;                         -- Check query plan
+SELECT * FROM large_table SAMPLE 1000;      -- Sample for profiling

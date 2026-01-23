@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/fabric"
@@ -62,7 +63,11 @@ func ProgressCallbackFromContext(ctx context.Context) ProgressCallback {
 // The agent will automatically use instrumented versions if provided,
 // enabling end-to-end tracing of conversations, LLM calls, and tool executions.
 func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...Option) *Agent {
+	// Generate unique ID for this agent instance
+	agentID := uuid.New().String()
+
 	a := &Agent{
+		id:           agentID,
 		backend:      backend,
 		llm:          llmProvider,
 		tools:        shuttle.NewRegistry(),
@@ -408,6 +413,23 @@ func (a *Agent) ListTools() []string {
 // GetName returns the agent name from configuration.
 func (a *Agent) GetName() string {
 	return a.config.Name
+}
+
+// GetID returns the agent's unique identifier.
+// Every agent instance has a UUID assigned by NewAgent().
+// Registry-managed agents have stable GUIDs persisted to database.
+func (a *Agent) GetID() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.id
+}
+
+// setID sets the agent's ID (used by Registry for stable GUID assignment).
+// This is an internal method - only Registry should call this.
+func (a *Agent) setID(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.id = id
 }
 
 // SetToolRegistryForDynamicDiscovery configures the tool registry for dynamic tool discovery.
