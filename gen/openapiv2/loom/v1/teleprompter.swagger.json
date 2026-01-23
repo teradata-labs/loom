@@ -44,6 +44,626 @@
           }
         }
       }
+    },
+    "v1AggregationStrategy": {
+      "type": "string",
+      "enum": [
+        "AGGREGATION_STRATEGY_UNSPECIFIED",
+        "AGGREGATION_STRATEGY_WEIGHTED_AVERAGE",
+        "AGGREGATION_STRATEGY_ALL_MUST_PASS",
+        "AGGREGATION_STRATEGY_MAJORITY_PASS",
+        "AGGREGATION_STRATEGY_ANY_PASS",
+        "AGGREGATION_STRATEGY_MIN_SCORE",
+        "AGGREGATION_STRATEGY_MAX_SCORE"
+      ],
+      "default": "AGGREGATION_STRATEGY_UNSPECIFIED",
+      "description": "- AGGREGATION_STRATEGY_WEIGHTED_AVERAGE: Weighted average of scores\n - AGGREGATION_STRATEGY_ALL_MUST_PASS: All judges must pass\n - AGGREGATION_STRATEGY_MAJORITY_PASS: Majority must pass (\u003e50%)\n - AGGREGATION_STRATEGY_ANY_PASS: Any judge passing is sufficient\n - AGGREGATION_STRATEGY_MIN_SCORE: Use minimum score across all judges\n - AGGREGATION_STRATEGY_MAX_SCORE: Use maximum score across all judges",
+      "title": "AggregationStrategy defines how to combine multi-judge results"
+    },
+    "v1COPROConfig": {
+      "type": "object",
+      "properties": {
+        "numIterations": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Optimization iterations"
+        },
+        "breadth": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Candidates per iteration"
+        },
+        "depth": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Refinement depth"
+        },
+        "useFeedback": {
+          "type": "boolean",
+          "title": "Use error feedback"
+        },
+        "feedbackMode": {
+          "type": "string",
+          "title": "\"error_only\", \"full_trace\""
+        }
+      },
+      "title": "COPROConfig for Collaborative Prompt Optimizer"
+    },
+    "v1CompareCompilationsResponse": {
+      "type": "object",
+      "properties": {
+        "comparison": {
+          "$ref": "#/definitions/v1CompilationComparison"
+        },
+        "recommendation": {
+          "type": "string",
+          "title": "Which compilation is better"
+        }
+      }
+    },
+    "v1CompilationComparison": {
+      "type": "object",
+      "properties": {
+        "compilationA": {
+          "type": "string"
+        },
+        "compilationB": {
+          "type": "string"
+        },
+        "scoreA": {
+          "type": "number",
+          "format": "double"
+        },
+        "scoreB": {
+          "type": "number",
+          "format": "double"
+        },
+        "scoreDelta": {
+          "type": "number",
+          "format": "double",
+          "title": "B - A"
+        },
+        "aWins": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Examples where A performed better"
+        },
+        "bWins": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Examples where B performed better"
+        },
+        "ties": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "statisticalSignificance": {
+          "type": "number",
+          "format": "double",
+          "title": "p-value"
+        },
+        "isSignificant": {
+          "type": "boolean",
+          "title": "p \u003c 0.05"
+        }
+      }
+    },
+    "v1CompilationResult": {
+      "type": "object",
+      "properties": {
+        "compilationId": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "teleprompter": {
+          "$ref": "#/definitions/v1TeleprompterType"
+        },
+        "optimizedPrompts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Learned content"
+        },
+        "demonstrations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Demonstration"
+          }
+        },
+        "trainsetScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Evaluation metrics"
+        },
+        "devsetScore": {
+          "type": "number",
+          "format": "double"
+        },
+        "examplesUsed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "successfulTraces": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "optimizationRounds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Optimization details"
+        },
+        "improvementDelta": {
+          "type": "number",
+          "format": "double",
+          "title": "Score improvement vs baseline"
+        },
+        "compilationTimeMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "compiledVersion": {
+          "type": "string",
+          "description": "Hash of learned content",
+          "title": "Version tracking"
+        },
+        "compiledAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix timestamp"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Metadata"
+        }
+      }
+    },
+    "v1CompileResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "compilationId": {
+          "type": "string",
+          "title": "UUID for tracking"
+        },
+        "result": {
+          "$ref": "#/definitions/v1CompilationResult"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "v1Demonstration": {
+      "type": "object",
+      "properties": {
+        "patternName": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string",
+          "title": "User query or task"
+        },
+        "rationale": {
+          "type": "string",
+          "title": "Chain-of-thought reasoning (optional)"
+        },
+        "output": {
+          "type": "string",
+          "title": "Successful result"
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double",
+          "title": "Quality score (0-1)"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "int64",
+          "title": "When this demo was captured"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Domain, LLM provider, etc."
+        }
+      },
+      "title": "Demonstration represents a successful execution trace (DSPy-style)"
+    },
+    "v1EnsembleConfig": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1TeleprompterType"
+          },
+          "title": "Teleprompters to ensemble"
+        },
+        "strategy": {
+          "$ref": "#/definitions/v1EnsembleStrategy"
+        },
+        "size": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Ensemble size"
+        }
+      },
+      "title": "EnsembleConfig for combining multiple programs"
+    },
+    "v1EnsembleStrategy": {
+      "type": "string",
+      "enum": [
+        "ENSEMBLE_STRATEGY_UNSPECIFIED",
+        "ENSEMBLE_MAJORITY_VOTE",
+        "ENSEMBLE_WEIGHTED",
+        "ENSEMBLE_STACKING"
+      ],
+      "default": "ENSEMBLE_STRATEGY_UNSPECIFIED",
+      "title": "- ENSEMBLE_MAJORITY_VOTE: Vote on outputs\n - ENSEMBLE_WEIGHTED: Weight by confidence\n - ENSEMBLE_STACKING: Meta-learner on top"
+    },
+    "v1Example": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Field name -\u003e value"
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Expected outputs (ground truth)"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Domain, complexity, etc."
+        }
+      },
+      "title": "Example represents a training or test case"
+    },
+    "v1GetCompilationHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "compilations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1CompilationResult"
+          }
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "v1JudgeDimension": {
+      "type": "string",
+      "enum": [
+        "JUDGE_DIMENSION_UNSPECIFIED",
+        "JUDGE_DIMENSION_QUALITY",
+        "JUDGE_DIMENSION_COST",
+        "JUDGE_DIMENSION_SAFETY",
+        "JUDGE_DIMENSION_DOMAIN",
+        "JUDGE_DIMENSION_PERFORMANCE",
+        "JUDGE_DIMENSION_USABILITY",
+        "JUDGE_DIMENSION_CUSTOM"
+      ],
+      "default": "JUDGE_DIMENSION_UNSPECIFIED",
+      "description": "- JUDGE_DIMENSION_QUALITY: Quality and correctness\n - JUDGE_DIMENSION_COST: Cost efficiency\n - JUDGE_DIMENSION_SAFETY: Safety and guardrails\n - JUDGE_DIMENSION_DOMAIN: Domain compliance\n - JUDGE_DIMENSION_PERFORMANCE: Performance and latency\n - JUDGE_DIMENSION_USABILITY: Usability and clarity\n - JUDGE_DIMENSION_CUSTOM: Phase 8: Custom dimensions (user-defined)",
+      "title": "JudgeDimension defines evaluation dimensions"
+    },
+    "v1KNNConfig": {
+      "type": "object",
+      "properties": {
+        "k": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of neighbors"
+        },
+        "distanceMetric": {
+          "type": "string",
+          "title": "\"cosine\", \"euclidean\", \"jaccard\""
+        },
+        "embeddingModel": {
+          "type": "string",
+          "title": "For computing similarity"
+        }
+      },
+      "title": "KNNConfig for K-nearest neighbor demonstration selection"
+    },
+    "v1MIPROConfig": {
+      "type": "object",
+      "properties": {
+        "numCandidates": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of instruction candidates"
+        },
+        "numTrials": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Optimization trials"
+        },
+        "optimizeInstructions": {
+          "type": "boolean",
+          "title": "Optimize system instructions"
+        },
+        "optimizeDemonstrations": {
+          "type": "boolean",
+          "title": "Optimize demo selection"
+        },
+        "promptModelSize": {
+          "type": "integer",
+          "format": "int32",
+          "title": "0=same, 1=larger, -1=smaller"
+        },
+        "instructionCandidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Pre-defined instruction candidates to evaluate",
+          "title": "Multi-judge integration (Phase 4)"
+        },
+        "taskDescription": {
+          "type": "string",
+          "title": "Task description for LLM-based instruction generation"
+        },
+        "dimensionPriorities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": "Dimension weights for instruction selection (e.g., {\"quality\": 2.0, \"cost\": 1.0})"
+        }
+      },
+      "title": "MIPROConfig for Multi-prompt Instruction Proposal Optimizer"
+    },
+    "v1MetricConfig": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1MetricType"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Metric-specific parameters"
+        },
+        "multiJudge": {
+          "$ref": "#/definitions/v1MultiJudgeMetricConfig",
+          "title": "Multi-judge configuration (for METRIC_MULTI_JUDGE type)"
+        }
+      },
+      "title": "MetricConfig defines how to evaluate program quality"
+    },
+    "v1MetricType": {
+      "type": "string",
+      "enum": [
+        "METRIC_TYPE_UNSPECIFIED",
+        "METRIC_EXACT_MATCH",
+        "METRIC_FUZZY_MATCH",
+        "METRIC_SEMANTIC_SIMILARITY",
+        "METRIC_ANSWER_CORRECTNESS",
+        "METRIC_ANSWER_PASSAGE_MATCH",
+        "METRIC_CONTEXT_RECALL",
+        "METRIC_WEIGHTED_COMPOSITE",
+        "METRIC_MULTI_JUDGE",
+        "METRIC_CUSTOM"
+      ],
+      "default": "METRIC_TYPE_UNSPECIFIED",
+      "description": "Output == expected (strict)\n - METRIC_FUZZY_MATCH: Output ≈ expected (normalized)\n - METRIC_SEMANTIC_SIMILARITY: Semantic metrics\n\nEmbedding similarity\n - METRIC_ANSWER_CORRECTNESS: LLM-as-judge correctness\n - METRIC_ANSWER_PASSAGE_MATCH: Pattern-based metrics\n\nAnswer found in retrieved context\n - METRIC_CONTEXT_RECALL: Retrieved correct context\n - METRIC_WEIGHTED_COMPOSITE: Composite metrics\n\nCombine multiple metrics\n - METRIC_MULTI_JUDGE: Multi-judge metric (RECOMMENDED - uses Loom's multi-judge infrastructure)\n\nMulti-dimensional LLM-as-judge evaluation\n - METRIC_CUSTOM: Custom metrics\n\nUser-defined metric function",
+      "title": "- METRIC_EXACT_MATCH: Exact match metrics"
+    },
+    "v1MultiJudgeMetricConfig": {
+      "type": "object",
+      "properties": {
+        "judgeIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Judge IDs to run (references registered judges)"
+        },
+        "aggregation": {
+          "$ref": "#/definitions/v1AggregationStrategy",
+          "title": "Aggregation strategy"
+        },
+        "targetDimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1JudgeDimension"
+          },
+          "title": "Target dimensions (optional - filter judges by dimension)"
+        },
+        "dimensionWeights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": "Dimension weights for score calculation"
+        },
+        "minThreshold": {
+          "type": "number",
+          "format": "double",
+          "title": "Minimum threshold for selection (0-100)"
+        },
+        "exportToHawk": {
+          "type": "boolean",
+          "title": "Export to Hawk"
+        }
+      },
+      "title": "MultiJudgeMetricConfig configures multi-judge evaluation for teleprompters"
+    },
+    "v1RollbackCompilationResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "restored": {
+          "$ref": "#/definitions/v1CompilationResult"
+        }
+      }
+    },
+    "v1SearchConfig": {
+      "type": "object",
+      "properties": {
+        "numCandidates": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of configurations to try"
+        },
+        "searchParams": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Which params to optimize"
+        },
+        "strategy": {
+          "$ref": "#/definitions/v1SearchStrategy"
+        }
+      },
+      "title": "SearchConfig for hyperparameter optimization"
+    },
+    "v1SearchStrategy": {
+      "type": "string",
+      "enum": [
+        "SEARCH_STRATEGY_UNSPECIFIED",
+        "SEARCH_RANDOM",
+        "SEARCH_GRID",
+        "SEARCH_BAYESIAN",
+        "SEARCH_EVOLUTIONARY"
+      ],
+      "default": "SEARCH_STRATEGY_UNSPECIFIED",
+      "title": "- SEARCH_RANDOM: Random search\n - SEARCH_GRID: Grid search\n - SEARCH_BAYESIAN: Bayesian optimization\n - SEARCH_EVOLUTIONARY: Genetic algorithm"
+    },
+    "v1TeacherConfig": {
+      "type": "object",
+      "properties": {
+        "useTeacher": {
+          "type": "boolean",
+          "title": "Use different model as teacher"
+        },
+        "teacherLlmProvider": {
+          "type": "string",
+          "title": "e.g., \"anthropic\""
+        },
+        "teacherLlmModel": {
+          "type": "string",
+          "title": "e.g., \"claude-opus-4\""
+        },
+        "teacherTemperature": {
+          "type": "integer",
+          "format": "int32",
+          "title": "More creative teacher (e.g., 0.8)"
+        },
+        "teacherMaxTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Higher token budget"
+        }
+      },
+      "title": "TeacherConfig defines a more capable \"teacher\" agent for bootstrapping"
+    },
+    "v1TeleprompterConfig": {
+      "type": "object",
+      "properties": {
+        "maxBootstrappedDemos": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Default: 5",
+          "title": "Common settings (all teleprompters)"
+        },
+        "maxLabeledDemos": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Default: 8"
+        },
+        "minConfidence": {
+          "type": "number",
+          "format": "double",
+          "title": "Default: 0.7"
+        },
+        "maxRounds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Default: 1 (multi-round optimization)"
+        },
+        "teacher": {
+          "$ref": "#/definitions/v1TeacherConfig",
+          "title": "Teacher configuration (bootstrap teleprompters)"
+        },
+        "search": {
+          "$ref": "#/definitions/v1SearchConfig",
+          "title": "Search configuration (random search, Bayesian)"
+        },
+        "mipro": {
+          "$ref": "#/definitions/v1MIPROConfig",
+          "title": "MIPRO-specific"
+        },
+        "copro": {
+          "$ref": "#/definitions/v1COPROConfig",
+          "title": "COPRO-specific"
+        },
+        "ensemble": {
+          "$ref": "#/definitions/v1EnsembleConfig",
+          "title": "Ensemble-specific"
+        },
+        "knn": {
+          "$ref": "#/definitions/v1KNNConfig",
+          "title": "KNN-specific"
+        }
+      },
+      "title": "TeleprompterConfig contains optimizer-specific settings"
+    },
+    "v1TeleprompterType": {
+      "type": "string",
+      "enum": [
+        "TELEPROMPTER_TYPE_UNSPECIFIED",
+        "TELEPROMPTER_BOOTSTRAP_FEW_SHOT",
+        "TELEPROMPTER_BOOTSTRAP_RANDOM_SEARCH",
+        "TELEPROMPTER_MIPRO",
+        "TELEPROMPTER_COPRO",
+        "TELEPROMPTER_BAYESIAN_SIGNATURE",
+        "TELEPROMPTER_KNN_FEW_SHOT",
+        "TELEPROMPTER_LABELED_FEW_SHOT",
+        "TELEPROMPTER_ENSEMBLE",
+        "TELEPROMPTER_BOOTSTRAP_FINETUNE"
+      ],
+      "default": "TELEPROMPTER_TYPE_UNSPECIFIED",
+      "description": "- TELEPROMPTER_BOOTSTRAP_FEW_SHOT: Basic bootstrapping\n - TELEPROMPTER_BOOTSTRAP_RANDOM_SEARCH: Bootstrap with hyperparameter search\n - TELEPROMPTER_MIPRO: Instruction optimization\n\nMulti-prompt Instruction Proposal Optimizer\n - TELEPROMPTER_COPRO: Collaborative optimization\n\nCollaborative Prompt Optimizer\n - TELEPROMPTER_BAYESIAN_SIGNATURE: Bayesian optimization\n - TELEPROMPTER_KNN_FEW_SHOT: Example-based\n - TELEPROMPTER_ENSEMBLE: Meta-optimization\n - TELEPROMPTER_BOOTSTRAP_FINETUNE: Fine-tuning based",
+      "title": "TeleprompterType defines available optimizers"
     }
   }
 }

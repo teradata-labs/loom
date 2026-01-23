@@ -44,6 +44,675 @@
           }
         }
       }
+    },
+    "v1ApplyImprovementResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "improvement": {
+          "$ref": "#/definitions/v1Improvement"
+        },
+        "canaryTest": {
+          "$ref": "#/definitions/v1CanaryTest",
+          "title": "Present if autonomy level 2"
+        }
+      },
+      "title": "ApplyImprovementResponse confirms application"
+    },
+    "v1CanaryTest": {
+      "type": "object",
+      "properties": {
+        "testId": {
+          "type": "string"
+        },
+        "patternName": {
+          "type": "string"
+        },
+        "controlVersion": {
+          "type": "string"
+        },
+        "treatmentVersion": {
+          "type": "string"
+        },
+        "trafficPercentage": {
+          "type": "number",
+          "format": "double",
+          "title": "0.10 for 10%"
+        },
+        "durationSeconds": {
+          "type": "string",
+          "format": "int64",
+          "title": "1800 for 30 min"
+        },
+        "startTime": {
+          "type": "string",
+          "format": "int64"
+        },
+        "status": {
+          "$ref": "#/definitions/v1CanaryTestStatus"
+        },
+        "result": {
+          "$ref": "#/definitions/v1CanaryTestResult"
+        }
+      },
+      "title": "CanaryTest represents a simple 10% canary deployment"
+    },
+    "v1CanaryTestResult": {
+      "type": "object",
+      "properties": {
+        "controlMetrics": {
+          "$ref": "#/definitions/v1PatternMetric"
+        },
+        "treatmentMetrics": {
+          "$ref": "#/definitions/v1PatternMetric"
+        },
+        "relativeImprovement": {
+          "type": "number",
+          "format": "double"
+        },
+        "statisticalSignificance": {
+          "type": "number",
+          "format": "double",
+          "title": "p-value"
+        },
+        "shouldPromote": {
+          "type": "boolean"
+        },
+        "shouldRollback": {
+          "type": "boolean"
+        },
+        "recommendation": {
+          "type": "string"
+        }
+      },
+      "title": "CanaryTestResult contains test outcome"
+    },
+    "v1CanaryTestStatus": {
+      "type": "string",
+      "enum": [
+        "CANARY_TEST_STATUS_UNSPECIFIED",
+        "CANARY_RUNNING",
+        "CANARY_COMPLETED",
+        "CANARY_FAILED"
+      ],
+      "default": "CANARY_TEST_STATUS_UNSPECIFIED",
+      "title": "CanaryTestStatus tracks test lifecycle"
+    },
+    "v1ImpactLevel": {
+      "type": "string",
+      "enum": [
+        "IMPACT_LEVEL_UNSPECIFIED",
+        "IMPACT_LOW",
+        "IMPACT_MEDIUM",
+        "IMPACT_HIGH",
+        "IMPACT_CRITICAL"
+      ],
+      "default": "IMPACT_LEVEL_UNSPECIFIED",
+      "description": "- IMPACT_LOW: Minor optimization\n - IMPACT_MEDIUM: Moderate improvement\n - IMPACT_HIGH: Major enhancement\n - IMPACT_CRITICAL: Breaking change or major fix",
+      "title": "ImpactLevel categorizes change significance"
+    },
+    "v1Improvement": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "UUID"
+        },
+        "type": {
+          "$ref": "#/definitions/v1ImprovementType"
+        },
+        "description": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double"
+        },
+        "impact": {
+          "$ref": "#/definitions/v1ImpactLevel"
+        },
+        "targetAgentId": {
+          "type": "string"
+        },
+        "targetPattern": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "details": {
+          "$ref": "#/definitions/v1ImprovementDetails"
+        },
+        "status": {
+          "$ref": "#/definitions/v1ImprovementStatus"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64"
+        },
+        "appliedAt": {
+          "type": "string",
+          "format": "int64"
+        },
+        "appliedBy": {
+          "type": "string",
+          "title": "\"learning-agent\" or \"human:{user_id}\""
+        }
+      },
+      "title": "Improvement represents a proposed change"
+    },
+    "v1ImprovementDetails": {
+      "type": "object",
+      "properties": {
+        "patternChanges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1PatternChange"
+          }
+        },
+        "expectedSuccessRateDelta": {
+          "type": "number",
+          "format": "double"
+        },
+        "expectedCostDeltaUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "expectedLatencyDeltaMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "title": "ImprovementDetails contains implementation specifics"
+    },
+    "v1ImprovementHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "improvements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Improvement"
+          }
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "summary": {
+          "$ref": "#/definitions/v1ImprovementHistorySummary"
+        }
+      },
+      "title": "ImprovementHistoryResponse returns history records"
+    },
+    "v1ImprovementHistorySummary": {
+      "type": "object",
+      "properties": {
+        "totalApplied": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalRolledBack": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalPending": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "avgSuccessRateImprovement": {
+          "type": "number",
+          "format": "double"
+        },
+        "totalCostSavingsUsd": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "title": "ImprovementHistorySummary provides aggregate stats"
+    },
+    "v1ImprovementStatus": {
+      "type": "string",
+      "enum": [
+        "IMPROVEMENT_STATUS_UNSPECIFIED",
+        "IMPROVEMENT_PENDING",
+        "IMPROVEMENT_APPROVED",
+        "IMPROVEMENT_APPLYING",
+        "IMPROVEMENT_APPLIED",
+        "IMPROVEMENT_CANARY_TESTING",
+        "IMPROVEMENT_ROLLED_BACK",
+        "IMPROVEMENT_REJECTED"
+      ],
+      "default": "IMPROVEMENT_STATUS_UNSPECIFIED",
+      "description": "- IMPROVEMENT_PENDING: Awaiting approval\n - IMPROVEMENT_APPROVED: Approved, not yet applied\n - IMPROVEMENT_APPLYING: Currently being applied\n - IMPROVEMENT_APPLIED: Successfully applied\n - IMPROVEMENT_CANARY_TESTING: Under canary test\n - IMPROVEMENT_ROLLED_BACK: Rolled back due to failure\n - IMPROVEMENT_REJECTED: Rejected by human or validation",
+      "title": "ImprovementStatus tracks lifecycle"
+    },
+    "v1ImprovementType": {
+      "type": "string",
+      "enum": [
+        "IMPROVEMENT_TYPE_UNSPECIFIED",
+        "IMPROVEMENT_PATTERN_ADD",
+        "IMPROVEMENT_PATTERN_REMOVE",
+        "IMPROVEMENT_PARAMETER_TUNE",
+        "IMPROVEMENT_TEMPLATE_ADJUST",
+        "IMPROVEMENT_CONFIG_ADJUST"
+      ],
+      "default": "IMPROVEMENT_TYPE_UNSPECIFIED",
+      "description": "- IMPROVEMENT_PATTERN_ADD: Add new pattern usage\n - IMPROVEMENT_PATTERN_REMOVE: Deprecate failing pattern\n - IMPROVEMENT_PARAMETER_TUNE: Adjust LLM parameters\n - IMPROVEMENT_TEMPLATE_ADJUST: Modify prompt template\n - IMPROVEMENT_CONFIG_ADJUST: Update agent configuration",
+      "title": "ImprovementType defines the kind of improvement"
+    },
+    "v1ImprovementsResponse": {
+      "type": "object",
+      "properties": {
+        "improvements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Improvement"
+          }
+        },
+        "totalProposed": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "title": "ImprovementsResponse contains improvement proposals"
+    },
+    "v1JudgeDimension": {
+      "type": "string",
+      "enum": [
+        "JUDGE_DIMENSION_UNSPECIFIED",
+        "JUDGE_DIMENSION_QUALITY",
+        "JUDGE_DIMENSION_COST",
+        "JUDGE_DIMENSION_SAFETY",
+        "JUDGE_DIMENSION_DOMAIN",
+        "JUDGE_DIMENSION_PERFORMANCE",
+        "JUDGE_DIMENSION_USABILITY",
+        "JUDGE_DIMENSION_CUSTOM"
+      ],
+      "default": "JUDGE_DIMENSION_UNSPECIFIED",
+      "description": "- JUDGE_DIMENSION_QUALITY: Quality and correctness\n - JUDGE_DIMENSION_COST: Cost efficiency\n - JUDGE_DIMENSION_SAFETY: Safety and guardrails\n - JUDGE_DIMENSION_DOMAIN: Domain compliance\n - JUDGE_DIMENSION_PERFORMANCE: Performance and latency\n - JUDGE_DIMENSION_USABILITY: Usability and clarity\n - JUDGE_DIMENSION_CUSTOM: Phase 8: Custom dimensions (user-defined)",
+      "title": "JudgeDimension defines evaluation dimensions"
+    },
+    "v1OptimizationGoal": {
+      "type": "object",
+      "properties": {
+        "costWeight": {
+          "type": "number",
+          "format": "double",
+          "description": "0.0-1.0",
+          "title": "Legacy weights (for patterns without judge scores)"
+        },
+        "qualityWeight": {
+          "type": "number",
+          "format": "double",
+          "title": "0.0-1.0"
+        },
+        "latencyWeight": {
+          "type": "number",
+          "format": "double",
+          "title": "0.0-1.0 (calculated if not set)"
+        },
+        "dimensionWeights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": "Judge dimension weights (preferred - uses multi-dimensional judge scores)\nDimension names: \"quality\", \"safety\", \"cost\", \"domain\", \"performance\", \"usability\"\nIf set, these override legacy weights for patterns with judge scores"
+        }
+      },
+      "title": "OptimizationGoal defines what to optimize for"
+    },
+    "v1ParameterAdjustment": {
+      "type": "object",
+      "properties": {
+        "parameterName": {
+          "type": "string",
+          "title": "e.g., \"priority\", \"threshold\""
+        },
+        "oldValue": {
+          "type": "string"
+        },
+        "newValue": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "title": "ParameterAdjustment describes a specific parameter change"
+    },
+    "v1PatternAnalysisResponse": {
+      "type": "object",
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1PatternMetric"
+          }
+        },
+        "summary": {
+          "$ref": "#/definitions/v1PatternAnalysisSummary"
+        }
+      },
+      "title": "PatternAnalysisResponse contains pattern performance analysis"
+    },
+    "v1PatternAnalysisSummary": {
+      "type": "object",
+      "properties": {
+        "totalPatternsAnalyzed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "overallSuccessRate": {
+          "type": "number",
+          "format": "double"
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "patternsToPromote": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "patternsToDeprecate": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "analysisWindowHours": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "title": "PatternAnalysisSummary provides aggregate statistics"
+    },
+    "v1PatternChange": {
+      "type": "object",
+      "properties": {
+        "fieldPath": {
+          "type": "string",
+          "title": "YAML path: \"templates.default.content\""
+        },
+        "currentValue": {
+          "type": "string"
+        },
+        "proposedValue": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "title": "PatternChange describes a specific modification"
+    },
+    "v1PatternMetric": {
+      "type": "object",
+      "properties": {
+        "patternName": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "totalUsages": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "successCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "failureCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "successRate": {
+          "type": "number",
+          "format": "double"
+        },
+        "avgCostUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "avgLatencyMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double"
+        },
+        "recommendation": {
+          "$ref": "#/definitions/v1PatternRecommendation"
+        },
+        "errorTypes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "llmProvider": {
+          "type": "string"
+        },
+        "llmModel": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string",
+          "title": "A/B testing variant (default, control, treatment, etc.)"
+        },
+        "judgePassRate": {
+          "type": "number",
+          "format": "double",
+          "description": "Percentage that passed judges (0-1)",
+          "title": "Judge evaluation metrics (from multi-judge evaluation)"
+        },
+        "judgeAvgScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Average score across evaluations (0-100)"
+        },
+        "judgeCriterionScores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "description": "\"safety\" -\u003e 0.92, \"cost\" -\u003e 0.85, etc."
+        }
+      },
+      "title": "PatternMetric represents runtime performance metrics for a pattern"
+    },
+    "v1PatternMetricEvent": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "int64"
+        },
+        "metric": {
+          "$ref": "#/definitions/v1PatternMetric"
+        },
+        "eventType": {
+          "$ref": "#/definitions/v1PatternMetricEventType"
+        }
+      },
+      "title": "PatternMetricEvent is a streaming event"
+    },
+    "v1PatternMetricEventType": {
+      "type": "string",
+      "enum": [
+        "PATTERN_METRIC_EVENT_TYPE_UNSPECIFIED",
+        "METRIC_UPDATE",
+        "THRESHOLD_EXCEEDED",
+        "ANOMALY_DETECTED"
+      ],
+      "default": "PATTERN_METRIC_EVENT_TYPE_UNSPECIFIED",
+      "description": "- METRIC_UPDATE: Regular metric update\n - THRESHOLD_EXCEEDED: Success rate threshold crossed\n - ANOMALY_DETECTED: Unusual behavior detected",
+      "title": "PatternMetricEventType categorizes events"
+    },
+    "v1PatternRecommendation": {
+      "type": "string",
+      "enum": [
+        "PATTERN_RECOMMENDATION_UNSPECIFIED",
+        "PATTERN_KEEP",
+        "PATTERN_PROMOTE",
+        "PATTERN_DEMOTE",
+        "PATTERN_REMOVE",
+        "PATTERN_INVESTIGATE"
+      ],
+      "default": "PATTERN_RECOMMENDATION_UNSPECIFIED",
+      "description": "- PATTERN_KEEP: Pattern performing well\n - PATTERN_PROMOTE: High success rate, use more\n - PATTERN_DEMOTE: Moderate issues, use less\n - PATTERN_REMOVE: Low success rate, deprecate\n - PATTERN_INVESTIGATE: Insufficient data or inconsistent",
+      "title": "PatternRecommendation suggests action for a pattern"
+    },
+    "v1PatternTuning": {
+      "type": "object",
+      "properties": {
+        "patternName": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "adjustments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ParameterAdjustment"
+          }
+        },
+        "beforeMetrics": {
+          "$ref": "#/definitions/v1PatternMetric"
+        },
+        "projectedMetrics": {
+          "$ref": "#/definitions/v1PatternMetric",
+          "title": "Estimated after tuning"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "confidence": {
+          "$ref": "#/definitions/v1TuningConfidence"
+        }
+      },
+      "title": "PatternTuning represents adjustments made to a single pattern"
+    },
+    "v1RollbackImprovementResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "restoredVersion": {
+          "type": "string"
+        },
+        "rollbackCompletedAt": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "title": "RollbackImprovementResponse confirms rollback"
+    },
+    "v1TunePatternsResponse": {
+      "type": "object",
+      "properties": {
+        "tunings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1PatternTuning"
+          }
+        },
+        "summary": {
+          "$ref": "#/definitions/v1TuningSummary"
+        },
+        "applied": {
+          "type": "boolean",
+          "title": "False if dry_run=true"
+        }
+      },
+      "title": "TunePatternsResponse contains tuning results"
+    },
+    "v1TuningConfidence": {
+      "type": "string",
+      "enum": [
+        "TUNING_CONFIDENCE_UNSPECIFIED",
+        "TUNING_LOW",
+        "TUNING_MEDIUM",
+        "TUNING_HIGH"
+      ],
+      "default": "TUNING_CONFIDENCE_UNSPECIFIED",
+      "description": "- TUNING_LOW: Insufficient data (\u003c50 samples)\n - TUNING_MEDIUM: Moderate data (50-200 samples)\n - TUNING_HIGH: Strong data (\u003e200 samples)",
+      "title": "TuningConfidence indicates certainty of tuning decision"
+    },
+    "v1TuningStrategy": {
+      "type": "string",
+      "enum": [
+        "TUNING_STRATEGY_UNSPECIFIED",
+        "TUNING_CONSERVATIVE",
+        "TUNING_MODERATE",
+        "TUNING_AGGRESSIVE"
+      ],
+      "default": "TUNING_STRATEGY_UNSPECIFIED",
+      "description": "- TUNING_CONSERVATIVE: Small priority adjustments (±5)\n - TUNING_MODERATE: Medium adjustments (±10-15)\n - TUNING_AGGRESSIVE: Large adjustments (±20-30)",
+      "title": "TuningStrategy controls how aggressively to adjust patterns"
+    },
+    "v1TuningSummary": {
+      "type": "object",
+      "properties": {
+        "patternsAnalyzed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "patternsTuned": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "patternsPromoted": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Priority increased"
+        },
+        "patternsDemoted": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Priority decreased"
+        },
+        "patternsUnchanged": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Already optimal"
+        },
+        "estimatedSuccessRateImprovement": {
+          "type": "number",
+          "format": "double"
+        },
+        "estimatedCostReductionUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "estimatedLatencyReductionMs": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "title": "TuningSummary provides aggregate tuning statistics"
     }
   }
 }

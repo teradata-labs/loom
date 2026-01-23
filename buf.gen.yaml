@@ -15,5 +15,5 @@ plugins:
     opt:
       - paths=source_relative
       - generate_unbound_methods=true
-  - remote: buf.build/grpc-ecosystem/openapiv2
+  - remote: buf.build/grpc-ecosystem/openapiv2:v2.22.0
     out: gen/openapiv2
