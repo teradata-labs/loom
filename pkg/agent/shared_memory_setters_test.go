@@ -53,10 +53,16 @@ func TestAgent_SetSharedMemory_UpdatesAllReferences(t *testing.T) {
 	require.NotNil(t, agent.sharedMemory)
 	assert.Same(t, store1, agent.sharedMemory, "Agent should initially use store1")
 
-	// Verify QueryToolResultTool is registered with store1
+	// Manually register query_tool_result to simulate state after first large result
+	// (Progressive disclosure: tool is registered after first large result, not at agent init)
+	if agent.sqlResultStore != nil {
+		agent.tools.Register(NewQueryToolResultTool(agent.sqlResultStore, agent.sharedMemory))
+	}
+
+	// Verify QueryToolResultTool is now registered with store1
 	// Note: GetToolResultTool removed - inline metadata makes it unnecessary
 	tool1, exists1 := agent.tools.Get("query_tool_result")
-	require.True(t, exists1, "QueryToolResultTool should be registered initially")
+	require.True(t, exists1, "QueryToolResultTool should be registered after manual registration")
 	require.NotNil(t, tool1, "QueryToolResultTool should not be nil")
 
 	// Now simulate what happens during hot-reload or post-creation injection
@@ -134,10 +140,16 @@ func TestAgent_SetSharedMemory_Integration(t *testing.T) {
 	assert.Equal(t, refID, ref.Id)
 	t.Logf("Data stored in global store with ref ID: %s", ref.Id)
 
+	// Manually register query_tool_result to simulate state after first large result
+	// (Progressive disclosure: tool is registered after first large result, not at agent init)
+	if agent.sqlResultStore != nil {
+		agent.tools.Register(NewQueryToolResultTool(agent.sqlResultStore, agent.sharedMemory))
+	}
+
 	// Try to retrieve with tool BEFORE SetSharedMemory (should fail)
 	// Note: get_tool_result removed - using query_tool_result instead with offset/limit for text data
 	getTool1, exists1 := agent.tools.Get("query_tool_result")
-	require.True(t, exists1, "query_tool_result should be registered")
+	require.True(t, exists1, "query_tool_result should be registered after manual registration")
 	result1, err1 := getTool1.Execute(ctx, map[string]interface{}{
 		"reference_id": refID,
 		"offset":       0,

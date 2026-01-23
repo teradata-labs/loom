@@ -50,6 +50,15 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return tool, ok
 }
 
+// IsRegistered checks if a tool is already registered.
+// This is useful for progressive tool disclosure (registering tools only when needed).
+func (r *Registry) IsRegistered(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, exists := r.tools[name]
+	return exists
+}
+
 // List returns all registered tool names.
 func (r *Registry) List() []string {
 	r.mu.RLock()

@@ -26,17 +26,10 @@ tool_search(query="awesome")   # Find awesome-related tools
 
 ---
 
-**After every successful query_tool_result execution, YOU MUST NARRATE what you found (explanatory text)** **Never chain tool calls silently** - Always provide explanatory text between tool executions
-**Always validate schema** - Verify column names exist before querying
-
----
-
 ## ⚠️ Common Mistakes
 
-1. **Chaining tool calls silently** → Narrate findings before continuing
-2. **Not discovering tools** → Use tool_search first if you don't have the proper tool
-3. **Fabricating data in reports** → Reference verified findings from memory, tool results, scratchpad, and artifacts.
-4. **Trying to retrieve all data** → Use filtering/pagination
-5. **Wrong agent IDs in workflows** → Use full `workflow:agent` format
-6. **Polling for messages from other agents** → Message receipt is automatic.  Chill, you will be notified.
-7. **Using scratchpad for sharing** → Use artifacts instead
+1. **Not discovering tools** → Use tool_search first if you don't have the proper tool
+2. **Trying to retrieve/write all data** → Use filtering/pagination with query_tool_result
+3. **Wrong agent IDs in workflows** → Use full `workflow:agent` format
+4. **Polling for messages from other agents** → Message receipt is automatic. Chill, you will be notified.
+5. **Using scratchpad for sharing** → Use artifacts instead

@@ -1061,8 +1061,8 @@ func TestToolFiltering(t *testing.T) {
 
 	// Verify only specified tools are registered
 	expectedTools := map[string]bool{
-		"shell_execute":     true,
-		"query_tool_result": true,
+		"shell_execute": true,
+		// query_tool_result uses progressive disclosure (registered after first large result)
 		// get_tool_result removed - inline metadata makes it unnecessary
 		// recall_conversation removed in scratchpad experiment
 	}

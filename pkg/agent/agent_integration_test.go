@@ -612,28 +612,29 @@ func TestAgent_ToolRegistration(t *testing.T) {
 
 	ag := NewAgent(mockBackend, mockLLM, WithConfig(cfg))
 
-	// Initially has 2 built-in tools (query_tool_result, shell_execute)
+	// Initially has 1 built-in tool (shell_execute)
+	// Note: query_tool_result uses progressive disclosure (registered after first large result)
+	// Note: get_error_details uses progressive disclosure (registered after first error)
 	// Note: get_tool_result removed - inline metadata makes it unnecessary
 	// Note: recall_conversation, search_conversation, clear_recalled_context removed for scratchpad experiment
-	// Note: get_error_details not registered (no errorStore in test setup)
 	// Note: record_finding removed - replaced by automatic extraction
 	tools := ag.RegisteredTools()
-	if len(tools) != 2 {
-		t.Errorf("Expected 2 tools initially (query_tool_result, shell_execute), got: %d", len(tools))
+	if len(tools) != 1 {
+		t.Errorf("Expected 1 tool initially (shell_execute), got: %d", len(tools))
 	}
 
 	// Register single tool
 	ag.RegisterTool(&mockCalculatorTool{})
 	tools = ag.RegisteredTools()
-	if len(tools) != 3 {
-		t.Errorf("Expected 3 tools, got: %d", len(tools))
+	if len(tools) != 2 {
+		t.Errorf("Expected 2 tools, got: %d", len(tools))
 	}
 
 	// Register multiple tools at once
 	ag.RegisterTools(&mockSearchTool{}, &mockWeatherTool{})
 	tools = ag.RegisteredTools()
-	if len(tools) != 5 {
-		t.Errorf("Expected 5 tools, got: %d", len(tools))
+	if len(tools) != 4 {
+		t.Errorf("Expected 4 tools, got: %d", len(tools))
 	}
 }
 

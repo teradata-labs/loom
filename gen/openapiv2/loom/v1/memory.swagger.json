@@ -44,6 +44,271 @@
           }
         }
       }
+    },
+    "v1BootstrapDemonstrationsResponse": {
+      "type": "object",
+      "properties": {
+        "selectedDemonstrations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Demonstration"
+          }
+        },
+        "totalCandidates": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "selectedCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "selectionCriteria": {
+          "type": "string"
+        }
+      }
+    },
+    "v1BootstrapStrategy": {
+      "type": "string",
+      "enum": [
+        "BOOTSTRAP_STRATEGY_UNSPECIFIED",
+        "BOOTSTRAP_TOP_K",
+        "BOOTSTRAP_DIVERSE",
+        "BOOTSTRAP_RECENT",
+        "BOOTSTRAP_REPRESENTATIVE"
+      ],
+      "default": "BOOTSTRAP_STRATEGY_UNSPECIFIED",
+      "title": "- BOOTSTRAP_TOP_K: Select top K by quality score\n - BOOTSTRAP_DIVERSE: Maximize diversity of examples\n - BOOTSTRAP_RECENT: Prefer recent examples\n - BOOTSTRAP_REPRESENTATIVE: Cover common query patterns"
+    },
+    "v1Demonstration": {
+      "type": "object",
+      "properties": {
+        "patternName": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string",
+          "title": "User query or task"
+        },
+        "rationale": {
+          "type": "string",
+          "title": "Chain-of-thought reasoning (optional)"
+        },
+        "output": {
+          "type": "string",
+          "title": "Successful result"
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double",
+          "title": "Quality score (0-1)"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "int64",
+          "title": "When this demo was captured"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Domain, LLM provider, etc."
+        }
+      },
+      "title": "Demonstration represents a successful execution trace (DSPy-style)"
+    },
+    "v1ExecutionTrace": {
+      "type": "object",
+      "properties": {
+        "traceId": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string",
+          "title": "Optional: CoT reasoning"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "qualityScore": {
+          "type": "number",
+          "format": "double",
+          "title": "From judge evaluation"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "int64"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "v1GetLearnedLayerResponse": {
+      "type": "object",
+      "properties": {
+        "optimizedPrompts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "pattern_name -\u003e optimized_prompt"
+        },
+        "demonstrations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Demonstration"
+          },
+          "title": "Few-shot examples"
+        },
+        "learnedVersion": {
+          "type": "string",
+          "title": "Version hash"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix timestamp"
+        },
+        "learnedTokenCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Tokens consumed by learned content"
+        }
+      }
+    },
+    "v1GetMemoryStatsResponse": {
+      "type": "object",
+      "properties": {
+        "rom": {
+          "$ref": "#/definitions/v1MemoryLayerStats"
+        },
+        "learned": {
+          "$ref": "#/definitions/v1MemoryLayerStats"
+        },
+        "kernel": {
+          "$ref": "#/definitions/v1MemoryLayerStats"
+        },
+        "l1": {
+          "$ref": "#/definitions/v1MemoryLayerStats"
+        },
+        "l2": {
+          "$ref": "#/definitions/v1MemoryLayerStats"
+        },
+        "totalTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "availableTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "usagePercentage": {
+          "type": "number",
+          "format": "double"
+        },
+        "compressionActive": {
+          "type": "boolean"
+        },
+        "compressionsTriggered": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "v1GetROMContentResponse": {
+      "type": "object",
+      "properties": {
+        "romContent": {
+          "type": "string",
+          "title": "Markdown-formatted domain documentation"
+        },
+        "romVersion": {
+          "type": "string",
+          "title": "Hash of ROM content"
+        },
+        "romGeneratedAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix timestamp"
+        },
+        "romTokenCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Tokens consumed by ROM"
+        }
+      }
+    },
+    "v1MemoryLayerStats": {
+      "type": "object",
+      "properties": {
+        "layerName": {
+          "type": "string"
+        },
+        "tokenCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "itemCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Messages, demos, schemas, etc."
+        },
+        "percentageOfBudget": {
+          "type": "number",
+          "format": "double"
+        },
+        "isMutable": {
+          "type": "boolean"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
+    "v1OptimizationSource": {
+      "type": "string",
+      "enum": [
+        "OPTIMIZATION_SOURCE_UNSPECIFIED",
+        "SOURCE_BOOTSTRAP",
+        "SOURCE_TEXTGRAD",
+        "SOURCE_HUMAN_FEEDBACK",
+        "SOURCE_HYBRID"
+      ],
+      "default": "OPTIMIZATION_SOURCE_UNSPECIFIED",
+      "title": "- SOURCE_BOOTSTRAP: DSPy BootstrapFewShot\n - SOURCE_TEXTGRAD: TextGrad backward pass\n - SOURCE_HUMAN_FEEDBACK: Manual curation\n - SOURCE_HYBRID: Combined approaches"
+    },
+    "v1UpdateLearnedLayerResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "learnedVersion": {
+          "type": "string",
+          "title": "New version hash"
+        },
+        "tokenCountDelta": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Change in token usage"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
     }
   }
 }

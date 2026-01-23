@@ -153,18 +153,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Determine working directory
-	// Priority: 1) explicit working_dir param, 2) session artifact dir, 3) baseDir
-	workingDir := t.baseDir
+	// Priority: 1) explicit working_dir param, 2) LOOM_SANDBOX_DIR (agent execution context)
+	// Note: LOOM_SANDBOX_DIR defaults to current working directory (see config.GetLoomSandboxDir)
+	workingDir := config.GetLoomSandboxDir()
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
-		workingDir = wd
-	} else if sessionID != "" {
-		// Default to session artifact directory if session exists
-		if sessionArtifactDir, err := artifacts.GetArtifactDir(sessionID, artifacts.SourceAgent); err == nil {
-			// Ensure directory exists
-			if err := artifacts.EnsureArtifactDir(sessionID, artifacts.SourceAgent); err == nil {
-				workingDir = sessionArtifactDir
-			}
-		}
+		workingDir = wd // Explicit override always wins
 	}
 
 	timeoutSeconds := DefaultShellTimeout

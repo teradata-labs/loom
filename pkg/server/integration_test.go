@@ -328,13 +328,14 @@ func TestServer_ListTools_Empty(t *testing.T) {
 		t.Fatalf("ListTools failed: %v", err)
 	}
 
-	// Agent has 2 built-in tools: query_tool_result, shell_execute
+	// Agent has 1 built-in tool: shell_execute
+	// Note: query_tool_result uses progressive disclosure (registered after first large result)
+	// Note: get_error_details uses progressive disclosure (registered after first error)
 	// Note: get_tool_result removed - inline metadata makes it unnecessary
 	// Note: recall_conversation, clear_recalled_context, search_conversation removed in scratchpad experiment
-	// Note: get_error_details not registered (no errorStore in basic test setup)
 	// Note: record_finding removed - replaced by automatic extraction
-	if len(resp.Tools) != 2 {
-		t.Errorf("Expected 2 built-in tools, got: %d", len(resp.Tools))
+	if len(resp.Tools) != 1 {
+		t.Errorf("Expected 1 built-in tool, got: %d", len(resp.Tools))
 	}
 
 	// Verify built-in tools are present
@@ -342,7 +343,7 @@ func TestServer_ListTools_Empty(t *testing.T) {
 	for _, tool := range resp.Tools {
 		toolNames[tool.Name] = true
 	}
-	expectedTools := []string{"query_tool_result", "shell_execute"}
+	expectedTools := []string{"shell_execute"}
 	for _, expected := range expectedTools {
 		if !toolNames[expected] {
 			t.Errorf("Expected built-in tool '%s' not found", expected)

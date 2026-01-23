@@ -44,6 +44,350 @@
           }
         }
       }
+    },
+    "v1GetToolsByCapabilityResponse": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1IndexedTool"
+          }
+        }
+      },
+      "description": "GetToolsByCapabilityResponse returns matching tools."
+    },
+    "v1IndexError": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/definitions/v1ToolSource"
+        },
+        "serverName": {
+          "type": "string",
+          "title": "For MCP errors"
+        },
+        "errorMessage": {
+          "type": "string"
+        }
+      },
+      "description": "IndexError describes a failure during indexing."
+    },
+    "v1IndexToolsResponse": {
+      "type": "object",
+      "properties": {
+        "builtinCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of tools indexed by source."
+        },
+        "mcpCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "customCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1IndexError"
+          },
+          "description": "Any errors during indexing."
+        },
+        "durationMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Time taken (milliseconds)."
+        }
+      },
+      "description": "IndexToolsResponse returns indexing results."
+    },
+    "v1IndexedTool": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this tool (source:server:name format)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed description of what the tool does."
+        },
+        "source": {
+          "$ref": "#/definitions/v1ToolSource",
+          "description": "Source of the tool."
+        },
+        "mcpServer": {
+          "type": "string",
+          "description": "For MCP tools, which server provides it."
+        },
+        "inputSchema": {
+          "type": "string",
+          "description": "JSON Schema for the tool's input parameters."
+        },
+        "outputSchema": {
+          "type": "string",
+          "description": "JSON Schema for the tool's output (if known)."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Capability tags for filtering."
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Keywords for search (auto-extracted + manual)."
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ToolExample"
+          },
+          "description": "Usage examples (optional, improves search accuracy)."
+        },
+        "indexedAt": {
+          "type": "string",
+          "description": "When this tool was last indexed."
+        },
+        "version": {
+          "type": "string",
+          "description": "Version info (for MCP tools, from server)."
+        },
+        "requiresApproval": {
+          "type": "boolean",
+          "description": "Whether this tool requires special permissions."
+        },
+        "rateLimit": {
+          "$ref": "#/definitions/v1RateLimitInfo",
+          "description": "Rate limit info (if any)."
+        }
+      },
+      "description": "IndexedTool is the complete indexed definition of a tool for search.\nExtends the basic ToolDefinition with search-specific metadata."
+    },
+    "v1ListToolSourcesResponse": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ToolSourceInfo"
+          }
+        }
+      },
+      "description": "ListToolSourcesResponse returns registered sources."
+    },
+    "v1RateLimitInfo": {
+      "type": "object",
+      "properties": {
+        "requestsPerMinute": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "requestsPerHour": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "description": "RateLimitInfo describes rate limiting for a tool."
+    },
+    "v1RelevanceSignal": {
+      "type": "object",
+      "properties": {
+        "signalType": {
+          "type": "string",
+          "title": "\"keyword_match\", \"capability_match\", \"semantic_similarity\""
+        },
+        "description": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "description": "RelevanceSignal explains why a tool was ranked highly."
+    },
+    "v1SearchMetadata": {
+      "type": "object",
+      "properties": {
+        "totalIndexed": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total tools in the index."
+        },
+        "candidatesRetrieved": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of candidates after FTS5 retrieval."
+        },
+        "modeUsed": {
+          "$ref": "#/definitions/v1SearchMode",
+          "description": "Search mode that was used."
+        },
+        "queryUnderstandingMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Time taken for each stage (milliseconds)."
+        },
+        "ftsRetrievalMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "llmRerankingMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "totalMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "expandedTerms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Expanded search terms (from LLM query understanding)."
+        }
+      },
+      "description": "SearchMetadata provides debugging info about the search."
+    },
+    "v1SearchMode": {
+      "type": "string",
+      "enum": [
+        "SEARCH_MODE_UNSPECIFIED",
+        "SEARCH_MODE_FAST",
+        "SEARCH_MODE_BALANCED",
+        "SEARCH_MODE_ACCURATE"
+      ],
+      "default": "SEARCH_MODE_UNSPECIFIED",
+      "description": "SearchMode controls the accuracy vs speed tradeoff for tool search.\n\n - SEARCH_MODE_UNSPECIFIED: UNSPECIFIED defaults to BALANCED.\n - SEARCH_MODE_FAST: FAST uses FTS5 only - fastest but least accurate for ambiguous queries.\n - SEARCH_MODE_BALANCED: BALANCED uses FTS5 + LLM re-ranking - good balance (default).\n - SEARCH_MODE_ACCURATE: ACCURATE uses full LLM pipeline with query understanding - most accurate."
+    },
+    "v1SearchToolsResponse": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ToolSearchResult"
+          },
+          "description": "Matched tools ordered by relevance."
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1SearchMetadata",
+          "description": "Search metadata for debugging/observability."
+        }
+      },
+      "description": "SearchToolsResponse contains the search results."
+    },
+    "v1ToolExample": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Natural language description of the use case."
+        },
+        "input": {
+          "type": "string",
+          "description": "Example input (JSON)."
+        },
+        "output": {
+          "type": "string",
+          "description": "Example output (JSON)."
+        }
+      },
+      "description": "ToolExample shows how to use a tool."
+    },
+    "v1ToolSearchResult": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "$ref": "#/definitions/v1IndexedTool",
+          "description": "The indexed tool definition."
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double",
+          "description": "Confidence score (0.0 - 1.0) indicating match quality."
+        },
+        "matchReason": {
+          "type": "string",
+          "description": "Explanation of why this tool matched (from LLM re-ranking)."
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1RelevanceSignal"
+          },
+          "description": "Relevance signals that contributed to the score."
+        }
+      },
+      "description": "ToolSearchResult is a single search result with confidence scoring."
+    },
+    "v1ToolSource": {
+      "type": "string",
+      "enum": [
+        "TOOL_SOURCE_UNSPECIFIED",
+        "TOOL_SOURCE_BUILTIN",
+        "TOOL_SOURCE_MCP",
+        "TOOL_SOURCE_CUSTOM"
+      ],
+      "default": "TOOL_SOURCE_UNSPECIFIED",
+      "description": "ToolSource identifies where a tool comes from.\n\n - TOOL_SOURCE_BUILTIN: Built into Loom (pkg/shuttle)\n - TOOL_SOURCE_MCP: From an MCP server\n - TOOL_SOURCE_CUSTOM: Custom tool definition"
+    },
+    "v1ToolSourceInfo": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1ToolSource"
+        },
+        "name": {
+          "type": "string",
+          "title": "e.g., \"slack-mcp\", \"builtin\""
+        },
+        "description": {
+          "type": "string"
+        },
+        "toolCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "lastIndexed": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean",
+          "title": "Is the source currently reachable?"
+        },
+        "statusMessage": {
+          "type": "string",
+          "title": "e.g., \"connected\", \"connection failed\""
+        }
+      },
+      "description": "ToolSourceInfo describes a tool source."
     }
   }
 }

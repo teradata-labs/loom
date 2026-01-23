@@ -47,6 +47,43 @@ func GetLoomDataDir() string {
 	return filepath.Join(homeDir, ".loom")
 }
 
+// GetLoomSandboxDir returns the agent execution sandbox directory.
+//
+// Priority:
+// 1. LOOM_SANDBOX_DIR environment variable (if set and non-empty)
+// 2. Current working directory (default)
+// 3. LOOM_DATA_DIR (fallback)
+//
+// This directory is where shell_execute runs commands by default.
+// It is separate from LOOM_DATA_DIR (which stores internal loom data like databases, artifacts, and configs).
+//
+// The returned path is always absolute. Tilde (~) in LOOM_SANDBOX_DIR is expanded to the user's home directory.
+//
+// Examples:
+//
+//	LOOM_SANDBOX_DIR=/project/myapp    -> /project/myapp
+//	LOOM_SANDBOX_DIR=~/workspace       -> /home/user/workspace
+//	LOOM_SANDBOX_DIR not set, cwd=/foo -> /foo
+//	LOOM_SANDBOX_DIR not set, cwd fail -> /home/user/.loom (LOOM_DATA_DIR)
+//
+// Note: This provides clear separation of concerns:
+//   - LOOM_DATA_DIR: Internal loom data (databases, artifacts, configs)
+//   - LOOM_SANDBOX_DIR: Agent execution context (where shell commands run)
+func GetLoomSandboxDir() string {
+	// Check environment variable first
+	if sandboxDir := os.Getenv("LOOM_SANDBOX_DIR"); sandboxDir != "" {
+		return expandPath(sandboxDir)
+	}
+
+	// Default to current working directory
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+
+	// Fallback to LOOM_DATA_DIR
+	return GetLoomDataDir()
+}
+
 // GetLoomSubDir returns a subdirectory within the Loom data directory.
 // Example: GetLoomSubDir("agents") returns ~/.loom/agents
 func GetLoomSubDir(subdir string) string {

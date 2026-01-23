@@ -158,10 +158,8 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.executor.SetSharedMemory(a.sharedMemory, storage.DefaultSharedMemoryThreshold)
 	}
 
-	// Register built-in get_error_details tool if error store is configured
-	if a.errorStore != nil {
-		a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
-	}
+	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
+	// See formatToolResult() for automatic registration when error store is used
 
 	// REMOVED: Manual record_finding tool (replaced by automatic extraction)
 	// Findings are now automatically extracted from tool results using LLM-based semantic analysis
@@ -181,8 +179,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		if a.executor != nil {
 			a.executor.SetSQLResultStore(sqlResultStore)
 		}
-		// Register query_tool_result tool (v1.0.1: now accepts both SQL and memory stores)
-		a.tools.Register(NewQueryToolResultTool(sqlResultStore, a.sharedMemory))
+
+		// PROGRESSIVE DISCLOSURE: query_tool_result tool is registered dynamically after first large result
+		// See formatToolResult() for automatic registration when large results are stored
 	}
 
 	// Auto-register shell_execute tool (standard toolset)
@@ -1725,6 +1724,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			})
 
 			if storeErr == nil {
+				// Progressive disclosure: Register get_error_details tool after first error
+				if !a.tools.IsRegistered("get_error_details") {
+					a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
+				}
+
 				// Successfully stored - return reference
 				return fmt.Sprintf(`Tool '%s' failed: %s
 [Error ID: %s]
@@ -1758,6 +1762,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				})
 
 				if storeErr == nil {
+					// Progressive disclosure: Register get_error_details tool after first error
+					if !a.tools.IsRegistered("get_error_details") {
+						a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
+					}
+
 					// Successfully stored - return reference
 					return fmt.Sprintf(`Tool '%s' failed: %s
 [Error ID: %s]
@@ -1838,6 +1847,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 					// This prevents LRU eviction while session is active and ensures cleanup when session ends
 					if a.refTracker != nil {
 						a.refTracker.PinForSession(sessionID, dataRef.Id)
+					}
+
+					// Progressive disclosure: Register query_tool_result after first large result
+					if !a.tools.IsRegistered("query_tool_result") && a.sqlResultStore != nil {
+						a.tools.Register(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
 					}
 
 					// Get metadata to create rich inline summary (eliminates need for get_tool_result call)
@@ -2202,11 +2216,15 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 	// 	a.tools.Register(NewGetToolResultTool(sharedMemory, a.sqlResultStore))
 	// }
 
-	// CRITICAL FIX: Re-register QueryToolResultTool with the new shared memory instance
+	// Re-register QueryToolResultTool with the new shared memory instance if it was already registered
 	// This fixes the bug where query_tool_result was using an old singleton store while
 	// tool_search was storing data in the new multi-agent server's shared memory
+	// Note: With progressive disclosure, this tool is only registered after first large result
 	if sharedMemory != nil && a.sqlResultStore != nil && a.tools != nil {
-		a.tools.Register(NewQueryToolResultTool(a.sqlResultStore, sharedMemory))
+		if a.tools.IsRegistered("query_tool_result") {
+			// Re-register with new shared memory instance
+			a.tools.Register(NewQueryToolResultTool(a.sqlResultStore, sharedMemory))
+		}
 	}
 
 	// Update reference tracker with new store

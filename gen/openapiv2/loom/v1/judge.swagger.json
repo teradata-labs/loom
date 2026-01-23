@@ -44,6 +44,672 @@
           }
         }
       }
+    },
+    "v1AggregatedJudgeMetrics": {
+      "type": "object",
+      "properties": {
+        "weightedAverageScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Weighted average score (0-100)"
+        },
+        "minScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Minimum score across all judges"
+        },
+        "maxScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Maximum score across all judges"
+        },
+        "scoreStddev": {
+          "type": "number",
+          "format": "double",
+          "title": "Standard deviation of scores"
+        },
+        "passRate": {
+          "type": "number",
+          "format": "double",
+          "title": "Pass rate (% of judges that passed)"
+        },
+        "strategy": {
+          "$ref": "#/definitions/v1AggregationStrategy",
+          "title": "Aggregation strategy used"
+        },
+        "totalExecutionTimeMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total execution time (ms)"
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "format": "double",
+          "title": "Total cost (USD)"
+        },
+        "avgDimensionScores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": "Average scores by dimension"
+        }
+      },
+      "title": "AggregatedJudgeMetrics combines metrics from all judges"
+    },
+    "v1AggregationStrategy": {
+      "type": "string",
+      "enum": [
+        "AGGREGATION_STRATEGY_UNSPECIFIED",
+        "AGGREGATION_STRATEGY_WEIGHTED_AVERAGE",
+        "AGGREGATION_STRATEGY_ALL_MUST_PASS",
+        "AGGREGATION_STRATEGY_MAJORITY_PASS",
+        "AGGREGATION_STRATEGY_ANY_PASS",
+        "AGGREGATION_STRATEGY_MIN_SCORE",
+        "AGGREGATION_STRATEGY_MAX_SCORE"
+      ],
+      "default": "AGGREGATION_STRATEGY_UNSPECIFIED",
+      "description": "- AGGREGATION_STRATEGY_WEIGHTED_AVERAGE: Weighted average of scores\n - AGGREGATION_STRATEGY_ALL_MUST_PASS: All judges must pass\n - AGGREGATION_STRATEGY_MAJORITY_PASS: Majority must pass (\u003e50%)\n - AGGREGATION_STRATEGY_ANY_PASS: Any judge passing is sufficient\n - AGGREGATION_STRATEGY_MIN_SCORE: Use minimum score across all judges\n - AGGREGATION_STRATEGY_MAX_SCORE: Use maximum score across all judges",
+      "title": "AggregationStrategy defines how to combine multi-judge results"
+    },
+    "v1CircuitBreakerConfig": {
+      "type": "object",
+      "properties": {
+        "failureThreshold": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of consecutive failures to open circuit (default = 5)"
+        },
+        "resetTimeoutMs": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Time to wait before trying again (ms, default = 60000 = 1 minute)"
+        },
+        "successThreshold": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of successful requests to close circuit (default = 2)"
+        },
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable circuit breaker (default = true)"
+        }
+      },
+      "title": "CircuitBreakerConfig defines circuit breaker behavior (Phase 7)"
+    },
+    "v1EvaluateProgress": {
+      "type": "object",
+      "properties": {
+        "judgeStarted": {
+          "$ref": "#/definitions/v1JudgeStarted"
+        },
+        "judgeCompleted": {
+          "$ref": "#/definitions/v1JudgeCompleted"
+        },
+        "exampleCompleted": {
+          "$ref": "#/definitions/v1ExampleCompleted"
+        },
+        "evaluationCompleted": {
+          "$ref": "#/definitions/v1EvaluationCompleted"
+        }
+      },
+      "title": "Phase 11: Streaming evaluation progress messages\nEvaluateProgress provides real-time updates during long-running evaluations"
+    },
+    "v1EvaluateResponse": {
+      "type": "object",
+      "properties": {
+        "passed": {
+          "type": "boolean",
+          "title": "Overall pass/fail verdict"
+        },
+        "verdicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1JudgeResult"
+          },
+          "title": "Individual judge results"
+        },
+        "dimensionScores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": "Dimension scores (quality, cost, safety, domain) -\u003e score (0-100)"
+        },
+        "finalScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Final aggregated score (0-100)"
+        },
+        "explanation": {
+          "type": "string",
+          "title": "Explanation of the verdict"
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Suggestions for improvement"
+        },
+        "aggregated": {
+          "$ref": "#/definitions/v1AggregatedJudgeMetrics",
+          "title": "Aggregated metrics"
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1EvaluationMetadata",
+          "title": "Metadata about evaluation"
+        }
+      },
+      "title": "EvaluateResponse contains aggregated results from multiple judges"
+    },
+    "v1EvaluationCompleted": {
+      "type": "object",
+      "properties": {
+        "finalResult": {
+          "$ref": "#/definitions/v1EvaluateResponse",
+          "title": "Final evaluation response"
+        },
+        "totalDurationMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total duration in milliseconds"
+        }
+      },
+      "title": "EvaluationCompleted indicates the entire evaluation has finished"
+    },
+    "v1EvaluationContext": {
+      "type": "object",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "title": "Agent that generated the output"
+        },
+        "sessionId": {
+          "type": "string",
+          "title": "Session ID for tracing"
+        },
+        "prompt": {
+          "type": "string",
+          "title": "User prompt/input"
+        },
+        "response": {
+          "type": "string",
+          "title": "Agent response/output"
+        },
+        "patternUsed": {
+          "type": "string",
+          "title": "Pattern used (if any)"
+        },
+        "toolsUsed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools used by agent"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "double",
+          "title": "Cost in USD"
+        },
+        "latencyMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Latency in milliseconds"
+        },
+        "traceId": {
+          "type": "string",
+          "title": "Trace ID for observability"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Additional context metadata"
+        }
+      },
+      "title": "EvaluationContext provides all context needed for judge evaluation"
+    },
+    "v1EvaluationMetadata": {
+      "type": "object",
+      "properties": {
+        "totalJudges": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total number of judges run"
+        },
+        "passedJudges": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of judges that passed"
+        },
+        "failedJudges": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of judges that failed"
+        },
+        "timeoutJudges": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Number of judges that timed out"
+        },
+        "executionMode": {
+          "$ref": "#/definitions/v1ExecutionMode",
+          "title": "Execution mode used"
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "format": "double",
+          "title": "Total cost (USD)"
+        },
+        "totalExecutionTimeMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total execution time (ms)"
+        },
+        "exportedToHawk": {
+          "type": "boolean",
+          "title": "Exported to Hawk"
+        }
+      },
+      "title": "EvaluationMetadata contains metadata about the evaluation run"
+    },
+    "v1ExampleCompleted": {
+      "type": "object",
+      "properties": {
+        "exampleNumber": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Example number that completed (0-indexed)"
+        },
+        "totalExamples": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total number of examples in evaluation"
+        },
+        "currentScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Current cumulative score across all examples evaluated so far"
+        },
+        "passed": {
+          "type": "boolean",
+          "title": "Whether this example passed"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1JudgeResult"
+          },
+          "title": "Results from all judges for this example"
+        }
+      },
+      "title": "ExampleCompleted indicates all judges have evaluated an example"
+    },
+    "v1ExecutionMode": {
+      "type": "string",
+      "enum": [
+        "EXECUTION_MODE_UNSPECIFIED",
+        "EXECUTION_MODE_SYNCHRONOUS",
+        "EXECUTION_MODE_ASYNCHRONOUS",
+        "EXECUTION_MODE_HYBRID"
+      ],
+      "default": "EXECUTION_MODE_UNSPECIFIED",
+      "description": "- EXECUTION_MODE_SYNCHRONOUS: All judges run synchronously (blocks response)\n - EXECUTION_MODE_ASYNCHRONOUS: All judges run asynchronously (background)\n - EXECUTION_MODE_HYBRID: Critical judges sync, non-critical async (balanced)",
+      "title": "ExecutionMode defines when judges run"
+    },
+    "v1GetJudgeHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "evaluations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1HistoricalEvaluation"
+          },
+          "title": "Historical evaluations"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count (for pagination)"
+        }
+      },
+      "title": "GetJudgeHistoryResponse returns judge evaluation history"
+    },
+    "v1HistoricalEvaluation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Evaluation ID"
+        },
+        "agentId": {
+          "type": "string",
+          "title": "Agent ID"
+        },
+        "patternName": {
+          "type": "string",
+          "title": "Pattern used"
+        },
+        "result": {
+          "$ref": "#/definitions/v1EvaluateResponse",
+          "title": "Multi-judge result"
+        },
+        "evaluatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Timestamp"
+        }
+      },
+      "title": "HistoricalEvaluation represents a past judge evaluation"
+    },
+    "v1JudgeCompleted": {
+      "type": "object",
+      "properties": {
+        "judgeId": {
+          "type": "string",
+          "title": "Judge identifier"
+        },
+        "exampleNumber": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Example number that was evaluated (0-indexed)"
+        },
+        "result": {
+          "$ref": "#/definitions/v1JudgeResult",
+          "title": "Judge evaluation result"
+        },
+        "durationMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Duration in milliseconds"
+        }
+      },
+      "title": "JudgeCompleted indicates a judge evaluation has finished"
+    },
+    "v1JudgeConfig": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Unique judge identifier"
+        },
+        "name": {
+          "type": "string",
+          "title": "Judge name (e.g., \"quality-judge\", \"cost-judge\")"
+        },
+        "criteria": {
+          "type": "string",
+          "title": "Evaluation criteria description"
+        },
+        "weight": {
+          "type": "number",
+          "format": "double",
+          "title": "Weight for aggregation (default: 1.0)"
+        },
+        "minPassingScore": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Minimum passing score (0-100, default: 80)"
+        },
+        "criticality": {
+          "$ref": "#/definitions/v1JudgeCriticality",
+          "title": "Criticality level"
+        },
+        "customPrompt": {
+          "type": "string",
+          "title": "Custom judge prompt template (optional)"
+        },
+        "model": {
+          "type": "string",
+          "title": "LLM model to use for this judge (optional, uses default if not specified)"
+        },
+        "type": {
+          "$ref": "#/definitions/v1JudgeType",
+          "title": "Judge type"
+        },
+        "agentId": {
+          "type": "string",
+          "title": "Agent ID (if type is AGENT_JUDGE)"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1JudgeDimension"
+          },
+          "title": "Dimensions this judge evaluates"
+        },
+        "customDimensionName": {
+          "type": "string",
+          "title": "Phase 8: Custom dimension support (for JUDGE_DIMENSION_CUSTOM only)\nIf dimensions contains JUDGE_DIMENSION_CUSTOM, this field must be set.\nThis name becomes the key in dimension_scores map (e.g., \"teradata_compliance\", \"hipaa_compliance\")"
+        },
+        "customDimensionDescription": {
+          "type": "string",
+          "title": "Phase 8: Custom dimension description (optional, for documentation/UI)"
+        },
+        "retryConfig": {
+          "$ref": "#/definitions/v1RetryConfig",
+          "title": "Retry configuration (Phase 7)"
+        }
+      },
+      "title": "JudgeConfig defines a single judge"
+    },
+    "v1JudgeCriticality": {
+      "type": "string",
+      "enum": [
+        "JUDGE_CRITICALITY_UNSPECIFIED",
+        "JUDGE_CRITICALITY_NON_CRITICAL",
+        "JUDGE_CRITICALITY_CRITICAL",
+        "JUDGE_CRITICALITY_SAFETY_CRITICAL"
+      ],
+      "default": "JUDGE_CRITICALITY_UNSPECIFIED",
+      "description": "- JUDGE_CRITICALITY_NON_CRITICAL: Non-critical: can run async\n - JUDGE_CRITICALITY_CRITICAL: Critical: must run sync\n - JUDGE_CRITICALITY_SAFETY_CRITICAL: Safety-critical: highest priority, blocks everything",
+      "title": "JudgeCriticality defines judge priority"
+    },
+    "v1JudgeDimension": {
+      "type": "string",
+      "enum": [
+        "JUDGE_DIMENSION_UNSPECIFIED",
+        "JUDGE_DIMENSION_QUALITY",
+        "JUDGE_DIMENSION_COST",
+        "JUDGE_DIMENSION_SAFETY",
+        "JUDGE_DIMENSION_DOMAIN",
+        "JUDGE_DIMENSION_PERFORMANCE",
+        "JUDGE_DIMENSION_USABILITY",
+        "JUDGE_DIMENSION_CUSTOM"
+      ],
+      "default": "JUDGE_DIMENSION_UNSPECIFIED",
+      "description": "- JUDGE_DIMENSION_QUALITY: Quality and correctness\n - JUDGE_DIMENSION_COST: Cost efficiency\n - JUDGE_DIMENSION_SAFETY: Safety and guardrails\n - JUDGE_DIMENSION_DOMAIN: Domain compliance\n - JUDGE_DIMENSION_PERFORMANCE: Performance and latency\n - JUDGE_DIMENSION_USABILITY: Usability and clarity\n - JUDGE_DIMENSION_CUSTOM: Phase 8: Custom dimensions (user-defined)",
+      "title": "JudgeDimension defines evaluation dimensions"
+    },
+    "v1JudgeResult": {
+      "type": "object",
+      "properties": {
+        "judgeId": {
+          "type": "string",
+          "title": "Judge identifier"
+        },
+        "judgeName": {
+          "type": "string",
+          "title": "Judge name"
+        },
+        "judgeModel": {
+          "type": "string",
+          "title": "Judge model used (e.g., \"claude-sonnet-4-5\")"
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Evaluation criteria used"
+        },
+        "factualAccuracy": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Hawk's 4 core scores (0-100)"
+        },
+        "hallucinationScore": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Lower is better"
+        },
+        "queryQuality": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "completeness": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "overallScore": {
+          "type": "number",
+          "format": "double",
+          "title": "Overall score for this judge (weighted combination of above)"
+        },
+        "verdict": {
+          "type": "string",
+          "description": "\"PASS\", \"FAIL\", \"PARTIAL\"",
+          "title": "Pass/fail verdict"
+        },
+        "reasoning": {
+          "type": "string",
+          "title": "Detailed reasoning"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Issues found"
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Suggestions for improvement"
+        },
+        "executionTimeMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Execution time (ms)"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "double",
+          "title": "Cost in USD"
+        },
+        "error": {
+          "type": "string",
+          "title": "Error message (if judge failed to execute)"
+        },
+        "judgedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Timestamp"
+        },
+        "dimensionScores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": "Dimension-specific scores (quality, cost, safety, domain)"
+        }
+      },
+      "title": "JudgeResult represents a single judge's verdict"
+    },
+    "v1JudgeStarted": {
+      "type": "object",
+      "properties": {
+        "judgeId": {
+          "type": "string",
+          "title": "Judge identifier"
+        },
+        "exampleNumber": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Example number being evaluated (0-indexed)"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "title": "Timestamp when evaluation started"
+        }
+      },
+      "title": "JudgeStarted indicates a judge evaluation has begun"
+    },
+    "v1JudgeType": {
+      "type": "string",
+      "enum": [
+        "JUDGE_TYPE_UNSPECIFIED",
+        "JUDGE_TYPE_HAWK",
+        "JUDGE_TYPE_AGENT",
+        "JUDGE_TYPE_CUSTOM"
+      ],
+      "default": "JUDGE_TYPE_UNSPECIFIED",
+      "description": "- JUDGE_TYPE_HAWK: Uses Hawk's embedded judge library\n - JUDGE_TYPE_AGENT: Uses Loom agent as judge\n - JUDGE_TYPE_CUSTOM: Custom judge implementation",
+      "title": "JudgeType defines the implementation type"
+    },
+    "v1RegisterJudgeResponse": {
+      "type": "object",
+      "properties": {
+        "judgeId": {
+          "type": "string",
+          "title": "Registered judge ID"
+        },
+        "message": {
+          "type": "string",
+          "title": "Success message"
+        }
+      },
+      "title": "RegisterJudgeResponse confirms judge registration"
+    },
+    "v1RetryConfig": {
+      "type": "object",
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum retry attempts (0 = no retry, default = 3)"
+        },
+        "initialBackoffMs": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Initial backoff duration (ms, default = 1000)"
+        },
+        "maxBackoffMs": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Max backoff duration (ms, default = 8000)"
+        },
+        "backoffMultiplier": {
+          "type": "number",
+          "format": "double",
+          "title": "Backoff multiplier (default = 2.0 for exponential)"
+        },
+        "retryOnStatus": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": "Retry on specific HTTP status codes (default: [429, 500, 502, 503])"
+        },
+        "circuitBreaker": {
+          "$ref": "#/definitions/v1CircuitBreakerConfig",
+          "title": "Circuit breaker configuration"
+        }
+      },
+      "title": "RetryConfig defines retry behavior for judge evaluations (Phase 7)"
     }
   }
 }
