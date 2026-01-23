@@ -272,9 +272,16 @@ func TestRegistry_EphemeralAgent_GUID(t *testing.T) {
 	agentName := agent.GetName()
 	assert.Contains(t, agentName, "ephemeral-", "ephemeral agent should have ephemeral prefix in name")
 
+	// Verify agent has an ID
+	agentID := agent.GetID()
+	assert.NotEmpty(t, agentID, "ephemeral agent should have an ID")
+
 	// Get agent info by name
 	infoByName, err := registry.GetAgentInfo(agentName)
 	require.NoError(t, err)
+
+	// Verify agent.GetID() matches registry info
+	assert.Equal(t, agentID, infoByName.ID, "agent.GetID() should match registry info")
 
 	// Verify GUID is a valid UUID
 	_, err = uuid.Parse(infoByName.ID)
@@ -291,4 +298,125 @@ func TestRegistry_EphemeralAgent_GUID(t *testing.T) {
 	assert.Equal(t, infoByName.ID, infoByGUID.ID)
 	assert.Equal(t, infoByName.Name, infoByGUID.Name)
 	assert.Equal(t, "running", infoByGUID.Status)
+}
+
+// TestAgent_AutoAssignID tests that NewAgent automatically assigns a UUID to every agent.
+func TestAgent_AutoAssignID(t *testing.T) {
+	// Create a standalone agent (not via registry)
+	ag := NewAgent(nil, nil)
+
+	// Verify agent has an ID
+	id := ag.GetID()
+	assert.NotEmpty(t, id, "NewAgent should automatically assign an ID")
+
+	// Verify ID is a valid UUID
+	_, err := uuid.Parse(id)
+	assert.NoError(t, err, "ID should be a valid UUID v4")
+}
+
+// TestAgent_GetIDThreadSafe tests that GetID is thread-safe.
+func TestAgent_GetIDThreadSafe(t *testing.T) {
+	ag := NewAgent(nil, nil)
+
+	// Verify agent has an ID
+	expectedID := ag.GetID()
+	assert.NotEmpty(t, expectedID, "agent should have an ID")
+
+	// Test concurrent GetID calls
+	const goroutines = 100
+	done := make(chan string, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			id := ag.GetID()
+			done <- id
+		}()
+	}
+
+	// Verify all goroutines got the same ID
+	for i := 0; i < goroutines; i++ {
+		id := <-done
+		assert.Equal(t, expectedID, id, "GetID should return consistent ID across concurrent calls")
+	}
+}
+
+// TestRegistry_AgentIDPersistence tests that agent.GetID() returns stable GUID after CreateAgent.
+func TestRegistry_AgentIDPersistence(t *testing.T) {
+	// Create first registry instance
+	registry1, tmpDir := createTestRegistry(t)
+	setupAgentConfig(t, registry1, tmpDir, "test-agent")
+
+	ctx := context.Background()
+
+	// Create an agent and get its GUID
+	agent1, err := registry1.CreateAgent(ctx, "test-agent")
+	require.NoError(t, err)
+
+	// Verify agent has an ID
+	agentID1 := agent1.GetID()
+	assert.NotEmpty(t, agentID1, "agent should have an ID")
+
+	// Verify agent.GetID() matches registry info
+	info1, err := registry1.GetAgentInfo("test-agent")
+	require.NoError(t, err)
+	assert.Equal(t, agentID1, info1.ID, "agent.GetID() should match registry info")
+
+	// Close first registry
+	err = registry1.Close()
+	require.NoError(t, err)
+
+	// Create second registry instance (same database)
+	dbPath := filepath.Join(tmpDir, "test_registry.db")
+	registry2, err := NewRegistry(RegistryConfig{
+		ConfigDir:   tmpDir,
+		DBPath:      dbPath,
+		LLMProvider: &mockLLMProvider{}, // Add LLM provider for agent creation
+	})
+	require.NoError(t, err)
+	defer registry2.Close()
+
+	// Load agent from database
+	err = registry2.LoadAgents(ctx)
+	require.NoError(t, err)
+
+	// Create agent again (should reuse stable GUID from database)
+	agent2, err := registry2.CreateAgent(ctx, "test-agent")
+	require.NoError(t, err)
+
+	// Verify agent.GetID() returns the same stable GUID
+	agentID2 := agent2.GetID()
+	assert.Equal(t, agentID1, agentID2, "agent.GetID() should return stable GUID after registry restart")
+
+	// Verify registry info matches
+	info2, err := registry2.GetAgentInfo("test-agent")
+	require.NoError(t, err)
+	assert.Equal(t, agentID1, info2.ID, "registry should preserve stable GUID across restarts")
+}
+
+// TestRegistry_AgentID_CreationFlow tests the complete agent ID creation flow.
+func TestRegistry_AgentID_CreationFlow(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	setupAgentConfig(t, registry, tmpDir, "test-agent")
+
+	ctx := context.Background()
+
+	// Create an agent
+	agent, err := registry.CreateAgent(ctx, "test-agent")
+	require.NoError(t, err)
+
+	// Verify agent has an ID (from NewAgent or stable GUID)
+	agentID := agent.GetID()
+	assert.NotEmpty(t, agentID, "agent should have an ID")
+
+	// Verify ID is a valid UUID
+	_, err = uuid.Parse(agentID)
+	assert.NoError(t, err, "agent ID should be a valid UUID")
+
+	// Verify agent.GetID() matches registry info
+	info, err := registry.GetAgentInfo("test-agent")
+	require.NoError(t, err)
+	assert.Equal(t, agentID, info.ID, "agent.GetID() should match registry info.ID")
+
+	// Verify ID is not the same as name
+	assert.NotEqual(t, agent.GetName(), agentID, "agent ID should not be the same as name")
 }

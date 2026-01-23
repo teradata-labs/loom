@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -38,6 +39,14 @@ type MCPClientRef struct {
 // and backend interactions. It's designed to be backend-agnostic and work with
 // any ExecutionBackend implementation (SQL databases, REST APIs, documents, etc.).
 type Agent struct {
+	// Unique agent identifier (UUID v4)
+	// Registry-managed agents have stable GUIDs persisted to database
+	// Standalone agents get ephemeral UUIDs from NewAgent
+	id string
+
+	// Mutex for thread-safe access to agent fields
+	mu sync.RWMutex
+
 	// Backend for executing domain-specific operations
 	backend fabric.ExecutionBackend
 
