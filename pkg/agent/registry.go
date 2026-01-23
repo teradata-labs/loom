@@ -46,10 +46,10 @@ type Registry struct {
 	mu           sync.RWMutex
 	configDir    string
 	db           *sql.DB
-	agents       map[string]*Agent       // Map of agent name -> Agent instance
+	agents       map[string]*Agent // Map of agent name -> Agent instance
 	configs      map[string]*loomv1.AgentConfig
 	agentInfo    map[string]*AgentInstanceInfo // Map of agent GUID -> AgentInstanceInfo
-	agentsByName map[string]string       // Map of agent name -> GUID for lookup
+	agentsByName map[string]string             // Map of agent name -> GUID for lookup
 	logger       *zap.Logger
 	watcher      *fsnotify.Watcher
 	mcpMgr       *manager.Manager
@@ -950,8 +950,18 @@ func (r *Registry) GetAgent(ctx context.Context, name string) (*Agent, error) {
 // CreateEphemeralAgent creates a temporary agent based on a role.
 // This implements the collaboration.AgentFactory interface.
 // The agent is NOT registered and caller must manage its lifecycle.
+//
+// Ephemeral agents receive stable GUIDs for tracking and observability,
+// but are NOT persisted to the database since they're temporary.
 func (r *Registry) CreateEphemeralAgent(ctx context.Context, role string) (*Agent, error) {
-	r.logger.Info("Creating ephemeral agent", zap.String("role", role))
+	// Generate stable GUID for ephemeral agent
+	agentID := uuid.New().String()
+	agentName := fmt.Sprintf("ephemeral-%s", role)
+
+	r.logger.Info("Creating ephemeral agent",
+		zap.String("role", role),
+		zap.String("id", agentID),
+		zap.String("name", agentName))
 
 	// For now, create a basic agent with the default LLM provider
 	// TODO: Look up role-specific ephemeral policies from configs
@@ -966,11 +976,30 @@ func (r *Registry) CreateEphemeralAgent(ctx context.Context, role string) (*Agen
 	agent := NewAgent(
 		nil, // Backend optional
 		r.llmProvider,
-		WithName(fmt.Sprintf("ephemeral-%s", role)),
+		WithName(agentName),
 		WithDescription(fmt.Sprintf("Ephemeral agent for role: %s", role)),
 	)
 
-	r.logger.Info("Ephemeral agent created", zap.String("role", role), zap.String("name", agent.GetName()))
+	// Track ephemeral agent in memory (not persisted to DB)
+	// This allows GetAgentInfo to work with ephemeral agents
+	info := &AgentInstanceInfo{
+		ID:        agentID,
+		Name:      agentName,
+		Status:    "running",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	r.mu.Lock()
+	r.agentInfo[agentID] = info
+	r.agentsByName[agentName] = agentID
+	// Note: NOT adding to r.agents map since caller manages lifecycle
+	r.mu.Unlock()
+
+	r.logger.Info("Ephemeral agent created",
+		zap.String("role", role),
+		zap.String("id", agentID),
+		zap.String("name", agentName))
 
 	return agent, nil
 }

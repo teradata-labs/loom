@@ -257,3 +257,38 @@ func TestRegistry_GetAgentByID(t *testing.T) {
 	_, err = registry.GetAgentByID("test-agent")
 	assert.Error(t, err, "GetAgentByID should not accept agent names")
 }
+
+// TestRegistry_EphemeralAgent_GUID tests that ephemeral agents get stable GUIDs.
+func TestRegistry_EphemeralAgent_GUID(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+
+	ctx := context.Background()
+
+	// Create an ephemeral agent
+	agent, err := registry.CreateEphemeralAgent(ctx, "test-role")
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+
+	agentName := agent.GetName()
+	assert.Contains(t, agentName, "ephemeral-", "ephemeral agent should have ephemeral prefix in name")
+
+	// Get agent info by name
+	infoByName, err := registry.GetAgentInfo(agentName)
+	require.NoError(t, err)
+
+	// Verify GUID is a valid UUID
+	_, err = uuid.Parse(infoByName.ID)
+	assert.NoError(t, err, "ephemeral agent ID should be a valid UUID")
+
+	// Verify GUID is not the same as name
+	assert.NotEqual(t, infoByName.Name, infoByName.ID, "ephemeral agent ID should not be the same as name")
+
+	// Get agent info by GUID
+	infoByGUID, err := registry.GetAgentInfo(infoByName.ID)
+	require.NoError(t, err)
+
+	// Verify both lookups return the same agent
+	assert.Equal(t, infoByName.ID, infoByGUID.ID)
+	assert.Equal(t, infoByName.Name, infoByGUID.Name)
+	assert.Equal(t, "running", infoByGUID.Status)
+}
