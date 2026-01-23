@@ -93,7 +93,6 @@ spec:
     - recall_conversation
     - clear_recalled_context
     - send_message
-    - receive_message
 
   memory:
     type: sqlite

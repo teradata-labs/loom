@@ -27,6 +27,7 @@ func All(promptRegistry prompts.PromptRegistry) []shuttle.Tool {
 		NewDocumentParseTool(""),
 		NewGRPCClientTool(),
 		NewShellExecuteTool(""),
+		NewAgentManagementTool(),
 		shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{}),
 	}
 
@@ -63,6 +64,8 @@ func ByName(name string) shuttle.Tool {
 		return NewGRPCClientTool()
 	case "shell_execute":
 		return NewShellExecuteTool("")
+	case "agent_management":
+		return NewAgentManagementTool()
 	case "contact_human":
 		return shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{})
 	default:
@@ -83,6 +86,7 @@ func Names() []string {
 		"parse_document",
 		"grpc_call",
 		"shell_execute",
+		"agent_management",
 		"contact_human",
 	}
 }
@@ -113,12 +117,15 @@ func RegisterByNames(registry *shuttle.Registry, names []string) {
 // They cannot be created via All() or ByName() since they need per-agent context.
 //
 // Includes:
-// - send_message, receive_message (point-to-point messaging)
-// - publish, subscribe, receive_broadcast (pub-sub broadcast messaging)
+// - send_message (point-to-point messaging)
+// - publish (pub-sub broadcast messaging)
 // - shared_memory_write, shared_memory_read (zero-copy data sharing)
 // - top_n_query, group_by_query (presentation strategies)
 //
-// Note: Visualization tools (generate_workflow_visualization, generate_visualization)
+// Note: Agents are automatically subscribed to workflow topics and messages are auto-injected.
+// No manual subscribe/receive tools needed - all event-driven.
+//
+// Visualization tools (generate_workflow_visualization, generate_visualization)
 // are NOT included by default. Use VisualizationTools() to get them for metaagent assignment.
 func CommunicationTools(queue *communication.MessageQueue, bus *communication.MessageBus, store *communication.SharedMemoryStore, agentID string) []shuttle.Tool {
 	tools := make([]shuttle.Tool, 0, 10)
@@ -126,15 +133,12 @@ func CommunicationTools(queue *communication.MessageQueue, bus *communication.Me
 	if queue != nil {
 		tools = append(tools,
 			NewSendMessageTool(queue, agentID),
-			NewReceiveMessageTool(queue, agentID),
 		)
 	}
 
 	if bus != nil {
 		tools = append(tools,
-			NewSubscribeTool(bus, agentID),
 			NewPublishTool(bus, agentID),
-			NewReceiveBroadcastTool(bus, agentID),
 		)
 	}
 
@@ -158,10 +162,7 @@ func CommunicationTools(queue *communication.MessageQueue, bus *communication.Me
 func CommunicationToolNames() []string {
 	return []string{
 		"send_message",
-		"receive_message",
-		"subscribe",
 		"publish",
-		"receive_broadcast",
 		"shared_memory_write",
 		"shared_memory_read",
 		"top_n_query",

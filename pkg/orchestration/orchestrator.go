@@ -71,6 +71,10 @@ type Orchestrator struct {
 
 	// Progress callback for workflow execution updates (optional)
 	progressCallback WorkflowProgressCallback
+
+	// LLM concurrency semaphore to limit parallel LLM calls (optional)
+	// If nil, no concurrency control is applied
+	llmSemaphore chan struct{}
 }
 
 // Config configures the orchestrator.
@@ -95,6 +99,11 @@ type Config struct {
 
 	// ProgressCallback for reporting workflow execution progress (optional)
 	ProgressCallback WorkflowProgressCallback
+
+	// LLMSemaphore for limiting concurrent LLM calls (optional)
+	// If nil, no concurrency control is applied
+	// Use make(chan struct{}, N) where N is the max concurrent LLM calls
+	LLMSemaphore chan struct{}
 }
 
 // NewOrchestrator creates a new orchestrator instance.
@@ -115,6 +124,7 @@ func NewOrchestrator(config Config) *Orchestrator {
 		messageBus:       config.MessageBus,
 		sharedMemory:     config.SharedMemory,
 		progressCallback: config.ProgressCallback,
+		llmSemaphore:     config.LLMSemaphore,
 	}
 
 	// Initialize collaboration engine with orchestrator as provider

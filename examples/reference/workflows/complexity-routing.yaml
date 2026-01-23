@@ -15,27 +15,13 @@ metadata:
     complexity: high
 
 spec:
-  pattern: conditional
-  agents:
-    - id: complexity-classifier
-      name: Complexity Classifier
-      role: classifier
-      system_prompt: |
-        You are a technical complexity classifier.
+  type: conditional  # Changed from pattern: conditional
 
-        When given a feature request, analyze its complexity and respond with EXACTLY ONE WORD:
-        - "simple" if it's a straightforward implementation (< 1 week, < 3 files, minimal dependencies)
-        - "medium" if it requires moderate effort (1-2 weeks, 3-10 files, some integration)
-        - "complex" if it's a large undertaking (> 2 weeks, > 10 files, major architecture changes)
+  agent_ids:
+    - complexity-classifier
 
-        Consider:
-        - Number of components affected
-        - Integration complexity
-        - Testing requirements
-        - Performance implications
-        - Security considerations
-
-        Respond with only the single word: simple, medium, or complex
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - complexity-classifier.yaml: Technical complexity classifier for routing-based decisions
 
 # Example usage:
 #

@@ -13,7 +13,7 @@ prompts:
       - Request clarifications from previous stages
       - Coordinate work between parallel agents
 
-      The receiving agent can use receive_message to get your message.
+      Messages are automatically delivered to the receiving agent via event-driven notifications.
     tags:
       - tool
       - communication
@@ -21,26 +21,6 @@ prompts:
     metadata:
       version: "v1.0"
       description: "Agent-to-agent messaging tool"
-
-  - id: receive_message
-    content: |
-      Receives messages sent to this agent by other agents in the workflow.
-
-      Use this tool to:
-      - Check for incoming questions from other agents
-      - Receive data requests from downstream stages
-      - Get coordination messages from parallel agents
-      - Poll for updates from upstream stages
-
-      Returns the next pending message in the queue, or null if no messages are available.
-      Messages should be acknowledged after processing.
-    tags:
-      - tool
-      - communication
-      - inter_agent
-    metadata:
-      version: "v1.0"
-      description: "Message queue polling tool"
 
   - id: shared_memory_write
     content: |

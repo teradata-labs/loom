@@ -57,10 +57,10 @@ spec:
   communication:                         # OPTIONAL: Documents communication topology
     pattern: "hub-and-spoke"             # OPTIONAL: hub-and-spoke | peer-to-peer-pub-sub
     hub: coordinator                     # OPTIONAL: Hub agent (for hub-and-spoke)
-    topic: "party-chat"                  # OPTIONAL: Topic name (for peer-to-peer)
-    entrypoint: coordinator              # OPTIONAL: Clarify entrypoint in peer-to-peer
+    topic: null                          # OPTIONAL: Topic name (for peer-to-peer-pub-sub)
+    entrypoint: coordinator              # OPTIONAL: Clarify entrypoint
     # Note: This field is documentation only - the actual pattern emerges from
-    # agent system prompts and tool usage (send_message, publish, subscribe)
+    # agent system prompts and tool usage (send_message, publish, subscribe, receive_broadcast)
 
   # Workflow-level configuration
   config:                                # OPTIONAL: Workflow behavior settings
@@ -88,6 +88,114 @@ schedule:
   variables:                             # OPTIONAL: Variables passed to workflow
     environment: "production"
     report_type: "daily"
+
+---
+# ============================================================================
+# FORMAT 1B: PEER-TO-PEER PUB-SUB MULTI-AGENT COORDINATION
+# All agents communicate as peers via broadcast topics (no central hub)
+# ============================================================================
+
+apiVersion: loom/v1
+kind: Workflow
+
+metadata:
+  name: peer-to-peer-pubsub-example
+  version: "1.0.0"
+  description: "Peer-to-peer pub-sub workflow where agents communicate via broadcast topics"
+  labels:
+    domain: example
+    category: peer-to-peer
+    pattern: pub-sub
+
+spec:
+  # Entrypoint agent (users interact with this agent first)
+  entrypoint: facilitator                # REQUIRED: Entry point for user interaction
+
+  # Agent definitions
+  agents:                                # REQUIRED: List of participating agents
+    - name: facilitator
+      agent: facilitator-agent
+      description: "Facilitates group discussion but participates as peer"
+      # Agent system prompt should include:
+      # - subscribe(topic="group-chat") to join the conversation
+      # - publish(topic="group-chat", message="...") to broadcast messages
+      # - receive_broadcast(timeout_seconds=15) to receive messages from all peers
+
+    - name: participant-1
+      agent: participant-agent-1
+      description: "First participant - equal peer in conversation"
+      # Same pub-sub tools: subscribe, publish, receive_broadcast
+
+    - name: participant-2
+      agent: participant-agent-2
+      description: "Second participant - equal peer in conversation"
+      # Same pub-sub tools: subscribe, publish, receive_broadcast
+
+  # Communication pattern (peer-to-peer pub-sub)
+  communication:                         # OPTIONAL: Documents communication topology
+    pattern: "peer-to-peer-pub-sub"      # REQUIRED for pub-sub workflows
+    topic: "group-chat"                  # REQUIRED: Topic all agents subscribe to
+    entrypoint: facilitator              # OPTIONAL: Clarifies which agent user talks to first
+    # How it works:
+    # 1. All agents subscribe to the same topic using subscribe(topic="group-chat")
+    # 2. Agents broadcast messages using publish(topic="group-chat", message="...")
+    # 3. All subscribed agents receive messages via receive_broadcast()
+    # 4. No hierarchy - all agents are equal peers in the conversation
+    # 5. The entrypoint agent is just where users start - it's not a "hub"
+
+  # Workflow configuration
+  config:                                # OPTIONAL: Workflow behavior settings
+    timeout_seconds: 1800                # Max workflow duration
+    max_workflow_turns: 200              # Max conversation turns across all agents
+
+  # Observability
+  observability:                         # OPTIONAL: Tracing and metrics
+    export_traces: true
+    export_metrics: true
+    tags:
+      workflow: peer-to-peer-example
+      pattern: pub-sub
+
+# CRITICAL TOOLS FOR PUB-SUB PATTERN:
+# Agents must have these tools in their spec.tools:
+# - subscribe: Join a topic to receive broadcasts
+# - publish: Send a message to all subscribers on a topic
+# - receive_broadcast: Receive messages from the topic (event-driven)
+#
+# AUTOMATIC SUB-AGENT SPAWNING:
+# When using spec.entrypoint workflows:
+# - Sub-agents (workflow-name:agent-name) auto-spawn when they receive messages
+# - No need for manage_ephemeral_agents tool in coordinator
+# - Just publish to the topic and wait for responses
+# - Server's message queue monitor auto-spawns workflow agents on-demand
+#
+# Example coordinator agent system prompt snippet:
+# """
+# Your workflow participants auto-spawn when they receive messages:
+# - workflow:participant-1
+# - workflow:participant-2
+#
+# WORKFLOW:
+# 1. Subscribe to topic using subscribe(topic="group-chat")
+# 2. Publish your message to the topic
+# 3. WAIT using receive_broadcast(timeout_seconds=30, max_messages=10)
+#    - Responses come back automatically from spawned agents
+#    - Be patient - agents need 10-20 seconds to process
+# 4. Respond to ideas and continue the conversation
+# """
+#
+# Example participant agent system prompt snippet:
+# """
+# You participate in a peer-to-peer conversation via pub-sub.
+# You are auto-spawned when messages arrive for you.
+#
+# WORKFLOW:
+# 1. Subscribe to topic using subscribe(topic="group-chat")
+# 2. Use receive_broadcast() to get messages from other participants
+# 3. Process the messages and formulate your response
+# 4. Use publish(topic="group-chat", message="...") to broadcast your response
+# 5. Continue participating throughout the session
+# """
 
 ---
 # ============================================================================
@@ -295,22 +403,44 @@ spec:
 # COMMUNICATION PATTERNS (for multi-agent coordination)
 # ============================================================================
 #
-# Hub-and-Spoke:
-#   - Central coordinator agent
-#   - Specialists communicate only with coordinator
-#   - Uses: send_message/receive_message
-#   - Example: vacation-planner, customer-health
+# LOOM PROVIDES TRI-MODAL COMMUNICATION:
+# 1. Message Queue: Direct agent-to-agent messages
+#    - Tools: send_message(to_agent, message), receive_message(timeout_seconds)
+#    - Use case: Private 1:1 communication between specific agents
 #
-# Peer-to-Peer Pub-Sub:
-#   - All agents subscribe to shared topic
-#   - Any agent can publish to all others
-#   - Uses: publish/subscribe/receive_broadcast
-#   - Example: dungeon-crawl (party-chat)
+# 2. Broadcast Bus: Topic-based pub-sub messaging
+#    - Tools: subscribe(topic), publish(topic, message), receive_broadcast(timeout_seconds)
+#    - Use case: Group communication where all agents see all messages
+#
+# 3. Shared Memory: Key-value store accessible to all agents
+#    - Tools: shared_memory_write(key, value), shared_memory_read(key)
+#    - Use case: Persistent shared state (not for messages)
+#
+# COMMON COORDINATION PATTERNS:
+#
+# Hub-and-Spoke (using Message Queue):
+#   - Central coordinator agent
+#   - Specialists communicate only with coordinator using send_message/receive_message
+#   - Coordinator routes information and delegates tasks
+#   - Example: vacation-planner, customer-health
+#   - communication.pattern: "hub-and-spoke"
+#   - communication.hub: "coordinator-agent-name"
+#
+# Peer-to-Peer Pub-Sub (using Broadcast Bus):
+#   - All agents subscribe to shared topic using subscribe(topic)
+#   - Any agent publishes to all others using publish(topic, message)
+#   - All agents receive broadcasts using receive_broadcast()
+#   - No hierarchy - all agents are equal peers in group chat
+#   - Example: dungeon-crawl (party-chat), dnd-campaign-builder
+#   - communication.pattern: "peer-to-peer-pub-sub"
+#   - communication.topic: "topic-name"
+#   - communication.entrypoint: "initial-agent-name"
 #
 # Hybrid:
-#   - Combination of direct messages and pub-sub
-#   - Uses: all communication tools
-#   - Example: Complex multi-agent systems
+#   - Combination of direct messages (Message Queue) and pub-sub (Broadcast Bus)
+#   - May also use Shared Memory for persistent state
+#   - Uses: All communication tools as needed
+#   - Example: Complex multi-agent systems with mixed communication needs
 
 # ============================================================================
 # FIELD REFERENCE SUMMARY
@@ -318,10 +448,14 @@ spec:
 #
 # MULTI-AGENT COORDINATION (spec.entrypoint):
 #   Required:
-#     - entrypoint: string (agent name)
+#     - entrypoint: string (agent name that users interact with first)
 #     - agents: list (agent definitions)
 #   Optional:
-#     - communication: object (pattern documentation)
+#     - communication: object (pattern documentation: hub-and-spoke | peer-to-peer-pub-sub)
+#       - pattern: string (required if communication present)
+#       - hub: string (for hub-and-spoke pattern)
+#       - topic: string (for peer-to-peer-pub-sub pattern)
+#       - entrypoint: string (for clarity in peer-to-peer)
 #     - config: object (timeout_seconds, max_workflow_turns)
 #     - observability: object (export_traces, export_metrics, tags)
 #
@@ -364,5 +498,14 @@ spec:
 #   role: string (optional - workflow-specific)
 #   prompt_template: string (optional - for pipeline stages)
 #   tools: list (optional - override tools)
+#
+# REQUIRED TOOLS FOR COMMUNICATION PATTERNS:
+#   Hub-and-Spoke:
+#     - Coordinator: send_message, receive_message
+#     - Specialists: send_message, receive_message
+#   Peer-to-Peer Pub-Sub:
+#     - All agents: subscribe, publish, receive_broadcast
+#   Shared State:
+#     - All agents: shared_memory_write, shared_memory_read
 #
 # ============================================================================

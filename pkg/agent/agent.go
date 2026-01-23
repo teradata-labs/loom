@@ -443,7 +443,7 @@ func (a *Agent) GetConfig() *Config {
 // ROM (Read-Only Memory) provides domain-specific knowledge loaded based on config.Rom
 // formatSystemPromptWithDatetime prepends current date/time information to system prompts.
 // This helps agents maintain temporal awareness and prevents confusion about the current date.
-func formatSystemPromptWithDatetime(prompt string) string {
+func formatSystemPromptWithDatetime(prompt string, workflowCtx *WorkflowCommunicationContext) string {
 	now := time.Now()
 
 	// Format: "Monday, January 2, 2006 at 3:04 PM MST"
@@ -467,7 +467,10 @@ func formatSystemPromptWithDatetime(prompt string) string {
 		"---\n\n",
 		dateStr, timeStr, offsetSign, offsetHours, timezone)
 
-	return header + prompt
+	// Add workflow communication instructions if available
+	workflowInstructions := formatWorkflowCommunicationInstructions(workflowCtx)
+
+	return header + workflowInstructions + prompt
 }
 
 func (a *Agent) getSystemPrompt() string {
@@ -488,9 +491,9 @@ func (a *Agent) getSystemPrompt() string {
 	if a.config != nil && a.config.SystemPrompt != "" {
 		// Combine ROM + System Prompt
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent + "\n\n---\n\n" + a.config.SystemPrompt)
+			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt)
+		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// Try loading from PromptRegistry as fallback
@@ -514,7 +517,7 @@ func (a *Agent) getSystemPrompt() string {
 		if streamingSupported {
 			prompt, err := a.prompts.Get(context.Background(), "agent.system_with_streaming", vars)
 			if err == nil && prompt != "" {
-				return formatSystemPromptWithDatetime(prompt)
+				return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
 			}
 			// Fall through to standard prompt if streaming prompt not found
 		}
@@ -522,13 +525,13 @@ func (a *Agent) getSystemPrompt() string {
 		// Try loading system prompt with patterns if pattern library is available
 		prompt, err := a.prompts.Get(context.Background(), "agent.system", vars)
 		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt)
+			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
 		}
 
 		// Fall back to basic system prompt
 		prompt, err = a.prompts.Get(context.Background(), "agent.system_basic", vars)
 		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt)
+			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
 		}
 	}
 
@@ -536,18 +539,59 @@ func (a *Agent) getSystemPrompt() string {
 	if a.config.SystemPrompt != "" {
 		// Combine ROM + System Prompt
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent + "\n\n---\n\n" + a.config.SystemPrompt)
+			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt)
+		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// If we have ROM but no system prompt, just use ROM
 	if romContent != "" {
-		return formatSystemPromptWithDatetime(romContent)
+		return formatSystemPromptWithDatetime(romContent, a.workflowCommContext)
 	}
 
 	// Final fallback - minimal instruction
-	return formatSystemPromptWithDatetime(`Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`)
+	return formatSystemPromptWithDatetime(`Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`, a.workflowCommContext)
+}
+
+// SetWorkflowCommunicationContext sets the workflow communication context for this agent.
+// This context is used to inject dynamic communication instructions into the system prompt.
+func (a *Agent) SetWorkflowCommunicationContext(ctx *WorkflowCommunicationContext) {
+	a.workflowCommContext = ctx
+}
+
+// formatWorkflowCommunicationInstructions generates concise, directive communication instructions
+// based on the agent's workflow context. These instructions are injected at the top of the system
+// prompt (after timestamp) to ensure LLMs see and follow them.
+func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) string {
+	if ctx == nil {
+		return ""
+	}
+
+	var instructions strings.Builder
+
+	// Pub-sub instructions (if subscribed to topics)
+	if len(ctx.SubscribedTopics) > 0 {
+		instructions.WriteString("🔔 WORKFLOW COMMUNICATION (PUB-SUB)\n")
+		instructions.WriteString(fmt.Sprintf("Subscribed topics: %s\n", strings.Join(ctx.SubscribedTopics, ", ")))
+		instructions.WriteString("→ To post: publish(topic=\"topic-name\", message=\"your message\")\n")
+		instructions.WriteString("→ Responses auto-inject as \"[BROADCAST FROM agent]: ...\"\n")
+		instructions.WriteString("→ Do NOT poll - you will be notified automatically\n\n")
+	}
+
+	// Point-to-point instructions (if available agents)
+	if len(ctx.AvailableAgents) > 0 {
+		instructions.WriteString("🔔 WORKFLOW COMMUNICATION (DIRECT MESSAGING)\n")
+		instructions.WriteString(fmt.Sprintf("Available agents: %s\n", strings.Join(ctx.AvailableAgents, ", ")))
+		instructions.WriteString("→ To send: send_message(to_agent=\"agent-id\", message=\"task description\")\n")
+		instructions.WriteString("→ Responses auto-inject as \"[MESSAGE FROM agent]: ...\"\n")
+		instructions.WriteString("→ Do NOT poll - you will be notified automatically\n\n")
+	}
+
+	if instructions.Len() > 0 {
+		instructions.WriteString("---\n\n")
+	}
+
+	return instructions.String()
 }
 
 // getGuidanceMessage loads a guidance message from PromptRegistry or returns default.
@@ -1572,21 +1616,26 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 	var result *shuttle.Result
 	var err error
 
-	// CRITICAL FIX: Add session_id to context for tools that need it
-	// Tools like recall_conversation, search_conversation, and clear_recalled_context
-	// expect session_id to be available in context
-	// Wrap the context to add session_id while preserving the Context interface
+	// CRITICAL FIX: Add session_id and agent_id to context for tools that need it
+	// Tools like recall_conversation, search_conversation, clear_recalled_context, and agent_management
+	// expect session_id and agent_id to be available in context
+	// Wrap the context to add both while preserving the Context interface
 	ctxWithSession := &contextWithValue{
 		Context: ctx,
 		key:     "session_id",
 		val:     sessionID,
+	}
+	ctxWithAgent := &contextWithValue{
+		Context: ctxWithSession,
+		key:     "agent_id",
+		val:     a.config.Name,
 	}
 
 	// Execute with circuit breaker if enabled
 	if a.circuitBreakers != nil {
 		breaker := a.circuitBreakers.GetBreaker(toolName)
 		cbErr := breaker.Execute(func() error {
-			result, err = a.executor.Execute(ctxWithSession, toolName, input)
+			result, err = a.executor.Execute(ctxWithAgent, toolName, input)
 			return err
 		})
 
@@ -1596,7 +1645,7 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 		}
 	} else {
 		// No circuit breaker - execute directly
-		result, err = a.executor.Execute(ctxWithSession, toolName, input)
+		result, err = a.executor.Execute(ctxWithAgent, toolName, input)
 	}
 
 	// If execution succeeded and guardrails enabled, clear error record

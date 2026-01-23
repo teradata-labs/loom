@@ -1,0 +1,143 @@
+# Pipeline Pattern - Sequential Data Processing
+# Use case: ETL pipeline with data validation, transformation, and loading
+
+name: data_etl_pipeline
+description: Sequential data processing pipeline with validation and transformation
+
+agents:
+  - id: extractor
+    role: Data Extractor
+    goal: Extract raw data from source systems
+    backstory: |
+      You are a data extraction specialist who retrieves data from various sources
+      including databases, APIs, and files. You validate data quality at extraction.
+    
+  - id: validator
+    role: Data Validator
+    goal: Validate data quality and completeness
+    backstory: |
+      You are a data quality expert who ensures extracted data meets quality standards.
+      You check for nulls, duplicates, schema compliance, and business rules.
+    
+  - id: transformer
+    role: Data Transformer
+    goal: Transform and enrich data according to business rules
+    backstory: |
+      You are a data engineer who transforms raw data into analytics-ready formats.
+      You apply business logic, calculate derived fields, and normalize data.
+    
+  - id: loader
+    role: Data Loader
+    goal: Load transformed data into target systems
+    backstory: |
+      You are a data loading specialist who efficiently loads data into warehouses,
+      databases, and data lakes with proper error handling and logging.
+
+tasks:
+  - id: extract_data
+    agent: extractor
+    description: |
+      Extract customer transaction data from the source database.
+      
+      Connect to the source system and extract:
+      - Customer profiles
+      - Transaction records from the last 24 hours
+      - Product metadata
+      
+      Store extracted data in shared memory under key 'raw_data'.
+      Include row counts and extraction timestamp in metadata.
+    expected_output: |
+      JSON object containing:
+      - extraction_status: success/failure
+      - row_count: number of records extracted
+      - timestamp: extraction timestamp
+      - data_location: shared memory key
+    context: []
+
+  - id: validate_data
+    agent: validator
+    description: |
+      Validate the extracted data for quality and completeness.
+      
+      Read raw_data from shared memory and check:
+      - Schema compliance (all required fields present)
+      - Data type validation
+      - Null checks on mandatory fields
+      - Duplicate detection (customer_id + transaction_id)
+      - Business rule validation (transaction_amount > 0, valid dates)
+      
+      Calculate data quality score (0-100).
+      Store validation report in shared memory under key 'validation_report'.
+      Only mark as passed if quality score >= 95.
+    expected_output: |
+      Validation report with:
+      - quality_score: 0-100
+      - passed: boolean
+      - issues_found: array of validation issues
+      - records_validated: count
+    context:
+      - extract_data
+
+  - id: transform_data
+    agent: transformer
+    description: |
+      Transform validated data according to business rules.
+      
+      Read raw_data from shared memory and apply:
+      - Date standardization (ISO 8601 format)
+      - Currency conversions (to USD)
+      - Customer segmentation (high/medium/low value)
+      - Calculate derived metrics:
+        * customer_lifetime_value
+        * transaction_frequency
+        * average_order_value
+      - Normalize product categories
+      
+      Store transformed data in shared memory under key 'transformed_data'.
+    expected_output: |
+      Transformation summary:
+      - records_transformed: count
+      - new_fields_added: list of derived fields
+      - transformation_rules_applied: count
+      - data_location: shared memory key
+    context:
+      - validate_data
+
+  - id: load_data
+    agent: loader
+    description: |
+      Load transformed data into the target data warehouse.
+      
+      Read transformed_data from shared memory and:
+      - Connect to Teradata data warehouse
+      - Create staging table if needed
+      - Perform upsert operation (update existing, insert new)
+      - Update load metadata table with run statistics
+      - Archive processed data
+      
+      Final report should include load statistics and any errors.
+    expected_output: |
+      Load report:
+      - records_loaded: count
+      - records_updated: count
+      - records_inserted: count
+      - load_duration_seconds: float
+      - status: success/partial/failure
+    context:
+      - transform_data
+
+workflow:
+  type: pipeline
+  
+output:
+  format: json
+  include_context: true
+  
+metadata:
+  version: "1.0"
+  category: data_pipeline
+  estimated_duration: "5-10 minutes"
+  tags:
+    - etl
+    - data-pipeline
+    - sequential

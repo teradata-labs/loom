@@ -549,9 +549,9 @@ graph TB
         AgentA[Agent A]
         AgentB[Agent B]
 
-        subgraph Mode1["1. Message Queue"]
+        subgraph Mode1["1. Message Queue (Event-Driven)"]
             SendMsg[send_message<br/>ordered, FIFO]
-            ReceiveMsg[receive_message]
+            AutoInject[auto-inject<br/>via Chat()]
         end
 
         subgraph Mode2["2. Shared Memory"]
@@ -560,9 +560,9 @@ graph TB
             Read[read key<br/>zero-copy, tiered]
         end
 
-        subgraph Mode3["3. Broadcast Bus"]
+        subgraph Mode3["3. Broadcast Bus (Event-Driven)"]
             Publish[publish topic]
-            Subscribe[subscribe topic<br/>pub/sub]
+            AutoSubscribe[auto-subscribe<br/>auto-inject]
         end
 
         subgraph Mode4["4. Interrupt Channel"]
@@ -573,19 +573,17 @@ graph TB
         end
 
         AgentA -->|send| SendMsg
-        SendMsg --> AgentB
-        AgentB -->|receive| ReceiveMsg
-        ReceiveMsg --> AgentA
+        SendMsg -->|notify| AutoInject
+        AutoInject --> AgentB
 
         AgentA --> Write
         Write --> Storage
         Storage --> Read
         Read --> AgentB
 
-        AgentA --> Publish
-        Publish --> AgentB
-        AgentB --> Subscribe
-        Subscribe --> AgentA
+        AgentA -->|publish| Publish
+        Publish -->|auto-notify| AutoSubscribe
+        AutoSubscribe --> AgentB
 
         AgentA --> LearningAnalyze
         LearningAnalyze --> AgentB

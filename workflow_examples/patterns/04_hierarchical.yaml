@@ -1,0 +1,374 @@
+# Hierarchical Pattern - Multi-level Delegation
+# Use case: Research report generation with specialist teams
+
+name: research_report_hierarchical
+description: Hierarchical research and report generation with specialist teams
+
+agents:
+  # Executive Level
+  - id: research_director
+    role: Research Director
+    goal: Oversee research project and synthesize final comprehensive report
+    backstory: |
+      You are a senior research director who coordinates research teams, ensures
+      quality standards, synthesizes findings, and produces executive-level reports.
+  
+  # Team Lead Level
+  - id: market_lead
+    role: Market Research Team Lead
+    goal: Lead market analysis research team
+    backstory: |
+      You coordinate market researchers to analyze market size, trends, competitors,
+      and customer segments. You synthesize team findings into market insights.
+    
+  - id: technical_lead
+    role: Technical Research Team Lead
+    goal: Lead technical research team
+    backstory: |
+      You coordinate technical researchers to evaluate technology stack, architecture,
+      scalability, and technical feasibility. You compile technical recommendations.
+    
+  - id: financial_lead
+    role: Financial Analysis Team Lead
+    goal: Lead financial analysis team
+    backstory: |
+      You coordinate financial analysts to assess costs, revenue projections, ROI,
+      and financial risks. You create financial models and recommendations.
+  
+  # Specialist Level - Market Team
+  - id: competitor_analyst
+    role: Competitor Analysis Specialist
+    goal: Analyze competitor landscape
+    backstory: |
+      You research competitors' products, pricing, market positioning, strengths,
+      and weaknesses to identify competitive advantages and threats.
+    
+  - id: customer_analyst
+    role: Customer Research Specialist
+    goal: Analyze customer segments and needs
+    backstory: |
+      You research target customer segments, pain points, buying behaviors, and
+      preferences through surveys, interviews, and data analysis.
+  
+  # Specialist Level - Technical Team
+  - id: architecture_specialist
+    role: Technical Architecture Specialist
+    goal: Evaluate technical architecture options
+    backstory: |
+      You analyze technology stacks, architecture patterns, cloud platforms, and
+      infrastructure to recommend optimal technical solutions.
+    
+  - id: security_specialist
+    role: Security Assessment Specialist
+    goal: Assess security and compliance requirements
+    backstory: |
+      You evaluate security requirements, compliance needs (GDPR, HIPAA, SOC2),
+      vulnerability risks, and security best practices.
+  
+  # Specialist Level - Financial Team
+  - id: cost_analyst
+    role: Cost Analysis Specialist
+    goal: Analyze implementation and operational costs
+    backstory: |
+      You estimate development costs, infrastructure costs, operational expenses,
+      and create detailed cost models for projects.
+    
+  - id: revenue_analyst
+    role: Revenue Projection Specialist
+    goal: Project revenue and business value
+    backstory: |
+      You forecast revenue streams, estimate customer acquisition costs, calculate
+      lifetime value, and project ROI timelines.
+
+tasks:
+  # Level 3 - Specialist Tasks (Leaves)
+  
+  - id: analyze_competitors
+    agent: competitor_analyst
+    description: |
+      Conduct comprehensive competitor analysis.
+      
+      Research:
+      - Identify top 5 direct competitors
+      - Analyze their product offerings and features
+      - Compare pricing models
+      - Assess market positioning and messaging
+      - Identify competitive advantages and gaps
+      
+      Store findings in shared memory under key 'competitor_analysis'.
+    expected_output: |
+      Competitor analysis report with:
+      - competitor_profiles: top 5 competitors detailed
+      - competitive_matrix: feature comparison
+      - market_gaps: opportunities
+      - threats: competitive risks
+    context: []
+
+  - id: analyze_customers
+    agent: customer_analyst
+    description: |
+      Research target customer segments and needs.
+      
+      Analyze:
+      - Define 3-5 customer segments
+      - Document pain points and needs per segment
+      - Assess willingness to pay
+      - Identify decision-making process and stakeholders
+      - Customer acquisition channels
+      
+      Store findings in shared memory under key 'customer_analysis'.
+    expected_output: |
+      Customer research report with:
+      - customer_segments: detailed profiles
+      - pain_points: prioritized list
+      - buying_behavior: decision process
+      - acquisition_strategy: channel recommendations
+    context: []
+
+  - id: evaluate_architecture
+    agent: architecture_specialist
+    description: |
+      Evaluate technical architecture options.
+      
+      Assess:
+      - Recommended technology stack (languages, frameworks)
+      - Architecture pattern (microservices, monolith, serverless)
+      - Cloud platform options (AWS, Azure, GCP)
+      - Database solutions (SQL, NoSQL, data warehouse)
+      - Scalability approach
+      
+      Store findings in shared memory under key 'architecture_evaluation'.
+    expected_output: |
+      Architecture assessment with:
+      - recommended_stack: technologies with rationale
+      - architecture_diagram: high-level design
+      - scalability_plan: handling growth
+      - technology_risks: concerns and mitigations
+    context: []
+
+  - id: assess_security
+    agent: security_specialist
+    description: |
+      Assess security and compliance requirements.
+      
+      Evaluate:
+      - Compliance requirements (GDPR, HIPAA, SOC2, etc.)
+      - Data protection and encryption needs
+      - Authentication and authorization approach
+      - Security monitoring and incident response
+      - Vulnerability management
+      
+      Store findings in shared memory under key 'security_assessment'.
+    expected_output: |
+      Security assessment with:
+      - compliance_requirements: regulations to meet
+      - security_controls: required safeguards
+      - risk_assessment: vulnerabilities and priorities
+      - implementation_roadmap: security timeline
+    context: []
+
+  - id: analyze_costs
+    agent: cost_analyst
+    description: |
+      Analyze implementation and operational costs.
+      
+      Estimate:
+      - Development costs (team size, timeline, rates)
+      - Infrastructure costs (cloud, hosting, tools)
+      - Operational costs (support, maintenance, monitoring)
+      - Licensing and subscription costs
+      - One-time vs recurring cost breakdown
+      
+      Store findings in shared memory under key 'cost_analysis'.
+    expected_output: |
+      Cost analysis with:
+      - total_investment: upfront costs
+      - annual_operating_cost: recurring expenses
+      - cost_breakdown: detailed categories
+      - cost_optimization_opportunities: savings
+    context: []
+
+  - id: project_revenue
+    agent: revenue_analyst
+    description: |
+      Project revenue and business value.
+      
+      Calculate:
+      - Revenue model (subscription, usage-based, etc.)
+      - Customer acquisition cost (CAC)
+      - Customer lifetime value (LTV)
+      - 3-year revenue projections
+      - Break-even analysis
+      - ROI timeline
+      
+      Store findings in shared memory under key 'revenue_projections'.
+    expected_output: |
+      Revenue projections with:
+      - revenue_model: monetization approach
+      - three_year_forecast: quarterly projections
+      - unit_economics: CAC, LTV, margins
+      - roi_analysis: payback period and ROI
+    context: []
+
+  # Level 2 - Team Lead Tasks (Consolidate specialists)
+  
+  - id: consolidate_market_research
+    agent: market_lead
+    description: |
+      Consolidate market research from specialist findings.
+      
+      Read from shared memory:
+      - competitor_analysis
+      - customer_analysis
+      
+      Create integrated market research report:
+      - Market opportunity size and growth
+      - Target customer segments and personas
+      - Competitive positioning strategy
+      - Market entry recommendations
+      - Go-to-market strategy
+      
+      Store report in shared memory under key 'market_research_report'.
+    expected_output: |
+      Market research report with:
+      - market_opportunity: size and growth rate
+      - target_segments: prioritized customers
+      - positioning: competitive differentiation
+      - gtm_strategy: market entry plan
+      - key_risks: market uncertainties
+    context:
+      - analyze_competitors
+      - analyze_customers
+
+  - id: consolidate_technical_research
+    agent: technical_lead
+    description: |
+      Consolidate technical research from specialist findings.
+      
+      Read from shared memory:
+      - architecture_evaluation
+      - security_assessment
+      
+      Create integrated technical recommendations:
+      - Recommended technical approach
+      - Architecture and technology stack
+      - Security and compliance plan
+      - Technical risks and mitigation
+      - Development timeline and milestones
+      
+      Store report in shared memory under key 'technical_research_report'.
+    expected_output: |
+      Technical research report with:
+      - recommended_approach: technical solution
+      - architecture: detailed design
+      - security_plan: compliance and controls
+      - implementation_timeline: phases and milestones
+      - technical_risks: challenges and solutions
+    context:
+      - evaluate_architecture
+      - assess_security
+
+  - id: consolidate_financial_analysis
+    agent: financial_lead
+    description: |
+      Consolidate financial analysis from specialist findings.
+      
+      Read from shared memory:
+      - cost_analysis
+      - revenue_projections
+      
+      Create integrated financial model:
+      - 3-year P&L projection
+      - Investment requirements and funding
+      - ROI analysis and sensitivity
+      - Financial risks and scenarios
+      - Funding recommendations
+      
+      Store report in shared memory under key 'financial_analysis_report'.
+    expected_output: |
+      Financial analysis report with:
+      - financial_model: 3-year projections
+      - investment_required: funding needs
+      - roi_analysis: return timeline
+      - scenarios: best/base/worst case
+      - recommendations: financial strategy
+    context:
+      - analyze_costs
+      - project_revenue
+
+  # Level 1 - Executive Task (Final synthesis)
+  
+  - id: create_executive_report
+    agent: research_director
+    description: |
+      Create comprehensive executive research report.
+      
+      Read from shared memory:
+      - market_research_report
+      - technical_research_report
+      - financial_analysis_report
+      
+      Synthesize final report with:
+      1. Executive Summary (1-2 pages)
+      2. Market Opportunity and Strategy
+      3. Technical Approach and Architecture
+      4. Financial Projections and ROI
+      5. Risk Assessment (market, technical, financial)
+      6. Recommendations (go/no-go decision with rationale)
+      7. Next Steps and Timeline
+      
+      Create professional report ready for executive presentation.
+      Store in shared memory under key 'executive_research_report'.
+    expected_output: |
+      Executive research report with:
+      - executive_summary: key findings and recommendation
+      - detailed_sections: market, technical, financial
+      - integrated_analysis: cross-functional insights
+      - risk_assessment: comprehensive risk view
+      - recommendation: go/no-go with supporting evidence
+      - next_steps: action plan and timeline
+    context:
+      - consolidate_market_research
+      - consolidate_technical_research
+      - consolidate_financial_analysis
+
+workflow:
+  type: hierarchical
+  structure:
+    level_1:  # Executive
+      - create_executive_report
+    level_2:  # Team Leads
+      - consolidate_market_research
+      - consolidate_technical_research
+      - consolidate_financial_analysis
+    level_3:  # Specialists
+      - analyze_competitors
+      - analyze_customers
+      - evaluate_architecture
+      - assess_security
+      - analyze_costs
+      - project_revenue
+  
+output:
+  format: markdown
+  include_context: true
+  primary_result: create_executive_report
+  
+metadata:
+  version: "1.0"
+  category: hierarchical
+  estimated_duration: "15-20 minutes"
+  benefits:
+    - "Specialized deep expertise per domain"
+    - "Structured delegation and synthesis"
+    - "Comprehensive multi-dimensional analysis"
+    - "Executive-ready deliverables"
+  use_cases:
+    - "Business case development"
+    - "Strategic planning"
+    - "Investment decisions"
+    - "Product launches"
+  tags:
+    - research
+    - hierarchical
+    - synthesis

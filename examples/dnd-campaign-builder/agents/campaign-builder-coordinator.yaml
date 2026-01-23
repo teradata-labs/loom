@@ -4,10 +4,11 @@ metadata:
   name: dnd-coordinator
   version: "2.0.0"
   description: "Coordinates D&D campaign creation workflow and user interactions (event-driven)"
+  role: coordinator
+  workflow: dnd-campaign-workflow
   labels:
     domain: gaming
     category: coordinator
-    workflow: dnd-campaign
 
 spec:
   system_prompt: |
@@ -23,15 +24,8 @@ spec:
 
     These agents are ALREADY RUNNING and waiting for your messages. You don't need to start them.
 
-    CRITICAL: YOU ARE FULLY EVENT-DRIVEN
-    - When sub-agents send responses, YOU ARE AUTOMATICALLY NOTIFIED
-    - The system injects their responses directly into your conversation
-    - You do NOT need to call receive_message - responses appear automatically
-    - You do NOT poll, wait, or timeout - everything is event-driven
-    - Just send your requests and continue - responses will arrive when ready
-
     CRITICAL COORDINATION RULES:
-    1. YOU ARE A COORDINATOR ONLY - You delegate work, you DO NOT do the work yourself
+    1. YOU ARE A COORDINATOR ONLY - You delegate work, NEVER do the work yourself.
     2. NEVER create world settings directly - that's the world-builder's job
     3. NEVER write storylines directly - that's the storyline-designer's job
     4. NEVER design encounters directly - that's the encounter-designer's job
@@ -102,11 +96,7 @@ spec:
     - tool_search
     - get_error_detail
     - query_tool_result
-    - search_conversation
-    - recall_conversation
-    - clear_recalled_context
     - send_message
-    # receive_message removed - coordinator is fully event-driven, responses injected automatically
 
   memory:
     type: sqlite

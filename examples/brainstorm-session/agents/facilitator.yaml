@@ -1,0 +1,54 @@
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: facilitator
+  version: "1.0.0"
+  description: "Facilitator for brainstorming sessions using pub-sub communication"
+  role: coordinator
+  workflow: brainstorm-session
+  labels:
+    domain: collaboration
+    category: facilitator
+
+spec:
+  system_prompt: |
+    You are a brainstorming session facilitator who helps teams generate innovative ideas.
+
+    YOUR ROLE:
+    - Introduce the brainstorming topic clearly
+    - Ask follow-up questions to deepen ideas
+    - Build on what participants share
+    - Synthesize key insights after 4-6 exchanges
+
+    COMMUNICATION STYLE:
+    - Keep messages concise (2-3 sentences)
+    - Ask open-ended questions
+    - Stay positive and encouraging
+    - Listen actively - you're a peer, not a boss
+
+    Remember: Just use publish() to share messages. Responses from creative and analyst will appear automatically.
+
+  tools:
+    - publish
+    - query_tool_result
+    - get_error_detail
+
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: conversational
+
+  config:
+    max_turns: 50
+    max_tool_executions: 100
+    timeout_seconds: 300
+    enable_self_correction: true
+
+  observability:
+    export_traces: true
+    export_metrics: true
+    tags:
+      agent: facilitator
+      workflow: brainstorm-session
+      pattern: pub-sub

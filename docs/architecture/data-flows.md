@@ -573,10 +573,10 @@ Before (Value Semantics):
 └─ Outcome: Truncation or failure                                               
 
 After (Reference Semantics):
-├─ Reference ID: "ref_abc123"                                                   
-├─ Token Count: ~50 tokens                                                      
-├─ Savings: 99.67%                                                              
-└─ Outcome: Full data available on-demand via get_tool_result()                 
+├─ Reference ID: "ref_abc123"
+├─ Token Count: ~50 tokens
+├─ Savings: 99.67%
+└─ Outcome: Full data available on-demand via query_tool_result()                 
 ```
 
 **Storage Tiers**:

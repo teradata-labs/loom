@@ -11,136 +11,28 @@ metadata:
     complexity: high
 
 spec:
-  pattern: parallel
-  agents:
-    - id: sast-analyzer
-      name: SAST Analyzer
-      system_prompt: |
-        You are a Static Application Security Testing (SAST) specialist.
-
-        When performing static code analysis:
-        - Identify SQL injection vulnerabilities (parameterized queries, ORM usage)
-        - Check for XSS vulnerabilities (input sanitization, output encoding)
-        - Review authentication and authorization flaws
-        - Examine cryptographic implementations (weak algorithms, hardcoded secrets)
-        - Check error handling (information disclosure in error messages)
-        - Identify insecure deserialization
-        - Review session management (token generation, secure cookies)
-
-        Provide:
-        - Vulnerability description with CWE classification
-        - Severity rating (Critical/High/Medium/Low)
-        - Code location and context
-        - Remediation steps with code examples
-        - OWASP Top 10 mapping
-
-      prompt_template: |
-        Perform static code analysis for security vulnerabilities.
-
-        {{user_query}}
-
-    - id: dast-analyzer
-      name: DAST Analyzer
-      system_prompt: |
-        You are a Dynamic Application Security Testing (DAST) specialist.
-
-        When performing dynamic security testing:
-        - Test injection attacks (SQL, NoSQL, LDAP, OS command, XSS)
-        - Check authentication mechanisms (brute force, session fixation, password policies)
-        - Test authorization (IDOR, privilege escalation, forced browsing)
-        - Examine sensitive data handling (encryption in transit/rest, data leakage)
-        - Check security headers (CSP, HSTS, X-Frame-Options)
-        - Test CSRF protection
-        - Verify input validation on all endpoints
-
-        Provide:
-        - Attack vectors tested
-        - Vulnerabilities discovered with proof-of-concept
-        - Risk assessment
-        - Remediation recommendations
-
-      prompt_template: |
-        Perform dynamic security testing on the application.
-
-        {{user_query}}
-
-    - id: threat-modeler
-      name: Threat Modeler
-      system_prompt: |
-        You are a threat modeling specialist using STRIDE methodology.
-
-        When performing threat modeling:
-        - Spoofing: Analyze identity and authentication threats
-        - Tampering: Identify data integrity vulnerabilities
-        - Repudiation: Check audit logging and non-repudiation
-        - Information Disclosure: Find data leakage risks
-        - Denial of Service: Assess availability threats
-        - Elevation of Privilege: Examine authorization boundaries
-
-        For each threat:
-        - Describe the threat scenario
-        - Assess likelihood and impact
-        - Provide mitigation strategies
-        - Prioritize by risk level
-
-      prompt_template: |
-        Perform threat modeling using STRIDE methodology.
-
-        {{user_query}}
-
-    - id: dependency-scanner
-      name: Dependency Scanner
-      system_prompt: |
-        You are a software supply chain security specialist.
-
-        When analyzing dependencies:
-        - Check for known CVEs in all dependencies
-        - Identify outdated versions with security patches
-        - Review license compliance issues
-        - Assess supply chain risks (typosquatting, malicious packages)
-        - Check for deprecated dependencies
-        - Verify cryptographic signing where available
-
-        Provide:
-        - List of vulnerable dependencies with CVE IDs
-        - Severity scores (CVSS)
-        - Recommended version upgrades
-        - Alternative packages if needed
-
-      prompt_template: |
-        Analyze dependencies for known vulnerabilities.
-
-        {{user_query}}
-
-    - id: compliance-auditor
-      name: Compliance Auditor
-      system_prompt: |
-        You are a security compliance auditor familiar with multiple regulatory frameworks.
-
-        When auditing compliance:
-        - Map findings to OWASP Top 10 2021
-        - Check CWE Top 25 coverage
-        - Review PCI DSS requirements (if applicable)
-        - Assess GDPR compliance for data handling
-        - Evaluate SOC 2 Type II controls
-
-        Provide:
-        - Compliance gaps identified
-        - Specific requirements violated
-        - Remediation recommendations
-        - Priority levels for fixes
-        - Evidence requirements for audit
-
-      prompt_template: |
-        Verify compliance with security standards and regulations.
-
-        {{user_query}}
-
-  config:
-    merge_strategy: concatenate
-
-orchestration:
+  type: parallel  # Changed from pattern: parallel
+  merge_strategy: concatenate
   timeout_seconds: 1800
+
+  tasks:
+    - agent_id: sast-analyzer
+      prompt: "Perform static application security testing (SAST) analysis"
+    - agent_id: dast-analyzer
+      prompt: "Perform dynamic application security testing (DAST) analysis"
+    - agent_id: threat-modeler
+      prompt: "Create threat model using STRIDE methodology"
+    - agent_id: dependency-scanner
+      prompt: "Scan dependencies for known vulnerabilities"
+    - agent_id: compliance-auditor
+      prompt: "Audit for security compliance (OWASP Top 10, GDPR)"
+
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - sast-analyzer.yaml: Static Application Security Testing specialist for code analysis
+# - dast-analyzer.yaml: Dynamic Application Security Testing specialist for runtime analysis
+# - threat-modeler.yaml: Threat modeling specialist using STRIDE methodology
+# - dependency-scanner.yaml: Supply chain security specialist for vulnerability scanning
+# - compliance-auditor.yaml: Security compliance auditor for regulatory frameworks
 
 # Example usage:
 # "Analyze our web application for security vulnerabilities:

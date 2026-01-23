@@ -1,0 +1,147 @@
+# Parallel Pattern - Independent Concurrent Tasks
+# Use case: Multi-channel marketing campaign analysis
+
+name: marketing_analysis_parallel
+description: Analyze multiple marketing channels concurrently for campaign performance
+
+agents:
+  - id: email_analyst
+    role: Email Marketing Analyst
+    goal: Analyze email campaign performance metrics
+    backstory: |
+      You specialize in email marketing analytics, tracking open rates, click-through
+      rates, conversions, and subscriber engagement across email campaigns.
+    
+  - id: social_analyst
+    role: Social Media Analyst
+    goal: Analyze social media campaign performance
+    backstory: |
+      You are an expert in social media analytics, measuring engagement, reach,
+      impressions, and conversions across platforms like Facebook, Twitter, LinkedIn.
+    
+  - id: paid_search_analyst
+    role: Paid Search Analyst
+    goal: Analyze paid search campaign performance
+    backstory: |
+      You specialize in PPC analytics, tracking CPC, CTR, quality scores, and ROAS
+      across Google Ads, Bing Ads, and other search platforms.
+    
+  - id: content_analyst
+    role: Content Marketing Analyst
+    goal: Analyze content marketing performance
+    backstory: |
+      You analyze blog posts, whitepapers, videos, and other content marketing efforts,
+      measuring traffic, engagement time, downloads, and lead generation.
+
+tasks:
+  - id: analyze_email
+    agent: email_analyst
+    description: |
+      Analyze email marketing campaign performance for Q4 2025.
+      
+      Metrics to analyze:
+      - Total emails sent, delivered, bounced
+      - Open rate, click-through rate, conversion rate
+      - List growth and unsubscribe rate
+      - Revenue attributed to email campaigns
+      - Top performing subject lines and content
+      - Segmentation performance
+      
+      Store results in shared memory under key 'email_analysis'.
+    expected_output: |
+      Email performance report with:
+      - overall_metrics: key performance indicators
+      - top_campaigns: best 5 campaigns by conversion
+      - recommendations: 3-5 actionable insights
+      - revenue_impact: dollar value
+    context: []
+
+  - id: analyze_social
+    agent: social_analyst
+    description: |
+      Analyze social media campaign performance for Q4 2025.
+      
+      Metrics to analyze across all platforms:
+      - Total reach, impressions, engagement rate
+      - Follower growth and demographics
+      - Top performing posts and content types
+      - Social conversions and assisted conversions
+      - Sentiment analysis of comments/mentions
+      - Platform-specific performance (FB, Twitter, LinkedIn)
+      
+      Store results in shared memory under key 'social_analysis'.
+    expected_output: |
+      Social media performance report with:
+      - platform_metrics: breakdown by platform
+      - engagement_trends: weekly/monthly patterns
+      - viral_content: top performing posts
+      - recommendations: optimization suggestions
+    context: []
+
+  - id: analyze_paid_search
+    agent: paid_search_analyst
+    description: |
+      Analyze paid search campaign performance for Q4 2025.
+      
+      Metrics to analyze:
+      - Total spend, impressions, clicks
+      - Average CPC, CTR, conversion rate
+      - Quality scores by keyword group
+      - ROAS (Return on Ad Spend)
+      - Top performing keywords and ad copy
+      - Geographic and device performance
+      
+      Store results in shared memory under key 'paid_search_analysis'.
+    expected_output: |
+      Paid search performance report with:
+      - spend_efficiency: cost metrics
+      - keyword_performance: top and bottom keywords
+      - ad_copy_insights: winning variations
+      - optimization_opportunities: budget reallocation suggestions
+    context: []
+
+  - id: analyze_content
+    agent: content_analyst
+    description: |
+      Analyze content marketing performance for Q4 2025.
+      
+      Metrics to analyze:
+      - Blog traffic, time on page, bounce rate
+      - Content downloads (whitepapers, ebooks)
+      - Video views and completion rates
+      - Lead generation from content
+      - SEO performance (rankings, organic traffic)
+      - Content engagement by topic/format
+      
+      Store results in shared memory under key 'content_analysis'.
+    expected_output: |
+      Content marketing report with:
+      - traffic_metrics: visitor and engagement data
+      - conversion_funnel: content-to-lead performance
+      - top_content: best performing assets
+      - content_gaps: topics to create
+    context: []
+
+workflow:
+  type: parallel
+  # All tasks execute simultaneously
+  # No dependencies between tasks
+  # Results collected when all complete
+
+output:
+  format: json
+  include_context: true
+  aggregation_strategy: collect_all  # Collect all results
+  
+metadata:
+  version: "1.0"
+  category: parallel_analysis
+  estimated_duration: "3-5 minutes"
+  benefits:
+    - "4x faster than sequential execution"
+    - "Independent analysis prevents bias"
+    - "Enables real-time comparison"
+  tags:
+    - marketing
+    - parallel
+    - analytics

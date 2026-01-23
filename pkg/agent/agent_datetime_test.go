@@ -24,7 +24,7 @@ func TestFormatSystemPromptWithDatetime(t *testing.T) {
 	now := time.Now()
 	prompt := "You are a helpful agent."
 
-	result := formatSystemPromptWithDatetime(prompt)
+	result := formatSystemPromptWithDatetime(prompt, nil)
 
 	// Verify structure
 	if !strings.Contains(result, "CURRENT DATE AND TIME") {
@@ -103,7 +103,7 @@ func TestGetSystemPromptIncludesDatetime(t *testing.T) {
 
 func TestDatetimeFormatReadability(t *testing.T) {
 	prompt := "Agent instructions"
-	result := formatSystemPromptWithDatetime(prompt)
+	result := formatSystemPromptWithDatetime(prompt, nil)
 
 	// Check for day of week (helps LLMs understand temporal context)
 	daysOfWeek := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}

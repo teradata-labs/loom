@@ -577,21 +577,15 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}
 	}
 
-	// AUTO-VALIDATION: Check if command wrote to ~/.loom/agents/ or ~/.loom/workflows/
-	// If so, validate the YAML files that were modified
-	if success {
-		validationOutput := autoValidateConfigFiles(command, stdout, cleanWorkingDir)
-		if validationOutput != "" {
-			// Append validation results to stdout
-			if stdout != "" {
-				stdout += "\n\n"
-			}
-			stdout += validationOutput
-
-			// Update result data with validation output
-			result.Data.(map[string]interface{})["stdout"] = stdout
-		}
-	}
+	// NOTE: Auto-validation removed - agent_management tool now handles validation upfront
+	// The agent_management tool validates YAML before writing files, providing immediate feedback.
+	// This is more user-friendly than post-hoc validation via shell_execute.
+	//
+	// If you need validation for files written via shell_execute (discouraged), consider:
+	// 1. Using agent_management tool instead (recommended for weaver)
+	// 2. Calling validation explicitly after writing
+	//
+	// Old auto-validation code (autoValidateConfigFiles) is preserved below for reference.
 
 	return result, nil
 }

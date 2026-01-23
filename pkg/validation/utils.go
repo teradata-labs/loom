@@ -16,6 +16,11 @@ func detectWorkflowType(spec map[string]interface{}) string {
 		return "orchestration"
 	}
 
+	// Check for deprecated workflow_type field (treat as orchestration so we can show deprecation errors)
+	if workflowType, ok := spec["workflow_type"].(string); ok && workflowType != "" {
+		return "orchestration" // Will be caught as deprecated in validateOrchestrationWorkflowStructure
+	}
+
 	// Check for multi-agent indicator (entrypoint field)
 	if entrypoint, ok := spec["entrypoint"].(string); ok && entrypoint != "" {
 		return "multi-agent"

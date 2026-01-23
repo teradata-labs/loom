@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -112,6 +113,13 @@ type workflowSubAgentContext struct {
 	cancelFunc          context.CancelFunc
 	lastChecked         time.Time
 	consecutiveFailures int // Track failures for exponential backoff
+
+	// Broadcast bus auto-injection fields
+	broadcastNotifyChan chan struct{}      // Aggregated notification signal
+	broadcastCancelFunc context.CancelFunc // Cancel function for broadcast goroutine
+	subscriptionIDs     []string           // Subscription IDs for cleanup
+	subscriptionTopics  []string           // Topic names for logging
+	notifyChannels      []chan struct{}    // Per-subscription notification channels
 }
 
 // spawnedAgentContext tracks a spawned sub-agent for lifecycle management
@@ -518,6 +526,13 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		}
 	}
 
+	// Spawn workflow sub-agents if this is a workflow coordinator
+	if err := s.spawnWorkflowSubAgents(ctx, ag, agentID, sessionID); err != nil {
+		s.logger.Warn("Failed to spawn workflow sub-agents (workflow may run with limited functionality)",
+			zap.String("workflow", agentID),
+			zap.Error(err))
+	}
+
 	// Execute agent chat
 	resp, err := ag.Chat(ctx, sessionID, req.Query)
 	if err != nil {
@@ -761,27 +776,141 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 
 // spawnWorkflowSubAgents spawns background sub-agents for a workflow coordinator
 func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinatorAgent *agent.Agent, coordinatorID, sessionID string) error {
+	s.logger.Debug("spawnWorkflowSubAgents called",
+		zap.String("coordinator_id", coordinatorID),
+		zap.String("session_id", sessionID))
+
 	// Check if this is a workflow coordinator by looking up its proto config in the registry
 	if s.registry == nil {
+		s.logger.Debug("spawnWorkflowSubAgents: no registry available")
 		return nil // No registry available
 	}
 
 	protoConfig := s.registry.GetConfig(coordinatorID)
-	if protoConfig == nil || protoConfig.Metadata == nil {
+	if protoConfig == nil {
+		s.logger.Debug("spawnWorkflowSubAgents: protoConfig is nil",
+			zap.String("coordinator_id", coordinatorID))
+		return nil // Not a workflow agent
+	}
+	if protoConfig.Metadata == nil {
+		s.logger.Debug("spawnWorkflowSubAgents: protoConfig.Metadata is nil",
+			zap.String("coordinator_id", coordinatorID))
 		return nil // Not a workflow agent
 	}
 
 	role, hasRole := protoConfig.Metadata["role"]
 	workflowName, hasWorkflow := protoConfig.Metadata["workflow"]
 
+	s.logger.Debug("spawnWorkflowSubAgents: checking role/workflow",
+		zap.String("coordinator_id", coordinatorID),
+		zap.Bool("has_role", hasRole),
+		zap.Any("role", role),
+		zap.Bool("has_workflow", hasWorkflow),
+		zap.Any("workflow_name", workflowName))
+
 	if !hasRole || role != "coordinator" || !hasWorkflow {
+		s.logger.Debug("spawnWorkflowSubAgents: not a coordinator",
+			zap.Bool("has_role", hasRole),
+			zap.Any("role", role),
+			zap.Bool("has_workflow", hasWorkflow))
 		return nil // Not a workflow coordinator
 	}
 
-	s.logger.Info("Detected workflow coordinator, spawning sub-agents",
+	s.logger.Info("Detected workflow coordinator, initializing workflow",
 		zap.String("coordinator", coordinatorID),
 		zap.String("workflow", workflowName),
 		zap.String("session", sessionID))
+
+	// AUTO-WORKFLOW INITIALIZATION: Load workflow YAML to get communication topics
+	// This enables auto-subscribe for coordinator and sub-agents
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		s.logger.Warn("Failed to get home directory for workflow auto-init", zap.Error(err))
+		homeDir = os.Getenv("HOME")
+	}
+	workflowPath := filepath.Join(homeDir, ".loom", "workflows", workflowName+".yaml")
+
+	// Extract workflow topic for auto-subscribe
+	var workflowTopic string
+	if _, statErr := os.Stat(workflowPath); statErr == nil {
+		s.logger.Info("Loading workflow definition for auto-subscribe",
+			zap.String("path", workflowPath))
+
+		// Load workflow config
+		workflowConfig, err := orchestration.LoadWorkflowConfigFromYAML(workflowPath)
+		if err != nil {
+			s.logger.Warn("Failed to load workflow config (coordinator will require manual subscribe)",
+				zap.String("path", workflowPath),
+				zap.Error(err))
+		} else {
+			// Extract communication topic from spec
+			if commInterface, ok := workflowConfig.Spec["communication"]; ok {
+				if commMap, ok := commInterface.(map[string]interface{}); ok {
+					if topic, ok := commMap["topic"].(string); ok && topic != "" {
+						workflowTopic = topic
+
+						// Auto-subscribe coordinator to workflow topic
+						s.logger.Info("Auto-subscribing coordinator to workflow topic",
+							zap.String("coordinator", coordinatorID),
+							zap.String("topic", topic))
+
+						if s.messageBus != nil {
+							_, err := s.messageBus.Subscribe(ctx, coordinatorID, topic, nil, 100)
+							if err != nil {
+								s.logger.Warn("Failed to auto-subscribe coordinator",
+									zap.String("coordinator", coordinatorID),
+									zap.String("topic", topic),
+									zap.Error(err))
+							} else {
+								s.logger.Info("Successfully auto-subscribed coordinator",
+									zap.String("coordinator", coordinatorID),
+									zap.String("topic", topic))
+							}
+						}
+					}
+				}
+			}
+
+			// SPAWN SUB-AGENTS: Parse agents list from workflow and spawn them
+			if agentsInterface, ok := workflowConfig.Spec["agents"]; ok {
+				if agentsList, ok := agentsInterface.([]interface{}); ok {
+					s.logger.Info("Spawning workflow sub-agents from workflow definition",
+						zap.String("workflow", workflowName),
+						zap.Int("num_agents", len(agentsList)))
+
+					for _, agentInterface := range agentsList {
+						if agentMap, ok := agentInterface.(map[string]interface{}); ok {
+							agentName, _ := agentMap["agent"].(string)
+							roleName, _ := agentMap["name"].(string)
+
+							if agentName == "" {
+								continue // Skip if no agent name specified
+							}
+
+							// Skip the coordinator itself (entrypoint)
+							if roleName == "coordinator" || agentName == coordinatorID {
+								continue
+							}
+
+							// Construct workflow-prefixed agent ID
+							subAgentID := fmt.Sprintf("%s:%s", workflowName, agentName)
+
+							s.logger.Info("Spawning workflow sub-agent",
+								zap.String("sub_agent_id", subAgentID),
+								zap.String("agent_name", agentName))
+
+							// Spawn the sub-agent (will auto-register with message queue if it exists)
+							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID); err != nil {
+								s.logger.Warn("Failed to spawn workflow sub-agent",
+									zap.String("sub_agent_id", subAgentID),
+									zap.Error(err))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Find all sub-agents with matching workflow prefix
 	s.mu.RLock()
@@ -802,6 +931,28 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Info("Found workflow sub-agents",
 		zap.String("workflow", workflowName),
 		zap.Strings("sub_agents", subAgentIDs))
+
+	// Inject workflow communication context into coordinator
+	coordinatorCommCtx := &agent.WorkflowCommunicationContext{
+		WorkflowName: workflowName,
+	}
+
+	// Add subscribed topics (pub-sub)
+	if workflowTopic != "" {
+		coordinatorCommCtx.SubscribedTopics = []string{workflowTopic}
+	}
+
+	// Add available agents for point-to-point communication
+	if len(subAgentIDs) > 0 {
+		coordinatorCommCtx.AvailableAgents = subAgentIDs
+	}
+
+	coordinatorAgent.SetWorkflowCommunicationContext(coordinatorCommCtx)
+
+	s.logger.Info("Injected workflow communication context into coordinator",
+		zap.String("coordinator", coordinatorID),
+		zap.Strings("subscribed_topics", coordinatorCommCtx.SubscribedTopics),
+		zap.Strings("available_agents", coordinatorCommCtx.AvailableAgents))
 
 	// Register coordinator for event-driven message notifications
 	coordinatorNotifyChan := make(chan struct{}, 10)
@@ -973,11 +1124,437 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			s.messageQueue.RegisterNotificationChannel(subAgentID, notifyChan)
 		}
 
+		// Inject workflow communication context into sub-agent
+		commCtx := &agent.WorkflowCommunicationContext{
+			WorkflowName: workflowName,
+		}
+
+		// Add subscribed topics (pub-sub)
+		if workflowTopic != "" {
+			commCtx.SubscribedTopics = []string{workflowTopic}
+		}
+
+		// Add available agents for point-to-point communication
+		// Include all sub-agents except self
+		var availableAgents []string
+		for _, otherSubAgentID := range subAgentIDs {
+			if otherSubAgentID != subAgentID {
+				availableAgents = append(availableAgents, otherSubAgentID)
+			}
+		}
+		if len(availableAgents) > 0 {
+			commCtx.AvailableAgents = availableAgents
+		}
+
+		subAgent.SetWorkflowCommunicationContext(commCtx)
+
 		// Start sub-agent with notification channel (pass subAgentKey for deregistration)
 		go s.runWorkflowSubAgent(subAgentCtx, subAgent, subAgentID, subAgentKey, subAgentSessionID, workflowName, notifyChan)
+
+		// AUTO-SUBSCRIBE SUB-AGENT: Subscribe sub-agent to workflow topic for pub-sub communication
+		// This allows sub-agents to receive broadcasts from coordinator and other sub-agents
+		if s.messageBus != nil && workflowTopic != "" {
+			s.logger.Info("Auto-subscribing sub-agent to workflow topic",
+				zap.String("sub_agent", subAgentID),
+				zap.String("topic", workflowTopic))
+
+			subID, err := s.messageBus.Subscribe(ctx, subAgentID, workflowTopic, nil, 100)
+			if err != nil {
+				s.logger.Warn("Failed to auto-subscribe sub-agent",
+					zap.String("sub_agent", subAgentID),
+					zap.String("topic", workflowTopic),
+					zap.Error(err))
+			} else {
+				s.logger.Info("Successfully auto-subscribed sub-agent",
+					zap.String("sub_agent", subAgentID),
+					zap.String("topic", workflowTopic))
+
+				// Register broadcast notification channel for auto-injection
+				broadcastNotifyChan := make(chan struct{}, 10)
+				s.messageBus.RegisterNotificationChannel(subID.ID, broadcastNotifyChan)
+				s.logger.Info("Registered broadcast notification channel for sub-agent",
+					zap.String("sub_agent", subAgentID),
+					zap.String("subscription_id", subID.ID))
+
+				// Start broadcast notification handler for sub-agent
+				go s.runSubAgentBroadcastHandler(subAgentCtx, subAgentKey, subAgent, subAgentSessionID, subAgentID, subID.ID, broadcastNotifyChan)
+			}
+		}
+	}
+
+	// NEW: Detect if coordinator has subscribed to any topics (for broadcast auto-injection)
+	if s.messageBus != nil {
+		coordinatorSubscriptions := s.messageBus.GetSubscriptionsByAgent(coordinatorID)
+
+		if len(coordinatorSubscriptions) > 0 {
+			s.logger.Info("Enabling broadcast auto-injection for coordinator",
+				zap.String("coordinator", coordinatorID),
+				zap.Int("subscription_count", len(coordinatorSubscriptions)))
+
+			// Register notification channels for each subscription
+			var subscriptionIDs, subscriptionTopics []string
+			var notifyChannels []chan struct{}
+
+			for _, sub := range coordinatorSubscriptions {
+				notifyChan := make(chan struct{}, 10)
+				s.messageBus.RegisterNotificationChannel(sub.ID, notifyChan)
+
+				subscriptionIDs = append(subscriptionIDs, sub.ID)
+				subscriptionTopics = append(subscriptionTopics, sub.Topic)
+				notifyChannels = append(notifyChannels, notifyChan)
+			}
+
+			// Update context with broadcast fields
+			var broadcastCtx context.Context
+			s.workflowSubAgentsMu.Lock()
+			if ctx, exists := s.workflowSubAgents[coordinatorKey]; exists {
+				ctx.subscriptionIDs = subscriptionIDs
+				ctx.subscriptionTopics = subscriptionTopics
+				ctx.notifyChannels = notifyChannels
+
+				var broadcastCancel context.CancelFunc
+				broadcastCtx, broadcastCancel = context.WithCancel(context.Background())
+				ctx.broadcastCancelFunc = broadcastCancel
+				ctx.broadcastNotifyChan = make(chan struct{}, 10)
+			}
+			s.workflowSubAgentsMu.Unlock()
+
+			// Start broadcast notification goroutine
+			go s.runCoordinatorBroadcastHandler(broadcastCtx, coordinatorKey,
+				coordinatorAgent, sessionID, coordinatorID)
+		}
 	}
 
 	return nil
+}
+
+// runCoordinatorBroadcastHandler is an event-driven notification handler for broadcast messages.
+// It monitors multiple subscription notification channels and processes broadcast messages
+// when they arrive, injecting them into the coordinator's conversation.
+func (s *MultiAgentServer) runCoordinatorBroadcastHandler(
+	ctx context.Context,
+	coordinatorKey string,
+	coordinatorAgent *agent.Agent,
+	sessionID string,
+	coordinatorID string,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("Broadcast handler panic",
+				zap.String("coordinator", coordinatorID),
+				zap.Any("panic", r))
+		}
+		s.logger.Info("Broadcast handler stopped",
+			zap.String("coordinator", coordinatorID))
+	}()
+
+	for {
+		// Get notification channels from context
+		s.workflowSubAgentsMu.RLock()
+		workflowCtx, exists := s.workflowSubAgents[coordinatorKey]
+		if !exists {
+			s.workflowSubAgentsMu.RUnlock()
+			return
+		}
+		notifyChannels := workflowCtx.notifyChannels
+		subscriptionIDs := workflowCtx.subscriptionIDs
+		s.workflowSubAgentsMu.RUnlock()
+
+		if len(notifyChannels) == 0 {
+			return
+		}
+
+		// Build dynamic select cases (context + notification channels)
+		cases := make([]reflect.SelectCase, len(notifyChannels)+1)
+		cases[0] = reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(ctx.Done()),
+		}
+		for i, ch := range notifyChannels {
+			cases[i+1] = reflect.SelectCase{
+				Dir:  reflect.SelectRecv,
+				Chan: reflect.ValueOf(ch),
+			}
+		}
+
+		// Wait for notification
+		chosen, _, _ := reflect.Select(cases)
+		if chosen == 0 {
+			return // Context canceled
+		}
+
+		// Log which subscription triggered
+		if chosen > 0 && chosen <= len(subscriptionIDs) {
+			s.logger.Debug("Broadcast notification received",
+				zap.String("coordinator", coordinatorID),
+				zap.String("subscription_id", subscriptionIDs[chosen-1]))
+		}
+
+		// Process messages from all subscriptions
+		s.processCoordinatorBroadcastMessages(ctx, coordinatorKey,
+			coordinatorAgent, sessionID, coordinatorID)
+	}
+}
+
+// processCoordinatorBroadcastMessages drains broadcast messages from all coordinator
+// subscriptions and injects them into the coordinator's conversation.
+func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
+	ctx context.Context,
+	coordinatorKey string,
+	coordinatorAgent *agent.Agent,
+	sessionID string,
+	coordinatorID string,
+) {
+	// Get subscription IDs
+	s.workflowSubAgentsMu.RLock()
+	workflowCtx, exists := s.workflowSubAgents[coordinatorKey]
+	if !exists {
+		s.workflowSubAgentsMu.RUnlock()
+		return
+	}
+	subscriptionIDs := workflowCtx.subscriptionIDs
+	s.workflowSubAgentsMu.RUnlock()
+
+	// Get subscription objects
+	var subscriptions []*communication.Subscription
+	for _, subID := range subscriptionIDs {
+		if sub := s.messageBus.GetSubscription(subID); sub != nil {
+			subscriptions = append(subscriptions, sub)
+		}
+	}
+
+	// Non-blocking drain from all subscription channels
+	type BroadcastMessage struct {
+		msg   *loomv1.BusMessage
+		topic string
+	}
+	var messages []BroadcastMessage
+
+	for _, sub := range subscriptions {
+		for {
+			select {
+			case msg := <-sub.Channel:
+				messages = append(messages, BroadcastMessage{msg, sub.Topic})
+			default:
+				goto nextSubscription
+			}
+		}
+	nextSubscription:
+	}
+
+	if len(messages) == 0 {
+		s.logger.Debug("No broadcast messages to process",
+			zap.String("coordinator", coordinatorID))
+		return
+	}
+
+	s.logger.Info("Processing broadcast messages for coordinator",
+		zap.String("coordinator", coordinatorID),
+		zap.Int("message_count", len(messages)))
+
+	// Inject each message
+	for _, busMsg := range messages {
+		msg := busMsg.msg
+
+		// Skip self-messages
+		if msg.FromAgent == coordinatorID {
+			s.logger.Debug("Skipping self-message",
+				zap.String("coordinator", coordinatorID),
+				zap.String("message_id", msg.Id))
+			continue
+		}
+
+		// Extract content
+		var content string
+		if msg.Payload != nil {
+			if value := msg.Payload.GetValue(); value != nil {
+				content = string(value)
+			} else if ref := msg.Payload.GetReference(); ref != nil {
+				content = fmt.Sprintf("[Reference: %s]", ref.Id)
+			}
+		}
+		if content == "" {
+			content = "[Empty message]"
+		}
+
+		// Format with topic and sender
+		injectedPrompt := fmt.Sprintf(
+			"[BROADCAST on topic '%s' FROM %s]:\n\n%s",
+			busMsg.topic, msg.FromAgent, content)
+
+		s.logger.Info("Injecting broadcast message into coordinator session",
+			zap.String("coordinator", coordinatorID),
+			zap.String("from_agent", msg.FromAgent),
+			zap.String("topic", busMsg.topic),
+			zap.Int("content_length", len(content)))
+
+		// Acquire semaphore with timeout
+		select {
+		case s.llmSemaphore <- struct{}{}:
+			// Acquired
+		case <-time.After(30 * time.Second):
+			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
+				zap.String("coordinator", coordinatorID))
+			continue
+		case <-ctx.Done():
+			s.logger.Info("Context canceled while waiting for semaphore",
+				zap.String("coordinator", coordinatorID))
+			return
+		}
+
+		// Inject message
+		_, err := coordinatorAgent.Chat(context.Background(), sessionID, injectedPrompt)
+
+		// Release semaphore
+		<-s.llmSemaphore
+
+		if err != nil {
+			s.logger.Warn("Failed to inject broadcast message",
+				zap.String("coordinator", coordinatorID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", busMsg.topic),
+				zap.Error(err))
+		} else {
+			s.logger.Info("Successfully injected broadcast message",
+				zap.String("coordinator", coordinatorID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", busMsg.topic))
+		}
+	}
+}
+
+// runSubAgentBroadcastHandler listens for broadcast notifications for a sub-agent
+// and auto-injects messages into the sub-agent's conversation.
+func (s *MultiAgentServer) runSubAgentBroadcastHandler(
+	ctx context.Context,
+	subAgentKey string,
+	subAgent *agent.Agent,
+	sessionID string,
+	subAgentID string,
+	subscriptionID string,
+	notifyChan chan struct{},
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("Sub-agent broadcast handler panic",
+				zap.String("sub_agent", subAgentID),
+				zap.Any("panic", r))
+		}
+		s.logger.Info("Sub-agent broadcast handler stopped",
+			zap.String("sub_agent", subAgentID))
+	}()
+
+	for {
+		// Wait for notification
+		select {
+		case <-ctx.Done():
+			return // Context canceled
+		case <-notifyChan:
+			// Process messages
+			s.processSubAgentBroadcastMessages(ctx, subAgentKey, subAgent, sessionID, subAgentID, subscriptionID)
+		}
+	}
+}
+
+// processSubAgentBroadcastMessages drains broadcast messages from the sub-agent's
+// subscription and injects them into the sub-agent's conversation.
+func (s *MultiAgentServer) processSubAgentBroadcastMessages(
+	ctx context.Context,
+	subAgentKey string,
+	subAgent *agent.Agent,
+	sessionID string,
+	subAgentID string,
+	subscriptionID string,
+) {
+	// Get subscription
+	sub := s.messageBus.GetSubscription(subscriptionID)
+	if sub == nil {
+		s.logger.Warn("Subscription not found for sub-agent",
+			zap.String("sub_agent", subAgentID),
+			zap.String("subscription_id", subscriptionID))
+		return
+	}
+
+	// Non-blocking drain from subscription channel
+	var messages []*loomv1.BusMessage
+	for {
+		select {
+		case msg := <-sub.Channel:
+			messages = append(messages, msg)
+		default:
+			goto done
+		}
+	}
+done:
+
+	if len(messages) == 0 {
+		s.logger.Debug("No broadcast messages to process for sub-agent",
+			zap.String("sub_agent", subAgentID))
+		return
+	}
+
+	s.logger.Info("Processing broadcast messages for sub-agent",
+		zap.String("sub_agent", subAgentID),
+		zap.Int("message_count", len(messages)))
+
+	// Inject each message
+	for _, msg := range messages {
+		// Skip self-messages
+		if msg.FromAgent == subAgentID {
+			continue
+		}
+
+		// Extract content
+		var content string
+		if msg.Payload != nil {
+			if value := msg.Payload.GetValue(); value != nil {
+				content = string(value)
+			} else if ref := msg.Payload.GetReference(); ref != nil {
+				content = fmt.Sprintf("[Reference: %s]", ref.Id)
+			}
+		}
+		if content == "" {
+			content = "[Empty message]"
+		}
+
+		// Format with topic and sender
+		injectedPrompt := fmt.Sprintf(
+			"[BROADCAST on topic '%s' FROM %s]:\n\n%s",
+			sub.Topic, msg.FromAgent, content)
+
+		// Acquire semaphore with timeout
+		select {
+		case s.llmSemaphore <- struct{}{}:
+			// Acquired
+		case <-time.After(30 * time.Second):
+			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
+				zap.String("sub_agent", subAgentID))
+			continue
+		case <-ctx.Done():
+			s.logger.Info("Context canceled while waiting for semaphore",
+				zap.String("sub_agent", subAgentID))
+			return
+		}
+
+		// Inject message
+		_, err := subAgent.Chat(context.Background(), sessionID, injectedPrompt)
+
+		// Release semaphore
+		<-s.llmSemaphore
+
+		if err != nil {
+			s.logger.Warn("Failed to inject broadcast message to sub-agent",
+				zap.String("sub_agent", subAgentID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", sub.Topic),
+				zap.Error(err))
+		} else {
+			s.logger.Info("Successfully injected broadcast message to sub-agent",
+				zap.String("sub_agent", subAgentID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", sub.Topic))
+		}
+	}
 }
 
 // StartMessageQueueMonitor starts a background goroutine that monitors the message queue
@@ -1000,9 +1577,21 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 			defer s.workflowSubAgentsMu.Unlock()
 
 			for agentID, subAgentCtx := range s.workflowSubAgents {
-				// Cancel goroutines
+				// Cancel MessageQueue goroutine
 				if subAgentCtx.cancelFunc != nil {
 					subAgentCtx.cancelFunc()
+				}
+
+				// Cancel Broadcast goroutine
+				if subAgentCtx.broadcastCancelFunc != nil {
+					subAgentCtx.broadcastCancelFunc()
+				}
+
+				// Unregister broadcast notification channels
+				if s.messageBus != nil && len(subAgentCtx.subscriptionIDs) > 0 {
+					for _, subID := range subAgentCtx.subscriptionIDs {
+						s.messageBus.UnregisterNotificationChannel(subID)
+					}
 				}
 
 				// Unregister from message queue
@@ -1096,15 +1685,25 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 		return fmt.Errorf("invalid workflow agent ID format: %s", agentID)
 	}
 	workflowName := parts[0]
+	baseAgentName := parts[1]
 
 	s.logger.Info("Auto-spawning workflow sub-agent",
 		zap.String("agent", agentID),
-		zap.String("workflow", workflowName))
+		zap.String("workflow", workflowName),
+		zap.String("base_agent", baseAgentName))
 
-	// Get the agent from registry
+	// Try to get the agent from registry using the workflow-prefixed ID first
 	subAgent, _, err := s.getAgent(agentID)
 	if err != nil {
-		return fmt.Errorf("failed to get agent: %w", err)
+		// If not found with workflow prefix, try the base agent name
+		s.logger.Debug("Agent not found with workflow prefix, trying base name",
+			zap.String("workflow_prefixed", agentID),
+			zap.String("base_name", baseAgentName))
+
+		subAgent, _, err = s.getAgent(baseAgentName)
+		if err != nil {
+			return fmt.Errorf("failed to get agent (tried both '%s' and '%s'): %w", agentID, baseAgentName, err)
+		}
 	}
 
 	// Generate unique session ID for this sub-agent

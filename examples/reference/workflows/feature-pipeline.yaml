@@ -11,24 +11,11 @@ metadata:
     complexity: high
 
 spec:
-  pattern: pipeline
-  agents:
-    - id: api-architect
-      name: API Architect
-      system_prompt: |
-        You are an API architect specializing in RESTful API design and best practices.
+  type: pipeline  # Changed from pattern: pipeline
+  initial_prompt: "Design a user authentication system with the following requirements: Support email/password and OAuth2 (Google, GitHub), JWT-based session management, Role-based access control (RBAC), Account lockout after failed attempts, Password reset functionality"
 
-        When designing APIs:
-        - Design RESTful endpoints following REST principles
-        - Define clear request/response schemas (JSON)
-        - Specify authentication and authorization requirements
-        - Plan error handling with appropriate HTTP status codes
-        - Consider versioning strategy
-        - Include pagination for list endpoints
-        - Design for scalability and performance
-
-        Provide detailed API specifications in a clear format.
-
+  stages:
+    - agent_id: api-architect
       prompt_template: |
         Based on the requirements: {{previous}}
 
@@ -38,22 +25,7 @@ spec:
         - Authentication flow
         - Error handling strategy
 
-    - id: backend-developer
-      name: Backend Developer
-      system_prompt: |
-        You are a senior backend developer experienced in implementing robust, production-ready systems.
-
-        When implementing features:
-        - Follow the API specification precisely
-        - Design appropriate database schema
-        - Implement proper error handling
-        - Add input validation and sanitization
-        - Include logging and monitoring
-        - Write clean, maintainable code
-        - Consider edge cases and error scenarios
-
-        Provide implementation details including code structure and key logic.
-
+    - agent_id: backend-developer
       prompt_template: |
         Based on this API specification: {{previous}}
 
@@ -64,22 +36,7 @@ spec:
         - Input validation
         - Error handling
 
-    - id: test-engineer
-      name: Test Engineer
-      system_prompt: |
-        You are a test engineer specializing in comprehensive testing strategies.
-
-        When creating tests:
-        - Write unit tests for individual components
-        - Create integration tests for API endpoints
-        - Include security tests (SQL injection, XSS, authentication bypass)
-        - Add performance/load tests for critical paths
-        - Create test data fixtures
-        - Document test coverage
-        - Provide clear assertions and error messages
-
-        Structure tests in a clear, maintainable way.
-
+    - agent_id: test-engineer
       prompt_template: |
         Based on this implementation: {{previous}}
 
@@ -90,13 +47,12 @@ spec:
         - Performance tests for critical operations
         - Test data setup and teardown
 
-orchestration:
   pass_full_history: false
 
-# Example usage:
-# "Design a user authentication system with the following requirements:
-# - Support email/password and OAuth2 (Google, GitHub)
-# - JWT-based session management
-# - Role-based access control (RBAC)
-# - Account lockout after failed attempts
-# - Password reset functionality"
+# Example execution:
+# looms workflow run feature-pipeline.yaml
+#
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - api-architect.yaml: API architect specializing in RESTful API design
+# - backend-developer.yaml: Senior backend developer implementing production systems
+# - test-engineer.yaml: Test engineer creating comprehensive testing strategies

@@ -1,0 +1,211 @@
+# Fork-Join Pattern - Parallel Execution with Result Aggregation
+# Use case: Code review from multiple perspectives
+
+name: code_review_fork_join
+description: Multi-perspective code review with consolidated recommendations
+
+agents:
+  - id: security_reviewer
+    role: Security Code Reviewer
+    goal: Identify security vulnerabilities and risks
+    backstory: |
+      You are a security expert specializing in identifying vulnerabilities like SQL
+      injection, XSS, authentication flaws, insecure dependencies, and data exposure.
+      You follow OWASP Top 10 and security best practices.
+    
+  - id: performance_reviewer
+    role: Performance Code Reviewer
+    goal: Identify performance bottlenecks and optimization opportunities
+    backstory: |
+      You are a performance optimization expert who identifies inefficient algorithms,
+      memory leaks, N+1 queries, unnecessary computations, and resource bottlenecks.
+    
+  - id: maintainability_reviewer
+    role: Code Maintainability Reviewer
+    goal: Assess code quality and maintainability
+    backstory: |
+      You evaluate code readability, structure, documentation, test coverage, naming
+      conventions, and adherence to SOLID principles and design patterns.
+    
+  - id: architecture_reviewer
+    role: Software Architect
+    goal: Review architectural decisions and patterns
+    backstory: |
+      You assess high-level design decisions, service boundaries, API design,
+      data flow, scalability considerations, and alignment with system architecture.
+    
+  - id: consolidator
+    role: Lead Code Reviewer
+    goal: Consolidate findings and create actionable review report
+    backstory: |
+      You synthesize feedback from multiple reviewers, prioritize issues by severity,
+      identify conflicts or redundancies, and create clear, actionable recommendations.
+
+tasks:
+  # FORK - Parallel reviews from different perspectives
+  
+  - id: security_review
+    agent: security_reviewer
+    description: |
+      Review the submitted code changes for security vulnerabilities.
+      
+      Code location: Read from shared memory key 'code_submission'
+      
+      Review for:
+      - Input validation and sanitization
+      - Authentication and authorization checks
+      - SQL injection, XSS, CSRF vulnerabilities
+      - Sensitive data exposure
+      - Insecure cryptography or hashing
+      - Dependency vulnerabilities
+      - Error handling that leaks information
+      
+      Rate severity: CRITICAL, HIGH, MEDIUM, LOW
+      Store findings in shared memory under key 'security_findings'.
+    expected_output: |
+      Security review report:
+      - vulnerabilities_found: array of issues with severity
+      - security_score: 0-100
+      - critical_blockers: issues that must be fixed
+      - recommendations: specific fixes
+    context: []
+
+  - id: performance_review
+    agent: performance_reviewer
+    description: |
+      Review the code for performance issues and optimization opportunities.
+      
+      Code location: Read from shared memory key 'code_submission'
+      
+      Review for:
+      - Algorithm efficiency (time/space complexity)
+      - Database query optimization (N+1, missing indexes)
+      - Memory leaks and resource management
+      - Caching opportunities
+      - Unnecessary computations or redundant operations
+      - Blocking operations that should be async
+      
+      Estimate performance impact (high/medium/low).
+      Store findings in shared memory under key 'performance_findings'.
+    expected_output: |
+      Performance review report:
+      - bottlenecks_identified: array of issues
+      - performance_score: 0-100
+      - estimated_impact: time/resource savings
+      - optimization_recommendations: specific improvements
+    context: []
+
+  - id: maintainability_review
+    agent: maintainability_reviewer
+    description: |
+      Assess code quality, readability, and maintainability.
+      
+      Code location: Read from shared memory key 'code_submission'
+      
+      Review for:
+      - Code readability and clarity
+      - Naming conventions and consistency
+      - Code duplication (DRY principle)
+      - Function/method length and complexity
+      - Documentation and comments
+      - Test coverage and test quality
+      - Adherence to team coding standards
+      
+      Store findings in shared memory under key 'maintainability_findings'.
+    expected_output: |
+      Maintainability review report:
+      - quality_score: 0-100
+      - code_smells: array of issues
+      - test_coverage: percentage and gaps
+      - refactoring_suggestions: improvements
+    context: []
+
+  - id: architecture_review
+    agent: architecture_reviewer
+    description: |
+      Review architectural decisions and design patterns.
+      
+      Code location: Read from shared memory key 'code_submission'
+      
+      Review for:
+      - Adherence to system architecture
+      - Service boundaries and separation of concerns
+      - API design and interface contracts
+      - Data flow and state management
+      - Scalability considerations
+      - Design pattern usage (appropriate/inappropriate)
+      - Dependency management and coupling
+      
+      Store findings in shared memory under key 'architecture_findings'.
+    expected_output: |
+      Architecture review report:
+      - architecture_score: 0-100
+      - design_concerns: array of issues
+      - scalability_assessment: future considerations
+      - pattern_recommendations: design improvements
+    context: []
+
+  # JOIN - Consolidate all review findings
+  
+  - id: consolidate_reviews
+    agent: consolidator
+    description: |
+      Consolidate all code review findings into a unified, actionable report.
+      
+      Read findings from shared memory:
+      - security_findings
+      - performance_findings
+      - maintainability_findings
+      - architecture_findings
+      
+      Create consolidated report:
+      1. Overall assessment (approve/approve with changes/reject)
+      2. Critical blockers that must be fixed (any severity)
+      3. Prioritized list of all issues (by impact and effort)
+      4. Quick wins (low effort, high value improvements)
+      5. Long-term recommendations
+      6. Consensus score (weighted average of all reviews)
+      
+      Resolve any conflicting recommendations with rationale.
+      Store final report in shared memory under key 'final_code_review'.
+    expected_output: |
+      Consolidated code review:
+      - overall_decision: approve/conditional/reject
+      - consensus_score: 0-100
+      - must_fix: array of blocking issues
+      - should_fix: array of important issues
+      - nice_to_have: array of optional improvements
+      - summary: executive summary for team
+    context:
+      - security_review
+      - performance_review
+      - maintainability_review
+      - architecture_review
+
+workflow:
+  type: fork_join
+  fork_tasks:
+    - security_review
+    - performance_review
+    - maintainability_review
+    - architecture_review
+  join_task: consolidate_reviews
+  
+output:
+  format: json
+  include_context: true
+  primary_result: consolidate_reviews
+  
+metadata:
+  version: "1.0"
+  category: fork_join
+  estimated_duration: "5-8 minutes"
+  benefits:
+    - "Comprehensive multi-perspective review"
+    - "4x faster than sequential reviews"
+    - "Reduces groupthink and bias"
+    - "Prioritized actionable feedback"
+  tags:
+    - code-review
+    - fork-join
+    - quality-assurance

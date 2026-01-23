@@ -1658,16 +1658,16 @@ Buffered channel (size=10) prevents slow clients from blocking Enqueue()
 
 **Integration with Event-Driven Sub-Agents**:
 
-Sub-agents already use notification channels for receive_message. SubscribeToSession extends this pattern to clients:
+Sub-agents use notification channels for auto-injection of messages. SubscribeToSession extends this pattern to clients:
 
 ```
 Sub-Agent Notification:          Client Notification:
 MessageQueue.Enqueue()            MessageQueue.Enqueue()
   └─▶ NotifyChannel               └─▶ NotifyListeners
-      (agent receives)                (stream.Send update)
+      (auto-inject via Chat())       (stream.Send update)
 ```
 
-Both use the same underlying message events, providing consistent real-time delivery.
+Both use the same underlying message events. Sub-agents have messages automatically injected into their conversation via `agent.Chat()`, while clients receive updates via gRPC streaming. This provides consistent real-time delivery without polling.
 
 
 ## Key Interactions

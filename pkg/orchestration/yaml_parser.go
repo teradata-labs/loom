@@ -128,6 +128,8 @@ type AgentConfigYAML struct {
 		Name        string            `yaml:"name"`
 		Version     string            `yaml:"version,omitempty"`
 		Description string            `yaml:"description,omitempty"`
+		Role        string            `yaml:"role,omitempty"`
+		Workflow    string            `yaml:"workflow,omitempty"`
 		Labels      map[string]string `yaml:"labels,omitempty"`
 	} `yaml:"metadata"`
 	Spec struct {

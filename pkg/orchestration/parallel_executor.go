@@ -126,6 +126,23 @@ func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.Agent
 		go func(taskIndex int, t *loomv1.AgentTask) {
 			defer wg.Done()
 
+			// Acquire LLM semaphore to limit concurrent LLM calls
+			if e.orchestrator.llmSemaphore != nil {
+				e.orchestrator.logger.Debug("Parallel task acquiring LLM semaphore",
+					zap.String("agent_id", t.AgentId),
+					zap.Int("task", taskIndex+1))
+				e.orchestrator.llmSemaphore <- struct{}{}
+				defer func() {
+					<-e.orchestrator.llmSemaphore
+					e.orchestrator.logger.Debug("Parallel task released LLM semaphore",
+						zap.String("agent_id", t.AgentId),
+						zap.Int("task", taskIndex+1))
+				}()
+				e.orchestrator.logger.Debug("Parallel task acquired LLM semaphore",
+					zap.String("agent_id", t.AgentId),
+					zap.Int("task", taskIndex+1))
+			}
+
 			// Create task span
 			taskCtx, taskSpan := e.orchestrator.tracer.StartSpan(ctx, fmt.Sprintf("parallel.task.%d", taskIndex+1))
 			if taskSpan != nil {

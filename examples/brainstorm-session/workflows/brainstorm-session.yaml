@@ -1,0 +1,55 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: brainstorm-session
+  version: "1.0.0"
+  description: "Peer-to-peer pub-sub brainstorming workflow with creative and analytical agents"
+  labels:
+    domain: collaboration
+    category: brainstorming
+    pattern: pub-sub
+
+spec:
+  # Entrypoint - users chat with the facilitator first
+  entrypoint: facilitator
+
+  # All agents participate as equals
+  agents:
+    - name: facilitator
+      agent: facilitator
+      description: "Facilitates brainstorming session and synthesizes insights"
+
+    - name: creative
+      agent: creative
+      description: "Generates wild, innovative, outside-the-box ideas"
+
+    - name: analyst
+      agent: analyst
+      description: "Evaluates ideas critically and constructively"
+
+  # Communication pattern: peer-to-peer pub-sub
+  communication:
+    pattern: "peer-to-peer-pub-sub"
+    topic: "brainstorm-chat"
+    entrypoint: facilitator
+    # How it works:
+    # 1. All agents subscribe to "brainstorm-chat" topic
+    # 2. Agents publish messages using publish(topic="brainstorm-chat", message="...")
+    # 3. All subscribed agents receive messages via receive_broadcast()
+    # 4. No hierarchy - all agents are equal peers in the conversation
+    # 5. Facilitator is just the entry point where users start
+
+  # Workflow configuration
+  config:
+    timeout_seconds: 300  # 5 minutes for brainstorming session
+    max_workflow_turns: 150
+
+  # Observability
+  observability:
+    export_traces: true
+    export_metrics: true
+    tags:
+      workflow: brainstorm-session
+      version: "1.0.0"
+      pattern: pub-sub
+      domain: collaboration

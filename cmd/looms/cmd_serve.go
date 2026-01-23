@@ -1014,9 +1014,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)
 
 				// Always register shell_execute for all agents
-				shellTool := builtin.NewShellExecuteTool("")
+				// For weaver, start in LOOM_DATA_DIR so relative paths work naturally
+				var shellTool shuttle.Tool
+				if cfg.Name == "weaver" {
+					shellTool = builtin.NewShellExecuteTool(loomDataDir)
+					logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR)")
+				} else {
+					shellTool = builtin.NewShellExecuteTool("")
+					logger.Info("    Auto-registered shell_execute tool")
+				}
 				ag.RegisterTool(shellTool)
-				logger.Info("    Auto-registered shell_execute tool")
 
 				// Always register workspace tool for session-scoped file management
 				workspaceTool := builtin.NewWorkspaceTool(artifactStore)
@@ -1830,9 +1837,16 @@ func runServe(cmd *cobra.Command, args []string) {
 			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
 
 			// Always register shell_execute for all agents
-			shellTool := builtin.NewShellExecuteTool("")
+			// For weaver, start in LOOM_DATA_DIR so relative paths work naturally
+			var shellTool shuttle.Tool
+			if agentConfig.Name == "weaver" {
+				shellTool = builtin.NewShellExecuteTool(loomDataDir)
+				logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR)")
+			} else {
+				shellTool = builtin.NewShellExecuteTool("")
+				logger.Info("  Auto-registered shell_execute tool")
+			}
 			newAgent.RegisterTool(shellTool)
-			logger.Info("  Auto-registered shell_execute tool")
 
 			// Always register workspace tool for session-scoped file management
 			workspaceTool := builtin.NewWorkspaceTool(artifactStore)

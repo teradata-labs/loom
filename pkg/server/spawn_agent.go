@@ -139,6 +139,30 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		}
 	}
 
+	// Inject workflow communication context into spawned agent
+	spawnCommCtx := &agent.WorkflowCommunicationContext{}
+
+	// Add subscribed topics (pub-sub)
+	if len(subscribedTopics) > 0 {
+		spawnCommCtx.SubscribedTopics = subscribedTopics
+	}
+
+	// Add workflow name if provided
+	if namespace != "" {
+		spawnCommCtx.WorkflowName = namespace
+	}
+
+	// For spawned agents, we don't know available agents upfront
+	// They'll discover via workflow or parent communication
+	// TODO: Could potentially query parent's workflow context here
+
+	ag.SetWorkflowCommunicationContext(spawnCommCtx)
+
+	logger.Info("Injected workflow communication context into spawned agent",
+		zap.String("sub_agent_id", subAgentID),
+		zap.Strings("subscribed_topics", spawnCommCtx.SubscribedTopics),
+		zap.String("workflow_name", spawnCommCtx.WorkflowName))
+
 	// Create contexts for lifecycle management
 	subCtx, cancel := context.WithCancel(context.Background())      // For session monitoring
 	loopCtx, loopCancel := context.WithCancel(context.Background()) // For background message loop

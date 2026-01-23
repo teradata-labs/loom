@@ -135,110 +135,6 @@ func TestSendMessageTool(t *testing.T) {
 	}
 }
 
-// TestReceiveMessageTool tests the receive_message tool
-func TestReceiveMessageTool(t *testing.T) {
-	tests := []struct {
-		name           string
-		agentID        string
-		params         map[string]interface{}
-		setupQueue     func(*communication.MessageQueue)
-		expectSuccess  bool
-		expectError    string
-		validateResult func(*testing.T, map[string]interface{})
-	}{
-		{
-			name:    "receive message successfully",
-			agentID: "agent-receiver",
-			params:  map[string]interface{}{},
-			setupQueue: func(queue *communication.MessageQueue) {
-				// Send a message first
-				payload := &loomv1.MessagePayload{
-					Data: &loomv1.MessagePayload_Value{
-						Value: []byte("Test message"),
-					},
-				}
-				_, _ = queue.Send(context.Background(), "agent-sender", "agent-receiver", "test", payload, nil)
-			},
-			expectSuccess: true,
-			validateResult: func(t *testing.T, data map[string]interface{}) {
-				assert.True(t, data["has_message"].(bool))
-				assert.Equal(t, "agent-sender", data["from_agent"])
-				assert.Equal(t, "test", data["message_type"])
-				assert.Equal(t, "Test message", data["message"])
-				assert.NotEmpty(t, data["message_id"])
-			},
-		},
-		{
-			name:          "no messages available",
-			agentID:       "agent-receiver",
-			params:        map[string]interface{}{},
-			setupQueue:    func(queue *communication.MessageQueue) {},
-			expectSuccess: true,
-			validateResult: func(t *testing.T, data map[string]interface{}) {
-				assert.False(t, data["has_message"].(bool))
-				assert.Equal(t, "no pending messages", data["reason"])
-			},
-		},
-		{
-			name:    "timeout waiting for message",
-			agentID: "agent-receiver",
-			params: map[string]interface{}{
-				"timeout_seconds": 0.1, // 100ms timeout
-			},
-			setupQueue:    func(queue *communication.MessageQueue) {},
-			expectSuccess: true,
-			validateResult: func(t *testing.T, data map[string]interface{}) {
-				assert.False(t, data["has_message"].(bool))
-				reason, ok := data["reason"].(string)
-				require.True(t, ok)
-				// Could be either timeout or no messages depending on timing
-				assert.Contains(t, []string{"timeout - no messages received within timeout period", "no pending messages"}, reason)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create message queue
-			queue := createTestQueue(t)
-
-			// Setup queue if needed
-			if tt.setupQueue != nil {
-				tt.setupQueue(queue)
-			}
-
-			// Create tool
-			tool := NewReceiveMessageTool(queue, tt.agentID)
-
-			// Validate tool interface
-			assert.Equal(t, "receive_message", tool.Name())
-			assert.NotEmpty(t, tool.Description())
-			assert.NotNil(t, tool.InputSchema())
-			assert.Empty(t, tool.Backend())
-
-			// Execute tool
-			ctx := context.Background()
-			result, err := tool.Execute(ctx, tt.params)
-			require.NoError(t, err)
-			require.NotNil(t, result)
-
-			// Validate result
-			assert.Equal(t, tt.expectSuccess, result.Success)
-
-			if tt.expectSuccess {
-				assert.Nil(t, result.Error)
-				require.NotNil(t, result.Data)
-				if tt.validateResult != nil {
-					tt.validateResult(t, result.Data.(map[string]interface{}))
-				}
-			} else {
-				require.NotNil(t, result.Error)
-				assert.Contains(t, result.Error.Message, tt.expectError)
-			}
-		})
-	}
-}
-
 // TestSharedMemoryWriteTool tests the shared_memory_write tool
 func TestSharedMemoryWriteTool(t *testing.T) {
 	tests := []struct {
@@ -573,16 +469,6 @@ func TestCommunicationToolsWithNilInfrastructure(t *testing.T) {
 		assert.Contains(t, result.Error.Code, "QUEUE_NOT_AVAILABLE")
 	})
 
-	t.Run("receive_message with nil queue", func(t *testing.T) {
-		tool := NewReceiveMessageTool(nil, "agent")
-		params := map[string]interface{}{}
-
-		result, err := tool.Execute(context.Background(), params)
-		require.NoError(t, err)
-		assert.False(t, result.Success)
-		assert.Contains(t, result.Error.Code, "QUEUE_NOT_AVAILABLE")
-	})
-
 	t.Run("shared_memory_write with nil store", func(t *testing.T) {
 		tool := NewSharedMemoryWriteTool(nil, "agent")
 		params := map[string]interface{}{
@@ -699,34 +585,6 @@ func TestCommunicationToolsRegistry(t *testing.T) {
 	})
 }
 
-// TestMessageReferencePayload tests receiving message with reference payload
-func TestMessageReferencePayload(t *testing.T) {
-	queue := createTestQueue(t)
-
-	// Send message with reference payload
-	payload := &loomv1.MessagePayload{
-		Data: &loomv1.MessagePayload_Reference{
-			Reference: &loomv1.Reference{
-				Id:   "ref-12345",
-				Type: loomv1.ReferenceType_REFERENCE_TYPE_LARGE_PAYLOAD,
-			},
-		},
-	}
-
-	_, err := queue.Send(context.Background(), "sender", "receiver", "test", payload, nil)
-	require.NoError(t, err)
-
-	// Receive message
-	tool := NewReceiveMessageTool(queue, "receiver")
-	result, err := tool.Execute(context.Background(), map[string]interface{}{})
-	require.NoError(t, err)
-	assert.True(t, result.Success)
-
-	data := result.Data.(map[string]interface{})
-	assert.True(t, data["has_message"].(bool))
-	assert.Contains(t, data["message"], "Reference: ref-12345")
-}
-
 // TestSharedMemoryMetadata tests shared memory with metadata
 func TestSharedMemoryMetadata(t *testing.T) {
 	store := createTestStore(t)
@@ -807,19 +665,4 @@ func TestMessageQueueEventDrivenNotification(t *testing.T) {
 		t.Fatal("Expected notification within 100ms, but none received")
 	}
 
-	// Verify message is actually in queue
-	receiveTool := NewReceiveMessageTool(queue, receiverID)
-	receiveParams := map[string]interface{}{
-		"timeout_seconds": float64(0), // Non-blocking
-	}
-
-	receiveResult, err := receiveTool.Execute(context.Background(), receiveParams)
-	require.NoError(t, err)
-	require.NotNil(t, receiveResult)
-	assert.True(t, receiveResult.Success, "receive should succeed")
-
-	data := receiveResult.Data.(map[string]interface{})
-	assert.True(t, data["has_message"].(bool), "should have received the message")
-	assert.Equal(t, senderID, data["from_agent"])
-	assert.Equal(t, "What is the weather in San Marcos right now?", data["message"])
 }
