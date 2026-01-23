@@ -3237,11 +3237,11 @@
       "properties": {
         "id": {
           "type": "string",
-          "title": "Unique agent identifier"
+          "description": "Immutable agent GUID (UUID v4) - stable across renames and restarts.\nThis is the canonical identifier for the agent and should be used\nfor all API operations, logging, and cross-references.\nGenerated automatically on agent creation and persisted to database."
         },
         "name": {
           "type": "string",
-          "title": "Agent name"
+          "description": "Agent name - user-editable display name that can change.\nUse `id` for stable references, not `name`."
         },
         "status": {
           "type": "string",

@@ -1573,10 +1573,14 @@ message CreateAgentRequest {
 
 // AgentInfo provides information about an agent instance.
 message AgentInfo {
-  // Unique agent identifier
+  // Immutable agent GUID (UUID v4) - stable across renames and restarts.
+  // This is the canonical identifier for the agent and should be used
+  // for all API operations, logging, and cross-references.
+  // Generated automatically on agent creation and persisted to database.
   string id = 1;
 
-  // Agent name
+  // Agent name - user-editable display name that can change.
+  // Use `id` for stable references, not `name`.
   string name = 2;
 
   // Agent status: "running", "stopped", "error", "initializing"

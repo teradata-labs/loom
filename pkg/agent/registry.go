@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -44,9 +46,10 @@ type Registry struct {
 	mu           sync.RWMutex
 	configDir    string
 	db           *sql.DB
-	agents       map[string]*Agent
+	agents       map[string]*Agent // Map of agent name -> Agent instance
 	configs      map[string]*loomv1.AgentConfig
-	agentInfo    map[string]*AgentInstanceInfo
+	agentInfo    map[string]*AgentInstanceInfo // Map of agent GUID -> AgentInstanceInfo
+	agentsByName map[string]string             // Map of agent name -> GUID for lookup
 	logger       *zap.Logger
 	watcher      *fsnotify.Watcher
 	mcpMgr       *manager.Manager
@@ -129,6 +132,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		agents:       make(map[string]*Agent),
 		configs:      make(map[string]*loomv1.AgentConfig),
 		agentInfo:    make(map[string]*AgentInstanceInfo),
+		agentsByName: make(map[string]string),
 		logger:       config.Logger,
 		watcher:      watcher,
 		mcpMgr:       config.MCPManager,
@@ -136,6 +140,11 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		tracer:       config.Tracer,
 		sessionStore: config.SessionStore,
 		toolRegistry: config.ToolRegistry,
+	}
+
+	// Load existing agents from database to restore GUIDs
+	if err := r.loadAgentsFromDB(); err != nil {
+		config.Logger.Warn("Failed to load agents from database", zap.Error(err))
 	}
 
 	return r, nil
@@ -292,19 +301,33 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 		return nil, fmt.Errorf("failed to build agent: %w", err)
 	}
 
-	// Store agent and info
-	r.mu.Lock()
-	r.agents[name] = agent
-	r.agentInfo[name] = &AgentInstanceInfo{
-		ID:        name,
+	// Generate stable GUID for agent
+	agentID := uuid.New().String()
+
+	// Create agent info with GUID
+	info := &AgentInstanceInfo{
+		ID:        agentID,
 		Name:      name,
 		Status:    "stopped",
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
+
+	// Persist to database
+	if err := r.persistAgentInfo(info, config); err != nil {
+		return nil, fmt.Errorf("failed to persist agent info: %w", err)
+	}
+
+	// Store agent and info in memory
+	r.mu.Lock()
+	r.agents[name] = agent
+	r.agentInfo[agentID] = info
+	r.agentsByName[name] = agentID
 	r.mu.Unlock()
 
-	r.logger.Info("Agent created successfully", zap.String("name", name))
+	r.logger.Info("Agent created successfully",
+		zap.String("name", name),
+		zap.String("id", agentID))
 
 	return agent, nil
 }
@@ -834,46 +857,68 @@ func (r *Registry) registerCustomTools(ctx context.Context, agent *Agent, custom
 	return nil
 }
 
-// StartAgent starts a stopped agent
-func (r *Registry) StartAgent(ctx context.Context, name string) error {
+// StartAgent starts a stopped agent by name or GUID
+func (r *Registry) StartAgent(ctx context.Context, nameOrID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	info, exists := r.agentInfo[name]
+	// Try GUID lookup first
+	info, exists := r.agentInfo[nameOrID]
 	if !exists {
-		return fmt.Errorf("agent not found: %s", name)
+		// Fall back to name lookup
+		agentID, nameExists := r.agentsByName[nameOrID]
+		if !nameExists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
+		info, exists = r.agentInfo[agentID]
+		if !exists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
 	}
 
 	if info.Status == "running" {
-		return fmt.Errorf("agent %s is already running", name)
+		return fmt.Errorf("agent %s is already running", info.Name)
 	}
 
 	info.Status = "running"
 	info.UpdatedAt = time.Now()
 
-	r.logger.Info("Agent started", zap.String("name", name))
+	r.logger.Info("Agent started",
+		zap.String("name", info.Name),
+		zap.String("id", info.ID))
 
 	return nil
 }
 
-// StopAgent stops a running agent
-func (r *Registry) StopAgent(ctx context.Context, name string) error {
+// StopAgent stops a running agent by name or GUID
+func (r *Registry) StopAgent(ctx context.Context, nameOrID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	info, exists := r.agentInfo[name]
+	// Try GUID lookup first
+	info, exists := r.agentInfo[nameOrID]
 	if !exists {
-		return fmt.Errorf("agent not found: %s", name)
+		// Fall back to name lookup
+		agentID, nameExists := r.agentsByName[nameOrID]
+		if !nameExists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
+		info, exists = r.agentInfo[agentID]
+		if !exists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
 	}
 
 	if info.Status != "running" {
-		return fmt.Errorf("agent %s is not running", name)
+		return fmt.Errorf("agent %s is not running", info.Name)
 	}
 
 	info.Status = "stopped"
 	info.UpdatedAt = time.Now()
 
-	r.logger.Info("Agent stopped", zap.String("name", name))
+	r.logger.Info("Agent stopped",
+		zap.String("name", info.Name),
+		zap.String("id", info.ID))
 
 	return nil
 }
@@ -905,8 +950,18 @@ func (r *Registry) GetAgent(ctx context.Context, name string) (*Agent, error) {
 // CreateEphemeralAgent creates a temporary agent based on a role.
 // This implements the collaboration.AgentFactory interface.
 // The agent is NOT registered and caller must manage its lifecycle.
+//
+// Ephemeral agents receive stable GUIDs for tracking and observability,
+// but are NOT persisted to the database since they're temporary.
 func (r *Registry) CreateEphemeralAgent(ctx context.Context, role string) (*Agent, error) {
-	r.logger.Info("Creating ephemeral agent", zap.String("role", role))
+	// Generate stable GUID for ephemeral agent
+	agentID := uuid.New().String()
+	agentName := fmt.Sprintf("ephemeral-%s", role)
+
+	r.logger.Info("Creating ephemeral agent",
+		zap.String("role", role),
+		zap.String("id", agentID),
+		zap.String("name", agentName))
 
 	// For now, create a basic agent with the default LLM provider
 	// TODO: Look up role-specific ephemeral policies from configs
@@ -921,23 +976,67 @@ func (r *Registry) CreateEphemeralAgent(ctx context.Context, role string) (*Agen
 	agent := NewAgent(
 		nil, // Backend optional
 		r.llmProvider,
-		WithName(fmt.Sprintf("ephemeral-%s", role)),
+		WithName(agentName),
 		WithDescription(fmt.Sprintf("Ephemeral agent for role: %s", role)),
 	)
 
-	r.logger.Info("Ephemeral agent created", zap.String("role", role), zap.String("name", agent.GetName()))
+	// Track ephemeral agent in memory (not persisted to DB)
+	// This allows GetAgentInfo to work with ephemeral agents
+	info := &AgentInstanceInfo{
+		ID:        agentID,
+		Name:      agentName,
+		Status:    "running",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	r.mu.Lock()
+	r.agentInfo[agentID] = info
+	r.agentsByName[agentName] = agentID
+	// Note: NOT adding to r.agents map since caller manages lifecycle
+	r.mu.Unlock()
+
+	r.logger.Info("Ephemeral agent created",
+		zap.String("role", role),
+		zap.String("id", agentID),
+		zap.String("name", agentName))
 
 	return agent, nil
 }
 
-// GetAgentInfo returns information about an agent
-func (r *Registry) GetAgentInfo(name string) (*AgentInstanceInfo, error) {
+// GetAgentInfo returns information about an agent by name or GUID.
+// Supports both stable GUID lookups and legacy name-based lookups.
+func (r *Registry) GetAgentInfo(nameOrID string) (*AgentInstanceInfo, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	info, exists := r.agentInfo[name]
+	// Try GUID lookup first
+	info, exists := r.agentInfo[nameOrID]
+	if exists {
+		return info, nil
+	}
+
+	// Fall back to name lookup
+	agentID, exists := r.agentsByName[nameOrID]
+	if exists {
+		info, exists = r.agentInfo[agentID]
+		if exists {
+			return info, nil
+		}
+	}
+
+	return nil, fmt.Errorf("agent not found: %s", nameOrID)
+}
+
+// GetAgentByID returns information about an agent by GUID only.
+// Use this when you specifically need GUID-based lookup without name fallback.
+func (r *Registry) GetAgentByID(id string) (*AgentInstanceInfo, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	info, exists := r.agentInfo[id]
 	if !exists {
-		return nil, fmt.Errorf("agent not found: %s", name)
+		return nil, fmt.Errorf("agent not found with ID: %s", id)
 	}
 
 	return info, nil
@@ -976,51 +1075,80 @@ func (r *Registry) GetConfig(name string) *loomv1.AgentConfig {
 	return r.configs[name]
 }
 
-// DeleteAgent removes an agent
-func (r *Registry) DeleteAgent(ctx context.Context, name string, force bool) error {
+// DeleteAgent removes an agent by name or GUID
+func (r *Registry) DeleteAgent(ctx context.Context, nameOrID string, force bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	info, exists := r.agentInfo[name]
+	// Try GUID lookup first
+	info, exists := r.agentInfo[nameOrID]
 	if !exists {
-		return fmt.Errorf("agent not found: %s", name)
+		// Fall back to name lookup
+		agentID, nameExists := r.agentsByName[nameOrID]
+		if !nameExists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
+		info, exists = r.agentInfo[agentID]
+		if !exists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
 	}
 
 	// Check if agent is running
 	if info.Status == "running" && !force {
-		return fmt.Errorf("agent %s is running, use force=true to delete", name)
+		return fmt.Errorf("agent %s is running, use force=true to delete", info.Name)
 	}
 
 	// Remove from runtime
-	delete(r.agents, name)
-	delete(r.agentInfo, name)
-	delete(r.configs, name)
+	delete(r.agents, info.Name)
+	delete(r.agentInfo, info.ID)
+	delete(r.agentsByName, info.Name)
+	delete(r.configs, info.Name)
+
+	// Delete from database
+	_, err := r.db.Exec("DELETE FROM agents WHERE id = ?", info.ID)
+	if err != nil {
+		r.logger.Warn("Failed to delete agent from database",
+			zap.String("id", info.ID),
+			zap.Error(err))
+	}
 
 	// Delete config file
-	configPath := filepath.Join(r.configDir, "agents", name+".yaml")
+	configPath := filepath.Join(r.configDir, "agents", info.Name+".yaml")
 	if err := removeFile(configPath); err != nil {
 		r.logger.Warn("Failed to delete config file",
 			zap.String("path", configPath),
 			zap.Error(err))
 	}
 
-	r.logger.Info("Agent deleted", zap.String("name", name))
+	r.logger.Info("Agent deleted",
+		zap.String("name", info.Name),
+		zap.String("id", info.ID))
 
 	return nil
 }
 
-// ReloadAgent hot-reloads an agent's configuration
-func (r *Registry) ReloadAgent(ctx context.Context, name string) error {
+// ReloadAgent hot-reloads an agent's configuration by name or GUID
+func (r *Registry) ReloadAgent(ctx context.Context, nameOrID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	info, exists := r.agentInfo[name]
+	// Try GUID lookup first
+	info, exists := r.agentInfo[nameOrID]
 	if !exists {
-		return fmt.Errorf("agent not found: %s", name)
+		// Fall back to name lookup
+		agentID, nameExists := r.agentsByName[nameOrID]
+		if !nameExists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
+		info, exists = r.agentInfo[agentID]
+		if !exists {
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
 	}
 
 	// Reload config from file
-	configPath := filepath.Join(r.configDir, "agents", name+".yaml")
+	configPath := filepath.Join(r.configDir, "agents", info.Name+".yaml")
 	config, err := LoadAgentConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
@@ -1030,7 +1158,7 @@ func (r *Registry) ReloadAgent(ctx context.Context, name string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	r.configs[name] = config
+	r.configs[info.Name] = config
 	info.UpdatedAt = time.Now()
 
 	// If agent is running, rebuild it
@@ -1039,10 +1167,12 @@ func (r *Registry) ReloadAgent(ctx context.Context, name string) error {
 		if err != nil {
 			return fmt.Errorf("failed to rebuild agent: %w", err)
 		}
-		r.agents[name] = agent
+		r.agents[info.Name] = agent
 	}
 
-	r.logger.Info("Agent config reloaded", zap.String("name", name))
+	r.logger.Info("Agent config reloaded",
+		zap.String("name", info.Name),
+		zap.String("id", info.ID))
 
 	return nil
 }
@@ -1306,6 +1436,95 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// persistAgentInfo persists agent info to the database.
+// This ensures agents have stable GUIDs that survive restarts.
+func (r *Registry) persistAgentInfo(info *AgentInstanceInfo, config *loomv1.AgentConfig) error {
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal agent config: %w", err)
+	}
+
+	query := `
+		INSERT INTO agents (id, name, config_json, status, created_at, updated_at, active_sessions, total_messages)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			config_json = excluded.config_json,
+			status = excluded.status,
+			updated_at = excluded.updated_at
+	`
+
+	_, err = r.db.Exec(query,
+		info.ID,
+		info.Name,
+		string(configJSON),
+		info.Status,
+		info.CreatedAt.Unix(),
+		info.UpdatedAt.Unix(),
+		info.ActiveSessions,
+		info.TotalMessages,
+	)
+
+	return err
+}
+
+// loadAgentsFromDB loads previously created agents from the database.
+// This is called during registry initialization to restore agent GUIDs.
+func (r *Registry) loadAgentsFromDB() error {
+	rows, err := r.db.Query(`
+		SELECT id, name, config_json, status, created_at, updated_at, active_sessions, total_messages
+		FROM agents
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to query agents: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var info AgentInstanceInfo
+		var configJSON string
+		var createdAt, updatedAt int64
+
+		err := rows.Scan(
+			&info.ID,
+			&info.Name,
+			&configJSON,
+			&info.Status,
+			&createdAt,
+			&updatedAt,
+			&info.ActiveSessions,
+			&info.TotalMessages,
+		)
+		if err != nil {
+			r.logger.Warn("Failed to scan agent row", zap.Error(err))
+			continue
+		}
+
+		info.CreatedAt = time.Unix(createdAt, 0)
+		info.UpdatedAt = time.Unix(updatedAt, 0)
+
+		// Load config from JSON
+		var config loomv1.AgentConfig
+		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+			r.logger.Warn("Failed to unmarshal agent config",
+				zap.String("agent", info.Name),
+				zap.Error(err))
+			continue
+		}
+
+		// Store in registry maps
+		r.agentInfo[info.ID] = &info
+		r.agentsByName[info.Name] = info.ID
+		r.configs[info.Name] = &config
+
+		r.logger.Debug("Loaded agent from database",
+			zap.String("name", info.Name),
+			zap.String("id", info.ID))
+	}
+
+	return rows.Err()
 }
 
 // Close closes the registry and cleans up resources

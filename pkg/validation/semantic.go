@@ -480,7 +480,7 @@ func validateCommunication(comm map[string]interface{}, agentNames map[string]st
 	hub, _ := comm["hub"].(string)
 
 	// Valid patterns
-	validPatterns := []string{"hub-and-spoke", "pipeline", "parallel", "debate", "fork-join"}
+	validPatterns := []string{"hub-and-spoke", "pipeline", "parallel", "debate", "fork-join", "peer-to-peer-pub-sub"}
 	if pattern != "" && !contains(validPatterns, pattern) {
 		errors = append(errors, ValidationError{
 			Level:    LevelSemantic,

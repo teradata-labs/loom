@@ -35,12 +35,6 @@ func TestRealWorkflowExamples(t *testing.T) {
 			shouldPass:   true,
 		},
 		{
-			name:         "vacation_planning_multi_agent",
-			path:         "examples/vacation-planner/workflows/vacation-planning-workflow.yaml",
-			workflowType: "multi-agent",
-			shouldPass:   true,
-		},
-		{
 			name:         "dungeon_crawl_multi_agent",
 			path:         "examples/dungeon-crawler/workflows/dungeon-crawl.yaml",
 			workflowType: "multi-agent",

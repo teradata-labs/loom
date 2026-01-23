@@ -1123,10 +1123,27 @@ func runServe(cmd *cobra.Command, args []string) {
 					logger.Info("    Enabled dynamic tool registration")
 				}
 
-				agents[cfg.Name] = ag
-				logger.Info("    Agent loaded successfully",
-					zap.String("name", cfg.Name),
-					zap.Int("tool_count", ag.ToolCount()))
+				// Get agent GUID from registry
+				var agentGUID string
+				if registry != nil {
+					if info, err := registry.GetAgentInfo(cfg.Name); err == nil {
+						agentGUID = info.ID
+						logger.Info("    Agent loaded successfully",
+							zap.String("name", cfg.Name),
+							zap.String("id", agentGUID),
+							zap.Int("tool_count", ag.ToolCount()))
+					} else {
+						logger.Warn("    Failed to get agent GUID from registry",
+							zap.String("name", cfg.Name),
+							zap.Error(err))
+						agentGUID = cfg.Name // Fallback to name if registry lookup fails
+					}
+				} else {
+					agentGUID = cfg.Name // Fallback to name if no registry
+				}
+
+				// Store agent with GUID as key for stable references
+				agents[agentGUID] = ag
 			}
 		}
 		// DO NOT close registry - keep it alive for hot-reload

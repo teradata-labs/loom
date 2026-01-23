@@ -4988,9 +4988,13 @@ func (x *CreateAgentRequest) GetConfigPath() string {
 // AgentInfo provides information about an agent instance.
 type AgentInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unique agent identifier
+	// Immutable agent GUID (UUID v4) - stable across renames and restarts.
+	// This is the canonical identifier for the agent and should be used
+	// for all API operations, logging, and cross-references.
+	// Generated automatically on agent creation and persisted to database.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// Agent name
+	// Agent name - user-editable display name that can change.
+	// Use `id` for stable references, not `name`.
 	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	// Agent status: "running", "stopped", "error", "initializing"
 	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
