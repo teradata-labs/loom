@@ -3237,7 +3237,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Immutable agent GUID (UUID v4) - stable across renames and restarts.\nThis is the canonical identifier for the agent and should be used\nfor all API operations, logging, and cross-references.\nGenerated automatically on agent creation and persisted to database."
+          "description": "Immutable agent GUID (UUID v4) - stable across renames and restarts.\nEvery agent instance has a unique ID automatically assigned by NewAgent().\nRegistry-managed agents have stable GUIDs persisted to database.\nStandalone and ephemeral agents have UUIDs but are not persisted.\nThis is the canonical identifier for the agent and should be used\nfor all API operations, logging, and cross-references."
         },
         "name": {
           "type": "string",

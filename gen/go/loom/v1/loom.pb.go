@@ -4989,9 +4989,11 @@ func (x *CreateAgentRequest) GetConfigPath() string {
 type AgentInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Immutable agent GUID (UUID v4) - stable across renames and restarts.
+	// Every agent instance has a unique ID automatically assigned by NewAgent().
+	// Registry-managed agents have stable GUIDs persisted to database.
+	// Standalone and ephemeral agents have UUIDs but are not persisted.
 	// This is the canonical identifier for the agent and should be used
 	// for all API operations, logging, and cross-references.
-	// Generated automatically on agent creation and persisted to database.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Agent name - user-editable display name that can change.
 	// Use `id` for stable references, not `name`.
