@@ -60,11 +60,11 @@ func TestNewMultiAgentServer(t *testing.T) {
 	server := NewMultiAgentServer(agents, nil)
 	require.NotNil(t, server)
 
-	// Check agents are registered
+	// Check agents are registered (by GUID now)
 	agentList := server.GetAgentIDs()
 	assert.Len(t, agentList, 2)
-	assert.Contains(t, agentList, "agent1")
-	assert.Contains(t, agentList, "agent2")
+	assert.Contains(t, agentList, agent1.GetID())
+	assert.Contains(t, agentList, agent2.GetID())
 
 	// Check default agent is set
 	assert.NotEmpty(t, server.defaultAgentID)
@@ -506,23 +506,27 @@ func TestUpdateAgent_Success(t *testing.T) {
 
 	server := NewMultiAgentServer(agents, nil)
 
+	// Get original agent's GUID
+	agent1GUID := agent1.GetID()
+
 	// Verify initial agent
-	ag, _, err := server.getAgent("test-agent")
+	ag, _, err := server.getAgent(agent1GUID)
 	require.NoError(t, err)
 	assert.Equal(t, "Original agent", ag.GetDescription())
 
-	// Create new agent instance
+	// Create new agent instance with same GUID
 	agent2 := agent.NewAgent(backend2, llm, agent.WithConfig(&agent.Config{
 		Name:        "test-agent",
 		Description: "Updated agent",
 	}))
+	agent2.SetID(agent1GUID) // Set same GUID for replacement
 
-	// Update agent
-	err = server.UpdateAgent("test-agent", agent2)
+	// Update agent using GUID
+	err = server.UpdateAgent(agent1GUID, agent2)
 	require.NoError(t, err)
 
 	// Verify agent was replaced
-	ag, _, err = server.getAgent("test-agent")
+	ag, _, err = server.getAgent(agent1GUID)
 	require.NoError(t, err)
 	assert.Equal(t, "Updated agent", ag.GetDescription())
 }
