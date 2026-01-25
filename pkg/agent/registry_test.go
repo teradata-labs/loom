@@ -682,7 +682,7 @@ func TestReloadCallback_Success(t *testing.T) {
 	registry.configs["callbacktest"] = newConfig
 	registry.mu.Unlock()
 
-	err = registry.onReload("callbacktest", newConfig)
+	err = registry.onReload("callbacktest", "test-guid-123", newConfig)
 	require.NoError(t, err)
 
 	// Verify callback received correct parameters
@@ -802,7 +802,7 @@ func TestReloadCallback_ThreadSafety(t *testing.T) {
 				callback := registry.onReload
 				registry.mu.RUnlock()
 				if callback != nil {
-					_ = callback("threadtest", config)
+					_ = callback("threadtest", "test-guid-concurrent", config)
 				}
 			}
 		}()

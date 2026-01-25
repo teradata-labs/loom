@@ -143,15 +143,25 @@ type spawnedAgentContext struct {
 
 // NewMultiAgentServer creates a new multi-agent LoomService server.
 func NewMultiAgentServer(agents map[string]*agent.Agent, store *agent.SessionStore) *MultiAgentServer {
-	// Find default agent (first one in map, or one named "default")
+	// Transform agent map to use GUID keys for consistency with AddAgent/UpdateAgent
+	guidAgents := make(map[string]*agent.Agent, len(agents))
 	var defaultID string
-	if defaultAgent, ok := agents["default"]; ok {
-		defaultID = "default"
-		_ = defaultAgent
-	} else {
-		// Use first agent as default
-		for id := range agents {
-			defaultID = id
+
+	for nameOrGUID, ag := range agents {
+		// Use agent's internal GUID as key
+		agentGUID := ag.GetID()
+		guidAgents[agentGUID] = ag
+
+		// Track default agent
+		if nameOrGUID == "default" {
+			defaultID = agentGUID
+		}
+	}
+
+	// If no "default" agent, use first agent as default
+	if defaultID == "" {
+		for guid := range guidAgents {
+			defaultID = guid
 			break
 		}
 	}
@@ -163,7 +173,7 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store *agent.SessionSto
 	defaultLLMConcurrency := 5
 
 	return &MultiAgentServer{
-		agents:                            agents,
+		agents:                            guidAgents,
 		sessionStore:                      store,
 		defaultAgentID:                    defaultID,
 		patternBroadcaster:                NewPatternEventBroadcaster(),
@@ -326,7 +336,7 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 		return ag, agentID, nil
 	}
 
-	// Fallback: Try to resolve name to GUID via registry
+	// Fallback 1: Try to resolve name to GUID via registry
 	if s.registry != nil {
 		info, err := s.registry.GetAgentInfo(agentID)
 		if err == nil {
@@ -348,6 +358,23 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 			}
 		}
 	}
+
+	// Fallback 2: If no registry, search by agent name directly in agents map
+	// This provides backward compatibility for tests and direct usage without registry
+	s.mu.RLock()
+	for guid, agent := range s.agents {
+		if agent.GetName() == agentID {
+			s.mu.RUnlock()
+			if s.logger != nil {
+				s.logger.Warn("Agent accessed by name instead of GUID (deprecated, no registry)",
+					zap.String("name", agentID),
+					zap.String("guid", guid),
+					zap.String("caller", "getAgent"))
+			}
+			return agent, guid, nil
+		}
+	}
+	s.mu.RUnlock()
 
 	// Not found - return error with available agents
 	s.mu.RLock()
@@ -850,13 +877,17 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 
 // spawnWorkflowSubAgents spawns background sub-agents for a workflow coordinator
 func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinatorAgent *agent.Agent, coordinatorID, sessionID string) error {
-	s.logger.Debug("spawnWorkflowSubAgents called",
-		zap.String("coordinator_id", coordinatorID),
-		zap.String("session_id", sessionID))
+	if s.logger != nil {
+		s.logger.Debug("spawnWorkflowSubAgents called",
+			zap.String("coordinator_id", coordinatorID),
+			zap.String("session_id", sessionID))
+	}
 
 	// Check if this is a workflow coordinator by looking up its proto config in the registry
 	if s.registry == nil {
-		s.logger.Debug("spawnWorkflowSubAgents: no registry available")
+		if s.logger != nil {
+			s.logger.Debug("spawnWorkflowSubAgents: no registry available")
+		}
 		return nil // No registry available
 	}
 
