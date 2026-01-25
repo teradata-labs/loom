@@ -8,7 +8,6 @@ A Go framework for building autonomous LLM agent threads with **natural language
 [![codecov](https://codecov.io/gh/teradata-labs/loom/branch/main/graph/badge.svg)](https://codecov.io/gh/teradata-labs/loom)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/teradata-labs/loom)](https://github.com/teradata-labs/loom/blob/main/go.mod)
 [![Release](https://img.shields.io/github/v/release/teradata-labs/loom)](https://github.com/teradata-labs/loom/releases/latest)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/teradata-labs/loom/badge)](https://securityscorecards.dev/viewer/?uri=github.com/teradata-labs/loom)
 
 ---
 
