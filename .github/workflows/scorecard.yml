@@ -1,0 +1,61 @@
+name: OpenSSF Scorecard
+
+on:
+  # Run on branch protection changes
+  branch_protection_rule:
+  # Run weekly on Mondays
+  schedule:
+    - cron: '30 1 * * 1'
+  # Allow manual trigger
+  workflow_dispatch:
+  # Run on pushes to main that change workflows
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/scorecard.yml'
+
+# Declare default permissions as read only
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload the results to code-scanning dashboard
+      security-events: write
+      # Needed to publish results and get a badge
+      id-token: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Public repositories:
+          #   - Publish results to OpenSSF REST API for easy access by consumers
+          #   - Allows the repository to include the Scorecard badge
+          #   - See https://github.com/ossf/scorecard-action#publishing-results
+          publish_results: true
+
+      # Upload the results as artifacts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      # Upload the results to GitHub's code scanning dashboard
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
