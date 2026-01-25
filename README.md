@@ -28,11 +28,13 @@ A Go framework for building autonomous LLM agent threads with **natural language
 Loom lets you **create AI agent threads by describing what you need in plain English**. No coding required for basic use - just tell Loom what you want:
 
 ```bash
-# Connect to the weaver agent
+# Option 1: Interactive TUI (Terminal UI)
 loom --thread weaver
+# Opens an interactive chat interface
 
-# Then describe what you need:
-# "Analyze PostgreSQL slow queries and suggest indexes"
+# Option 2: CLI (Command Line)
+loom chat --thread weaver "Analyze PostgreSQL slow queries and suggest indexes"
+# Sends a single message and gets a response
 
 # The weaver:
 # 1. Analyzes your requirements
