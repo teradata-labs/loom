@@ -493,6 +493,59 @@ func TestRegistry_GetAgent(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+// TestRegistry_GetAgent_ByNameAndGUID tests that GetAgent works with both name and GUID
+func TestRegistry_GetAgent_ByNameAndGUID(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	// Setup agent
+	agentsDir := filepath.Join(tmpDir, "agents")
+	err := os.MkdirAll(agentsDir, 0755)
+	require.NoError(t, err)
+
+	config := createTestAgentConfig("weaver")
+	err = SaveAgentConfig(config, filepath.Join(agentsDir, "weaver.yaml"))
+	require.NoError(t, err)
+
+	err = registry.LoadAgents(ctx)
+	require.NoError(t, err)
+
+	_, err = registry.CreateAgent(ctx, "weaver")
+	require.NoError(t, err)
+
+	// Get agent info to retrieve the GUID
+	info, err := registry.GetAgentInfo("weaver")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	agentGUID := info.ID
+	require.NotEmpty(t, agentGUID)
+
+	// Test 1: GetAgent by name should work
+	agent, err := registry.GetAgent(ctx, "weaver")
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	assert.Equal(t, "weaver", agent.GetName())
+
+	// Test 2: GetAgent by GUID should work
+	agentByGUID, err := registry.GetAgent(ctx, agentGUID)
+	require.NoError(t, err)
+	require.NotNil(t, agentByGUID)
+	assert.Equal(t, "weaver", agentByGUID.GetName())
+
+	// Test 3: Both lookups should return the same agent instance
+	assert.Equal(t, agent.GetID(), agentByGUID.GetID())
+
+	// Test 4: Non-existent name should fail
+	_, err = registry.GetAgent(ctx, "nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+
+	// Test 5: Non-existent GUID should fail
+	_, err = registry.GetAgent(ctx, "00000000-0000-0000-0000-000000000000")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
 func TestRegistry_GetAgentInfo_NotFound(t *testing.T) {
 	registry, _ := createTestRegistry(t)
 

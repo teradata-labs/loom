@@ -1036,28 +1036,49 @@ func (r *Registry) StopAgent(ctx context.Context, nameOrID string) error {
 	return nil
 }
 
-// GetAgent returns a running agent instance
-func (r *Registry) GetAgent(ctx context.Context, name string) (*Agent, error) {
-	// Check if agent is already created and running
+// GetAgent returns a running agent instance by name or GUID
+func (r *Registry) GetAgent(ctx context.Context, nameOrID string) (*Agent, error) {
+	// First try direct name lookup
 	r.mu.RLock()
-	agent, exists := r.agents[name]
+	agent, exists := r.agents[nameOrID]
+	_, hasConfig := r.configs[nameOrID]
 	r.mu.RUnlock()
 
 	if exists {
 		return agent, nil
 	}
 
-	// Agent not created yet - check if config exists and lazily create it
-	r.mu.RLock()
-	_, hasConfig := r.configs[name]
-	r.mu.RUnlock()
-
-	if !hasConfig {
-		return nil, fmt.Errorf("agent not found or not running: %s", name)
+	if hasConfig {
+		// Lazily create agent from config
+		return r.CreateAgent(ctx, nameOrID)
 	}
 
-	// Lazily create agent from config
-	return r.CreateAgent(ctx, name)
+	// Not found by name - try GUID lookup
+	r.mu.RLock()
+	info, guidExists := r.agentInfo[nameOrID]
+	r.mu.RUnlock()
+
+	if !guidExists {
+		return nil, fmt.Errorf("agent not found: %s", nameOrID)
+	}
+
+	// Found by GUID - try to get by name
+	name := info.Name
+	r.mu.RLock()
+	agent, exists = r.agents[name]
+	_, hasConfig = r.configs[name]
+	r.mu.RUnlock()
+
+	if exists {
+		return agent, nil
+	}
+
+	if hasConfig {
+		// Lazily create agent from config
+		return r.CreateAgent(ctx, name)
+	}
+
+	return nil, fmt.Errorf("agent not found or not running: %s", nameOrID)
 }
 
 // CreateEphemeralAgent creates a temporary agent based on a role.
