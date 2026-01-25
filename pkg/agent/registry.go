@@ -38,8 +38,9 @@ import (
 )
 
 // ReloadCallback is called when an agent config changes.
-// It receives the agent name and new configuration.
-type ReloadCallback func(name string, config *loomv1.AgentConfig) error
+// It receives the agent name, agent GUID, and new configuration.
+// The GUID is the stable identifier that should be used for agent registration.
+type ReloadCallback func(name string, guid string, config *loomv1.AgentConfig) error
 
 // Registry manages agent configurations and instances.
 // It provides centralized agent lifecycle management, hot-reloading, and persistence.
@@ -368,7 +369,7 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 	if hasStableGUID {
 		// Use stable GUID from database - override ephemeral UUID
 		agentID = existingGUID
-		agent.setID(agentID)
+		agent.SetID(agentID)
 		r.logger.Info("Using existing stable GUID",
 			zap.String("name", name),
 			zap.String("id", agentID))
@@ -1357,7 +1358,17 @@ func (r *Registry) ForceReload(ctx context.Context, name string) error {
 	r.mu.RUnlock()
 
 	if callback != nil {
-		if err := callback(name, config); err != nil {
+		// Get agent GUID for callback
+		agentGUID := ""
+		if info, err := r.GetAgentInfo(name); err == nil {
+			agentGUID = info.ID
+		} else {
+			r.logger.Warn("Could not get GUID for force-reload callback",
+				zap.String("agent", name),
+				zap.Error(err))
+		}
+
+		if err := callback(name, agentGUID, config); err != nil {
 			return fmt.Errorf("reload callback failed: %w", err)
 		}
 		r.logger.Info("Agent force-reloaded successfully", zap.String("agent", name))
@@ -1427,9 +1438,16 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 
 					if callback != nil {
 						for name, config := range configs {
-							if err := callback(name, config); err != nil {
+							// Get agent GUID for callback
+							agentGUID := ""
+							if info, err := r.GetAgentInfo(name); err == nil {
+								agentGUID = info.ID
+							}
+
+							if err := callback(name, agentGUID, config); err != nil {
 								r.logger.Debug("Agent already loaded or callback failed",
 									zap.String("agent", name),
+									zap.String("guid", agentGUID),
 									zap.Error(err))
 							}
 						}
@@ -1492,15 +1510,23 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 
 						// Call reload callback if set
 						if callback != nil {
-							if err := callback(config.Name, config); err != nil {
+							// Get agent GUID for callback
+							agentGUID := ""
+							if info, err := r.GetAgentInfo(config.Name); err == nil {
+								agentGUID = info.ID
+							}
+
+							if err := callback(config.Name, agentGUID, config); err != nil {
 								r.logger.Error("Workflow agent reload callback failed",
 									zap.String("workflow", name),
 									zap.String("agent", config.Name),
+									zap.String("guid", agentGUID),
 									zap.Error(err))
 							} else {
 								r.logger.Info("Workflow agent reloaded successfully",
 									zap.String("workflow", name),
-									zap.String("agent", config.Name))
+									zap.String("agent", config.Name),
+									zap.String("guid", agentGUID))
 							}
 						} else {
 							// Fallback to internal reload if no callback set
@@ -1541,13 +1567,25 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 					r.mu.RUnlock()
 
 					if callback != nil {
-						if err := callback(name, config); err != nil {
+						// Get agent GUID for callback
+						agentGUID := ""
+						if info, err := r.GetAgentInfo(name); err == nil {
+							agentGUID = info.ID
+						} else {
+							r.logger.Warn("Could not get GUID for hot-reload callback",
+								zap.String("agent", name),
+								zap.Error(err))
+						}
+
+						if err := callback(name, agentGUID, config); err != nil {
 							r.logger.Error("Reload callback failed",
 								zap.String("agent", name),
+								zap.String("guid", agentGUID),
 								zap.Error(err))
 						} else {
 							r.logger.Info("Agent reloaded successfully",
-								zap.String("agent", name))
+								zap.String("agent", name),
+								zap.String("guid", agentGUID))
 						}
 					} else {
 						// Fallback to internal reload if no callback set

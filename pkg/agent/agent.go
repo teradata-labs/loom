@@ -424,9 +424,10 @@ func (a *Agent) GetID() string {
 	return a.id
 }
 
-// setID sets the agent's ID (used by Registry for stable GUID assignment).
-// This is an internal method - only Registry should call this.
-func (a *Agent) setID(id string) {
+// SetID sets the agent's ID (used by Registry for stable GUID assignment).
+// This method allows external systems to set a stable GUID for the agent.
+// IMPORTANT: This should only be called during agent initialization or hot-reload.
+func (a *Agent) SetID(id string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.id = id

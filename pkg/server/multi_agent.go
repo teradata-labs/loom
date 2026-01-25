@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -309,37 +310,78 @@ func (s *MultiAgentServer) SetProviderFactory(f *factory.ProviderFactory) {
 }
 
 // getAgent retrieves an agent by ID, using default if not specified
+// Supports both GUID (preferred) and name-based (deprecated) lookups
 func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	// Use default if not specified
 	if agentID == "" {
 		agentID = s.defaultAgentID
 	}
 
+	// Try direct GUID lookup first (fast path)
+	s.mu.RLock()
 	ag, ok := s.agents[agentID]
-	if !ok {
-		available := make([]string, 0, len(s.agents))
-		for id := range s.agents {
-			available = append(available, id)
-		}
-		return nil, "", status.Errorf(codes.NotFound, "agent not found: %s (available: %v)", agentID, available)
+	s.mu.RUnlock()
+
+	if ok {
+		return ag, agentID, nil
 	}
 
-	return ag, agentID, nil
+	// Fallback: Try to resolve name to GUID via registry
+	if s.registry != nil {
+		info, err := s.registry.GetAgentInfo(agentID)
+		if err == nil {
+			resolvedGUID := info.ID
+
+			s.mu.RLock()
+			ag, ok = s.agents[resolvedGUID]
+			s.mu.RUnlock()
+
+			if ok {
+				// Log deprecation warning when name used instead of GUID
+				if s.logger != nil {
+					s.logger.Warn("Agent accessed by name instead of GUID (deprecated)",
+						zap.String("name", agentID),
+						zap.String("guid", resolvedGUID),
+						zap.String("caller", "getAgent"))
+				}
+				return ag, resolvedGUID, nil
+			}
+		}
+	}
+
+	// Not found - return error with available agents
+	s.mu.RLock()
+	available := make([]string, 0, len(s.agents))
+	for id := range s.agents {
+		available = append(available, id)
+	}
+	s.mu.RUnlock()
+
+	return nil, "", status.Errorf(codes.NotFound, "agent not found: %s (available: %v)", agentID, available)
 }
 
 // AddAgent adds a new agent to the server at runtime
 func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
+	// Get agent's internal GUID - this is the stable identifier
+	agentGUID := ag.GetID()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.agents[id] = ag
+	// Use agent's internal GUID as map key (stable across renames)
+	s.agents[agentGUID] = ag
 
 	// Set as default if no default exists
 	if s.defaultAgentID == "" {
-		s.defaultAgentID = id
+		s.defaultAgentID = agentGUID
+	}
+
+	// Log if provided ID doesn't match GUID
+	if id != "" && id != agentGUID && s.logger != nil {
+		s.logger.Debug("AddAgent called with ID that differs from agent's internal GUID",
+			zap.String("provided_id", id),
+			zap.String("agent_guid", agentGUID),
+			zap.String("agent_name", ag.GetName()))
 	}
 
 	// Inject shared memory if configured (legacy storage package)
@@ -357,12 +399,13 @@ func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
 
 	// Inject communication tools if communication is configured
 	if s.messageQueue != nil || s.messageBus != nil || s.sharedMemoryComm != nil {
-		commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, id)
+		commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentGUID)
 		ag.RegisterTools(commTools...)
 
 		if s.commLogger != nil {
 			s.commLogger.Debug("Communication tools injected into new agent",
-				zap.String("agent_id", id),
+				zap.String("agent_id", agentGUID),
+				zap.String("agent_name", ag.GetName()),
 				zap.Int("num_tools", len(commTools)))
 		}
 	}
@@ -374,6 +417,9 @@ func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
 // UpdateAgent replaces an existing agent with a new instance (for hot-reload).
 // The new agent will inherit shared memory and communication configuration if set.
 func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
+	// Get agent's internal GUID - this is the stable identifier
+	agentGUID := ag.GetID()
+
 	// Prepare agent completely BEFORE acquiring lock to minimize critical section
 	// This prevents deadlock when multiple agents are being reloaded concurrently
 
@@ -390,14 +436,15 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 		ag.SetCommunicationPolicy(s.commPolicy)
 	}
 
-	// Inject communication tools if communication is configured
+	// Inject communication tools if communication is configured (use GUID)
 	if s.messageQueue != nil || s.messageBus != nil || s.sharedMemoryComm != nil {
-		commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, id)
+		commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentGUID)
 		ag.RegisterTools(commTools...)
 
 		if s.commLogger != nil {
 			s.commLogger.Debug("Communication tools injected into updated agent",
-				zap.String("agent_id", id),
+				zap.String("agent_id", agentGUID),
+				zap.String("agent_name", ag.GetName()),
 				zap.Int("num_tools", len(commTools)))
 		}
 	}
@@ -406,13 +453,13 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if agent exists
-	if _, ok := s.agents[id]; !ok {
-		return fmt.Errorf("agent not found: %s", id)
+	// Check if agent exists using GUID
+	if _, ok := s.agents[agentGUID]; !ok {
+		return fmt.Errorf("agent not found: %s (GUID: %s)", id, agentGUID)
 	}
 
-	// Atomic swap
-	s.agents[id] = ag
+	// Atomic swap using GUID key
+	s.agents[agentGUID] = ag
 
 	return nil
 }
@@ -437,6 +484,33 @@ func (s *MultiAgentServer) RemoveAgent(id string) error {
 	}
 
 	return nil
+}
+
+// isGUID validates if a string matches UUID v4 format (GUID)
+// UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+func isGUID(s string) bool {
+	// UUID v4 has specific format with version 4 in third group and variant in fourth group
+	matched, _ := regexp.MatchString(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, strings.ToLower(s))
+	return matched
+}
+
+// resolveAgentID resolves an agent identifier (name or GUID) to a GUID
+// Returns the GUID if input is already a GUID, or looks up GUID from name via registry
+func (s *MultiAgentServer) resolveAgentID(nameOrGUID string) (string, error) {
+	// Check if already GUID format
+	if isGUID(nameOrGUID) {
+		return nameOrGUID, nil
+	}
+
+	// Try to lookup GUID from registry via name
+	if s.registry != nil {
+		info, err := s.registry.GetAgentInfo(nameOrGUID)
+		if err == nil {
+			return info.ID, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not resolve agent identifier: %s", nameOrGUID)
 }
 
 // GetAgentIDs returns available agent IDs (internal helper)

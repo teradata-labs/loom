@@ -96,7 +96,7 @@ func TestHotReloadIntegration(t *testing.T) {
 	var callbackConfig *loomv1.AgentConfig
 
 	// Set reload callback that updates the server
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		callbackInvoked = true
 		callbackName = name
 		callbackConfig = agentConfig
@@ -208,7 +208,7 @@ func TestHotReloadIntegration_MultipleAgents(t *testing.T) {
 
 	// Set reload callback
 	reloadedAgents := make(map[string]bool)
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		reloadedAgents[name] = true
 
 		backend := &mockBackend{}
@@ -318,7 +318,7 @@ func TestHotReloadIntegration_CallbackError(t *testing.T) {
 
 	// Set callback that returns error
 	callbackInvoked := false
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		callbackInvoked = true
 		return assert.AnError // Return error
 	})
@@ -412,7 +412,7 @@ func TestWatchConfigs_ReloadTriggerFile(t *testing.T) {
 	reloadedAgents := make(map[string]bool)
 	var mu sync.Mutex
 
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		mu.Lock()
 		reloadedAgents[name] = true
 		mu.Unlock()
@@ -489,7 +489,7 @@ func TestWatchConfigs_ReloadTrigger_NewAgent(t *testing.T) {
 	newAgents := make(map[string]bool)
 	var mu sync.Mutex
 
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		mu.Lock()
 		defer mu.Unlock()
 

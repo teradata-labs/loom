@@ -619,7 +619,7 @@ func TestSetReloadCallback(t *testing.T) {
 
 	// Set callback
 	called := false
-	callback := func(name string, config *loomv1.AgentConfig) error {
+	callback := func(name string, guid string, config *loomv1.AgentConfig) error {
 		called = true
 		return nil
 	}
@@ -632,7 +632,7 @@ func TestSetReloadCallback(t *testing.T) {
 	registry.mu.RUnlock()
 
 	// Test callback can be invoked
-	err := registry.onReload("test", &loomv1.AgentConfig{Name: "test"})
+	err := registry.onReload("test", "test-guid", &loomv1.AgentConfig{Name: "test"})
 	require.NoError(t, err)
 	assert.True(t, called)
 }
@@ -661,7 +661,7 @@ func TestReloadCallback_Success(t *testing.T) {
 	// Set callback
 	var receivedName string
 	var receivedConfig *loomv1.AgentConfig
-	callback := func(name string, config *loomv1.AgentConfig) error {
+	callback := func(name string, guid string, config *loomv1.AgentConfig) error {
 		receivedName = name
 		receivedConfig = config
 		return nil
@@ -697,14 +697,14 @@ func TestReloadCallback_Error(t *testing.T) {
 
 	// Set callback that returns error
 	expectedErr := fmt.Errorf("callback error")
-	callback := func(name string, config *loomv1.AgentConfig) error {
+	callback := func(name string, guid string, config *loomv1.AgentConfig) error {
 		return expectedErr
 	}
 
 	registry.SetReloadCallback(callback)
 
 	// Invoke callback
-	err := registry.onReload("test", &loomv1.AgentConfig{Name: "test"})
+	err := registry.onReload("test", "test-guid", &loomv1.AgentConfig{Name: "test"})
 	require.Error(t, err)
 	assert.Equal(t, expectedErr, err)
 }
@@ -786,7 +786,7 @@ func TestReloadCallback_ThreadSafety(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				registry.SetReloadCallback(func(name string, config *loomv1.AgentConfig) error {
+				registry.SetReloadCallback(func(name string, guid string, config *loomv1.AgentConfig) error {
 					return nil
 				})
 			}
@@ -846,7 +846,7 @@ func TestForceReload_Success(t *testing.T) {
 	var receivedName string
 	var receivedConfig *loomv1.AgentConfig
 
-	registry.SetReloadCallback(func(name string, cfg *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
 		callbackInvoked = true
 		receivedName = name
 		receivedConfig = cfg
@@ -976,7 +976,7 @@ func TestForceReload_CallbackError(t *testing.T) {
 
 	// Set callback that returns error
 	expectedErr := fmt.Errorf("callback failed")
-	registry.SetReloadCallback(func(name string, cfg *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
 		return expectedErr
 	})
 
@@ -1023,7 +1023,7 @@ func TestForceReload_ThreadSafety(t *testing.T) {
 
 	// Set callback
 	var callbackCount sync.Map
-	registry.SetReloadCallback(func(name string, cfg *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
 		// Track callback invocations
 		count, _ := callbackCount.LoadOrStore(name, 0)
 		callbackCount.Store(name, count.(int)+1)
