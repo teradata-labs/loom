@@ -1569,12 +1569,43 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 					if callback != nil {
 						// Get agent GUID for callback
 						agentGUID := ""
-						if info, err := r.GetAgentInfo(name); err == nil {
+						info, err := r.GetAgentInfo(name)
+						if err == nil {
+							// Agent exists in database, use its stable GUID
 							agentGUID = info.ID
 						} else {
-							r.logger.Warn("Could not get GUID for hot-reload callback",
-								zap.String("agent", name),
-								zap.Error(err))
+							// Agent is NEW (just created), generate and persist stable GUID
+							r.logger.Info("New agent detected, generating stable GUID",
+								zap.String("agent", name))
+
+							// Generate new stable GUID
+							agentGUID = uuid.New().String()
+
+							// Create agent info
+							now := time.Now()
+							newInfo := &AgentInstanceInfo{
+								ID:             agentGUID,
+								Name:           name,
+								Status:         "initializing",
+								CreatedAt:      now,
+								UpdatedAt:      now,
+								ActiveSessions: 0,
+								TotalMessages:  0,
+							}
+
+							// Persist to database BEFORE callback
+							// This ensures GetAgentInfo will work correctly for subsequent operations
+							if err := r.persistAgentInfo(newInfo, config); err != nil {
+								r.logger.Error("Failed to persist new agent info",
+									zap.String("agent", name),
+									zap.String("guid", agentGUID),
+									zap.Error(err))
+								// Continue anyway with the GUID we generated
+							} else {
+								r.logger.Info("New agent persisted to registry",
+									zap.String("agent", name),
+									zap.String("guid", agentGUID))
+							}
 						}
 
 						if err := callback(name, agentGUID, config); err != nil {
