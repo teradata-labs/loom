@@ -11,12 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//go:build hawk
 
-// Package observability provides embedded Hawk integration for in-process trace storage.
+// Package observability provides embedded trace storage for in-process observability.
 //
-// EmbeddedHawkTracer stores traces in-process using Hawk's core storage (memory or SQLite),
-// providing 10,000x faster performance than service mode while maintaining full compatibility.
+// EmbeddedTracer stores traces in-process using self-contained storage (memory or SQLite),
+// providing high-performance tracing without external dependencies.
 package observability
 
 import (
@@ -27,11 +26,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/teradata-labs/hawk/pkg/core"
+	"github.com/teradata-labs/loom/pkg/observability/storage"
 	"go.uber.org/zap"
 )
 
-// EmbeddedConfig configures the embedded Hawk tracer
+// EmbeddedConfig configures the embedded tracer
 type EmbeddedConfig struct {
 	// StorageType: "memory" (default) or "sqlite"
 	StorageType string
@@ -58,9 +57,9 @@ func DefaultEmbeddedConfig() *EmbeddedConfig {
 	}
 }
 
-// EmbeddedHawkTracer implements Tracer interface using embedded Hawk storage
-type EmbeddedHawkTracer struct {
-	storage       core.Storage
+// EmbeddedTracer implements Tracer interface using embedded storage
+type EmbeddedTracer struct {
+	storage       storage.Storage
 	config        *EmbeddedConfig
 	logger        *zap.Logger
 	mu            sync.RWMutex
@@ -71,8 +70,8 @@ type EmbeddedHawkTracer struct {
 	currentEvalID string // Current evaluation session
 }
 
-// NewEmbeddedHawkTracer creates a new embedded Hawk tracer with in-process storage
-func NewEmbeddedHawkTracer(config *EmbeddedConfig) (*EmbeddedHawkTracer, error) {
+// NewEmbeddedTracer creates a new embedded tracer with in-process storage
+func NewEmbeddedTracer(config *EmbeddedConfig) (*EmbeddedTracer, error) {
 	if config == nil {
 		config = DefaultEmbeddedConfig()
 	}
@@ -88,24 +87,25 @@ func NewEmbeddedHawkTracer(config *EmbeddedConfig) (*EmbeddedHawkTracer, error) 
 	}
 
 	// Create storage based on type
-	storageConfig := &core.StorageConfig{
-		Type: config.StorageType,
+	storageConfig := &storage.StorageConfig{
+		Type:            config.StorageType,
+		Path:            config.SQLitePath,
+		MaxMemoryTraces: config.MaxMemoryTraces,
 	}
 
 	if config.StorageType == "sqlite" {
 		if config.SQLitePath == "" {
 			return nil, fmt.Errorf("sqlite_path required when storage_type = 'sqlite'")
 		}
-		storageConfig.Path = config.SQLitePath
 	}
 
-	storage, err := core.NewStorage(storageConfig)
+	stor, err := storage.NewStorage(storageConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
-	tracer := &EmbeddedHawkTracer{
-		storage:     storage,
+	tracer := &EmbeddedTracer{
+		storage:     stor,
 		config:      config,
 		logger:      logger,
 		activeSpans: make(map[string]*Span),
@@ -118,7 +118,7 @@ func NewEmbeddedHawkTracer(config *EmbeddedConfig) (*EmbeddedHawkTracer, error) 
 		go tracer.flushLoop()
 	}
 
-	logger.Info("embedded hawk tracer initialized",
+	logger.Info("embedded tracer initialized",
 		zap.String("storage_type", config.StorageType),
 		zap.String("sqlite_path", config.SQLitePath),
 	)
@@ -126,8 +126,14 @@ func NewEmbeddedHawkTracer(config *EmbeddedConfig) (*EmbeddedHawkTracer, error) 
 	return tracer, nil
 }
 
+// NewEmbeddedHawkTracer is deprecated - use NewEmbeddedTracer instead.
+// Kept for backward compatibility.
+func NewEmbeddedHawkTracer(config *EmbeddedConfig) (*EmbeddedTracer, error) {
+	return NewEmbeddedTracer(config)
+}
+
 // StartSpan creates a new tracing span
-func (t *EmbeddedHawkTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
+func (t *EmbeddedTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -166,7 +172,7 @@ func (t *EmbeddedHawkTracer) StartSpan(ctx context.Context, name string, opts ..
 }
 
 // EndSpan completes a tracing span and stores it
-func (t *EmbeddedHawkTracer) EndSpan(span *Span) {
+func (t *EmbeddedTracer) EndSpan(span *Span) {
 	if span == nil {
 		return
 	}
@@ -185,10 +191,10 @@ func (t *EmbeddedHawkTracer) EndSpan(span *Span) {
 	// Remove from active spans
 	delete(t.activeSpans, span.SpanID)
 
-	// Convert to Hawk EvalRun format
+	// Convert to storage EvalRun format
 	evalRun := t.spanToEvalRun(span)
 
-	// Store in Hawk storage
+	// Store in storage
 	ctx := context.Background()
 	if err := t.storage.CreateEvalRun(ctx, evalRun); err != nil {
 		t.logger.Error("failed to store eval run",
@@ -205,8 +211,8 @@ func (t *EmbeddedHawkTracer) EndSpan(span *Span) {
 	)
 }
 
-// spanToEvalRun converts a Span to Hawk's EvalRun format
-func (t *EmbeddedHawkTracer) spanToEvalRun(span *Span) *core.EvalRun {
+// spanToEvalRun converts a Span to storage EvalRun format
+func (t *EmbeddedTracer) spanToEvalRun(span *Span) *storage.EvalRun {
 	// Extract metadata from span attributes
 	query, _ := span.Attributes["query"].(string)
 	model, _ := span.Attributes[AttrLLMModel].(string)
@@ -237,7 +243,7 @@ func (t *EmbeddedHawkTracer) spanToEvalRun(span *Span) *core.EvalRun {
 	// Serialize configuration
 	configJSON, _ := json.Marshal(span.Attributes)
 
-	return &core.EvalRun{
+	return &storage.EvalRun{
 		ID:                span.SpanID,
 		EvalID:            t.getCurrentEvalID(),
 		Query:             query,
@@ -254,7 +260,7 @@ func (t *EmbeddedHawkTracer) spanToEvalRun(span *Span) *core.EvalRun {
 }
 
 // getCurrentEvalID returns the current evaluation ID (or creates one)
-func (t *EmbeddedHawkTracer) getCurrentEvalID() string {
+func (t *EmbeddedTracer) getCurrentEvalID() string {
 	if t.currentEvalID != "" {
 		return t.currentEvalID
 	}
@@ -263,7 +269,7 @@ func (t *EmbeddedHawkTracer) getCurrentEvalID() string {
 	evalID := fmt.Sprintf("loom-session-%d", time.Now().Unix())
 	t.currentEvalID = evalID
 
-	eval := &core.Eval{
+	eval := &storage.Eval{
 		ID:        evalID,
 		Name:      "Loom Agent Session",
 		Suite:     "embedded",
@@ -283,15 +289,14 @@ func (t *EmbeddedHawkTracer) getCurrentEvalID() string {
 }
 
 // SetEvalID sets the current evaluation ID for grouping traces
-func (t *EmbeddedHawkTracer) SetEvalID(evalID string) {
+func (t *EmbeddedTracer) SetEvalID(evalID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.currentEvalID = evalID
 }
 
-// RecordMetric records a point-in-time metric (not stored in Hawk currently)
-func (t *EmbeddedHawkTracer) RecordMetric(name string, value float64, labels map[string]string) {
-	// Could be extended to store metrics in Hawk if needed
+// RecordMetric records a point-in-time metric
+func (t *EmbeddedTracer) RecordMetric(name string, value float64, labels map[string]string) {
 	t.logger.Debug("metric recorded",
 		zap.String("name", name),
 		zap.Float64("value", value),
@@ -299,9 +304,8 @@ func (t *EmbeddedHawkTracer) RecordMetric(name string, value float64, labels map
 	)
 }
 
-// RecordEvent records a standalone event (not stored in Hawk currently)
-func (t *EmbeddedHawkTracer) RecordEvent(ctx context.Context, name string, attributes map[string]interface{}) {
-	// Could be extended to store events in Hawk if needed
+// RecordEvent records a standalone event
+func (t *EmbeddedTracer) RecordEvent(ctx context.Context, name string, attributes map[string]interface{}) {
 	t.logger.Debug("event recorded",
 		zap.String("name", name),
 		zap.Any("attributes", attributes),
@@ -309,7 +313,7 @@ func (t *EmbeddedHawkTracer) RecordEvent(ctx context.Context, name string, attri
 }
 
 // Flush forces a metrics update for the current evaluation
-func (t *EmbeddedHawkTracer) Flush(ctx context.Context) error {
+func (t *EmbeddedTracer) Flush(ctx context.Context) error {
 	t.mu.RLock()
 	evalID := t.currentEvalID
 	t.mu.RUnlock()
@@ -339,7 +343,7 @@ func (t *EmbeddedHawkTracer) Flush(ctx context.Context) error {
 }
 
 // flushLoop periodically flushes metrics
-func (t *EmbeddedHawkTracer) flushLoop() {
+func (t *EmbeddedTracer) flushLoop() {
 	for {
 		select {
 		case <-t.flushTicker.C:
@@ -353,7 +357,7 @@ func (t *EmbeddedHawkTracer) flushLoop() {
 }
 
 // Close shuts down the embedded tracer
-func (t *EmbeddedHawkTracer) Close() error {
+func (t *EmbeddedTracer) Close() error {
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
@@ -389,14 +393,14 @@ func (t *EmbeddedHawkTracer) Close() error {
 		return err
 	}
 
-	t.logger.Info("embedded hawk tracer closed")
+	t.logger.Info("embedded tracer closed")
 	return nil
 }
 
 // GetStorage returns the underlying storage (for testing/inspection)
-func (t *EmbeddedHawkTracer) GetStorage() core.Storage {
+func (t *EmbeddedTracer) GetStorage() storage.Storage {
 	return t.storage
 }
 
 // Compile-time interface check
-var _ Tracer = (*EmbeddedHawkTracer)(nil)
+var _ Tracer = (*EmbeddedTracer)(nil)
