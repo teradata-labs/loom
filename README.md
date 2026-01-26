@@ -4,6 +4,10 @@ A Go framework for building autonomous LLM agent threads with **natural language
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/teradata-labs/loom.svg)](https://pkg.go.dev/github.com/teradata-labs/loom)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CI](https://github.com/teradata-labs/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/teradata-labs/loom/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/teradata-labs/loom/branch/main/graph/badge.svg)](https://codecov.io/gh/teradata-labs/loom)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/teradata-labs/loom)](https://github.com/teradata-labs/loom/blob/main/go.mod)
+[![Release](https://img.shields.io/github/v/release/teradata-labs/loom)](https://github.com/teradata-labs/loom/releases/latest)
 
 ---
 
@@ -24,11 +28,13 @@ A Go framework for building autonomous LLM agent threads with **natural language
 Loom lets you **create AI agent threads by describing what you need in plain English**. No coding required for basic use - just tell Loom what you want:
 
 ```bash
-# Connect to the weaver agent
+# Option 1: Interactive TUI (Terminal UI)
 loom --thread weaver
+# Opens an interactive chat interface
 
-# Then describe what you need:
-# "Analyze PostgreSQL slow queries and suggest indexes"
+# Option 2: CLI (Command Line)
+loom chat --thread weaver "Analyze PostgreSQL slow queries and suggest indexes"
+# Sends a single message and gets a response
 
 # The weaver:
 # 1. Analyzes your requirements
