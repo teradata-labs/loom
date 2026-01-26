@@ -45,16 +45,16 @@ type EvalRun struct {
 
 // EvalMetrics represents aggregated metrics for an evaluation
 type EvalMetrics struct {
-	EvalID               string  // Evaluation ID
-	TotalRuns            int32   // Total number of runs
-	SuccessfulRuns       int32   // Number of successful runs
-	FailedRuns           int32   // Number of failed runs
-	SuccessRate          float64 // Success rate (0.0-1.0)
-	AvgExecutionTimeMS   float64 // Average execution time
-	TotalTokens          int64   // Total tokens used
-	AvgTokensPerRun      float64 // Average tokens per run
-	TotalCost            float64 // Total estimated cost (if available)
-	FirstRunTimestamp    int64   // Timestamp of first run
-	LastRunTimestamp     int64   // Timestamp of last run
-	UpdatedAt            int64   // When metrics were last updated
+	EvalID             string  // Evaluation ID
+	TotalRuns          int32   // Total number of runs
+	SuccessfulRuns     int32   // Number of successful runs
+	FailedRuns         int32   // Number of failed runs
+	SuccessRate        float64 // Success rate (0.0-1.0)
+	AvgExecutionTimeMS float64 // Average execution time
+	TotalTokens        int64   // Total tokens used
+	AvgTokensPerRun    float64 // Average tokens per run
+	TotalCost          float64 // Total estimated cost (if available)
+	FirstRunTimestamp  int64   // Timestamp of first run
+	LastRunTimestamp   int64   // Timestamp of last run
+	UpdatedAt          int64   // When metrics were last updated
 }

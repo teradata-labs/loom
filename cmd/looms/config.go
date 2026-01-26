@@ -339,8 +339,8 @@ type ObservabilityConfig struct {
 	HawkAPIKey   string `mapstructure:"hawk_api_key"` // From CLI/env only
 
 	// Embedded mode (always available)
-	StorageType string `mapstructure:"storage_type"` // memory, sqlite
-	SQLitePath  string `mapstructure:"sqlite_path"`  // Path for SQLite storage
+	StorageType   string `mapstructure:"storage_type"`   // memory, sqlite
+	SQLitePath    string `mapstructure:"sqlite_path"`    // Path for SQLite storage
 	FlushInterval string `mapstructure:"flush_interval"` // e.g., "5s", "30s"
 }
 

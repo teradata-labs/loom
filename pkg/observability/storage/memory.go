@@ -24,13 +24,13 @@ import (
 // MemoryStorage provides in-memory trace storage with ring buffer eviction.
 // Thread-safe for concurrent access. Suitable for development and testing.
 type MemoryStorage struct {
-	mu             sync.RWMutex
-	maxTraces      int
-	evals          map[string]*Eval
-	runs           map[string]*EvalRun  // All runs by ID
-	runsByEval     map[string][]string  // Run IDs grouped by eval ID
-	metrics        map[string]*EvalMetrics
-	closed         bool
+	mu         sync.RWMutex
+	maxTraces  int
+	evals      map[string]*Eval
+	runs       map[string]*EvalRun // All runs by ID
+	runsByEval map[string][]string // Run IDs grouped by eval ID
+	metrics    map[string]*EvalMetrics
+	closed     bool
 }
 
 // NewMemoryStorage creates a new in-memory storage backend

@@ -482,7 +482,7 @@ func TestSQLiteStorage_Concurrent(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < runsPerGoroutine; j++ {
 				run := &EvalRun{
-					ID:        string(rune('A'+goroutineID*100+j)),
+					ID:        string(rune('A' + goroutineID*100 + j)),
 					EvalID:    "eval-concurrent",
 					Timestamp: time.Now().Unix(),
 				}
