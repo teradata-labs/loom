@@ -116,7 +116,7 @@ func TestEmbeddedTracer_ErrorRecording(t *testing.T) {
 	defer tracer.Close()
 
 	ctx := context.Background()
-	ctx, span := tracer.StartSpan(ctx, "test.operation")
+	_, span := tracer.StartSpan(ctx, "test.operation")
 
 	// Record error
 	span.RecordError(context.DeadlineExceeded)
@@ -234,7 +234,7 @@ func TestEmbeddedTracer_SetEvalID(t *testing.T) {
 
 	// Create span
 	ctx := context.Background()
-	ctx, span := tracer.StartSpan(ctx, "test.operation")
+	_, span := tracer.StartSpan(ctx, "test.operation")
 	tracer.EndSpan(span)
 
 	// Verify eval ID was set

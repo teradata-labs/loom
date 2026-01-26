@@ -49,7 +49,7 @@ func TestAutoSelectTracer_EmbeddedMemory(t *testing.T) {
 
 	// Test basic span operations
 	ctx := context.Background()
-	ctx, span := tracer.StartSpan(ctx, "test.operation")
+	_, span := tracer.StartSpan(ctx, "test.operation")
 	span.SetAttribute("test_key", "test_value")
 	time.Sleep(10 * time.Millisecond)
 	tracer.EndSpan(span)
@@ -89,7 +89,7 @@ func TestAutoSelectTracer_EmbeddedSQLite(t *testing.T) {
 
 	// Test basic span operations
 	ctx := context.Background()
-	ctx, span := tracer.StartSpan(ctx, "test.sqlite.operation")
+	_, span := tracer.StartSpan(ctx, "test.sqlite.operation")
 	span.SetAttribute("backend", "sqlite")
 	time.Sleep(10 * time.Millisecond)
 	tracer.EndSpan(span)
@@ -164,7 +164,7 @@ func TestEmbeddedTracer_EndToEnd(t *testing.T) {
 	// Simulate agent conversation with multiple turns
 	for turn := 0; turn < 3; turn++ {
 		// LLM call span
-		ctx, llmSpan := tracer.StartSpan(ctx, "llm.completion",
+		_, llmSpan := tracer.StartSpan(ctx, "llm.completion",
 			WithAttribute(AttrLLMModel, "claude-sonnet-4-5"),
 			WithAttribute(AttrSessionID, "test-session-123"),
 			WithAttribute("turn", turn),
@@ -178,7 +178,7 @@ func TestEmbeddedTracer_EndToEnd(t *testing.T) {
 		tracer.EndSpan(llmSpan)
 
 		// Tool execution span
-		ctx, toolSpan := tracer.StartSpan(ctx, "tool.execute",
+		_, toolSpan := tracer.StartSpan(ctx, "tool.execute",
 			WithAttribute("tool.name", "calculator"),
 			WithAttribute("turn", turn),
 		)
