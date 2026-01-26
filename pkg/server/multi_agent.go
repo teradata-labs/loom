@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -511,33 +510,6 @@ func (s *MultiAgentServer) RemoveAgent(id string) error {
 	}
 
 	return nil
-}
-
-// isGUID validates if a string matches UUID v4 format (GUID)
-// UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
-func isGUID(s string) bool {
-	// UUID v4 has specific format with version 4 in third group and variant in fourth group
-	matched, _ := regexp.MatchString(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, strings.ToLower(s))
-	return matched
-}
-
-// resolveAgentID resolves an agent identifier (name or GUID) to a GUID
-// Returns the GUID if input is already a GUID, or looks up GUID from name via registry
-func (s *MultiAgentServer) resolveAgentID(nameOrGUID string) (string, error) {
-	// Check if already GUID format
-	if isGUID(nameOrGUID) {
-		return nameOrGUID, nil
-	}
-
-	// Try to lookup GUID from registry via name
-	if s.registry != nil {
-		info, err := s.registry.GetAgentInfo(nameOrGUID)
-		if err == nil {
-			return info.ID, nil
-		}
-	}
-
-	return "", fmt.Errorf("could not resolve agent identifier: %s", nameOrGUID)
 }
 
 // GetAgentIDs returns available agent IDs (internal helper)
