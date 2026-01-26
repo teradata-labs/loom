@@ -310,12 +310,51 @@ func (r *Registry) LoadWorkflows(ctx context.Context) error {
 				continue
 			}
 
-			r.mu.Lock()
-			r.configs[config.Name] = config
-			r.mu.Unlock()
+			// Check if agent already loaded from database (via loadAgentsFromDB)
+			r.mu.RLock()
+			agentID, exists := r.agentsByName[config.Name]
+			r.mu.RUnlock()
+
+			var info *AgentInstanceInfo
+			if exists {
+				// Agent already exists in memory (loaded from DB), use its GUID
+				r.mu.RLock()
+				info = r.agentInfo[agentID]
+				r.mu.RUnlock()
+				info.UpdatedAt = time.Now()
+
+				r.mu.Lock()
+				r.configs[config.Name] = config
+				r.mu.Unlock()
+			} else {
+				// New workflow agent, generate GUID
+				agentID = uuid.New().String()
+				info = &AgentInstanceInfo{
+					ID:        agentID,
+					Name:      config.Name,
+					Status:    "initializing",
+					CreatedAt: time.Now(),
+					UpdatedAt: time.Now(),
+				}
+
+				r.mu.Lock()
+				r.configs[config.Name] = config
+				r.agentInfo[agentID] = info
+				r.agentsByName[config.Name] = agentID
+				r.mu.Unlock()
+			}
+
+			// Persist to database (upsert: create new or update existing)
+			if err := r.persistAgentInfo(info, config); err != nil {
+				r.logger.Warn("Failed to persist workflow agent info",
+					zap.String("name", config.Name),
+					zap.String("id", agentID),
+					zap.Error(err))
+			}
 
 			r.logger.Info("Loaded workflow agent",
 				zap.String("name", config.Name),
+				zap.String("id", agentID),
 				zap.String("role", config.Metadata["role"]),
 				zap.String("workflow", config.Metadata["workflow"]),
 				zap.String("workflow_file", file))
