@@ -393,28 +393,76 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Using defaults + environment variables")
 	}
 
-	// Create tracer
+	// Create tracer based on mode
 	var tracer observability.Tracer
-	if config.Observability.Enabled && config.Observability.HawkEndpoint != "" {
-		logger.Info("Observability enabled",
-			zap.String("provider", config.Observability.Provider),
-			zap.String("endpoint", config.Observability.HawkEndpoint))
+	if config.Observability.Enabled {
+		mode := config.Observability.Mode
+		if mode == "" {
+			// Default to service mode if endpoint is set, otherwise embedded
+			if config.Observability.HawkEndpoint != "" {
+				mode = "service"
+			} else {
+				mode = "embedded"
+			}
+		}
 
-		var err error
-		tracer, err = observability.NewHawkTracer(observability.HawkConfig{
-			Endpoint: config.Observability.HawkEndpoint,
-			APIKey:   config.Observability.HawkAPIKey,
-		})
-		if err != nil {
-			logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))
+		switch mode {
+		case "embedded":
+			logger.Info("Observability enabled with embedded storage",
+				zap.String("storage_type", config.Observability.StorageType),
+				zap.String("sqlite_path", config.Observability.SQLitePath))
+
+			storageType := config.Observability.StorageType
+			if storageType == "" {
+				storageType = "memory"
+			}
+
+			flushInterval := 30 * time.Second
+			if config.Observability.FlushInterval != "" {
+				if duration, err := time.ParseDuration(config.Observability.FlushInterval); err == nil {
+					flushInterval = duration
+				}
+			}
+
+			embeddedTracer, err := observability.NewEmbeddedTracer(&observability.EmbeddedConfig{
+				StorageType:   storageType,
+				SQLitePath:    config.Observability.SQLitePath,
+				FlushInterval: flushInterval,
+				Logger:        logger,
+			})
+			if err != nil {
+				logger.Warn("Failed to create embedded tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = embeddedTracer
+			}
+
+		case "service":
+			logger.Info("Observability enabled with service export",
+				zap.String("provider", config.Observability.Provider),
+				zap.String("endpoint", config.Observability.HawkEndpoint))
+
+			hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
+				Endpoint: config.Observability.HawkEndpoint,
+				APIKey:   config.Observability.HawkAPIKey,
+			})
+			if err != nil {
+				logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = hawkTracer
+			}
+
+		case "none":
+			logger.Info("Observability disabled by mode=none")
+			tracer = observability.NewNoOpTracer()
+
+		default:
+			logger.Warn("Unknown observability mode, using no-op tracer", zap.String("mode", mode))
 			tracer = observability.NewNoOpTracer()
 		}
 	} else {
-		if config.Observability.Enabled {
-			logger.Info("Observability enabled but no Hawk endpoint configured (use --observability=false to silence)")
-		} else {
-			logger.Info("Observability disabled (use --observability=true to enable)")
-		}
+		logger.Info("Observability disabled (use --observability=true to enable)")
 		tracer = observability.NewNoOpTracer()
 	}
 
