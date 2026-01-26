@@ -1605,6 +1605,12 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 								r.logger.Info("New agent persisted to registry",
 									zap.String("agent", name),
 									zap.String("guid", agentGUID))
+
+								// Update in-memory maps so GetAgentInfo can find it
+								r.mu.Lock()
+								r.agentInfo[agentGUID] = newInfo
+								r.agentsByName[name] = agentGUID
+								r.mu.Unlock()
 							}
 						}
 
