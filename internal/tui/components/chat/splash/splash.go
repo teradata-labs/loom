@@ -242,7 +242,7 @@ func (s *splashCmp) agentDescription() string {
 
 	var title, description string
 
-	switch s.agentID {
+	switch s.agentName {
 	case "weaver":
 		title = "✨ Weaver"
 		description = `The weaver analyzes your natural language requirements and creates

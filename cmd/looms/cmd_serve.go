@@ -1176,6 +1176,8 @@ func runServe(cmd *cobra.Command, args []string) {
 				if registry != nil {
 					if info, err := registry.GetAgentInfo(cfg.Name); err == nil {
 						agentGUID = info.ID
+						// Set stable GUID on agent object to override ephemeral UUID
+						ag.SetID(agentGUID)
 						logger.Info("    Agent loaded successfully",
 							zap.String("name", cfg.Name),
 							zap.String("id", agentGUID),
@@ -1184,10 +1186,10 @@ func runServe(cmd *cobra.Command, args []string) {
 						logger.Warn("    Failed to get agent GUID from registry",
 							zap.String("name", cfg.Name),
 							zap.Error(err))
-						agentGUID = cfg.Name // Fallback to name if registry lookup fails
+						agentGUID = ag.GetID() // Use agent's internal GUID as fallback
 					}
 				} else {
-					agentGUID = cfg.Name // Fallback to name if no registry
+					agentGUID = ag.GetID() // Use agent's internal GUID if no registry
 				}
 
 				// Store agent with GUID as key for stable references
@@ -1802,8 +1804,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Start agent config hot-reload watcher
 	if registry != nil {
 		// Set reload callback to update running agents
-		registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
-			logger.Info("Reloading agent in server", zap.String("agent", name))
+		registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
+			logger.Info("Reloading agent in server",
+				zap.String("agent", name),
+				zap.String("guid", guid))
 
 			// Load backend from backend_path if specified
 			var backend fabric.ExecutionBackend
@@ -1901,6 +1905,13 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Create new agent
 			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
 
+			// Set stable GUID from registry if provided
+			// This ensures the agent maintains the same ID across hot-reloads
+			if guid != "" {
+				newAgent.SetID(guid)
+				logger.Debug("  Set stable GUID on agent", zap.String("guid", guid))
+			}
+
 			// Always register shell_execute for all agents
 			// For weaver, start in LOOM_DATA_DIR so relative paths work naturally
 			var shellTool shuttle.Tool
@@ -1991,27 +2002,37 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Info("  Enabled dynamic tool registration")
 			}
 
-			// Check if agent already exists in server
+			// Check if agent already exists in server (by GUID)
 			existingAgents := loomService.GetAgentIDs()
 			agentExists := false
+			// Use GUID for comparison (agents map is keyed by GUID now)
+			agentGUIDToUse := guid
+			if agentGUIDToUse == "" {
+				// Fallback to agent's internal GUID if not provided
+				agentGUIDToUse = newAgent.GetID()
+			}
 			for _, id := range existingAgents {
-				if id == name {
+				if id == agentGUIDToUse {
 					agentExists = true
 					break
 				}
 			}
 
-			// Add or update agent in server
+			// Add or update agent in server (using GUID)
 			if agentExists {
 				// Hot-reload: update existing agent
-				if err := loomService.UpdateAgent(name, newAgent); err != nil {
+				if err := loomService.UpdateAgent(agentGUIDToUse, newAgent); err != nil {
 					return fmt.Errorf("failed to update agent in server: %w", err)
 				}
-				logger.Info("  Agent reloaded in server successfully", zap.String("agent", name))
+				logger.Info("  Agent reloaded in server successfully",
+					zap.String("agent", name),
+					zap.String("guid", agentGUIDToUse))
 			} else {
 				// New agent from metaagent: add to server
-				loomService.AddAgent(name, newAgent)
-				logger.Info("  Agent added to server successfully", zap.String("agent", name))
+				loomService.AddAgent(agentGUIDToUse, newAgent)
+				logger.Info("  Agent added to server successfully",
+					zap.String("agent", name),
+					zap.String("guid", agentGUIDToUse))
 			}
 
 			return nil
