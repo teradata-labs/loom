@@ -989,17 +989,48 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		}
 	}
 
-	// Find all sub-agents with matching workflow prefix
-	s.mu.RLock()
+	// Find all sub-agents with matching workflow from registry
+	// After PR #43, agents are keyed by GUID in s.agents map, so we must use registry
 	var subAgentIDs []string
-	for agentID := range s.agents {
-		// Sub-agents have format: workflow-name:agent-id
-		if agentID != coordinatorID && len(agentID) > len(workflowName)+1 &&
-			agentID[:len(workflowName)] == workflowName && agentID[len(workflowName)] == ':' {
-			subAgentIDs = append(subAgentIDs, agentID)
+	if s.registry != nil {
+		configs := s.registry.ListConfigs()
+		for _, config := range configs {
+			// Skip if not part of this workflow
+			if config.Metadata["workflow"] != workflowName {
+				continue
+			}
+			// Skip coordinator (we only want executor sub-agents)
+			if config.Metadata["role"] == "coordinator" {
+				continue
+			}
+			// Add sub-agent (format: workflow-name:agent-name)
+			subAgentIDs = append(subAgentIDs, config.Name)
 		}
 	}
-	s.mu.RUnlock()
+
+	// Fallback: search agents map for workflow-prefixed IDs (for tests without registry)
+	if len(subAgentIDs) == 0 {
+		s.mu.RLock()
+		for _, ag := range s.agents {
+			// Try registry config first if available
+			if s.registry != nil {
+				if config := s.registry.GetConfig(ag.GetName()); config != nil {
+					// Check if this agent belongs to the workflow
+					if config.Metadata["workflow"] == workflowName && config.Metadata["role"] != "coordinator" {
+						subAgentIDs = append(subAgentIDs, config.Name)
+					}
+					continue
+				}
+			}
+			// Legacy: check if agent name has workflow prefix
+			// This handles test cases where agents aren't registered in registry
+			agentName := ag.GetName()
+			if agentName != coordinatorID && strings.HasPrefix(agentName, workflowName+":") {
+				subAgentIDs = append(subAgentIDs, agentName)
+			}
+		}
+		s.mu.RUnlock()
+	}
 
 	if len(subAgentIDs) == 0 {
 		return fmt.Errorf("no sub-agents found for workflow '%s'", workflowName)
