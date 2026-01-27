@@ -53,9 +53,8 @@ const LogoHeightBreakpoint = 30
 
 // Default maximum number of items to show in each section
 const (
-	DefaultMaxLSPsShown = 8
-	DefaultMaxMCPsShown = 8
-	MinItemsPerSection  = 2 // Minimum items to show per section
+	DefaultMaxItemsPerSection = 5 // Show max 5 items per section
+	MinItemsPerSection        = 2 // Minimum items to show per section
 )
 
 // AgentInfo represents an agent in the multi-agent system
@@ -88,6 +87,12 @@ type PatternFileSelectedMsg struct {
 
 // ShowPatternModalMsg is sent when user wants to see all patterns
 type ShowPatternModalMsg struct{}
+
+// ShowWorkflowModalMsg is sent when user wants to see all workflows
+type ShowWorkflowModalMsg struct{}
+
+// ShowAgentModalMsg is sent when user wants to see all agents
+type ShowAgentModalMsg struct{}
 
 // MCPToolInfo represents a tool from an MCP server
 type MCPToolInfo struct {
@@ -670,8 +675,12 @@ func (m *sidebarCmp) agentsBlock() string {
 	}
 	agentList = append(agentList, sectionHeader)
 
+	// Limit to first N items
+	maxItems := min(len(m.regularAgents), DefaultMaxItemsPerSection)
+
 	// Render each regular agent (excluding workflow orchestrators and sub-agents)
-	for i, agent := range m.regularAgents {
+	for i := 0; i < maxItems; i++ {
+		agent := m.regularAgents[i]
 		isActive := agent.ID == m.currentAgent
 		isSelected := m.focused && m.selectedSection == SectionAgents && i == m.selectedIndex
 
@@ -707,6 +716,20 @@ func (m *sidebarCmp) agentsBlock() string {
 				m.getMaxWidth(),
 			),
 		)
+	}
+
+	// Show "+X more" if there are additional agents
+	if len(m.regularAgents) > maxItems {
+		remaining := len(m.regularAgents) - maxItems
+		isSelected := m.focused && m.selectedSection == SectionAgents && maxItems == m.selectedIndex
+
+		var moreLine string
+		if isSelected {
+			moreLine = t.S().Base.Foreground(t.Primary).Render(fmt.Sprintf("> +%d more agents...", remaining))
+		} else {
+			moreLine = t.S().Muted.Render(fmt.Sprintf("  +%d more agents...", remaining))
+		}
+		agentList = append(agentList, moreLine)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, agentList...)
@@ -760,11 +783,15 @@ func (m *sidebarCmp) workflowsBlock() string {
 	}
 	parts := []string{sectionHeader}
 
+	// Limit to first N items
+	maxItems := min(len(workflowGroups), DefaultMaxItemsPerSection)
+
 	// Track item index for selection (coordinators + visible sub-agents)
 	itemIndex := 0
 
-	// Render each workflow group
-	for _, group := range workflowGroups {
+	// Render each workflow group (limited)
+	for i := 0; i < maxItems; i++ {
+		group := workflowGroups[i]
 		isExpanded := m.expandedWorkflows[group.CoordinatorID]
 		isActive := group.CoordinatorID == m.currentAgent
 
@@ -870,6 +897,20 @@ func (m *sidebarCmp) workflowsBlock() string {
 				itemIndex++
 			}
 		}
+	}
+
+	// Show "+X more" if there are additional workflows
+	if len(workflowGroups) > maxItems {
+		remaining := len(workflowGroups) - maxItems
+		isSelected := m.focused && m.selectedSection == SectionWorkflows && itemIndex == m.selectedIndex
+
+		var moreLine string
+		if isSelected {
+			moreLine = t.S().Base.Foreground(t.Primary).Render(fmt.Sprintf("> +%d more workflows...", remaining))
+		} else {
+			moreLine = t.S().Muted.Render(fmt.Sprintf("  +%d more workflows...", remaining))
+		}
+		parts = append(parts, moreLine)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -1281,7 +1322,12 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 		// Calculate max index based on expanded workflows
 		maxIndex = m.getWorkflowNavigableItemCount() - 1
 	case SectionAgents:
-		maxIndex = len(m.regularAgents) - 1
+		// Calculate max index based on visible agents (limited to first N) + "+X more" if present
+		maxItems := min(len(m.regularAgents), DefaultMaxItemsPerSection)
+		maxIndex = maxItems - 1
+		if len(m.regularAgents) > maxItems {
+			maxIndex++ // +1 for "+X more" line
+		}
 	case SectionMCP:
 		maxIndex = max(0, m.getMCPNavigableItemCount()-1)
 	case SectionPatterns:
@@ -1336,15 +1382,21 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 }
 
 // getWorkflowNavigableItemCount returns the number of navigable items in workflows section
-// (coordinators + visible sub-agents from expanded workflows)
+// (coordinators + visible sub-agents from expanded workflows, limited to first N)
 func (m *sidebarCmp) getWorkflowNavigableItemCount() int {
 	workflowGroups := m.groupWorkflowAgents()
+	maxItems := min(len(workflowGroups), DefaultMaxItemsPerSection)
 	count := 0
-	for _, group := range workflowGroups {
+	for i := 0; i < maxItems; i++ {
+		group := workflowGroups[i]
 		count++ // Coordinator
 		if m.expandedWorkflows[group.CoordinatorID] {
 			count += len(group.SubAgents) // Sub-agents
 		}
+	}
+	// Add 1 for "+X more" item if there are additional workflows
+	if len(workflowGroups) > maxItems {
+		count++
 	}
 	return count
 }
@@ -1363,14 +1415,20 @@ func (m *sidebarCmp) getMCPNavigableItemCount() int {
 }
 
 // getPatternNavigableItemCount returns the number of navigable items in patterns section
-// (categories + visible files from expanded categories)
+// (categories + visible files from expanded categories, limited to first N)
 func (m *sidebarCmp) getPatternNavigableItemCount() int {
+	maxItems := min(len(m.patternCategories), DefaultMaxItemsPerSection)
 	count := 0
-	for _, cat := range m.patternCategories {
+	for i := 0; i < maxItems; i++ {
+		cat := m.patternCategories[i]
 		count++ // Category
 		if m.expandedCategories[cat.Name] {
 			count += len(cat.Files) // Pattern files
 		}
+	}
+	// Add 1 for "+X more" item if there are additional categories
+	if len(m.patternCategories) > maxItems {
+		count++
 	}
 	return count
 }
@@ -1390,8 +1448,12 @@ func (m *sidebarCmp) countTotalNavigableItems() int {
 	// Workflows (coordinators + visible sub-agents)
 	count += m.getWorkflowNavigableItemCount()
 
-	// Regular agents
-	count += len(m.regularAgents)
+	// Regular agents (limited to first N) + "+X more" if present
+	maxAgents := min(len(m.regularAgents), DefaultMaxItemsPerSection)
+	count += maxAgents
+	if len(m.regularAgents) > maxAgents {
+		count++ // +1 for "+X more" line
+	}
 
 	// MCP servers + expanded tools
 	count += m.getMCPNavigableItemCount()
@@ -1515,7 +1577,13 @@ func (m *sidebarCmp) calculateSelectedItemLine() int {
 		if m.selectedSection == SectionAgents {
 			return line + 1 + m.selectedIndex
 		}
-		line += 1 + len(m.regularAgents) // Header + items
+		// Count only visible agents (limited to first N) + "+X more" if present
+		maxItems := min(len(m.regularAgents), DefaultMaxItemsPerSection)
+		visibleCount := maxItems
+		if len(m.regularAgents) > maxItems {
+			visibleCount++ // +1 for "+X more" line
+		}
+		line += 1 + visibleCount // Header + items
 	}
 
 	// MCP section
@@ -1596,7 +1664,7 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 		})
 	case SectionPatterns:
 		// Map selectedIndex to category or pattern file
-		maxItems := min(len(m.patternCategories), DefaultMaxLSPsShown)
+		maxItems := min(len(m.patternCategories), DefaultMaxItemsPerSection)
 		itemIndex := 0
 
 		for i := 0; i < maxItems; i++ {
@@ -1635,9 +1703,11 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 	case SectionWorkflows:
 		// Map selectedIndex to coordinator or sub-agent in hierarchical structure
 		workflowGroups := m.groupWorkflowAgents()
+		maxItems := min(len(workflowGroups), DefaultMaxItemsPerSection)
 		itemIndex := 0
 
-		for _, group := range workflowGroups {
+		for i := 0; i < maxItems; i++ {
+			group := workflowGroups[i]
 			// Check if selecting coordinator
 			if itemIndex == m.selectedIndex {
 				isExpanded := m.expandedWorkflows[group.CoordinatorID]
@@ -1684,8 +1754,22 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 				}
 			}
 		}
+
+		// Check if selecting "+X more" overflow item
+		if len(workflowGroups) > maxItems && m.selectedIndex == itemIndex {
+			// Selected the "+X more" item - show workflow modal
+			return util.CmdHandler(ShowWorkflowModalMsg{})
+		}
 	case SectionAgents:
-		if m.selectedIndex < len(m.regularAgents) {
+		maxItems := min(len(m.regularAgents), DefaultMaxItemsPerSection)
+
+		// Check if selecting "+X more" overflow item
+		if len(m.regularAgents) > maxItems && m.selectedIndex == maxItems {
+			// Selected the "+X more" item - show agent modal
+			return util.CmdHandler(ShowAgentModalMsg{})
+		}
+
+		if m.selectedIndex < maxItems {
 			agent := m.regularAgents[m.selectedIndex]
 			// Debug: log agent selection
 			if f, err := os.OpenFile("/tmp/sidebar-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
@@ -2088,8 +2172,8 @@ func (m *sidebarCmp) patternsBlock() string {
 	}
 	parts := []string{sectionHeader}
 
-	// Show all patterns - we have a scrollbar now
-	maxItems := len(categories)
+	// Limit to first N items
+	maxItems := min(len(categories), DefaultMaxItemsPerSection)
 
 	// Render categories and their files
 	itemIndex := 0 // Track overall item index for selection
@@ -2151,6 +2235,20 @@ func (m *sidebarCmp) patternsBlock() string {
 				if m.focused && m.selectedSection == SectionPatterns && itemIndex == m.selectedIndex {
 					fileStyle = t.S().Text.Foreground(t.Primary)
 					fileText = "> " + fileText
+				}
+
+				// Show "+X more" if there are additional categories
+				if len(categories) > maxItems {
+					remaining := len(categories) - maxItems
+					isSelected := m.focused && m.selectedSection == SectionPatterns && itemIndex == m.selectedIndex
+
+					var moreLine string
+					if isSelected {
+						moreLine = t.S().Base.Foreground(t.Primary).Render(fmt.Sprintf("> +%d more categories...", remaining))
+					} else {
+						moreLine = t.S().Muted.Render(fmt.Sprintf("  +%d more categories...", remaining))
+					}
+					parts = append(parts, moreLine)
 				}
 
 				parts = append(parts, fmt.Sprintf("  %s %s", fileIconStyled, fileStyle.Render(fileText)))
