@@ -1231,9 +1231,30 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 	cmds = append(cmds, p.chat.GoToBottom())
 
 	// Check if we're in operator mode (built-in operator, not a YAML agent)
+	// Debug: Log what we're checking
+	if f, err := os.OpenFile("/tmp/loom-operator-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "[%s] sendMessage check: p.currentAgentID='%s' (operator=%v)\n",
+			time.Now().Format("15:04:05"), p.currentAgentID, p.currentAgentID == "operator")
+		f.Close()
+	}
+
 	if p.currentAgentID == "operator" {
 		// Handle via built-in operator logic
 		cmds = append(cmds, func() tea.Msg {
+			// Debug: Log operator invocation
+			if f, err := os.OpenFile("/tmp/loom-operator-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+				fmt.Fprintf(f, "[%s] Calling operator.HandleMessage with text='%s', operator=%v, coordinator=%v\n",
+					time.Now().Format("15:04:05"), text, p.operator != nil, p.app.AgentCoordinator != nil)
+				f.Close()
+			}
+
+			if p.operator == nil {
+				return util.InfoMsg{
+					Type: util.InfoTypeError,
+					Msg:  "Operator not initialized",
+				}
+			}
+
 			response, suggestions, err := p.operator.HandleMessage(context.Background(), text)
 			if err != nil {
 				return util.InfoMsg{
@@ -1754,6 +1775,11 @@ func (p *chatPage) fetchAgentsList() tea.Cmd {
 // fetchMCPServers fetches the list of MCP servers from the gRPC server
 func (p *chatPage) fetchMCPServers() tea.Cmd {
 	return func() tea.Msg {
+		// If client is nil (server unavailable), return empty list
+		if p.app.Client() == nil {
+			return sidebar.MCPServersListMsg{Servers: []sidebar.MCPServerInfo{}}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -1794,6 +1820,14 @@ func (p *chatPage) fetchMCPServers() tea.Cmd {
 // handleAddMCPServer adds a new MCP server and refreshes the list
 func (p *chatPage) handleAddMCPServer(req *loomv1.AddMCPServerRequest) tea.Cmd {
 	return func() tea.Msg {
+		// If client is nil (server unavailable), return error
+		if p.app.Client() == nil {
+			return util.InfoMsg{
+				Text: "Server not available",
+				Type: util.InfoTypeError,
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -1828,6 +1862,11 @@ type MCPServerToolsMsg struct {
 // fetchMCPServerTools fetches the tools for a specific MCP server
 func (p *chatPage) fetchMCPServerTools(serverName string) tea.Cmd {
 	return func() tea.Msg {
+		// If client is nil (server unavailable), return empty tools
+		if p.app.Client() == nil {
+			return MCPServerToolsMsg{ServerName: serverName, Tools: []sidebar.MCPToolInfo{}}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
