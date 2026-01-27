@@ -977,7 +977,7 @@ func (p *chatPage) SetSize(width, height int) tea.Cmd {
 		} else {
 			cmds = append(cmds, p.chat.SetSize(width-SideBarWidth, height-EditorHeight-pillsAreaHeight))
 			cmds = append(cmds, p.editor.SetSize(width, EditorHeight))
-			cmds = append(cmds, p.sidebar.SetSize(SideBarWidth, height-EditorHeight))
+			cmds = append(cmds, p.sidebar.SetSize(SideBarWidth, height-EditorHeight-pillsAreaHeight))
 		}
 		cmds = append(cmds, p.editor.SetPosition(0, height-EditorHeight))
 	}
@@ -1629,8 +1629,8 @@ func (p *chatPage) Help() help.KeyMap {
 					key.WithHelp("↑/↓", "navigate"),
 				),
 				key.NewBinding(
-					key.WithKeys("enter"),
-					key.WithHelp("enter", "select/expand"),
+					key.WithKeys("enter", "space"),
+					key.WithHelp("enter/space", "select/expand"),
 				),
 			)
 			fullList = append(fullList,
@@ -1640,8 +1640,18 @@ func (p *chatPage) Help() help.KeyMap {
 						key.WithHelp("↑/↓", "navigate"),
 					),
 					key.NewBinding(
-						key.WithKeys("enter"),
-						key.WithHelp("enter", "select/expand"),
+						key.WithKeys("enter", "space"),
+						key.WithHelp("enter/space", "select/expand"),
+					),
+				},
+				[]key.Binding{
+					key.NewBinding(
+						key.WithKeys("e"),
+						key.WithHelp("e", "expand section"),
+					),
+					key.NewBinding(
+						key.WithKeys("c"),
+						key.WithHelp("c", "collapse all"),
 					),
 				},
 				[]key.Binding{

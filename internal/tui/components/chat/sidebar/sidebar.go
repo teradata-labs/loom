@@ -225,6 +225,7 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		m.agents = msg.Agents
 		m.currentAgent = msg.CurrentAgent
 		m.updateCachedItems()
+		m.updateAutoCollapseState()
 		m.resetSelectionIfNeeded()
 		return m, nil
 
@@ -237,6 +238,7 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 			}
 		}
 		m.mcpServers = msg.Servers
+		m.updateAutoCollapseState()
 		return m, nil
 
 	case UpdateMCPServerToolsMsg:
@@ -296,11 +298,43 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 			m.scrollDown(m.height / 2)
 			return m, nil
 
-		case "enter":
+		case "enter", " ": // space bar as alternative to enter
 			if debugLog != nil {
-				debugLog.Printf("[DEBUG] Enter pressed - calling selectCurrentItem() with section=%d, index=%d\n", m.selectedSection, m.selectedIndex)
+				debugLog.Printf("[DEBUG] Enter/Space pressed - calling selectCurrentItem() with section=%d, index=%d\n", m.selectedSection, m.selectedIndex)
 			}
 			return m, m.selectCurrentItem()
+
+		case "e":
+			// Expand all in current section
+			if debugLog != nil {
+				debugLog.Printf("[DEBUG] 'e' pressed - expanding all in section=%d\n", m.selectedSection)
+			}
+			switch m.selectedSection {
+			case SectionPatterns:
+				for i := range m.patternCategories {
+					m.expandedCategories[m.patternCategories[i].Name] = true
+				}
+			case SectionMCP:
+				for i := range m.mcpServers {
+					m.expandedMCPServers[m.mcpServers[i].Name] = true
+				}
+			case SectionWorkflows:
+				groups := m.groupWorkflowAgents()
+				for _, group := range groups {
+					m.expandedWorkflows[group.CoordinatorID] = true
+				}
+			}
+			return m, nil
+
+		case "c":
+			// Collapse all sections
+			if debugLog != nil {
+				debugLog.Printf("[DEBUG] 'c' pressed - collapsing all sections\n")
+			}
+			m.expandedCategories = make(map[string]bool)
+			m.expandedMCPServers = make(map[string]bool)
+			m.expandedWorkflows = make(map[string]bool)
+			return m, nil
 
 		case "a":
 			// Add new server when 'a' is pressed in MCP section
@@ -513,6 +547,7 @@ func (m *sidebarCmp) SetSize(width, height int) tea.Cmd {
 	m.cwd = cwd()
 	m.width = width
 	m.height = height
+	m.updateAutoCollapseState()
 	return nil
 }
 
@@ -698,8 +733,26 @@ func (m *sidebarCmp) workflowsBlock() string {
 		return ""
 	}
 
-	// Section header with focus indicator
-	sectionHeader := "Agent Workflows"
+	// Calculate expanded state
+	expandedCount := 0
+	totalSubAgents := 0
+	for _, group := range workflowGroups {
+		totalSubAgents += len(group.SubAgents)
+		if m.expandedWorkflows[group.CoordinatorID] {
+			expandedCount++
+		}
+	}
+
+	// Section header with indicator
+	indicator := "▸"
+	if expandedCount > 0 {
+		indicator = "▾"
+	}
+
+	sectionHeader := fmt.Sprintf("Agent Workflows %s (%d/%d expanded, %d sub-agents)",
+		indicator, expandedCount, len(workflowGroups), totalSubAgents)
+
+	// Apply focus styling
 	if m.focused && m.selectedSection == SectionWorkflows {
 		sectionHeader = t.S().Base.Foreground(t.Primary).Render(sectionHeader)
 	} else {
@@ -1172,6 +1225,7 @@ func (m *sidebarCmp) resetSelectionIfNeeded() {
 func (m *sidebarCmp) navigateUp() tea.Cmd {
 	if m.selectedIndex > 0 {
 		m.selectedIndex--
+		m.ensureSelectionVisible()
 		return nil
 	}
 
@@ -1211,6 +1265,7 @@ func (m *sidebarCmp) navigateUp() tea.Cmd {
 		// Already at top
 	}
 
+	m.ensureSelectionVisible()
 	return nil
 }
 
@@ -1235,6 +1290,7 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 
 	if m.selectedIndex < maxIndex {
 		m.selectedIndex++
+		m.ensureSelectionVisible()
 		return nil
 	}
 
@@ -1275,6 +1331,7 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 		// Already at bottom
 	}
 
+	m.ensureSelectionVisible()
 	return nil
 }
 
@@ -1316,6 +1373,167 @@ func (m *sidebarCmp) getPatternNavigableItemCount() int {
 		}
 	}
 	return count
+}
+
+// countTotalNavigableItems counts all items that would appear in sidebar
+func (m *sidebarCmp) countTotalNavigableItems() int {
+	count := 0
+
+	// Weaver (if exists)
+	for _, agent := range m.agents {
+		if agent.Name == "weaver" {
+			count++
+			break
+		}
+	}
+
+	// Workflows (coordinators + visible sub-agents)
+	count += m.getWorkflowNavigableItemCount()
+
+	// Regular agents
+	count += len(m.regularAgents)
+
+	// MCP servers + expanded tools
+	count += m.getMCPNavigableItemCount()
+
+	// Pattern categories + expanded files
+	count += m.getPatternNavigableItemCount()
+
+	return count
+}
+
+// updateAutoCollapseState automatically collapses sections when content exceeds viewport
+func (m *sidebarCmp) updateAutoCollapseState() {
+	totalItems := m.countTotalNavigableItems()
+	availableLines := m.height - 10 // Reserve space for header, model, scroll indicator
+
+	if availableLines < 1 {
+		availableLines = 1
+	}
+
+	// If content exceeds viewport by 50%, auto-collapse expandable sections
+	if totalItems > int(float64(availableLines)*1.5) {
+		// Priority: Keep workflows and agents visible, collapse patterns and MCP
+
+		// Collapse all pattern categories
+		for k := range m.expandedCategories {
+			m.expandedCategories[k] = false
+		}
+
+		// Collapse all MCP servers
+		for k := range m.expandedMCPServers {
+			m.expandedMCPServers[k] = false
+		}
+	}
+
+	// If still overflowing by 100%, collapse workflows too
+	if totalItems > availableLines*2 {
+		for k := range m.expandedWorkflows {
+			m.expandedWorkflows[k] = false
+		}
+	}
+}
+
+// ensureSelectionVisible auto-scrolls to keep selected item in viewport
+func (m *sidebarCmp) ensureSelectionVisible() {
+	selectedLine := m.calculateSelectedItemLine()
+
+	if selectedLine < 0 {
+		return // Invalid selection
+	}
+
+	// Calculate viewport height (similar to View() method logic)
+	// Account for style padding/borders (typically 2 lines)
+	maxContentHeight := m.height - 2
+
+	// If we need scroll indicator, reduce available content height by 2 (spacer + indicator)
+	// For simplicity in navigation, use maxContentHeight directly as viewport
+	viewportHeight := maxContentHeight
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+
+	// Auto-scroll if selected item is above viewport
+	if selectedLine < m.scrollOffset {
+		m.scrollOffset = selectedLine
+	}
+
+	// Auto-scroll if selected item is below viewport
+	if selectedLine >= m.scrollOffset+viewportHeight {
+		m.scrollOffset = selectedLine - viewportHeight + 1
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
+}
+
+// calculateSelectedItemLine returns line number of currently selected item
+func (m *sidebarCmp) calculateSelectedItemLine() int {
+	line := 0
+
+	// Account for header content (logo, model, session title, cwd)
+	// This varies based on compact mode and window height
+	if !m.compactMode {
+		if m.height > LogoHeightBreakpoint {
+			line += 7 // Full logo
+		} else {
+			line += 2 // Small logo
+		}
+	}
+
+	if m.session.ID != "" {
+		line += 2 // Session title + blank line
+	}
+
+	// Weaver section
+	hasWeaver := false
+	for _, agent := range m.agents {
+		if agent.Name == "weaver" {
+			hasWeaver = true
+			break
+		}
+	}
+
+	if hasWeaver {
+		if m.selectedSection == SectionWeaver {
+			return line + 1 // Section header + weaver item
+		}
+		line += 2 // Skip weaver section
+	}
+
+	// Workflows section
+	workflowCount := m.getWorkflowNavigableItemCount()
+	if workflowCount > 0 {
+		if m.selectedSection == SectionWorkflows {
+			return line + 1 + m.selectedIndex
+		}
+		line += 1 + workflowCount // Header + items
+	}
+
+	// Agents section
+	if len(m.regularAgents) > 0 {
+		if m.selectedSection == SectionAgents {
+			return line + 1 + m.selectedIndex
+		}
+		line += 1 + len(m.regularAgents) // Header + items
+	}
+
+	// MCP section
+	if len(m.mcpServers) > 0 {
+		if m.selectedSection == SectionMCP {
+			return line + 1 + m.selectedIndex
+		}
+		line += 1 + m.getMCPNavigableItemCount() // Header + items
+	}
+
+	// Patterns section
+	if len(m.patternCategories) > 0 {
+		if m.selectedSection == SectionPatterns {
+			return line + 1 + m.selectedIndex
+		}
+	}
+
+	return -1 // Invalid selection
 }
 
 // navigateToNextSection cycles to the next section
@@ -1389,6 +1607,7 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 			if itemIndex == m.selectedIndex {
 				// Toggle expansion
 				m.expandedCategories[cat.Name] = !isExpanded
+				m.ensureSelectionVisible()
 				return nil
 			}
 			itemIndex++
@@ -1434,6 +1653,7 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 					} else {
 						// Workflow is collapsed - expand it to show sub-agents
 						m.expandedWorkflows[group.CoordinatorID] = true
+						m.ensureSelectionVisible()
 						return nil
 					}
 				} else {
@@ -1495,6 +1715,7 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 						ServerName: server.Name,
 					})
 				}
+				m.ensureSelectionVisible()
 				return nil
 			}
 			itemIndex++
@@ -1697,8 +1918,26 @@ func listYAMLFiles(dir string) []string {
 func (m *sidebarCmp) mcpServersBlock() string {
 	t := styles.CurrentTheme()
 
-	// Section header with focus indicator
-	sectionHeader := "MCP Servers"
+	// Calculate expanded state
+	expandedCount := 0
+	totalTools := 0
+	for _, server := range m.mcpServers {
+		totalTools += len(server.Tools)
+		if m.expandedMCPServers[server.Name] {
+			expandedCount++
+		}
+	}
+
+	// Section header with indicator
+	indicator := "▸"
+	if expandedCount > 0 {
+		indicator = "▾"
+	}
+
+	sectionHeader := fmt.Sprintf("MCP Servers %s (%d/%d expanded, %d tools)",
+		indicator, expandedCount, len(m.mcpServers), totalTools)
+
+	// Apply focus styling
 	if m.focused && m.selectedSection == SectionMCP {
 		sectionHeader = t.S().Base.Foreground(t.Primary).Render(sectionHeader)
 	} else {
@@ -1822,8 +2061,26 @@ func (m *sidebarCmp) patternsBlock() string {
 		return ""
 	}
 
-	// Section header with focus indicator
-	sectionHeader := "Pattern Library"
+	// Calculate expanded state
+	expandedCount := 0
+	totalFiles := 0
+	for _, cat := range categories {
+		totalFiles += len(cat.Files)
+		if m.expandedCategories[cat.Name] {
+			expandedCount++
+		}
+	}
+
+	// Section header with indicator
+	indicator := "▸"
+	if expandedCount > 0 {
+		indicator = "▾"
+	}
+
+	sectionHeader := fmt.Sprintf("Pattern Library %s (%d/%d categories, %d files)",
+		indicator, expandedCount, len(categories), totalFiles)
+
+	// Apply focus styling
 	if m.focused && m.selectedSection == SectionPatterns {
 		sectionHeader = t.S().Base.Foreground(t.Primary).Render(sectionHeader)
 	} else {
@@ -1920,26 +2177,41 @@ func (m *sidebarCmp) scrollDown(lines int) {
 
 // renderScrollIndicator renders a scroll position indicator
 func (m *sidebarCmp) renderScrollIndicator(pct float64, hasAbove bool, hasBelow bool, t *styles.Theme) string {
-	// For vertical scrolling in sidebar, show simple up/down indicators
+	if !hasAbove && !hasBelow {
+		return "" // No overflow
+	}
+
+	// Ultra-compact mode for narrow sidebars
+	if m.width < 25 {
+		if hasAbove && hasBelow {
+			return t.S().Base.Foreground(t.Primary).Render("⇅")
+		} else if hasAbove {
+			return t.S().Base.Foreground(t.Primary).Render("↑")
+		} else {
+			return t.S().Base.Foreground(t.Primary).Render("↓")
+		}
+	}
+
+	// Standard mode: arrows with dimming
 	upArrow := "▲"
 	downArrow := "▼"
 
-	upColor := t.FgSubtle
-	downColor := t.FgSubtle
+	upColor := t.FgMuted   // Dimmed when can't scroll up
+	downColor := t.FgMuted // Dimmed when can't scroll down
 
 	if hasAbove {
-		upColor = t.Primary
+		upColor = t.Primary // Bright when scrollable
 	}
 	if hasBelow {
-		downColor = t.Primary
+		downColor = t.Primary // Bright when scrollable
 	}
 
 	upStyled := t.S().Base.Foreground(upColor).Render(upArrow)
 	downStyled := t.S().Base.Foreground(downColor).Render(downArrow)
 
-	// Show scroll position as percentage
+	// Show percentage in middle
 	scrollPctText := fmt.Sprintf(" %d%% ", int(pct*100))
-	scrollPctStyled := t.S().Base.Foreground(t.FgMuted).Render(scrollPctText)
+	scrollPctStyled := t.S().Base.Foreground(t.FgSubtle).Render(scrollPctText)
 
 	return lipgloss.JoinHorizontal(lipgloss.Center, upStyled, scrollPctStyled, downStyled)
 }
