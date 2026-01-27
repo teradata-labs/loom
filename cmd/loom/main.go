@@ -108,9 +108,11 @@ func runChat(cmd *cobra.Command, args []string) {
 	}
 	defer c.Close()
 
-	// If no thread specified, start TUI with sidebar for selection
-	// The sidebar always shows agents/workflows, so no need for CLI menu
-	// agentID remains empty - user will select from sidebar
+	// If no thread specified, default to the built-in operator
+	// The operator helps users discover and select agents
+	if agentID == "" {
+		agentID = "operator"
+	}
 
 	// Debug: Log the agent ID being set
 	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0644); err == nil {

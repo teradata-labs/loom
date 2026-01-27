@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/internal/app"
 	"github.com/teradata-labs/loom/internal/config"
 	"github.com/teradata-labs/loom/internal/message"
+	"github.com/teradata-labs/loom/internal/operator"
 	"github.com/teradata-labs/loom/internal/permission"
 	"github.com/teradata-labs/loom/internal/pubsub"
 	"github.com/teradata-labs/loom/internal/session"
@@ -156,6 +157,9 @@ type chatPage struct {
 	editor  editor.Editor
 	splash  splash.Splash
 
+	// Built-in operator (not a YAML agent)
+	operator *operator.Operator
+
 	// Simple state flags
 	showingDetails   bool
 	isCanceling      bool
@@ -183,6 +187,7 @@ func New(app *app.App) ChatPage {
 		chat:          chat.New(app),
 		editor:        editor.New(app),
 		splash:        splash.New(),
+		operator:      operator.New(app.AgentCoordinator), // Initialize built-in operator
 		focusedPane:   PanelTypeSplash,
 		todoSpinner: spinner.New(
 			spinner.WithSpinner(spinner.MiniDot),
@@ -1224,6 +1229,47 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 	}))
 
 	cmds = append(cmds, p.chat.GoToBottom())
+
+	// Check if we're in operator mode (built-in operator, not a YAML agent)
+	if p.currentAgentID == "operator" {
+		// Handle via built-in operator logic
+		cmds = append(cmds, func() tea.Msg {
+			response, suggestions, err := p.operator.HandleMessage(context.Background(), text)
+			if err != nil {
+				return util.InfoMsg{
+					Type: util.InfoTypeError,
+					Msg:  fmt.Sprintf("Operator error: %v", err),
+				}
+			}
+
+			// Append suggestions to response for now (agent selection modal will be added in Phase 2)
+			if len(suggestions) > 0 {
+				response += "\n\nSuggested agents:\n"
+				for i, sug := range suggestions {
+					response += fmt.Sprintf("%d. %s - %s\n", i+1, sug.Name, sug.Reason)
+				}
+				response += "\nUse ctrl+e to open the agent browser and select one."
+			}
+
+			// Create operator response message
+			assistantMsg := message.NewMessage(
+				fmt.Sprintf("assistant-%d", time.Now().UnixNano()),
+				session.ID,
+				message.Assistant,
+			)
+			assistantMsg.AddPart(message.ContentText{Text: response})
+
+			// Send operator response to chat
+			return pubsub.Event[message.Message]{
+				Type:    pubsub.CreatedEvent,
+				Payload: assistantMsg,
+			}
+		})
+
+		return tea.Batch(cmds...)
+	}
+
+	// Otherwise, use standard gRPC agent flow
 	cmds = append(cmds, func() tea.Msg {
 		// Convert attachments to interface{}
 		var attch []interface{}
