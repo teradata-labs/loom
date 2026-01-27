@@ -554,7 +554,7 @@ func (m *sidebarCmp) weaverBlock() string {
 	// Find the weaver agent
 	var weaverAgent *AgentInfo
 	for i := range m.agents {
-		if m.agents[i].ID == "weaver" {
+		if m.agents[i].Name == "weaver" {
 			weaverAgent = &m.agents[i]
 			break
 		}
@@ -1069,7 +1069,7 @@ func (m *sidebarCmp) updateCachedItems() {
 		isCoordinator := coordinatorIDs[agent.ID]
 		hasWorkflowInName := strings.Contains(strings.ToLower(agent.Name), "workflow") ||
 			strings.Contains(strings.ToLower(agent.ID), "workflow")
-		isWeaver := agent.ID == "weaver"
+		isWeaver := agent.Name == "weaver"
 
 		// Check if this agent's ID matches a workflow sub-agent name
 		// (e.g., standalone "vacation-activity-planner" should be hidden if "vacation-planner:activity-planner" exists)

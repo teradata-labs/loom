@@ -493,6 +493,59 @@ func TestRegistry_GetAgent(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+// TestRegistry_GetAgent_ByNameAndGUID tests that GetAgent works with both name and GUID
+func TestRegistry_GetAgent_ByNameAndGUID(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	// Setup agent
+	agentsDir := filepath.Join(tmpDir, "agents")
+	err := os.MkdirAll(agentsDir, 0755)
+	require.NoError(t, err)
+
+	config := createTestAgentConfig("weaver")
+	err = SaveAgentConfig(config, filepath.Join(agentsDir, "weaver.yaml"))
+	require.NoError(t, err)
+
+	err = registry.LoadAgents(ctx)
+	require.NoError(t, err)
+
+	_, err = registry.CreateAgent(ctx, "weaver")
+	require.NoError(t, err)
+
+	// Get agent info to retrieve the GUID
+	info, err := registry.GetAgentInfo("weaver")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	agentGUID := info.ID
+	require.NotEmpty(t, agentGUID)
+
+	// Test 1: GetAgent by name should work
+	agent, err := registry.GetAgent(ctx, "weaver")
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	assert.Equal(t, "weaver", agent.GetName())
+
+	// Test 2: GetAgent by GUID should work
+	agentByGUID, err := registry.GetAgent(ctx, agentGUID)
+	require.NoError(t, err)
+	require.NotNil(t, agentByGUID)
+	assert.Equal(t, "weaver", agentByGUID.GetName())
+
+	// Test 3: Both lookups should return the same agent instance
+	assert.Equal(t, agent.GetID(), agentByGUID.GetID())
+
+	// Test 4: Non-existent name should fail
+	_, err = registry.GetAgent(ctx, "nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+
+	// Test 5: Non-existent GUID should fail
+	_, err = registry.GetAgent(ctx, "00000000-0000-0000-0000-000000000000")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
 func TestRegistry_GetAgentInfo_NotFound(t *testing.T) {
 	registry, _ := createTestRegistry(t)
 
@@ -566,7 +619,7 @@ func TestSetReloadCallback(t *testing.T) {
 
 	// Set callback
 	called := false
-	callback := func(name string, config *loomv1.AgentConfig) error {
+	callback := func(name string, guid string, config *loomv1.AgentConfig) error {
 		called = true
 		return nil
 	}
@@ -579,7 +632,7 @@ func TestSetReloadCallback(t *testing.T) {
 	registry.mu.RUnlock()
 
 	// Test callback can be invoked
-	err := registry.onReload("test", &loomv1.AgentConfig{Name: "test"})
+	err := registry.onReload("test", "test-guid", &loomv1.AgentConfig{Name: "test"})
 	require.NoError(t, err)
 	assert.True(t, called)
 }
@@ -608,7 +661,7 @@ func TestReloadCallback_Success(t *testing.T) {
 	// Set callback
 	var receivedName string
 	var receivedConfig *loomv1.AgentConfig
-	callback := func(name string, config *loomv1.AgentConfig) error {
+	callback := func(name string, guid string, config *loomv1.AgentConfig) error {
 		receivedName = name
 		receivedConfig = config
 		return nil
@@ -629,7 +682,7 @@ func TestReloadCallback_Success(t *testing.T) {
 	registry.configs["callbacktest"] = newConfig
 	registry.mu.Unlock()
 
-	err = registry.onReload("callbacktest", newConfig)
+	err = registry.onReload("callbacktest", "test-guid-123", newConfig)
 	require.NoError(t, err)
 
 	// Verify callback received correct parameters
@@ -644,14 +697,14 @@ func TestReloadCallback_Error(t *testing.T) {
 
 	// Set callback that returns error
 	expectedErr := fmt.Errorf("callback error")
-	callback := func(name string, config *loomv1.AgentConfig) error {
+	callback := func(name string, guid string, config *loomv1.AgentConfig) error {
 		return expectedErr
 	}
 
 	registry.SetReloadCallback(callback)
 
 	// Invoke callback
-	err := registry.onReload("test", &loomv1.AgentConfig{Name: "test"})
+	err := registry.onReload("test", "test-guid", &loomv1.AgentConfig{Name: "test"})
 	require.Error(t, err)
 	assert.Equal(t, expectedErr, err)
 }
@@ -733,7 +786,7 @@ func TestReloadCallback_ThreadSafety(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				registry.SetReloadCallback(func(name string, config *loomv1.AgentConfig) error {
+				registry.SetReloadCallback(func(name string, guid string, config *loomv1.AgentConfig) error {
 					return nil
 				})
 			}
@@ -749,7 +802,7 @@ func TestReloadCallback_ThreadSafety(t *testing.T) {
 				callback := registry.onReload
 				registry.mu.RUnlock()
 				if callback != nil {
-					_ = callback("threadtest", config)
+					_ = callback("threadtest", "test-guid-concurrent", config)
 				}
 			}
 		}()
@@ -793,7 +846,7 @@ func TestForceReload_Success(t *testing.T) {
 	var receivedName string
 	var receivedConfig *loomv1.AgentConfig
 
-	registry.SetReloadCallback(func(name string, cfg *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
 		callbackInvoked = true
 		receivedName = name
 		receivedConfig = cfg
@@ -923,7 +976,7 @@ func TestForceReload_CallbackError(t *testing.T) {
 
 	// Set callback that returns error
 	expectedErr := fmt.Errorf("callback failed")
-	registry.SetReloadCallback(func(name string, cfg *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
 		return expectedErr
 	})
 
@@ -970,7 +1023,7 @@ func TestForceReload_ThreadSafety(t *testing.T) {
 
 	// Set callback
 	var callbackCount sync.Map
-	registry.SetReloadCallback(func(name string, cfg *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
 		// Track callback invocations
 		count, _ := callbackCount.LoadOrStore(name, 0)
 		callbackCount.Store(name, count.(int)+1)

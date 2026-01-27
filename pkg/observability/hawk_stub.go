@@ -18,15 +18,10 @@ package observability
 import "fmt"
 
 // NewHawkTracer returns an error when built without hawk build tag.
-// To enable Hawk support, build with: go build -tags hawk
+// To enable Hawk HTTP export support, build with: go build -tags hawk
+// Note: Embedded tracing (NewEmbeddedTracer) is always available without build tags.
 func NewHawkTracer(config HawkConfig) (Tracer, error) {
-	return nil, fmt.Errorf("hawk support not compiled in (rebuild with -tags hawk)")
-}
-
-// NewEmbeddedHawkTracer returns an error when built without hawk build tag.
-// To enable embedded Hawk support, build with: go build -tags hawk
-func NewEmbeddedHawkTracer(config *EmbeddedConfig) (Tracer, error) {
-	return nil, fmt.Errorf("embedded hawk support not compiled in (rebuild with -tags hawk)")
+	return nil, fmt.Errorf("hawk HTTP export not compiled in (rebuild with -tags hawk)")
 }
 
 // NewHawkJudgeExporter returns an error when built without hawk build tag.
