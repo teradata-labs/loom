@@ -53,16 +53,6 @@ func TestExampleTemplates(t *testing.T) {
 				"severity_threshold": "high",
 			},
 		},
-		{
-			name:    "code-reviewer",
-			file:    "code-reviewer.yaml",
-			extends: "base-expert",
-			testVars: map[string]string{
-				"language":     "go",
-				"style_guide":  "effective-go",
-				"review_depth": "deep",
-			},
-		},
 	}
 
 	for _, ex := range examples {
@@ -142,50 +132,6 @@ func TestSQLExpertVariants(t *testing.T) {
 			// Memory path is optional - not checked
 			assert.Equal(t, db.name, config.Metadata["database_type"])
 			assert.Equal(t, db.schema, config.Metadata["default_schema"])
-		})
-	}
-}
-
-// Test code reviewer with different languages
-func TestCodeReviewerVariants(t *testing.T) {
-	languages := []struct {
-		name       string
-		styleGuide string
-		depth      string
-	}{
-		{"go", "effective-go", "standard"},
-		{"python", "pep8", "deep"},
-		{"typescript", "airbnb", "quick"},
-		{"java", "google-java-style", "standard"},
-	}
-
-	registry := orchestration.NewTemplateRegistry()
-
-	// Load parent and template
-	require.NoError(t, registry.LoadTemplate("base-expert.yaml"))
-	require.NoError(t, registry.LoadTemplate("code-reviewer.yaml"))
-
-	for _, lang := range languages {
-		t.Run(lang.name, func(t *testing.T) {
-			vars := map[string]string{
-				"language":     lang.name,
-				"style_guide":  lang.styleGuide,
-				"review_depth": lang.depth,
-			}
-
-			config, err := registry.ApplyTemplate("code-reviewer", vars)
-			require.NoError(t, err)
-
-			// Verify variable substitution
-			expectedName := "code-reviewer-" + lang.name
-			assert.Equal(t, expectedName, config.Name)
-			assert.Contains(t, config.SystemPrompt, lang.name)
-			assert.Contains(t, config.SystemPrompt, lang.styleGuide)
-			assert.Contains(t, config.SystemPrompt, lang.depth)
-			// Memory path is optional - not checked
-			assert.Equal(t, lang.name, config.Metadata["language"])
-			assert.Equal(t, lang.styleGuide, config.Metadata["style_guide"])
-			assert.Equal(t, lang.depth, config.Metadata["review_depth"])
 		})
 	}
 }

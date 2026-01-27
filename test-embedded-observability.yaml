@@ -1,0 +1,44 @@
+# Test configuration for embedded observability
+server:
+  port: 60052
+  host: 0.0.0.0
+  enable_reflection: true
+
+llm:
+  provider: anthropic
+  anthropic_model: claude-sonnet-4-5-20250929
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+database:
+  path: ./test-loom.db
+  driver: sqlite
+
+observability:
+  enabled: true
+  mode: embedded  # Use embedded mode (not service mode)
+  storage_type: memory  # Use memory storage
+  max_memory_traces: 1000
+  flush_interval: 10s
+
+logging:
+  level: info
+  format: text
+
+tools:
+  permissions:
+    yolo: true
+
+# Simple test agent
+agents:
+  agents:
+    test-agent:
+      name: Test Agent
+      description: Simple test agent for embedded observability testing
+      system_prompt: |
+        You are a helpful assistant for testing.
+        When asked to calculate something, just provide a simple answer.
+      max_turns: 5
+      max_tool_executions: 10
+      enable_tracing: true

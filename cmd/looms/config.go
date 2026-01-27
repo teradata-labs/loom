@@ -332,10 +332,16 @@ type SharedMemoryConfig struct {
 type ObservabilityConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Provider string `mapstructure:"provider"` // hawk, otlp
+	Mode     string `mapstructure:"mode"`     // embedded, service, none
 
-	// Hawk-specific
+	// Hawk service mode (requires -tags hawk)
 	HawkEndpoint string `mapstructure:"hawk_endpoint"`
 	HawkAPIKey   string `mapstructure:"hawk_api_key"` // From CLI/env only
+
+	// Embedded mode (always available)
+	StorageType   string `mapstructure:"storage_type"`   // memory, sqlite
+	SQLitePath    string `mapstructure:"sqlite_path"`    // Path for SQLite storage
+	FlushInterval string `mapstructure:"flush_interval"` // e.g., "5s", "30s"
 }
 
 // LoggingConfig holds logging configuration.
@@ -1068,10 +1074,32 @@ func (c *Config) Validate() error {
 
 	// Validate observability config
 	if c.Observability.Enabled {
-		if c.Observability.HawkEndpoint == "" {
-			return fmt.Errorf("observability.hawk_endpoint is required when observability is enabled")
+		mode := c.Observability.Mode
+		if mode == "" {
+			mode = "service" // Default to service mode for backward compatibility
 		}
-		// Note: HawkAPIKey is optional - not required for local Hawk installations
+
+		switch mode {
+		case "embedded":
+			// Embedded mode: validate storage config
+			storageType := c.Observability.StorageType
+			if storageType == "" {
+				storageType = "memory" // Default to memory storage
+			}
+			if storageType == "sqlite" && c.Observability.SQLitePath == "" {
+				return fmt.Errorf("observability.sqlite_path is required when storage_type=sqlite")
+			}
+		case "service":
+			// Service mode: validate Hawk endpoint
+			if c.Observability.HawkEndpoint == "" {
+				return fmt.Errorf("observability.hawk_endpoint is required when mode=service")
+			}
+			// Note: HawkAPIKey is optional - not required for local Hawk installations
+		case "none":
+			// No-op mode: no validation needed
+		default:
+			return fmt.Errorf("observability.mode must be 'embedded', 'service', or 'none' (got: %s)", mode)
+		}
 	}
 
 	return nil

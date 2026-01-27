@@ -500,13 +500,11 @@ func TestCommunicationToolsRegistry(t *testing.T) {
 	t.Run("CommunicationToolNames", func(t *testing.T) {
 		names := CommunicationToolNames()
 		// Visualization tools are NOT included by default (metaagent assigns them)
-		// Point-to-point (2) + pub-sub (3) + shared memory (2) + query (2) = 9 tools
-		assert.Len(t, names, 9)
+		// Point-to-point (1) + pub-sub (1) + shared memory (2) + query (2) = 6 tools
+		// Note: receive_message, subscribe, receive_broadcast removed (event-driven auto-injection)
+		assert.Len(t, names, 6)
 		assert.Contains(t, names, "send_message")
-		assert.Contains(t, names, "receive_message")
-		assert.Contains(t, names, "subscribe")
 		assert.Contains(t, names, "publish")
-		assert.Contains(t, names, "receive_broadcast")
 		assert.Contains(t, names, "shared_memory_write")
 		assert.Contains(t, names, "shared_memory_read")
 		assert.Contains(t, names, "top_n_query")
@@ -518,8 +516,9 @@ func TestCommunicationToolsRegistry(t *testing.T) {
 		store := createTestStore(t)
 		tools := CommunicationTools(queue, nil, store, "test-agent")
 
-		// 2 message + 2 shared memory + 2 query = 6 tools (viz tools NOT included)
-		assert.Len(t, tools, 6)
+		// 1 message + 2 shared memory + 2 query = 5 tools (viz tools NOT included)
+		// Note: receive_message removed (event-driven auto-injection)
+		assert.Len(t, tools, 5)
 
 		// Check tool names
 		names := make(map[string]bool)
@@ -527,7 +526,6 @@ func TestCommunicationToolsRegistry(t *testing.T) {
 			names[tool.Name()] = true
 		}
 		assert.True(t, names["send_message"])
-		assert.True(t, names["receive_message"])
 		assert.True(t, names["shared_memory_write"])
 		assert.True(t, names["shared_memory_read"])
 		assert.True(t, names["top_n_query"])
@@ -538,15 +536,15 @@ func TestCommunicationToolsRegistry(t *testing.T) {
 		queue := createTestQueue(t)
 		tools := CommunicationTools(queue, nil, nil, "test-agent")
 
-		// 2 message tools only (no store means no query tools, viz tools NOT included)
-		assert.Len(t, tools, 2)
+		// 1 message tool only (no store means no query tools, viz tools NOT included)
+		// Note: receive_message removed (event-driven auto-injection)
+		assert.Len(t, tools, 1)
 
 		names := make(map[string]bool)
 		for _, tool := range tools {
 			names[tool.Name()] = true
 		}
 		assert.True(t, names["send_message"])
-		assert.True(t, names["receive_message"])
 	})
 
 	t.Run("CommunicationTools with store only", func(t *testing.T) {

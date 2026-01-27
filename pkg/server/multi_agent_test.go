@@ -60,11 +60,11 @@ func TestNewMultiAgentServer(t *testing.T) {
 	server := NewMultiAgentServer(agents, nil)
 	require.NotNil(t, server)
 
-	// Check agents are registered
+	// Check agents are registered (by GUID now)
 	agentList := server.GetAgentIDs()
 	assert.Len(t, agentList, 2)
-	assert.Contains(t, agentList, "agent1")
-	assert.Contains(t, agentList, "agent2")
+	assert.Contains(t, agentList, agent1.GetID())
+	assert.Contains(t, agentList, agent2.GetID())
 
 	// Check default agent is set
 	assert.NotEmpty(t, server.defaultAgentID)
@@ -82,8 +82,9 @@ func TestMultiAgentServer_DefaultAgent(t *testing.T) {
 
 	server := NewMultiAgentServer(agents, nil)
 
-	// Verify default agent is "default"
-	assert.Equal(t, "default", server.defaultAgentID)
+	// Verify default agent ID is set to the GUID of the default agent
+	assert.NotEmpty(t, server.defaultAgentID)
+	assert.Equal(t, defaultAgent.GetID(), server.defaultAgentID)
 }
 
 func TestMultiAgentServer_AddRemoveAgent(t *testing.T) {
@@ -106,13 +107,16 @@ func TestMultiAgentServer_AddRemoveAgent(t *testing.T) {
 	agentList := server.GetAgentIDs()
 	assert.Len(t, agentList, 2)
 
-	// Remove agent
-	err := server.RemoveAgent("agent1")
+	// Remove agent (use agent's GUID)
+	agent1GUID := agent1.GetID()
+	err := server.RemoveAgent(agent1GUID)
 	require.NoError(t, err)
 
 	agentList = server.GetAgentIDs()
 	assert.Len(t, agentList, 1)
-	assert.Contains(t, agentList, "agent2")
+	// Check for agent2's GUID
+	agent2GUID := agent2.GetID()
+	assert.Contains(t, agentList, agent2GUID)
 }
 
 func TestMultiAgentServer_GetAgent(t *testing.T) {
@@ -130,11 +134,12 @@ func TestMultiAgentServer_GetAgent(t *testing.T) {
 
 	server := NewMultiAgentServer(agents, nil)
 
-	// Get existing agent
-	ag, id, err := server.getAgent("agent1")
+	// Get existing agent by GUID
+	agent1GUID := agent1.GetID()
+	ag, id, err := server.getAgent(agent1GUID)
 	require.NoError(t, err)
 	assert.NotNil(t, ag)
-	assert.Equal(t, "agent1", id)
+	assert.Equal(t, agent1GUID, id)
 
 	// Get non-existent agent
 	ag, id, err = server.getAgent("nonexistent")
@@ -154,6 +159,7 @@ func TestMultiAgentServer_Weave(t *testing.T) {
 	llm := &mockLLMForMultiAgent{}
 
 	ag := agent.NewAgent(backend, llm)
+	agentGUID := ag.GetID()
 
 	agents := map[string]*agent.Agent{
 		"test-agent": ag,
@@ -162,10 +168,10 @@ func TestMultiAgentServer_Weave(t *testing.T) {
 	server := NewMultiAgentServer(agents, nil)
 	ctx := context.Background()
 
-	// Test with specific agent
+	// Test with specific agent (use GUID)
 	req := &loomv1.WeaveRequest{
 		Query:   "Hello, agent!",
-		AgentId: "test-agent",
+		AgentId: agentGUID,
 	}
 
 	resp, err := server.Weave(ctx, req)
@@ -173,7 +179,7 @@ func TestMultiAgentServer_Weave(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.NotEmpty(t, resp.Text)
 	assert.NotEmpty(t, resp.SessionId)
-	assert.Equal(t, "test-agent", resp.AgentId)
+	assert.Equal(t, agentGUID, resp.AgentId)
 	assert.NotNil(t, resp.Cost)
 }
 
@@ -182,6 +188,7 @@ func TestMultiAgentServer_WeaveWithDefaultAgent(t *testing.T) {
 	llm := &mockLLMForMultiAgent{}
 
 	ag := agent.NewAgent(backend, llm)
+	agentGUID := ag.GetID()
 
 	agents := map[string]*agent.Agent{
 		"default": ag,
@@ -198,7 +205,7 @@ func TestMultiAgentServer_WeaveWithDefaultAgent(t *testing.T) {
 	resp, err := server.Weave(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	assert.Equal(t, "default", resp.AgentId)
+	assert.Equal(t, agentGUID, resp.AgentId)
 }
 
 func TestMultiAgentServer_WeaveWithInvalidAgent(t *testing.T) {
@@ -499,23 +506,27 @@ func TestUpdateAgent_Success(t *testing.T) {
 
 	server := NewMultiAgentServer(agents, nil)
 
+	// Get original agent's GUID
+	agent1GUID := agent1.GetID()
+
 	// Verify initial agent
-	ag, _, err := server.getAgent("test-agent")
+	ag, _, err := server.getAgent(agent1GUID)
 	require.NoError(t, err)
 	assert.Equal(t, "Original agent", ag.GetDescription())
 
-	// Create new agent instance
+	// Create new agent instance with same GUID
 	agent2 := agent.NewAgent(backend2, llm, agent.WithConfig(&agent.Config{
 		Name:        "test-agent",
 		Description: "Updated agent",
 	}))
+	agent2.SetID(agent1GUID) // Set same GUID for replacement
 
-	// Update agent
-	err = server.UpdateAgent("test-agent", agent2)
+	// Update agent using GUID
+	err = server.UpdateAgent(agent1GUID, agent2)
 	require.NoError(t, err)
 
 	// Verify agent was replaced
-	ag, _, err = server.getAgent("test-agent")
+	ag, _, err = server.getAgent(agent1GUID)
 	require.NoError(t, err)
 	assert.Equal(t, "Updated agent", ag.GetDescription())
 }

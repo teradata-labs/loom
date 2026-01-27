@@ -179,7 +179,13 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 
 		// Always capture the final message
 		if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
-			lastMessage = progress.Message
+			// Get actual agent response from PartialResult
+			if progress.PartialResult != nil && progress.PartialResult.DataJson != "" {
+				lastMessage = progress.PartialResult.DataJson
+			} else {
+				// Fallback to progress message if no result
+				lastMessage = progress.Message
+			}
 		}
 	})
 

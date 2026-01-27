@@ -96,7 +96,7 @@ func TestHotReloadIntegration(t *testing.T) {
 	var callbackConfig *loomv1.AgentConfig
 
 	// Set reload callback that updates the server
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		callbackInvoked = true
 		callbackName = name
 		callbackConfig = agentConfig
@@ -208,7 +208,7 @@ func TestHotReloadIntegration_MultipleAgents(t *testing.T) {
 
 	// Set reload callback
 	reloadedAgents := make(map[string]bool)
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		reloadedAgents[name] = true
 
 		backend := &mockBackend{}
@@ -318,7 +318,7 @@ func TestHotReloadIntegration_CallbackError(t *testing.T) {
 
 	// Set callback that returns error
 	callbackInvoked := false
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		callbackInvoked = true
 		return assert.AnError // Return error
 	})
@@ -412,7 +412,7 @@ func TestWatchConfigs_ReloadTriggerFile(t *testing.T) {
 	reloadedAgents := make(map[string]bool)
 	var mu sync.Mutex
 
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		mu.Lock()
 		reloadedAgents[name] = true
 		mu.Unlock()
@@ -489,15 +489,21 @@ func TestWatchConfigs_ReloadTrigger_NewAgent(t *testing.T) {
 	newAgents := make(map[string]bool)
 	var mu sync.Mutex
 
-	registry.SetReloadCallback(func(name string, agentConfig *loomv1.AgentConfig) error {
+	registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
 		mu.Lock()
 		defer mu.Unlock()
 
-		// Check if agent already exists
+		// Use GUID for agent operations (name for backward compat only)
+		agentGUIDToUse := guid
+		if agentGUIDToUse == "" {
+			t.Logf("Warning: No GUID provided for agent %s, will use agent's internal GUID", name)
+		}
+
+		// Check if agent already exists using GUID
 		existingAgents := loomService.GetAgentIDs()
 		agentExists := false
 		for _, id := range existingAgents {
-			if id == name {
+			if id == guid {
 				agentExists = true
 				break
 			}
@@ -514,12 +520,21 @@ func TestWatchConfigs_ReloadTrigger_NewAgent(t *testing.T) {
 
 		newAgent := agent.NewAgent(backend, llm, agent.WithConfig(cfg))
 
+		// Set the stable GUID on the agent
+		if guid != "" {
+			newAgent.SetID(guid)
+		}
+
 		if agentExists {
-			// Hot-reload existing agent
-			return loomService.UpdateAgent(name, newAgent)
+			// Hot-reload existing agent using GUID
+			return loomService.UpdateAgent(guid, newAgent)
 		} else {
-			// New agent from metaagent
-			loomService.AddAgent(name, newAgent)
+			// New agent from metaagent - use GUID for server storage
+			agentGUIDToAdd := guid
+			if agentGUIDToAdd == "" {
+				agentGUIDToAdd = newAgent.GetID()
+			}
+			loomService.AddAgent(agentGUIDToAdd, newAgent)
 			newAgents[name] = true
 			return nil
 		}
@@ -574,12 +589,14 @@ func TestWatchConfigs_ReloadTrigger_NewAgent(t *testing.T) {
 	defer mu.Unlock()
 	assert.True(t, newAgents["metaagent-spawned"], "New agent should be added")
 
-	// Verify agent is available in server
-	agentIDs := loomService.GetAgentIDs()
-	assert.Contains(t, agentIDs, "metaagent-spawned")
-
-	// Verify agent can be retrieved
+	// Verify agent is available in server (agents now stored by GUID)
+	// We verify by successfully retrieving the agent by name (name resolution fallback)
 	spawnedAgent, _, err := loomService.getAgent("metaagent-spawned")
 	require.NoError(t, err)
 	assert.Equal(t, "Agent created by metaagent", spawnedAgent.GetDescription())
+
+	// Verify agent ID is a GUID in the server's agent list
+	agentIDs := loomService.GetAgentIDs()
+	agentGUID := spawnedAgent.GetID()
+	assert.Contains(t, agentIDs, agentGUID, "Agent should be stored by its GUID")
 }

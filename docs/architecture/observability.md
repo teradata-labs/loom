@@ -52,22 +52,27 @@ The Observability System instruments **every operation in Loom** with distribute
 - Full conversation flows (multi-turn context)
 - Multi-agent workflows (inter-agent communication)
 
-Traces are exported to **Hawk** (Loom's evaluation platform) or other backends (OTLP, Jaeger) for analysis, debugging, and cost attribution.
+Traces can be stored in three modes:
+1. **Embedded**: Self-contained in-process storage (memory or SQLite) with no external dependencies
+2. **Service**: HTTP export to Hawk or other observability services
+3. **None**: Zero-overhead no-op tracer
 
-**Key Innovation**: Privacy-aware distributed tracing with automatic PII redaction and batched export with retry logic.
+**Key Innovation**: Self-contained embedded observability with SQLite persistence, privacy-aware tracing with automatic PII redaction, and pluggable storage backends.
 
 
 ## Design Goals
 
 1. **Universal Instrumentation**: Every operation traced (LLM, tool, pattern, conversation)
 2. **Privacy by Default**: Automatic PII redaction with whitelist overrides
-3. **Low Latency**: Batched async export (non-blocking operation)
-4. **Reliable Export**: Retry failed exports with exponential backoff
-5. **Context Propagation**: Parent-child span relationships via context
-6. **Zero External Deps**: Embedded Hawk for local development
+3. **Zero External Dependencies**: Embedded mode works out-of-the-box with no external services
+4. **Flexible Storage**: Pluggable backends (memory, SQLite, HTTP export)
+5. **Low Latency**: Batched async export (non-blocking operation)
+6. **Reliable Export**: Retry failed exports with exponential backoff (service mode)
+7. **Context Propagation**: Parent-child span relationships via context
+8. **SQL Queryable**: Persistent traces with indexed SQLite storage
 
 **Non-goals**:
-- Real-time query UI (use Hawk/Jaeger for visualization)
+- Real-time query UI (use SQL queries for embedded, Hawk/Jaeger for service mode)
 - Custom sampling (all spans exported, filter at destination)
 - Distributed tracing across processes (single-process multi-agent server only)
 
@@ -97,10 +102,11 @@ graph TB
             HT4[Privacy redaction PII scrubbing]
         end
 
-        subgraph EmbeddedHawk["EmbeddedHawk (Development Mode)"]
-            EH1[SQLite storage traces.db]
-            EH2[FTS5 search full-text trace search]
-            EH3[No external service required]
+        subgraph EmbeddedTracer["EmbeddedTracer (Self-Contained)"]
+            ET1[Storage backends Memory or SQLite]
+            ET2[SQL queryable indexed tables]
+            ET3[No external service required]
+            ET4[Aggregated metrics calculated]
         end
 
         subgraph NoOpTracer["NoOpTracer (Testing)"]
@@ -333,49 +339,86 @@ Span N ──┘
 - **Background flusher**: Periodic export even if buffer not full
 
 
-### Embedded Hawk
+### Embedded Tracer
 
-**Responsibility**: Local SQLite-based trace storage for development (no external service required).
+**Responsibility**: In-process trace storage with pluggable backends (memory or SQLite).
 
-**Note**: Implementation not yet present in codebase. Design sketch:
-
+**Core Structure** (`pkg/observability/embedded.go:45`):
 ```go
-type EmbeddedHawk struct {
-    db *sql.DB // SQLite connection
+type EmbeddedTracer struct {
+    storage storage.Storage // Pluggable storage backend
+    config  *EmbeddedConfig
+    logger  *zap.Logger
+    mu      sync.RWMutex
+}
+
+type EmbeddedConfig struct {
+    StorageType   string        // "memory" or "sqlite"
+    SQLitePath    string        // Path for SQLite database
+    FlushInterval time.Duration // Metric calculation interval
+    Logger        *zap.Logger
 }
 ```
 
-**SQLite Schema** (planned):
+**Storage Backends**:
+
+1. **Memory Storage** (`pkg/observability/storage/memory.go:20`):
+```go
+type MemoryStorage struct {
+    mu             sync.RWMutex
+    maxTraces      int
+    evals          map[string]*Eval
+    runs           map[string]*EvalRun
+    runsByEval     map[string][]string
+    metrics        map[string]*EvalMetrics
+}
+```
+
+2. **SQLite Storage** (`pkg/observability/storage/sqlite.go:30`):
 ```sql
-CREATE TABLE traces (
-    trace_id TEXT NOT NULL,
-    span_id TEXT PRIMARY KEY,
-    parent_span_id TEXT,
+CREATE TABLE evals (
+    id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    start_time INTEGER NOT NULL,
-    end_time INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL,
+    suite TEXT NOT NULL,
     status TEXT NOT NULL,
-    attributes TEXT, -- JSON
-    events TEXT      -- JSON
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 
-CREATE INDEX idx_trace_id ON traces(trace_id);
-CREATE INDEX idx_parent_id ON traces(parent_span_id);
-CREATE INDEX idx_start_time ON traces(start_time);
+CREATE TABLE eval_runs (
+    id TEXT PRIMARY KEY,
+    eval_id TEXT NOT NULL,
+    query TEXT,
+    model TEXT,
+    response TEXT,
+    execution_time_ms INTEGER NOT NULL,
+    token_count INTEGER NOT NULL,
+    success INTEGER NOT NULL,
+    session_id TEXT,
+    timestamp INTEGER NOT NULL,
+    FOREIGN KEY (eval_id) REFERENCES evals(id)
+);
 
--- Full-text search for trace content
-CREATE VIRTUAL TABLE traces_fts USING fts5(
-    name, attributes, content=traces
+CREATE TABLE eval_metrics (
+    eval_id TEXT PRIMARY KEY,
+    total_runs INTEGER NOT NULL,
+    successful_runs INTEGER NOT NULL,
+    failed_runs INTEGER NOT NULL,
+    success_rate REAL NOT NULL,
+    avg_execution_time_ms REAL NOT NULL,
+    total_tokens INTEGER NOT NULL,
+    FOREIGN KEY (eval_id) REFERENCES evals(id)
 );
 ```
 
 **Rationale**:
-- **Zero external dependencies**: No Hawk service required
-- **Full-text search**: FTS5 enables grep-like trace search
-- **Persistent**: Traces survive server restart
+- **Zero external dependencies**: No external services required
+- **Pluggable backends**: Memory for dev, SQLite for production
+- **SQL queryable**: Standard SQL queries for trace analysis
+- **Persistent**: SQLite traces survive server restart
+- **Aggregated metrics**: Pre-calculated success rates, avg execution time
 
-**Status**: 📋 Planned
+**Status**: ✅ Implemented (v1.0.2)
 
 
 ### NoOp Tracer
@@ -1012,31 +1055,43 @@ Total time: 7s (max)
 - ❌ Performance cost: ~10µs per span for regex matching
 
 
-### Decision 3: Embedded Hawk vs. External Only
+### Decision 3: Self-Contained Storage vs. External Only
 
-**Chosen**: Pluggable tracer (Hawk, Embedded, NoOp)
+**Chosen**: Pluggable tracer (Embedded, Service, NoOp) with self-contained storage
 
 **Rationale**:
-- **Development workflow**: No external service required (Embedded Hawk)
+- **Zero dependencies**: Embedded mode works without any external services
+- **Development workflow**: No setup required for local development
 - **Testing**: Zero overhead (NoOp)
-- **Production**: Full Hawk service for analysis
+- **Production flexibility**: Choose embedded (single server) or service (multi-server)
+- **No vendor lock-in**: Storage interface allows multiple backends
 
 **Alternatives**:
-1. **External Hawk only**:
+1. **External service only**:
    - ✅ Simpler implementation (one code path)
-   - ❌ Requires Hawk service for local development
-   - ❌ Complex onboarding (setup Hawk first)
+   - ❌ Requires external service for local development
+   - ❌ Complex onboarding (setup service first)
+   - ❌ Network dependency for all tracing
 
-2. **Embedded only**:
+2. **Embedded only (no service export)**:
    - ✅ Self-contained
    - ❌ No centralized trace aggregation for production
-   - ❌ Limited analysis capabilities (no Hawk UI)
+   - ❌ Limited multi-server support
+
+3. **Hawk SDK dependency for embedded**:
+   - ✅ Less code to maintain
+   - ❌ External dependency requirement
+   - ❌ Can't build without Hawk SDK access
+   - ❌ Vendor lock-in
 
 **Consequences**:
-- ✅ Flexible deployment (choose tracer per environment)
-- ✅ Easy onboarding (Embedded Hawk for local dev)
-- ✅ Production-ready (Hawk service for scale)
-- ❌ More code to maintain (3 implementations)
+- ✅ Works out-of-the-box (embedded mode requires no setup)
+- ✅ Flexible deployment (choose mode per environment)
+- ✅ Easy onboarding (no external services to configure)
+- ✅ Production-ready (service mode for multi-server)
+- ✅ SQL queryable (embedded SQLite storage)
+- ❌ More code to maintain (storage layer + 3 tracer implementations)
+- ❌ Limited to single-server for embedded mode
 
 
 ## Constraints and Limitations
