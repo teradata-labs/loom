@@ -42,9 +42,13 @@ YAML-based configuration examples demonstrating Loom's declarative agent, workfl
 
 ### Server Configurations
 
-- `looms.yaml` - Full multi-agent server configuration
-- `looms-tls-dev.yaml` - TLS development configuration
-- `looms-tls-manual.yaml` - Manual TLS configuration
+Server configuration files are located in `config/`:
+- `config/looms.yaml` - Full multi-agent server configuration
+- `config/looms-tls-dev.yaml` - TLS development configuration
+- `config/looms-tls-manual.yaml` - Manual TLS configuration
+- `config/looms-production-cors.yaml` - Production CORS configuration
+
+See [config/README.md](config/README.md) for detailed configuration documentation.
 
 **Test Configurations**: See `tests/config/` for test-specific server configurations
 
@@ -81,7 +85,7 @@ ollama serve
 ```bash
 # Multi-agent server with configuration
 cd examples
-looms serve --config looms.yaml
+looms serve --config config/looms.yaml
 
 # In another terminal, connect to an agent
 loom --thread weaver
