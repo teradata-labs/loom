@@ -763,14 +763,36 @@ func (s *MultiAgentServer) addMCPServerToConfig(req *loomv1.AddMCPServerRequest)
 	}
 
 	serverConfig := map[string]interface{}{
-		"command":   req.Command,
-		"args":      req.Args,
-		"env":       req.Env,
-		"transport": req.Transport,
+		"command":           req.Command,
+		"args":              req.Args,
+		"env":               req.Env,
+		"transport":         req.Transport,
+		"enabled":           req.Enabled,          // CRITICAL: Prevent server being disabled on restart
+		"enable_sessions":   req.EnableSessions,   // For streamable-http transport
+		"enable_resumption": req.EnableResumption, // For streamable-http transport
+	}
+
+	// Add URL if specified (required for http/sse/streamable-http transports)
+	if req.Url != "" {
+		serverConfig["url"] = req.Url
 	}
 
 	if req.WorkingDir != "" {
 		serverConfig["working_dir"] = req.WorkingDir
+	}
+
+	// Add tool_filter if specified
+	if req.ToolFilter != nil {
+		filterMap := map[string]interface{}{
+			"all": req.ToolFilter.All,
+		}
+		if len(req.ToolFilter.Include) > 0 {
+			filterMap["include"] = req.ToolFilter.Include
+		}
+		if len(req.ToolFilter.Exclude) > 0 {
+			filterMap["exclude"] = req.ToolFilter.Exclude
+		}
+		serverConfig["tool_filter"] = filterMap
 	}
 
 	v.Set(fmt.Sprintf("mcp.servers.%s", req.Name), serverConfig)
@@ -792,14 +814,36 @@ func (s *MultiAgentServer) updateMCPServerInConfig(req *loomv1.UpdateMCPServerRe
 	}
 
 	serverConfig := map[string]interface{}{
-		"command":   req.Command,
-		"args":      req.Args,
-		"env":       req.Env,
-		"transport": req.Transport,
+		"command":           req.Command,
+		"args":              req.Args,
+		"env":               req.Env,
+		"transport":         req.Transport,
+		"enabled":           req.Enabled,          // CRITICAL: Prevent server being disabled on restart
+		"enable_sessions":   req.EnableSessions,   // For streamable-http transport
+		"enable_resumption": req.EnableResumption, // For streamable-http transport
+	}
+
+	// Add URL if specified (required for http/sse/streamable-http transports)
+	if req.Url != "" {
+		serverConfig["url"] = req.Url
 	}
 
 	if req.WorkingDir != "" {
 		serverConfig["working_dir"] = req.WorkingDir
+	}
+
+	// Add tool_filter if specified
+	if req.ToolFilter != nil {
+		filterMap := map[string]interface{}{
+			"all": req.ToolFilter.All,
+		}
+		if len(req.ToolFilter.Include) > 0 {
+			filterMap["include"] = req.ToolFilter.Include
+		}
+		if len(req.ToolFilter.Exclude) > 0 {
+			filterMap["exclude"] = req.ToolFilter.Exclude
+		}
+		serverConfig["tool_filter"] = filterMap
 	}
 
 	v.Set(fmt.Sprintf("mcp.servers.%s", req.ServerName), serverConfig)
