@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,11 +59,6 @@ func NewCoordinatorAdapter(c *client.Client, events chan<- tea.Msg) *Coordinator
 
 // SetAgentID sets the default agent ID for operations.
 func (c *CoordinatorAdapter) SetAgentID(agentID string) {
-	// Debug: Log agent ID being set
-	if f, err := os.OpenFile("/tmp/loom-coordinator-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "[%s] CoordinatorAdapter.SetAgentID called with: '%s'\n", time.Now().Format("15:04:05"), agentID)
-		f.Close()
-	}
 	c.agentID = agentID
 }
 
@@ -91,7 +87,7 @@ type CostInfo struct {
 // Run starts agent processing for a prompt.
 // Implements agent.Coordinator interface.
 // Attachments[0] can be the agent ID if provided.
-func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, attachments ...interface{}) (interface{}, error) {
+func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, attachments ...any) (any, error) {
 	// Get agent ID from attachments or use default
 	agentID := c.agentID
 	if len(attachments) > 0 {
@@ -113,41 +109,45 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 	c.agentCancelFunc[agentID] = cancel
 	c.sessionToAgent[sessionID] = agentID
 
-	// Start session subscription if not already active
+	// Start session subscription ONLY for coordinator agents
 	// This allows us to receive async responses from workflow sub-agents
-	if _, exists := c.sessionSubscriptions[sessionID]; !exists {
-		subscribeCtx, subscribeCancel := context.WithCancel(context.Background())
-		c.sessionSubscriptions[sessionID] = subscribeCancel
+	// Regular agents don't need this as their responses come via StreamWeave
+	isCoordinator := strings.HasSuffix(strings.ToLower(agentID), "-coordinator")
+	if isCoordinator {
+		if _, exists := c.sessionSubscriptions[sessionID]; !exists {
+			subscribeCtx, subscribeCancel := context.WithCancel(context.Background())
+			c.sessionSubscriptions[sessionID] = subscribeCancel
 
-		// Start subscription in background goroutine
-		go func() {
-			err := c.client.SubscribeToSession(subscribeCtx, sessionID, agentID, func(update *loomv1.SessionUpdate) {
-				// Only process assistant messages (skip user/tool messages already shown)
-				if newMsg := update.GetNewMessage(); newMsg != nil && newMsg.Role == "assistant" {
-					// Generate message ID for this async response
-					messageID := fmt.Sprintf("assistant-%d", time.Now().UnixNano())
+			// Start subscription in background goroutine
+			go func() {
+				err := c.client.SubscribeToSession(subscribeCtx, sessionID, agentID, func(update *loomv1.SessionUpdate) {
+					// Only process assistant messages (skip user/tool messages already shown)
+					if newMsg := update.GetNewMessage(); newMsg != nil && newMsg.Role == "assistant" {
+						// Generate message ID for this async response
+						messageID := fmt.Sprintf("assistant-%d", time.Now().UnixNano())
 
-					// Create message using the internal message format
-					msg := message.NewMessage(messageID, sessionID, message.Assistant)
-					msg.AddPart(message.ContentText{Text: newMsg.Content})
+						// Create message using the internal message format
+						msg := message.NewMessage(messageID, sessionID, message.Assistant)
+						msg.AddPart(message.ContentText{Text: newMsg.Content})
 
-					// Send as a new message event to TUI
-					if c.events != nil {
-						c.events <- pubsub.Event[message.Message]{
-							Type:    pubsub.CreatedEvent,
-							Payload: msg,
+						// Send as a new message event to TUI
+						if c.events != nil {
+							c.events <- pubsub.Event[message.Message]{
+								Type:    pubsub.CreatedEvent,
+								Payload: msg,
+							}
 						}
 					}
+				})
+				if err != nil && subscribeCtx.Err() == nil {
+					// Log error if it wasn't a cancellation
+					if f, errLog := os.OpenFile("/tmp/loom-subscription-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); errLog == nil {
+						fmt.Fprintf(f, "[%s] Subscription error for session %s: %v\n", time.Now().Format("15:04:05"), sessionID, err)
+						_ = f.Close()
+					}
 				}
-			})
-			if err != nil && subscribeCtx.Err() == nil {
-				// Log error if it wasn't a cancellation
-				if f, errLog := os.OpenFile("/tmp/loom-subscription-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); errLog == nil {
-					fmt.Fprintf(f, "[%s] Subscription error for session %s: %v\n", time.Now().Format("15:04:05"), sessionID, err)
-					f.Close()
-				}
-			}
-		}()
+			}()
+		}
 	}
 
 	c.mu.Unlock()
@@ -159,13 +159,6 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 		// Don't cancel subscription here - it should continue listening for async responses
 		c.mu.Unlock()
 	}()
-
-	// Debug: Log which agent is being used for this request
-	if f, err := os.OpenFile("/tmp/loom-coordinator-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "[%s] CoordinatorAdapter.Run using agentID: '%s' (default: '%s', from attachments: %v)\n",
-			time.Now().Format("15:04:05"), agentID, c.agentID, len(attachments) > 0)
-		f.Close()
-	}
 
 	var result AgentResult
 	result.SessionID = sessionID

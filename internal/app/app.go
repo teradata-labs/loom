@@ -61,6 +61,26 @@ func NewFromClient(c *client.Client, events chan tea.Msg) *App {
 	}
 }
 
+// NewMinimal creates a minimal App with no server connection.
+// Used when server is unavailable to show connection instructions.
+func NewMinimal(events chan tea.Msg) *App {
+	noopCoord := &adapter.NoopCoordinator{}
+	noopSess := &adapter.NoopSessionAdapter{}
+	noopMsg := &adapter.NoopMessageAdapter{}
+	permAdapter := adapter.NewPermissionAdapter()
+
+	return &App{
+		Sessions:         noopSess,
+		Messages:         noopMsg,
+		History:          &history.NoopService{},
+		Permissions:      permAdapter,
+		AgentCoordinator: noopCoord,
+		LSPClients:       &LSPClientMap{},
+		events:           events,
+		client:           nil,
+	}
+}
+
 // Client returns the underlying gRPC client.
 func (a *App) Client() *client.Client {
 	return a.client
