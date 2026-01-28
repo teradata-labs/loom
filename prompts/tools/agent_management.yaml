@@ -1,0 +1,97 @@
+---
+name: tools
+namespace: loom.agent
+---
+prompts:
+  - id: agent_management
+    content: |
+      Manage agent lifecycle including spawning new agents, monitoring status, and coordinating
+      multi-agent workflows. Enables hierarchical agent architectures and task delegation.
+
+      Use this tool to:
+      - Spawn new agents for subtasks
+      - Monitor agent status and health
+      - Coordinate multi-agent workflows
+      - Delegate tasks to specialized agents
+      - Manage agent resources and cleanup
+
+      Actions supported:
+      - spawn: Create a new agent instance
+      - status: Check agent health and state
+      - stop: Gracefully terminate an agent
+      - list: List all active agents
+      - send_task: Delegate task to another agent
+      - wait: Wait for agent completion
+
+      Agent types:
+      - Worker: General-purpose task execution
+      - Specialist: Domain-specific agents (SQL, API, etc.)
+      - Coordinator: Orchestrates other agents
+      - Monitor: Observes and reports on system state
+
+      Features:
+      - Hierarchical agent trees (parent-child relationships)
+      - Task delegation with results collection
+      - Agent isolation (separate contexts)
+      - Resource management (automatic cleanup)
+      - Status monitoring and health checks
+      - Message passing between agents
+
+      Best practices:
+      - Spawn agents for truly independent subtasks
+      - Use specialized agents for domain-specific work
+      - Monitor agent status before sending tasks
+      - Clean up agents when done (avoid resource leaks)
+      - Handle agent failures gracefully
+      - Use message passing instead of shared state
+
+      When to use agent_management:
+      - Task requires parallel execution
+      - Need domain expertise (spawn specialist agent)
+      - Workload needs distribution across multiple agents
+      - Task isolation required (security, resource limits)
+      - Complex workflows with dependencies
+
+      Common patterns:
+      - Map-reduce: Spawn workers, collect results
+      - Pipeline: Chain agents for sequential processing
+      - Fan-out: Spawn multiple agents for parallel work
+      - Supervisor: Monitor and restart failed agents
+      - Load balancing: Distribute work across agent pool
+
+      Examples:
+      - Spawn worker: agent_management(action="spawn", agent_type="worker", config={...})
+      - Check status: agent_management(action="status", agent_id="agent-123")
+      - Delegate task: agent_management(action="send_task", agent_id="agent-123", task="...")
+      - List agents: agent_management(action="list")
+      - Stop agent: agent_management(action="stop", agent_id="agent-123")
+
+      Result format:
+      - agent_id: Unique agent identifier
+      - status: running, idle, stopped, failed
+      - uptime: How long agent has been running
+      - task_count: Number of tasks processed
+      - resource_usage: Memory, CPU usage
+
+      Multi-agent coordination:
+      - Agents communicate via message passing
+      - Parent agents can spawn child agents
+      - Results flow back to parent automatically
+      - Shared state via shared_memory tools
+      - Event-driven coordination via message bus
+
+      Safety:
+      - Agents inherit parent permissions
+      - Resource limits enforced per agent
+      - Automatic cleanup on parent termination
+      - Failed agents don't crash parent
+
+    tags:
+      - tool
+      - agent
+      - management
+      - workflow
+      - coordination
+    metadata:
+      version: "v1.0"
+      description: "Agent lifecycle and coordination tool"

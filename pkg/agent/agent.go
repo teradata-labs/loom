@@ -191,7 +191,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 
 	// Auto-register shell_execute tool (standard toolset)
 	// Uses LOOM_DATA_DIR as baseDir for consistent artifact/data management
-	a.tools.Register(builtin.NewShellExecuteTool(config.GetLoomDataDir()))
+	shellTool := shuttle.Tool(builtin.NewShellExecuteTool(config.GetLoomDataDir()))
+	if a.prompts != nil {
+		shellTool = shuttle.NewPromptAwareTool(shellTool, a.prompts, "tools.shell_execute")
+	}
+	a.tools.Register(shellTool)
 
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction
@@ -435,7 +439,7 @@ func (a *Agent) SetID(id string) {
 
 // SetToolRegistryForDynamicDiscovery configures the tool registry for dynamic tool discovery.
 // When enabled, agents can use tools discovered via tool_search without explicit registration.
-// MCP tools found in the registry will be dynamically registered when first used.
+// MCP tools and builtin tools found in the registry will be dynamically registered when first used.
 func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegistry, mcpManager shuttle.MCPManager) {
 	if a.executor == nil {
 		return
@@ -446,6 +450,8 @@ func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegi
 	if mcpManager != nil {
 		a.executor.SetMCPManager(mcpManager)
 	}
+	// Always enable builtin tool provider for dynamic registration
+	a.executor.SetBuiltinToolProvider(builtin.NewProvider())
 }
 
 // GetDescription returns the agent description from configuration.
@@ -1749,7 +1755,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			if storeErr == nil {
 				// Progressive disclosure: Register get_error_details tool after first error
 				if !a.tools.IsRegistered("get_error_details") {
-					a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
+					errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+					if a.prompts != nil {
+						errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+					}
+					a.tools.Register(errorTool)
 				}
 
 				// Successfully stored - return reference
@@ -1787,7 +1797,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				if storeErr == nil {
 					// Progressive disclosure: Register get_error_details tool after first error
 					if !a.tools.IsRegistered("get_error_details") {
-						a.tools.Register(NewGetErrorDetailsTool(a.errorStore))
+						errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+						if a.prompts != nil {
+							errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
+						}
+						a.tools.Register(errorTool)
 					}
 
 					// Successfully stored - return reference
@@ -1874,7 +1888,11 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 
 					// Progressive disclosure: Register query_tool_result after first large result
 					if !a.tools.IsRegistered("query_tool_result") && a.sqlResultStore != nil {
-						a.tools.Register(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+						queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, a.sharedMemory))
+						if a.prompts != nil {
+							queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+						}
+						a.tools.Register(queryTool)
 					}
 
 					// Get metadata to create rich inline summary (eliminates need for get_tool_result call)
@@ -2246,7 +2264,11 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 	if sharedMemory != nil && a.sqlResultStore != nil && a.tools != nil {
 		if a.tools.IsRegistered("query_tool_result") {
 			// Re-register with new shared memory instance
-			a.tools.Register(NewQueryToolResultTool(a.sqlResultStore, sharedMemory))
+			queryTool := shuttle.Tool(NewQueryToolResultTool(a.sqlResultStore, sharedMemory))
+			if a.prompts != nil {
+				queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+			}
+			a.tools.Register(queryTool)
 		}
 	}
 
@@ -2270,7 +2292,11 @@ func (a *Agent) SetSQLResultStore(sqlStore *storage.SQLResultStore) {
 	// Register query_tool_result tool if not already registered
 	// v1.0.1: Pass both SQL and memory stores
 	if sqlStore != nil && a.tools != nil {
-		a.tools.Register(NewQueryToolResultTool(sqlStore, a.sharedMemory))
+		queryTool := shuttle.Tool(NewQueryToolResultTool(sqlStore, a.sharedMemory))
+		if a.prompts != nil {
+			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+		}
+		a.tools.Register(queryTool)
 	}
 }
 

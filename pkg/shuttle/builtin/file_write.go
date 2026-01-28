@@ -25,6 +25,11 @@ const (
 
 // FileWriteTool provides safe file writing capabilities for agents.
 // Apple-style: Secure by default, creates directories automatically.
+//
+// DEPRECATED: Use workspace tool for session-scoped file operations (write, read, search, list)
+// or shell_execute for direct filesystem access (echo, tee, etc.). The workspace tool provides
+// superior functionality with session isolation, artifact indexing, and full-text search.
+// This tool remains for backwards compatibility but is not recommended for new agents.
 type FileWriteTool struct {
 	baseDir string // Optional base directory for safety
 }
@@ -48,14 +53,20 @@ func (t *FileWriteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/file.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *FileWriteTool) Description() string {
-	return `Writes content to files on the local filesystem. Creates parent directories automatically.
+	return `⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (echo command).
+
+Writes content to files on the local filesystem. Creates parent directories automatically.
 Safe by default - won't overwrite system files.
 
 Use this tool to:
 - Save API responses to files
 - Create data files from agent operations
 - Store results for later processing
-- Generate output files`
+- Generate output files
+
+RECOMMENDED ALTERNATIVES:
+- workspace tool: action=write, scope=artifact (session-scoped, indexed, searchable)
+- shell_execute: echo "content" > /path/to/file (direct filesystem access)`
 }
 
 func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {

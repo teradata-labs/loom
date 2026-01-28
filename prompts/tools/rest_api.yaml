@@ -5,14 +5,84 @@ namespace: loom.rest_api
 prompts:
   - id: http_request
     content: |
-      Makes HTTP requests to APIs and websites. Supports GET, POST, PUT, DELETE, PATCH methods.
-      Returns response body, status code, and headers. Automatically handles JSON content.
+      Make HTTP/HTTPS requests to REST APIs, web services, and external endpoints.
+      Supports all standard HTTP methods with custom headers, authentication, request bodies,
+      and automatic retry with exponential backoff.
 
       Use this tool to:
-      - Fetch data from REST APIs
-      - Call web services
-      - Download content from URLs
-      - Send data to HTTP endpoints
+      - Fetch data from REST APIs (GET requests)
+      - Submit data to web services (POST, PUT, PATCH)
+      - Delete resources (DELETE requests)
+      - Download files and content
+      - Integrate with third-party APIs
+      - Test API endpoints
+
+      Supported methods:
+      - GET: Retrieve data from APIs
+      - POST: Create new resources
+      - PUT: Update entire resources
+      - PATCH: Update partial resources
+      - DELETE: Remove resources
+      - HEAD: Check resource metadata
+      - OPTIONS: Check supported methods
+
+      Features:
+      - JSON request/response handling (automatic)
+      - Custom HTTP headers (auth, content-type, etc.)
+      - Query parameters (automatically encoded)
+      - Request body (JSON, form data, raw)
+      - Response metadata (status, headers, timing)
+      - Automatic retry with exponential backoff
+      - Timeout configuration
+      - Follow redirects (optional)
+
+      Authentication:
+      - Bearer tokens: headers={"Authorization": "Bearer TOKEN"}
+      - API keys: headers={"X-API-Key": "KEY"} or query params
+      - Basic auth: headers={"Authorization": "Basic BASE64"}
+      - Custom headers: Any header you need
+
+      Best practices:
+      - Always check response.success before using data
+      - Use retry_count for flaky APIs (default: 3)
+      - Set timeout to prevent hanging (default: 30s)
+      - Include proper Content-Type headers
+      - Handle rate limits gracefully
+      - Validate response status codes
+
+      Common patterns:
+      - GET with query: http_request(method="GET", url="https://api.example.com/users?status=active")
+      - POST JSON: http_request(method="POST", url="...", body={"key": "value"}, headers={"Content-Type": "application/json"})
+      - Auth header: http_request(method="GET", url="...", headers={"Authorization": "Bearer token123"})
+      - Custom timeout: http_request(method="GET", url="...", timeout=60)
+
+      Examples:
+      - Fetch data: http_request(method="GET", url="https://api.github.com/repos/user/repo")
+      - Create resource: http_request(method="POST", url="https://api.example.com/users", body={"name": "Alice"})
+      - With auth: http_request(method="GET", url="https://api.example.com/data", headers={"Authorization": "Bearer xyz"})
+      - Update: http_request(method="PATCH", url="https://api.example.com/users/123", body={"status": "active"})
+      - Delete: http_request(method="DELETE", url="https://api.example.com/users/123")
+
+      Result format:
+      - success: Boolean indicating success/failure
+      - status_code: HTTP status code (200, 404, 500, etc.)
+      - body: Response body (parsed JSON or raw text)
+      - headers: Response headers dictionary
+      - duration_ms: Request duration in milliseconds
+
+      Error handling:
+      - Network errors: Returns error with suggestion
+      - Timeouts: Configurable timeout (default 30s)
+      - Rate limits: Returns 429 status, suggests retry
+      - Auth failures: Returns 401/403 with clear message
+      - Auto-retry: Retries on 5xx errors with backoff
+
+      Safety:
+      - HTTPS enforced for sensitive data
+      - Certificates validated by default
+      - Headers sanitized in logs
+      - Request body size limits (prevent memory issues)
+
     tags:
       - tool
       - http

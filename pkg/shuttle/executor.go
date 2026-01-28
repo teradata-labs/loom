@@ -38,15 +38,22 @@ type MCPManager interface {
 	GetClient(serverName string) (interface{}, error)
 }
 
+// BuiltinToolProvider is an interface for getting builtin tools.
+// This avoids import cycles with pkg/shuttle/builtin.
+type BuiltinToolProvider interface {
+	GetTool(name string) Tool
+}
+
 // Executor executes tools with tracking and error handling.
 type Executor struct {
-	registry          *Registry
-	sharedMemory      *storage.SharedMemoryStore
-	sqlResultStore    *storage.SQLResultStore // SQL result store for queryable large results
-	threshold         int64                   // Threshold for using shared memory (bytes)
-	permissionChecker *PermissionChecker
-	toolRegistry      ToolRegistry // Tool registry for dynamic tool discovery
-	mcpManager        MCPManager   // MCP manager for dynamic MCP tool registration
+	registry            *Registry
+	sharedMemory        *storage.SharedMemoryStore
+	sqlResultStore      *storage.SQLResultStore // SQL result store for queryable large results
+	threshold           int64                   // Threshold for using shared memory (bytes)
+	permissionChecker   *PermissionChecker
+	toolRegistry        ToolRegistry        // Tool registry for dynamic tool discovery
+	mcpManager          MCPManager          // MCP manager for dynamic MCP tool registration
+	builtinToolProvider BuiltinToolProvider // Builtin tool provider for dynamic builtin tool registration
 
 	// Metrics for large parameter optimization
 	largeParamStores      atomic.Int64 // Count of parameters stored
@@ -91,6 +98,11 @@ func (e *Executor) SetToolRegistry(registry ToolRegistry) {
 // SetMCPManager configures the MCP manager for dynamic MCP tool registration.
 func (e *Executor) SetMCPManager(manager MCPManager) {
 	e.mcpManager = manager
+}
+
+// SetBuiltinToolProvider configures the builtin tool provider for dynamic builtin tool registration.
+func (e *Executor) SetBuiltinToolProvider(provider BuiltinToolProvider) {
+	e.builtinToolProvider = provider
 }
 
 // Execute executes a tool by name with the given parameters.
@@ -648,8 +660,7 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 	case loomv1.ToolSource_TOOL_SOURCE_MCP:
 		return e.registerMCPTool(ctx, toolInfo)
 	case loomv1.ToolSource_TOOL_SOURCE_BUILTIN:
-		// Builtin tools should already be registered, but handle gracefully
-		return nil, fmt.Errorf("builtin tool not registered locally (this shouldn't happen)")
+		return e.registerBuiltinTool(ctx, toolInfo)
 	case loomv1.ToolSource_TOOL_SOURCE_CUSTOM:
 		return nil, fmt.Errorf("custom tools not yet supported for dynamic registration")
 	default:
@@ -698,6 +709,24 @@ func (e *Executor) registerMCPTool(ctx context.Context, toolInfo *loomv1.Indexed
 	e.registry.Register(mcpTool)
 
 	return mcpTool, nil
+}
+
+// registerBuiltinTool dynamically registers a builtin tool from the builtin tool provider.
+func (e *Executor) registerBuiltinTool(ctx context.Context, toolInfo *loomv1.IndexedTool) (Tool, error) {
+	if e.builtinToolProvider == nil {
+		return nil, fmt.Errorf("builtin tool provider not configured")
+	}
+
+	// Get tool from builtin provider
+	tool := e.builtinToolProvider.GetTool(toolInfo.Name)
+	if tool == nil {
+		return nil, fmt.Errorf("builtin tool not found: %s", toolInfo.Name)
+	}
+
+	// Register the tool so subsequent calls don't require dynamic lookup
+	e.registry.Register(tool)
+
+	return tool, nil
 }
 
 // mcpToolWrapper wraps an MCP client to implement the Tool interface.

@@ -5,6 +5,8 @@ namespace: loom.file
 prompts:
   - id: file_read
     content: |
+      ⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (cat command).
+
       Reads content from files on the local filesystem.
       Use this tool to ground your responses in actual data rather than guessing.
 
@@ -15,16 +17,27 @@ prompts:
       - Read markdown, JSON, XML, or other text files
 
       Safety: Won't read sensitive system files. Max file size: 10MB.
+
+      RECOMMENDED ALTERNATIVES:
+      - workspace tool: action=read, scope=artifact (session-scoped, indexed, searchable)
+      - shell_execute: cat /path/to/file (direct filesystem access)
     tags:
       - tool
       - file
       - read
+      - deprecated
     metadata:
       version: "v1.0"
-      description: "File reading tool"
+      description: "File reading tool (DEPRECATED)"
+      deprecated: true
+      alternatives:
+        - workspace
+        - shell_execute
 
   - id: file_write
     content: |
+      ⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (echo command).
+
       Writes content to files on the local filesystem. Creates parent directories automatically.
       Safe by default - won't overwrite system files.
 
@@ -33,13 +46,22 @@ prompts:
       - Create data files from agent operations
       - Store results for later processing
       - Generate output files
+
+      RECOMMENDED ALTERNATIVES:
+      - workspace tool: action=write, scope=artifact (session-scoped, indexed, searchable)
+      - shell_execute: echo "content" > /path/to/file (direct filesystem access)
     tags:
       - tool
       - file
       - write
+      - deprecated
     metadata:
       version: "v1.0"
-      description: "File writing tool"
+      description: "File writing tool (DEPRECATED)"
+      deprecated: true
+      alternatives:
+        - workspace
+        - shell_execute
 
   - id: list_files
     content: |

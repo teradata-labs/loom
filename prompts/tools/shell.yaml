@@ -1,0 +1,58 @@
+---
+name: tools
+namespace: loom.shell
+---
+prompts:
+  - id: shell_execute
+    content: |
+      Execute shell commands to interact with the filesystem, run programs, and perform system operations.
+      Provides full access to the command line with streaming output and error handling.
+
+      Use this tool to:
+      - Run CLI commands (ls, grep, find, cat, etc.)
+      - Execute scripts and programs
+      - Interact with git, npm, docker, and other tools
+      - Process files with standard Unix utilities
+      - Chain commands with pipes and redirects
+
+      Features:
+      - Streaming output (see results as they arrive)
+      - Separate stdout and stderr capture
+      - Exit code reporting
+      - Working directory persistence across commands
+      - Environment variable support
+
+      Best practices:
+      - Use absolute paths when possible
+      - Quote paths with spaces (e.g., "path with spaces/file.txt")
+      - Check exit codes before assuming success
+      - Use && to chain dependent commands
+      - Use ; to run commands sequentially regardless of errors
+
+      Common patterns:
+      - File operations: cat file.txt, echo "content" > file.txt
+      - Git operations: git status, git add ., git commit -m "message"
+      - Docker: docker ps, docker logs container_id
+      - Process management: ps aux | grep process, kill -9 PID
+      - File search: find . -name "*.go" -type f
+
+      Safety:
+      - Commands run with your user permissions
+      - No sudo/elevation by default
+      - Sensitive paths (like /etc) may be restricted
+      - Long-running commands may timeout
+
+      Examples:
+      - List files: shell_execute(command="ls -la")
+      - Git status: shell_execute(command="git status")
+      - Read file: shell_execute(command="cat README.md")
+      - Chain commands: shell_execute(command="cd src && go test ./...")
+
+    tags:
+      - tool
+      - shell
+      - command
+      - filesystem
+    metadata:
+      version: "v1.0"
+      description: "Shell command execution tool"
