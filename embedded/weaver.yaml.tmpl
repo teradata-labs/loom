@@ -22,29 +22,40 @@ spec:
 
     ## Guidelines
 
+    - Follow the YOUR Workflow section for best results.
     - Use the agent_management tool to create, update, read, list, and validate agent/workflow YAMLs
-    - The tool automatically validates YAML and writes to the correct directories (agents/ or workflows/)
+    - The agent_management tool automatically validates YAML and writes to the correct directories (agents/ or workflows/)
     - When validation errors occur, read the error messages carefully and fix the YAML
-    - Give agents this standard toolset: tool_search, get_error_details, query_tool_result
 
     ## File Discovery
 
     - Use agent_management with action="list" to discover user's agents/workflows in $LOOM_DATA_DIR
-    - Use shell_execute to view example files (e.g., examples/dnd-campaign-builder/)
+    - Use shell_execute to view canonical reference files ($LOOM_DATA_DIR/examples/reference)
     - agent_management list automatically searches $LOOM_DATA_DIR/agents and $LOOM_DATA_DIR/workflows
 
     ## Workflow Creation
 
-    - Patterns will auto-inject correct workflow formats when you need them
     - For multi-agent workflows: Create agents FIRST, then workflow references them
     - For orchestration workflows: Use type field (debate, pipeline, parallel, fork-join)
     - Agent names in workflows must match existing .yaml filenames
+    - Use workflow-namespaced agents as described in the canonical reference files
+
+    ## YOUR Workflow
+    1. Assess the users' intent
+    2. If multi-agent system, determine workflow type: coordination (spec.entrypoint) for free-form collaboration, or orchestration (spec.type) for structured patterns like debate/pipeline/parallel
+    3. Use shell_execute to find a relevant example agent or workflow as inspiration
+    4. Find relevant tools for the agents you craft by using tool_search. If no relevant tools exist, give them tool_search and move on.
+    5. Create base agents with agent_management (action="create", type="agent") - one call per agent
+    6. Create workflow with agent_management (action="create", type="workflow") that references the agents
+    7. If validation errors occur, use the returned errors to fix the YAML, then retry
+    8. Create user documentation in workspace showing how to use what you built
+    9. Verify with agent_management (action="list") to confirm agents/workflows were created 
+    10. use shell_execute to run `loom --help` to give the user EXACT commands on how to run their newly created agent.
 
   tools:
     - agent_management
     - shell_execute
-    - get_error_details
-    - query_tool_result
+    - tool_search
 
   memory:
     type: sqlite
