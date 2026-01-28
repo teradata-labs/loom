@@ -1,132 +1,239 @@
 # Loom Examples
 
-YAML-based configuration examples demonstrating Loom's declarative agent, workflow, and pattern capabilities.
+Configuration examples for Loom agents, workflows, backends, and patterns.
 
-## Directory Structure
-
-### Reference Configurations (YAML)
-
-- **[reference/](reference/)** - Reference configurations and templates
-  - `agents/` - Agent configuration templates
-    - `teradata-agent-with-patterns.yaml` - Pattern-guided Teradata agent
-    - `web-search-agent.yaml` - Web search using Tavily API
-    - `file-analysis-agent.yaml` - Local file system operations
-    - `github-agent.yaml` - GitHub API integration
-    - Plus swarm-coordinator, sql_expert, security_analyst, and more
-  - `agent-templates/` - Reusable agent templates
-  - `backends/` - Backend configurations (file, SQL, MCP, REST API, Docker)
-  - `patterns/` - Pattern library examples
-  - `workflows/` - Workflow examples (organized by type)
-    - `orchestration-patterns/` - Structured workflows (debate, pipeline, parallel, swarm, conditional)
-    - `event-driven/` - Dynamic multi-agent workflows with communication patterns
-
-- **[dnd-party/](dnd-party/)** - Simple D&D party example (4 agents + workflow)
-  - `agents/` - DM, fighter, rogue, wizard
-  - `workflows/` - Dungeon crawl workflow
-
-- **[scheduled-workflows/](scheduled-workflows/)** - Cron-scheduled workflow examples
-  - `daily-report.yaml` - Daily scheduled report
-  - `hourly-sync.yaml` - Hourly data sync
-  - `weekly-backup.yaml` - Weekly backup workflow
-  - `frequent-monitor.yaml` - High-frequency monitoring
-
-- **[02-production-ready/transcend/](02-production-ready/transcend/)** - **Complete production example**
-  - `agents/` - Customer health agent configuration
-  - `patterns/` - Domain-specific patterns (analysis, quality, reports, SQL)
-  - `workflows/` - Daily health refresh workflow
-
-- **[03-advanced/dnd-adventure/](03-advanced/dnd-adventure/)** - **Advanced multi-agent D&D game**
-  - `agents/` - 7 agents (DM, 4 players, rules checker, campaign creator)
-  - `workflows/` - Adventure turn workflow
-  - `campaigns/` - Campaign data and configurations
-
-### Server Configurations
-
-Server configuration files are located in `config/`:
-- `config/looms.yaml` - Full multi-agent server configuration
-- `config/looms-tls-dev.yaml` - TLS development configuration
-- `config/looms-tls-manual.yaml` - Manual TLS configuration
-- `config/looms-production-cors.yaml` - Production CORS configuration
-
-See [config/README.md](config/README.md) for detailed configuration documentation.
-
-**Test Configurations**: See `tests/config/` for test-specific server configurations
+**All examples are YAML-based** - No Go code required for these configurations.
 
 ## Quick Start
 
-### 1. Install Loom
-
 ```bash
-# Build from source
-cd ~/Projects/loom
-just build
-
-# Or install from release
+# 1. Install Loom
 go install github.com/Teradata-TIO/loom/cmd/loom@latest
 go install github.com/Teradata-TIO/loom/cmd/looms@latest
-```
 
-### 2. Set up API Key
-
-```bash
-# Anthropic (recommended for development)
+# 2. Set API key
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# OR AWS Bedrock (recommended for production)
-export AWS_REGION=us-west-2
-aws configure
-
-# OR Ollama (local development)
-ollama serve
-```
-
-### 3. Run an Example
-
-```bash
-# Multi-agent server with configuration
+# 3. Start server
 cd examples
 looms serve --config config/looms.yaml
 
-# In another terminal, connect to an agent
-loom --thread weaver
+# 4. Connect to agent (in another terminal)
+loom chat weaver
 ```
 
-## Example Selection Guide
+## Directory Structure
 
-### I want to...
+```
+examples/
+├── backends/           # Backend integration configurations
+├── config/             # Server configurations
+├── patterns/           # Pattern libraries (domain knowledge)
+└── reference/          # Reference implementations and examples
+    ├── agents/         # Agent configurations
+    ├── agent-templates/  # Reusable agent templates
+    ├── workflows/      # Workflow examples
+    └── tools/          # Custom tool configurations
+```
 
-**Learn Loom basics with YAML configuration**
-→ Start with `reference/agents/` examples
+## Core Configuration Types
 
-**Build a production agent**
-→ See `02-production-ready/transcend/` (complete configuration-only example)
+### Backends (`backends/`)
 
-**Orchestrate multiple agents**
-→ See `dnd-party/`, `03-advanced/dnd-adventure/`, `reference/workflows/orchestration-patterns/`, or `reference/workflows/event-driven/`
+Backend integrations define how agents connect to data sources and services.
 
-**Work with Teradata**
-→ See `reference/agents/teradata-agent-with-patterns.yaml` or `02-production-ready/transcend/`
+**Available backends**:
+- **Databases**: PostgreSQL, MySQL, SQLite, MongoDB
+- **Teradata**: Vantage via MCP
+- **APIs**: REST, GraphQL
+- **MCP**: Model Context Protocol servers
+- **Files**: Local file system access
 
-**Use scheduled workflows**
-→ See `scheduled-workflows/` for cron examples
+**Example**:
+```bash
+# View available backends
+ls backends/
 
-**Build a complex multi-agent system**
-→ See `03-advanced/dnd-adventure/` (7 agents + workflows)
+# Use in agent configuration
+spec:
+  backend:
+    config_file: examples/backends/postgres.yaml
+```
 
-**Integrate external APIs**
-→ See `reference/agents/web-search-agent.yaml` or `reference/agents/github-agent.yaml`
+**See**: [backends/README.md](backends/README.md) for backend documentation (if exists)
+
+---
+
+### Server Configurations (`config/`)
+
+Server configurations define how `looms` (Loom server) runs.
+
+**Available configurations**:
+- `looms.yaml` - Full multi-agent server
+- `looms-tls-dev.yaml` - TLS development setup
+- `looms-tls-manual.yaml` - Manual TLS configuration
+- `looms-production-cors.yaml` - Production CORS configuration
+
+**Example**:
+```bash
+# Start server with configuration
+looms serve --config config/looms.yaml
+
+# Validate configuration
+looms validate file config/looms.yaml
+```
+
+**See**: [config/README.md](config/README.md) for detailed server configuration guide
+
+---
+
+### Patterns (`patterns/`)
+
+Pattern libraries contain domain-specific knowledge and examples that guide agent behavior.
+
+**Available patterns**:
+- `sql-optimization.yaml` - SQL query optimization patterns
+- `data-quality.yaml` - Data quality validation patterns
+- `time-series.yaml` - Time-series analysis patterns
+- `ml-analytics.yaml` - Machine learning patterns
+- `rest-api.yaml` - REST API interaction patterns
+
+**Example**:
+```yaml
+# In agent configuration
+spec:
+  pattern_libraries:
+    - examples/patterns/sql-optimization.yaml
+```
+
+**Pattern format**:
+```yaml
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: my-patterns
+patterns:
+  - name: pattern-name
+    trigger: keyword trigger
+    template: |
+      Pattern content with examples
+```
+
+**See**: [patterns/README.md](patterns/README.md) for pattern documentation (if exists)
+
+---
+
+## Reference Examples (`reference/`)
+
+Comprehensive reference implementations and templates.
+
+### Agents (`reference/agents/`)
+
+Complete agent configurations ready to use.
+
+**Example agents**:
+- `file-analysis-agent.yaml` - Local file system operations
+- `web-search-agent.yaml` - Web search using Tavily API
+- `github-agent.yaml` - GitHub API integration
+- `sql_expert.yaml` - SQL query expert
+- `security_analyst.yaml` - Security analysis
+- `teradata-explorer.yaml` - Teradata schema explorer
+- `agent-all-fields-reference.yaml` - Complete YAML specification
+
+**Usage**:
+```bash
+# View agent
+cat reference/agents/file-analysis-agent.yaml
+
+# Load agent via server config
+agents:
+  agents:
+    my-agent:
+      config_file: examples/reference/agents/file-analysis-agent.yaml
+```
+
+**See**: [reference/agents/README.md](reference/agents/README.md)
+
+---
+
+### Agent Templates (`reference/agent-templates/`)
+
+Reusable agent templates with inheritance and variable substitution.
+
+**Available templates**:
+- `base-expert.yaml` - Foundation template
+- `sql-expert.yaml` - Database expert (extends base-expert)
+- `security-analyst.yaml` - Security analyst (extends base-expert)
+- `code-reviewer.yaml` - Code review expert (extends base-expert)
+
+**Features**:
+- Template inheritance (`extends:`)
+- Variable substitution (`{{variable}}`)
+- Parameter validation
+
+**Example**:
+```go
+// Load template programmatically
+registry := orchestration.NewTemplateRegistry()
+registry.LoadTemplate("reference/agent-templates/sql-expert.yaml")
+
+config, _ := registry.ApplyTemplate("sql-expert", map[string]string{
+    "database": "postgres",
+    "schema":   "analytics",
+})
+```
+
+**See**: [reference/agent-templates/README.md](reference/agent-templates/README.md)
+
+---
+
+### Workflows (`reference/workflows/`)
+
+Multi-agent workflow examples demonstrating different coordination patterns.
+
+**Two workflow types**:
+
+#### 1. Orchestration Patterns (`workflows/orchestration-patterns/`)
+Structured workflows with predefined patterns:
+- **Pipeline** - Sequential stages
+- **Debate** - Multi-round structured debate
+- **Parallel** - Independent parallel tasks
+- **Swarm** - Collective voting/consensus
+- **Conditional** - Dynamic routing
+- **Fork-join** - Parallel execution with merge
+- **Iterative** - Self-correcting pipeline
+
+#### 2. Event-Driven (`workflows/event-driven/`)
+Dynamic multi-agent workflows with autonomous coordination:
+- **dnd-campaign-builder/** - Hub-and-spoke pattern (7 agents)
+- **dungeon-crawler/** - Peer-to-peer pub-sub (4 agents)
+- **brainstorm-session/** - Peer-to-peer collaboration (3 agents)
+
+**Example**:
+```bash
+# Run orchestration pattern
+loom workflow run reference/workflows/orchestration-patterns/feature-pipeline.yaml \
+  --prompt "Implement user authentication"
+
+# Run event-driven workflow
+loom workflow run reference/workflows/event-driven/dnd-campaign-builder/workflows/dnd-campaign-workflow.yaml
+```
+
+**See**:
+- [reference/workflows/README.md](reference/workflows/README.md)
+- [reference/workflows/orchestration-patterns/README.md](reference/workflows/orchestration-patterns/README.md)
+- [reference/workflows/event-driven/README.md](reference/workflows/event-driven/README.md)
+
+---
 
 ## LLM Provider Setup
 
-All examples support multiple LLM providers:
+All examples support multiple LLM providers.
 
 ### Anthropic (Recommended for Development)
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
-- Fast API responses
-- Claude Sonnet 4.5 model
-- Simple setup
 
 ### AWS Bedrock (Recommended for Production)
 ```bash
@@ -134,9 +241,6 @@ export AWS_REGION=us-west-2
 export AWS_PROFILE=your-profile
 export BEDROCK_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
 ```
-- Enterprise features
-- VPC integration
-- Cost optimization
 
 ### Ollama (Local Development)
 ```bash
@@ -144,86 +248,101 @@ ollama serve
 export OLLAMA_BASE_URL=http://localhost:11434
 export OLLAMA_MODEL=qwen2.5:7b
 ```
-- No API key required
-- Runs locally
-- Free and private
 
-## Configuration-Only (YAML)
+## Common Workflows
 
-All examples in this directory use YAML configuration:
-- No Go code required
-- Use existing backends and MCP servers
-- See: `reference/agents/`, `reference/workflows/`, `02-production-ready/transcend/`
+### Creating an Agent
 
-**Example**: The `transcend/` example is 100% configuration - agents, patterns, and workflows defined entirely in YAML.
+```yaml
+# my-agent.yaml
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: my-agent
+  description: "My custom agent"
 
-## Testing Examples
+spec:
+  backend:
+    config_file: examples/backends/postgres.yaml
+
+  system_prompt: |
+    You are a helpful assistant.
+
+  llm:
+    temperature: 0.7
+    max_tokens: 4096
+
+  config:
+    max_turns: 20
+    max_tool_executions: 50
+```
+
+### Starting the Server
 
 ```bash
-# Validate YAML configurations
-looms validate examples/reference/agents/*.yaml
-looms validate examples/reference/workflows/*.yaml
+# Full configuration
+looms serve --config config/looms.yaml
 
+# Custom configuration
+looms serve --config my-config.yaml
+```
+
+### Connecting a Client
+
+```bash
+# Interactive chat
+loom chat agent-name
+
+# Single query
+loom query agent-name "Your question here"
+
+# Thread-based conversation
+loom --thread my-thread chat agent-name
+```
+
+## Validation
+
+Validate configurations before running:
+
+```bash
+# Validate server config
+looms validate file config/looms.yaml
+
+# Validate backend
+looms validate file backends/postgres.yaml
+
+# Validate pattern library
+looms validate file patterns/sql-optimization.yaml
+
+# Validate all files in directory
+looms validate dir examples/config/
+```
+
+## Testing
+
+Test configurations are in `tests/config/`:
+
+```bash
 # Test server startup
 looms serve --config tests/config/looms-test.yaml --dry-run
+
+# Run configuration tests
+cd cmd/looms
+go test -tags fts5 -run TestLoadConfig
 ```
 
-## Example Complexity
+## Further Reading
 
-| Complexity | Examples | Best For |
-|------------|----------|----------|
-| ⭐ Basic | `reference/agents/`, `dnd-party/` | Learning Loom configuration |
-| ⭐⭐ Intermediate | `scheduled-workflows/`, `reference/workflows/` | Workflow orchestration |
-| ⭐⭐⭐ Advanced | `02-production-ready/transcend/` | Complete production system |
-| ⭐⭐⭐⭐ Expert | `03-advanced/dnd-adventure/` | Complex multi-agent systems |
+### Documentation
+- [Agent Configuration Reference](reference/agents/agent-all-fields-reference.yaml) - Complete agent YAML spec
+- [Workflow Reference](reference/workflows/workflow-all-fields-reference.yaml) - Complete workflow YAML spec
+- [Server Configuration Guide](config/README.md) - Comprehensive server setup
+- [Agent Templates Guide](reference/agent-templates/README.md) - Template usage and creation
 
-## Common Patterns
-
-### 1. Simple Agent Configuration
-```yaml
-# See: reference/agents/file-analysis-agent.yaml
-agent_id: file-analyzer
-model: claude-sonnet-4-5
-system_prompt: "Analyze files and provide insights"
-tools:
-  - file_read
-  - file_write
-```
-
-### 2. Agent with Patterns
-```yaml
-# See: reference/agents/teradata-agent-with-patterns.yaml
-pattern_libraries:
-  - patterns/libraries/teradata-analytics.yaml
-  - patterns/libraries/teradata-ml.yaml
-```
-
-### 3. Multi-Agent Workflow
-```yaml
-# See: reference/workflows/feature-pipeline.yaml
-spec:
-  type: pipeline
-  stages:
-    - agent_id: designer
-    - agent_id: implementer
-    - agent_id: tester
-```
-
-### 4. MCP Integration
-```yaml
-# See: 03-advanced/dnd-adventure/looms.yaml
-mcp_servers:
-  - name: dnd-mcp
-    command: dnd-mcp
-    args: [serve, --mode=stdio]
-```
-
-## Documentation
-
-- **Architecture**: `website/content/en/docs/concepts/architecture.md`
-- **Patterns**: `website/content/en/docs/guides/patterns.md`
-- **MCP Integration**: `website/content/en/docs/guides/integration/mcp.md`
-- **Observability**: `website/content/en/docs/guides/integration/observability.md`
+### Architecture
+- `docs/architecture/` - System design documentation
+- `docs/guides/` - How-to guides
+- `docs/reference/` - API reference documentation
 
 ## Contributing
 
@@ -231,13 +350,9 @@ Found an issue or want to add an example?
 - Open an issue: https://github.com/Teradata-TIO/loom/issues
 - Submit a PR: https://github.com/Teradata-TIO/loom/pulls
 
-## Next Steps
+## Questions?
 
-1. **Start simple**: Explore `reference/agents/` examples
-2. **Try workflows**: Check out `reference/workflows/` for orchestration
-3. **Scale up**: Use `dnd-party/` or `dnd-adventure/` for multi-agent systems
-4. **Production**: See `02-production-ready/transcend/` for a complete example
-
----
-
-**All examples are YAML-based configurations.** No Go code compilation required!
+- **Documentation**: See `docs/` directory
+- **Examples**: Explore subdirectories in this directory
+- **Issues**: GitHub issues tracker
+- **Community**: Check README.md for community links
