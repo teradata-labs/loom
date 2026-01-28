@@ -328,7 +328,6 @@ orchestrator.Debate().
 
 ## See Also
 
-- [Agent Management Guide](../../docs/AGENT_MANAGEMENT.md)
 - [Workflow Orchestration Guide](../workflows/README.md)
 - [Agent Configuration Proto](../../proto/loom/v1/agent_config.proto)
 - [Template Implementation](../../pkg/orchestration/agent_template.go)

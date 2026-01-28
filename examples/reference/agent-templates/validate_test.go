@@ -53,6 +53,16 @@ func TestExampleTemplates(t *testing.T) {
 				"severity_threshold": "high",
 			},
 		},
+		{
+			name:    "code-reviewer",
+			file:    "code-reviewer.yaml",
+			extends: "base-expert",
+			testVars: map[string]string{
+				"language":     "go",
+				"style_guide":  "effective-go",
+				"review_depth": "standard",
+			},
+		},
 	}
 
 	for _, ex := range examples {
@@ -178,7 +188,6 @@ func TestSecurityAnalystVariants(t *testing.T) {
 
 // Test template inheritance chain
 func TestTemplateInheritance(t *testing.T) {
-	t.Skip("Template inheritance functionality incomplete - nil pointer dereference")
 	registry := orchestration.NewTemplateRegistry()
 
 	// Load base template
@@ -196,7 +205,8 @@ func TestTemplateInheritance(t *testing.T) {
 
 	// Verify inherited values from base-expert
 	assert.NotNil(t, config.Behavior)
-	assert.Equal(t, int32(10), config.Behavior.MaxIterations)
+	assert.Equal(t, int32(10), config.Behavior.MaxTurns)
+	assert.Equal(t, int32(30), config.Behavior.MaxToolExecutions)
 	assert.Equal(t, int32(600), config.Behavior.TimeoutSeconds)
 
 	// Verify overridden values from sql-expert

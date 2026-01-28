@@ -62,6 +62,46 @@ type AgentSpec struct {
 	Metadata     map[string]string      `yaml:"metadata,omitempty"`
 }
 
+// UnmarshalYAML implements custom YAML unmarshaling for AgentSpec
+// Supports both "config" and "behavior" field names for backward compatibility
+func (s *AgentSpec) UnmarshalYAML(value *yaml.Node) error {
+	// Define a temporary struct with all fields as interface{}
+	type rawSpec struct {
+		Name         string                 `yaml:"name,omitempty"`
+		Description  string                 `yaml:"description,omitempty"`
+		SystemPrompt string                 `yaml:"system_prompt,omitempty"`
+		LLM          map[string]interface{} `yaml:"llm,omitempty"`
+		Tools        map[string]interface{} `yaml:"tools,omitempty"`
+		Memory       map[string]interface{} `yaml:"memory,omitempty"`
+		Config       map[string]interface{} `yaml:"config,omitempty"`    // Alias for Behavior
+		Behavior     map[string]interface{} `yaml:"behavior,omitempty"` // Canonical name
+		Metadata     map[string]string      `yaml:"metadata,omitempty"`
+	}
+
+	var raw rawSpec
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+
+	// Copy fields
+	s.Name = raw.Name
+	s.Description = raw.Description
+	s.SystemPrompt = raw.SystemPrompt
+	s.LLM = raw.LLM
+	s.Tools = raw.Tools
+	s.Memory = raw.Memory
+	s.Metadata = raw.Metadata
+
+	// Support both "config" and "behavior" - "behavior" takes precedence
+	if raw.Behavior != nil {
+		s.Behavior = raw.Behavior
+	} else if raw.Config != nil {
+		s.Behavior = raw.Config
+	}
+
+	return nil
+}
+
 // TemplateRegistry manages agent templates
 type TemplateRegistry struct {
 	templates map[string]*AgentTemplateConfig
@@ -483,6 +523,8 @@ func (r *TemplateRegistry) convertToAgentConfig(spec *AgentSpec) (*loomv1.AgentC
 			MaxIterations:      int32(getIntValue(spec.Behavior, "max_iterations")),
 			TimeoutSeconds:     int32(getIntValue(spec.Behavior, "timeout_seconds")),
 			AllowCodeExecution: getBoolValue(spec.Behavior, "allow_code_execution"),
+			MaxTurns:           int32(getIntValue(spec.Behavior, "max_turns")),
+			MaxToolExecutions:  int32(getIntValue(spec.Behavior, "max_tool_executions")),
 		}
 
 		// Handle allowed_domains
