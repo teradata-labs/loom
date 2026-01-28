@@ -435,7 +435,7 @@ func (a *Agent) SetID(id string) {
 
 // SetToolRegistryForDynamicDiscovery configures the tool registry for dynamic tool discovery.
 // When enabled, agents can use tools discovered via tool_search without explicit registration.
-// MCP tools found in the registry will be dynamically registered when first used.
+// MCP tools and builtin tools found in the registry will be dynamically registered when first used.
 func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegistry, mcpManager shuttle.MCPManager) {
 	if a.executor == nil {
 		return
@@ -446,6 +446,8 @@ func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegi
 	if mcpManager != nil {
 		a.executor.SetMCPManager(mcpManager)
 	}
+	// Always enable builtin tool provider for dynamic registration
+	a.executor.SetBuiltinToolProvider(builtin.NewProvider())
 }
 
 // GetDescription returns the agent description from configuration.
