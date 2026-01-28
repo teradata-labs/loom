@@ -251,8 +251,8 @@ spec:
     enable_self_correction: true       # OPTIONAL: Allow self-correction loops
     patterns:                          # OPTIONAL: Pattern-guided learning
       enabled: true                    # Enable pattern injection (default: true)
-      use_llm_classifier: false        # Use LLM for intent classification (default: false, uses keyword-based)
-      min_confidence: 0.75             # Pattern confidence threshold 0.0-1.0 (default: 0.75)
+      use_llm_classifier: true         # Use LLM for intent classification (default: true, more accurate than keyword-based)
+      min_confidence: 0.75             # Pattern confidence threshold 0.0-1.0 (default: 0.50)
       max_patterns_per_turn: 1         # Max patterns per turn (default: 1)
       enable_tracking: true            # Track pattern effectiveness (default: true)
 

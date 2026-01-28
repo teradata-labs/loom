@@ -5,28 +5,25 @@ YAML-based configuration for threads, backends, patterns, and workflows. Support
 ## Directories
 
 ### agent-templates/
-Reusable thread configuration templates.
+Reusable agent configuration templates.
 
 **Contents:**
-- Base thread configurations
+- Base agent configurations
 - Common thread patterns
 - Template variables for customization
 
-**Use case:** Share thread configurations across projects, standardize thread setup.
-
-**Note:** Directory name `agent-templates/` will change to `thread-templates/` in v0.6.0. Current configs use `agent:` field internally.
+**Use case:** Share agent configurations across projects, standardize agent setup.
 
 ### agents/
-Complete thread definitions ready to load and run.
+Complete agent definitions ready to load and run.
 
 **Contents:**
-- Production thread configs
-- Domain-specific thread definitions
-- Thread behavior specifications
+- Validated agent configs
+- Domain-specific agent definitions
+- Agent behavior specifications
+- `agent-all-fields-reference.yaml` - Comprehensive reference showing all possible YAML fields
 
-**Use case:** Configuration-driven thread deployment, version-controlled thread definitions.
-
-**Note:** Directory name `agents/` will change to `threads/` in v0.6.0. Configs work with both `~/.loom/agents/` and `~/.loom/threads/` paths.
+**Use case:** Configuration-driven agent deployment, version-controlled agent definitions.
 
 ### backends/
 Backend connection configurations.
@@ -62,6 +59,7 @@ Multi-step workflow definitions.
 - Conditional branching
 - Error handling patterns
 - Retry strategies
+- `workflow-all-fields-reference.yaml` - Comprehensive reference showing all possible workflow YAML fields for both orchestration patterns and event-driven workflows
 
 **Use case:** Complex multi-step operations, orchestration patterns.
 
@@ -111,9 +109,6 @@ thread := agent.NewAgent(
     agent.WithConfig(threadCfg),
 )
 ```
-
-**Note:** APIs use `agent.NewAgent()` internally; will be renamed to `thread.NewThread()` in v0.6.0.
-
 ### Loading Patterns
 
 ```go
@@ -146,7 +141,7 @@ backend, err := backends.NewFromConfig(backendCfg)
 
 1. **Version Control:** Keep all configurations in version control
 2. **Environment Variables:** Use env vars for secrets and environment-specific values
-3. **Validation:** Validate configs on load (see `validate_test.go` examples)
+3. **Validation:** Validate configs on load (see `validate_test.go` examples in the ../../test/ directory)
 4. **Documentation:** Document patterns with clear use cases and examples
 5. **Testing:** Test patterns with real queries (see pattern validation tests)
 
@@ -160,13 +155,13 @@ The config approach enables:
 - **Testing:** Validate configurations before deployment
 - **Domain Knowledge:** Encode expertise as patterns
 
-## Example Workflow
+## Example Developer Workflow
 
-1. **Define Thread:** Create thread config in `agents/` (will be `threads/` in v0.6.0)
+1. **Define Agent:** Create agent config in `agents/`
 2. **Configure Backend:** Set up backend in `backends/`
 3. **Add Patterns:** Create domain patterns in `patterns/`
 4. **Define Workflow:** Add multi-step workflow in `workflows/`
-5. **Load and Run:** Use configs to create production thread
+5. **Load and Run:** Use configs to create production agent
 
 ```go
 // Load everything from config
@@ -204,9 +199,8 @@ This validates:
 
 - Review existing patterns in `patterns/`
 - Create your own domain-specific patterns
-- Define reusable thread templates in `agent-templates/` (will be `thread-templates/` in v0.6.0)
 - Test configurations with validation tests
 
 ---
 
-**Configuration-driven development makes threads reproducible, testable, and maintainable!**
+**Configuration-driven development makes agents reproducible, testable, and maintainable!**
