@@ -1,57 +1,135 @@
 
 # Observability Guide
 
-**Version**: v1.0.0
+**Version**: v1.0.2
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Observability Modes](#observability-modes)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Common Tasks](#common-tasks)
-  - [Send Traces to Hawk](#send-traces-to-hawk)
+  - [Use Embedded Storage](#use-embedded-storage)
+  - [Send Traces to Hawk Service](#send-traces-to-hawk-service)
   - [Track LLM Costs](#track-llm-costs)
   - [Enable Privacy Redaction](#enable-privacy-redaction)
   - [Use No-Op Tracer for Development](#use-no-op-tracer-for-development)
 - [Examples](#examples)
-  - [Example 1: Instrumented Agent](#example-1-instrumented-agent)
-  - [Example 2: Production Configuration](#example-2-production-configuration)
-- [Hawk Query Examples](#hawk-query-examples)
+  - [Example 1: Embedded SQLite Storage](#example-1-embedded-sqlite-storage)
+  - [Example 2: Hawk Service Export](#example-2-hawk-service-export)
+  - [Example 3: Production Configuration](#example-3-production-configuration)
+- [Query Examples](#query-examples)
 - [Troubleshooting](#troubleshooting)
 
 
 ## Overview
 
-Instrument Loom agents to send traces and metrics to Hawk for monitoring, cost tracking, and debugging.
+Loom provides comprehensive observability with distributed tracing and metrics. Choose from three modes based on your needs:
+
+1. **Embedded Mode**: In-process storage (memory or SQLite) - no external dependencies
+2. **Service Mode**: HTTP export to Hawk or other observability services
+3. **None Mode**: Zero overhead for testing
+
+## Observability Modes
+
+### Embedded Mode (Recommended)
+
+**Use when**: You want local trace storage without external services
+
+**Features**:
+- ✅ Zero external dependencies
+- ✅ Memory or SQLite storage options
+- ✅ Query traces with SQL
+- ✅ Offline capability
+- ❌ Single-server only (no centralized aggregation)
+
+### Service Mode
+
+**Use when**: You need centralized observability across multiple servers
+
+**Features**:
+- ✅ Centralized trace aggregation
+- ✅ Hawk UI for visualization
+- ✅ Multi-server support
+- ❌ Requires external Hawk service
+- ❌ Requires `-tags hawk` build flag
+
+### None Mode
+
+**Use when**: Testing or when observability is not needed
+
+**Features**:
+- ✅ Zero overhead
+- ✅ Always available
+- ❌ No trace collection
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
-- Hawk service running (optional - use no-op tracer for development)
-- Anthropic/Bedrock/Ollama API key configured
+**For all modes**:
+- Loom v1.0.2+
+- Build with FTS5 tag: `go build -tags fts5`
+
+**For service mode only**:
+- Hawk service running
+- Build with hawk tag: `go build -tags fts5,hawk`
+
+**For embedded mode**:
+- No additional prerequisites (always available)
 
 ## Quick Start
 
-Add observability to your agent:
+### Embedded Mode (Recommended for Getting Started)
 
-```go
-import (
-    "github.com/teradata-labs/loom/pkg/observability"
-    "github.com/teradata-labs/loom/pkg/llm/anthropic"
-)
+```yaml
+# looms.yaml
+observability:
+  enabled: true
+  mode: embedded
+  storage_type: sqlite
+  sqlite_path: ./traces.db
+```
 
-// Create Hawk tracer
-tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
-    Endpoint: "http://localhost:9090/v1/traces",
-})
-defer tracer.Close()
+Start server:
+```bash
+looms serve --config looms.yaml
+```
 
-// Create instrumented agent
-agent := loom.NewInstrumentedAgent(backend, llmProvider, tracer)
+Query traces:
+```bash
+sqlite3 ./traces.db "SELECT * FROM eval_metrics;"
+```
 
-// Use normally - traces sent automatically
-response, _ := agent.Chat(ctx, "session-123", "Hello!")
+### Service Mode (For Production with Hawk)
+
+```yaml
+# looms.yaml
+observability:
+  enabled: true
+  mode: service
+  hawk_endpoint: http://localhost:9090/v1/traces
+  hawk_api_key: ${HAWK_API_KEY}
+```
+
+Start server (requires `-tags hawk` build):
+```bash
+looms serve --config looms.yaml
+```
+
+### None Mode (For Testing)
+
+```yaml
+# looms.yaml
+observability:
+  enabled: false
+```
+
+Or explicitly:
+```yaml
+observability:
+  enabled: true
+  mode: none
 ```
 
 ## Configuration
@@ -92,18 +170,59 @@ spec:
 
 ## Common Tasks
 
-### Send Traces to Hawk
+### Use Embedded Storage
 
-Create a tracer and inject it into your agent:
+Store traces locally without external services:
 
-```go
-tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
-    Endpoint: "http://localhost:9090/v1/traces",
-    APIKey:   os.Getenv("HAWK_API_KEY"),
-})
-defer tracer.Close()
+**Configuration**:
+```yaml
+observability:
+  enabled: true
+  mode: embedded
+  storage_type: sqlite  # or "memory"
+  sqlite_path: ./traces.db
+  flush_interval: 30s
+```
 
-agent := agent.NewAgent(backend, llm, agent.WithTracer(tracer))
+**Query traces**:
+```bash
+# View sessions
+sqlite3 ./traces.db "
+SELECT id, name, status, datetime(created_at, 'unixepoch') as created
+FROM evals ORDER BY created_at DESC LIMIT 10;
+"
+
+# View metrics
+sqlite3 ./traces.db "
+SELECT eval_id, total_runs, successful_runs,
+       ROUND(success_rate, 4) as success_rate,
+       ROUND(avg_execution_time_ms, 2) as avg_ms
+FROM eval_metrics;
+"
+```
+
+Embedded storage includes:
+- Session tracking
+- Span storage with timing
+- Aggregated metrics (success rate, avg execution time)
+- Cost tracking (token usage)
+
+### Send Traces to Hawk Service
+
+Export traces to centralized Hawk service:
+
+**Configuration**:
+```yaml
+observability:
+  enabled: true
+  mode: service
+  hawk_endpoint: http://localhost:9090/v1/traces
+  hawk_api_key: ${HAWK_API_KEY}
+```
+
+**Build requirement**: Requires `-tags fts5,hawk`:
+```bash
+go build -tags fts5,hawk -o bin/looms ./cmd/looms
 ```
 
 Traces include:

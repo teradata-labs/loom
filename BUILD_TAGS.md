@@ -1,51 +1,63 @@
 # Build Tags for Optional Dependencies
 
-Loom can be built with or without optional dependencies (Hawk) using Go build tags.
+Loom can be built with or without optional dependencies using Go build tags.
 
 ## Quick Start
 
-**Build without any optional dependencies (minimal build - default)**:
+**Build with SQLite support (recommended - default)**:
 ```bash
-just build              # or: just build-minimal
-go build ./cmd/looms    # Direct go build
+just build              # Includes -tags fts5
+go build -tags fts5 ./cmd/looms
 ```
 
-**Build with all features**:
+**Build with Hawk service export (optional)**:
 ```bash
-just build-full
-go build -tags "hawk" ./cmd/looms
-```
-
-**Build with Hawk**:
-```bash
-just build-hawk        # Hawk observability
+just build-hawk         # Includes -tags fts5,hawk
+go build -tags "fts5,hawk" ./cmd/looms
 ```
 
 ---
 
 ## Available Build Tags
 
-### `hawk` - Hawk Observability Support
+### `fts5` - SQLite FTS5 Support (Required)
 
 **What it enables**:
-- `observability.HawkTracer` - Export traces to Hawk service
-- `observability.EmbeddedHawkTracer` - Embedded trace storage (memory/SQLite)
+- Session storage with SQLite
+- Embedded observability with SQLite persistence
+- Full-text search for traces and sessions
+
+**When to use**:
+- Always (this is the default for all builds)
+- Required for production deployments
+
+**Without this tag**:
+- Session storage will fail
+- Only in-memory observability available
+
+**Dependencies required**:
+- `modernc.org/sqlite` - Pure Go SQLite implementation
+
+### `hawk` - Hawk Service Export (Optional)
+
+**What it enables**:
+- `observability.HawkTracer` - Export traces to Hawk service via HTTP
 - `observability.HawkJudgeExporter` - Export judge verdicts to Hawk for observability
 - `pkg/evals.ExportToHawk()` - Eval result export
 
 **When to use**:
-- You want to export observability traces to Hawk
-- You need embedded trace storage for debugging
+- You want to export observability traces to external Hawk service
 - You want to export judge evaluation results to Hawk for analysis
 
 **Without this tag**:
-- All Hawk functions return errors: "hawk support not compiled in"
-- Falls back to `observability.NoOpTracer` (no overhead)
+- Hawk HTTP export returns errors: "hawk support not compiled in"
+- Embedded observability still works (in-process storage)
+- Falls back to `observability.NoOpTracer` for service export
 - **Judge evaluation works fully** - judges are built-in, only export functionality requires this tag
-- Full agent and evaluation functionality works, just without observability export
+- Full agent and evaluation functionality works, just without external export
 
 **Dependencies required**:
-- `github.com/Teradata-TIO/hawk` - Hawk SDK
+- `github.com/Teradata-TIO/hawk` - Hawk SDK (optional)
 
 ---
 
@@ -53,12 +65,12 @@ just build-hawk        # Hawk observability
 
 | Command | Tags | Description | Use Case |
 |---------|------|-------------|----------|
-| `just build` | `fts5` | Minimal build (default) | Production deployment, no external services |
-| `just build-minimal` | `fts5` | Same as `build` | Explicit minimal build |
-| `just build-hawk` | `fts5,hawk` | With Hawk | Observability enabled |
-| `just build-full` | `fts5,hawk` | All features | Full development environment |
+| `just build` | `fts5` | Standard build (default) | Production deployment with embedded observability |
+| `just build-minimal` | `fts5` | Same as `build` | Explicit standard build |
+| `just build-hawk` | `fts5,hawk` | With Hawk service export | External observability service |
+| `just build-full` | `fts5,hawk` | All features | Full development environment with external export |
 
-**Note**: The `fts5` tag is always included for SQLite FTS5 support (required for session storage).
+**Note**: The `fts5` tag is always included for SQLite FTS5 support (required for session storage and embedded observability).
 
 ---
 
@@ -67,10 +79,10 @@ just build-hawk        # Hawk observability
 If you're not using `just`:
 
 ```bash
-# Minimal (no optional dependencies)
+# Standard build (embedded observability with SQLite)
 go build -tags fts5 -o bin/looms ./cmd/looms
 
-# With Hawk
+# With Hawk service export
 go build -tags fts5,hawk -o bin/looms ./cmd/looms
 
 # With all features (same as hawk)
@@ -98,14 +110,33 @@ go test -tags "fts5,hawk" ./...
 
 ## Runtime Behavior
 
-### Without Hawk Tag
+### Observability Modes
 
+Loom supports three observability modes:
+
+1. **Embedded Mode** (Always available):
 ```go
-tracer, err := observability.NewHawkTracer(config)
-// Returns: nil, "hawk support not compiled in (rebuild with -tags hawk)"
+// In-process storage (memory or SQLite)
+tracer, err := observability.NewEmbeddedTracer(&observability.EmbeddedConfig{
+    StorageType: "sqlite",
+    SQLitePath:  "./traces.db",
+})
+// Works without any build tags (requires -tags fts5 for SQLite)
+```
 
-// Server automatically falls back to NoOpTracer:
-tracer = observability.NewNoOpTracer()
+2. **Service Mode** (Requires `-tags hawk`):
+```go
+// HTTP export to Hawk service
+tracer, err := observability.NewHawkTracer(observability.HawkConfig{
+    Endpoint: "http://localhost:9090/v1/traces",
+})
+// Without -tags hawk: Returns error "hawk support not compiled in"
+```
+
+3. **None Mode** (Always available):
+```go
+// No observability overhead
+tracer := observability.NewNoOpTracer()
 ```
 
 ---
@@ -114,35 +145,40 @@ tracer = observability.NewNoOpTracer()
 
 ### go.mod Entries
 
-The optional dependencies remain in `go.mod` for convenience:
+Embedded observability has no external dependencies:
 
 ```go
 require (
+    // Always available: Pure Go SQLite
+    modernc.org/sqlite v1.29.5
+
     // Optional: Only needed when building with -tags hawk
-    github.com/Teradata-TIO/hawk v0.0.0-00010101000000-000000000000
+    // github.com/Teradata-TIO/hawk v0.0.0 (not required)
 )
 ```
 
-### Building Without Dependencies
+### Building Without Hawk Dependency
 
-If you don't have the dependencies locally and only want the minimal build:
+Standard builds don't require Hawk:
 
-1. **Remove the dependencies** (they're not needed for minimal build):
-   ```bash
-   go mod edit -dropreplace github.com/Teradata-TIO/hawk
-   go mod edit -droprequire github.com/Teradata-TIO/hawk
-   go mod tidy
-   ```
+```bash
+# Standard build (embedded observability)
+go build -tags fts5 -o bin/looms ./cmd/looms
 
-2. **Build normally**:
-   ```bash
-   go build -tags fts5 ./cmd/looms
-   ```
+# No Hawk dependency needed
+```
 
-3. **To restore full features later**:
-   ```bash
-   go get github.com/Teradata-TIO/hawk@latest
-   ```
+### Adding Hawk Service Export
+
+To enable Hawk service export:
+
+```bash
+# Add Hawk dependency (if not present)
+go get github.com/Teradata-TIO/hawk@latest
+
+# Build with hawk tag
+go build -tags fts5,hawk -o bin/looms ./cmd/looms
+```
 
 ---
 
@@ -189,27 +225,51 @@ Approximate sizes (as of Jan 2026):
 
 ## Troubleshooting
 
-### Build fails with "undefined: HawkConfig"
+### Build fails with "undefined: sqlite3"
 
-**Cause**: You're building with `-tags hawk` but `hawk_types.go` is excluded.
+**Cause**: Missing `-tags fts5` build tag.
 
-**Fix**: This shouldn't happen with the current setup. If it does, check that `hawk_types.go` has the build constraint `//go:build !hawk`.
+**Fix**: Always include fts5 tag:
+```bash
+go build -tags fts5 -o bin/looms ./cmd/looms
+```
 
 ### Runtime error: "hawk support not compiled in"
 
-**Cause**: Binary was built without `-tags hawk` but code tried to use Hawk.
+**Cause**: Binary was built without `-tags hawk` but code tried to use Hawk service export.
 
 **Fix**: Either:
-1. Rebuild with `-tags hawk`
-2. Configure observability to use `mode: none` or `mode: embedded`
-3. Don't set `HAWK_ENDPOINT` (server will use NoOpTracer automatically)
+1. Use embedded mode instead (always available):
+   ```yaml
+   observability:
+     enabled: true
+     mode: embedded
+     storage_type: sqlite
+   ```
+2. Rebuild with `-tags fts5,hawk` for service export
+3. Configure observability to use `mode: none`
 
-### Import cycle with hawk
+### Embedded traces not persisting
 
-**Cause**: Trying to import Hawk packages directly.
+**Cause**: SQLite path not configured or insufficient permissions.
 
-**Fix**: Don't import these packages directly in application code. Use the interfaces:
-- `observability.Tracer` (not `hawk.Tracer`)
+**Fix**: Check configuration:
+```yaml
+observability:
+  enabled: true
+  mode: embedded
+  storage_type: sqlite
+  sqlite_path: ./traces.db  # Ensure write permissions
+```
+
+### Import errors with observability package
+
+**Cause**: Trying to import internal storage packages.
+
+**Fix**: Use the public interfaces:
+- `observability.Tracer` (not internal packages)
+- `observability.NewEmbeddedTracer()` for embedded mode
+- `observability.NewHawkTracer()` for service mode
 
 ---
 
@@ -235,9 +295,21 @@ Approximate sizes (as of Jan 2026):
 
 ## Related Files
 
-- `pkg/observability/hawk.go` - Real Hawk implementation (`//go:build hawk`)
+**Embedded Observability (Always Available)**:
+- `pkg/observability/embedded.go` - Embedded tracer implementation
+- `pkg/observability/storage/interface.go` - Storage interface
+- `pkg/observability/storage/memory.go` - In-memory storage
+- `pkg/observability/storage/sqlite.go` - SQLite storage (`//go:build fts5`)
+- `pkg/observability/storage/sqlite_stub.go` - SQLite stub (`//go:build !fts5`)
+
+**Service Export (Requires `-tags hawk`)**:
+- `pkg/observability/hawk.go` - HTTP export to Hawk service (`//go:build hawk`)
 - `pkg/observability/hawk_stub.go` - Stub implementation (`//go:build !hawk`)
-- `pkg/observability/hawk_types.go` - Shared types (`//go:build !hawk`)
+
+**Always Available**:
+- `pkg/observability/noop.go` - No-op tracer
+- `pkg/observability/interface.go` - Tracer interface
+- `pkg/observability/types.go` - Span and event types
 
 ---
 

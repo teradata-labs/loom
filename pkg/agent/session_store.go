@@ -165,11 +165,8 @@ func (s *SessionStore) initSchema() error {
 	END;
 
 	CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-	CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context);
 	CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON tool_executions(session_id);
 	CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
-	CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
-	CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 	CREATE INDEX IF NOT EXISTS idx_snapshots_session ON memory_snapshots(session_id, created_at);
 
 	-- Artifacts table for user-provided and agent-generated files
@@ -200,7 +197,6 @@ func (s *SessionStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_artifacts_content_type ON artifacts(content_type);
 	CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_artifacts_deleted ON artifacts(deleted_at);
-	CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 
 	-- FTS5 virtual table for artifact search
 	CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts5 USING fts5(
@@ -283,6 +279,23 @@ func (s *SessionStore) initSchema() error {
 					span.RecordError(fmt.Errorf("migration warning (non-fatal) for %s: %w", columnName, err))
 				}
 			} else {
+				// Create corresponding index after successful column addition
+				var indexSQL string
+				switch columnName {
+				case "agent_id":
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)"
+				case "parent_session_id":
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)"
+				case "session_context":
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context)"
+				}
+				if indexSQL != "" {
+					if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
+						if span != nil {
+							span.RecordError(fmt.Errorf("migration warning (non-fatal) for %s index: %w", columnName, err))
+						}
+					}
+				}
 				if span != nil {
 					span.SetAttribute(fmt.Sprintf("migration_applied_%s", columnName), "true")
 				}

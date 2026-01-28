@@ -70,35 +70,6 @@ type PrivacyConfig struct {
 	AllowedAttributes []string
 }
 
-// EmbeddedConfig configures the embedded Hawk tracer.
-// This type is always available, but the actual EmbeddedHawkTracer implementation
-// requires building with -tags hawk.
-type EmbeddedConfig struct {
-	// StorageType: "memory" (default) or "sqlite"
-	StorageType string
-
-	// SQLitePath: Path to SQLite database file (required if StorageType = "sqlite")
-	SQLitePath string
-
-	// MaxMemoryTraces: Maximum traces to keep in memory storage (default: 10,000)
-	MaxMemoryTraces int
-
-	// Logger for embedded tracer (optional)
-	Logger *zap.Logger
-
-	// FlushInterval: How often to flush metrics (default: 30s)
-	FlushInterval time.Duration
-}
-
-// DefaultEmbeddedConfig returns sensible defaults for embedded mode.
-func DefaultEmbeddedConfig() *EmbeddedConfig {
-	return &EmbeddedConfig{
-		StorageType:     "memory",
-		MaxMemoryTraces: 10000,
-		FlushInterval:   30 * time.Second,
-	}
-}
-
 // HawkJudgeExporterConfig configures the Hawk judge verdict exporter.
 // This type is always available, but the actual HawkJudgeExporter implementation
 // requires building with -tags hawk.
