@@ -421,6 +421,8 @@ type MCPServerConfig struct {
 	EnableResumption bool `mapstructure:"enable_resumption"`
 
 	// Enabled controls whether this server should be started (default: true)
+	// CRITICAL: This field MUST be explicitly written during add/update operations
+	// to prevent the server being disabled on restart (Go zero-value is false).
 	Enabled bool `mapstructure:"enabled"`
 
 	// WorkingDir is the working directory for the MCP server process (optional)
