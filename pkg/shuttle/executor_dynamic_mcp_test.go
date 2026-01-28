@@ -19,10 +19,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/tools/registry"
-	"github.com/stretchr/testify/require"
 )
 
 // mockMCPClient implements a minimal MCP client for testing

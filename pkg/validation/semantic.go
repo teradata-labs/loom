@@ -345,12 +345,12 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 
 	// Add framework tools (auto-registered, not in builtin.Names())
 	frameworkTools := []string{
-		"workspace",             // Session-scoped file management (auto-registered)
-		"tool_search",           // Tool discovery via FTS (conditionally registered)
-		"get_error_details",     // Progressive disclosure (conditionally registered)
-		"query_tool_result",     // Progressive disclosure (conditionally registered)
-		"search_conversation",   // Memory tool (deprecated)
-		"recall_conversation",   // Memory tool (deprecated)
+		"workspace",              // Session-scoped file management (auto-registered)
+		"tool_search",            // Tool discovery via FTS (conditionally registered)
+		"get_error_details",      // Progressive disclosure (conditionally registered)
+		"query_tool_result",      // Progressive disclosure (conditionally registered)
+		"search_conversation",    // Memory tool (deprecated)
+		"recall_conversation",    // Memory tool (deprecated)
 		"clear_recalled_context", // Memory tool (deprecated)
 	}
 	for _, name := range frameworkTools {
@@ -596,12 +596,12 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		"error_details":    "get_error_details",
 
 		// query_tool_result variations
-		"query_result":      "query_tool_result",
-		"get_tool_result":   "query_tool_result",
-		"tool_result":       "query_tool_result",
+		"query_result":    "query_tool_result",
+		"get_tool_result": "query_tool_result",
+		"tool_result":     "query_tool_result",
 
 		// workspace variations
-		"work_space": "workspace",
+		"work_space":   "workspace",
 		"file_manager": "workspace",
 
 		// http_request variations
@@ -630,9 +630,9 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		"escalate":      "contact_human",
 
 		// communication tools
-		"send_msg":   "send_message",
-		"message":    "send_message",
-		"read_memory": "shared_memory_read",
+		"send_msg":     "send_message",
+		"message":      "send_message",
+		"read_memory":  "shared_memory_read",
 		"write_memory": "shared_memory_write",
 	}
 

@@ -17,11 +17,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/tools/registry"
-	"github.com/stretchr/testify/require"
 )
 
 // TestDynamicRegistration_BuiltinTool verifies that builtin tools can be dynamically

@@ -46,14 +46,14 @@ type BuiltinToolProvider interface {
 
 // Executor executes tools with tracking and error handling.
 type Executor struct {
-	registry           *Registry
-	sharedMemory       *storage.SharedMemoryStore
-	sqlResultStore     *storage.SQLResultStore // SQL result store for queryable large results
-	threshold          int64                   // Threshold for using shared memory (bytes)
-	permissionChecker  *PermissionChecker
-	toolRegistry       ToolRegistry            // Tool registry for dynamic tool discovery
-	mcpManager         MCPManager              // MCP manager for dynamic MCP tool registration
-	builtinToolProvider BuiltinToolProvider     // Builtin tool provider for dynamic builtin tool registration
+	registry            *Registry
+	sharedMemory        *storage.SharedMemoryStore
+	sqlResultStore      *storage.SQLResultStore // SQL result store for queryable large results
+	threshold           int64                   // Threshold for using shared memory (bytes)
+	permissionChecker   *PermissionChecker
+	toolRegistry        ToolRegistry        // Tool registry for dynamic tool discovery
+	mcpManager          MCPManager          // MCP manager for dynamic MCP tool registration
+	builtinToolProvider BuiltinToolProvider // Builtin tool provider for dynamic builtin tool registration
 
 	// Metrics for large parameter optimization
 	largeParamStores      atomic.Int64 // Count of parameters stored

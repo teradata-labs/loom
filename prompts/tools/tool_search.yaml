@@ -1,0 +1,70 @@
+---
+name: tools
+namespace: loom.tools
+---
+prompts:
+  - id: tool_search
+    content: |
+      Search for available tools using natural language queries. Discover tools from builtin,
+      MCP servers, and custom implementations using full-text search with semantic ranking.
+
+      Use this tool to:
+      - Find tools for specific tasks ("tools for database queries")
+      - Discover available capabilities ("what tools can read files?")
+      - Search by keywords ("search tools", "HTTP request tools")
+      - Filter by source (builtin, MCP server, custom)
+      - Get detailed tool information before using
+
+      Search modes:
+      - FAST: Keyword matching with FTS5 (quick, basic relevance)
+      - BALANCED: FTS5 + LLM re-ranking (default, good accuracy)
+      - ACCURATE: Query expansion + FTS5 + LLM re-ranking (best results, slower)
+
+      Features:
+      - FTS5 full-text search with BM25 ranking
+      - Semantic understanding with LLM re-ranking
+      - Source filtering (builtin, MCP, custom)
+      - Capability-based search
+      - Confidence scores for results
+
+      Best practices:
+      - Use specific queries ("HTTP POST with auth" vs "API")
+      - Try BALANCED mode first (good speed/accuracy tradeoff)
+      - Check multiple results (top 5-10)
+      - Use source filter when you know the tool type
+      - Review tool descriptions before using
+
+      When to use tool_search:
+      - User asks "What tools are available?"
+      - You need a capability but don't know which tool has it
+      - You want to verify a tool exists before attempting to use it
+      - You're exploring available integrations (MCP servers)
+      - You need to recommend tools to the user
+
+      Examples:
+      - Find HTTP tools: tool_search(query="make HTTP requests", mode="BALANCED")
+      - Search files: tool_search(query="file search grep", mode="FAST")
+      - Filter MCP: tool_search(query="database", source="mcp", mode="BALANCED")
+      - Find exact tool: tool_search(query="workspace read write", mode="ACCURATE")
+
+      Result format:
+      - tool_name: Name of the tool
+      - description: What the tool does
+      - source: builtin, mcp, or custom
+      - confidence: Relevance score (0.0-1.0)
+      - capabilities: What the tool can do
+
+      Notes:
+      - Results are ranked by relevance
+      - LLM re-ranking improves semantic matching
+      - Use FAST mode for simple keyword searches
+      - Use ACCURATE mode when precision matters
+
+    tags:
+      - tool
+      - search
+      - discovery
+      - metadata
+    metadata:
+      version: "v1.0"
+      description: "Tool discovery with semantic search"

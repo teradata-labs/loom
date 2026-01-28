@@ -1,0 +1,86 @@
+---
+name: tools
+namespace: loom.document
+---
+prompts:
+  - id: parse_document
+    content: |
+      Parse and extract content from various document formats including PDF, DOCX, XLSX, PPTX,
+      and other structured documents. Converts documents to text, extracts metadata, and
+      preserves structure where possible.
+
+      Use this tool to:
+      - Extract text from PDFs
+      - Read Word documents (DOCX)
+      - Parse Excel spreadsheets (XLSX)
+      - Read PowerPoint presentations (PPTX)
+      - Extract document metadata (author, dates, etc.)
+      - Convert documents to searchable text
+
+      Supported formats:
+      - PDF: Full text extraction with page numbers
+      - DOCX: Microsoft Word documents
+      - XLSX: Excel spreadsheets (all sheets)
+      - PPTX: PowerPoint presentations
+      - TXT, MD, CSV: Plain text formats
+      - HTML: Web pages and HTML files
+
+      Features:
+      - Text extraction with structure preservation
+      - Metadata extraction (author, title, dates)
+      - Multi-page PDF support
+      - Excel sheet enumeration
+      - Table detection and parsing
+      - Image location tracking (PDFs)
+
+      Best practices:
+      - Specify output format (text, JSON, markdown)
+      - Request specific pages/sheets to reduce output size
+      - Use metadata extraction for document organization
+      - Consider OCR for scanned PDFs (use analyze_image instead)
+      - Handle large documents in chunks
+
+      Common use cases:
+      - Document search: Extract text for indexing and search
+      - Data extraction: Pull tables and data from reports
+      - Content analysis: Analyze document content and structure
+      - Format conversion: Convert documents to text/markdown
+      - Metadata indexing: Organize documents by metadata
+      - Compliance: Extract data for regulatory reporting
+
+      Examples:
+      - PDF text: parse_document(path="report.pdf", format="text")
+      - Excel data: parse_document(path="data.xlsx", sheet="Sheet1", format="json")
+      - Word doc: parse_document(path="proposal.docx", format="markdown")
+      - Metadata: parse_document(path="contract.pdf", extract_metadata=true)
+      - Specific pages: parse_document(path="manual.pdf", pages="1-5", format="text")
+
+      Result format:
+      - content: Extracted text or structured data
+      - metadata: Document metadata (author, title, dates)
+      - pages: Number of pages (PDFs)
+      - format: Original document format
+      - size: File size in bytes
+
+      Limitations:
+      - Scanned PDFs require OCR (use analyze_image tool)
+      - Complex formatting may be simplified
+      - Embedded images are not extracted (use separate tools)
+      - Some proprietary formats may have limited support
+      - Very large documents may be truncated
+
+      Safety:
+      - Only processes documents you have access to
+      - Does not execute macros or scripts
+      - Safe for untrusted documents (no code execution)
+      - Metadata may contain sensitive information
+
+    tags:
+      - tool
+      - document
+      - pdf
+      - parsing
+      - extraction
+    metadata:
+      version: "v1.0"
+      description: "Document parsing and content extraction tool"

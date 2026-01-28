@@ -1,0 +1,132 @@
+---
+name: tools
+namespace: loom.progressive_disclosure
+---
+prompts:
+  - id: get_error_details
+    content: |
+      Retrieve complete error information for a previously failed tool execution.
+      When a tool fails, you receive a short error summary. Use this tool to get the
+      full error details including stack traces, context, and debugging information.
+
+      Use this tool when:
+      - A tool execution fails and you need more context
+      - The error message is truncated or unclear
+      - You need stack traces for debugging
+      - You want to understand root cause of failures
+      - You need to report detailed error information
+
+      Features:
+      - Complete error messages (no truncation)
+      - Full stack traces when available
+      - Error context (parameters, environment)
+      - Timestamp and tool name
+      - Structured error data
+
+      Best practices:
+      - Only fetch errors you need to debug
+      - Use error_id from the failed tool result
+      - Check error details before retrying
+      - Look for patterns in repeated failures
+      - Share detailed errors when asking for help
+
+      When to use:
+      - Tool fails with cryptic error message
+      - You see "error_id" in tool result
+      - Need to understand why tool failed
+      - Debugging complex failures
+      - Reporting bugs or issues
+
+      Examples:
+      - Get details: get_error_details(error_id="err_abc123")
+      - After failure: tool_result.error.error_id → get_error_details(error_id=...)
+
+      Result format:
+      - error_id: Unique error identifier
+      - tool_name: Which tool failed
+      - timestamp: When the error occurred
+      - short_summary: Brief error message (what you already saw)
+      - raw_error: Complete error details (full stack trace)
+
+      Notes:
+      - Progressive disclosure: Errors start small, grow on demand
+      - Reduces context window usage (only fetch when needed)
+      - Error details are retained for debugging
+      - Use sparingly (only when you need full context)
+
+    tags:
+      - tool
+      - error
+      - debugging
+      - progressive_disclosure
+    metadata:
+      version: "v1.0"
+      description: "Fetch detailed error information on demand"
+
+  - id: query_tool_result
+    content: |
+      Query and paginate large tool results using SQL or text filtering.
+      When a tool returns a large dataset (>1000 rows, >10KB text), you receive a summary
+      instead. Use this tool to query, filter, and paginate the full results.
+
+      Use this tool when:
+      - Tool result is marked as "truncated" or "too_large"
+      - You see result_id in the tool output
+      - You need to filter/search large datasets
+      - You want to paginate through results
+      - You need specific rows from a large table
+
+      Features:
+      - SQL queries on JSON/CSV data (auto-conversion to SQLite)
+      - Pagination for large text (offset/limit)
+      - Full-text search in results
+      - Efficient data access (no re-execution)
+      - Structured query support
+
+      Query modes:
+      - SQL: Run SELECT queries on tabular data
+      - Text pagination: Get chunks of large text (offset/limit)
+      - Full scan: Retrieve everything (use sparingly)
+
+      Best practices:
+      - Start with small queries (LIMIT 10)
+      - Use WHERE clauses to filter data
+      - Paginate large results (offset=0, limit=100)
+      - Use COUNT(*) to check total size first
+      - Only fetch what you need (reduces context usage)
+
+      When to use:
+      - Tool returns: result_too_large=true
+      - You see: result_id in output
+      - Need to: Filter/search/paginate large data
+      - Want to: Avoid re-running expensive tool
+
+      Examples:
+      - SQL query: query_tool_result(result_id="res_123", query="SELECT * FROM data WHERE status='active' LIMIT 10")
+      - Count rows: query_tool_result(result_id="res_123", query="SELECT COUNT(*) FROM data")
+      - Text pagination: query_tool_result(result_id="res_123", offset=0, limit=1000)
+      - Filter: query_tool_result(result_id="res_123", query="SELECT name, email FROM users WHERE age > 25")
+
+      Result format:
+      - rows: Query results (array of objects)
+      - total_rows: Total available rows
+      - returned_rows: Rows in this response
+      - truncated: Whether more data exists
+      - result_id: Original result identifier
+
+      Notes:
+      - Progressive disclosure: Results start small, grow on demand
+      - SQL queries run on temporary SQLite tables
+      - JSON/CSV data auto-converted to SQL
+      - Use for data exploration and filtering
+      - Paginate to manage context window
+
+    tags:
+      - tool
+      - query
+      - pagination
+      - progressive_disclosure
+      - sql
+    metadata:
+      version: "v1.0"
+      description: "Query and paginate large tool results"
