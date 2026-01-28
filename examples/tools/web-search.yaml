@@ -1,0 +1,114 @@
+apiVersion: loom/v1
+kind: Tool
+metadata:
+  name: web_search
+  description: Search the web using Tavily API for current information
+  version: "1.0"
+  labels:
+    category: information-retrieval
+    provider: tavily
+    maturity: beta
+
+spec:
+  input_schema:
+    type: object
+    properties:
+      query:
+        type: string
+        description: Search query (e.g., "latest news on AI", "weather in San Francisco")
+
+      max_results:
+        type: integer
+        description: Maximum number of results to return (1-10)
+        default: 5
+        minimum: 1
+        maximum: 10
+
+      search_depth:
+        type: string
+        description: Depth of search - "basic" or "advanced"
+        enum: ["basic", "advanced"]
+        default: "basic"
+
+      include_domains:
+        type: array
+        description: Only search within these domains (optional)
+        items:
+          type: string
+
+      exclude_domains:
+        type: array
+        description: Exclude these domains from results (optional)
+        items:
+          type: string
+
+    required:
+      - query
+
+  output_schema:
+    type: object
+    properties:
+      results:
+        type: array
+        items:
+          type: object
+          properties:
+            title:
+              type: string
+            url:
+              type: string
+            content:
+              type: string
+            score:
+              type: number
+      query:
+        type: string
+      response_time:
+        type: number
+
+  implementation:
+    type: http
+    config:
+      endpoint: "https://api.tavily.com/search"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+        X-API-Key: "${TAVILY_API_KEY}"  # From environment
+
+      request_mapping:
+        api_key: "${TAVILY_API_KEY}"
+        query: "{{query}}"
+        max_results: "{{max_results}}"
+        search_depth: "{{search_depth}}"
+        include_domains: "{{include_domains}}"
+        exclude_domains: "{{exclude_domains}}"
+
+      response_mapping:
+        results: "$.results"
+        query: "$.query"
+        response_time: "$.response_time"
+
+      timeout_seconds: 30
+      max_retries: 3
+      rate_limit:
+        requests_per_minute: 60
+
+  examples:
+    - description: Search for AI news
+      input:
+        query: "latest developments in AI 2024"
+        max_results: 3
+        search_depth: "basic"
+      output:
+        results:
+          - title: "Major AI Breakthrough in 2024"
+            url: "https://example.com/ai-news"
+            content: "..."
+            score: 0.95
+        query: "latest developments in AI 2024"
+
+  metadata:
+    cost_per_request: 0.001  # USD
+    requires_api_key: true
+    api_key_env: TAVILY_API_KEY
+    documentation: "https://docs.tavily.com"

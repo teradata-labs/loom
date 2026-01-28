@@ -1,0 +1,128 @@
+apiVersion: loom/v1
+kind: Tool
+metadata:
+  name: execute_sql
+  description: Execute SQL queries against configured database
+  version: "1.0"
+  labels:
+    category: database
+    risk: high  # Can modify data
+    maturity: stable
+
+spec:
+  input_schema:
+    type: object
+    properties:
+      sql:
+        type: string
+        description: SQL query to execute
+
+      parameters:
+        type: array
+        description: Parameter values for parameterized queries
+        items:
+          type: any
+
+      timeout_seconds:
+        type: integer
+        description: Query timeout in seconds
+        default: 30
+        minimum: 1
+        maximum: 300
+
+      max_rows:
+        type: integer
+        description: Maximum rows to return
+        default: 1000
+        minimum: 1
+        maximum: 10000
+
+      read_only:
+        type: boolean
+        description: If true, reject write operations
+        default: false
+
+    required:
+      - sql
+
+  output_schema:
+    type: object
+    properties:
+      columns:
+        type: array
+        items:
+          type: string
+      rows:
+        type: array
+        items:
+          type: array
+      row_count:
+        type: integer
+      execution_time_ms:
+        type: number
+      affected_rows:
+        type: integer  # For INSERT/UPDATE/DELETE
+
+  implementation:
+    type: mcp
+    config:
+      server: postgres-mcp  # MCP server name
+      tool: execute_sql
+
+      # Safety checks
+      validation:
+        - type: sql_injection_check
+          enabled: true
+        - type: destructive_operation_check
+          enabled: true
+          allowed_operations: ["SELECT", "INSERT", "UPDATE"]
+          blocked_operations: ["DROP", "TRUNCATE", "DELETE FROM"]
+        - type: row_limit_enforcement
+          enabled: true
+
+      # Connection pool
+      pool:
+        max_connections: 10
+        idle_timeout_seconds: 300
+
+      # Observability
+      tracing:
+        enabled: true
+        trace_queries: true
+        trace_parameters: false  # Don't log potentially sensitive data
+
+  examples:
+    - description: Select query with limit
+      input:
+        sql: "SELECT id, name, email FROM users WHERE active = $1 LIMIT $2"
+        parameters: [true, 10]
+        read_only: true
+      output:
+        columns: ["id", "name", "email"]
+        rows: [[1, "Alice", "alice@example.com"]]
+        row_count: 1
+        execution_time_ms: 12.5
+
+    - description: Insert new record
+      input:
+        sql: "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id"
+        parameters: ["Bob", "bob@example.com"]
+        read_only: false
+      output:
+        columns: ["id"]
+        rows: [[42]]
+        row_count: 1
+        affected_rows: 1
+
+  safety:
+    requires_approval: true  # Requires human approval for destructive operations
+    approval_timeout_seconds: 300
+    dangerous_patterns:
+      - "DROP TABLE"
+      - "TRUNCATE"
+      - "DELETE FROM .* WITHOUT WHERE"  # Regex pattern
+
+  metadata:
+    documentation: "https://docs.loom.dev/tools/database-query"
+    security_level: high
+    audit_logging: required

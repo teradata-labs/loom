@@ -234,17 +234,33 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 	// Session-based path restrictions
 	if loomDataDir != "" && sessionID != "" {
-		// Ensure working directory is within LOOM_DATA_DIR
+		// Ensure working directory is within LOOM_DATA_DIR or whitelisted directories
 		absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
 		absLoomDataDir, _ := filepath.Abs(loomDataDir)
 
-		if !strings.HasPrefix(absWorkingDir, absLoomDataDir) {
+		// Check if path is within LOOM_DATA_DIR or a whitelisted directory
+		isAllowed := strings.HasPrefix(absWorkingDir, absLoomDataDir)
+		if !isAllowed {
+			// Whitelist /tmp for temporary file operations (common for agent workflows)
+			if runtime.GOOS != "windows" && strings.HasPrefix(absWorkingDir, "/tmp") {
+				isAllowed = true
+			}
+			// Windows temp directory
+			if runtime.GOOS == "windows" && os.Getenv("TEMP") != "" {
+				absTempDir, _ := filepath.Abs(os.Getenv("TEMP"))
+				if strings.HasPrefix(absWorkingDir, absTempDir) {
+					isAllowed = true
+				}
+			}
+		}
+
+		if !isAllowed {
 			return &shuttle.Result{
 				Success: false,
 				Error: &shuttle.Error{
 					Code:       "PATH_RESTRICTED",
 					Message:    fmt.Sprintf("Working directory outside LOOM_DATA_DIR: %s", cleanWorkingDir),
-					Suggestion: "Execute commands within your session workspace or LOOM_DATA_DIR",
+					Suggestion: "Execute commands within LOOM_SANDBOX_DIR, LOOM_DATA_DIR, or /tmp",
 				},
 				ExecutionTimeMs: time.Since(start).Milliseconds(),
 			}, nil
@@ -259,7 +275,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 					Error: &shuttle.Error{
 						Code:       "WRITE_RESTRICTED",
 						Message:    fmt.Sprintf("Write operations restricted to session directories: %s", cleanWorkingDir),
-						Suggestion: fmt.Sprintf("Use working directory within session: %s", sessionDir),
+						Suggestion: fmt.Sprintf("Use working directory within LOOM_SANDBOX_DIR: %s", sessionDir),
 					},
 					ExecutionTimeMs: time.Since(start).Milliseconds(),
 				}, nil
@@ -777,7 +793,7 @@ func intPtr(i int) *float64 {
 	return &f
 }
 
-// autoValidateConfigFiles detects and validates YAML files written to ~/.loom/agents/ or ~/.loom/workflows/
+// autoValidateConfigFiles detects and validates YAML files written to $LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/
 // Returns formatted validation output to append to command result, or empty string if no validation needed.
 func autoValidateConfigFiles(command, stdout, workingDir string) string {
 	// Extract file paths from command
