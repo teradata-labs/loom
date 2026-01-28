@@ -189,7 +189,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/agent"
+    "github.com/teradata-labs/loom/pkg/agent"
 )
 
 func main() {
@@ -382,7 +382,7 @@ message WeaveResponse {
 
 ```go
 import (
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 client := loomv1.NewLoomServiceClient(conn)

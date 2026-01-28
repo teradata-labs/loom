@@ -5,12 +5,9 @@ namespace: loom
 prompts:
   - id: system
     content: |
-      Help users interact with data systems.
-
       Backend Type: {{.backend_type}}
 
       Guidelines:
-      - Verify table/column names before querying
       - Never fabricate data - only report what tools return
       - If a tool fails, admit failure rather than guessing
       - Provide clear explanations of your reasoning
@@ -31,16 +28,9 @@ prompts:
 
   - id: system_with_patterns
     content: |
-      Help users interact with data systems.
-
       Backend Type: {{.backend_type}}
-      Pattern Library: {{.pattern_count}} patterns available
-      Categories: {{.pattern_categories}}
 
       Guidelines:
-      - Verify table/column names before querying
-      - Use patterns for complex operations (time series, data quality, etc.)
-      - Recommend patterns when user intent is unclear
       - Never fabricate data - only report what tools return
       - If a tool fails, admit failure rather than guessing
       - Provide clear explanations of your reasoning
@@ -51,18 +41,6 @@ prompts:
         type: 1  # STRING
         required: true
         description: "Type of backend system"
-      pattern_count:
-        name: pattern_count
-        type: 2  # INT
-        required: false
-        default_value: "0"
-        description: "Number of available patterns"
-      pattern_categories:
-        name: pattern_categories
-        type: 1  # STRING
-        required: false
-        default_value: "none"
-        description: "Comma-separated list of pattern categories"
     tags:
       - agent
       - system

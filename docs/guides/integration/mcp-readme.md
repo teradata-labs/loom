@@ -249,7 +249,7 @@ tools:
 Programmatic usage:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/mcp/manager"
+import "github.com/teradata-labs/loom/pkg/mcp/manager"
 
 // Create MCP manager
 mcpMgr := manager.NewManager(&manager.Config{

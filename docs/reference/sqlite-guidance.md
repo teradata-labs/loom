@@ -198,8 +198,8 @@ CREATE INDEX idx_sessions_updated ON sessions(updated_at);
 
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/agent"
-    "github.com/Teradata-TIO/loom/pkg/observability"
+    "github.com/teradata-labs/loom/pkg/agent"
+    "github.com/teradata-labs/loom/pkg/observability"
 )
 
 // Create session store
@@ -295,7 +295,7 @@ CREATE INDEX idx_human_requests_expires ON human_requests(expires_at);
 ### Usage
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/shuttle"
+import "github.com/teradata-labs/loom/pkg/shuttle"
 
 // Create HITL store
 config := shuttle.SQLiteConfig{
@@ -361,8 +361,8 @@ CREATE INDEX idx_ref_count ON reference_store(ref_count);
 
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/communication"
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/communication"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // Create reference store with garbage collection

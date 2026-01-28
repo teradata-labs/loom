@@ -63,7 +63,12 @@ func NewMessage(id, sessionID string, role Role) Message {
 }
 
 // AddPart adds a content part to the message.
+// If the part is a FinishPart, it sets the finish field instead of adding to parts.
 func (m *Message) AddPart(part ContentPart) {
+	if fp, ok := part.(FinishPart); ok {
+		m.finish = &fp
+		return
+	}
 	m.parts = append(m.parts, part)
 }
 

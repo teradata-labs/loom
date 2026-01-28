@@ -5,7 +5,7 @@ Learn how to use Loom's Docker backend for secure, containerized code execution 
 
 **Status**: ✅ Available (v1.0.0-beta.2)
 
-> **Note:** The Docker backend is a Go library (`pkg/docker`). There is currently no CLI interface. For CLI-based code execution, see the [planned roadmap](https://github.com/Teradata-TIO/loom/issues).
+> **Note:** The Docker backend is a Go library (`pkg/docker`). There is currently no CLI interface. For CLI-based code execution, see the [planned roadmap](https://github.com/teradata-labs/loom/issues).
 
 
 ## Table of Contents
@@ -76,9 +76,9 @@ import (
 	"context"
 	"fmt"
 
-	loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
-	"github.com/Teradata-TIO/loom/pkg/docker"
-	"github.com/Teradata-TIO/loom/pkg/observability"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/docker"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
 
@@ -787,7 +787,7 @@ Lifecycle: &loomv1.ContainerLifecycleConfig{
 
 ### Practice 4: Disable Network for Untrusted Code
 
-> **Note:** Network mode configuration is not currently exposed in the proto API. Network is hardcoded to `bridge` mode in `pkg/docker/runtime/*_runtime.go`. See [issue #XXX](https://github.com/Teradata-TIO/loom/issues) for planned `network_mode` field.
+> **Note:** Network mode configuration is not currently exposed in the proto API. Network is hardcoded to `bridge` mode in `pkg/docker/runtime/*_runtime.go`. See [issue #XXX](https://github.com/teradata-labs/loom/issues) for planned `network_mode` field.
 
 
 ## Next Steps
@@ -802,7 +802,7 @@ Lifecycle: &loomv1.ContainerLifecycleConfig{
 
 **Q: Is there a CLI interface for Docker backend?**
 
-A: Not yet. The Docker backend is currently a Go library (`pkg/docker`) with no CLI interface. Use the Go API as shown in this guide. CLI commands (`loom execute`, `loom containers list`) are [planned for v1.1](https://github.com/Teradata-TIO/loom/issues).
+A: Not yet. The Docker backend is currently a Go library (`pkg/docker`) with no CLI interface. Use the Go API as shown in this guide. CLI commands (`loom execute`, `loom containers list`) are [planned for v1.1](https://github.com/teradata-labs/loom/issues).
 
 
 **Q: Can I use Docker Compose with Loom?**

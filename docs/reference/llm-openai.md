@@ -204,8 +204,8 @@ The OpenAI provider is currently available through the Builder API for programma
 
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/builder"
-    "github.com/Teradata-TIO/loom/pkg/llm/openai"
+    "github.com/teradata-labs/loom/pkg/builder"
+    "github.com/teradata-labs/loom/pkg/llm/openai"
 )
 
 // Option 1: Using builder with default model (gpt-4o)
@@ -241,7 +241,7 @@ Error: API key is required
 For full configuration control, instantiate the client directly:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm/openai"
+import "github.com/teradata-labs/loom/pkg/llm/openai"
 
 // Create client with custom configuration
 client := openai.NewClient(openai.Config{
@@ -441,7 +441,7 @@ OpenAI's o1 series models are optimized for complex reasoning tasks.
 ```go
 import (
     "context"
-    "github.com/Teradata-TIO/loom/pkg/llm/types"
+    "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
 ctx := context.Background()
@@ -588,7 +588,7 @@ Cost = (InputTokens / 1,000,000 * InputPrice) + (OutputTokens / 1,000,000 * Outp
 The OpenAI provider fully supports tool calling (function calling):
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/shuttle"
+import "github.com/teradata-labs/loom/pkg/shuttle"
 
 // Define custom tool
 type CalculatorTool struct{}
@@ -661,7 +661,7 @@ Arguments: map[expression:2+2]
 GPT-4o and GPT-4 Turbo support image inputs:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm/types"
+import "github.com/teradata-labs/loom/pkg/llm/types"
 
 // Create message with image
 messages := []types.Message{
@@ -1043,7 +1043,7 @@ OpenAI applies rate limits based on account tier and usage:
 **Option 2: Client-Side Rate Limiting**
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm"
+import "github.com/teradata-labs/loom/pkg/llm"
 
 // Configure client with rate limiter
 client := openai.NewClient(openai.Config{
@@ -1094,7 +1094,7 @@ go test -v ./pkg/llm/openai/
 ...
 PASS
 coverage: 80.9% of statements
-ok  	github.com/Teradata-TIO/loom/pkg/llm/openai	0.198s
+ok  	github.com/teradata-labs/loom/pkg/llm/openai	0.198s
 ```
 
 
@@ -1386,7 +1386,7 @@ Migrating from OpenAI to Azure OpenAI for enterprise compliance:
 ### Before (OpenAI Direct)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/builder"
+import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
@@ -1398,7 +1398,7 @@ agent, err := builder.NewAgentBuilder().
 ### After (Azure OpenAI)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/builder"
+import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).

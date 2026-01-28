@@ -293,8 +293,8 @@ The Azure OpenAI provider is currently available through the Builder API for pro
 
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/builder"
-    "github.com/Teradata-TIO/loom/pkg/llm/azureopenai"
+    "github.com/teradata-labs/loom/pkg/builder"
+    "github.com/teradata-labs/loom/pkg/llm/azureopenai"
 )
 
 // Option 1: API Key Authentication
@@ -341,7 +341,7 @@ Error: deployment ID is required
 For more control, instantiate the client directly:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm/azureopenai"
+import "github.com/teradata-labs/loom/pkg/llm/azureopenai"
 
 // Full configuration with all options
 client, err := azureopenai.NewClient(azureopenai.Config{
@@ -519,7 +519,7 @@ Cost: $0.0001
 ```go
 import (
     "context"
-    "github.com/Teradata-TIO/loom/pkg/llm/types"
+    "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
 ctx := context.Background()
@@ -995,7 +995,7 @@ Success: received response after 2 retries
 #### Option 2: Token Rate Limiting (Client-Side)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm"
+import "github.com/teradata-labs/loom/pkg/llm"
 
 // Configure client with rate limiter
 client, err := azureopenai.NewClient(azureopenai.Config{
@@ -1110,7 +1110,7 @@ go test -v ./pkg/llm/azureopenai
 ...
 PASS
 coverage: 76.0% of statements
-ok  	github.com/Teradata-TIO/loom/pkg/llm/azureopenai	0.156s
+ok  	github.com/teradata-labs/loom/pkg/llm/azureopenai	0.156s
 ```
 
 
@@ -1334,7 +1334,7 @@ agent, err := builder.NewAgentBuilder().
 ```go
 import (
     "go.uber.org/zap"
-    "github.com/Teradata-TIO/loom/pkg/observability"
+    "github.com/teradata-labs/loom/pkg/observability"
 )
 
 logger, _ := zap.NewProduction()
@@ -1573,7 +1573,7 @@ Migrating from OpenAI to Azure OpenAI is straightforward:
 ### Before (OpenAI Direct)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/builder"
+import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
@@ -1588,7 +1588,7 @@ agent, err := builder.NewAgentBuilder().
 ### After (Azure OpenAI)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/builder"
+import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).

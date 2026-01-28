@@ -982,10 +982,10 @@ type PatternConfig struct {
 	// When enabled, records pattern usage metrics to learning database
 	// Enables continuous learning and adaptive pattern selection
 	EnableTracking bool `protobuf:"varint,4,opt,name=enable_tracking,json=enableTracking,proto3" json:"enable_tracking,omitempty"`
-	// Use LLM-based intent classification (default: false, uses keyword-based)
+	// Use LLM-based intent classification (default: true for v1.0.2+)
 	// When enabled, uses LLM to classify user intent for more accurate pattern selection
 	// Trade-off: Higher accuracy (~90-95%) but adds ~300ms latency and ~$0.0001 cost per turn
-	// Recommended: Enable for production deployments where accuracy is critical
+	// Set to false for keyword-based classification (fast, no cost, but less accurate)
 	UseLlmClassifier bool `protobuf:"varint,5,opt,name=use_llm_classifier,json=useLlmClassifier,proto3" json:"use_llm_classifier,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

@@ -148,6 +148,20 @@ func ProgressToMessageWithHistory(progress *loomv1.WeaveProgress, sessionID stri
 		msg.AddPart(message.ContentText{Text: progress.PartialResult.DataJson})
 	}
 
+	// Mark message as finished when execution completes or fails
+	if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+		msg.AddPart(message.FinishPart{
+			Reason: message.FinishReasonEndTurn,
+			Time:   progress.Timestamp,
+		})
+	} else if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_FAILED {
+		msg.AddPart(message.FinishPart{
+			Reason:  message.FinishReasonError,
+			Message: progress.Message,
+			Time:    progress.Timestamp,
+		})
+	}
+
 	return msg
 }
 
@@ -223,6 +237,20 @@ func ProgressToMessage(progress *loomv1.WeaveProgress, sessionID string, message
 		msg.AddPart(message.ContentText{Text: progress.PartialContent})
 	} else if progress.PartialResult != nil && progress.PartialResult.DataJson != "" {
 		msg.AddPart(message.ContentText{Text: progress.PartialResult.DataJson})
+	}
+
+	// Mark message as finished when execution completes or fails
+	if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+		msg.AddPart(message.FinishPart{
+			Reason: message.FinishReasonEndTurn,
+			Time:   progress.Timestamp,
+		})
+	} else if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_FAILED {
+		msg.AddPart(message.FinishPart{
+			Reason:  message.FinishReasonError,
+			Message: progress.Message,
+			Time:    progress.Timestamp,
+		})
 	}
 
 	return msg

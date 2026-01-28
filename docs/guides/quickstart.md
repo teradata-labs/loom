@@ -34,7 +34,7 @@ Get a working Loom agent in 5 minutes. Describe what you need, and the weaver ge
 ### Step 1: Build from Source
 
 ```bash
-git clone https://github.com/Teradata-TIO/loom
+git clone https://github.com/teradata-labs/loom
 cd loom
 just build
 ```

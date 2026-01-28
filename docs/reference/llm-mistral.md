@@ -180,8 +180,8 @@ The Mistral provider is currently available through the Builder API for programm
 
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/builder"
-    "github.com/Teradata-TIO/loom/pkg/llm/mistral"
+    "github.com/teradata-labs/loom/pkg/builder"
+    "github.com/teradata-labs/loom/pkg/llm/mistral"
 )
 
 // Option 1: Using builder with default model (mistral-large-latest)
@@ -217,7 +217,7 @@ Error: API key is required
 For full configuration control, instantiate the client directly:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm/mistral"
+import "github.com/teradata-labs/loom/pkg/llm/mistral"
 
 // Create client with custom configuration
 client := mistral.NewClient(mistral.Config{
@@ -372,7 +372,7 @@ Mistral provides several open-source models with permissive licenses:
 ```go
 import (
     "context"
-    "github.com/Teradata-TIO/loom/pkg/llm/types"
+    "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
 ctx := context.Background()
@@ -522,7 +522,7 @@ Cost = (InputTokens / 1,000,000 * InputPrice) + (OutputTokens / 1,000,000 * Outp
 The Mistral provider fully supports function calling (OpenAI-compatible):
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/shuttle"
+import "github.com/teradata-labs/loom/pkg/shuttle"
 
 // Define custom tool
 type WeatherTool struct{}
@@ -888,7 +888,7 @@ Mistral AI applies rate limits based on account tier:
 **Option 2: Client-Side Rate Limiting**
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/llm"
+import "github.com/teradata-labs/loom/pkg/llm"
 
 // Configure client with rate limiter
 client := mistral.NewClient(mistral.Config{
@@ -938,7 +938,7 @@ go test -v ./pkg/llm/mistral/
 ...
 PASS
 coverage: 92.3% of statements
-ok  	github.com/Teradata-TIO/loom/pkg/llm/mistral	0.124s
+ok  	github.com/teradata-labs/loom/pkg/llm/mistral	0.124s
 ```
 
 
@@ -1257,7 +1257,7 @@ Migrating from OpenAI to Mistral is straightforward due to API compatibility:
 ### Before (OpenAI)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/builder"
+import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
@@ -1272,7 +1272,7 @@ agent, err := builder.NewAgentBuilder().
 ### After (Mistral)
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/builder"
+import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).

@@ -113,8 +113,8 @@ mcp_server:
 # 1. Start MCP server programmatically (Go):
 #
 # import (
-#     "github.com/Teradata-TIO/loom/pkg/docker"
-#     loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+#     "github.com/teradata-labs/loom/pkg/docker"
+#     loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 # )
 #
 # // Load config from YAML

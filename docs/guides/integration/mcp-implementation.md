@@ -153,7 +153,7 @@ prompt, err := client.GetPrompt(ctx, "sql_query", map[string]string{
 ### Creating a Client
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/mcp/client"
+import "github.com/teradata-labs/loom/pkg/mcp/client"
 
 cfg := &client.Config{
     Command:   "npx",
@@ -174,7 +174,7 @@ info, err := c.Initialize(ctx)
 ### Using the Manager
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/mcp/manager"
+import "github.com/teradata-labs/loom/pkg/mcp/manager"
 
 mgr := manager.NewManager(&manager.Config{
     Servers: map[string]manager.ServerConfig{

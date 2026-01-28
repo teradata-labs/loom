@@ -1,9 +1,0 @@
-# Invalid agent config - missing system_prompt
-apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: Invalid Agent
-spec:
-  # Missing system_prompt - should cause validation error
-  tools:
-    - some_tool

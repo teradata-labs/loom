@@ -55,7 +55,7 @@ prompts:
 Load and use in your agent:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/prompts"
+import "github.com/teradata-labs/loom/pkg/prompts"
 
 registry := prompts.NewFileRegistry("./prompts")
 agent := agent.NewAgent(backend, llm, agent.WithPrompts(registry))

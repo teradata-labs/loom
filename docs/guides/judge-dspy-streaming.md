@@ -77,7 +77,7 @@ stream := make(chan *loomv1.EvaluateProgress, 100)  // Buffer for 100 messages
 ### Stream Evaluation Progress
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/evals/judges"
+import "github.com/teradata-labs/loom/pkg/evals/judges"
 
 orch := judges.NewOrchestrator(&judges.Config{
     Registry:   registry,
@@ -167,8 +167,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/evals/judges"
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/evals/judges"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 func main() {
@@ -227,8 +227,8 @@ import (
     "context"
     "fmt"
 
-    "github.com/Teradata-TIO/loom/pkg/evals/judges"
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/evals/judges"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 func evaluateWithProgress(ctx context.Context, orch *judges.Orchestrator, req *loomv1.EvaluateRequest) error {

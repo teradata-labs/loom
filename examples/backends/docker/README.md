@@ -45,8 +45,8 @@ looms mcp stop teradata
 **Programmatic Usage (Go):**
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/docker"
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/docker"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 // Create MCP manager

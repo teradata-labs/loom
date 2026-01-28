@@ -138,8 +138,8 @@ package teleprompter
 
 import (
     "context"
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
-    "github.com/Teradata-TIO/loom/pkg/observability"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/observability"
 )
 
 // MIPRO implements the Multi-prompt Instruction Proposal Optimizer.
@@ -349,8 +349,8 @@ import (
     "context"
     "testing"
 
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
-    "github.com/Teradata-TIO/loom/pkg/observability"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/observability"
 )
 
 func TestMyTeleprompter_Compile(t *testing.T) {

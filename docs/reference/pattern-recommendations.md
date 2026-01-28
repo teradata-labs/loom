@@ -2126,7 +2126,7 @@ Patterns in `prompt_engineering/`, `text/`, `code/`, `debugging/`, `vision/`, `e
 ### Loading Patterns
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/patterns"
+import "github.com/teradata-labs/loom/pkg/patterns"
 
 // Create library
 lib, err := patterns.NewLibrary(

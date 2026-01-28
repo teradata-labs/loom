@@ -469,7 +469,7 @@ Before deploying to production:
 ## Support
 
 If you encounter issues during migration:
-- Open an issue at https://github.com/Teradata-TIO/loom/issues
+- Open an issue at https://github.com/teradata-labs/loom/issues
 - Tag with `memory`, `compression`, and `beta5` labels
 - Include your agent config and Hawk metrics
 - Describe expected vs actual behavior

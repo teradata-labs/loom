@@ -41,7 +41,7 @@ looms pattern list
 Load and use a pattern:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/patterns"
+import "github.com/teradata-labs/loom/pkg/patterns"
 
 library := patterns.NewLibrary(nil, "./patterns")
 pattern, _ := library.Load("count_optimization")

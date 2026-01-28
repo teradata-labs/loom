@@ -393,7 +393,7 @@ loom --tls \
 
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/tui/client"
+    "github.com/teradata-labs/loom/pkg/tui/client"
 )
 
 // TLS client

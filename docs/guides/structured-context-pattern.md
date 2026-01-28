@@ -33,7 +33,7 @@ Pass structured JSON between workflow stages with mandatory validation to preven
 ## Quick Start
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/orchestration"
+import "github.com/teradata-labs/loom/pkg/orchestration"
 
 // Create context
 ctx := orchestration.NewStructuredContext("workflow-123", "npath-discovery")
@@ -78,7 +78,7 @@ spec:
 ### Initialize Context
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/orchestration"
+import "github.com/teradata-labs/loom/pkg/orchestration"
 
 ctx := orchestration.NewStructuredContext(
     "npath-v3.7-run-12345",  // workflow_id

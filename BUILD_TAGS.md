@@ -57,7 +57,7 @@ go build -tags "fts5,hawk" ./cmd/looms
 - Full agent and evaluation functionality works, just without external export
 
 **Dependencies required**:
-- `github.com/Teradata-TIO/hawk` - Hawk SDK (optional)
+- `github.com/teradata-labs/hawk` - Hawk SDK (optional)
 
 ---
 
@@ -153,7 +153,7 @@ require (
     modernc.org/sqlite v1.29.5
 
     // Optional: Only needed when building with -tags hawk
-    // github.com/Teradata-TIO/hawk v0.0.0 (not required)
+    // github.com/teradata-labs/hawk v0.0.0 (not required)
 )
 ```
 
@@ -174,7 +174,7 @@ To enable Hawk service export:
 
 ```bash
 # Add Hawk dependency (if not present)
-go get github.com/Teradata-TIO/hawk@latest
+go get github.com/teradata-labs/hawk@latest
 
 # Build with hawk tag
 go build -tags fts5,hawk -o bin/looms ./cmd/looms

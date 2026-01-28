@@ -1791,7 +1791,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/metaagent/tools"
+    "github.com/teradata-labs/loom/pkg/metaagent/tools"
 )
 
 func main() {
@@ -1905,7 +1905,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/metaagent/tools"
+    "github.com/teradata-labs/loom/pkg/metaagent/tools"
 )
 
 func main() {

@@ -32,7 +32,7 @@ Manage prompts in YAML files with variable substitution and hot-reload using Pro
 ## Quick Start
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/prompts"
+import "github.com/teradata-labs/loom/pkg/prompts"
 
 // Create registry
 registry := prompts.NewPromptioRegistry("./prompts")

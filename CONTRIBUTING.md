@@ -33,7 +33,7 @@ Thank you for your interest in contributing to Loom! This document provides guid
 
 ```bash
 # Clone the repository
-git clone https://github.com/Teradata-TIO/loom.git
+git clone https://github.com/teradata-labs/loom.git
 cd loom
 
 # Verify all tools are installed

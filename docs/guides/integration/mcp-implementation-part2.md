@@ -21,7 +21,7 @@ The MCP Manager orchestrates multiple MCP server connections, handling startup, 
 ## Creating a Manager
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/mcp/manager"
+import "github.com/teradata-labs/loom/pkg/mcp/manager"
 
 cfg := &manager.Config{
     Servers: map[string]manager.ServerConfig{

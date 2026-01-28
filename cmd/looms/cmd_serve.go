@@ -1055,6 +1055,17 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
+				// Transfer pattern configuration from proto if present
+				if cfg.Behavior != nil && cfg.Behavior.Patterns != nil {
+					agentCfg.PatternConfig = &agent.PatternConfig{
+						Enabled:            cfg.Behavior.Patterns.Enabled,
+						MinConfidence:      float64(cfg.Behavior.Patterns.MinConfidence),
+						MaxPatternsPerTurn: int(cfg.Behavior.Patterns.MaxPatternsPerTurn),
+						EnableTracking:     cfg.Behavior.Patterns.EnableTracking,
+						UseLLMClassifier:   cfg.Behavior.Patterns.UseLlmClassifier,
+					}
+				}
+
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
 
 				// Add PermissionChecker if configured

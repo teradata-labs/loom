@@ -162,7 +162,7 @@ looms status
 
 ```bash
 # Download latest release
-curl -LO https://github.com/Teradata-TIO/loom/releases/latest/download/loom-$(uname -s)-$(uname -m)
+curl -LO https://github.com/teradata-labs/loom/releases/latest/download/loom-$(uname -s)-$(uname -m)
 
 # Make executable
 chmod +x loom-*
@@ -184,7 +184,7 @@ Loom TUI v1.0.0-beta.1
 
 ```bash
 # Clone repository
-git clone https://github.com/Teradata-TIO/loom.git
+git clone https://github.com/teradata-labs/loom.git
 cd loom
 
 # Build TUI binary

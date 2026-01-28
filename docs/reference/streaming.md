@@ -293,7 +293,7 @@ import (
     "io"
     "log"
 
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials/insecure"
 )
@@ -834,7 +834,7 @@ import (
     "io"
     "log"
 
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
     "google.golang.org/grpc"
 )
 

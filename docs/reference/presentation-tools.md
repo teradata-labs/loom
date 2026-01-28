@@ -154,7 +154,7 @@ Complete specification for presentation strategy tools that enable SQL-like data
 #### Example Usage
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/shuttle/builtin"
+import "github.com/teradata-labs/loom/pkg/shuttle/builtin"
 
 // Get top 50 patterns by frequency
 result, err := topNTool.Execute(ctx, map[string]interface{}{
@@ -260,7 +260,7 @@ top_n_query(
 #### Example Usage
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/shuttle/builtin"
+import "github.com/teradata-labs/loom/pkg/shuttle/builtin"
 
 // Distribution by path length
 result, err := groupByTool.Execute(ctx, map[string]interface{}{
@@ -341,7 +341,7 @@ type ChartRecommendation struct {
 #### Example
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/visualization"
+import "github.com/teradata-labs/loom/pkg/visualization"
 
 // Parse presentation tool result
 dataset, _ := visualization.ParseDataFromPresentationToolResult(
@@ -403,7 +403,7 @@ GlowIntensity:      0.6        // 0.0-1.0
 #### Example
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/visualization"
+import "github.com/teradata-labs/loom/pkg/visualization"
 
 gen := visualization.NewEChartsGenerator(nil) // Uses default Hawk style
 echartsJSON, _ := gen.Generate(dataset, rec)
@@ -485,7 +485,7 @@ func (rg *ReportGenerator) ExportHTML(report *Report) (string, error)
 #### Example
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/visualization"
+import "github.com/teradata-labs/loom/pkg/visualization"
 
 // Create report generator
 rg := visualization.NewReportGenerator(nil)
@@ -881,7 +881,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/shuttle/builtin"
+    "github.com/teradata-labs/loom/pkg/shuttle/builtin"
 )
 
 func main() {
@@ -960,8 +960,8 @@ import (
     "io/ioutil"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/shuttle/builtin"
-    "github.com/Teradata-TIO/loom/pkg/visualization"
+    "github.com/teradata-labs/loom/pkg/shuttle/builtin"
+    "github.com/teradata-labs/loom/pkg/visualization"
 )
 
 func main() {

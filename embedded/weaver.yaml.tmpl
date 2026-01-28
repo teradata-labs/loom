@@ -60,7 +60,7 @@ spec:
     reserved_output_tokens: 20000
     patterns:
       enabled: true                 # Enable pattern-guided learning
-      use_llm_classifier: false     # Use keyword-based classifier (fast, no cost)
+      use_llm_classifier: true     # Use LLM-based classifier (more accurate, ~300ms latency)
       min_confidence: 0.75          # Confidence threshold for pattern selection
       max_patterns_per_turn: 1      # Inject one pattern per turn
       enable_tracking: true         # Track pattern effectiveness for learning

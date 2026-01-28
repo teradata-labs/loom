@@ -34,7 +34,7 @@ Request human approval, input, or decision-making during agent execution using t
 The ContactHumanTool is included in the builtin tool registry:
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/shuttle/builtin"
+import "github.com/teradata-labs/loom/pkg/shuttle/builtin"
 
 tools := builtin.All()  // Includes contact_human
 ```

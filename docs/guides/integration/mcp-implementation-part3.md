@@ -22,9 +22,9 @@ import (
     "context"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/agent"
-    "github.com/Teradata-TIO/loom/pkg/llm"
-    "github.com/Teradata-TIO/loom/pkg/mcp/manager"
+    "github.com/teradata-labs/loom/pkg/agent"
+    "github.com/teradata-labs/loom/pkg/llm"
+    "github.com/teradata-labs/loom/pkg/mcp/manager"
     "go.uber.org/zap"
 )
 
@@ -135,7 +135,7 @@ import (
     "context"
     "os"
 
-    "github.com/Teradata-TIO/loom/pkg/mcp/server"
+    "github.com/teradata-labs/loom/pkg/mcp/server"
 )
 
 func main() {

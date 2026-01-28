@@ -110,7 +110,7 @@ Balance optimization across dimensions:
 ### Create a Multi-Judge Metric
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/metaagent/teleprompter"
+import "github.com/teradata-labs/loom/pkg/metaagent/teleprompter"
 
 metric, _ := teleprompter.NewMultiJudgeMetric(&teleprompter.MultiJudgeMetricConfig{
     Orchestrator: judgeOrchestrator,
@@ -304,9 +304,9 @@ import (
     "fmt"
     "log"
 
-    loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
-    "github.com/Teradata-TIO/loom/pkg/metaagent/teleprompter"
-    "github.com/Teradata-TIO/loom/pkg/observability"
+    loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+    "github.com/teradata-labs/loom/pkg/metaagent/teleprompter"
+    "github.com/teradata-labs/loom/pkg/observability"
 )
 
 func main() {

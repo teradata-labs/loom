@@ -251,10 +251,10 @@ message PatternConfig {
   // Enables continuous learning and adaptive pattern selection
   bool enable_tracking = 4;
 
-  // Use LLM-based intent classification (default: false, uses keyword-based)
+  // Use LLM-based intent classification (default: true for v1.0.2+)
   // When enabled, uses LLM to classify user intent for more accurate pattern selection
   // Trade-off: Higher accuracy (~90-95%) but adds ~300ms latency and ~$0.0001 cost per turn
-  // Recommended: Enable for production deployments where accuracy is critical
+  // Set to false for keyword-based classification (fast, no cost, but less accurate)
   bool use_llm_classifier = 5;
 }
 

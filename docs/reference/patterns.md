@@ -368,7 +368,7 @@ func NewLibrary(fs *embed.FS, path string) *Library
 
 **Example (filesystem)**:
 ```go
-import "github.com/Teradata-TIO/loom/pkg/patterns"
+import "github.com/teradata-labs/loom/pkg/patterns"
 
 library := patterns.NewLibrary(nil, "./patterns")
 ```
@@ -377,7 +377,7 @@ library := patterns.NewLibrary(nil, "./patterns")
 ```go
 import (
     "embed"
-    "github.com/Teradata-TIO/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/patterns"
 )
 
 //go:embed patterns/*.yaml
@@ -893,7 +893,7 @@ type HotReloadConfig struct {
 **Example**:
 ```go
 import (
-    "github.com/Teradata-TIO/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/patterns"
     "go.uber.org/zap"
 )
 
@@ -1007,7 +1007,7 @@ message CreatePatternResponse {
 
 **Example (Go client)**:
 ```go
-import loomv1 "github.com/Teradata-TIO/loom/gen/go/loom/v1"
+import loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 
 patternYAML := `
 name: my_pattern
@@ -1252,7 +1252,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/Teradata-TIO/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/patterns"
 )
 
 func main() {
@@ -1291,7 +1291,7 @@ package main
 import (
     "fmt"
 
-    "github.com/Teradata-TIO/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/patterns"
 )
 
 func main() {
@@ -1339,7 +1339,7 @@ import (
     "log"
     "time"
 
-    "github.com/Teradata-TIO/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/patterns"
     "go.uber.org/zap"
 )
 
@@ -1392,7 +1392,7 @@ import (
     "fmt"
     "strings"
 
-    "github.com/Teradata-TIO/loom/pkg/patterns"
+    "github.com/teradata-labs/loom/pkg/patterns"
 )
 
 func main() {

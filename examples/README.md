@@ -8,8 +8,8 @@ Configuration examples for Loom agents, workflows, backends, and patterns.
 
 ```bash
 # 1. Install Loom
-go install github.com/Teradata-TIO/loom/cmd/loom@latest
-go install github.com/Teradata-TIO/loom/cmd/looms@latest
+go install github.com/teradata-labs/loom/cmd/loom@latest
+go install github.com/teradata-labs/loom/cmd/looms@latest
 
 # 2. Set API key
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -19,7 +19,7 @@ cd examples
 looms serve --config config/looms.yaml
 
 # 4. Connect to agent (in another terminal)
-loom chat weaver
+loom chat --thread=weaver "hi there"
 ```
 
 ## Directory Structure
@@ -347,8 +347,8 @@ go test -tags fts5 -run TestLoadConfig
 ## Contributing
 
 Found an issue or want to add an example?
-- Open an issue: https://github.com/Teradata-TIO/loom/issues
-- Submit a PR: https://github.com/Teradata-TIO/loom/pulls
+- Open an issue: https://github.com/teradata-labs/loom/issues
+- Submit a PR: https://github.com/teradata-labs/loom/pulls
 
 ## Questions?
 

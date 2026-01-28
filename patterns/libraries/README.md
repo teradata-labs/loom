@@ -126,7 +126,7 @@ spec:
 ## Loading Patterns Programmatically
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/patterns"
+import "github.com/teradata-labs/loom/pkg/patterns"
 
 // Load a pattern library
 lib, err := patterns.LoadPatternLibrary("patterns/libraries/teradata-analytics.yaml")

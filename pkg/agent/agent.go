@@ -531,8 +531,12 @@ func (a *Agent) getSystemPrompt() string {
 			patternCount = len(a.orchestrator.GetLibrary().ListAll())
 		}
 
+		backendType := "meta-agent"
+		if a.backend != nil {
+			backendType = a.backend.Name()
+		}
 		vars := map[string]interface{}{
-			"backend_type":       a.backend.Name(),
+			"backend_type":       backendType,
 			"tool_count":         a.tools.Count(),
 			"pattern_count":      patternCount,
 			"pattern_categories": "none",
@@ -1092,7 +1096,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	}
 
 	// Only select patterns if enabled and prerequisites are met
-	if patternConfig.Enabled && a.orchestrator != nil && session != nil && a.backend != nil {
+	if patternConfig.Enabled && a.orchestrator != nil && session != nil {
 		// Get most recent user message
 		messages := session.GetMessages()
 		var lastUserMessage string
@@ -1112,8 +1116,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			// Build context data
+			backendType := "meta-agent" // Default for agents without backends
+			if a.backend != nil {
+				backendType = a.backend.Name()
+			}
 			contextData := map[string]interface{}{
-				"backend_type": a.backend.Name(),
+				"backend_type": backendType,
 				"session_id":   session.ID,
 			}
 

@@ -229,7 +229,7 @@ The **GuardrailEngine** performs two critical functions:
 ### Creating Guardrail Engine
 
 ```go
-import "github.com/Teradata-TIO/loom/pkg/fabric"
+import "github.com/teradata-labs/loom/pkg/fabric"
 
 // Create engine
 engine := fabric.NewGuardrailEngine()

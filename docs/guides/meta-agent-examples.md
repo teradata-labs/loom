@@ -98,7 +98,7 @@ bin/looms weave "Create a GitHub repository explorer using the public API"
 bin/loom --thread api-github-explorer-ghi789
 
 > "Search for repositories related to 'LLM agents'"
-> "Show me the latest pull requests for Teradata-TIO/loom"
+> "Show me the latest pull requests for teradata-labs/loom"
 > "What are the open issues in the repository?"
 ```
 
