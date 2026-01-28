@@ -575,7 +575,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if r.artifactStore != nil {
 		// Type assert to artifacts.ArtifactStore
 		if artifactStore, ok := r.artifactStore.(artifacts.ArtifactStore); ok {
-			workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+			workspaceTool := shuttle.Tool(builtin.NewWorkspaceTool(artifactStore))
+			// Wrap with PromptAwareTool for externalized descriptions
+			if agent.prompts != nil {
+				workspaceTool = shuttle.NewPromptAwareTool(workspaceTool, agent.prompts, "tools.workspace")
+			}
 			agent.RegisterTool(workspaceTool)
 			r.logger.Debug("Registered workspace tool",
 				zap.String("agent", config.Name))
@@ -587,7 +591,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 
 	// Always register shell_execute tool (standard toolset)
 	// For weaver, use LOOM_DATA_DIR; for others, use current dir
-	shellTool := builtin.NewShellExecuteTool("")
+	shellTool := shuttle.Tool(builtin.NewShellExecuteTool(""))
 	if config.Name == "weaver" {
 		shellTool = builtin.NewShellExecuteTool(r.configDir)
 		r.logger.Debug("Registered shell_execute tool with LOOM_DATA_DIR",
@@ -596,6 +600,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	} else {
 		r.logger.Debug("Registered shell_execute tool",
 			zap.String("agent", config.Name))
+	}
+	// Wrap with PromptAwareTool for externalized descriptions
+	if agent.prompts != nil {
+		shellTool = shuttle.NewPromptAwareTool(shellTool, agent.prompts, "tools.shell_execute")
 	}
 	agent.RegisterTool(shellTool)
 
@@ -652,7 +660,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		}
 
 		if shouldRegisterToolSearch {
-			searchTool := toolregistry.NewSearchTool(r.toolRegistry)
+			searchTool := shuttle.Tool(toolregistry.NewSearchTool(r.toolRegistry))
+			// Wrap with PromptAwareTool for externalized descriptions
+			if agent.prompts != nil {
+				searchTool = shuttle.NewPromptAwareTool(searchTool, agent.prompts, "tools.tool_search")
+			}
 			agent.RegisterTool(searchTool)
 			r.logger.Debug("Registered tool_search for agent",
 				zap.String("agent", config.Name))

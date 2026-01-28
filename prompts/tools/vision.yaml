@@ -1,0 +1,74 @@
+---
+name: tools
+namespace: loom.vision
+---
+prompts:
+  - id: analyze_image
+    content: |
+      Analyze images using computer vision to extract information, detect objects, read text,
+      and understand visual content. Supports multiple vision providers (OpenAI, Anthropic).
+
+      Use this tool to:
+      - Extract text from images (OCR)
+      - Identify objects and scenes
+      - Read charts, graphs, and diagrams
+      - Analyze screenshots and UI elements
+      - Describe visual content
+      - Detect patterns and anomalies
+
+      Supported image formats:
+      - PNG, JPEG, GIF, WebP
+      - Base64-encoded images
+      - URLs to publicly accessible images
+      - Local file paths
+
+      Features:
+      - Multi-provider support (OpenAI GPT-4V, Anthropic Claude Vision)
+      - Text extraction (OCR) from images
+      - Object detection and scene understanding
+      - Chart and diagram interpretation
+      - Screenshot analysis
+      - Structured output (JSON) support
+
+      Best practices:
+      - Use high-resolution images for better accuracy
+      - Crop images to focus on relevant areas
+      - Specify what you're looking for (e.g., "extract table data")
+      - Use structured prompts for consistent results
+      - Try different providers if results aren't satisfactory
+
+      Common use cases:
+      - Document digitization: Extract text from scanned documents
+      - Chart analysis: Read data from graphs and visualizations
+      - Screenshot debugging: Analyze error messages from screenshots
+      - UI testing: Verify visual elements in applications
+      - Image cataloging: Generate descriptions for image libraries
+      - Quality control: Detect defects in product images
+
+      Examples:
+      - OCR: analyze_image(image_path="receipt.jpg", prompt="Extract all text and amounts")
+      - Chart: analyze_image(image_url="https://...", prompt="Describe the data trends in this chart")
+      - Screenshot: analyze_image(image_path="error.png", prompt="What error is shown?")
+      - Object detection: analyze_image(image_path="photo.jpg", prompt="List all objects in this image")
+
+      Result format:
+      - analysis: Text description of the image
+      - extracted_data: Structured data (if requested)
+      - confidence: Provider-specific confidence scores
+      - provider: Which vision model was used
+
+      Notes:
+      - Requires vision-capable LLM provider (OpenAI GPT-4V, Claude 3+)
+      - Large images may be resized automatically
+      - Processing time varies by image size and complexity
+      - Some providers have rate limits for vision requests
+
+    tags:
+      - tool
+      - vision
+      - image
+      - ocr
+      - analysis
+    metadata:
+      version: "v1.0"
+      description: "Image analysis and computer vision tool"

@@ -1,0 +1,68 @@
+---
+name: tools
+namespace: loom.workspace
+---
+prompts:
+  - id: workspace
+    content: |
+      Manage session-scoped files with full-text search, indexing, and artifact tracking.
+      The workspace provides a safe, isolated environment for reading, writing, and searching files
+      within the current session. All files are automatically indexed for fast search.
+
+      Use this tool to:
+      - Save and retrieve session data (read/write files)
+      - Search across all workspace files (full-text search)
+      - List files and manage workspace contents
+      - Track artifacts and intermediate results
+      - Isolate session data from global filesystem
+
+      Actions supported:
+      - read: Read file contents from workspace
+      - write: Write or update files in workspace
+      - search: Full-text search across all workspace files
+      - list: List all files in workspace
+      - delete: Remove files from workspace
+
+      Scopes:
+      - artifact: Session-scoped files (default, recommended)
+      - global: Shared files across sessions (use sparingly)
+
+      Features:
+      - Automatic indexing for fast search
+      - Session isolation (files don't leak between sessions)
+      - FTS5 full-text search with BM25 ranking
+      - Metadata tracking (size, modified time, etc.)
+      - Safe by default (no accidental system file access)
+
+      Best practices:
+      - Use artifact scope for temporary/session data
+      - Use global scope only for shared configuration
+      - Search before reading (find the right file first)
+      - Write incrementally for large content (avoid token limits)
+      - List files to see what's available
+
+      When to use workspace vs shell_execute:
+      - Use workspace for: Session data, intermediate results, searchable content
+      - Use shell_execute for: System files, git operations, external commands
+
+      Examples:
+      - Save results: workspace(action="write", path="results.json", content="{...}", scope="artifact")
+      - Search files: workspace(action="search", query="error handling", scope="artifact")
+      - Read file: workspace(action="read", path="results.json", scope="artifact")
+      - List files: workspace(action="list", scope="artifact")
+
+      Safety:
+      - Files are scoped to current session by default
+      - No access to system directories
+      - Files persist only for session duration (artifact scope)
+      - Global scope requires explicit opt-in
+
+    tags:
+      - tool
+      - workspace
+      - file
+      - search
+      - artifact
+    metadata:
+      version: "v1.0"
+      description: "Session-scoped workspace with search and indexing"

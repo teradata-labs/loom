@@ -320,22 +320,56 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 	var errors []ValidationError
 	var warnings []ValidationWarning
 
-	// Known builtin tools
-	builtinTools := map[string]bool{
-		"shell_execute":          true,
-		"tool_search":            true,
-		"get_error_detail":       true,
-		"get_tool_result":        true,
-		"search_conversation":    true,
-		"recall_conversation":    true,
-		"clear_recalled_context": true,
-		"send_message":           true,
-		"receive_message":        true,
-		"publish_message":        true,
-		"subscribe_topic":        true,
-		"shared_memory_read":     true,
-		"shared_memory_write":    true,
-		"contact_human":          true,
+	// Build map of known tools
+	// NOTE: Cannot import pkg/shuttle/builtin here (import cycle with agent_management tool)
+	// This list should match builtin.Names() in pkg/shuttle/builtin/registry.go
+	// To update: check builtin.Names() and update this list
+	knownTools := make(map[string]bool)
+
+	// Builtin tools from pkg/shuttle/builtin/registry.go:79-91
+	builtinTools := []string{
+		"http_request",
+		"web_search",
+		"file_write",
+		"file_read",
+		"analyze_image",
+		"parse_document",
+		"grpc_call",
+		"shell_execute",
+		"agent_management",
+		"contact_human",
+	}
+	for _, name := range builtinTools {
+		knownTools[name] = true
+	}
+
+	// Add framework tools (auto-registered, not in builtin.Names())
+	frameworkTools := []string{
+		"workspace",              // Session-scoped file management (auto-registered)
+		"tool_search",            // Tool discovery via FTS (conditionally registered)
+		"get_error_details",      // Progressive disclosure (conditionally registered)
+		"query_tool_result",      // Progressive disclosure (conditionally registered)
+		"search_conversation",    // Memory tool (deprecated)
+		"recall_conversation",    // Memory tool (deprecated)
+		"clear_recalled_context", // Memory tool (deprecated)
+	}
+	for _, name := range frameworkTools {
+		knownTools[name] = true
+	}
+
+	// Add communication tools (multi-agent workflows)
+	communicationTools := []string{
+		"send_message",
+		"publish",
+		"shared_memory_read",
+		"shared_memory_write",
+		"top_n_query",
+		"group_by_query",
+		"generate_workflow_visualization",
+		"generate_visualization",
+	}
+	for _, name := range communicationTools {
+		knownTools[name] = true
 	}
 
 	for _, tool := range tools {
@@ -344,10 +378,10 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 			continue
 		}
 
-		// Check for common typos
-		if !builtinTools[toolName] {
-			// Check for close matches
-			suggestion := findClosestTool(toolName, builtinTools)
+		// Check if tool exists in known tools
+		if !knownTools[toolName] {
+			// Check for close matches (typos)
+			suggestion := findClosestTool(toolName, knownTools)
 			if suggestion != "" {
 				errors = append(errors, ValidationError{
 					Level:   LevelSemantic,
@@ -357,11 +391,12 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 					Got:     toolName,
 				})
 			} else {
-				// Tool might be from MCP - just warn
+				// Tool might be from MCP, custom source, or dynamically registered
+				// This is not an error - just a note
 				warnings = append(warnings, ValidationWarning{
 					Field:   "spec.tools",
-					Message: fmt.Sprintf("Tool '%s' not in builtin list (may be from MCP server)", toolName),
-					Fix:     "Verify tool is available from configured MCP servers",
+					Message: fmt.Sprintf("Tool '%s' will be loaded from MCP server, custom source, or dynamic registration", toolName),
+					Fix:     "Verify tool is available at runtime",
 				})
 			}
 		}
@@ -542,25 +577,63 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		return ""
 	}
 
-	// Common typos
+	// Common typos - map incorrect names to correct tool names
 	typos := map[string]string{
+		// shell_execute variations
 		"shell_exec":    "shell_execute",
 		"execute_shell": "shell_execute",
-		"search_tools":  "tool_search",
-		"find_tools":    "tool_search",
-		"get_error":     "get_error_detail",
-		"error_detail":  "get_error_detail",
-		"search_conv":   "search_conversation",
-		"recall_conv":   "recall_conversation",
-		"clear_context": "clear_recalled_context",
-		"send_msg":      "send_message",
-		"receive_msg":   "receive_message",
-		"publish":       "publish_message",
-		"subscribe":     "subscribe_topic",
-		"read_memory":   "shared_memory_read",
-		"write_memory":  "shared_memory_write",
+		"exec_shell":    "shell_execute",
+
+		// tool_search variations
+		"search_tools": "tool_search",
+		"find_tools":   "tool_search",
+		"search_tool":  "tool_search",
+
+		// get_error_details variations (note: correct name has 's')
+		"get_error":        "get_error_details",
+		"get_error_detail": "get_error_details",
+		"error_detail":     "get_error_details",
+		"error_details":    "get_error_details",
+
+		// query_tool_result variations
+		"query_result":    "query_tool_result",
+		"get_tool_result": "query_tool_result",
+		"tool_result":     "query_tool_result",
+
+		// workspace variations
+		"work_space":   "workspace",
+		"file_manager": "workspace",
+
+		// http_request variations
+		"http":         "http_request",
+		"make_request": "http_request",
+		"rest_request": "http_request",
+
+		// web_search variations
+		"search_web":    "web_search",
+		"websearch":     "web_search",
+		"google_search": "web_search",
+
+		// file operations
+		"read_file":  "file_read",
+		"write_file": "file_write",
+		"readfile":   "file_read",
+		"writefile":  "file_write",
+
+		// agent_management variations
+		"manage_agent":  "agent_management",
+		"agent_manager": "agent_management",
+
+		// contact_human variations
 		"ask_human":     "contact_human",
 		"human_contact": "contact_human",
+		"escalate":      "contact_human",
+
+		// communication tools
+		"send_msg":     "send_message",
+		"message":      "send_message",
+		"read_memory":  "shared_memory_read",
+		"write_memory": "shared_memory_write",
 	}
 
 	if suggestion, ok := typos[tool]; ok {

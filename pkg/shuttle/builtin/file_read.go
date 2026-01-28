@@ -28,6 +28,11 @@ const (
 
 // FileReadTool provides safe file reading capabilities for agents.
 // Enables data grounding by reading actual file content rather than guessing.
+//
+// DEPRECATED: Use workspace tool for session-scoped file operations (read, write, search, list)
+// or shell_execute for direct filesystem access (cat, ls, etc.). The workspace tool provides
+// superior functionality with session isolation, artifact indexing, and full-text search.
+// This tool remains for backwards compatibility but is not recommended for new agents.
 type FileReadTool struct {
 	baseDir string // Optional base directory for safety
 }
@@ -51,7 +56,9 @@ func (t *FileReadTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/file.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *FileReadTool) Description() string {
-	return `Reads content from files on the local filesystem.
+	return `⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (cat command).
+
+Reads content from files on the local filesystem.
 Use this tool to ground your responses in actual data rather than guessing.
 
 Use this tool to:
@@ -60,7 +67,11 @@ Use this tool to:
 - Load configuration or results files
 - Read markdown, JSON, XML, or other text files
 
-Safety: Won't read sensitive system files. Max file size: 10MB.`
+Safety: Won't read sensitive system files. Max file size: 10MB.
+
+RECOMMENDED ALTERNATIVES:
+- workspace tool: action=read, scope=artifact (session-scoped, indexed, searchable)
+- shell_execute: cat /path/to/file (direct filesystem access)`
 }
 
 func (t *FileReadTool) InputSchema() *shuttle.JSONSchema {

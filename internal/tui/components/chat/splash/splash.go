@@ -243,6 +243,33 @@ func (s *splashCmp) agentDescription() string {
 	var title, description string
 
 	switch s.agentName {
+	case "guide":
+		title = "👋 Guide"
+		description = `I'm here to help you find the right agent or workflow for your task.
+Tell me what you need, and I'll suggest which agent to use.
+
+You can also:
+  • Press ctrl+e to browse all agents
+  • Press ctrl+w to browse workflows
+  • Select Weaver from the sidebar to create a new agent
+
+Examples:
+  • "I need help writing SQL queries"
+  • "Review my code for security issues"
+  • "Analyze this dataset"`
+
+	case "no-server":
+		title = "🔌 No Server Running"
+		description = `Loom requires a running server to connect to agents.
+
+Start the server:
+  loom-server
+
+Or start with custom config:
+  loom-server --config ~/.loom/config.yaml
+
+Once the server is running, the TUI will automatically connect.`
+
 	case "weaver":
 		title = "✨ Weaver"
 		description = `The weaver analyzes your natural language requirements and creates

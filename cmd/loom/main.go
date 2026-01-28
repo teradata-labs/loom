@@ -14,8 +14,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -87,7 +89,7 @@ func main() {
 }
 
 func runChat(cmd *cobra.Command, args []string) {
-	// Connect to server
+	// Try to connect to server (but don't exit if it fails - show connection error in TUI instead)
 	c, err := client.NewClient(client.Config{
 		ServerAddr:    serverAddr,
 		TLSEnabled:    tlsEnabled,
@@ -95,42 +97,64 @@ func runChat(cmd *cobra.Command, args []string) {
 		TLSCAFile:     tlsCAFile,
 		TLSServerName: tlsServerName,
 	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to Loom server at %s\n", serverAddr)
-		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
-		fmt.Fprintf(os.Stderr, "Make sure the server is running:\n")
-		if tlsEnabled {
-			fmt.Fprintf(os.Stderr, "  looms serve --config <config-with-tls>\n\n")
-		} else {
-			fmt.Fprintf(os.Stderr, "  looms serve\n\n")
-		}
-		os.Exit(1)
-	}
-	defer c.Close()
 
-	// If no thread specified, start TUI with sidebar for selection
-	// The sidebar always shows agents/workflows, so no need for CLI menu
-	// agentID remains empty - user will select from sidebar
+	// Test if server is actually reachable by trying to list agents
+	serverAvailable := false
+	if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := c.ListAgents(ctx)
+		cancel()
+		serverAvailable = (err == nil)
+	}
+
+	if !serverAvailable {
+		// Server not available - will show "no-server" splash in TUI
+		fmt.Fprintf(os.Stderr, "Warning: Cannot connect to Loom server at %s\n", serverAddr)
+		fmt.Fprintf(os.Stderr, "Starting TUI with connection instructions. Start the server with: looms serve\n\n")
+		if c != nil {
+			_ = c.Close()
+			c = nil
+		}
+	} else {
+		defer c.Close()
+	}
+
+	// If no thread specified, default to the built-in guide
+	// The guide helps users discover and select agents
+	if agentID == "" {
+		agentID = "guide"
+	}
+
+	// If server not available, show "no-server" splash instead of guide
+	if !serverAvailable {
+		agentID = "no-server"
+	}
 
 	// Debug: Log the agent ID being set
-	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "Setting agentID on application: '%s'\n", agentID)
-		f.Close()
+	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+		fmt.Fprintf(f, "Setting agentID on application: '%s' (serverAvailable=%v)\n", agentID, serverAvailable)
+		_ = f.Close()
 	}
 
 	// Create event channel for TUI
 	events := make(chan tea.Msg, 100)
 
-	// Create App from client
-	application := app.NewFromClient(c, events)
+	// Create App from client (will be limited if server not available)
+	var application *app.App
+	if c != nil {
+		application = app.NewFromClient(c, events)
+	} else {
+		// Create minimal app for no-server mode
+		application = app.NewMinimal(events)
+	}
 
 	// Set the selected agent/thread ID
 	application.SetAgentID(agentID)
 
 	// Debug: Verify it was set
-	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		fmt.Fprintf(f, "Agent ID set on application\n")
-		f.Close()
+		_ = f.Close()
 	}
 
 	// Create new TUI model

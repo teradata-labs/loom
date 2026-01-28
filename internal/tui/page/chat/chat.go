@@ -74,6 +74,14 @@ type (
 	AddMCPServerSuccessMsg struct {
 		ServerName string
 	}
+
+	// autoSwitchToAgentMsg is sent after a delay to auto-switch to a newly created agent
+	autoSwitchToAgentMsg struct {
+		AgentID      string
+		RetryCount   int
+		MaxRetries   int
+		RetryDelayMs int
+	}
 )
 
 type PanelType string
@@ -204,9 +212,9 @@ func (p *chatPage) Init() tea.Cmd {
 		if coord, ok := p.app.AgentCoordinator.(interface{ GetAgentID() string }); ok {
 			p.currentAgentID = coord.GetAgentID()
 			// Debug: log what we got from coordinator
-			if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 				fmt.Fprintf(f, "[%s] chatPage.Init: Got currentAgentID from coordinator: '%s'\n", time.Now().Format("15:04:05"), p.currentAgentID)
-				f.Close()
+				_ = f.Close()
 			}
 
 			// Update splash screen with agent info
@@ -432,6 +440,33 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		if _, ok := msg.(pubsub.Event[message.Message]); ok && p.hasInProgressTodo() && agentBusy {
 			cmds = append(cmds, p.todoSpinner.Tick)
 		}
+
+		// Detect when weaver creates an agent and auto-switch to it
+		if msgEvent, ok := msg.(pubsub.Event[message.Message]); ok {
+			if p.currentAgentID == "weaver" && msgEvent.Type == pubsub.UpdatedEvent {
+				// Check if this message has a tool result for agent_management
+				toolResults := msgEvent.Payload.ToolResults()
+				for _, tr := range toolResults {
+					if strings.Contains(tr.Content, `"action":"create"`) &&
+						strings.Contains(tr.Content, `"type":"agent"`) {
+						// Parse the agent name from the tool result
+						if agentName := parseAgentNameFromToolResult(tr.Content); agentName != "" {
+							// Schedule auto-switch with retry mechanism (initial 200ms, up to 3 retries with 100ms delays)
+							cmds = append(cmds, tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+								return autoSwitchToAgentMsg{
+									AgentID:      agentName,
+									RetryCount:   0,
+									MaxRetries:   3,
+									RetryDelayMs: 100,
+								}
+							}))
+						}
+						break
+					}
+				}
+			}
+		}
+
 		if p.focusedPane == PanelTypeSplash {
 			u, cmd := p.splash.Update(msg)
 			p.splash = u.(splash.Splash)
@@ -491,10 +526,10 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 
 	case sidebar.AgentSelectedMsg:
 		// Debug: log agent selection
-		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			fmt.Fprintf(f, "[%s] AgentSelectedMsg received: msg.AgentID=%s, p.currentAgentID=%s\n",
 				time.Now().Format("15:04:05"), msg.AgentID, p.currentAgentID)
-			f.Close()
+			_ = f.Close()
 		}
 
 		// Switch to the selected agent
@@ -511,10 +546,10 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		p.splash.SetAgentInfo(msg.AgentID, msg.AgentID)
 
 		// Debug: log after setting
-		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			fmt.Fprintf(f, "[%s] After setting: p.currentAgentID=%s\n",
 				time.Now().Format("15:04:05"), p.currentAgentID)
-			f.Close()
+			_ = f.Close()
 		}
 
 		// Check if we have an existing session for this agent
@@ -598,6 +633,43 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		p.chat = u.(chat.MessageListCmp)
 		cmds = append(cmds, cmd)
 		return p, tea.Batch(cmds...)
+
+	case autoSwitchToAgentMsg:
+		// Verify the agent exists before switching
+		if p.app.AgentCoordinator != nil {
+			agents, err := p.app.AgentCoordinator.ListAgents(context.Background())
+			if err == nil {
+				// Check if the agent exists in the list
+				agentExists := false
+				for _, ag := range agents {
+					if ag.ID == msg.AgentID {
+						agentExists = true
+						break
+					}
+				}
+
+				if agentExists {
+					// Agent found - switch to it
+					return p, util.CmdHandler(sidebar.AgentSelectedMsg{AgentID: msg.AgentID})
+				}
+
+				// Agent not found yet - retry if we haven't exceeded max retries
+				if msg.RetryCount < msg.MaxRetries {
+					return p, tea.Tick(time.Duration(msg.RetryDelayMs)*time.Millisecond, func(time.Time) tea.Msg {
+						return autoSwitchToAgentMsg{
+							AgentID:      msg.AgentID,
+							RetryCount:   msg.RetryCount + 1,
+							MaxRetries:   msg.MaxRetries,
+							RetryDelayMs: msg.RetryDelayMs,
+						}
+					})
+				}
+
+				// Max retries exceeded - show warning
+				return p, util.ReportWarn(fmt.Sprintf("Agent '%s' created but not yet loaded. Try switching manually with ctrl+e", msg.AgentID))
+			}
+		}
+		return p, nil
 
 	case commands.CommandRunCustomMsg:
 		if p.app.AgentCoordinator != nil && p.app.AgentCoordinator.IsBusy(p.currentAgentID) {
@@ -1157,22 +1229,22 @@ func (p *chatPage) toggleDetails() {
 
 func (p *chatPage) sendMessage(text string, attachments []message.Attachment) tea.Cmd {
 	// Debug: log current state
-	if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+	if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		fmt.Fprintf(f, "[%s] sendMessage: currentAgentID='%s', session.ID='%s'\n", time.Now().Format("15:04:05"), p.currentAgentID, p.session.ID)
-		f.Close()
+		_ = f.Close()
 	}
 
 	session := p.session
 	var cmds []tea.Cmd
 	if p.session.ID == "" {
 		// Debug: log before creating session
-		if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			// Check what agentID the SessionAdapter will use
 			if sessAdapter, ok := p.app.Sessions.(*adapter.SessionAdapter); ok {
 				fmt.Fprintf(f, "[%s] sendMessage: Creating session, SessionAdapter will use agentID from coordinator\n", time.Now().Format("15:04:05"))
 				_ = sessAdapter // just to avoid unused variable warning
 			}
-			f.Close()
+			_ = f.Close()
 		}
 
 		newSession, err := p.app.Sessions.Create(context.Background(), "New Session")
@@ -1186,9 +1258,9 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 			if coord, ok := p.app.AgentCoordinator.(interface{ GetAgentID() string }); ok {
 				p.currentAgentID = coord.GetAgentID()
 				// Debug: log retrieval
-				if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+				if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 					fmt.Fprintf(f, "[%s] sendMessage: Retrieved currentAgentID from coordinator: '%s'\n", time.Now().Format("15:04:05"), p.currentAgentID)
-					f.Close()
+					_ = f.Close()
 				}
 			}
 		}
@@ -1224,6 +1296,8 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 	}))
 
 	cmds = append(cmds, p.chat.GoToBottom())
+
+	// Use standard gRPC agent flow (guide is now a regular agent)
 	cmds = append(cmds, func() tea.Msg {
 		// Convert attachments to interface{}
 		var attch []interface{}
@@ -1512,6 +1586,18 @@ func (p *chatPage) Help() help.KeyMap {
 				key.WithHelp("ctrl+s", "sessions"),
 			),
 		)
+		globalBindings = append(globalBindings,
+			key.NewBinding(
+				key.WithKeys("ctrl+e"),
+				key.WithHelp("ctrl+e", "agents"),
+			),
+		)
+		globalBindings = append(globalBindings,
+			key.NewBinding(
+				key.WithKeys("ctrl+w"),
+				key.WithHelp("ctrl+w", "workflows"),
+			),
+		)
 		if p.session.ID != "" {
 			globalBindings = append(globalBindings,
 				key.NewBinding(
@@ -1708,6 +1794,11 @@ func (p *chatPage) fetchAgentsList() tea.Cmd {
 // fetchMCPServers fetches the list of MCP servers from the gRPC server
 func (p *chatPage) fetchMCPServers() tea.Cmd {
 	return func() tea.Msg {
+		// If client is nil (server unavailable), return empty list
+		if p.app.Client() == nil {
+			return sidebar.MCPServersListMsg{Servers: []sidebar.MCPServerInfo{}}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -1748,6 +1839,14 @@ func (p *chatPage) fetchMCPServers() tea.Cmd {
 // handleAddMCPServer adds a new MCP server and refreshes the list
 func (p *chatPage) handleAddMCPServer(req *loomv1.AddMCPServerRequest) tea.Cmd {
 	return func() tea.Msg {
+		// If client is nil (server unavailable), return error
+		if p.app.Client() == nil {
+			return util.InfoMsg{
+				Text: "Server not available",
+				Type: util.InfoTypeError,
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -1782,6 +1881,11 @@ type MCPServerToolsMsg struct {
 // fetchMCPServerTools fetches the tools for a specific MCP server
 func (p *chatPage) fetchMCPServerTools(serverName string) tea.Cmd {
 	return func() tea.Msg {
+		// If client is nil (server unavailable), return empty tools
+		if p.app.Client() == nil {
+			return MCPServerToolsMsg{ServerName: serverName, Tools: []sidebar.MCPToolInfo{}}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -1865,4 +1969,32 @@ func (p *chatPage) hasInProgressTodo() bool {
 		}
 	}
 	return false
+}
+
+// parseAgentNameFromToolResult extracts the agent name from an agent_management tool result JSON.
+// The JSON structure from agent_management create action is:
+// {"action":"create","type":"agent","name":"agent-name","path":"...","validation":"..."}
+func parseAgentNameFromToolResult(jsonContent string) string {
+	// Simple string parsing for the name field
+	// Look for "name":"..." pattern
+	namePrefix := `"name":"`
+	nameIdx := strings.Index(jsonContent, namePrefix)
+	if nameIdx == -1 {
+		return ""
+	}
+
+	// Start after the prefix
+	start := nameIdx + len(namePrefix)
+	// Find the closing quote
+	end := strings.Index(jsonContent[start:], `"`)
+	if end == -1 {
+		return ""
+	}
+
+	agentName := jsonContent[start : start+end]
+	// Remove .yaml extension if present
+	agentName = strings.TrimSuffix(agentName, ".yaml")
+	agentName = strings.TrimSuffix(agentName, ".yml")
+
+	return agentName
 }

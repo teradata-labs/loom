@@ -74,14 +74,14 @@ func (t *AgentManagementTool) InputSchema() *shuttle.JSONSchema {
 func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	start := time.Now()
 
-	// SECURITY: Restrict this tool to the weaver agent only
+	// SECURITY: Restrict this tool to weaver and guide agents only
 	agentID := session.AgentIDFromContext(ctx)
-	if agentID != "weaver" {
+	if agentID != "weaver" && agentID != "guide" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:    "UNAUTHORIZED",
-				Message: "This tool is restricted to the weaver meta-agent only",
+				Message: "This tool is restricted to the weaver and guide meta-agents only",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
@@ -95,6 +95,18 @@ func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]int
 			Error: &shuttle.Error{
 				Code:    "INVALID_PARAMS",
 				Message: "action parameter is required",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	// SECURITY: Guide agent is READ-ONLY (can only list and read)
+	if agentID == "guide" && action != "list" && action != "read" {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "UNAUTHORIZED",
+				Message: fmt.Sprintf("Guide agent is read-only. Only 'list' and 'read' actions are allowed, not '%s'", action),
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
