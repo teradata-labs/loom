@@ -1,0 +1,14 @@
+# Test workflow with invalid agent path
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: invalid-path-test
+  description: Test workflow with non-existent agent path (should fail)
+  labels:
+    test: "true"
+
+spec:
+  type: pipeline
+  agents:
+    - id: missing-agent
+      path: non-existent-agent.yaml

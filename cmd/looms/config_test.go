@@ -22,8 +22,8 @@ import (
 )
 
 func TestLoadConfig_WithAgents(t *testing.T) {
-	// Load the example test config
-	config, err := LoadConfig("../../examples/looms-test.yaml")
+	// Load the test config
+	config, err := LoadConfig("../../tests/config/looms-test.yaml")
 	require.NoError(t, err)
 	require.NotNil(t, config)
 

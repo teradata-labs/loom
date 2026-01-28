@@ -12,11 +12,13 @@ YAML-based configuration examples demonstrating Loom's declarative agent, workfl
     - `web-search-agent.yaml` - Web search using Tavily API
     - `file-analysis-agent.yaml` - Local file system operations
     - `github-agent.yaml` - GitHub API integration
-    - Plus swarm-coordinator, sql_expert, security_analyst, code_reviewer, and more
+    - Plus swarm-coordinator, sql_expert, security_analyst, and more
   - `agent-templates/` - Reusable agent templates
   - `backends/` - Backend configurations (file, SQL, MCP, REST API, Docker)
   - `patterns/` - Pattern library examples
-  - `workflows/` - Workflow orchestration (all 6 patterns)
+  - `workflows/` - Workflow examples (organized by type)
+    - `orchestration-patterns/` - Structured workflows (debate, pipeline, parallel, swarm, conditional)
+    - `event-driven/` - Dynamic multi-agent workflows with communication patterns
 
 - **[dnd-party/](dnd-party/)** - Simple D&D party example (4 agents + workflow)
   - `agents/` - DM, fighter, rogue, wizard
@@ -41,9 +43,10 @@ YAML-based configuration examples demonstrating Loom's declarative agent, workfl
 ### Server Configurations
 
 - `looms.yaml` - Full multi-agent server configuration
-- `looms-test.yaml` - Minimal test configuration
 - `looms-tls-dev.yaml` - TLS development configuration
 - `looms-tls-manual.yaml` - Manual TLS configuration
+
+**Test Configurations**: See `tests/config/` for test-specific server configurations
 
 ## Quick Start
 
@@ -95,7 +98,7 @@ loom --thread weaver
 → See `02-production-ready/transcend/` (complete configuration-only example)
 
 **Orchestrate multiple agents**
-→ See `dnd-party/`, `03-advanced/dnd-adventure/`, or `reference/workflows/`
+→ See `dnd-party/`, `03-advanced/dnd-adventure/`, `reference/workflows/orchestration-patterns/`, or `reference/workflows/event-driven/`
 
 **Work with Teradata**
 → See `reference/agents/teradata-agent-with-patterns.yaml` or `02-production-ready/transcend/`
@@ -158,7 +161,7 @@ looms validate examples/reference/agents/*.yaml
 looms validate examples/reference/workflows/*.yaml
 
 # Test server startup
-looms serve --config examples/looms-test.yaml --dry-run
+looms serve --config tests/config/looms-test.yaml --dry-run
 ```
 
 ## Example Complexity
