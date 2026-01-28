@@ -113,7 +113,7 @@ looms serve [flags]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--config` | string | `~/.loom/server.yaml` | Path to server config file |
+| `--config` | string | `$LOOM_DATA_DIR/server.yaml` | Path to server config file |
 | `--port` | int | `50051` | gRPC port |
 | `--http-port` | int | `8080` | HTTP gateway port |
 | `--agents` | stringArray | `[]` | Agent config files to load (repeatable) |
@@ -133,8 +133,8 @@ Start with custom port and agents:
 looms serve \
   --port 9090 \
   --http-port 8888 \
-  --agents ~/.loom/agents/sql-expert.yaml \
-  --agents ~/.loom/agents/data-analyst.yaml
+  --agents $LOOM_DATA_DIR/agents/sql-expert.yaml \
+  --agents $LOOM_DATA_DIR/agents/data-analyst.yaml
 ```
 
 Enable hot reload for development:
@@ -167,14 +167,14 @@ looms serve \
 
 **Configuration File Example:**
 ```yaml
-# ~/.loom/server.yaml
+# $LOOM_DATA_DIR/server.yaml
 server:
   grpc_port: 50051
   http_port: 8080
   hot_reload: false
 
-agents_dir: ~/.loom/agents
-patterns_dir: ~/.loom/patterns
+agents_dir: $LOOM_DATA_DIR/agents
+patterns_dir: $LOOM_DATA_DIR/patterns
 
 observability:
   enabled: true
@@ -242,7 +242,7 @@ looms config get mcp.servers.vantage.command
 
 **Configuration Hierarchy:**
 1. Command-line flags (highest priority)
-2. `~/.loom/server.yaml`
+2. `$LOOM_DATA_DIR/server.yaml`
 3. `/etc/loom/server.yaml`
 4. Default values (lowest priority)
 
@@ -1432,7 +1432,7 @@ loom config set mcp.servers.vantage.env.TD_USER myuser
 - Configuring MCP servers
 - Setting default preferences
 
-**Configuration File:** `~/.loom/config.yaml`
+**Configuration File:** `$LOOM_DATA_DIR/config.yaml`
 
 **Errors:**
 - Exit code 2: Invalid key format
@@ -1847,7 +1847,7 @@ Troubleshooting:
 # Server configuration
 LOOM_SERVER_PORT=50051
 LOOM_HTTP_PORT=8080
-LOOM_CONFIG_PATH=~/.loom/server.yaml
+LOOM_CONFIG_PATH=$LOOM_DATA_DIR/server.yaml
 
 # Observability
 LOOM_HAWK_ENDPOINT=http://localhost:9090
@@ -1869,7 +1869,7 @@ TD_PASSWORD={{keyring:td_password}}
 # Client configuration
 LOOM_SERVER=localhost:50051
 LOOM_AGENT=sql-expert
-LOOM_CONFIG_PATH=~/.loom/config.yaml
+LOOM_CONFIG_PATH=$LOOM_DATA_DIR/config.yaml
 
 # MCP servers
 MCP_VANTAGE_CMD=~/bin/vantage-mcp
@@ -1879,7 +1879,7 @@ MCP_GITHUB_TOKEN={{keyring:github_token}}
 
 ## Configuration Files
 
-### Server Configuration (`~/.loom/server.yaml`)
+### Server Configuration (`$LOOM_DATA_DIR/server.yaml`)
 
 ```yaml
 server:
@@ -1891,8 +1891,8 @@ server:
     cert_file: /path/to/cert.pem
     key_file: /path/to/key.pem
 
-agents_dir: ~/.loom/agents
-patterns_dir: ~/.loom/patterns
+agents_dir: $LOOM_DATA_DIR/agents
+patterns_dir: $LOOM_DATA_DIR/patterns
 
 observability:
   enabled: true
@@ -1918,7 +1918,7 @@ mcp:
         TD_PASSWORD: "{{keyring:td_password}}"
 ```
 
-### Client Configuration (`~/.loom/config.yaml`)
+### Client Configuration (`$LOOM_DATA_DIR/config.yaml`)
 
 ```yaml
 server:
@@ -1948,7 +1948,7 @@ mcp:
         GITHUB_TOKEN: "{{keyring:github_token}}"
 ```
 
-### Agent Configuration (`~/.loom/agents/sql-expert.yaml`)
+### Agent Configuration (`$LOOM_DATA_DIR/agents/sql-expert.yaml`)
 
 ```yaml
 name: sql-expert
@@ -1978,7 +1978,7 @@ patterns:
 
 memory:
   type: sqlite
-  path: ~/.loom/memory/sql-expert.db
+  path: $LOOM_DATA_DIR/memory/sql-expert.db
   max_history: 50
 
 limits:
@@ -2051,13 +2051,13 @@ Error: listen tcp :50051: bind: address already in use
 
 **Example**:
 ```
-Error: config file not found: ~/.loom/server.yaml
+Error: config file not found: $LOOM_DATA_DIR/server.yaml
 ```
 
 **Resolution**:
 1. Create the default config file:
    ```bash
-   mkdir -p ~/.loom
+   mkdir -p $LOOM_DATA_DIR
    looms config set server.grpc_port 50051
    ```
 2. Or specify a different config:
@@ -2081,7 +2081,7 @@ Error: invalid configuration: field 'agent.timeout' must be positive duration, g
 **Resolution**:
 1. Validate YAML syntax:
    ```bash
-   yamllint ~/.loom/server.yaml
+   yamllint $LOOM_DATA_DIR/server.yaml
    ```
 2. Check field types match schema requirements
 3. Verify all required fields are present
@@ -2108,11 +2108,11 @@ Error: agent not found: sql-expert
    ```
 2. Check agent configuration file exists:
    ```bash
-   ls -la ~/.loom/agents/sql-expert.yaml
+   ls -la $LOOM_DATA_DIR/agents/sql-expert.yaml
    ```
 3. Load agent at server start:
    ```bash
-   looms serve --agents ~/.loom/agents/sql-expert.yaml
+   looms serve --agents $LOOM_DATA_DIR/agents/sql-expert.yaml
    ```
 
 
@@ -2135,11 +2135,11 @@ Error: pattern not found: revenue_aggregation
    ```
 2. Check pattern file exists:
    ```bash
-   ls -la ~/.loom/patterns/analytics/revenue-aggregation.yaml
+   ls -la $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
    ```
 3. Validate pattern YAML:
    ```bash
-   looms pattern validate ~/.loom/patterns/analytics/revenue-aggregation.yaml
+   looms pattern validate $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
    ```
 4. Reload patterns:
    ```bash
@@ -2580,7 +2580,7 @@ looms teleprompter compile \
   --output ./prompts/sql-perf-optimized.txt
 
 # 3. Update agent configuration with optimized prompt
-vim ~/.loom/agents/sql-expert.yaml
+vim $LOOM_DATA_DIR/agents/sql-expert.yaml
 # (update system_prompt with optimized content)
 
 # 4. Reload agent
@@ -2634,10 +2634,10 @@ loom mcp test filesystem
 looms pattern list
 
 # Check pattern file exists
-ls -la ~/.loom/patterns/analytics/revenue-aggregation.yaml
+ls -la $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
 
 # Validate pattern
-looms pattern validate ~/.loom/patterns/analytics/revenue-aggregation.yaml
+looms pattern validate $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
 
 # Reload patterns
 looms pattern reload
@@ -2668,13 +2668,13 @@ loom mcp test vantage
 **Solution:**
 ```bash
 # Check agent memory configuration
-cat ~/.loom/agents/sql-expert.yaml | grep -A 3 memory:
+cat $LOOM_DATA_DIR/agents/sql-expert.yaml | grep -A 3 memory:
 
 # Verify database exists
-ls -la ~/.loom/memory/sql-expert.db
+ls -la $LOOM_DATA_DIR/memory/sql-expert.db
 
 # Check permissions
-chmod 644 ~/.loom/memory/sql-expert.db
+chmod 644 $LOOM_DATA_DIR/memory/sql-expert.db
 ```
 
 

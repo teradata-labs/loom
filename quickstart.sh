@@ -128,7 +128,7 @@ if [ "$CI_MODE" = false ]; then
 
     echo ""
     echo -e "${YELLOW}Where would you like to store Loom data (patterns, configs, databases)?${NC}"
-    echo -e "${BLUE}  Default: ~/.loom${NC}"
+    echo -e "${BLUE}  Default: \$HOME/.loom${NC}"
     echo ""
     read -p "Enter data directory (press Enter for default): " data_dir_input
     if [ -z "$data_dir_input" ]; then

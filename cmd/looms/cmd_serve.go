@@ -136,7 +136,7 @@ func createPromptRegistry(config *Config, logger *zap.Logger) (prompts.PromptReg
 }
 
 // initializeAgentsMap creates an empty agents map.
-// All agents are now loaded from ~/.loom/agents/ directory via the registry system.
+// All agents are now loaded from $LOOM_DATA_DIR/agents/ directory via the registry system.
 // This function simply initializes the map that will be populated by the registry.
 func initializeAgentsMap() map[string]*agent.Agent {
 	return make(map[string]*agent.Agent)
@@ -389,7 +389,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	if configFileUsed != "" {
 		logger.Info("Config file loaded", zap.String("path", configFileUsed))
 	} else {
-		logger.Info("No config file found", zap.String("searched", "$HOME/.loom/looms.yaml, ./looms.yaml, /etc/loom/looms.yaml"))
+		logger.Info("No config file found", zap.String("searched", "$LOOM_DATA_DIR/looms.yaml, ./looms.yaml, /etc/loom/looms.yaml"))
 		logger.Info("Using defaults + environment variables")
 	}
 
@@ -917,11 +917,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Create PermissionChecker (if configured)
 	permissionChecker := createPermissionChecker(config, logger)
 
-	// Initialize empty agents map - all agents loaded from ~/.loom/agents/ via registry below
+	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
-	logger.Info("Agents will be loaded from ~/.loom/agents/ directory via registry system")
+	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
 
-	// Also load agents from ~/.loom/agents/ directory (created by meta-agent)
+	// Also load agents from $LOOM_DATA_DIR/agents/ directory (created by meta-agent)
 	// Keep registry alive for hot-reload
 	var registry *agent.Registry
 	configDir := loomconfig.GetLoomDataDir()
@@ -947,7 +947,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		} else {
 			// Get configs from registry
 			configs := registry.ListConfigs()
-			logger.Info("Found agents from ~/.loom/agents/", zap.Int("count", len(configs)))
+			logger.Info("Found agents from $LOOM_DATA_DIR/agents/", zap.Int("count", len(configs)))
 
 			// Create agents from loaded configs
 			for _, cfg := range configs {
@@ -1098,11 +1098,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)
 
 				// Always register shell_execute for all agents
-				// For weaver, start in LOOM_DATA_DIR so relative paths work naturally
+				// For weaver, start in LOOM_DATA_DIR/examples/reference so relative paths work naturally
 				var shellTool shuttle.Tool
 				if cfg.Name == "weaver" {
-					shellTool = builtin.NewShellExecuteTool(loomDataDir)
-					logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR)")
+					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
+					shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
+					logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
 				} else {
 					shellTool = builtin.NewShellExecuteTool("")
 					logger.Info("    Auto-registered shell_execute tool")
@@ -1949,11 +1950,12 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			// Always register shell_execute for all agents
-			// For weaver, start in LOOM_DATA_DIR so relative paths work naturally
+			// For weaver, start in LOOM_DATA_DIR/examples/reference so relative paths work naturally
 			var shellTool shuttle.Tool
 			if agentConfig.Name == "weaver" {
-				shellTool = builtin.NewShellExecuteTool(loomDataDir)
-				logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR)")
+				weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
+				shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
+				logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
 			} else {
 				shellTool = builtin.NewShellExecuteTool("")
 				logger.Info("  Auto-registered shell_execute tool")
@@ -2082,7 +2084,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Warn("Agent config watcher stopped", zap.Error(err))
 			}
 		}()
-		logger.Info("Agent config hot-reload enabled (watching ~/.loom/agents/ and ~/.loom/workflows/)")
+		logger.Info("Agent config hot-reload enabled (watching $LOOM_DATA_DIR/agents/ and $LOOM_DATA_DIR/workflows/)")
 	}
 
 	// Start server

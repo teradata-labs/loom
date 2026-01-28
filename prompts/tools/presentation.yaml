@@ -80,7 +80,7 @@ prompts:
       It includes interactive features: zoom, pan, drag nodes, and click for details.
 
       Example workflow paths:
-      - ~/.loom/agents/workflow-npath-autonomous-v3.6-streamlined.yaml
+      - $LOOM_DATA_DIR/agents/workflow-npath-autonomous-v3.6-streamlined.yaml
       - ./workflows/my-workflow.yaml
       - /absolute/path/to/workflow.yaml
     tags:

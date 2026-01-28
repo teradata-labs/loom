@@ -52,7 +52,7 @@ The PowerShell script does the same as the bash version with Windows-specific:
 ## What Gets Installed
 
 ### Binaries (Configurable Location)
-**Default**: `~/.local/bin/` (macOS/Linux) or `%USERPROFILE%\.local\bin\` (Windows)
+**Default**: `$HOME/.local/bin/` (macOS/Linux) or `%USERPROFILE%\.local\bin\` (Windows)
 
 - `looms` / `looms.exe` - Loom server
 - `loom` / `loom.exe` - TUI client
@@ -60,7 +60,7 @@ The PowerShell script does the same as the bash version with Windows-specific:
 **Custom Installation**: The installer prompts for a custom binary directory if desired.
 
 ### Data & Configuration (Configurable Location)
-**Default**: `~/.loom/` (macOS/Linux) or `%USERPROFILE%\.loom\` (Windows)
+**Default**: `$LOOM_DATA_DIR` (defaults to `$HOME/.loom/` on macOS/Linux or `%USERPROFILE%\.loom\` on Windows)
 
 - `patterns/` - 90+ reusable YAML patterns
 - `documentation/` - Complete documentation
@@ -229,8 +229,8 @@ Both installers prompt for installation directories:
 **Interactive Mode** (default):
 ```bash
 # You'll be asked:
-# "Where would you like to install Loom binaries?" [~/.local/bin]
-# "Where would you like to store Loom data?" [~/.loom]
+# "Where would you like to install Loom binaries?" [$HOME/.local/bin]
+# "Where would you like to store Loom data?" [$LOOM_DATA_DIR]
 ```
 
 **Non-Interactive Mode** (use defaults):
@@ -335,7 +335,7 @@ $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [Envir
 **macOS/Linux**: Make sure the installer added exports to your shell config file. Check:
 
 ```bash
-grep LOOM ~/.bashrc  # or ~/.zshrc
+grep LOOM $HOME/.bashrc  # or $HOME/.zshrc
 ```
 
 **Windows**: Check user environment variables:
@@ -401,7 +401,7 @@ cargo install just --force
 - **Try examples**: `./examples/README.md`
 - **Join the community**: https://github.com/teradata-labs/loom/issues
 - **Add Hawk observability**: https://github.com/teradata-labs/hawk
-- **Explore patterns**: `~/.loom/patterns/`
+- **Explore patterns**: `$LOOM_DATA_DIR/patterns/`
 
 ## CI/CD Installation
 
@@ -429,7 +429,7 @@ rm -f "$LOOM_BIN_DIR/loom" "$LOOM_BIN_DIR/looms"
 rm -rf "$LOOM_DATA_DIR"
 
 # Remove environment variables from shell config
-# Edit ~/.bashrc or ~/.zshrc and remove the Loom section
+# Edit $HOME/.bashrc or $HOME/.zshrc and remove the Loom section
 
 # Remove source
 cd .. && rm -rf loom

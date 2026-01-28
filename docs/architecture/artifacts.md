@@ -356,7 +356,7 @@ func EnsureScratchpadDir(sessionID string) error
 **Path Resolution Logic**:
 ```go
 func GetArtifactDir(sessionID string, source SourceType) (string, error) {
-    baseDir := config.GetLoomDataDir()  // ~/.loom/
+    baseDir := config.GetLoomDataDir()  // $LOOM_DATA_DIR/
     artifactsDir := filepath.Join(baseDir, "artifacts")
 
     if sessionID == "" {
@@ -374,7 +374,7 @@ func GetArtifactDir(sessionID string, source SourceType) (string, error) {
 
 **Directory Structure**:
 ```
-~/.loom/artifacts/
+$LOOM_DATA_DIR/artifacts/
 ├── user/                          # User uploads (no session)
 ├── temp/                          # Fallback (no session context)
 └── sessions/
@@ -488,18 +488,18 @@ type ShellExecuteTool struct {
 
 | Operation | Allowed Paths | Blocked Paths |
 |-----------|---------------|---------------|
-| **Read** | `~/.loom/artifacts/sessions/<session>/` | Other sessions (if `restrictReads=session`) |
-| | `~/.loom/documentation/` | Outside `LOOM_DATA_DIR` |
-| | `~/.loom/examples/` | System directories (`/etc`, `/tmp`) |
-| **Write** | `~/.loom/artifacts/sessions/<session>/agent/` | Other sessions |
-| | `~/.loom/artifacts/sessions/<session>/scratchpad/` | User directory |
+| **Read** | `$LOOM_DATA_DIR/artifacts/sessions/<session>/` | Other sessions (if `restrictReads=session`) |
+| | `$LOOM_DATA_DIR/documentation/` | Outside `LOOM_DATA_DIR` |
+| | `$LOOM_DATA_DIR/examples/` | System directories (`/etc`, `/tmp`) |
+| **Write** | `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/` | Other sessions |
+| | `$LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/` | User directory |
 | | | Outside `LOOM_DATA_DIR` |
 
 **Environment Variables**:
 ```bash
-$LOOM_DATA_DIR             # ~/.loom/
-$SESSION_ARTIFACT_DIR      # ~/.loom/artifacts/sessions/<session>/agent/
-$SESSION_SCRATCHPAD_DIR    # ~/.loom/artifacts/sessions/<session>/scratchpad/
+$LOOM_DATA_DIR             # $LOOM_DATA_DIR/
+$SESSION_ARTIFACT_DIR      # $LOOM_DATA_DIR/artifacts/sessions/<session>/agent/
+$SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/
 ```
 
 **Working Directory**: Defaults to `$SESSION_ARTIFACT_DIR` (agent can use relative paths)
@@ -848,7 +848,7 @@ LIMIT 20;
 
 **Filesystem Layout**:
 ```
-~/.loom/
+$LOOM_DATA_DIR/
 ├── loom.db                         # SQLite database
 ├── artifacts/
 │   ├── user/                      # User-uploaded (no session)
@@ -879,10 +879,10 @@ LIMIT 20;
 **Path Resolution**:
 | Context | Path |
 |---------|------|
-| User upload | `~/.loom/artifacts/user/<filename>` |
-| Agent with session | `~/.loom/artifacts/sessions/<session>/agent/<filename>` |
-| Scratchpad | `~/.loom/artifacts/sessions/<session>/scratchpad/<filename>` |
-| No session context | `~/.loom/artifacts/temp/<filename>` |
+| User upload | `$LOOM_DATA_DIR/artifacts/user/<filename>` |
+| Agent with session | `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/<filename>` |
+| Scratchpad | `$LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/<filename>` |
+| No session context | `$LOOM_DATA_DIR/artifacts/temp/<filename>` |
 
 ---
 
@@ -969,7 +969,7 @@ END;
 
 ### Session-Based Organization
 
-**Problem Statement**: In v1.0.0, artifacts lived in a flat `~/.loom/artifacts/` directory with no association to sessions. This created several issues:
+**Problem Statement**: In v1.0.0, artifacts lived in a flat `$LOOM_DATA_DIR/artifacts/` directory with no association to sessions. This created several issues:
 
 1. **Manual Path Management**: Agents had to construct full paths manually
 2. **No Automatic Cleanup**: Deleting session left orphaned artifacts

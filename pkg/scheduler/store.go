@@ -28,7 +28,7 @@ type Store struct {
 }
 
 // NewStore creates a new scheduler store with SQLite backend.
-// The dbPath should point to ~/.loom/scheduler.db.
+// The dbPath should point to $LOOM_DATA_DIR/scheduler.db.
 func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, error) {
 	// Open database with SQLite-specific pragmas
 	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?cache=shared&mode=rwc&_journal_mode=WAL", dbPath))

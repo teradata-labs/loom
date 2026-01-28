@@ -141,7 +141,7 @@ agent:
     model: claude-sonnet-4-5-20250929
   memory:
     type: sqlite
-    path: ~/.loom/sessions/sql-agent.db
+    path: $LOOM_DATA_DIR/sessions/sql-agent.db
     memory_compression:
       workload_profile: data_intensive  # Add this
 ```
@@ -156,7 +156,7 @@ agent:
     model: claude-sonnet-4-5-20250929
   memory:
     type: sqlite
-    path: ~/.loom/sessions/chat-agent.db
+    path: $LOOM_DATA_DIR/sessions/chat-agent.db
     memory_compression:
       workload_profile: conversational  # Add this
 ```
@@ -201,7 +201,7 @@ agent:
     model: claude-sonnet-4-5-20250929
   memory:
     type: sqlite
-    path: ~/.loom/sessions/teradata.db
+    path: $LOOM_DATA_DIR/sessions/teradata.db
 ```
 
 **After (Beta 5):**
@@ -213,7 +213,7 @@ agent:
     model: claude-sonnet-4-5-20250929
   memory:
     type: sqlite
-    path: ~/.loom/sessions/teradata.db
+    path: $LOOM_DATA_DIR/sessions/teradata.db
     memory_compression:
       workload_profile: data_intensive  # Add this for SQL workloads
 ```

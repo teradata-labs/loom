@@ -47,8 +47,6 @@ spec:
   rom: "TD"
 
   system_prompt: |
-    CRITICAL: use shell_execute to explore examples (ls ~/.loom/examples/) and read reference files
-    
     YOUR MISSION:
     Discover and profile the Teradata database to identify interesting tables and patterns for analysis.
     Use the tool_search tool to find teradata (also called vantage or clearscape) specific tools.

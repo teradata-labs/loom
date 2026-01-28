@@ -687,7 +687,7 @@ func extractLineNumber(errMsg string) int {
 }
 
 // ShouldValidate checks if a file path should be validated.
-// Returns true for files in ~/.loom/agents/ or ~/.loom/workflows/
+// Returns true for files in $LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/
 func ShouldValidate(filePath string) bool {
 	cleanPath := filepath.Clean(filePath)
 	return strings.Contains(cleanPath, "/.loom/agents/") ||

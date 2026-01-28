@@ -24,7 +24,7 @@
         "  scoop install loom-server",
         "",
         "Quick start:",
-        "  1. Install patterns: New-Item -ItemType Directory -Force $env:USERPROFILE\\.loom\\patterns",
+        "  1. Install patterns: New-Item -ItemType Directory -Force $env:LOOM_DATA_DIR\\patterns",
         "  2. Download patterns from: https://github.com/teradata-labs/loom/tree/main/patterns",
         "  3. Configure LLM provider (see: https://github.com/teradata-labs/loom#quick-start)",
         "",

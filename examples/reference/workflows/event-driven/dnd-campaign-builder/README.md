@@ -107,7 +107,7 @@ Coordinator: Campaign Creation Summary:
              📄 FINAL DOCUMENT: campaign_20251231_142530.pdf
              Complete campaign saved to artifacts!
 
-             [All artifacts in ~/.loom/artifacts/dnd-campaigns/campaign_20251231_142530/]
+             [All artifacts in $LOOM_DATA_DIR/artifacts/dnd-campaigns/campaign_20251231_142530/]
 ```
 
 ## Features
@@ -118,7 +118,7 @@ Coordinator: Campaign Creation Summary:
 - Delegates work to appropriate specialist agents via `send_message`
 - Synthesizes multi-agent results into comprehensive campaign overview
 - Generates unique campaign_id for organizing artifacts
-- Saves final overview to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/overview.md`
+- Saves final overview to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/overview.md`
 - **Memory**: SQLite with conversational profile (max_history: 1000)
 - **Config**: max_turns: 100, max_tool_executions: 200, timeout: 900s
 - **Tools**: shell_execute, tool_search, send_message (NO receive_message - fully event-driven)
@@ -129,7 +129,7 @@ Coordinator: Campaign Creation Summary:
 - Designs political systems, economies, and social structures
 - Develops pantheons, magic systems, and supernatural elements
 - Ensures world elements support campaign theme and tone
-- Saves world data to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/world.json`
+- Saves world data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/world.json`
 - **Memory**: SQLite with data_intensive profile (max_history: 2000)
 - **Config**: max_turns: 80, max_tool_executions: 150, timeout: 600s
 - **Tools**: shell_execute, tool_search, send_message, receive_message
@@ -141,7 +141,7 @@ Coordinator: Campaign Creation Summary:
 - Develops dramatic tension, pacing, and emotional beats
 - Integrates story with world setting from world-builder
 - Generates plot points that accommodate player agency
-- Saves story data to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/story.json`
+- Saves story data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/story.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
 - **Tools**: shell_execute, tool_search, send_message, receive_message
@@ -153,7 +153,7 @@ Coordinator: Campaign Creation Summary:
 - Balances encounter difficulty for party composition
 - Integrates encounters with story beats and world setting
 - Provides stat blocks, tactics, and treasure rewards
-- Saves encounter data to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/encounters.json`
+- Saves encounter data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/encounters.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
 - **Tools**: shell_execute, tool_search, send_message, receive_message
@@ -165,7 +165,7 @@ Coordinator: Campaign Creation Summary:
 - Designs memorable quirks, secrets, and relationships
 - Integrates NPCs into world's factions and storyline
 - Provides roleplay guidance and voice suggestions
-- Saves NPC data to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/npcs.json`
+- Saves NPC data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/npcs.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
 - **Tools**: shell_execute, tool_search, send_message, receive_message
@@ -177,7 +177,7 @@ Coordinator: Campaign Creation Summary:
 - Provides pacing guidance and estimated session length
 - Includes hooks to connect sessions and maintain momentum
 - Creates session prep notes for DMs
-- Saves session plans to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/sessions.json`
+- Saves session plans to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/sessions.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
 - **Tools**: shell_execute, tool_search, send_message, receive_message
@@ -189,7 +189,7 @@ Coordinator: Campaign Creation Summary:
 - Creates table of contents and index
 - Generates PDF or markdown formatted campaign book
 - Includes DM notes, player handouts, and reference materials
-- Saves final document to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/campaign.pdf`
+- Saves final document to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/campaign.pdf`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 60, max_tool_executions: 150, timeout: 600s
 - **Tools**: shell_execute, tool_search, send_message, receive_message
@@ -219,7 +219,7 @@ All agents have:
 
 ## Output Artifacts
 
-The workflow saves detailed artifacts to `~/.loom/artifacts/dnd-campaigns/{campaign_id}/`:
+The workflow saves detailed artifacts to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/`:
 
 - `overview.md` - Complete campaign overview (coordinator)
 - `world.json` - World setting and geography (world-builder)

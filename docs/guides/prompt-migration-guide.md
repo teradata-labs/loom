@@ -46,7 +46,7 @@ prompts:
 EOF
 
 # Update looms.yaml
-cat >> ~/.loom/looms.yaml << 'EOF'
+cat >> $LOOM_DATA_DIR/looms.yaml << 'EOF'
 prompts:
   source: file
   file_dir: ./prompts

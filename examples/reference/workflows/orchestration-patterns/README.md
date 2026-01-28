@@ -180,7 +180,7 @@ looms workflow execute \
 
 ### Agent Requirements
 
-Workflows reference agent IDs that must exist in your agent registry (`$LOOM_DATA_DIR/agents/` or `~/.loom/agents/`).
+Workflows reference agent IDs that must exist in your agent registry (`$LOOM_DATA_DIR/agents/` or `$LOOM_DATA_DIR/agents/`).
 
 Each workflow file includes comments describing the expected agent capabilities.
 

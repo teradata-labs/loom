@@ -3501,7 +3501,7 @@
           "title": "Soft delete timestamp (Unix seconds, optional)"
         }
       },
-      "title": "Artifact represents a file in ~/.loom/artifacts/"
+      "title": "Artifact represents a file in $LOOM_DATA_DIR/artifacts/"
     },
     "v1AssessmentStrategy": {
       "type": "string",
@@ -4634,7 +4634,7 @@
         },
         "cacheDir": {
           "type": "string",
-          "title": "Certificate cache directory (default: ~/.loom/certs)"
+          "title": "Certificate cache directory (default: $LOOM_DATA_DIR/certs)"
         },
         "autoRenew": {
           "type": "boolean",

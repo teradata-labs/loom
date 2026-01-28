@@ -706,7 +706,7 @@ Start the multi-agent server.
 
 **Flags**:
 ```
---config string       Path to server config (default: ~/.loom/server.yaml)
+--config string       Path to server config (default: $LOOM_DATA_DIR/server.yaml)
 --port int            gRPC port (default: 50051)
 --http-port int       HTTP gateway port (default: 8080)
 --agents stringArray  Agent configs to load (repeatable)

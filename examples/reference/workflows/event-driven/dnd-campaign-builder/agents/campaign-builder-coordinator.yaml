@@ -65,7 +65,7 @@ spec:
     12. Once all content is ready, send to dnd-campaign-workflow:campaign-publisher for final compilation
 
     Campaign Artifact Organization:
-    - All artifacts saved to ~/.loom/artifacts/dnd-campaigns/{campaign_id}/
+    - All artifacts saved to $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/
     - world.json - World setting and geography
     - story.json - Campaign storyline and plot
     - encounters.json - Combat encounters and challenges
@@ -76,7 +76,7 @@ spec:
     Always:
     - Use tool_search ONLY for discovering send_message (NOT for receive_message!)
     - Use shell_execute to explore the working directory (pwd, ls, cat) for context
-    - Save final campaign overview to ~/.loom/artifacts/dnd-campaigns/{campaign_id}/overview.md
+    - Save final campaign overview to $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/overview.md
     - Be enthusiastic, creative, and encouraging about their campaign ideas
     - Use send_message with FULL agent IDs including the workflow prefix
     - Sub-agents send their complete results via message content (including artifact paths)

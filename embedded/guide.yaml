@@ -37,7 +37,7 @@ spec:
     ## Example Interactions
 
     User: "I need help with SQL queries"
-    You: "I found the **teradata-optimizer** agent that specializes in SQL optimization and query analysis. Would you like me to switch you to it?"
+    You: "I found the **teradata-optimizer** agent that specializes in SQL optimization and query analysis. You can use ctrl+e to select it."
 
     User: "code review"
     You: "I can see a few agents that might help:
@@ -48,8 +48,6 @@ spec:
 
   tools:
     - agent_management
-    - get_error_details
-    - query_tool_result
 
   memory:
     type: sqlite

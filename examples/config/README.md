@@ -97,7 +97,7 @@ llm:
   max_tokens: 4096
 
 database:
-  path: ~/.loom/loom.db   # SQLite database for sessions
+  path: $LOOM_DATA_DIR/loom.db   # SQLite database for sessions
   driver: sqlite
 
 observability:
@@ -129,15 +129,15 @@ Create environment-specific configurations by copying and modifying these exampl
 
 ```bash
 # Development
-cp config/looms.yaml ~/.loom/looms-dev.yaml
+cp config/looms.yaml $LOOM_DATA_DIR/looms-dev.yaml
 # Edit for local development settings
 
 # Staging
-cp config/looms.yaml ~/.loom/looms-staging.yaml
+cp config/looms.yaml $LOOM_DATA_DIR/looms-staging.yaml
 # Edit for staging environment
 
 # Production
-cp config/looms.yaml ~/.loom/looms-prod.yaml
+cp config/looms.yaml $LOOM_DATA_DIR/looms-prod.yaml
 # Edit for production settings (observability, TLS, etc.)
 ```
 

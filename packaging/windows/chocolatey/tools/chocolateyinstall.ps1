@@ -53,8 +53,8 @@ $loomsExe = Join-Path $toolsDir 'looms-windows-amd64.exe'
 Install-BinFile -Name 'loom' -Path $loomExe
 Install-BinFile -Name 'looms' -Path $loomsExe
 
-# Create Loom data directory
-$loomDataDir = Join-Path $env:USERPROFILE '.loom'
+# Create Loom data directory (respect existing LOOM_DATA_DIR if set)
+$loomDataDir = if ($env:LOOM_DATA_DIR) { $env:LOOM_DATA_DIR } else { Join-Path $env:USERPROFILE '.loom' }
 $patternsDir = Join-Path $loomDataDir 'patterns'
 
 Write-Host "Creating Loom data directory at $loomDataDir..." -ForegroundColor Green
@@ -100,9 +100,12 @@ try {
     if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
 }
 
-# Set user environment variable for Loom data directory
+# Set user environment variable for Loom data directory (only if not already set)
 # This is a standard configuration step for the application
-Install-ChocolateyEnvironmentVariable -VariableName 'LOOM_DATA_DIR' -VariableValue $loomDataDir -VariableType 'User'
+if (-not $env:LOOM_DATA_DIR) {
+    Install-ChocolateyEnvironmentVariable -VariableName 'LOOM_DATA_DIR' -VariableValue $loomDataDir -VariableType 'User'
+    Write-Host "LOOM_DATA_DIR set to: $loomDataDir" -ForegroundColor Green
+}
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan

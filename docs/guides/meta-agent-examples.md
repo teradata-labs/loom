@@ -150,7 +150,7 @@ bin/looms weave "Build a SQL optimizer where multiple threads debate the best qu
 bin/looms weave "Build a SQL optimizer where multiple threads debate the best query plan" --spawn-window
 
 # Or execute manually
-looms workflow execute ~/.loom/threads/workflows/sql/sql-optimizer-debate.yaml
+looms workflow execute $LOOM_DATA_DIR/threads/workflows/sql/sql-optimizer-debate.yaml
 ```
 
 **What Happens**:
@@ -213,7 +213,7 @@ bin/looms weave "Extract data from CSV, transform column names to snake_case, th
 **Usage**:
 
 ```bash
-looms workflow execute ~/.loom/threads/workflows/etl/csv-to-postgres-pipeline.yaml \
+looms workflow execute $LOOM_DATA_DIR/threads/workflows/etl/csv-to-postgres-pipeline.yaml \
   --var input_csv_path=./data/customers.csv \
   --var target_table=customers
 ```

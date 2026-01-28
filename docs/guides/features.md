@@ -72,7 +72,7 @@ Connect to Model Context Protocol servers for external tool access.
 
 ### Configure MCP Servers
 
-Create `~/.loom/mcp.yaml`:
+Create `$LOOM_DATA_DIR/mcp.yaml`:
 
 ```yaml
 servers:
@@ -254,7 +254,7 @@ metadata:
 spec:
   memory:
     type: sqlite
-    path: ~/.loom/memory/sql_expert.db
+    path: $LOOM_DATA_DIR/memory/sql_expert.db
     max_history: 50
 ```
 

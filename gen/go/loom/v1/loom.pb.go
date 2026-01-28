@@ -8682,7 +8682,7 @@ func (x *ListMCPServerToolsResponse) GetServerName() string {
 	return ""
 }
 
-// Artifact represents a file in ~/.loom/artifacts/
+// Artifact represents a file in $LOOM_DATA_DIR/artifacts/
 type Artifact struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unique identifier (UUID)

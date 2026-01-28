@@ -34,7 +34,7 @@ var configCmd = &cobra.Command{
 var configInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Generate example configuration file",
-	Long:  `Generate an example looms.yaml configuration file in ~/.loom/`,
+	Long:  `Generate an example looms.yaml configuration file in $LOOM_DATA_DIR/`,
 	Run:   runConfigInit,
 }
 
@@ -84,7 +84,7 @@ var configListKeysCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set [key] [value]",
 	Short: "Set a configuration value",
-	Long: `Set a non-sensitive configuration value in ~/.loom/looms.yaml.
+	Long: `Set a non-sensitive configuration value in $LOOM_DATA_DIR/looms.yaml.
 
 For sensitive values (API keys, secrets), use 'looms config set-key' instead.
 
@@ -102,7 +102,7 @@ Examples:
 var configGetCmd = &cobra.Command{
 	Use:   "get [key]",
 	Short: "Get a configuration value",
-	Long: `Get a configuration value from ~/.loom/looms.yaml.
+	Long: `Get a configuration value from $LOOM_DATA_DIR/looms.yaml.
 
 Examples:
   looms config get llm.provider
@@ -225,7 +225,7 @@ func runConfigInit(cmd *cobra.Command, args []string) {
 	fmt.Println("2. Start the server:")
 	fmt.Println("   looms serve")
 	fmt.Println()
-	fmt.Println("Tip: Validate your configuration with 'looms validate file ~/.loom/looms.yaml'")
+	fmt.Println("Tip: Validate your configuration with 'looms validate file $LOOM_DATA_DIR/looms.yaml'")
 }
 
 func runConfigSetKey(cmd *cobra.Command, args []string) {

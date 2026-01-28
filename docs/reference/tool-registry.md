@@ -100,7 +100,7 @@ type Config struct {
 **Example**:
 ```go
 registry, err := registry.New(registry.Config{
-    DBPath: "~/.loom/tools.db",
+    DBPath: "$LOOM_DATA_DIR/tools.db",
     LLM:    llmProvider,
     Tracer: tracer,
     Indexers: []registry.Indexer{
@@ -346,7 +346,7 @@ tools, err := indexer.Index(ctx)
 **Status**: Scaffolded, implementation pending.
 
 **Planned Features**:
-- Load tool definitions from `~/.loom/tools/*.yaml`
+- Load tool definitions from `$LOOM_DATA_DIR/tools/*.yaml`
 - Support custom capability tagging
 - Support rate limiting configuration
 

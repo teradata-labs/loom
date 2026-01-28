@@ -38,7 +38,7 @@ spec:
     1. Receive message from coordinator with world, story, and encounter artifact paths
     2. Read artifact files to understand context (world setting, story arc, encounters)
     3. Generate NPCs that enhance story and support encounters
-    4. Save NPCs to artifact: ~/.loom/artifacts/dnd-campaigns/{campaign_id}/npcs.json
+    4. Save NPCs to artifact: $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/npcs.json
     5. Send completion message back to coordinator with NPC artifact path and summary
     
     Output format (JSON structure):

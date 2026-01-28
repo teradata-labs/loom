@@ -1003,7 +1003,7 @@ type PatternCategory struct {
 	Files []string // List of pattern file paths in this category
 }
 
-// listPatternCategories scans ~/.loom/patterns and returns categories.
+// listPatternCategories scans $LOOM_DATA_DIR/patterns and returns categories.
 func listPatternCategories() []PatternCategory {
 	loomDir, err := home.Dir()
 	if err != nil {

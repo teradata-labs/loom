@@ -550,7 +550,7 @@ type WebSearchEndpointsConfig struct {
 // LearningConfig holds configuration for the learning agent (self-improvement system).
 // This can be configured via:
 // 1. Config file (looms.yaml) - basic settings
-// 2. YAML files in ~/.loom/learning/ - full declarative config (preferred)
+// 2. YAML files in $LOOM_DATA_DIR/learning/ - full declarative config (preferred)
 // 3. CLI flags - for quick overrides
 type LearningConfig struct {
 	// Enabled enables the learning agent (default: true)
@@ -562,7 +562,7 @@ type LearningConfig struct {
 
 	// ConfigDir is a directory containing LearningAgentConfig YAML files
 	// All *.yaml files in this directory will be loaded
-	// Default: ~/.loom/learning/
+	// Default: $LOOM_DATA_DIR/learning/
 	ConfigDir string `mapstructure:"config_dir"`
 
 	// AutonomyLevel controls how improvements are applied
@@ -584,11 +584,11 @@ type SchedulerConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
 	// WorkflowDir is the directory containing workflow YAML files with schedule sections
-	// Default: ~/.loom/workflows/
+	// Default: $LOOM_DATA_DIR/workflows/
 	WorkflowDir string `mapstructure:"workflow_dir"`
 
 	// DBPath is the path to the scheduler SQLite database
-	// Default: ~/.loom/scheduler.db
+	// Default: $LOOM_DATA_DIR/scheduler.db
 	DBPath string `mapstructure:"db_path"`
 
 	// HotReload enables automatic reloading when workflow files change (default: true)

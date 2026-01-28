@@ -93,7 +93,7 @@ message LetsEncryptConfig {
   // Must be accessible from the internet for Let's Encrypt validation
   int32 http_challenge_port = 4;
 
-  // Certificate cache directory (default: ~/.loom/certs)
+  // Certificate cache directory (default: $LOOM_DATA_DIR/certs)
   string cache_dir = 5;
 
   // Enable automatic certificate renewal (default: true)

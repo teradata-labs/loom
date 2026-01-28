@@ -54,7 +54,7 @@ type SQLResultMetadata struct {
 
 // SQLResultStoreConfig configures the SQL result store.
 type SQLResultStoreConfig struct {
-	DBPath     string // Path to SQLite database (defaults to ~/.loom/loom.db)
+	DBPath     string // Path to SQLite database (defaults to $LOOM_DATA_DIR/loom.db)
 	TTLSeconds int64
 }
 

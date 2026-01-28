@@ -833,7 +833,7 @@ func loadAgentReferenceWorkflow(path, workflowName, description, entrypoint stri
 	// Load agent configs and create namespaced copies
 	var configs []*loomv1.AgentConfig
 
-	// Determine config directory (assume same directory as workflow file or ~/.loom/agents)
+	// Determine config directory (assume same directory as workflow file or $LOOM_DATA_DIR/agents)
 	configDir := filepath.Dir(path)
 	agentsDir := filepath.Join(filepath.Dir(configDir), "agents")
 
@@ -1041,7 +1041,7 @@ Use the workflow orchestration tools to coordinate execution across these agents
 		},
 		Memory: &loomv1.MemoryConfig{
 			Type:       "sqlite",
-			Path:       fmt.Sprintf("~/.loom/memory/%s-coordinator.db", workflowName),
+			Path:       fmt.Sprintf("$LOOM_DATA_DIR/memory/%s-coordinator.db", workflowName),
 			MaxHistory: 100,
 		},
 		Behavior: &loomv1.BehaviorConfig{
@@ -1071,7 +1071,7 @@ Use the workflow orchestration tools to coordinate execution across these agents
 			},
 			Memory: &loomv1.MemoryConfig{
 				Type:       "sqlite",
-				Path:       fmt.Sprintf("~/.loom/memory/%s-%s.db", workflowName, agentID),
+				Path:       fmt.Sprintf("$LOOM_DATA_DIR/memory/%s-%s.db", workflowName, agentID),
 				MaxHistory: 100,
 			},
 			Behavior: &loomv1.BehaviorConfig{
@@ -1184,7 +1184,7 @@ func loadWeaverWorkflow(path string, data map[string]interface{}, llmProvider LL
 		},
 		Memory: &loomv1.MemoryConfig{
 			Type:       "sqlite",
-			Path:       fmt.Sprintf("~/.loom/memory/%s-coordinator.db", displayName),
+			Path:       fmt.Sprintf("$LOOM_DATA_DIR/memory/%s-coordinator.db", displayName),
 			MaxHistory: 100,
 		},
 		Behavior: &loomv1.BehaviorConfig{
@@ -1241,7 +1241,7 @@ func loadWeaverWorkflow(path string, data map[string]interface{}, llmProvider LL
 			},
 			Memory: &loomv1.MemoryConfig{
 				Type:       "sqlite",
-				Path:       fmt.Sprintf("~/.loom/memory/%s-%s.db", displayName, agentName),
+				Path:       fmt.Sprintf("$LOOM_DATA_DIR/memory/%s-%s.db", displayName, agentName),
 				MaxHistory: 100,
 			},
 			Behavior: &loomv1.BehaviorConfig{

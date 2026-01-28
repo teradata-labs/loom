@@ -19,8 +19,8 @@ class LoomServer < Formula
     bin.install "looms-darwin-arm64" => "looms" if Hardware::CPU.arm?
     bin.install "looms-darwin-amd64" => "looms" if Hardware::CPU.intel?
 
-    # Create Loom data directory
-    loom_dir = "#{Dir.home}/.loom"
+    # Create Loom data directory (respects LOOM_DATA_DIR env var)
+    loom_dir = ENV["LOOM_DATA_DIR"] || "#{Dir.home}/.loom"
     patterns_dir = "#{loom_dir}/patterns"
     config_file = "#{loom_dir}/looms.yaml"
 
@@ -102,8 +102,8 @@ class LoomServer < Formula
     <<~EOS
       Loom server has been installed.
 
-      Configuration file: #{Dir.home}/.loom/looms.yaml
-      Patterns directory: #{Dir.home}/.loom/patterns
+      Configuration file: $LOOM_DATA_DIR/looms.yaml (default: $HOME/.loom/looms.yaml)
+      Patterns directory: $LOOM_DATA_DIR/patterns (default: $HOME/.loom/patterns)
 
       To start the server:
         looms serve

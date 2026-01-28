@@ -409,10 +409,10 @@ jobs:
       - name: Verify configuration (Unix)
         if: runner.os != 'Windows'
         run: |
-          test -d ~/.loom && echo "✓ loom config directory exists"
-          test -f ~/.loom/looms.yaml && echo "✓ loom looms.yaml exists"
-          test -d ~/.hawk && echo "✓ hawk config directory exists"
-          test -f ~/.hawk/config.yaml && echo "✓ hawk config.yaml exists"
+          test -d $HOME/.loom && echo "✓ loom config directory exists"
+          test -f $HOME/.loom/looms.yaml && echo "✓ loom looms.yaml exists"
+          test -d $HOME/.hawk && echo "✓ hawk config directory exists"
+          test -f $HOME/.hawk/config.yaml && echo "✓ hawk config.yaml exists"
 
       - name: Verify configuration (Windows)
         if: runner.os == 'Windows'

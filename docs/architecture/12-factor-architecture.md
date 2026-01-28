@@ -329,7 +329,7 @@ func (m *CircuitBreakerManager) Execute(ctx context.Context, key string, fn func
 │  ─────────────────────────────────────────────────────────────────────  │
 │  grpc_port: 60051                                                        │
 │  http_port: 5006                                                         │
-│  db_path: ~/.loom/loom.db                                                │
+│  db_path: $LOOM_DATA_DIR/loom.db                                                │
 │  tracer: noop (disabled)                                                 │
 │  patterns_dir: ./patterns                                                │
 └─────────────────────────────────────┬───────────────────────────────────┘
@@ -623,7 +623,7 @@ LOOM_ENV=prod looms start --config=/etc/loom/prod.yaml
          │  • Metadata    │  │  (Optional)    │  │  • 5 others    │
          │                │  │                │  │                │
          │ File Location: │  │ Address:       │  │ Config-driven  │
-         │ ~/.loom/loom.db│  │ :50051         │  │ selection      │
+         │ $LOOM_DATA_DIR/loom.db│  │ :50051         │  │ selection      │
          └────────────────┘  └────────────────┘  └────────────────┘
 ```
 
@@ -1320,7 +1320,7 @@ curl http://localhost:5006/v1/agents
 │  └────────────────────────────────────────────────────────────────┘    │
 │                                                                          │
 │  Access: Lazy-load on demand, paginated queries                         │
-│  Storage: ~/.loom/loom.db (persistent across restarts)                  │
+│  Storage: $LOOM_DATA_DIR/loom.db (persistent across restarts)                  │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐

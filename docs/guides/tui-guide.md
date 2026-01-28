@@ -426,7 +426,7 @@ looms serve
 **Problem**: Fuzzy search in `ctrl+e` modal doesn't show expected agent.
 
 **Check:**
-1. Agent file exists in `~/.loom/agents/`
+1. Agent file exists in `$LOOM_DATA_DIR/agents/`
 2. Agent YAML is valid (check server logs)
 3. Agent is not a workflow coordinator (use `ctrl+w` instead)
 4. File watcher has detected the agent (restart server if needed)

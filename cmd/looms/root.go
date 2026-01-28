@@ -67,7 +67,7 @@ Support:
 `)
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: $HOME/.loom/looms.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: $LOOM_DATA_DIR/looms.yaml)")
 
 	// Server flags
 	rootCmd.PersistentFlags().Int("port", 60051, "gRPC server port")

@@ -38,7 +38,7 @@ spec:
     1. Receive message from coordinator with world artifact path (e.g., "dnd-campaigns/{id}/world.json")
     2. Read world artifact to understand the setting
     3. Generate narrative arc that fits the world
-    4. Save story data to artifact: ~/.loom/artifacts/dnd-campaigns/{campaign_id}/story.json
+    4. Save story data to artifact: $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/story.json
     5. Send completion message back to coordinator with story artifact path and summary
     
     Output format (JSON structure):

@@ -54,7 +54,7 @@ Complete best practices for SQLite usage in Loom - session storage, HITL persist
 
 ```bash
 # Default storage locations
-~/.loom/
+$LOOM_DATA_DIR/
 ├── sessions.db         # Agent sessions (SessionStore)
 ├── sessions.db-wal     # WAL file (auto-created)
 ├── sessions.db-shm     # Shared memory (auto-created)
@@ -910,8 +910,8 @@ func BackupDatabase(srcPath, dstPath string) error {
 looms stop
 
 # Copy database files
-cp ~/.loom/sessions.db ~/.loom/backups/sessions-2025-12-11.db
-cp ~/.loom/hitl.db ~/.loom/backups/hitl-2025-12-11.db
+cp $LOOM_DATA_DIR/sessions.db $LOOM_DATA_DIR/backups/sessions-2025-12-11.db
+cp $LOOM_DATA_DIR/hitl.db $LOOM_DATA_DIR/backups/hitl-2025-12-11.db
 
 # Restart Loom
 looms serve
@@ -946,18 +946,18 @@ sqlite3 restored.db < sessions-backup.sql
 #!/bin/bash
 # backup-loom.sh
 
-BACKUP_DIR=~/.loom/backups
+BACKUP_DIR=$LOOM_DATA_DIR/backups
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 mkdir -p $BACKUP_DIR
 
 # Checkpoint WAL (merge into main database)
-sqlite3 ~/.loom/sessions.db "PRAGMA wal_checkpoint(TRUNCATE)"
+sqlite3 $LOOM_DATA_DIR/sessions.db "PRAGMA wal_checkpoint(TRUNCATE)"
 
 # Copy databases
-cp ~/.loom/sessions.db $BACKUP_DIR/sessions-$TIMESTAMP.db
-cp ~/.loom/hitl.db $BACKUP_DIR/hitl-$TIMESTAMP.db
-cp ~/.loom/references.db $BACKUP_DIR/references-$TIMESTAMP.db
+cp $LOOM_DATA_DIR/sessions.db $BACKUP_DIR/sessions-$TIMESTAMP.db
+cp $LOOM_DATA_DIR/hitl.db $BACKUP_DIR/hitl-$TIMESTAMP.db
+cp $LOOM_DATA_DIR/references.db $BACKUP_DIR/references-$TIMESTAMP.db
 
 # Delete backups older than 7 days
 find $BACKUP_DIR -name "*.db" -mtime +7 -delete
@@ -1355,7 +1355,7 @@ db.Exec("PRAGMA wal_autocheckpoint = 1000")  // Every 1000 pages
 
 ```bash
 # Weekly cron job
-0 3 * * 0 sqlite3 ~/.loom/sessions.db "PRAGMA integrity_check"
+0 3 * * 0 sqlite3 $LOOM_DATA_DIR/sessions.db "PRAGMA integrity_check"
 ```
 
 **Why**: Detect corruption early before data loss.

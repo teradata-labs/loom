@@ -13,7 +13,7 @@ import (
 
 // Base ROM - operational guidance for all agents
 // Single source of truth: pkg/agent/roms/START_HERE.md
-// Embedded into binary at compile time and deployed to ~/.loom/START_HERE.md
+// Embedded into binary at compile time and deployed to $LOOM_DATA_DIR/START_HERE.md
 //
 //go:embed roms/START_HERE.md
 var baseROM string
@@ -172,7 +172,7 @@ func GetDomainROMSize(romID string) int {
 // GetBaseROM returns the raw base ROM content (START_HERE.md).
 // This is the single source of truth for the base ROM, used by both:
 // - Agent ROM loading (via LoadROMContent)
-// - Deployment to ~/.loom/START_HERE.md (via embedded package)
+// - Deployment to $LOOM_DATA_DIR/START_HERE.md (via embedded package)
 func GetBaseROM() []byte {
 	return []byte(baseROM)
 }

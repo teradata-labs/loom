@@ -88,10 +88,10 @@ type Stats struct {
 
 // GetArtifactDir returns the artifact directory for a given context.
 // Directory structure:
-//   - No session + user: ~/.loom/artifacts/user/
-//   - No session + generated/agent: ~/.loom/artifacts/temp/
-//   - Session + user: ~/.loom/artifacts/sessions/<session-id>/user/
-//   - Session + generated/agent: ~/.loom/artifacts/sessions/<session-id>/agent/
+//   - No session + user: $LOOM_DATA_DIR/artifacts/user/
+//   - No session + generated/agent: $LOOM_DATA_DIR/artifacts/temp/
+//   - Session + user: $LOOM_DATA_DIR/artifacts/sessions/<session-id>/user/
+//   - Session + generated/agent: $LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/
 func GetArtifactDir(sessionID string, source SourceType) (string, error) {
 	baseDir := config.GetLoomDataDir()
 	artifactsDir := filepath.Join(baseDir, "artifacts")
@@ -148,7 +148,7 @@ func EnsureScratchpadDir(sessionID string) error {
 
 // ExtractSessionIDFromPath attempts to extract session ID from an artifact path.
 // Returns empty string if path is not session-based.
-// Example path: ~/.loom/artifacts/sessions/<session-id>/agent/file.csv
+// Example path: $LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/file.csv
 func ExtractSessionIDFromPath(path string) string {
 	// Normalize path and convert to forward slashes for consistent parsing
 	path = filepath.ToSlash(filepath.Clean(path))

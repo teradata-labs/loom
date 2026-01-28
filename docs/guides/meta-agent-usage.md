@@ -236,7 +236,7 @@ export API_BASE_URL=https://api.example.com
 For SQL backends, verify connection in the agent config:
 
 ```bash
-vim ~/.loom/threads/<agent-name>.yaml
+vim $LOOM_DATA_DIR/threads/<agent-name>.yaml
 ```
 
 ### Agent Spawn Failed

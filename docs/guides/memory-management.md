@@ -200,7 +200,7 @@ agent:
 
   memory:
     type: sqlite
-    path: ~/.loom/sessions/sql-agent.db
+    path: $LOOM_DATA_DIR/sessions/sql-agent.db
     memory_compression:
       workload_profile: data_intensive
       # Optionally override specific values

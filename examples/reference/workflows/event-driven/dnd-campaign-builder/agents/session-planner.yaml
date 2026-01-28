@@ -41,7 +41,7 @@ spec:
        - npcs artifact (dnd-campaigns/{id}/npcs.json)
     2. Read all artifact files to understand complete campaign
     3. Generate session-by-session breakdown of campaign
-    4. Save sessions to artifact: ~/.loom/artifacts/dnd-campaigns/{campaign_id}/sessions.json
+    4. Save sessions to artifact: $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/sessions.json
     5. Send completion message back to coordinator with sessions artifact path and summary
     
     Output format (JSON structure):

@@ -79,7 +79,7 @@ Analysis:
 - Intent: analyze
 - Suggested Name: postgres-slow-query-analyzer
 
-Configuration saved to: ~/.loom/agents/postgres-slow-query-analyzer.yaml
+Configuration saved to: $LOOM_DATA_DIR/agents/postgres-slow-query-analyzer.yaml
 The server will hot-reload the agent automatically
 Connect to the agent: loom --thread postgres-slow-query-analyzer
 ```
@@ -133,7 +133,7 @@ Weaver generates:
 - Workflow pattern: debate
 - Agents: 3 (index-expert, query-rewrite-expert, join-expert)
 - Orchestration: 5 debate rounds, consensus merge
-- Configuration: ~/.loom/workflows/sql-debate-optimizer.yaml
+- Configuration: $LOOM_DATA_DIR/workflows/sql-debate-optimizer.yaml
 ```
 
 **Expected response time:** 45-60 seconds (longer for workflow design)
@@ -248,7 +248,7 @@ system_prompt: |
   issues, suggest index improvements, and explain query plans.
 
 Next Steps:
-1. Configuration saved to: ~/.loom/agents/postgres-optimizer.yaml
+1. Configuration saved to: $LOOM_DATA_DIR/agents/postgres-optimizer.yaml
 2. The server will hot-reload the agent automatically
 3. Connect to the agent: loom --thread postgres-optimizer
 ```
@@ -304,7 +304,7 @@ Orchestration:
   Merge Strategy: consensus
 
 Next Steps:
-1. Configuration saved to: ~/.loom/workflows/sql-optimizer-debate.yaml
+1. Configuration saved to: $LOOM_DATA_DIR/workflows/sql-optimizer-debate.yaml
 2. The server will hot-reload the workflow automatically
 3. Connect to the workflow: loom --thread sql-optimizer-debate
 ```
@@ -444,7 +444,7 @@ curl https://api.anthropic.com/v1/messages
 # Upload summarized data instead of full file
 
 # Check server logs
-tail -f ~/.loom/logs/server.log
+tail -f $LOOM_DATA_DIR/logs/server.log
 ```
 
 ### Weaver Generates Wrong Domain
@@ -491,16 +491,16 @@ Weaver: Detects 5 conflicts...
 
 ```bash
 # Check if file was created
-ls -la ~/.loom/agents/
+ls -la $LOOM_DATA_DIR/agents/
 
 # Validate YAML syntax
-cat ~/.loom/agents/your-agent.yaml
+cat $LOOM_DATA_DIR/agents/your-agent.yaml
 
 # Check server logs for validation errors
-grep "validation failed" ~/.loom/logs/server.log
+grep "validation failed" $LOOM_DATA_DIR/logs/server.log
 
 # Manual validation
-bin/looms validate ~/.loom/agents/your-agent.yaml
+bin/looms validate $LOOM_DATA_DIR/agents/your-agent.yaml
 ```
 
 **Common causes:**
@@ -519,7 +519,7 @@ bin/looms validate ~/.loom/agents/your-agent.yaml
 bin/looms agent list
 
 # Check exact agent name (case-sensitive)
-ls ~/.loom/agents/
+ls $LOOM_DATA_DIR/agents/
 
 # Restart server to force reload
 pkill looms

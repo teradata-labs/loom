@@ -218,7 +218,7 @@ func (t *ManageEphemeralAgentsTool) executeSpawn(ctx context.Context, params map
 			Error: &shuttle.Error{
 				Code:       "SPAWN_FAILED",
 				Message:    fmt.Sprintf("Failed to spawn agent: %v", err),
-				Suggestion: "Verify the agent_id exists in ~/.loom/agents/",
+				Suggestion: "Verify the agent_id exists in $LOOM_DATA_DIR/agents/",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil

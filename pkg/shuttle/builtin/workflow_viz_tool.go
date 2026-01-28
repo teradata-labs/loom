@@ -56,7 +56,7 @@ The generated HTML file is standalone and can be opened in any browser.
 It includes interactive features: zoom, pan, drag nodes, and click for details.
 
 Example workflow paths:
-- ~/.loom/agents/workflow-npath-autonomous-v3.6-streamlined.yaml
+- $LOOM_DATA_DIR/agents/workflow-npath-autonomous-v3.6-streamlined.yaml
 - ./workflows/my-workflow.yaml
 - /absolute/path/to/workflow.yaml`
 }
@@ -83,7 +83,7 @@ func (t *WorkflowVisualizationTool) Execute(ctx context.Context, params map[stri
 			Error: &shuttle.Error{
 				Code:       "INVALID_PARAMS",
 				Message:    "workflow_path is required",
-				Suggestion: "Provide the path to a workflow YAML file (e.g., '~/.loom/agents/workflow.yaml')",
+				Suggestion: "Provide the path to a workflow YAML file (e.g., '$LOOM_DATA_DIR/agents/workflow.yaml')",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil

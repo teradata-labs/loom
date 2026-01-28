@@ -62,7 +62,7 @@ Artifact Management provides **session-aware file storage** for agents and users
 Every artifact is associated with a **session ID**. When an agent creates an artifact, it's automatically saved to that session's directory:
 
 ```
-~/.loom/artifacts/sessions/<session-id>/agent/<filename>
+$LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/<filename>
 ```
 
 **Benefits:**
@@ -83,13 +83,13 @@ Every artifact is associated with a **session ID**. When an agent creates an art
 | **Use case** | CSV files, reports, generated code | Brainstorming, temp calculations |
 
 **Directory paths:**
-- Artifacts: `~/.loom/artifacts/sessions/<session-id>/agent/<filename>`
-- Scratchpad: `~/.loom/artifacts/sessions/<session-id>/scratchpad/<filename>`
+- Artifacts: `$LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/<filename>`
+- Scratchpad: `$LOOM_DATA_DIR/artifacts/sessions/<session-id>/scratchpad/<filename>`
 
 ### Directory Structure
 
 ```
-~/.loom/artifacts/
+$LOOM_DATA_DIR/artifacts/
 ├── user/                          # User-uploaded artifacts (no session)
 │   ├── data.csv
 │   └── report.pdf
@@ -120,10 +120,10 @@ Every artifact is associated with a **session ID**. When an agent creates an art
 loom --version  # Should show v1.0.2 or later
 
 # Verify artifacts directory exists
-ls -la ~/.loom/artifacts/
+ls -la $LOOM_DATA_DIR/artifacts/
 
 # Verify SQLite has artifacts table with session_id column
-sqlite3 ~/.loom/loom.db "PRAGMA table_info(artifacts);" | grep session_id
+sqlite3 $LOOM_DATA_DIR/loom.db "PRAGMA table_info(artifacts);" | grep session_id
 ```
 
 Expected output:
@@ -238,7 +238,7 @@ loom artifacts show acf3abbb-6249-4d0e-9f0c-f1b501d19924
 ```
 ID: acf3abbb-6249-4d0e-9f0c-f1b501d19924
 Name: data.csv
-Path: /Users/you/.loom/artifacts/sessions/sess_abc123/agent/data.csv
+Path: $LOOM_DATA_DIR/artifacts/sessions/sess_abc123/agent/data.csv
 Source: agent
 Purpose: Q4 sales analysis
 Content Type: text/csv
@@ -417,9 +417,9 @@ workspace({
 
 **Environment variables available:**
 ```bash
-$LOOM_DATA_DIR             # ~/.loom/
-$SESSION_ARTIFACT_DIR      # ~/.loom/artifacts/sessions/<session>/agent/
-$SESSION_SCRATCHPAD_DIR    # ~/.loom/artifacts/sessions/<session>/scratchpad/
+$LOOM_DATA_DIR             # Loom data directory
+$SESSION_ARTIFACT_DIR      # $LOOM_DATA_DIR/artifacts/sessions/<session>/agent/
+$SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/
 ```
 
 **Examples:**
@@ -477,7 +477,7 @@ loom --thread data-analyst
 # workspace({action: "list"})
 
 # Results are automatically in:
-# ~/.loom/artifacts/sessions/<session-id>/agent/analysis.txt
+# $LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/analysis.txt
 ```
 
 ### Using Scratchpad for Notes
@@ -495,7 +495,7 @@ loom --thread brainstorm-agent
 # workspace({action: "write", scope: "scratchpad", filename: "ideas.md", content: "..."})
 
 # Scratchpad not indexed - faster writes, no search clutter
-# File at: ~/.loom/artifacts/sessions/<session-id>/scratchpad/ideas.md
+# File at: $LOOM_DATA_DIR/artifacts/sessions/<session-id>/scratchpad/ideas.md
 ```
 
 ### Searching Across Artifacts
@@ -564,7 +564,7 @@ loom artifacts show sales-trend-report.md
 loom artifacts download sales-trend-report.md --output ~/Downloads/report.md
 ```
 
-**Result:** Artifact at `~/.loom/artifacts/sessions/my-analysis/agent/sales-trend-report.md`
+**Result:** Artifact at `$LOOM_DATA_DIR/artifacts/sessions/my-analysis/agent/sales-trend-report.md`
 
 ### Example 2: Multi-Session Data Analysis
 
@@ -574,12 +574,12 @@ loom artifacts download sales-trend-report.md --output ~/Downloads/report.md
 # Session 1: Q3 analysis
 loom --thread data-analyst --session q3-analysis
 > "Analyze Q3 sales and save to q3-results.csv"
-# Creates: ~/.loom/artifacts/sessions/q3-analysis/agent/q3-results.csv
+# Creates: $LOOM_DATA_DIR/artifacts/sessions/q3-analysis/agent/q3-results.csv
 
 # Session 2: Q4 analysis (isolated from Q3)
 loom --thread data-analyst --session q4-analysis
 > "Analyze Q4 sales and save to q4-results.csv"
-# Creates: ~/.loom/artifacts/sessions/q4-analysis/agent/q4-results.csv
+# Creates: $LOOM_DATA_DIR/artifacts/sessions/q4-analysis/agent/q4-results.csv
 
 # List artifacts per session
 loom artifacts list  # Shows artifacts from current session only
@@ -621,8 +621,8 @@ Agent: "Bug report saved to bug-report.md (searchable), debug notes in scratchpa
 ```
 
 **Result:**
-- Searchable: `~/.loom/artifacts/sessions/<session>/agent/bug-report.md`
-- Not searchable: `~/.loom/artifacts/sessions/<session>/scratchpad/debug-notes.md`
+- Searchable: `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/bug-report.md`
+- Not searchable: `$LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/debug-notes.md`
 
 ### Example 4: Session Cleanup
 
@@ -640,10 +640,10 @@ loom artifacts list  # Shows 3 files
 loom sessions delete temp-session
 
 # Verify artifacts are gone (CASCADE delete)
-ls ~/.loom/artifacts/sessions/temp-session/  # Directory removed
+ls $LOOM_DATA_DIR/artifacts/sessions/temp-session/  # Directory removed
 
 # Database records also removed (foreign key CASCADE)
-sqlite3 ~/.loom/loom.db "SELECT COUNT(*) FROM artifacts WHERE session_id='temp-session';"
+sqlite3 $LOOM_DATA_DIR/loom.db "SELECT COUNT(*) FROM artifacts WHERE session_id='temp-session';"
 # Returns: 0
 ```
 
@@ -692,13 +692,13 @@ loom sessions list
 **Solution:**
 ```bash
 # Check if file is in scratchpad
-ls ~/.loom/artifacts/sessions/<session>/scratchpad/
+ls $LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/
 
 # Move to artifacts scope (agents should use workspace tool)
 # workspace({action: "write", scope: "artifact", filename: "...", content: "..."})
 
 # Verify FTS5 index
-sqlite3 ~/.loom/loom.db "SELECT * FROM artifacts_fts5 WHERE name MATCH '<filename>';"
+sqlite3 $LOOM_DATA_DIR/loom.db "SELECT * FROM artifacts_fts5 WHERE name MATCH '<filename>';"
 ```
 
 ### Session Directory Not Created
@@ -740,7 +740,7 @@ loom artifacts list --include-deleted
 loom artifacts delete <artifact-id> --hard
 
 # Check disk space
-df -h ~/.loom/
+df -h $LOOM_DATA_DIR/
 ```
 
 ## Next Steps

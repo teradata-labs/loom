@@ -200,7 +200,7 @@ mistral:latest      f974a74358d6    4.1 GB    3 days ago
 
 No authentication needed for local Ollama!
 
-Edit `~/.loom/looms.yaml`:
+Edit `$LOOM_DATA_DIR/looms.yaml`:
 
 ```yaml
 llm:

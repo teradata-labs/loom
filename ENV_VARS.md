@@ -27,14 +27,14 @@ This document describes all environment variables used in the Loom project.
 ## Core Configuration
 
 ### LOOM_DATA_DIR
-**Default:** `~/.loom`
+**Default:** `$HOME/.loom`
 **Used in:** `pkg/config/paths.go`
 
 Specifies the Loom data directory where configuration, databases, and other persistent data are stored.
 
 - If relative path, converted to absolute
 - Tilde (`~`) expansion supported
-- Takes precedence over default `~/.loom`
+- Takes precedence over default `$HOME/.loom`
 
 **Examples:**
 ```bash
@@ -64,14 +64,14 @@ $LOOM_DATA_DIR/
 └── scheduler.db            # Workflow scheduler database
 ```
 
-**Migration from ~/.loom:**
+**Migration from $LOOM_DATA_DIR:**
 
-Existing installations using `~/.loom` will continue to work. To migrate to a custom location:
+Existing installations using the default location will continue to work. To migrate to a custom location:
 
 ```bash
 # Stop Loom server
 # Move data directory
-mv ~/.loom /var/lib/loom
+mv $LOOM_DATA_DIR /var/lib/loom
 
 # Set environment variable (add to ~/.bashrc or ~/.zshrc)
 export LOOM_DATA_DIR=/var/lib/loom
@@ -88,7 +88,7 @@ docker run -e LOOM_DATA_DIR=/data/loom -v /host/loom-data:/data/loom loom:latest
 ```
 
 ### LOOM_BIN_DIR
-**Default:** `~/.local/bin`
+**Default:** `$HOME/.local/bin`
 **Used in:** `Justfile` (installation scripts only)
 **Type:** Installation-time only (not used at runtime)
 
@@ -106,7 +106,7 @@ export LOOM_BIN_DIR=/usr/local/bin
 just install
 
 # Install to user bin directory (default)
-just install  # Uses ~/.local/bin
+just install  # Uses $HOME/.local/bin
 
 # Clean from custom location
 export LOOM_BIN_DIR=/usr/local/bin
@@ -673,7 +673,7 @@ export DOCKER_HOST=tcp://localhost:2375
 ```
 
 **Auto-detection:** If not set, Loom tries:
-- macOS: `~/.orbstack/run/docker.sock`, `~/.docker/run/docker.sock`, `/var/run/docker.sock`
+- macOS: `$HOME/.orbstack/run/docker.sock`, `$HOME/.docker/run/docker.sock`, `/var/run/docker.sock`
 - Linux: `/var/run/docker.sock`
 
 ### LOOM_DOCKER_SOCKET_PATHS
@@ -765,7 +765,7 @@ export EDITOR=nano
 **Used in:** `pkg/docker/scheduler.go`, `cmd/looms/cmd_serve.go`
 
 User home directory. Used for:
-- Docker socket path detection (`~/.orbstack/run/docker.sock`)
+- Docker socket path detection (`$HOME/.orbstack/run/docker.sock`)
 - Default config paths
 - Path expansion
 
@@ -778,7 +778,7 @@ export HOME=/home/username
 **Used in:** `pkg/docker/scheduler.go`, `cmd/looms/cmd_hitl.go`
 
 Current username. Used for:
-- Docker socket path detection on macOS (`/Users/$USER/.orbstack/run/docker.sock`)
+- Docker socket path detection on macOS (`$HOME/.orbstack/run/docker.sock`)
 - HITL (human-in-the-loop) respondent tracking
 
 Typically set by the system. Manual override:
@@ -946,6 +946,6 @@ export LOOM_EMBEDDED_SQLITE_PATH=./traces.db
 
 - [README.md](README.md) - Project overview
 - [CLAUDE.md](CLAUDE.md) - Development guidelines
-- Configuration file: `~/.loom/looms.yaml` (or `$LOOM_DATA_DIR/looms.yaml`)
+- Configuration file: `$LOOM_DATA_DIR/looms.yaml`
 - Keyring management: `looms config set-key`, `looms config get-key`, `looms config list-keys`
 - Build configuration: `Justfile` - Uses `LOOM_BIN_DIR` and `LOOM_DATA_DIR` for installation

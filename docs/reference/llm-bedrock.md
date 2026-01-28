@@ -300,7 +300,7 @@ looms config set-key bedrock_secret_access_key
 
 ### Option 2: Direct YAML Editing
 
-Edit `~/.loom/looms.yaml` directly:
+Edit `$LOOM_DATA_DIR/looms.yaml` directly:
 
 ```yaml
 llm:

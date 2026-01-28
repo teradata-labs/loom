@@ -19,8 +19,8 @@ class Loom < Formula
     bin.install "loom-darwin-arm64" => "loom" if Hardware::CPU.arm?
     bin.install "loom-darwin-amd64" => "loom" if Hardware::CPU.intel?
 
-    # Create Loom data directory
-    loom_dir = "#{Dir.home}/.loom"
+    # Create Loom data directory (respects LOOM_DATA_DIR env var)
+    loom_dir = ENV["LOOM_DATA_DIR"] || "#{Dir.home}/.loom"
     patterns_dir = "#{loom_dir}/patterns"
 
     # Download and install patterns
@@ -73,7 +73,7 @@ class Loom < Formula
         Then type: "Create a code review assistant"
 
       Documentation: https://github.com/teradata-labs/loom
-      Patterns installed to: #{Dir.home}/.loom/patterns
+      Patterns installed to: $LOOM_DATA_DIR/patterns (default: $HOME/.loom/patterns)
     EOS
   end
 

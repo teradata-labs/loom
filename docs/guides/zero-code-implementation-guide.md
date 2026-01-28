@@ -67,7 +67,7 @@ looms config set mcp.servers.github.args "-y,@modelcontextprotocol/server-github
 looms config set-key github_token
 ```
 
-**Via YAML** (for complex configurations, edit `~/.loom/looms.yaml`):
+**Via YAML** (for complex configurations, edit `$LOOM_DATA_DIR/looms.yaml`):
 
 ```yaml
 mcp:
@@ -90,7 +90,7 @@ mcp:
 
 ### Create Agent Configuration
 
-Create `~/.loom/agents/sql-expert.yaml`:
+Create `$LOOM_DATA_DIR/agents/sql-expert.yaml`:
 
 ```yaml
 name: sql-expert
@@ -117,11 +117,11 @@ max_tool_executions: 50
 enable_tracing: true
 ```
 
-Agents in `~/.loom/agents/` auto-load on server startup with hot-reload support.
+Agents in `$LOOM_DATA_DIR/agents/` auto-load on server startup with hot-reload support.
 
 ### Configure Backends
 
-Create `~/.loom/backends/postgres.yaml`:
+Create `$LOOM_DATA_DIR/backends/postgres.yaml`:
 
 ```yaml
 apiVersion: loom/v1
@@ -157,15 +157,15 @@ spec:
 
 ```bash
 # Validate a single file
-looms validate file ~/.loom/backends/postgres.yaml
+looms validate file $LOOM_DATA_DIR/backends/postgres.yaml
 
 # Validate all files in a directory
-looms validate dir ~/.loom/
+looms validate dir $LOOM_DATA_DIR/
 ```
 
 Expected output:
 ```
-Validating 4 YAML files in ~/.loom/...
+Validating 4 YAML files in $LOOM_DATA_DIR/...
 
 looms.yaml
 backends/postgres.yaml
@@ -202,7 +202,7 @@ loom --thread teradata-optimizer-abc123 --server localhost:9090
 
 ### Example 2: Multi-Backend Setup
 
-Configure multiple backends in `~/.loom/looms.yaml`:
+Configure multiple backends in `$LOOM_DATA_DIR/looms.yaml`:
 
 ```yaml
 mcp:
@@ -263,8 +263,8 @@ Supported kinds: `Project`, `Backend`, `PatternLibrary`, `EvalSuite`
 
 ### Agent Not Loading
 
-1. Check file location: `ls ~/.loom/agents/`
-2. Validate YAML syntax: `looms validate file ~/.loom/agents/myagent.yaml`
+1. Check file location: `ls $LOOM_DATA_DIR/agents/`
+2. Validate YAML syntax: `looms validate file $LOOM_DATA_DIR/agents/myagent.yaml`
 3. Check server logs for loading errors
 4. Restart server: `looms serve`
 

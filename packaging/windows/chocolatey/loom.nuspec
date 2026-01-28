@@ -37,7 +37,7 @@ This package installs both:
 - `loom` - TUI client for connecting to agents
 - `looms` - Multi-agent server with gRPC/HTTP APIs
 
-Patterns are automatically downloaded and installed to `$env:USERPROFILE\.loom\patterns\`.
+Patterns are automatically downloaded and installed to `$env:LOOM_DATA_DIR\patterns\` (default: `$env:USERPROFILE\.loom\patterns\`).
 
 ## Quick Start
 

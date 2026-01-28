@@ -12,7 +12,7 @@ This directory contains Read-Only Memory (ROM) files that provide domain-specifi
   - Agent communication (send_message, receive_message, pub-sub)
   - Artifacts directory usage
   - Scratchpad patterns
-  - **This file is the source of truth** - embedded into binary and deployed to ~/.loom/
+  - **This file is the source of truth** - embedded into binary and deployed to $LOOM_DATA_DIR/
 
 - **TD.rom** (31KB): Teradata SQL development guide
   - Teradata-specific SQL syntax
@@ -27,7 +27,7 @@ This directory contains Read-Only Memory (ROM) files that provide domain-specifi
 2. Rebuild: `just build`
 3. The updated ROM is automatically:
    - Embedded into the binary (via go:embed in rom_loader.go)
-   - Deployed to ~/.loom/START_HERE.md (via embedded.GetStartHere())
+   - Deployed to $LOOM_DATA_DIR/START_HERE.md (via embedded.GetStartHere())
 
 **No copying required** - there is only one source file.
 

@@ -115,7 +115,7 @@ cd loom
 just install
 # This installs:
 #   - Binaries to ~/.local/bin/ (looms, loom)
-#   - Patterns to ~/.loom/patterns/ (94 YAML patterns)
+#   - Patterns to $LOOM_DATA_DIR/patterns/ (94 YAML patterns)
 #
 # Customize installation directories:
 #   export LOOM_BIN_DIR=/usr/local/bin  # Custom binary location
@@ -129,7 +129,7 @@ just build                # Minimal build (no optional dependencies)
 **What gets installed:**
 - `looms` - Multi-agent server with weaver and pattern hot-reload
 - `loom` - TUI client for connecting to agents
-- `~/.loom/patterns/` - 90 reusable patterns across 16 domains (SQL, Teradata, Postgres, text, code, debugging, vision, REST API, document processing, etc.)
+- `$LOOM_DATA_DIR/patterns/` - 90 reusable patterns across 16 domains (SQL, Teradata, Postgres, text, code, debugging, vision, REST API, document processing, etc.)
 
 **Alternative: Install from source**
 ```bash
@@ -332,7 +332,7 @@ See [Learning Agent Guide](docs/guides/learning-agent-guide.md) and [Judge-DSPy 
 
 ### Pattern Library
 
-90 reusable YAML patterns across 16 domains, installed to `~/.loom/patterns/` by default:
+90 reusable YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/` by default:
 
 | Domain | Patterns | Examples |
 |--------|----------|----------|
@@ -395,7 +395,7 @@ Session-aware file storage system for agents managing datasets, documents, and g
 
 **Directory Structure:**
 ```
-~/.loom/artifacts/
+$LOOM_DATA_DIR/artifacts/
 ├── sessions/<session-id>/
 │   ├── agent/          # Agent-generated artifacts (indexed)
 │   └── scratchpad/     # Ephemeral notes (not indexed)

@@ -15,16 +15,6 @@ Complete agent definitions ready to load and run.
 
 **Use case:** Configuration-driven agent deployment, version-controlled agent definitions.
 
-### agent-templates/
-Reusable agent configuration templates.
-
-**Contents:**
-- Base agent configurations
-- Common thread patterns
-- Template variables for customization
-
-**Use case:** Share agent configurations across projects, standardize agent setup.
-
 ### workflows/
 Multi-step workflow definitions.
 
@@ -37,20 +27,15 @@ Multi-step workflow definitions.
 
 **Use case:** Complex multi-step operations, orchestration patterns.
 
-## Validation
+### agent-templates/
+Reusable agent configuration templates.
 
-Each configuration directory includes `validate_test.go` to ensure YAML files are valid:
+**Contents:**
+- Base agent configurations
+- Common thread patterns
+- Template variables for customization
 
-```bash
-cd config/agents
-go test -v validate_test.go
-```
-
-This validates:
-- YAML syntax
-- Required fields
-- Schema compliance
-- Example correctness
+**Use case:** Share agent configurations across projects, standardize agent setup.
 
 ---
 

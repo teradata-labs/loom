@@ -39,7 +39,7 @@ MCP server started: server="vantage", command="/path/to/vantage-mcp", pid=12345
 ```
 
 **If missing:**
-- Check `~/.loom/looms.yaml` has `mcp.servers` configured
+- Check `$LOOM_DATA_DIR/looms.yaml` has `mcp.servers` configured
 - Verify MCP binary exists: `ls /path/to/vantage-mcp`
 - Check permissions: `chmod +x /path/to/vantage-mcp`
 
@@ -104,7 +104,7 @@ mcpConfig.Servers[serverName] = manager.ServerConfig{
 **Solution 2: Add MCP tools to agent config**
 
 ```yaml
-# ~/.loom/agents/my-agent.yaml
+# $LOOM_DATA_DIR/agents/my-agent.yaml
 tools:
   mcp:
     - server: "vantage"
@@ -180,7 +180,7 @@ just build
 ### Minimal Working Config
 
 ```yaml
-# ~/.loom/looms.yaml
+# $LOOM_DATA_DIR/looms.yaml
 server:
   host: "0.0.0.0"
   port: 9090
@@ -201,7 +201,7 @@ mcp:
 ### Agent with All MCP Tools
 
 ```yaml
-# ~/.loom/agents/my-agent.yaml
+# $LOOM_DATA_DIR/agents/my-agent.yaml
 agent:
   name: "my-agent"
   description: "Teradata SQL agent"

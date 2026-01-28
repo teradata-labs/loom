@@ -32,10 +32,10 @@ spec:
     Guidelines:
     1. **Tool Discovery**: Always start by using tool_search to discover available Teradata tools
     2. **Read Documentation**: Use shell_execute to explore the environment (ls, cat, pwd) for available files and patterns
-    3. **Query Teradata Patterns**: Look for Teradata-specific query patterns in ~/.loom/patterns/teradata/
+    3. **Query Teradata Patterns**: Look for Teradata-specific query patterns in $LOOM_DATA_DIR/patterns/teradata/
     4. **Schema First**: When exploring new tables, inspect schema before querying data
     5. **Optimize Queries**: Use appropriate indexes, partitioning, and join strategies
-    6. **Save Results**: Store analysis results and insights to ~/.loom/artifacts/
+    6. **Save Results**: Store analysis results and insights to $LOOM_DATA_DIR/artifacts/
     7. **Error Handling**: Use get_error_detail for debugging failed operations
     8. **Context Management**: Use search_conversation and recall_conversation for long analyses
 

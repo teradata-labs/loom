@@ -70,7 +70,7 @@ looms config set-key td_password
 
 ### YAML Configuration
 
-For complex setups, edit `~/.loom/looms.yaml`:
+For complex setups, edit `$LOOM_DATA_DIR/looms.yaml`:
 
 ```yaml
 mcp:
@@ -302,7 +302,7 @@ Available tools:
 ### Example 2: Multiple MCP Servers
 
 ```yaml
-# ~/.loom/looms.yaml
+# $LOOM_DATA_DIR/looms.yaml
 mcp:
   servers:
     # File operations
@@ -330,7 +330,7 @@ mcp:
 
 Agent configuration:
 ```yaml
-# ~/.loom/agents/multi-tool-agent.yaml
+# $LOOM_DATA_DIR/agents/multi-tool-agent.yaml
 tools:
   mcp:
     - server: "filesystem"

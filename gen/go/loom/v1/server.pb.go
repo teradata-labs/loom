@@ -351,7 +351,7 @@ type LetsEncryptConfig struct {
 	// HTTP-01 challenge port (default: 80)
 	// Must be accessible from the internet for Let's Encrypt validation
 	HttpChallengePort int32 `protobuf:"varint,4,opt,name=http_challenge_port,json=httpChallengePort,proto3" json:"http_challenge_port,omitempty"`
-	// Certificate cache directory (default: ~/.loom/certs)
+	// Certificate cache directory (default: $LOOM_DATA_DIR/certs)
 	CacheDir string `protobuf:"bytes,5,opt,name=cache_dir,json=cacheDir,proto3" json:"cache_dir,omitempty"`
 	// Enable automatic certificate renewal (default: true)
 	AutoRenew bool `protobuf:"varint,6,opt,name=auto_renew,json=autoRenew,proto3" json:"auto_renew,omitempty"`

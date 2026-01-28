@@ -73,7 +73,7 @@ func (s *AgentSpec) UnmarshalYAML(value *yaml.Node) error {
 		LLM          map[string]interface{} `yaml:"llm,omitempty"`
 		Tools        map[string]interface{} `yaml:"tools,omitempty"`
 		Memory       map[string]interface{} `yaml:"memory,omitempty"`
-		Config       map[string]interface{} `yaml:"config,omitempty"`    // Alias for Behavior
+		Config       map[string]interface{} `yaml:"config,omitempty"`   // Alias for Behavior
 		Behavior     map[string]interface{} `yaml:"behavior,omitempty"` // Canonical name
 		Metadata     map[string]string      `yaml:"metadata,omitempty"`
 	}

@@ -48,7 +48,7 @@ looms serve --anthropic-key "sk-ant-api03-..."
 
 ## Configuration File
 
-Edit `~/.loom/looms.yaml`:
+Edit `$LOOM_DATA_DIR/looms.yaml`:
 
 ```yaml
 llm:

@@ -38,7 +38,7 @@ spec:
     1. Receive message from coordinator with world and story artifact paths
     2. Read artifact files to understand world setting and story arc
     3. Generate encounters that fit story beats and world setting
-    4. Save encounters to artifact: ~/.loom/artifacts/dnd-campaigns/{campaign_id}/encounters.json
+    4. Save encounters to artifact: $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/encounters.json
     5. Send completion message back to coordinator with encounters artifact path and summary
     
     Output format (JSON structure):

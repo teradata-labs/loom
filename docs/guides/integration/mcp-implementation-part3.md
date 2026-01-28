@@ -219,7 +219,7 @@ response, _ := ag.Chat(ctx, "session-1", `
 Equivalent YAML configuration:
 
 ```yaml
-# ~/.loom/looms.yaml
+# $LOOM_DATA_DIR/looms.yaml
 mcp:
   servers:
     filesystem:
@@ -240,7 +240,7 @@ mcp:
 ```
 
 ```yaml
-# ~/.loom/agents/my-agent.yaml
+# $LOOM_DATA_DIR/agents/my-agent.yaml
 tools:
   mcp:
     - server: "filesystem"

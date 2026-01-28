@@ -164,18 +164,18 @@ choco uninstall loom -y
 ### What Gets Installed
 
 - **Binaries**: `loom.exe` and `looms.exe` added to PATH via shims
-- **Patterns**: 90+ YAML patterns downloaded to `$env:USERPROFILE\.loom\patterns\`
-- **Environment Variable**: `LOOM_DATA_DIR` set to `$env:USERPROFILE\.loom`
+- **Patterns**: 90+ YAML patterns downloaded to `$env:LOOM_DATA_DIR\patterns\` (default: `$env:USERPROFILE\.loom\patterns\`)
+- **Environment Variable**: `LOOM_DATA_DIR` set to `$env:USERPROFILE\.loom` (if not already set)
 - **Configuration**: Empty `looms.yaml` created (user configures LLM provider post-install)
 
 ### What Gets Uninstalled
 
 - **Binaries**: Removed from PATH
-- **Environment Variable**: `LOOM_DATA_DIR` removed
+- **Environment Variable**: `LOOM_DATA_DIR` removed (if set by installer)
 
 **Preserved** (user data):
-- `$env:USERPROFILE\.loom\` directory (patterns, config, database)
-- Users can manually remove with: `Remove-Item -Path "$env:USERPROFILE\.loom" -Recurse -Force`
+- `$env:LOOM_DATA_DIR\` directory (patterns, config, database)
+- Users can manually remove with: `Remove-Item -Path "$env:LOOM_DATA_DIR" -Recurse -Force`
 
 ## Chocolatey Guidelines
 
@@ -194,7 +194,7 @@ Before publishing:
 - [ ] Installation works: `choco install loom -source . -y`
 - [ ] Binaries are in PATH: `where loom` and `where looms`
 - [ ] Binaries execute: `loom --help` and `looms --help`
-- [ ] Patterns installed: Check `$env:USERPROFILE\.loom\patterns\`
+- [ ] Patterns installed: Check `$env:LOOM_DATA_DIR\patterns\`
 - [ ] Environment variable set: `$env:LOOM_DATA_DIR`
 - [ ] Uninstall works: `choco uninstall loom -y`
 - [ ] Upgrade works: `choco upgrade loom -source . -y`

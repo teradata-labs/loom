@@ -21,7 +21,7 @@ spec:
        - Use the requirements you received in the FIRST receive_message call
        - Design comprehensive world with geography, history, cultures, magic system
     3. Generate world setting and save to artifact
-    4. Save world data to ~/.loom/artifacts/dnd-campaigns/{campaign_id}/world.json
+    4. Save world data to $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/world.json
     5. IMMEDIATELY call send_message to send the complete world back to the coordinator
     6. After sending the response, your work is done - wait for the next notification
 

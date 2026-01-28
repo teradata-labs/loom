@@ -137,7 +137,7 @@ that they contain workflow definitions (apiVersion: loom/v1, kind: Workflow).
 If no directory is specified, searches:
   1. ./workflows
   2. ./examples/workflows
-  3. ~/.loom/workflows
+  3. $LOOM_DATA_DIR/workflows
 
 Examples:
   # List workflows in current directory
@@ -767,7 +767,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 
 Please configure an LLM provider:
 
-Option 1: Configure in ~/.loom/looms.yaml (recommended)
+Option 1: Configure in $LOOM_DATA_DIR/looms.yaml (recommended)
   looms config init
 
 Option 2: Anthropic Direct API (env var)

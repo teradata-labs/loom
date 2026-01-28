@@ -168,7 +168,7 @@ brew install loom loom-server
 
 ### loom.rb (TUI Client)
 - Installs `loom` binary to PATH
-- Downloads and installs patterns to `~/.loom/patterns/`
+- Downloads and installs patterns to `$LOOM_DATA_DIR/patterns/`
 - Cross-platform (macOS ARM64/AMD64, Linux AMD64)
 - Provides helpful post-install instructions
 

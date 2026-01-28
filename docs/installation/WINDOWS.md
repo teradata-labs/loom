@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
 **What it does**:
 - ✅ Checks/installs prerequisites (Go, Just, Buf)
 - ✅ Builds `looms.exe` and `loom.exe`
-- ✅ Installs 90+ patterns to `~/.loom/patterns/`
+- ✅ Installs 90+ patterns to `$LOOM_DATA_DIR/patterns/`
 - ✅ Creates configuration file
 - ✅ Sets up environment variables
 - ✅ Interactive LLM provider setup
@@ -114,7 +114,7 @@ go build -tags fts5 -o bin/looms.exe ./cmd/looms
 go build -tags fts5 -o bin/loom.exe ./cmd/loom
 
 # Install patterns
-xcopy /E /I /Y patterns %USERPROFILE%\.loom\patterns
+xcopy /E /I /Y patterns %LOOM_DATA_DIR%\patterns
 
 # Add to PATH (PowerShell - Admin required)
 $binDir = "$PWD\bin"
@@ -170,7 +170,7 @@ $env:ANTHROPIC_API_KEY = "your-api-key"
 
 ### Configuration File Location
 
-Default: `%USERPROFILE%\.loom\looms.yaml`
+Default: `%LOOM_DATA_DIR%\looms.yaml` (usually `%USERPROFILE%\.loom\looms.yaml`)
 
 Example configuration:
 ```yaml
@@ -179,7 +179,7 @@ server:
   port: 60051
 
 database:
-  path: "C:/Users/YourName/.loom/loom.db"
+  path: "%LOOM_DATA_DIR%/loom.db"
 
 llm:
   provider: "anthropic"
@@ -360,7 +360,7 @@ loom --help
 looms config list
 
 # Test pattern installation
-Get-ChildItem -Path "$env:USERPROFILE\.loom\patterns" -Filter "*.yaml" -Recurse
+Get-ChildItem -Path "$env:LOOM_DATA_DIR\patterns" -Filter "*.yaml" -Recurse
 
 # Test server start (Ctrl+C to stop)
 looms serve
@@ -394,7 +394,7 @@ Remove-Item "$env:USERPROFILE\.local\bin\looms.exe"
 # System Properties → Advanced → Environment Variables
 
 # Remove data directory (optional - contains patterns, config, database)
-Remove-Item -Path "$env:USERPROFILE\.loom" -Recurse -Force
+Remove-Item -Path "$env:LOOM_DATA_DIR" -Recurse -Force
 ```
 
 ---

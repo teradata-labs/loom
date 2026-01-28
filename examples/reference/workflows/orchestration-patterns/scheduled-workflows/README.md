@@ -114,15 +114,15 @@ Standard 5-field cron format:
 
 1. **Create workflow YAML** with `schedule:` section:
    ```bash
-   mkdir -p ~/.loom/workflows
-   cp examples/scheduled-workflows/daily-report.yaml ~/.loom/workflows/
+   mkdir -p $LOOM_DATA_DIR/workflows
+   cp examples/scheduled-workflows/daily-report.yaml $LOOM_DATA_DIR/workflows/
    ```
 
-2. **Enable scheduler** in `~/.loom/looms.yaml`:
+2. **Enable scheduler** in `$LOOM_DATA_DIR/looms.yaml`:
    ```yaml
    scheduler:
      enabled: true
-     workflow_dir: "~/.loom/workflows"
+     workflow_dir: "$LOOM_DATA_DIR/workflows"
      hot_reload: true
    ```
 
@@ -186,7 +186,7 @@ The scheduler automatically detects changes to workflow YAML files:
 
 ```bash
 # Edit workflow
-vim ~/.loom/workflows/daily-report.yaml
+vim $LOOM_DATA_DIR/workflows/daily-report.yaml
 
 # Change cron from "0 8 * * *" to "0 9 * * *"
 # Save file
@@ -206,7 +206,7 @@ vim ~/.loom/workflows/daily-report.yaml
 
 | Feature | YAML-Sourced | RPC-Created |
 |---------|-------------|-------------|
-| Source | `~/.loom/workflows/*.yaml` | gRPC API calls |
+| Source | `$LOOM_DATA_DIR/workflows/*.yaml` | gRPC API calls |
 | Hot-reload | ✅ Yes | ❌ No |
 | Modifiable via RPC | ❌ No (edit YAML) | ✅ Yes |
 | Deletable via RPC | ❌ No (delete YAML) | ✅ Yes |
@@ -220,9 +220,9 @@ vim ~/.loom/workflows/daily-report.yaml
 looms serve
 
 # Sample log output:
-# [INFO] Loading workflow file path=/Users/you/.loom/workflows/daily-report.yaml new=true
-# [INFO] Created schedule from YAML schedule_id=daily-report-abc123 path=/Users/you/.loom/workflows/daily-report.yaml
-# [INFO] Workflow scheduler started workflow_dir=/Users/you/.loom/workflows hot_reload=true
+# [INFO] Loading workflow file path=$LOOM_DATA_DIR/workflows/daily-report.yaml new=true
+# [INFO] Created schedule from YAML schedule_id=daily-report-abc123 path=$LOOM_DATA_DIR/workflows/daily-report.yaml
+# [INFO] Workflow scheduler started workflow_dir=$LOOM_DATA_DIR/workflows hot_reload=true
 # [INFO] Executing scheduled workflow schedule_id=daily-report-abc123 workflow=daily-sales-report
 # [INFO] Workflow execution completed schedule_id=daily-report-abc123 duration=12.5s status=success
 ```

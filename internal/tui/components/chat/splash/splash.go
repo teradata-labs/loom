@@ -266,7 +266,7 @@ Start the server:
   loom-server
 
 Or start with custom config:
-  loom-server --config ~/.loom/config.yaml
+  loom-server --config $LOOM_DATA_DIR/config.yaml
 
 Once the server is running, the TUI will automatically connect.`
 

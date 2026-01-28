@@ -26,7 +26,7 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 - **Natural Language Generation**: Creates k8s-style agent and workflow YAMLs from descriptions
 - **Upfront Validation**: Uses `agent_management` tool for schema validation before writing
 - **Self-Discovery**: Uses `tool_search` to find relevant examples and tools
-- **Hot-Reload Integration**: Saves to `~/.loom/agents/` and `~/.loom/workflows/` for immediate availability
+- **Hot-Reload Integration**: Saves to `$LOOM_DATA_DIR/agents/` and `$LOOM_DATA_DIR/workflows/` for immediate availability
 - **Standardized Toolset**: All generated agents get core discovery tools by default
 
 **Design Philosophy**: **Simplicity over complexity**. The weaver is a standard agent using standard RPCs (`Weave`/`StreamWeave`). No special services, no conflict resolution system, no multi-stage pipeline. It just works.
@@ -93,7 +93,7 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 │  Key Instructions:                                              │
 │    - Use agent_management for all YAML operations               │
 │    - Tool validates YAML before writing                         │
-│    - Automatic placement in ~/.loom/{agents,workflows}/         │
+│    - Automatic placement in $LOOM_DATA_DIR/{agents,workflows}/         │
 │    - Give agents standard toolset + tool_search                │
 │    - Enable memory compression with appropriate workload        │
 │                                                                 │
@@ -127,7 +127,7 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
           │                                             │
           ▼                                             ▼
 ┌────────────────────┐                      ┌────────────────────┐
-│  ~/.loom/agents/   │                      │  ~/.loom/workflows/│
+│  $LOOM_DATA_DIR/agents/   │                      │  $LOOM_DATA_DIR/workflows/│
 │  sql-agent.yaml    │                      │  debate-flow.yaml  │
 │  file-agent.yaml   │  Hot-reload ──────▶ │  pipeline.yaml     │
 │  api-agent.yaml    │                      │  swarm.yaml        │
@@ -171,7 +171,7 @@ spec:
     ## Guidelines
 
     - Use the agent_management tool to create, update, read, list, and validate agent/workflow YAMLs
-    - The tool automatically validates YAML and writes to the correct directories (~/.loom/agents/ or ~/.loom/workflows/)
+    - The tool automatically validates YAML and writes to the correct directories ($LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/)
     - When validation errors occur, read the error messages carefully and fix the YAML
     - Give agents this standard toolset: tool_search, get_error_details, query_tool_result
 
@@ -274,7 +274,7 @@ User Request                           Weaver Agent Processing
                                                   ▼
                                      ┌─────────────────────────┐
                                      │ 5. If valid, write to   │
-                                     │    ~/.loom/agents/      │
+                                     │    $LOOM_DATA_DIR/agents/      │
                                      └────────────┬────────────┘
                                                   │
                                                   ▼
@@ -594,7 +594,7 @@ Allow agent_management tool to suggest patterns based on agent type.
 
 Pre-validated templates for common agent types.
 
-**Implementation**: Store in `~/.loom/templates/`, reference in tool.
+**Implementation**: Store in `$LOOM_DATA_DIR/templates/`, reference in tool.
 
 **3. Dependency Resolution**
 

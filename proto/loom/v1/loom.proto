@@ -2310,7 +2310,7 @@ message ListMCPServerToolsResponse {
 // Artifact Management Messages
 // ============================================================================
 
-// Artifact represents a file in ~/.loom/artifacts/
+// Artifact represents a file in $LOOM_DATA_DIR/artifacts/
 message Artifact {
   // Unique identifier (UUID)
   string id = 1;

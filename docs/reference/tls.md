@@ -233,7 +233,7 @@ openssl verify -CAfile ca.pem cert.pem
 
 ### Configuration File (`looms.yaml`)
 
-**Location**: `~/.loom/looms.yaml` or specified with `--config`
+**Location**: `$LOOM_DATA_DIR/looms.yaml` or specified with `--config`
 
 **Complete Example**:
 ```yaml
@@ -1018,7 +1018,7 @@ loom --tls --tls-ca-file /var/loom/self-signed-ca.crt --server localhost:60051
 
 ### Generated Files
 
-**Location**: `/var/loom/certs/` (or `$HOME/.loom/certs/`)
+**Location**: `/var/loom/certs/` (or `$LOOM_DATA_DIR/certs/`)
 
 **Files**:
 - `self-signed-ca.crt` - CA certificate (trust this for clients)

@@ -70,11 +70,11 @@ spec:
        - sessions artifact (dnd-campaigns/{id}/sessions.json)
     2. Read all artifact files to access complete campaign data
     3. Compile and format all content into readable documents
-    4. Save documents to ~/.loom/artifacts/dnd-campaigns/{campaign_id}/
+    4. Save documents to $LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/
     5. Send completion message with file locations to coordinator
     
     Output format:
-    - Save all files to: ~/.loom/artifacts/dnd-campaign/
+    - Save all files to: $LOOM_DATA_DIR/artifacts/dnd-campaign/
     - Create subdirectories: dm-guide/, player-guide/, session-plans/, handouts/
     - Generate: 
       - dm-guide/campaign-guide.md (complete reference)

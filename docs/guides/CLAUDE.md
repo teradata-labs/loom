@@ -79,7 +79,7 @@ Run: `looms serve`
 Start the Loom server with your agent configuration:
 
 \`\`\`bash
-looms serve --config ~/.loom/config.yaml
+looms serve --config $LOOM_DATA_DIR/config.yaml
 \`\`\`
 
 Expected output:

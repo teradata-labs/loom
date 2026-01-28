@@ -172,10 +172,10 @@ prompts:
 
   - id: example_catalog_fallback
     content: |
-      EXAMPLES (discovered dynamically from ~/.loom/examples and ./examples):
-      - Look for YAML files in: workflows/, agents/, backends/, patterns/
-      - Bundle directories contain looms.yaml as marker
-      - File paths indicate type: workflow, agent, backend, pattern
+      EXAMPLES (discovered dynamically from $LOOM_DATA_DIR/examples/reference and ./examples/reference):
+      - Look for YAML files in: workflows/, agents/, agent-templates/
+      - Configuration files in: backends/ (examples/backends/), patterns/ (examples/patterns/), config/ (examples/config/)
+      - File paths indicate type: workflow, agent, agent-template, backend, pattern, server config
       - Names are descriptive of purpose
     variables: {}
     tags:

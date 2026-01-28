@@ -618,7 +618,7 @@ func (v *AgentValidator) getAvailablePatterns() []string {
 // findPatternsDir finds the patterns directory, searching multiple locations
 // This matches the logic in generator_patterns.go
 func (v *AgentValidator) findPatternsDir() (string, error) {
-	// 1. Check user's ~/.loom/patterns directory first (installed patterns)
+	// 1. Check user's $LOOM_DATA_DIR/patterns directory first (installed patterns)
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		userPatternsDir := filepath.Join(homeDir, ".loom", "patterns")
@@ -654,7 +654,7 @@ func (v *AgentValidator) findPatternsDir() (string, error) {
 		dir = parentDir
 	}
 
-	return "", fmt.Errorf("patterns directory not found (searched ~/.loom/patterns, %s, and upward)", cwd)
+	return "", fmt.Errorf("patterns directory not found (searched $LOOM_DATA_DIR/patterns, %s, and upward)", cwd)
 }
 
 // isPatternsDir checks if a directory is the patterns directory with YAML files
