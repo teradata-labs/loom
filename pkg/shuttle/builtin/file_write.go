@@ -196,7 +196,7 @@ func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface
 			n, err := f.WriteString(content)
 			bytesWritten = n
 			writeErr = err
-			f.Close()
+			_ = f.Close()
 		}
 	default: // create or overwrite
 		data := []byte(content)

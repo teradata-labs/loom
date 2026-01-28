@@ -42,7 +42,7 @@ var debugLog *log.Logger
 
 func init() {
 	// Create debug log file
-	f, err := os.OpenFile("/tmp/loom-sidebar-debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile("/tmp/loom-sidebar-debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err == nil {
 		debugLog = log.New(f, "", log.LstdFlags)
 	}

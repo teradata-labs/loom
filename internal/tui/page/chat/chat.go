@@ -212,9 +212,9 @@ func (p *chatPage) Init() tea.Cmd {
 		if coord, ok := p.app.AgentCoordinator.(interface{ GetAgentID() string }); ok {
 			p.currentAgentID = coord.GetAgentID()
 			// Debug: log what we got from coordinator
-			if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 				fmt.Fprintf(f, "[%s] chatPage.Init: Got currentAgentID from coordinator: '%s'\n", time.Now().Format("15:04:05"), p.currentAgentID)
-				f.Close()
+				_ = f.Close()
 			}
 
 			// Update splash screen with agent info
@@ -526,10 +526,10 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 
 	case sidebar.AgentSelectedMsg:
 		// Debug: log agent selection
-		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			fmt.Fprintf(f, "[%s] AgentSelectedMsg received: msg.AgentID=%s, p.currentAgentID=%s\n",
 				time.Now().Format("15:04:05"), msg.AgentID, p.currentAgentID)
-			f.Close()
+			_ = f.Close()
 		}
 
 		// Switch to the selected agent
@@ -546,10 +546,10 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		p.splash.SetAgentInfo(msg.AgentID, msg.AgentID)
 
 		// Debug: log after setting
-		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		if f, err := os.OpenFile("/tmp/chatpage-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			fmt.Fprintf(f, "[%s] After setting: p.currentAgentID=%s\n",
 				time.Now().Format("15:04:05"), p.currentAgentID)
-			f.Close()
+			_ = f.Close()
 		}
 
 		// Check if we have an existing session for this agent
@@ -1229,22 +1229,22 @@ func (p *chatPage) toggleDetails() {
 
 func (p *chatPage) sendMessage(text string, attachments []message.Attachment) tea.Cmd {
 	// Debug: log current state
-	if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+	if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		fmt.Fprintf(f, "[%s] sendMessage: currentAgentID='%s', session.ID='%s'\n", time.Now().Format("15:04:05"), p.currentAgentID, p.session.ID)
-		f.Close()
+		_ = f.Close()
 	}
 
 	session := p.session
 	var cmds []tea.Cmd
 	if p.session.ID == "" {
 		// Debug: log before creating session
-		if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			// Check what agentID the SessionAdapter will use
 			if sessAdapter, ok := p.app.Sessions.(*adapter.SessionAdapter); ok {
 				fmt.Fprintf(f, "[%s] sendMessage: Creating session, SessionAdapter will use agentID from coordinator\n", time.Now().Format("15:04:05"))
 				_ = sessAdapter // just to avoid unused variable warning
 			}
-			f.Close()
+			_ = f.Close()
 		}
 
 		newSession, err := p.app.Sessions.Create(context.Background(), "New Session")
@@ -1258,9 +1258,9 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 			if coord, ok := p.app.AgentCoordinator.(interface{ GetAgentID() string }); ok {
 				p.currentAgentID = coord.GetAgentID()
 				// Debug: log retrieval
-				if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+				if f, err := os.OpenFile("/tmp/loom-chatpage-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 					fmt.Fprintf(f, "[%s] sendMessage: Retrieved currentAgentID from coordinator: '%s'\n", time.Now().Format("15:04:05"), p.currentAgentID)
-					f.Close()
+					_ = f.Close()
 				}
 			}
 		}

@@ -112,7 +112,7 @@ func runChat(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Warning: Cannot connect to Loom server at %s\n", serverAddr)
 		fmt.Fprintf(os.Stderr, "Starting TUI with connection instructions. Start the server with: looms serve\n\n")
 		if c != nil {
-			c.Close()
+			_ = c.Close()
 			c = nil
 		}
 	} else {
@@ -131,9 +131,9 @@ func runChat(cmd *cobra.Command, args []string) {
 	}
 
 	// Debug: Log the agent ID being set
-	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		fmt.Fprintf(f, "Setting agentID on application: '%s' (serverAvailable=%v)\n", agentID, serverAvailable)
-		f.Close()
+		_ = f.Close()
 	}
 
 	// Create event channel for TUI
@@ -152,9 +152,9 @@ func runChat(cmd *cobra.Command, args []string) {
 	application.SetAgentID(agentID)
 
 	// Debug: Verify it was set
-	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		fmt.Fprintf(f, "Agent ID set on application\n")
-		f.Close()
+		_ = f.Close()
 	}
 
 	// Create new TUI model
