@@ -11,6 +11,30 @@ metadata:
 spec:
   entrypoint: coordinator
 
+  # IMPORTANT: Workflow Namespacing
+  # When this workflow loads, Loom automatically creates namespaced copies of all agents:
+  #
+  # Entrypoint (coordinator):
+  #   - Base agent: agents/dnd-coordinator.yaml
+  #   - Namespaced ID: "dnd-campaign-workflow" (uses workflow name)
+  #   - Users start workflow with: loom chat dnd-campaign-workflow
+  #
+  # Sub-agents (all others):
+  #   - Base agents: agents/dnd-world-builder.yaml, agents/dnd-storyline-designer.yaml, etc.
+  #   - Namespaced IDs: "dnd-campaign-workflow:world-builder", "dnd-campaign-workflow:storyline-designer", etc.
+  #   - Format: "{workflow-name}:{agent-name}"
+  #
+  # Inter-agent communication uses namespaced IDs:
+  #   - To entrypoint: send_message(to="dnd-campaign-workflow", ...)
+  #   - To sub-agent: send_message(to="dnd-campaign-workflow:world-builder", ...)
+  #
+  # Benefits:
+  #   - No naming conflicts with standalone agents or other workflows
+  #   - Clear agent ownership and organization
+  #   - Automatic cleanup when workflow completes
+  #
+  # Code reference: pkg/agent/config_loader.go:790-914
+
   agents:
     - name: coordinator
       agent: dnd-coordinator

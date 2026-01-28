@@ -26,26 +26,54 @@ metadata:
     environment: development
 
 spec:
+  # ============================================================================
+  # AUTOMATIC AGENT NAMESPACING
+  # When a workflow loads, Loom creates namespaced copies of all referenced agents
+  # to prevent naming conflicts and provide clear ownership structure.
+  #
+  # Namespacing Rules:
+  #   1. Entrypoint agent: Uses workflow name as namespaced ID
+  #      Example: workflow "multi-agent-coordination-example" → agent ID "multi-agent-coordination-example"
+  #
+  #   2. Sub-agents: Use format "{workflow-name}:{agent-name}"
+  #      Example: workflow "multi-agent-coordination-example", agent "specialist-1"
+  #               → agent ID "multi-agent-coordination-example:specialist-1"
+  #
+  # Inter-Agent Communication:
+  #   - To entrypoint: send_message(to="multi-agent-coordination-example", ...)
+  #   - To sub-agent: send_message(to="multi-agent-coordination-example:specialist-1", ...)
+  #
+  # Benefits:
+  #   - No naming conflicts between workflows
+  #   - Clear agent ownership
+  #   - Multiple workflows can use same base agent configs
+  #
+  # Code Reference: pkg/agent/config_loader.go:790-914
+  # ============================================================================
+
   # Entrypoint agent (required for coordination workflows)
   entrypoint: coordinator                # REQUIRED: Agent that users interact with first
 
   # Agent definitions (required)
   agents:                               # REQUIRED: List of participating agents
     # Agent with inline configuration
-    - name: coordinator                  # REQUIRED: Agent instance name
-      agent: coordinator-agent           # REQUIRED: Agent config name/reference
+    - name: coordinator                  # REQUIRED: Agent instance name (used in namespacing)
+      agent: coordinator-agent           # REQUIRED: Base agent config name from agents/ directory
       description: "User-facing coordinator that manages the workflow"  # OPTIONAL
+      # When loaded: namespaced ID = "multi-agent-coordination-example" (workflow name, since this is entrypoint)
 
     # Agent loaded from external file
-    - name: specialist-1
-      agent: specialist-agent
+    - name: specialist-1                 # Agent instance name
+      agent: specialist-agent            # Base agent name (references agents/specialist-agent.yaml)
       description: "Domain specialist agent"
       path: /path/to/agent.yaml          # OPTIONAL: Load from file
+      # When loaded: namespaced ID = "multi-agent-coordination-example:specialist-1"
 
     # Agent with path override
-    - name: specialist-2
-      agent: specialist-agent-2
+    - name: specialist-2                 # Agent instance name
+      agent: specialist-agent-2          # Base agent name
       path: ../agents/specialist.yaml
+      # When loaded: namespaced ID = "multi-agent-coordination-example:specialist-2"
       # Path-loaded agents can have workflow-specific overrides:
       system_prompt: |                   # OPTIONAL: Override system prompt
         Custom prompt for this workflow context
