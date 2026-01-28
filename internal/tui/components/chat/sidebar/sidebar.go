@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -140,8 +139,6 @@ type SidebarSection int
 const (
 	SectionNone SidebarSection = iota
 	SectionWeaver
-	SectionWorkflows
-	SectionAgents
 	SectionMCP
 	SectionPatterns
 )
@@ -161,7 +158,7 @@ type sidebarCmp struct {
 	session       session.Session
 	logo          string
 	cwd           string
-	lspClients    interface{} // LSP clients (nil in Loom)
+	lspClients    any // LSP clients (nil in Loom)
 	compactMode   bool
 	history       history.Service
 	agents        []AgentInfo // List of available agents
@@ -174,15 +171,10 @@ type sidebarCmp struct {
 
 	// Cached items for navigation
 	patternCategories []PatternCategory
-	workflowAgents    []AgentInfo
-	regularAgents     []AgentInfo
 	mcpServers        []MCPServerInfo // List of MCP servers
 
 	// Pattern expansion state
 	expandedCategories map[string]bool // Track which pattern categories are expanded
-
-	// Workflow expansion state
-	expandedWorkflows map[string]bool // Track which workflows are expanded
 
 	// MCP server expansion state
 	expandedMCPServers map[string]bool // Track which MCP servers are expanded
@@ -191,20 +183,17 @@ type sidebarCmp struct {
 	scrollOffset int // Current scroll position (line offset)
 
 	// Mouse support - track Y positions of clickable items
-	weaverYStart   int
-	workflowYStart int
-	agentYStart    int
-	patternYStart  int
-	contentYStart  int // Where sidebar content begins (after logo/header)
+	weaverYStart  int
+	patternYStart int
+	contentYStart int // Where sidebar content begins (after logo/header)
 }
 
-func New(history history.Service, lspClients interface{}, compact bool) Sidebar {
+func New(history history.Service, lspClients any, compact bool) Sidebar {
 	return &sidebarCmp{
 		lspClients:         lspClients,
 		history:            history,
 		compactMode:        compact,
 		expandedCategories: make(map[string]bool),
-		expandedWorkflows:  make(map[string]bool),
 		expandedMCPServers: make(map[string]bool),
 	}
 }
@@ -418,23 +407,7 @@ func (m *sidebarCmp) View() string {
 			currentY += strings.Count(weaverContent, "\n") + 2
 		}
 
-		// Show agent workflows
-		workflowsContent := m.workflowsBlock()
-		if workflowsContent != "" {
-			parts = append(parts, "", workflowsContent)
-			m.workflowYStart = currentY + 1                       // +1 for empty line
-			currentY += strings.Count(workflowsContent, "\n") + 2 // +1 for content, +1 for empty line
-		}
-
-		// Show agents
-		if len(m.agents) > 0 {
-			agentsContent := m.agentsBlock()
-			parts = append(parts, "", agentsContent)
-			m.agentYStart = currentY + 1 // +1 for empty line
-			currentY += strings.Count(agentsContent, "\n") + 2
-		}
-
-		// Show MCP servers (after agents, before patterns)
+		// Show MCP servers (after weaver, before patterns)
 		mcpContent := m.mcpServersBlock()
 		if mcpContent != "" {
 			parts = append(parts, "", mcpContent)
@@ -616,280 +589,6 @@ func (m *sidebarCmp) weaverBlock() string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func (m *sidebarCmp) agentsBlock() string {
-	t := styles.CurrentTheme()
-
-	// Use pre-filtered regular agents (excludes workflows and sub-agents)
-	if len(m.regularAgents) == 0 {
-		return ""
-	}
-
-	var agentList []string
-
-	// Section header with focus indicator
-	sectionHeader := "Agents"
-	if m.focused && m.selectedSection == SectionAgents {
-		sectionHeader = t.S().Base.Foreground(t.Primary).Render(sectionHeader)
-	} else {
-		sectionHeader = core.Section(sectionHeader, m.getMaxWidth())
-	}
-	agentList = append(agentList, sectionHeader)
-
-	// Render each regular agent (excluding workflow orchestrators and sub-agents)
-	for i, agent := range m.regularAgents {
-		isActive := agent.ID == m.currentAgent
-		isSelected := m.focused && m.selectedSection == SectionAgents && i == m.selectedIndex
-
-		// Standard icons: record button for both selected and unselected
-		icon := "⏺"
-		iconColor := t.FgSubtle
-		if isSelected || isActive {
-			iconColor = t.Primary
-		}
-
-		styledIcon := t.S().Base.Foreground(iconColor).Render(icon)
-		agentName := agent.Name
-		if agentName == "" {
-			agentName = agent.ID
-		}
-
-		// Highlight selected agent (keyboard navigation)
-		titleColor := t.FgBase
-		if isSelected {
-			titleColor = t.Primary
-			agentName = "> " + agentName
-		} else if isActive {
-			titleColor = t.Success
-		}
-
-		agentList = append(agentList,
-			core.Status(
-				core.StatusOpts{
-					Icon:       styledIcon,
-					Title:      agentName,
-					TitleColor: titleColor,
-				},
-				m.getMaxWidth(),
-			),
-		)
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, agentList...)
-}
-
-// WorkflowGroup represents a workflow coordinator and its sub-agents
-type WorkflowGroup struct {
-	CoordinatorName   string
-	CoordinatorID     string
-	CoordinatorStatus string
-	SubAgents         []AgentInfo
-}
-
-// workflowsBlock renders the Agent Workflows section with hierarchical sub-agents.
-// Workflows can be expanded to show sub-agents (agents with "workflow-name:agent-id" format).
-func (m *sidebarCmp) workflowsBlock() string {
-	t := styles.CurrentTheme()
-
-	// Group agents by workflow
-	workflowGroups := m.groupWorkflowAgents()
-
-	// Don't show section if no workflow agents
-	if len(workflowGroups) == 0 {
-		return ""
-	}
-
-	// Section header with focus indicator
-	sectionHeader := "Agent Workflows"
-	if m.focused && m.selectedSection == SectionWorkflows {
-		sectionHeader = t.S().Base.Foreground(t.Primary).Render(sectionHeader)
-	} else {
-		sectionHeader = core.Section(sectionHeader, m.getMaxWidth())
-	}
-	parts := []string{sectionHeader}
-
-	// Track item index for selection (coordinators + visible sub-agents)
-	itemIndex := 0
-
-	// Render each workflow group
-	for _, group := range workflowGroups {
-		isExpanded := m.expandedWorkflows[group.CoordinatorID]
-		isActive := group.CoordinatorID == m.currentAgent
-
-		// Workflow name
-		workflowName := group.CoordinatorName
-		if workflowName == "" {
-			workflowName = group.CoordinatorID
-		}
-
-		// Determine if this item is selected (for keyboard navigation)
-		isSelected := m.focused && m.selectedSection == SectionWorkflows && itemIndex == m.selectedIndex
-
-		// Single icon logic:
-		// - If selected or active: ⏺ (record button)
-		// - Else if expanded: ▼ (down triangle)
-		// - Else: ▶ (right triangle)
-		var icon string
-		if isSelected || isActive {
-			icon = "⏺"
-		} else if isExpanded {
-			icon = "▼"
-		} else {
-			icon = "▶"
-		}
-
-		// Build coordinator line with appropriate colors
-		var coordinatorLine string
-		if isSelected {
-			// Selected: everything in primary color
-			styledIcon := t.S().Base.Foreground(t.Primary).Render(icon)
-			name := t.S().Base.Foreground(t.Primary).Render("> " + workflowName)
-			coordinatorLine = fmt.Sprintf("%s %s", styledIcon, name)
-			if len(group.SubAgents) > 0 {
-				coordinatorLine += t.S().Base.Foreground(t.Primary).Render(fmt.Sprintf(" (%d agents)", len(group.SubAgents)))
-			}
-		} else if isActive {
-			// Active but not selected: dot icon in primary color, name in success color
-			styledIcon := t.S().Base.Foreground(t.Primary).Render(icon)
-			name := t.S().Base.Foreground(t.Success).Render(workflowName)
-			coordinatorLine = fmt.Sprintf("%s %s", styledIcon, name)
-			if len(group.SubAgents) > 0 {
-				coordinatorLine += t.S().Muted.Render(fmt.Sprintf(" (%d agents)", len(group.SubAgents)))
-			}
-		} else {
-			// Neither selected nor active: default colors (arrows in subtle)
-			styledIcon := t.S().Base.Foreground(t.FgSubtle).Render(icon)
-			name := t.S().Base.Foreground(t.FgBase).Render(workflowName)
-			coordinatorLine = fmt.Sprintf("%s %s", styledIcon, name)
-			if len(group.SubAgents) > 0 {
-				coordinatorLine += t.S().Muted.Render(fmt.Sprintf(" (%d agents)", len(group.SubAgents)))
-			}
-		}
-		parts = append(parts, coordinatorLine)
-		itemIndex++
-
-		// If expanded, show sub-agents
-		if isExpanded {
-			for _, subAgent := range group.SubAgents {
-				subIsActive := subAgent.ID == m.currentAgent
-
-				// Sub-agent icon: record button for both selected and unselected
-				subIcon := "⏺"
-				subIconColor := t.FgSubtle
-				if subIsActive {
-					subIconColor = t.Primary
-				}
-
-				// Sub-agent name (use agent ID after colon)
-				subName := subAgent.Name
-				if subName == "" {
-					subName = subAgent.ID
-				}
-				// Extract name after colon if present
-				if idx := strings.Index(subName, ":"); idx != -1 {
-					subName = subName[idx+1:]
-				}
-
-				// Determine if this sub-agent is selected
-				subIsSelected := m.focused && m.selectedSection == SectionWorkflows && itemIndex == m.selectedIndex
-
-				// Build sub-agent line with appropriate colors
-				var subLine string
-				if subIsSelected {
-					// Selected: everything in primary color with selection indicator
-					subStyledIcon := t.S().Base.Foreground(t.Primary).Render("⏺")
-					styledName := t.S().Base.Foreground(t.Primary).Render(subName)
-					styledPrefix := t.S().Base.Foreground(t.Primary).Render("> └─ ")
-					subLine = fmt.Sprintf("%s%s %s", styledPrefix, subStyledIcon, styledName)
-				} else if subIsActive {
-					// Active but not selected: dot icon and name in success color
-					subStyledIcon := t.S().Base.Foreground(subIconColor).Render(subIcon)
-					styledName := t.S().Base.Foreground(t.Success).Render(subName)
-					styledPrefix := t.S().Base.Foreground(t.FgSubtle).Render("  └─ ")
-					subLine = fmt.Sprintf("%s%s %s", styledPrefix, subStyledIcon, styledName)
-				} else {
-					// Neither selected nor active: white/base color to match agents and patterns
-					subStyledIcon := t.S().Base.Foreground(subIconColor).Render(subIcon)
-					styledName := t.S().Base.Foreground(t.FgBase).Render(subName)
-					styledPrefix := t.S().Base.Foreground(t.FgSubtle).Render("  └─ ")
-					subLine = fmt.Sprintf("%s%s %s", styledPrefix, subStyledIcon, styledName)
-				}
-				parts = append(parts, subLine)
-				itemIndex++
-			}
-		}
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
-}
-
-// groupWorkflowAgents groups agents by workflow, separating coordinators and sub-agents.
-// Returns a slice of WorkflowGroup with coordinator info and sub-agents.
-func (m *sidebarCmp) groupWorkflowAgents() []WorkflowGroup {
-	// Map workflow name -> WorkflowGroup
-	groupMap := make(map[string]*WorkflowGroup)
-
-	// First pass: identify all sub-agents and create workflow groups
-	for _, agent := range m.agents {
-		if strings.Contains(agent.ID, ":") {
-			// This is a sub-agent: "workflow-name:agent-id"
-			parts := strings.SplitN(agent.ID, ":", 2)
-			workflowName := parts[0]
-
-			// Ensure workflow group exists
-			if _, exists := groupMap[workflowName]; !exists {
-				groupMap[workflowName] = &WorkflowGroup{
-					CoordinatorID: workflowName,
-					SubAgents:     []AgentInfo{},
-				}
-			}
-
-			// Add to sub-agents
-			groupMap[workflowName].SubAgents = append(groupMap[workflowName].SubAgents, agent)
-		}
-	}
-
-	// Second pass: match coordinators to their workflow groups
-	for _, agent := range m.agents {
-		// Skip sub-agents
-		if strings.Contains(agent.ID, ":") {
-			continue
-		}
-
-		// Check if this agent is a coordinator (has a matching workflow group)
-		if group, exists := groupMap[agent.ID]; exists {
-			// Update coordinator info
-			group.CoordinatorName = agent.Name
-			group.CoordinatorStatus = agent.Status
-		} else if strings.Contains(strings.ToLower(agent.Name), "workflow") ||
-			strings.Contains(strings.ToLower(agent.ID), "workflow") {
-			// This is a coordinator without sub-agents yet (has "workflow" in name)
-			groupMap[agent.ID] = &WorkflowGroup{
-				CoordinatorID:     agent.ID,
-				CoordinatorName:   agent.Name,
-				CoordinatorStatus: agent.Status,
-				SubAgents:         []AgentInfo{},
-			}
-		}
-	}
-
-	// Convert map to slice
-	var groups []WorkflowGroup
-	for _, group := range groupMap {
-		// Sort sub-agents within each group by ID for stable ordering
-		sort.Slice(group.SubAgents, func(i, j int) bool {
-			return group.SubAgents[i].ID < group.SubAgents[j].ID
-		})
-		groups = append(groups, *group)
-	}
-
-	// Sort groups by CoordinatorID for stable ordering
-	sort.Slice(groups, func(i, j int) bool {
-		return groups[i].CoordinatorID < groups[j].CoordinatorID
-	})
-
-	return groups
-}
-
 func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 	t := styles.CurrentTheme()
 	// Format tokens in human-readable format (e.g., 110K, 1.2M)
@@ -977,17 +676,9 @@ func (m *sidebarCmp) Focus() {
 	m.updateCachedItems()
 	// Initialize selection to first available section (workflows -> agents -> patterns)
 	if m.selectedSection == SectionNone {
-		workflowCount := m.getWorkflowNavigableItemCount()
-		if workflowCount > 0 {
-			m.selectedSection = SectionWorkflows
-			m.selectedIndex = 0
-		} else if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
-			m.selectedIndex = 0
-		} else if len(m.patternCategories) > 0 {
-			m.selectedSection = SectionPatterns
-			m.selectedIndex = 0
-		}
+		// Default to Weaver section
+		m.selectedSection = SectionWeaver
+		m.selectedIndex = 0
 	}
 }
 
@@ -1005,143 +696,6 @@ func (m *sidebarCmp) IsFocused() bool {
 func (m *sidebarCmp) updateCachedItems() {
 	// Cache pattern categories
 	m.patternCategories = listPatternCategories()
-
-	// Debug: log all agents BEFORE filtering
-	if debugLog != nil {
-		debugLog.Printf("[DEBUG] updateCachedItems: m.agents has %d total agents\n", len(m.agents))
-		for i, agent := range m.agents {
-			debugLog.Printf("  [%d] name='%s', id='%s', status='%s'\n", i, agent.Name, agent.ID, agent.Status)
-		}
-	}
-
-	// First, identify which agent IDs are workflow coordinators
-	// (they have sub-agents with ID pattern "coordinator-id:sub-agent-id")
-	coordinatorIDs := make(map[string]bool)
-	// Also track which agent names are used as workflow sub-agents
-	workflowSubAgentNames := make(map[string]bool)
-	// Track workflow prefixes (e.g., "vacation" from "vacation-planner")
-	workflowPrefixes := make(map[string]bool)
-
-	for _, agent := range m.agents {
-		if strings.Contains(agent.ID, ":") {
-			// Extract coordinator ID (part before colon)
-			parts := strings.SplitN(agent.ID, ":", 2)
-			coordinatorIDs[parts[0]] = true
-			// Track the sub-agent name (part after colon)
-			if len(parts) == 2 {
-				workflowSubAgentNames[parts[1]] = true
-			}
-		}
-	}
-
-	// Extract workflow prefixes from coordinator IDs
-	// e.g., "vacation-planner" -> "vacation"
-	for coordinatorID := range coordinatorIDs {
-		if idx := strings.LastIndex(coordinatorID, "-"); idx != -1 {
-			prefix := coordinatorID[:idx]
-			workflowPrefixes[prefix] = true
-		}
-	}
-
-	// Cache workflow agents (coordinators only)
-	m.workflowAgents = nil
-	for _, agent := range m.agents {
-		isSubAgent := strings.Contains(agent.ID, ":")
-		isCoordinator := coordinatorIDs[agent.ID]
-		hasWorkflowInName := strings.Contains(strings.ToLower(agent.Name), "workflow") ||
-			strings.Contains(strings.ToLower(agent.ID), "workflow")
-
-		// Coordinator: either has sub-agents OR has "workflow" in name (but not a sub-agent itself)
-		if !isSubAgent && (isCoordinator || hasWorkflowInName) {
-			m.workflowAgents = append(m.workflowAgents, agent)
-		}
-	}
-
-	// Sort workflow agents by ID for stable ordering
-	sort.Slice(m.workflowAgents, func(i, j int) bool {
-		return m.workflowAgents[i].ID < m.workflowAgents[j].ID
-	})
-
-	// Cache regular agents (exclude weaver, mender, workflow coordinators, and sub-agents)
-	m.regularAgents = nil
-	for _, agent := range m.agents {
-		isSubAgent := strings.Contains(agent.ID, ":")
-		isCoordinator := coordinatorIDs[agent.ID]
-		hasWorkflowInName := strings.Contains(strings.ToLower(agent.Name), "workflow") ||
-			strings.Contains(strings.ToLower(agent.ID), "workflow")
-		isWeaver := agent.Name == "weaver"
-
-		// Check if this agent's ID matches a workflow sub-agent name
-		// (e.g., standalone "vacation-activity-planner" should be hidden if "vacation-planner:activity-planner" exists)
-		isUsedInWorkflow := false
-		for subAgentName := range workflowSubAgentNames {
-			// Check if the agent ID ends with the sub-agent name
-			// This handles cases like "vacation-activity-planner" matching "activity-planner"
-			if strings.HasSuffix(agent.ID, subAgentName) || strings.HasSuffix(agent.ID, "-"+subAgentName) {
-				isUsedInWorkflow = true
-				if debugLog != nil {
-					debugLog.Printf("[DEBUG] Filtering out agent '%s' (id=%s) because it matches workflow sub-agent '%s'\n",
-						agent.Name, agent.ID, subAgentName)
-				}
-				break
-			}
-		}
-
-		// Also check if this is a coordinator/entrypoint agent for a workflow
-		// (e.g., "vacation-coordinator" should be hidden if there's a "vacation-planner" workflow)
-		if !isUsedInWorkflow && strings.Contains(strings.ToLower(agent.ID), "coordinator") {
-			for prefix := range workflowPrefixes {
-				if strings.HasPrefix(agent.ID, prefix+"-") {
-					isUsedInWorkflow = true
-					if debugLog != nil {
-						debugLog.Printf("[DEBUG] Filtering out coordinator agent '%s' (id=%s) because it's part of workflow with prefix '%s'\n",
-							agent.Name, agent.ID, prefix)
-					}
-					break
-				}
-			}
-		}
-
-		// Regular agents: not weaver, not a sub-agent, not a coordinator, no "workflow" in name, and not used in a workflow
-		if !isWeaver && !isSubAgent && !isCoordinator && !hasWorkflowInName && !isUsedInWorkflow {
-			m.regularAgents = append(m.regularAgents, agent)
-		}
-	}
-
-	// Sort regular agents by ID for stable ordering
-	sort.Slice(m.regularAgents, func(i, j int) bool {
-		return m.regularAgents[i].ID < m.regularAgents[j].ID
-	})
-
-	// Debug: log cached agents AFTER filtering
-	if debugLog != nil {
-		debugLog.Printf("[DEBUG] After filtering: %d workflows, %d regular agents, %d workflow sub-agent names tracked, %d workflow prefixes\n",
-			len(m.workflowAgents), len(m.regularAgents), len(workflowSubAgentNames), len(workflowPrefixes))
-		if len(workflowPrefixes) > 0 {
-			debugLog.Printf("[DEBUG] Workflow prefixes (will hide coordinator agents with these prefixes):\n")
-			for prefix := range workflowPrefixes {
-				debugLog.Printf("  - %s\n", prefix)
-			}
-		}
-		if len(workflowSubAgentNames) > 0 {
-			debugLog.Printf("[DEBUG] Workflow sub-agent names (will hide matching standalone agents):\n")
-			for name := range workflowSubAgentNames {
-				debugLog.Printf("  - %s\n", name)
-			}
-		}
-		if len(m.workflowAgents) > 0 {
-			debugLog.Printf("[DEBUG] Workflow agents:\n")
-			for i, agent := range m.workflowAgents {
-				debugLog.Printf("  [%d] %s (id=%s)\n", i, agent.Name, agent.ID)
-			}
-		}
-		if len(m.regularAgents) > 0 {
-			debugLog.Printf("[DEBUG] Regular agents:\n")
-			for i, agent := range m.regularAgents {
-				debugLog.Printf("  [%d] %s (id=%s)\n", i, agent.Name, agent.ID)
-			}
-		}
-	}
 }
 
 // resetSelectionIfNeeded resets selection if current selection is invalid
@@ -1150,61 +704,34 @@ func (m *sidebarCmp) resetSelectionIfNeeded() {
 	case SectionWeaver:
 		// Weaver section only has one item (index 0)
 		m.selectedIndex = 0
+	case SectionMCP:
+		maxMCPItems := m.getMCPNavigableItemCount()
+		if m.selectedIndex >= maxMCPItems {
+			m.selectedIndex = max(0, maxMCPItems-1)
+		}
 	case SectionPatterns:
 		maxPatternItems := m.getPatternNavigableItemCount()
 		if m.selectedIndex >= maxPatternItems {
 			m.selectedIndex = max(0, maxPatternItems-1)
 		}
-	case SectionWorkflows:
-		workflowCount := m.getWorkflowNavigableItemCount()
-		if m.selectedIndex >= workflowCount {
-			m.selectedIndex = max(0, workflowCount-1)
-		}
-	case SectionAgents:
-		if m.selectedIndex >= len(m.regularAgents) {
-			m.selectedIndex = max(0, len(m.regularAgents)-1)
-		}
 	}
 }
 
 // navigateUp moves selection up, crossing section boundaries
-// Order: Weaver (top) -> Workflows -> Agents -> MCP -> Patterns (bottom)
+// Order: Weaver (top) -> MCP -> Patterns (bottom)
 func (m *sidebarCmp) navigateUp() tea.Cmd {
 	if m.selectedIndex > 0 {
 		m.selectedIndex--
 		return nil
 	}
 
-	// Move to previous section (going up: patterns -> mcp -> agents -> workflows -> mender -> weaver)
+	// Move to previous section (going up: patterns -> mcp -> weaver)
 	switch m.selectedSection {
 	case SectionPatterns:
 		// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
 		m.selectedSection = SectionMCP
 		m.selectedIndex = max(0, len(m.mcpServers)-1)
 	case SectionMCP:
-		if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
-			m.selectedIndex = len(m.regularAgents) - 1
-		} else {
-			workflowCount := m.getWorkflowNavigableItemCount()
-			if workflowCount > 0 {
-				m.selectedSection = SectionWorkflows
-				m.selectedIndex = workflowCount - 1
-			} else {
-				m.selectedSection = SectionWeaver
-				m.selectedIndex = 0
-			}
-		}
-	case SectionAgents:
-		workflowCount := m.getWorkflowNavigableItemCount()
-		if workflowCount > 0 {
-			m.selectedSection = SectionWorkflows
-			m.selectedIndex = workflowCount - 1
-		} else {
-			m.selectedSection = SectionWeaver
-			m.selectedIndex = 0
-		}
-	case SectionWorkflows:
 		m.selectedSection = SectionWeaver
 		m.selectedIndex = 0
 	case SectionWeaver:
@@ -1215,18 +742,13 @@ func (m *sidebarCmp) navigateUp() tea.Cmd {
 }
 
 // navigateDown moves selection down, crossing section boundaries
-// Order: Weaver (top) -> Workflows -> Agents -> MCP -> Patterns (bottom)
+// Order: Weaver (top) -> MCP -> Patterns (bottom)
 func (m *sidebarCmp) navigateDown() tea.Cmd {
 	maxIndex := 0
 	switch m.selectedSection {
 	case SectionWeaver:
 		// Weaver section only has weaver (1 item)
 		maxIndex = 0
-	case SectionWorkflows:
-		// Calculate max index based on expanded workflows
-		maxIndex = m.getWorkflowNavigableItemCount() - 1
-	case SectionAgents:
-		maxIndex = len(m.regularAgents) - 1
 	case SectionMCP:
 		maxIndex = max(0, m.getMCPNavigableItemCount()-1)
 	case SectionPatterns:
@@ -1238,31 +760,9 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 		return nil
 	}
 
-	// Move to next section (going down: weaver -> workflows -> agents -> mcp -> patterns)
+	// Move to next section (going down: weaver -> mcp -> patterns)
 	switch m.selectedSection {
 	case SectionWeaver:
-		workflowCount := m.getWorkflowNavigableItemCount()
-		if workflowCount > 0 {
-			m.selectedSection = SectionWorkflows
-			m.selectedIndex = 0
-		} else if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
-			m.selectedIndex = 0
-		} else {
-			// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
-			m.selectedSection = SectionMCP
-			m.selectedIndex = 0
-		}
-	case SectionWorkflows:
-		if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
-			m.selectedIndex = 0
-		} else {
-			// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
-			m.selectedSection = SectionMCP
-			m.selectedIndex = 0
-		}
-	case SectionAgents:
 		// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
 		m.selectedSection = SectionMCP
 		m.selectedIndex = 0
@@ -1276,20 +776,6 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 	}
 
 	return nil
-}
-
-// getWorkflowNavigableItemCount returns the number of navigable items in workflows section
-// (coordinators + visible sub-agents from expanded workflows)
-func (m *sidebarCmp) getWorkflowNavigableItemCount() int {
-	workflowGroups := m.groupWorkflowAgents()
-	count := 0
-	for _, group := range workflowGroups {
-		count++ // Coordinator
-		if m.expandedWorkflows[group.CoordinatorID] {
-			count += len(group.SubAgents) // Sub-agents
-		}
-	}
-	return count
 }
 
 // getMCPNavigableItemCount returns the number of navigable items in MCP section
@@ -1319,23 +805,12 @@ func (m *sidebarCmp) getPatternNavigableItemCount() int {
 }
 
 // navigateToNextSection cycles to the next section
-// Order: Workflows -> Agents -> MCP -> Patterns -> Workflows (cycles)
+// Order: Weaver -> MCP -> Patterns -> Weaver (cycles)
 //
 //nolint:unused // Reserved for future keyboard navigation enhancement
 func (m *sidebarCmp) navigateToNextSection() tea.Cmd {
-	workflowCount := m.getWorkflowNavigableItemCount()
-
 	switch m.selectedSection {
-	case SectionWorkflows:
-		if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
-			m.selectedIndex = 0
-		} else {
-			// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
-			m.selectedSection = SectionMCP
-			m.selectedIndex = 0
-		}
-	case SectionAgents:
+	case SectionWeaver:
 		// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
 		m.selectedSection = SectionMCP
 		m.selectedIndex = 0
@@ -1343,27 +818,15 @@ func (m *sidebarCmp) navigateToNextSection() tea.Cmd {
 		if len(m.patternCategories) > 0 {
 			m.selectedSection = SectionPatterns
 			m.selectedIndex = 0
-		} else if workflowCount > 0 {
-			// Wrap around
-			m.selectedSection = SectionWorkflows
-			m.selectedIndex = 0
-		} else if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
+		} else {
+			// Wrap around to Weaver
+			m.selectedSection = SectionWeaver
 			m.selectedIndex = 0
 		}
 	case SectionPatterns:
-		if workflowCount > 0 {
-			// Wrap around to top
-			m.selectedSection = SectionWorkflows
-			m.selectedIndex = 0
-		} else if len(m.regularAgents) > 0 {
-			m.selectedSection = SectionAgents
-			m.selectedIndex = 0
-		} else {
-			// MCP is always navigable
-			m.selectedSection = SectionMCP
-			m.selectedIndex = 0
-		}
+		// Wrap around to top
+		m.selectedSection = SectionWeaver
+		m.selectedIndex = 0
 	}
 	return nil
 }
@@ -1378,7 +841,8 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 		})
 	case SectionPatterns:
 		// Map selectedIndex to category or pattern file
-		maxItems := min(len(m.patternCategories), DefaultMaxLSPsShown)
+		// Show all patterns - we have a scrollbar now
+		maxItems := len(m.patternCategories)
 		itemIndex := 0
 
 		for i := 0; i < maxItems; i++ {
@@ -1405,77 +869,6 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 					itemIndex++
 				}
 			}
-		}
-
-		// Check if selecting "+X more" overflow item
-		if len(m.patternCategories) > maxItems && m.selectedIndex == itemIndex {
-			// Selected the "+X more" item - show pattern modal
-			return util.CmdHandler(ShowPatternModalMsg{})
-		}
-
-	case SectionWorkflows:
-		// Map selectedIndex to coordinator or sub-agent in hierarchical structure
-		workflowGroups := m.groupWorkflowAgents()
-		itemIndex := 0
-
-		for _, group := range workflowGroups {
-			// Check if selecting coordinator
-			if itemIndex == m.selectedIndex {
-				isExpanded := m.expandedWorkflows[group.CoordinatorID]
-				if len(group.SubAgents) > 0 {
-					if isExpanded {
-						// Workflow is already expanded - select the coordinator to run it
-						if debugLog != nil {
-							debugLog.Printf("[DEBUG] Selected expanded workflow coordinator: id=%s\n", group.CoordinatorID)
-						}
-						return util.CmdHandler(AgentSelectedMsg{
-							AgentID: group.CoordinatorID,
-						})
-					} else {
-						// Workflow is collapsed - expand it to show sub-agents
-						m.expandedWorkflows[group.CoordinatorID] = true
-						return nil
-					}
-				} else {
-					// Select coordinator if no sub-agents
-					if debugLog != nil {
-						debugLog.Printf("[DEBUG] Selected workflow coordinator: id=%s\n", group.CoordinatorID)
-					}
-					return util.CmdHandler(AgentSelectedMsg{
-						AgentID: group.CoordinatorID,
-					})
-				}
-			}
-			itemIndex++
-
-			// Check sub-agents if expanded
-			if m.expandedWorkflows[group.CoordinatorID] {
-				for _, subAgent := range group.SubAgents {
-					if itemIndex == m.selectedIndex {
-						// Selected a sub-agent
-						if debugLog != nil {
-							debugLog.Printf("[DEBUG] Selected workflow sub-agent: id=%s\n", subAgent.ID)
-						}
-						return util.CmdHandler(AgentSelectedMsg{
-							AgentID: subAgent.ID,
-						})
-					}
-					itemIndex++
-				}
-			}
-		}
-	case SectionAgents:
-		if m.selectedIndex < len(m.regularAgents) {
-			agent := m.regularAgents[m.selectedIndex]
-			// Debug: log agent selection
-			if f, err := os.OpenFile("/tmp/sidebar-selection-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-				fmt.Fprintf(f, "[%s] Selected regular agent: name=%s, id=%s, index=%d, currentAgent=%s\n",
-					time.Now().Format("15:04:05"), agent.Name, agent.ID, m.selectedIndex, m.currentAgent)
-				f.Close()
-			}
-			return util.CmdHandler(AgentSelectedMsg{
-				AgentID: agent.ID,
-			})
 		}
 
 	case SectionMCP:
@@ -1546,37 +939,6 @@ func (m *sidebarCmp) handleMouseClick(x, y int) tea.Cmd {
 			m.selectedIndex = 0
 			// Trigger selection (weaver)
 			return util.CmdHandler(AgentSelectedMsg{AgentID: "weaver"})
-		}
-	}
-
-	// Check workflows section
-	workflowCount := m.getWorkflowNavigableItemCount()
-	if workflowCount > 0 && clickY >= m.workflowYStart {
-		relativeY := clickY - m.workflowYStart
-		// First line is section header
-		if relativeY > 0 && relativeY <= workflowCount {
-			itemIndex := relativeY - 1
-			if itemIndex >= 0 && itemIndex < workflowCount {
-				m.selectedSection = SectionWorkflows
-				m.selectedIndex = itemIndex
-				// Trigger selection
-				return m.selectCurrentItem()
-			}
-		}
-	}
-
-	// Check agents section
-	if len(m.regularAgents) > 0 && clickY >= m.agentYStart {
-		relativeY := clickY - m.agentYStart
-		// First line is section header
-		if relativeY > 0 && relativeY <= len(m.regularAgents) {
-			itemIndex := relativeY - 1
-			if itemIndex >= 0 && itemIndex < len(m.regularAgents) {
-				m.selectedSection = SectionAgents
-				m.selectedIndex = itemIndex
-				// Trigger selection
-				return m.selectCurrentItem()
-			}
 		}
 	}
 

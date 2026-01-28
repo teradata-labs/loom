@@ -18,11 +18,13 @@ import (
 )
 
 type KeyMap struct {
-	Quit     key.Binding
-	Help     key.Binding
-	Commands key.Binding
-	Suspend  key.Binding
-	Sessions key.Binding
+	Quit            key.Binding
+	Help            key.Binding
+	Commands        key.Binding
+	Suspend         key.Binding
+	Sessions        key.Binding
+	AgentsDialog    key.Binding
+	WorkflowsDialog key.Binding
 
 	pageBindings []key.Binding
 }
@@ -48,6 +50,14 @@ func DefaultKeyMap() KeyMap {
 		Sessions: key.NewBinding(
 			key.WithKeys("ctrl+o", "ctrl+s"), // ctrl+o as alternative since ctrl+s often freezes terminal
 			key.WithHelp("ctrl+o", "sessions"),
+		),
+		AgentsDialog: key.NewBinding(
+			key.WithKeys("ctrl+e"),
+			key.WithHelp("ctrl+e", "agents"),
+		),
+		WorkflowsDialog: key.NewBinding(
+			key.WithKeys("ctrl+w"),
+			key.WithHelp("ctrl+w", "workflows"),
 		),
 	}
 }

@@ -31,7 +31,6 @@ import (
 	"github.com/teradata-labs/loom/internal/app"
 	"github.com/teradata-labs/loom/internal/config"
 	"github.com/teradata-labs/loom/internal/message"
-	"github.com/teradata-labs/loom/internal/operator"
 	"github.com/teradata-labs/loom/internal/permission"
 	"github.com/teradata-labs/loom/internal/pubsub"
 	"github.com/teradata-labs/loom/internal/session"
@@ -74,6 +73,14 @@ type (
 	// AddMCPServerSuccessMsg is sent when an MCP server is successfully added
 	AddMCPServerSuccessMsg struct {
 		ServerName string
+	}
+
+	// autoSwitchToAgentMsg is sent after a delay to auto-switch to a newly created agent
+	autoSwitchToAgentMsg struct {
+		AgentID      string
+		RetryCount   int
+		MaxRetries   int
+		RetryDelayMs int
 	}
 )
 
@@ -157,9 +164,6 @@ type chatPage struct {
 	editor  editor.Editor
 	splash  splash.Splash
 
-	// Built-in operator (not a YAML agent)
-	operator *operator.Operator
-
 	// Simple state flags
 	showingDetails   bool
 	isCanceling      bool
@@ -187,7 +191,6 @@ func New(app *app.App) ChatPage {
 		chat:          chat.New(app),
 		editor:        editor.New(app),
 		splash:        splash.New(),
-		operator:      operator.New(app.AgentCoordinator), // Initialize built-in operator
 		focusedPane:   PanelTypeSplash,
 		todoSpinner: spinner.New(
 			spinner.WithSpinner(spinner.MiniDot),
@@ -437,6 +440,33 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		if _, ok := msg.(pubsub.Event[message.Message]); ok && p.hasInProgressTodo() && agentBusy {
 			cmds = append(cmds, p.todoSpinner.Tick)
 		}
+
+		// Detect when weaver creates an agent and auto-switch to it
+		if msgEvent, ok := msg.(pubsub.Event[message.Message]); ok {
+			if p.currentAgentID == "weaver" && msgEvent.Type == pubsub.UpdatedEvent {
+				// Check if this message has a tool result for agent_management
+				toolResults := msgEvent.Payload.ToolResults()
+				for _, tr := range toolResults {
+					if strings.Contains(tr.Content, `"action":"create"`) &&
+						strings.Contains(tr.Content, `"type":"agent"`) {
+						// Parse the agent name from the tool result
+						if agentName := parseAgentNameFromToolResult(tr.Content); agentName != "" {
+							// Schedule auto-switch with retry mechanism (initial 200ms, up to 3 retries with 100ms delays)
+							cmds = append(cmds, tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+								return autoSwitchToAgentMsg{
+									AgentID:      agentName,
+									RetryCount:   0,
+									MaxRetries:   3,
+									RetryDelayMs: 100,
+								}
+							}))
+						}
+						break
+					}
+				}
+			}
+		}
+
 		if p.focusedPane == PanelTypeSplash {
 			u, cmd := p.splash.Update(msg)
 			p.splash = u.(splash.Splash)
@@ -603,6 +633,43 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		p.chat = u.(chat.MessageListCmp)
 		cmds = append(cmds, cmd)
 		return p, tea.Batch(cmds...)
+
+	case autoSwitchToAgentMsg:
+		// Verify the agent exists before switching
+		if p.app.AgentCoordinator != nil {
+			agents, err := p.app.AgentCoordinator.ListAgents(context.Background())
+			if err == nil {
+				// Check if the agent exists in the list
+				agentExists := false
+				for _, ag := range agents {
+					if ag.ID == msg.AgentID {
+						agentExists = true
+						break
+					}
+				}
+
+				if agentExists {
+					// Agent found - switch to it
+					return p, util.CmdHandler(sidebar.AgentSelectedMsg{AgentID: msg.AgentID})
+				}
+
+				// Agent not found yet - retry if we haven't exceeded max retries
+				if msg.RetryCount < msg.MaxRetries {
+					return p, tea.Tick(time.Duration(msg.RetryDelayMs)*time.Millisecond, func(time.Time) tea.Msg {
+						return autoSwitchToAgentMsg{
+							AgentID:      msg.AgentID,
+							RetryCount:   msg.RetryCount + 1,
+							MaxRetries:   msg.MaxRetries,
+							RetryDelayMs: msg.RetryDelayMs,
+						}
+					})
+				}
+
+				// Max retries exceeded - show warning
+				return p, util.ReportWarn(fmt.Sprintf("Agent '%s' created but not yet loaded. Try switching manually with ctrl+e", msg.AgentID))
+			}
+		}
+		return p, nil
 
 	case commands.CommandRunCustomMsg:
 		if p.app.AgentCoordinator != nil && p.app.AgentCoordinator.IsBusy(p.currentAgentID) {
@@ -1230,67 +1297,7 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 
 	cmds = append(cmds, p.chat.GoToBottom())
 
-	// Check if we're in operator mode (built-in operator, not a YAML agent)
-	// Debug: Log what we're checking
-	if f, err := os.OpenFile("/tmp/loom-operator-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "[%s] sendMessage check: p.currentAgentID='%s' (operator=%v)\n",
-			time.Now().Format("15:04:05"), p.currentAgentID, p.currentAgentID == "operator")
-		f.Close()
-	}
-
-	if p.currentAgentID == "operator" {
-		// Handle via built-in operator logic
-		cmds = append(cmds, func() tea.Msg {
-			// Debug: Log operator invocation
-			if f, err := os.OpenFile("/tmp/loom-operator-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-				fmt.Fprintf(f, "[%s] Calling operator.HandleMessage with text='%s', operator=%v, coordinator=%v\n",
-					time.Now().Format("15:04:05"), text, p.operator != nil, p.app.AgentCoordinator != nil)
-				f.Close()
-			}
-
-			if p.operator == nil {
-				return util.InfoMsg{
-					Type: util.InfoTypeError,
-					Msg:  "Operator not initialized",
-				}
-			}
-
-			response, suggestions, err := p.operator.HandleMessage(context.Background(), text)
-			if err != nil {
-				return util.InfoMsg{
-					Type: util.InfoTypeError,
-					Msg:  fmt.Sprintf("Operator error: %v", err),
-				}
-			}
-
-			// Append suggestions to response for now (agent selection modal will be added in Phase 2)
-			if len(suggestions) > 0 {
-				response += "\n\nSuggested agents:\n"
-				for i, sug := range suggestions {
-					response += fmt.Sprintf("%d. %s - %s\n", i+1, sug.Name, sug.Reason)
-				}
-				response += "\nUse ctrl+e to open the agent browser and select one."
-			}
-
-			// Create operator response message
-			assistantMsg := message.NewMessage(
-				fmt.Sprintf("assistant-%d", time.Now().UnixNano()),
-				session.ID,
-				message.Assistant,
-			)
-			assistantMsg.AddPart(message.ContentText{Text: response})
-
-			// Send operator response to chat
-			return pubsub.Event[message.Message]{
-				Type:    pubsub.CreatedEvent,
-				Payload: assistantMsg,
-			}
-		})
-
-		return tea.Batch(cmds...)
-	}
-
-	// Otherwise, use standard gRPC agent flow
+	// Use standard gRPC agent flow (guide is now a regular agent)
 	cmds = append(cmds, func() tea.Msg {
 		// Convert attachments to interface{}
 		var attch []interface{}
@@ -1577,6 +1584,18 @@ func (p *chatPage) Help() help.KeyMap {
 			key.NewBinding(
 				key.WithKeys("ctrl+s"),
 				key.WithHelp("ctrl+s", "sessions"),
+			),
+		)
+		globalBindings = append(globalBindings,
+			key.NewBinding(
+				key.WithKeys("ctrl+e"),
+				key.WithHelp("ctrl+e", "agents"),
+			),
+		)
+		globalBindings = append(globalBindings,
+			key.NewBinding(
+				key.WithKeys("ctrl+w"),
+				key.WithHelp("ctrl+w", "workflows"),
 			),
 		)
 		if p.session.ID != "" {
@@ -1950,4 +1969,32 @@ func (p *chatPage) hasInProgressTodo() bool {
 		}
 	}
 	return false
+}
+
+// parseAgentNameFromToolResult extracts the agent name from an agent_management tool result JSON.
+// The JSON structure from agent_management create action is:
+// {"action":"create","type":"agent","name":"agent-name","path":"...","validation":"..."}
+func parseAgentNameFromToolResult(jsonContent string) string {
+	// Simple string parsing for the name field
+	// Look for "name":"..." pattern
+	namePrefix := `"name":"`
+	nameIdx := strings.Index(jsonContent, namePrefix)
+	if nameIdx == -1 {
+		return ""
+	}
+
+	// Start after the prefix
+	start := nameIdx + len(namePrefix)
+	// Find the closing quote
+	end := strings.Index(jsonContent[start:], `"`)
+	if end == -1 {
+		return ""
+	}
+
+	agentName := jsonContent[start : start+end]
+	// Remove .yaml extension if present
+	agentName = strings.TrimSuffix(agentName, ".yaml")
+	agentName = strings.TrimSuffix(agentName, ".yml")
+
+	return agentName
 }

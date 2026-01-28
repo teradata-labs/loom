@@ -25,6 +25,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/teradata-labs/loom/internal/agent"
 	"github.com/teradata-labs/loom/internal/agent/tools/mcp"
 	"github.com/teradata-labs/loom/internal/app"
 	"github.com/teradata-labs/loom/internal/config"
@@ -39,11 +40,13 @@ import (
 	"github.com/teradata-labs/loom/internal/tui/components/core/layout"
 	"github.com/teradata-labs/loom/internal/tui/components/core/status"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs"
+	"github.com/teradata-labs/loom/internal/tui/components/dialogs/agents"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/commands"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/filepicker"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/permissions"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/quit"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/sessions"
+	"github.com/teradata-labs/loom/internal/tui/components/dialogs/workflows"
 	"github.com/teradata-labs/loom/internal/tui/page"
 	"github.com/teradata-labs/loom/internal/tui/page/chat"
 	"github.com/teradata-labs/loom/internal/tui/styles"
@@ -511,6 +514,50 @@ func (a *appModel) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			},
 		)
 		return tea.Sequence(cmds...)
+	case key.Matches(msg, a.keyMap.AgentsDialog):
+		// if the app is not configured show no agents
+		if !a.isConfigured {
+			return nil
+		}
+		if a.dialog.ActiveDialogID() == agents.AgentsDialogID {
+			return util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		if a.dialog.HasDialogs() {
+			return nil
+		}
+		return func() tea.Msg {
+			agentsList, err := a.app.AgentCoordinator.ListAgents(context.Background())
+			if err != nil {
+				return util.ReportError(err)
+			}
+			// Filter to regular agents (exclude weaver, guide, coordinators, sub-agents, etc.)
+			regularAgents := a.filterRegularAgents(agentsList)
+			return dialogs.OpenDialogMsg{
+				Model: agents.NewAgentsDialog(regularAgents),
+			}
+		}
+	case key.Matches(msg, a.keyMap.WorkflowsDialog):
+		// if the app is not configured show no workflows
+		if !a.isConfigured {
+			return nil
+		}
+		if a.dialog.ActiveDialogID() == workflows.WorkflowsDialogID {
+			return util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		if a.dialog.HasDialogs() {
+			return nil
+		}
+		return func() tea.Msg {
+			agentsList, err := a.app.AgentCoordinator.ListAgents(context.Background())
+			if err != nil {
+				return util.ReportError(err)
+			}
+			// Extract workflows from agent list
+			workflowsList := a.extractWorkflows(agentsList)
+			return dialogs.OpenDialogMsg{
+				Model: workflows.NewWorkflowsDialog(workflowsList),
+			}
+		}
 	case key.Matches(msg, a.keyMap.Suspend):
 		if a.app.AgentCoordinator != nil && a.app.AgentCoordinator.IsBusy(a.app.AgentCoordinator.GetAgentID()) {
 			return util.ReportWarn("Agent is busy, please wait...")
@@ -650,6 +697,90 @@ func handleMCPToolsEvent(ctx context.Context, name string) tea.Cmd {
 		mcp.RefreshTools(ctx, name)
 		return nil
 	}
+}
+
+// filterRegularAgents filters the agent list to include only regular agents.
+// Excludes: weaver, guide, coordinators, sub-agents, and agents used in workflows.
+func (a *appModel) filterRegularAgents(agentsList []agent.AgentInfo) []agents.AgentInfo {
+	regularAgents := []agents.AgentInfo{}
+
+	// Track all sub-agent names used in workflows
+	workflowSubAgentNames := make(map[string]bool)
+	for _, ag := range agentsList {
+		if strings.Contains(ag.ID, ":") {
+			parts := strings.SplitN(ag.ID, ":", 2)
+			if len(parts) == 2 {
+				workflowSubAgentNames[parts[1]] = true
+			}
+		}
+	}
+
+	// Filter to regular agents
+	for _, ag := range agentsList {
+		// Exclude special agents
+		isWeaver := ag.Name == "weaver"
+		isGuide := ag.Name == "guide"
+		isSubAgent := strings.Contains(ag.ID, ":")
+		isCoordinator := strings.HasSuffix(strings.ToLower(ag.Name), "-coordinator")
+		hasWorkflowInName := strings.Contains(strings.ToLower(ag.ID), "workflow")
+		isUsedInWorkflow := workflowSubAgentNames[ag.Name]
+
+		if !isWeaver && !isGuide && !isSubAgent && !isCoordinator && !hasWorkflowInName && !isUsedInWorkflow {
+			regularAgents = append(regularAgents, agents.AgentInfo{
+				ID:     ag.ID,
+				Name:   ag.Name,
+				Status: ag.Status,
+			})
+		}
+	}
+
+	return regularAgents
+}
+
+// extractWorkflows extracts workflow information from the agent list.
+// Workflows are identified by having sub-agents with ":" in their Name field.
+func (a *appModel) extractWorkflows(agentsList []agent.AgentInfo) []workflows.WorkflowInfo {
+	// Map workflow name -> WorkflowInfo
+	workflowMap := make(map[string]*workflows.WorkflowInfo)
+
+	// First pass: identify all sub-agents and create workflow entries
+	// Sub-agents have ":" in their Name field (e.g., "dnd-campaign-workflow:session-planner")
+	for _, ag := range agentsList {
+		if strings.Contains(ag.Name, ":") {
+			// This is a sub-agent: "workflow-name:agent-name"
+			parts := strings.SplitN(ag.Name, ":", 2)
+			workflowName := parts[0]
+
+			// Ensure workflow entry exists
+			if _, exists := workflowMap[workflowName]; !exists {
+				workflowMap[workflowName] = &workflows.WorkflowInfo{
+					CoordinatorID:   "", // Will be set in second pass
+					CoordinatorName: workflowName,
+					SubAgentCount:   0,
+				}
+			}
+			workflowMap[workflowName].SubAgentCount++
+		}
+	}
+
+	// Second pass: find coordinator agents and set their IDs
+	// Coordinators have a Name that matches the workflow name (without colon)
+	for _, ag := range agentsList {
+		if workflow, exists := workflowMap[ag.Name]; exists {
+			// This agent's name matches a workflow coordinator name
+			workflow.CoordinatorID = ag.ID
+		}
+	}
+
+	// Convert map to slice
+	workflowsList := []workflows.WorkflowInfo{}
+	for _, workflow := range workflowMap {
+		if workflow.SubAgentCount > 0 { // Only include workflows with sub-agents
+			workflowsList = append(workflowsList, *workflow)
+		}
+	}
+
+	return workflowsList
 }
 
 // New creates and initializes a new TUI application model.

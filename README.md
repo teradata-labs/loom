@@ -28,9 +28,10 @@ A Go framework for building autonomous LLM agent threads with **natural language
 Loom lets you **create AI agent threads by describing what you need in plain English**. No coding required for basic use - just tell Loom what you want:
 
 ```bash
-# Option 1: Interactive TUI (Terminal UI)
-loom --thread weaver
-# Opens an interactive chat interface
+# Option 1: Interactive TUI (Terminal UI) - Recommended
+loom
+# Opens interactive chat with Guide who helps you find the right agent
+# Or directly to a specific agent: loom --thread weaver
 
 # Option 2: CLI (Command Line)
 loom chat --thread weaver "Analyze PostgreSQL slow queries and suggest indexes"
@@ -41,6 +42,7 @@ loom chat --thread weaver "Analyze PostgreSQL slow queries and suggest indexes"
 # 2. Selects appropriate patterns and tools
 # 3. Generates complete YAML configuration
 # 4. Activates the agent thread
+# 5. TUI automatically switches to your new agent
 ```
 
 Loom is also a complete Go framework for building agent threads programmatically, with pattern-guided learning, real-time streaming, and observability.
@@ -185,11 +187,17 @@ looms serve  # gRPC on :60051, HTTP/REST on :5006
 # 3. Access Swagger UI for API docs
 open http://localhost:5006/swagger-ui
 
-# 4. Or use the TUI client
+# 4. Use the TUI client (recommended)
+loom
+# Starts with Guide who helps you find agents
+# Or press ctrl+e to browse agents, ctrl+w for workflows
+
+# 5. Or directly to weaver to create agents
 loom --thread weaver
 # Then type: "Create a code review assistant that checks for security issues"
+# TUI will automatically switch to your new agent when ready
 
-# 5. Connect to your newly created thread
+# 6. Or connect directly to a specific agent
 loom --thread code-review-assistant
 ```
 
@@ -464,17 +472,27 @@ MCP coverage: 50-92% across modules (adapter 60%, manager 50%, protocol 92%).
 
 Loom includes a feature-rich terminal UI (`loom`) based on [charmbracelet](https://github.com/charmbracelet)'s excellent TUI framework, [bubbletea](https://github.com/charmbracelet/bubbletea) with [Crush](https://github.com/charmbracelet/crush)-inspired visual design and aesthetics:
 
+### Guide-Driven Discovery
+When you launch `loom`, you're greeted by the **Guide** - a built-in agent that helps you discover and select the right agent for your task:
+- **Natural language queries**: "I need help with SQL optimization" or "Show me data analysis agents"
+- **Agent recommendations**: Guide suggests suitable agents based on your needs
+- **Quick access**: `ctrl+e` for agent selection, `ctrl+w` for workflows
+
 ### Visual Design
 - **Crush-style theming**: Orange/green color scheme with proper visual hierarchy
 - **Multi-agent support**: Unlimited agents with distinct colors (6 predefined + golden ratio color generation)
 - **Message separators**: Visual dividers between messages for clarity
 - **Responsive layout**: Adapts to terminal size with proper padding
+- **Simplified sidebar**: Focus on essentials (Weaver, MCP Servers, Patterns)
 
 ### Keyboard Shortcuts
 - `ctrl+c` - Quit application
+- **`ctrl+e` - Open agent selection modal** (fuzzy search)
+- **`ctrl+w` - Open workflow selection modal**
+- `ctrl+p` or `ctrl+k` - Open command palette
+- `ctrl+o` or `ctrl+s` - Open sessions dialog
 - `ctrl+n` - New session
 - `ctrl+l` - Clear messages
-- **`ctrl+p` - Toggle compact mode** (reduced padding/spacing)
 - `ctrl+u` / `ctrl+d` - Page up/down
 - `pgup` / `pgdn` - Scroll viewport
 

@@ -28,7 +28,7 @@ type AgentInfo struct {
 
 // Coordinator defines the agent coordinator interface.
 type Coordinator interface {
-	Run(ctx context.Context, sessionID, prompt string, attachments ...interface{}) (interface{}, error)
+	Run(ctx context.Context, sessionID, prompt string, attachments ...any) (any, error)
 	IsBusy(agentID string) bool
 	IsSessionBusy(sessionID string) bool
 	GetAgentID() string

@@ -243,8 +243,8 @@ func (s *splashCmp) agentDescription() string {
 	var title, description string
 
 	switch s.agentName {
-	case "operator":
-		title = "👋 Operator"
+	case "guide":
+		title = "👋 Guide"
 		description = `I'm here to help you find the right agent or workflow for your task.
 Tell me what you need, and I'll suggest which agent to use.
 

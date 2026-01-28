@@ -581,6 +581,31 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Debug("Weaver agent already exists", zap.String("path", weaverDestPath))
 	}
 
+	// Copy default guide agent to loom data directory (if not exists)
+	guideDestPath := filepath.Join(agentsDir, "guide.yaml")
+	if _, err := os.Stat(guideDestPath); os.IsNotExist(err) {
+		// Ensure agents directory exists
+		if err := os.MkdirAll(agentsDir, 0755); err != nil {
+			logger.Warn("Failed to create agents directory", zap.Error(err))
+		}
+
+		// Get guide from embedded files
+		guideData := embedded.GetGuide()
+		logger.Info("Using embedded guide.yaml")
+
+		// Write to destination
+		if err := os.WriteFile(guideDestPath, guideData, 0640); err != nil {
+			logger.Warn("Failed to copy guide.yaml to agents directory", zap.Error(err))
+		} else {
+			logger.Info("Guide agent installed",
+				zap.String("source", "embedded"),
+				zap.String("dest", guideDestPath),
+				zap.Int("size", len(guideData)))
+		}
+	} else {
+		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
+	}
+
 	// Create agent guide in loom data directory (visible to agents)
 	agentGuidePath := filepath.Join(loomDataDir, "START_HERE.md")
 	if _, err := os.Stat(agentGuidePath); os.IsNotExist(err) {
