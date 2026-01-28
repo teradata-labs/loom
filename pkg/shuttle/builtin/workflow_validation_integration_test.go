@@ -18,10 +18,11 @@ import (
 
 // TestShellExecuteValidatesOrchestrationWorkflows verifies that shell_execute
 // automatically validates orchestration workflow YAML files.
-// TODO: This feature is not yet implemented - shell_execute does not currently
-// perform automatic validation of workflow files. Skip until implemented.
+//
+// SKIPPED: Auto-validation removed from shell_execute (commit 0336205).
+// Validation now handled by agent_management tool for better UX.
 func TestShellExecuteValidatesOrchestrationWorkflows(t *testing.T) {
-	t.Skip("Automatic workflow validation not yet implemented")
+	t.Skip("Auto-validation removed from shell_execute - see agent_management tool instead")
 	// Create temp directory for test
 	tempDir := t.TempDir()
 	workflowsDir := filepath.Join(tempDir, ".loom", "workflows")
@@ -119,10 +120,11 @@ EOF`,
 
 // TestShellExecuteValidatesMultiAgentWorkflows verifies that shell_execute
 // automatically validates multi-agent workflow YAML files.
-// TODO: This feature is not yet implemented - shell_execute does not currently
-// perform automatic validation of workflow files. Skip until implemented.
+//
+// SKIPPED: Auto-validation removed from shell_execute (commit 0336205).
+// Validation now handled by agent_management tool for better UX.
 func TestShellExecuteValidatesMultiAgentWorkflows(t *testing.T) {
-	t.Skip("Automatic workflow validation not yet implemented")
+	t.Skip("Auto-validation removed from shell_execute - see agent_management tool instead")
 	// Create temp directory for test
 	tempDir := t.TempDir()
 	workflowsDir := filepath.Join(tempDir, ".loom", "workflows")

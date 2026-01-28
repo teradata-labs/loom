@@ -128,10 +128,20 @@ func TestCoordinatorBroadcastAutoInjection_SingleSubscription(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { registry.Close() })
 
+	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
 		Name: "test-workflow",
 		Metadata: map[string]string{
 			"role":     "coordinator",
+			"workflow": "test-workflow",
+		},
+	})
+
+	// Register sub-agent (required after PR #43 GUID refactoring)
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name: "test-workflow:worker",
+		Metadata: map[string]string{
+			"role":     "executor",
 			"workflow": "test-workflow",
 		},
 	})
@@ -224,10 +234,20 @@ func TestCoordinatorBroadcastAutoInjection_MultipleSubscriptions(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { registry.Close() })
 
+	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
 		Name: "test-workflow",
 		Metadata: map[string]string{
 			"role":     "coordinator",
+			"workflow": "test-workflow",
+		},
+	})
+
+	// Register sub-agent (required after PR #43 GUID refactoring)
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name: "test-workflow:worker",
+		Metadata: map[string]string{
+			"role":     "executor",
 			"workflow": "test-workflow",
 		},
 	})
@@ -337,10 +357,20 @@ func TestCoordinatorBroadcastAutoInjection_SkipsSelfMessages(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { registry.Close() })
 
+	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
 		Name: "test-workflow",
 		Metadata: map[string]string{
 			"role":     "coordinator",
+			"workflow": "test-workflow",
+		},
+	})
+
+	// Register sub-agent (required after PR #43 GUID refactoring)
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name: "test-workflow:worker",
+		Metadata: map[string]string{
+			"role":     "executor",
 			"workflow": "test-workflow",
 		},
 	})
@@ -411,10 +441,20 @@ func TestCoordinatorBroadcastAutoInjection_CleanupOnSessionEnd(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { registry.Close() })
 
+	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
 		Name: "test-workflow",
 		Metadata: map[string]string{
 			"role":     "coordinator",
+			"workflow": "test-workflow",
+		},
+	})
+
+	// Register sub-agent (required after PR #43 GUID refactoring)
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name: "test-workflow:worker",
+		Metadata: map[string]string{
+			"role":     "executor",
 			"workflow": "test-workflow",
 		},
 	})
