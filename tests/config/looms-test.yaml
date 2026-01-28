@@ -29,7 +29,7 @@ agents:
     sqlite-agent:
       name: SQLite Test Agent
       description: Test agent for SQLite queries
-      backend_path: ./examples/reference/backends/sqlite.yaml
+      backend_path: ./examples/backends/sqlite.yaml
       system_prompt: "You are a helpful SQLite assistant."
       max_turns: 10
       max_tool_executions: 20

@@ -40,7 +40,7 @@ metadata:
 spec:
   backend:
     name: file
-    config_file: examples/reference/backends/file.yaml
+    config_file: examples/backends/file.yaml
 
   llm:
     provider: anthropic

@@ -185,8 +185,8 @@ looms validate file config/looms.yaml
 
 - **Test configurations**: See `tests/config/` for minimal test configs
 - **Agent configurations**: See `reference/agents/` for agent examples
-- **Backend configurations**: See `reference/backends/` for backend examples
-- **Pattern libraries**: See `reference/patterns/` for pattern examples
+- **Backend configurations**: See `../backends/` for backend examples
+- **Pattern libraries**: See `../patterns/` for pattern examples
 
 ## Troubleshooting
 
@@ -223,4 +223,4 @@ looms validate file config/looms.yaml
 
 - [Examples README](../README.md) - Overview of all examples
 - [Agent Configuration Reference](../reference/agents/agent-all-fields-reference.yaml) - Complete agent YAML spec
-- [Backend Examples](../reference/backends/) - Backend configuration examples
+- [Backend Examples](../backends/) - Backend configuration examples

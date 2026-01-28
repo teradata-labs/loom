@@ -36,7 +36,7 @@ func TestLoadConfig_WithAgents(t *testing.T) {
 	require.True(t, ok, "sqlite-agent should exist in config")
 	assert.Equal(t, "SQLite Test Agent", sqliteAgent.Name)
 	assert.Equal(t, "Test agent for SQLite queries", sqliteAgent.Description)
-	assert.Equal(t, "./examples/reference/backends/sqlite.yaml", sqliteAgent.BackendPath)
+	assert.Equal(t, "./examples/backends/sqlite.yaml", sqliteAgent.BackendPath)
 	assert.Equal(t, "You are a helpful SQLite assistant.", sqliteAgent.SystemPrompt)
 	assert.Equal(t, 10, sqliteAgent.MaxTurns)
 	assert.Equal(t, 20, sqliteAgent.MaxToolExecutions)

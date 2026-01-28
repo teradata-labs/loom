@@ -1,0 +1,289 @@
+# Data Quality Patterns
+#
+# Patterns for validating data quality, detecting anomalies,
+# and ensuring data integrity across databases and APIs.
+
+apiVersion: loom/v1
+kind: PatternLibrary
+
+metadata:
+  name: data-quality-patterns
+  description: Data quality validation and anomaly detection patterns
+  version: "1.0"
+  tags:
+    - data-quality
+    - validation
+    - anomaly-detection
+
+patterns:
+  # Null Value Detection
+  - name: null_value_check
+    description: Detect unexpected null values in columns
+    intent_keywords:
+      - check nulls
+      - find missing values
+      - null detection
+      - missing data
+
+    template: |
+      Identify columns with unexpected null values that violate data quality rules.
+
+      Steps:
+      1. Query the table to find null values in required columns
+      2. Calculate null percentage for each column
+      3. Flag columns exceeding threshold (default: 5%)
+      4. Generate SQL: SELECT column_name, COUNT(*) as null_count FROM {table} WHERE {column} IS NULL GROUP BY column_name
+      5. Report violations with recommended actions
+
+    examples:
+      - input: "Check for nulls in customer_email"
+        output: "SELECT customer_id, customer_email FROM customers WHERE customer_email IS NULL"
+
+      - input: "Find missing values in orders table"
+        output: |
+          SELECT
+            'customer_id' as column_name, COUNT(*) as null_count
+          FROM orders WHERE customer_id IS NULL
+          UNION ALL
+          SELECT
+            'order_date' as column_name, COUNT(*) as null_count
+          FROM orders WHERE order_date IS NULL
+
+  # Duplicate Detection
+  - name: duplicate_detection
+    description: Find duplicate records based on key columns
+    intent_keywords:
+      - find duplicates
+      - duplicate records
+      - check uniqueness
+      - duplicate keys
+
+    template: |
+      Detect duplicate records that violate uniqueness constraints.
+
+      Steps:
+      1. Identify key columns that should be unique
+      2. Query for records with duplicate key values
+      3. Count occurrences of each duplicate
+      4. Generate SQL: SELECT {key_columns}, COUNT(*) as count FROM {table} GROUP BY {key_columns} HAVING COUNT(*) > 1
+      5. Report duplicates with row IDs for cleanup
+
+    examples:
+      - input: "Find duplicate emails in users table"
+        output: |
+          SELECT email, COUNT(*) as count, STRING_AGG(user_id::text, ',') as user_ids
+          FROM users
+          GROUP BY email
+          HAVING COUNT(*) > 1
+
+      - input: "Check for duplicate orders"
+        output: |
+          SELECT order_id, COUNT(*) as count
+          FROM orders
+          GROUP BY order_id
+          HAVING COUNT(*) > 1
+
+  # Data Type Validation
+  - name: data_type_validation
+    description: Validate data types and format consistency
+    intent_keywords:
+      - validate data types
+      - check formats
+      - type validation
+      - format consistency
+
+    template: |
+      Ensure data conforms to expected types and formats.
+
+      Steps:
+      1. Define expected format (email, phone, date, etc.)
+      2. Query for values not matching format
+      3. Use regex or type casting to validate
+      4. Generate SQL with CASE statements or regex patterns
+      5. Report invalid values with correction suggestions
+
+    examples:
+      - input: "Validate email format"
+        output: |
+          SELECT email, user_id
+          FROM users
+          WHERE email !~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+
+      - input: "Check date validity"
+        output: |
+          SELECT order_date, order_id
+          FROM orders
+          WHERE order_date > CURRENT_DATE OR order_date < '2000-01-01'
+
+  # Range Validation
+  - name: range_validation
+    description: Check if numeric values fall within expected ranges
+    intent_keywords:
+      - check range
+      - validate bounds
+      - out of range
+      - boundary check
+
+    template: |
+      Identify values outside acceptable ranges or business rules.
+
+      Steps:
+      1. Define min/max acceptable values
+      2. Query for values outside range
+      3. Calculate statistics (mean, stddev) to detect outliers
+      4. Generate SQL: SELECT * FROM {table} WHERE {column} < {min} OR {column} > {max}
+      5. Report violations with statistical context
+
+    examples:
+      - input: "Check prices are positive"
+        output: |
+          SELECT product_id, price
+          FROM products
+          WHERE price <= 0
+
+      - input: "Find ages outside valid range"
+        output: |
+          SELECT user_id, age
+          FROM users
+          WHERE age < 0 OR age > 150
+
+  # Referential Integrity
+  - name: referential_integrity_check
+    description: Verify foreign key relationships and orphaned records
+    intent_keywords:
+      - check integrity
+      - orphaned records
+      - foreign key
+      - referential integrity
+
+    template: |
+      Detect broken relationships between tables.
+
+      Steps:
+      1. Identify parent-child table relationships
+      2. Query for child records without parent
+      3. Query for parent records without children (if required)
+      4. Generate SQL: SELECT child.* FROM child LEFT JOIN parent ON ... WHERE parent.id IS NULL
+      5. Report orphaned records with cleanup recommendations
+
+    examples:
+      - input: "Find orders without customers"
+        output: |
+          SELECT o.*
+          FROM orders o
+          LEFT JOIN customers c ON o.customer_id = c.customer_id
+          WHERE c.customer_id IS NULL
+
+      - input: "Check for orphaned order items"
+        output: |
+          SELECT oi.*
+          FROM order_items oi
+          LEFT JOIN orders o ON oi.order_id = o.order_id
+          WHERE o.order_id IS NULL
+
+  # Completeness Check
+  - name: completeness_check
+    description: Assess data completeness across critical fields
+    intent_keywords:
+      - data completeness
+      - completeness score
+      - missing fields
+      - profile completeness
+
+    template: |
+      Calculate completeness score for records or profiles.
+
+      Steps:
+      1. Define required fields for complete record
+      2. Query to count non-null values per field
+      3. Calculate completeness percentage
+      4. Generate SQL: SELECT id, (non_null_count / total_fields) * 100 as completeness_score
+      5. Report records below threshold with missing fields
+
+    examples:
+      - input: "Calculate user profile completeness"
+        output: |
+          SELECT
+            user_id,
+            (CASE WHEN first_name IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN last_name IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN email IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN phone IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN address IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / 5 as completeness_pct
+          FROM users
+          WHERE (CASE WHEN first_name IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN last_name IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN email IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN phone IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN address IS NOT NULL THEN 1 ELSE 0 END) < 5
+
+  # Consistency Check
+  - name: consistency_check
+    description: Verify consistency across related fields or tables
+    intent_keywords:
+      - check consistency
+      - data inconsistency
+      - validate consistency
+      - cross-field validation
+
+    template: |
+      Identify inconsistencies between related data points.
+
+      Steps:
+      1. Define consistency rules (e.g., end_date > start_date)
+      2. Query for violations
+      3. Check cross-table consistency
+      4. Generate SQL with conditional logic
+      5. Report inconsistencies with business impact
+
+    examples:
+      - input: "Check order dates are consistent"
+        output: |
+          SELECT order_id, order_date, ship_date
+          FROM orders
+          WHERE ship_date < order_date
+
+      - input: "Validate aggregate totals"
+        output: |
+          SELECT
+            o.order_id,
+            o.total_amount as order_total,
+            SUM(oi.price * oi.quantity) as items_total
+          FROM orders o
+          JOIN order_items oi ON o.order_id = oi.order_id
+          GROUP BY o.order_id, o.total_amount
+          HAVING ABS(o.total_amount - SUM(oi.price * oi.quantity)) > 0.01
+
+  # Freshness Check
+  - name: data_freshness_check
+    description: Monitor data freshness and identify stale data
+    intent_keywords:
+      - check freshness
+      - stale data
+      - outdated records
+      - data age
+
+    template: |
+      Detect data that hasn't been updated within expected timeframe.
+
+      Steps:
+      1. Define freshness threshold (e.g., updated in last 24 hours)
+      2. Query for records older than threshold
+      3. Calculate age distribution
+      4. Generate SQL: SELECT * FROM {table} WHERE updated_at < NOW() - INTERVAL '{threshold}'
+      5. Report stale data with business impact assessment
+
+    examples:
+      - input: "Find stale inventory records"
+        output: |
+          SELECT product_id, last_updated,
+                 NOW() - last_updated as age
+          FROM inventory
+          WHERE last_updated < NOW() - INTERVAL '7 days'
+
+      - input: "Check for outdated prices"
+        output: |
+          SELECT product_id, price, price_updated_at,
+                 DATEDIFF(NOW(), price_updated_at) as days_old
+          FROM products
+          WHERE price_updated_at < DATE_SUB(NOW(), INTERVAL 30 DAY)
