@@ -1,0 +1,62 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: workflow-multi-agent
+  version: 1.0.0
+  domain: loom
+  description: Pattern for creating multi-agent coordination workflows
+  labels:
+    category: workflow
+    type: multi-agent
+
+spec:
+  entries:
+    - name: multi-agent-workflow
+      description: Multi-agent workflow with entrypoint and agent references
+      trigger_conditions:
+        - "multi-agent workflow"
+        - "create workflow"
+        - "agent coordination"
+        - "collaborative agents"
+      template: |
+        apiVersion: loom/v1
+        kind: Workflow
+        metadata:
+          name: {{workflow_name}}
+          version: "1.0.0"
+          description: "{{workflow_description}}"
+        spec:
+          entrypoint: {{entry_agent_name}}  # Agent users interact with first
+
+          agents:  # CRITICAL: These are REFERENCES to existing agent files
+            - name: {{entry_agent_name}}
+              agent: {{entry_agent_file}}  # Must match existing $LOOM_DATA_DIR/agents/{{entry_agent_file}}.yaml
+              description: "{{entry_agent_desc}}"
+
+            - name: {{agent2_name}}
+              agent: {{agent2_file}}  # References existing $LOOM_DATA_DIR/agents/{{agent2_file}}.yaml
+              description: "{{agent2_desc}}"
+
+          communication:
+            pattern: "hub-and-spoke"  # or "pub-sub" or "peer-to-peer"
+            hub: {{entry_agent_name}}
+
+          config:
+            timeout_seconds: 3600
+            max_workflow_turns: 300
+
+      rule:
+        condition: "Creating multi-agent workflow"
+        action: |
+          1. Create ALL agent files FIRST using agent_management action="create"
+          2. Verify agents exist with action="list", type="agent"
+          3. Create workflow with spec.entrypoint + spec.agents array
+          4. Use agent REFERENCES (agent: filename) NOT inline definitions
+          5. Agent names must match .yaml filenames (without extension)
+        rationale: "Workflows reference existing agent files, cannot define agents inline"
+
+      priority: 95
+      tags:
+        - workflow
+        - multi-agent
+        - coordination

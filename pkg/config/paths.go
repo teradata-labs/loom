@@ -51,8 +51,7 @@ func GetLoomDataDir() string {
 //
 // Priority:
 // 1. LOOM_SANDBOX_DIR environment variable (if set and non-empty)
-// 2. Current working directory (default)
-// 3. LOOM_DATA_DIR (fallback)
+// 2. LOOM_DATA_DIR (default)
 //
 // This directory is where shell_execute runs commands by default.
 // It is separate from LOOM_DATA_DIR (which stores internal loom data like databases, artifacts, and configs).
@@ -63,8 +62,7 @@ func GetLoomDataDir() string {
 //
 //	LOOM_SANDBOX_DIR=/project/myapp    -> /project/myapp
 //	LOOM_SANDBOX_DIR=~/workspace       -> /home/user/workspace
-//	LOOM_SANDBOX_DIR not set, cwd=/foo -> /foo
-//	LOOM_SANDBOX_DIR not set, cwd fail -> /home/user/.loom (LOOM_DATA_DIR)
+//	LOOM_SANDBOX_DIR not set           -> /home/user/.loom (LOOM_DATA_DIR)
 //
 // Note: This provides clear separation of concerns:
 //   - LOOM_DATA_DIR: Internal loom data (databases, artifacts, configs)
@@ -75,12 +73,7 @@ func GetLoomSandboxDir() string {
 		return expandPath(sandboxDir)
 	}
 
-	// Default to current working directory
-	if cwd, err := os.Getwd(); err == nil {
-		return cwd
-	}
-
-	// Fallback to LOOM_DATA_DIR
+	// Default to LOOM_DATA_DIR (changed from cwd)
 	return GetLoomDataDir()
 }
 

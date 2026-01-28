@@ -1,0 +1,41 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: workflow-parallel
+  version: 1.0.0
+  domain: loom
+  description: Pattern for parallel orchestration workflows
+  labels:
+    category: workflow
+    type: orchestration
+
+spec:
+  entries:
+    - name: parallel-workflow
+      description: Parallel pattern for concurrent execution
+      trigger_conditions:
+        - "parallel workflow"
+        - "concurrent workflow"
+        - "run in parallel"
+      template: |
+        apiVersion: loom/v1
+        kind: Workflow
+        metadata:
+          name: {{workflow_name}}
+          description: "{{description}}"
+        spec:
+          type: parallel  # NOT workflow_type!
+          merge_strategy: concatenate  # NOT aggregation!
+          timeout_seconds: 600
+
+          tasks:
+            - agent_id: {{task1_agent}}
+              prompt: "{{task1_prompt}}"
+
+            - agent_id: {{task2_agent}}
+              prompt: "{{task2_prompt}}"
+      priority: 90
+      tags:
+        - workflow
+        - parallel
+        - orchestration

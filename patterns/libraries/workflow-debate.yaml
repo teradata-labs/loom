@@ -1,0 +1,39 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: workflow-debate
+  version: 1.0.0
+  domain: loom
+  description: Pattern for debate orchestration workflows
+  labels:
+    category: workflow
+    type: orchestration
+
+spec:
+  entries:
+    - name: debate-workflow
+      description: Debate pattern for structured discussions
+      trigger_conditions:
+        - "debate workflow"
+        - "structured debate"
+        - "decision debate"
+      template: |
+        apiVersion: loom/v1
+        kind: Workflow
+        metadata:
+          name: {{workflow_name}}
+          description: "{{description}}"
+        spec:
+          type: debate  # NOT workflow_type!
+          topic: "{{debate_topic}}"
+          rounds: {{num_rounds}}
+          moderator_agent_id: {{moderator_name}}
+
+          agent_ids:  # List of agent names (NOT agents array)
+            - {{agent1_name}}
+            - {{agent2_name}}
+      priority: 90
+      tags:
+        - workflow
+        - debate
+        - orchestration

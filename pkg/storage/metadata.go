@@ -23,6 +23,14 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
+const (
+	// MaxPreviewChars limits progressive disclosure preview size
+	// 20,000 chars ≈ 5K tokens (4 bytes/token estimate)
+	// Large enough for full workflow examples (~20KB) with minimal headroom
+	// Patterns are injected separately so don't need larger limits
+	MaxPreviewChars = 20000
+)
+
 // DataMetadata contains metadata about stored data for progressive disclosure.
 // This enables agents to inspect data structure and size before retrieving full content.
 type DataMetadata struct {
@@ -186,24 +194,33 @@ func analyzeJSONArray(data []byte) (*SchemaInfo, *PreviewData) {
 }
 
 // truncateObjectForPreview creates a truncated copy of an object for preview display.
-// Limits the number of fields shown and truncates long values to prevent massive previews.
-func truncateObjectForPreview(obj map[string]any, maxFields int, maxValueLen int) map[string]any {
+// Uses character-based limits to prevent massive previews.
+func truncateObjectForPreview(obj map[string]any, maxChars int) map[string]any {
 	if obj == nil {
 		return nil
 	}
 
 	truncated := make(map[string]any)
-	count := 0
+	totalChars := 0
 
 	for key, value := range obj {
-		if count >= maxFields {
-			truncated["..."] = fmt.Sprintf("(%d more fields)", len(obj)-maxFields)
+		keyValueStr := fmt.Sprintf("%s:%v", key, value)
+		if totalChars+len(keyValueStr) > maxChars {
+			truncated["..."] = fmt.Sprintf("(%d more fields, %d chars over limit)",
+				len(obj)-len(truncated),
+				totalChars+len(keyValueStr)-maxChars)
 			break
 		}
 
-		// Truncate the value based on its type
-		truncated[key] = truncateValue(value, maxValueLen)
-		count++
+		// Allocate remaining budget proportionally
+		remainingChars := maxChars - totalChars
+		remainingFields := len(obj) - len(truncated)
+		if remainingFields > 0 {
+			truncated[key] = truncateValue(value, remainingChars/remainingFields)
+		} else {
+			truncated[key] = truncateValue(value, remainingChars)
+		}
+		totalChars += len(keyValueStr)
 	}
 
 	return truncated
@@ -219,24 +236,33 @@ func truncateValue(value any, maxLen int) any {
 		return v
 
 	case []any:
-		// For arrays, show first 3 items only
-		if len(v) > 3 {
-			truncated := make([]any, 3)
-			for i := 0; i < 3; i++ {
-				truncated[i] = truncateValue(v[i], maxLen)
-			}
-			return append(truncated, fmt.Sprintf("... (%d more items)", len(v)-3))
-		}
-		// Truncate each item in small arrays
-		truncated := make([]any, len(v))
+		// Character-based truncation for arrays
+		var totalChars int
+		var truncated []any
+
 		for i, item := range v {
-			truncated[i] = truncateValue(item, maxLen)
+			itemStr := fmt.Sprintf("%v", item)
+			if totalChars+len(itemStr) > maxLen {
+				truncated = append(truncated, fmt.Sprintf("... (%d more items, %d chars remaining)", len(v)-i, maxLen-totalChars))
+				break
+			}
+			// Allocate remaining budget proportionally
+			remainingItems := len(v) - i
+			if remainingItems > 0 {
+				truncated = append(truncated, truncateValue(item, (maxLen-totalChars)/remainingItems))
+			} else {
+				truncated = append(truncated, truncateValue(item, maxLen-totalChars))
+			}
+			totalChars += len(itemStr)
+		}
+
+		if len(truncated) == 0 {
+			return v
 		}
 		return truncated
 
 	case map[string]any:
-		// For nested objects, recursively truncate (max 5 fields, 100 char values)
-		return truncateObjectForPreview(v, 5, 100)
+		return truncateObjectForPreview(v, maxLen)
 
 	default:
 		// Numbers, booleans, null - return as is
@@ -258,8 +284,8 @@ func analyzeJSONObject(data []byte) (*SchemaInfo, *PreviewData) {
 	}
 
 	// CRITICAL FIX: Truncate object preview to prevent 1MB+ previews from accumulating in conversation
-	// Only show first 10 fields with values truncated to 200 chars max
-	truncatedObj := truncateObjectForPreview(obj, 10, 200)
+	// Use character-based limit (20,000 chars ≈ 5K tokens)
+	truncatedObj := truncateObjectForPreview(obj, MaxPreviewChars)
 
 	preview := &PreviewData{
 		First5: []any{truncatedObj},

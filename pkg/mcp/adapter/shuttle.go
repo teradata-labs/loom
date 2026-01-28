@@ -36,10 +36,11 @@ import (
 // Result truncation and caching configuration
 const (
 	// DefaultMaxResultBytes is the maximum size of tool results before truncation
-	DefaultMaxResultBytes = 4096
+	// 20KB matches MaxPreviewChars in storage package (20,000 chars ≈ 5K tokens)
+	DefaultMaxResultBytes = 20000
 
 	// DefaultMaxResultRows is the maximum number of rows to return from SQL results
-	DefaultMaxResultRows = 25
+	DefaultMaxResultRows = 500
 
 	// SchemaCacheTTL is how long schema results are cached
 	SchemaCacheTTL = 5 * time.Minute

@@ -1,0 +1,66 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: agent-standard
+  version: 1.0.0
+  domain: loom
+  description: Pattern for creating standard Loom agents
+  labels:
+    category: agent
+    type: creation
+
+spec:
+  entries:
+    - name: standard-agent
+      description: Standard agent configuration with common fields
+      trigger_conditions:
+        - "create agent"
+        - "new agent"
+        - "agent configuration"
+      template: |
+        apiVersion: loom/v1
+        kind: Agent
+        metadata:
+          name: {{agent_name}}
+          version: "1.0.0"
+          description: "{{agent_description}}"
+          labels:
+            category: {{category}}
+            domain: {{domain}}
+
+        spec:
+          system_prompt: |
+            {{system_prompt}}
+
+          tools:
+            - tool_search
+            - get_error_details
+            - query_tool_result
+            {{#additional_tools}}
+            - {{tool_name}}
+            {{/additional_tools}}
+
+          llm:
+            provider: anthropic
+            model: claude-3-5-sonnet-20241022
+            temperature: {{temperature|0.7}}
+            max_tokens: {{max_tokens|4096}}
+
+          config:
+            max_turns: {{max_turns|50}}
+            enable_self_correction: true
+
+      rule:
+        condition: "Creating new agent"
+        action: |
+          1. Define clear system_prompt with agent's role and capabilities
+          2. Include standard tools: tool_search, get_error_details, query_tool_result
+          3. Add domain-specific tools as needed
+          4. Set appropriate temperature (0.0-0.2 for deterministic, 0.7-0.9 for creative)
+          5. Use kebab-case for agent name (metadata.name)
+        rationale: "Consistent agent structure ensures reliability and maintainability"
+
+      priority: 95
+      tags:
+        - agent
+        - creation

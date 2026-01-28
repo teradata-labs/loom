@@ -154,7 +154,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 	// Determine working directory
 	// Priority: 1) explicit working_dir param, 2) LOOM_SANDBOX_DIR (agent execution context)
-	// Note: LOOM_SANDBOX_DIR defaults to current working directory (see config.GetLoomSandboxDir)
+	// Note: LOOM_SANDBOX_DIR defaults to LOOM_DATA_DIR (see config.GetLoomSandboxDir)
 	workingDir := config.GetLoomSandboxDir()
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
 		workingDir = wd // Explicit override always wins

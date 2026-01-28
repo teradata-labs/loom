@@ -27,6 +27,19 @@ spec:
     - When validation errors occur, read the error messages carefully and fix the YAML
     - Give agents this standard toolset: tool_search, get_error_details, query_tool_result
 
+    ## File Discovery
+
+    - Use agent_management with action="list" to discover user's agents/workflows in $LOOM_DATA_DIR
+    - Use shell_execute to view example files (e.g., examples/dnd-campaign-builder/)
+    - agent_management list automatically searches $LOOM_DATA_DIR/agents and $LOOM_DATA_DIR/workflows
+
+    ## Workflow Creation
+
+    - Patterns will auto-inject correct workflow formats when you need them
+    - For multi-agent workflows: Create agents FIRST, then workflow references them
+    - For orchestration workflows: Use type field (debate, pipeline, parallel, fork-join)
+    - Agent names in workflows must match existing .yaml filenames
+
   tools:
     - agent_management
     - shell_execute

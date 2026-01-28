@@ -1,0 +1,44 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: workflow-pipeline
+  version: 1.0.0
+  domain: loom
+  description: Pattern for pipeline orchestration workflows
+  labels:
+    category: workflow
+    type: orchestration
+
+spec:
+  entries:
+    - name: pipeline-workflow
+      description: Pipeline pattern for sequential processing
+      trigger_conditions:
+        - "pipeline workflow"
+        - "sequential workflow"
+        - "step by step"
+      template: |
+        apiVersion: loom/v1
+        kind: Workflow
+        metadata:
+          name: {{workflow_name}}
+          description: "{{description}}"
+        spec:
+          type: pipeline  # NOT workflow_type!
+          initial_prompt: "{{initial_task}}"
+
+          stages:
+            - agent_id: {{stage1_agent}}
+              prompt_template: |
+                {{stage1_prompt}}
+                {{previous}}  # Access previous stage output
+
+            - agent_id: {{stage2_agent}}
+              prompt_template: |
+                {{stage2_prompt}}
+                {{previous}}
+      priority: 90
+      tags:
+        - workflow
+        - pipeline
+        - orchestration

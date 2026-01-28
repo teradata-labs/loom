@@ -107,8 +107,8 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 		if backendName == "teradata" || backendName == "teradata-mcp" ||
 			backendName == "postgres" || backendName == "snowflake" ||
 			backendName == "bigquery" || backendName == "redshift" {
-			truncationConfig.MaxResultBytes = 16384 // 16KB for data-intensive
-			truncationConfig.MaxResultRows = 100    // 100 rows
+			truncationConfig.MaxResultBytes = 40000 // 40KB for data-intensive (2x base limit)
+			truncationConfig.MaxResultRows = 500    // 500 rows
 			logger.Info("using data-intensive truncation config",
 				zap.Int("max_bytes", truncationConfig.MaxResultBytes),
 				zap.Int("max_rows", truncationConfig.MaxResultRows))

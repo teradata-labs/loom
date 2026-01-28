@@ -466,9 +466,9 @@ func TestTruncateString_LargeString(t *testing.T) {
 	tool := protocol.Tool{Name: "test"}
 	adapter := NewMCPToolAdapter(nil, tool, "test")
 
-	// Create string larger than default 4096 bytes
+	// Create string larger than default 20000 bytes (updated from 4096)
 	largeString := ""
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1000; i++ { // Increased from 200 to generate >20KB
 		largeString += "Row " + string(rune('A'+i%26)) + ": some data here\n"
 	}
 
