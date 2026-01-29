@@ -18,6 +18,8 @@ spec:
         - "new agent"
         - "agent configuration"
       template: |
+        What follows is the template for simple agent creation:
+        
         apiVersion: loom/v1
         kind: Agent
         metadata:
@@ -34,27 +36,21 @@ spec:
 
           tools:
             - tool_search
-            - get_error_details
-            - query_tool_result
             {{#additional_tools}}
-            - {{tool_name}}
             {{/additional_tools}}
-
-          llm:
-            provider: anthropic
-            model: claude-3-5-sonnet-20241022
-            temperature: {{temperature|0.7}}
-            max_tokens: {{max_tokens|4096}}
 
           config:
             max_turns: {{max_turns|50}}
             enable_self_correction: true
+          
+          memory:
+            type: sqlite
 
       rule:
         condition: "Creating new agent"
         action: |
           1. Define clear system_prompt with agent's role and capabilities
-          2. Include standard tools: tool_search, get_error_details, query_tool_result
+          2. Include standard tool: tool_search
           3. Add domain-specific tools as needed
           4. Set appropriate temperature (0.0-0.2 for deterministic, 0.7-0.9 for creative)
           5. Use kebab-case for agent name (metadata.name)

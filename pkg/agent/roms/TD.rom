@@ -1,158 +1,211 @@
-# TD.rom - Teradata SQL Reference
-
-**CRITICAL**: Teradata SQL is NOT standard SQL. Always use Teradata-specific syntax.
+# TD.rom v2 - Teradata SQL
 
 ---
 
-## 🚨 Teradata SQL Syntax (Non-Negotiable)
+## ⚠️ FUNDAMENTAL RULE: TERADATA SQL ONLY
 
-### Row Limiting
-❌ WRONG: SELECT * FROM table LIMIT 10;
-✅ CORRECT: SELECT TOP 10 * FROM table;
+**YOU ARE CONNECTED TO A TERADATA DATABASE.**
 
-### Type Casting
-❌ WRONG: column::INTEGER
-✅ CORRECT: CAST(column AS INTEGER)
+When writing SQL queries, you MUST use **Teradata SQL dialect ONLY**.
 
-### String Concatenation
-❌ WRONG: CONCAT(first, ' ', last)
-✅ CORRECT: first || ' ' || last
+❌ **DO NOT use:**
+- MySQL syntax (LIMIT, `column`, CONCAT())
+- PostgreSQL syntax (::type, column::type)
+- Oracle syntax (ROWNUM, (+) joins)
+- SQL Server syntax (SELECT TOP ... PERCENT, GETDATE())
+- Standard SQL that Teradata doesn't support
 
-### Date Arithmetic
-❌ WRONG: date + INTERVAL 7 DAY
-✅ CORRECT: date + INTERVAL '7' DAY  -- Note: number in quotes!
+✅ **ONLY use Teradata-specific syntax:**
+- TOP and SAMPLE for row limiting
+- CAST() for type conversion
+- || for string concatenation
+- QUALIFY for window function filtering
+- CURRENT_DATE for date functions
 
-### CTEs in VIEWs
-❌ WRONG: CREATE VIEW v AS WITH cte AS (...) SELECT * FROM cte;
--- Error: Teradata does NOT support CTEs in VIEW definitions
-✅ CORRECT: CREATE VIEW v AS SELECT * FROM (subquery) AS derived;
--- CTEs work fine in stored procedures and standalone queries
+**If you're unsure whether syntax is Teradata-compatible, use HELP TABLE or check DBC system views first.**
 
----
-
-## 🔑 QUALIFY Clause (Teradata-Specific)
-
-QUALIFY filters window function results WITHOUT subqueries. UNIQUE to Teradata.
-
-❌ SLOWER (standard SQL):
-SELECT * FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY date DESC) AS rn
-    FROM orders
-) WHERE rn = 1;
-
-✅ FASTER (Teradata QUALIFY):
-SELECT * FROM orders
-QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY date DESC) = 1;
-
-Use for: ROW_NUMBER(), RANK(), DENSE_RANK(), COUNT() OVER(), SUM() OVER()
+This database will reject any non-Teradata SQL with syntax errors. When in doubt, use the most basic Teradata-compatible syntax.
 
 ---
 
-## ⚠️ Reserved Words (Cannot Use as Aliases)
+## 🚨 RULE 1: NEVER Use LIMIT (Instant Error!)
 
-| Reserved | Use Instead |
-|----------|-------------|
-| DATE | event_date, record_date |
-| TIME | event_time, log_time |
-| USER | username, user_id |
-| VALUE | metric_value, data_value |
-| LEVEL | tree_level, depth_level |
-| COUNT | row_count, record_count |
-| TIMESTAMP | event_ts, created_ts |
-| INDEX | idx, position_idx |
+Teradata does NOT support LIMIT clause. Using it causes instant failure.
 
-❌ WRONG: SELECT USER AS USER FROM sessions;  -- Error 3707
-✅ CORRECT: SELECT USER AS username FROM sessions;
+**Trigger:** Whenever you want to limit result rows
+**Action:** Use TOP or SAMPLE instead
 
----
+❌ **NEVER:**
+```sql
+SELECT * FROM table ORDER BY col DESC LIMIT 10;
+-- Error 3706: Syntax error near 'LIMIT' keyword
+```
 
-## 📊 Table Types & Operations
+✅ **ALWAYS:**
+```sql
+-- Option 1: TOP at beginning (most common)
+SELECT TOP 10 * FROM table ORDER BY col DESC;
 
-| Type | Code | SELECT | INSERT | UPDATE | DELETE | Notes |
-|------|------|--------|--------|--------|--------|-------|
-| Table | T | ✅ | ✅ | ✅ | ✅ | Full DML |
-| View | V | ✅ | ❌ | ❌ | ❌ | Read-only |
-| Join Index | O | ✅ | ❌ | ❌ | ❌ | Pre-computed joins |
-| Hash Index | H | ✅ | ❌ | ❌ | ❌ | Performance index |
-| Global Temp | G | ✅ | ✅ | ✅ | ✅ | Session-scoped |
-| Stored Procedure | P | ❌ | ❌ | ❌ | ❌ | Use CALL |
-| Macro | M | ❌ | ❌ | ❌ | ❌ | Use EXEC |
-
-Check table type before operations:
-SELECT TableName, TableKind FROM DBC.TablesV WHERE DatabaseName = 'db' AND TableName = 'table';
+-- Option 2: SAMPLE at end (for random sampling)
+SELECT * FROM table ORDER BY col DESC SAMPLE 10;
+```
 
 ---
 
-## 🔍 DBC Metadata Views (Case-Sensitive!)
+## 🚨 RULE 2: ALWAYS Filter Large Tables by Date (Prevents Overflow!)
 
-**CRITICAL**: Column names are case-sensitive. Always use exact casing.
+Enterprise tables have millions/billions of rows spanning years. Aggregating without date filters causes numeric overflow.
 
-DBC.DatabasesV    -- Database info (PermSpace, SpoolSpace)
-DBC.TablesV       -- Table metadata (TableKind, CreateTimeStamp)
-DBC.ColumnsV      -- Column definitions (ColumnType, Nullable)
-DBC.IndicesV      -- Index information (IndexType, UniqueFlag)
-DBC.AllRightsV    -- User permissions (AccessRight)
-DBC.SessionInfoV  -- Active sessions (UserName, DefaultDatabase)
-DBC.DBCInfoV      -- System info (VERSION, RELEASE)
+**Trigger:** Before writing SUM(), AVG(), COUNT() on any table
+**Action:** Add WHERE log_dt >= CURRENT_DATE - N
 
-Example:
-SELECT DatabaseName, TableName, TableKind FROM DBC.TablesV WHERE DatabaseName = DATABASE;
--- Note: DatabaseName, TableName, TableKind (not lowercase)
+❌ **NEVER:**
+```sql
+SELECT SUM(impact_io_qty) FROM acc_ted_con_vw.dbp_featusg_agg_dly;
+-- Error 2616: Numeric overflow occurred during computation
+-- Reason: Summing billions of values across years
+```
 
----
+✅ **ALWAYS:**
+```sql
+-- Add date filter (30-90 days max for large tables)
+SELECT SUM(impact_io_qty)
+FROM acc_ted_con_vw.dbp_featusg_agg_dly
+WHERE log_dt >= CURRENT_DATE - 30;  -- REQUIRED!
+```
 
-## 🚨 Common Teradata Errors
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| "Invalid syntax near LIMIT" | MySQL syntax | Use SELECT TOP n |
-| "Syntax error near WITH" | CTE in VIEW | Use subquery/derived table |
-| "Reserved keyword" (3707) | Used DATE/USER/VALUE | Use non-reserved alias |
-| "Column not found" | Assumed column name | Check exact name in DBC.ColumnsV |
-
----
-
-## 🔧 System Functions
-
-USER           -- Current username
-DATABASE       -- Current database
-SESSION        -- Session ID
-CURRENT_DATE   -- Today's date
-CURRENT_TIMESTAMP  -- Current timestamp
+**How to know if table is "large":**
+```sql
+-- Quick size check (runs in <1 second)
+SELECT COUNT(*) FROM table SAMPLE 1000;
+-- If result > 100 rows → table has > 100K rows → MUST filter by date
+```
 
 ---
 
-## 📅 Teradata Date/Time Functions
+## 🚨 RULE 3: Use BIGINT for Large Number Aggregations
 
-ADD_MONTHS(date, n)          -- Add months to date
-MONTHS_BETWEEN(date1, date2) -- Difference in months
-EXTRACT(YEAR FROM date)      -- Extract year/month/day
-date + INTERVAL '7' DAY      -- Add days (note quotes)
-date - INTERVAL '1' MONTH    -- Subtract months
+Columns like `impact_io_qty`, `impact_cpu_qty`, `peak_spool_bytes_used_qty` contain enterprise-scale metrics (billions). Standard SUM() overflows.
 
----
+**Trigger:** Summing metrics with "impact", "total", "peak", "bytes" in name
+**Action:** Cast to BIGINT before SUM, then cast result back
 
-## 🔤 Teradata String Functions
+❌ **CAUSES OVERFLOW:**
+```sql
+SELECT SUM(impact_io_qty) FROM table WHERE ...;
+-- Error 2616: Numeric overflow
+```
 
-string1 || string2           -- Concatenation
-SUBSTR(string, start, len)   -- Substring (not SUBSTRING)
-POSITION('x' IN string)      -- Find position
-TRIM(string)                 -- Remove whitespace
-INDEX(string, 'substring')   -- Find substring
-
----
-
-## 💡 Table Operations
-
-REPLACE VIEW view_name AS ...     -- Not: CREATE OR REPLACE VIEW
-REPLACE PROCEDURE proc AS ...     -- Not: CREATE OR REPLACE PROCEDURE
-CREATE MULTISET TABLE ...         -- Allows duplicates (default)
-CREATE SET TABLE ...              -- No duplicates
+✅ **PREVENTS OVERFLOW:**
+```sql
+SELECT CAST(SUM(CAST(impact_io_qty AS BIGINT)) AS DECIMAL(20,2)) as total_io
+FROM table
+WHERE log_dt >= CURRENT_DATE - 30;
+```
 
 ---
 
-## Performance Tips (Teradata-Specific)
+## 🚨 RULE 4: GROUP BY + ORDER BY Expression Rules
 
-COLLECT STATISTICS ON table COLUMN (col);  -- After bulk loads
-EXPLAIN SELECT ...;                         -- Check query plan
-SELECT * FROM large_table SAMPLE 1000;      -- Sample for profiling
+When GROUP BY uses an expression (like EXTRACT), ORDER BY cannot use the alias. Must use ordinal position.
+
+**Trigger:** GROUP BY with EXTRACT(), CAST(), or any expression
+**Action:** ORDER BY 1 (not by alias)
+
+❌ **FAILS:**
+```sql
+SELECT EXTRACT(MONTH FROM log_dt) as month, COUNT(*)
+FROM table
+GROUP BY EXTRACT(MONTH FROM log_dt)
+ORDER BY month;
+-- Error 3707: Syntax error - can't use alias after GROUP BY expression
+```
+
+✅ **WORKS:**
+```sql
+SELECT CAST(EXTRACT(MONTH FROM log_dt) AS INTEGER) as month_num, COUNT(*)
+FROM table
+GROUP BY CAST(EXTRACT(MONTH FROM log_dt) AS INTEGER)
+ORDER BY 1;  -- Use ordinal position, not alias
+```
+
+**Avoid these aliases:** month, year, date, time, order, group (reserved words)
+
+---
+
+## 🚨 RULE 5: Stop on Circuit Breaker (Cascading Failures!)
+
+After 10 consecutive query failures, the system triggers a circuit breaker and blocks ALL queries for 20-30 seconds.
+
+**Trigger:** See error "circuit breaker open: too many consecutive failures"
+**Action:** STOP, analyze, fix root cause, wait, then retry
+
+❌ **DON'T:**
+- Keep trying different queries (makes it worse)
+- Ignore the circuit breaker message
+
+✅ **DO:**
+1. STOP executing new queries immediately
+2. Look at last 5-10 failed queries - find the pattern
+   - All missing date filters? → Add WHERE log_dt >= ...
+   - All using LIMIT? → Change to TOP or SAMPLE
+   - All overflowing? → Add BIGINT casts
+3. Wait 30 seconds for circuit breaker to reset
+4. Start with simple validation query:
+   ```sql
+   SELECT COUNT(*) FROM table SAMPLE 100;
+   ```
+5. Then retry with FIXED queries
+
+---
+
+## Quick Reference Card
+
+| Problem | Solution |
+|---------|----------|
+| Want to limit rows | Use `SELECT TOP N` or `SAMPLE N` (NEVER LIMIT) |
+| Aggregating on large table | Add `WHERE log_dt >= CURRENT_DATE - 30` first |
+| Numeric overflow | Wrap in `CAST(SUM(CAST(col AS BIGINT)) AS DECIMAL(20,2))` |
+| GROUP BY expression | Use `ORDER BY 1` (ordinal) not alias |
+| Circuit breaker open | Stop, analyze failures, wait 30s, retry with fixes |
+
+---
+
+**Remember:** These 5 rules prevent 95% of Teradata query failures. When in doubt, check table size and add date filters.
+
+---
+
+## 🔧 BONUS: Common Teradata-Specific Issues
+
+### HELP TABLE Before Query (Critical!)
+**Always verify schema before querying a new table**
+
+❌ **DON'T assume column names:**
+```sql
+-- Assuming columns exist:
+SELECT calendar_dt, cust_site_id FROM table WHERE ...
+-- Error 5628: Column calendar_dt not found
+```
+
+✅ **DO verify with HELP TABLE first:**
+```sql
+-- Step 1: Get schema
+HELP TABLE database.tablename;
+
+-- Step 2: See sample data
+SELECT TOP 5 * FROM database.tablename;
+
+-- Step 3: Then query with correct column names
+SELECT log_dt, acct_nbr FROM database.tablename WHERE ...
+```
+
+### Unsupported Functions
+These functions **do NOT exist** in Teradata:
+- ❌ `TYPEOF()` - no type inspection
+- ❌ `JSON_EXTRACT()` - limited JSON support
+- ❌ `ISNULL()` - use `COALESCE()` or `IS NULL`
+
+### TOP and SAMPLE Cannot Mix
+❌ `SELECT TOP 100 * FROM table SAMPLE 100;` - Error 6916
+✅ `SELECT TOP 100 * FROM table;` - Limits result
+✅ `SELECT * FROM table SAMPLE 100;` - Samples rows
