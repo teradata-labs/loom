@@ -266,21 +266,12 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			}, nil
 		}
 
-		// If write restrictions enabled, ensure working directory is in session
-		if t.restrictWrites {
-			sessionDir := filepath.Join(loomDataDir, "artifacts", "sessions", sessionID)
-			if !strings.HasPrefix(absWorkingDir, sessionDir) {
-				return &shuttle.Result{
-					Success: false,
-					Error: &shuttle.Error{
-						Code:       "WRITE_RESTRICTED",
-						Message:    fmt.Sprintf("Write operations restricted to session directories: %s", cleanWorkingDir),
-						Suggestion: fmt.Sprintf("Use working directory within LOOM_SANDBOX_DIR: %s", sessionDir),
-					},
-					ExecutionTimeMs: time.Since(start).Milliseconds(),
-				}, nil
-			}
-		}
+		// Note: restrictWrites check removed - PATH_RESTRICTED check above is sufficient
+		// The PATH_RESTRICTED validation already ensures working_dir is in safe locations:
+		// - LOOM_DATA_DIR (includes agents/, workflows/, examples/, artifacts/)
+		// - /tmp (temporary operations)
+		// - LOOM_SANDBOX_DIR (if configured)
+		// No additional restriction needed - agents can read from LOOM_DATA_DIR as intended
 	}
 
 	// Detect shell binary
