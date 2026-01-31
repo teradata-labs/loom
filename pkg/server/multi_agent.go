@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -543,7 +544,7 @@ func (s *MultiAgentServer) ListAgents(ctx context.Context, req *loomv1.ListAgent
 	agents := make([]*loomv1.AgentInfo, 0, len(s.agents))
 	for id, ag := range s.agents {
 		// Count active sessions for this agent
-		activeSessions := int32(len(ag.ListSessions()))
+		activeSessions := types.SafeInt32(len(ag.ListSessions()))
 
 		// Create metadata with description
 		metadata := make(map[string]string)
@@ -632,8 +633,8 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			LlmCost: &loomv1.LLMCost{
 				Provider:     ag.GetLLMProviderName(),
 				Model:        ag.GetLLMModel(),
-				InputTokens:  int32(resp.Usage.InputTokens),
-				OutputTokens: int32(resp.Usage.OutputTokens),
+				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
 				CostUsd:      resp.Usage.CostUSD,
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
@@ -802,7 +803,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 					Question:       event.HITLRequest.Question,
 					RequestType:    event.HITLRequest.RequestType,
 					Priority:       event.HITLRequest.Priority,
-					TimeoutSeconds: int32(event.HITLRequest.Timeout.Seconds()),
+					TimeoutSeconds: types.SafeInt32(int(event.HITLRequest.Timeout.Seconds())),
 				}
 			}
 
@@ -848,8 +849,8 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			LlmCost: &loomv1.LLMCost{
 				Provider:     ag.GetLLMProviderName(),
 				Model:        ag.GetLLMModel(),
-				InputTokens:  int32(resp.Usage.InputTokens),
-				OutputTokens: int32(resp.Usage.OutputTokens),
+				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
 				CostUsd:      resp.Usage.CostUSD,
 			},
 		},
@@ -2358,7 +2359,7 @@ func (s *MultiAgentServer) ListAvailableModels(ctx context.Context, req *loomv1.
 
 	return &loomv1.ListAvailableModelsResponse{
 		Models:     models,
-		TotalCount: int32(len(models)),
+		TotalCount: types.SafeInt32(len(models)),
 	}, nil
 }
 
@@ -3239,7 +3240,7 @@ func (s *MultiAgentServer) ListWorkflowExecutions(ctx context.Context, req *loom
 	return &loomv1.ListWorkflowExecutionsResponse{
 		Executions:    protoExecutions,
 		NextPageToken: "", // No pagination yet
-		TotalCount:    int32(len(protoExecutions)),
+		TotalCount:    types.SafeInt32(len(protoExecutions)),
 	}, nil
 }
 

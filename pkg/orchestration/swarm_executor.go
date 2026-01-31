@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -275,9 +276,9 @@ func (e *SwarmExecutor) collectVoteWithContext(ctx context.Context, workflowID, 
 
 	// Build cost info
 	cost := &loomv1.AgentExecutionCost{
-		TotalTokens:  int32(response.Usage.TotalTokens),
-		InputTokens:  int32(response.Usage.InputTokens),
-		OutputTokens: int32(response.Usage.OutputTokens),
+		TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
+		InputTokens:  types.SafeInt32(response.Usage.InputTokens),
+		OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
 		CostUsd:      response.Usage.CostUSD,
 	}
 
@@ -320,9 +321,9 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 
 	// Build cost info
 	cost := &loomv1.AgentExecutionCost{
-		TotalTokens:  int32(response.Usage.TotalTokens),
-		InputTokens:  int32(response.Usage.InputTokens),
-		OutputTokens: int32(response.Usage.OutputTokens),
+		TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
+		InputTokens:  types.SafeInt32(response.Usage.InputTokens),
+		OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
 		CostUsd:      response.Usage.CostUSD,
 	}
 

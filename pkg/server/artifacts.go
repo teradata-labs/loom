@@ -16,6 +16,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/types"
 	"github.com/teradata-labs/loom/pkg/session"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -67,7 +68,7 @@ func (s *MultiAgentServer) ListArtifacts(ctx context.Context, req *loomv1.ListAr
 
 	return &loomv1.ListArtifactsResponse{
 		Artifacts:  protoArtifacts,
-		TotalCount: int32(len(artifactList)),
+		TotalCount: types.SafeInt32(len(artifactList)),
 	}, nil
 }
 

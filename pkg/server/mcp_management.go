@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -61,7 +62,7 @@ func (s *MultiAgentServer) ListMCPServers(ctx context.Context, req *loomv1.ListM
 		if srv.Connected {
 			if client, err := s.mcpManager.GetClient(srv.Name); err == nil {
 				if tools, err := client.ListTools(ctx); err == nil {
-					protoServers[i].ToolCount = int32(len(tools))
+					protoServers[i].ToolCount = types.SafeInt32(len(tools))
 				}
 			}
 		}
@@ -69,7 +70,7 @@ func (s *MultiAgentServer) ListMCPServers(ctx context.Context, req *loomv1.ListM
 
 	return &loomv1.ListMCPServersResponse{
 		Servers:    protoServers,
-		TotalCount: int32(len(protoServers)),
+		TotalCount: types.SafeInt32(len(protoServers)),
 	}, nil
 }
 
@@ -103,7 +104,7 @@ func (s *MultiAgentServer) GetMCPServer(ctx context.Context, req *loomv1.GetMCPS
 			if srv.Connected {
 				if client, err := s.mcpManager.GetClient(srv.Name); err == nil {
 					if tools, err := client.ListTools(ctx); err == nil {
-						info.ToolCount = int32(len(tools))
+						info.ToolCount = types.SafeInt32(len(tools))
 					}
 				}
 			}
@@ -228,7 +229,7 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 		// Get tool count
 		if client, err := s.mcpManager.GetClient(req.Name); err == nil {
 			if tools, err := client.ListTools(ctx); err == nil {
-				serverInfo.ToolCount = int32(len(tools))
+				serverInfo.ToolCount = types.SafeInt32(len(tools))
 			}
 		}
 	} else {
@@ -694,7 +695,7 @@ func (s *MultiAgentServer) TestMCPServerConnection(ctx context.Context, req *loo
 	return &loomv1.TestMCPServerConnectionResponse{
 		Success:   true,
 		Message:   fmt.Sprintf("Successfully connected and discovered %d tools", len(tools)),
-		ToolCount: int32(len(tools)),
+		ToolCount: types.SafeInt32(len(tools)),
 		LatencyMs: latency,
 	}, nil
 }
@@ -746,7 +747,7 @@ func (s *MultiAgentServer) ListMCPServerTools(ctx context.Context, req *loomv1.L
 
 	return &loomv1.ListMCPServerToolsResponse{
 		Tools:      protoTools,
-		TotalCount: int32(len(protoTools)),
+		TotalCount: types.SafeInt32(len(protoTools)),
 		ServerName: req.ServerName,
 	}, nil
 }
