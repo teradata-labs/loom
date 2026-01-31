@@ -28,7 +28,7 @@ func TestProfileDefaults(t *testing.T) {
 		{
 			name:                  "balanced profile",
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED,
-			expectedMaxL1:         8,
+			expectedMaxL1:         6400, // 8 messages @ 800 tokens each
 			expectedMinL1:         4,
 			expectedWarning:       60,
 			expectedCritical:      75,
@@ -39,7 +39,7 @@ func TestProfileDefaults(t *testing.T) {
 		{
 			name:                  "data_intensive profile",
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE,
-			expectedMaxL1:         5,
+			expectedMaxL1:         4000, // 5 messages @ 800 tokens each
 			expectedMinL1:         3,
 			expectedWarning:       50,
 			expectedCritical:      70,
@@ -50,7 +50,7 @@ func TestProfileDefaults(t *testing.T) {
 		{
 			name:                  "conversational profile",
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL,
-			expectedMaxL1:         12,
+			expectedMaxL1:         9600, // 12 messages @ 800 tokens each
 			expectedMinL1:         6,
 			expectedWarning:       70,
 			expectedCritical:      85,
