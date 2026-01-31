@@ -550,20 +550,6 @@ func getStringValue(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func getIntValue(m map[string]interface{}, key string) int {
-	switch v := m[key].(type) {
-	case int:
-		return v
-	case int32:
-		return int(v)
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	}
-	return 0
-}
-
 // getInt32Value safely extracts an int32 value from a map
 func getInt32Value(m map[string]interface{}, key string) int32 {
 	switch v := m[key].(type) {
@@ -600,18 +586,6 @@ func getFloat32Value(m map[string]interface{}, key string) float32 {
 		return v
 	case int:
 		return float32(v)
-	}
-	return 0.0
-}
-
-func getFloatValue(m map[string]interface{}, key string) float64 {
-	switch v := m[key].(type) {
-	case float64:
-		return v
-	case float32:
-		return float64(v)
-	case int:
-		return float64(v)
 	}
 	return 0.0
 }
