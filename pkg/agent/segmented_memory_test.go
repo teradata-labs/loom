@@ -54,7 +54,7 @@ func TestNewSegmentedMemory(t *testing.T) {
 	assert.Equal(t, romContent, sm.romContent)
 	assert.NotNil(t, sm.tokenCounter)
 	assert.NotNil(t, sm.tokenBudget)
-	assert.Equal(t, 8, sm.maxL1Tokens, "Should use balanced profile default maxL1Messages")
+	assert.Equal(t, 6400, sm.maxL1Tokens, "Should use balanced profile default maxL1Tokens (6400 tokens)")
 	assert.Equal(t, 4, sm.minL1Messages, "Should use balanced profile default minL1Messages")
 	assert.Equal(t, 1, sm.maxToolResults)
 	assert.Equal(t, 10, sm.maxSchemas)
@@ -102,8 +102,9 @@ func TestSegmentedMemory_AddMessage_Compression(t *testing.T) {
 		sm.AddMessage(msg)
 	}
 
-	// Should trigger compression and keep messages under maxL1Messages
-	assert.LessOrEqual(t, sm.GetL1MessageCount(), sm.maxL1Tokens)
+	// Should trigger compression and keep L1 messages reasonable
+	// Token-based compression means L1 can have variable message counts
+	assert.LessOrEqual(t, sm.GetL1MessageCount(), 20, "L1 should have reasonable message count after compression")
 
 	// L2 summary should have content (compressed old messages)
 	sm.mu.RLock()
@@ -135,8 +136,9 @@ func TestSegmentedMemory_AddMessage_AdaptiveCompression(t *testing.T) {
 		sm.AddMessage(msg)
 	}
 
-	// Should have compressed some messages
-	assert.LessOrEqual(t, sm.GetL1MessageCount(), sm.maxL1Tokens)
+	// Should have compressed some messages (token-based compression)
+	// With 25 messages of ~500 tokens each (12.5K tokens), should compress to stay under 6400 token limit
+	assert.LessOrEqual(t, sm.GetL1MessageCount(), 15, "L1 should have reasonable message count after compression")
 }
 
 func TestSegmentedMemory_AddToolResult(t *testing.T) {
@@ -335,7 +337,7 @@ func TestSegmentedMemory_GetMemoryStats(t *testing.T) {
 	assert.NotNil(t, stats["token_budget_total"])
 	assert.NotNil(t, stats["budget_usage_pct"])
 	assert.Equal(t, 1, stats["l1_message_count"])
-	assert.Equal(t, 8, stats["l1_max_messages"], "Should use balanced profile default maxL1Messages")
+	assert.Equal(t, 6400, stats["l1_max_tokens"], "Should use balanced profile default maxL1Tokens")
 	assert.Equal(t, 4, stats["l1_min_messages"], "Should use balanced profile default minL1Messages")
 	assert.Equal(t, 1, stats["tool_result_count"])
 	assert.Equal(t, 1, stats["schema_cache_count"])

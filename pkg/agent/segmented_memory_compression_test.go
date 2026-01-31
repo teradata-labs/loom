@@ -17,7 +17,7 @@ func TestNewSegmentedMemory_UsesBalancedProfileByDefault(t *testing.T) {
 	sm := NewSegmentedMemory(romContent, 200000, 20000)
 
 	// Should use balanced profile defaults
-	assert.Equal(t, 8, sm.maxL1Tokens, "Should use balanced maxL1Messages")
+	assert.Equal(t, 6400, sm.maxL1Tokens, "Should use balanced maxL1Tokens (6400 tokens)")
 	assert.Equal(t, 4, sm.minL1Messages, "Should use balanced minL1Messages")
 	assert.Equal(t, "balanced", sm.compressionProfile.Name)
 }
@@ -29,7 +29,7 @@ func TestNewSegmentedMemoryWithCompression_DataIntensiveProfile(t *testing.T) {
 	sm := NewSegmentedMemoryWithCompression(romContent, 200000, 20000, profile)
 
 	// Should use data_intensive profile
-	assert.Equal(t, 5, sm.maxL1Tokens, "Should use data_intensive maxL1Messages")
+	assert.Equal(t, 4000, sm.maxL1Tokens, "Should use data_intensive maxL1Tokens (4000 tokens)")
 	assert.Equal(t, 3, sm.minL1Messages, "Should use data_intensive minL1Messages")
 	assert.Equal(t, 50, sm.compressionProfile.WarningThresholdPercent)
 	assert.Equal(t, 70, sm.compressionProfile.CriticalThresholdPercent)
@@ -43,7 +43,7 @@ func TestNewSegmentedMemoryWithCompression_ConversationalProfile(t *testing.T) {
 	sm := NewSegmentedMemoryWithCompression(romContent, 200000, 20000, profile)
 
 	// Should use conversational profile
-	assert.Equal(t, 12, sm.maxL1Tokens, "Should use conversational maxL1Messages")
+	assert.Equal(t, 9600, sm.maxL1Tokens, "Should use conversational maxL1Tokens (9600 tokens)")
 	assert.Equal(t, 6, sm.minL1Messages, "Should use conversational minL1Messages")
 	assert.Equal(t, 70, sm.compressionProfile.WarningThresholdPercent)
 	assert.Equal(t, 85, sm.compressionProfile.CriticalThresholdPercent)

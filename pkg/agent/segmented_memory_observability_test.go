@@ -7,6 +7,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -181,13 +183,14 @@ func TestSegmentedMemory_CompressionMetrics_ConversationalProfile(t *testing.T) 
 	// Verify profile configuration
 	require.Len(t, mockTracer.events, 1)
 	assert.Equal(t, "conversational", mockTracer.events[0].attributes["profile"])
-	assert.Equal(t, 12, mockTracer.events[0].attributes["max_l1_messages"])
+	assert.Equal(t, 9600, mockTracer.events[0].attributes["max_l1_tokens"])
 
-	// Add many messages to trigger compression
-	for i := 0; i < 15; i++ {
+	// Add many large messages to trigger compression (token-based)
+	// Each message ~700 tokens, 20 messages = ~14K tokens > 9600 limit
+	for i := 0; i < 20; i++ {
 		sm.AddMessage(Message{
 			Role:    "user",
-			Content: "Conversational message " + string(rune(i)),
+			Content: strings.Repeat(fmt.Sprintf("Conversational message %d ", i), 100), // ~700 tokens
 		})
 	}
 
@@ -297,7 +300,7 @@ func TestSegmentedMemory_ProfileConfigurationEvent(t *testing.T) {
 			event := mockTracer.events[0]
 			assert.Equal(t, "memory.profile_configured", event.name)
 			assert.Equal(t, tt.profile.Name, event.attributes["profile"])
-			assert.Equal(t, tt.profile.MaxL1Tokens, event.attributes["max_l1_messages"])
+			assert.Equal(t, tt.profile.MaxL1Tokens, event.attributes["max_l1_tokens"])
 			assert.Equal(t, tt.profile.MinL1Messages, event.attributes["min_l1_messages"])
 			assert.Equal(t, tt.profile.WarningThresholdPercent, event.attributes["warning_threshold_percent"])
 			assert.Equal(t, tt.profile.CriticalThresholdPercent, event.attributes["critical_threshold_percent"])
