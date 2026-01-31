@@ -359,10 +359,10 @@ func TestListWorkflowExecutions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name               string
-		req                *loomv1.ListWorkflowExecutionsRequest
-		expectedCount      int
-		expectedStatuses   []string
+		name                 string
+		req                  *loomv1.ListWorkflowExecutionsRequest
+		expectedCount        int
+		expectedStatuses     []string
 		expectedPatternTypes []string
 	}{
 		{

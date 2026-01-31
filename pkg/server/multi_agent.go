@@ -3159,7 +3159,7 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 	// Create orchestrator with configuration including progress callback
 	orchestrator := orchestration.NewOrchestrator(orchestration.Config{
 		Registry:         registry,
-		LLMProvider:      nil, // Orchestrator will use agents' LLM providers as needed
+		LLMProvider:      nil,    // Orchestrator will use agents' LLM providers as needed
 		Tracer:           tracer, // Use provided tracer for observability
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
