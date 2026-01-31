@@ -16,8 +16,8 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
-	"github.com/teradata-labs/loom/pkg/types"
 	"github.com/teradata-labs/loom/pkg/session"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
