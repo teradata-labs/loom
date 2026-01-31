@@ -1324,17 +1324,35 @@ func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, 
 	// FTS5 MATCH query with BM25 ranking
 	// bm25(messages_fts5) is FTS5's built-in BM25 ranking function (lower score = more relevant)
 	// Note: FTS5 requires the actual table name in bm25(), not an alias
-	sqlQuery := `
-		SELECT m.role, m.content, m.tool_calls_json,
-		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
-		FROM messages_fts5
-		JOIN messages m ON messages_fts5.message_id = m.id
-		WHERE messages_fts5.session_id = ? AND messages_fts5.content MATCH ?
-		ORDER BY bm25(messages_fts5)
-		LIMIT ?
-	`
+	var sqlQuery string
+	var rows *sql.Rows
+	var err error
 
-	rows, err := s.db.QueryContext(ctx, sqlQuery, sessionID, fts5Query, limit)
+	if sessionID == "" {
+		// Search across ALL sessions when sessionID is empty
+		sqlQuery = `
+			SELECT m.role, m.content, m.tool_calls_json,
+			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+			FROM messages_fts5
+			JOIN messages m ON messages_fts5.message_id = m.id
+			WHERE messages_fts5.content MATCH ?
+			ORDER BY bm25(messages_fts5)
+			LIMIT ?
+		`
+		rows, err = s.db.QueryContext(ctx, sqlQuery, fts5Query, limit)
+	} else {
+		// Search within specific session
+		sqlQuery = `
+			SELECT m.role, m.content, m.tool_calls_json,
+			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+			FROM messages_fts5
+			JOIN messages m ON messages_fts5.message_id = m.id
+			WHERE messages_fts5.session_id = ? AND messages_fts5.content MATCH ?
+			ORDER BY bm25(messages_fts5)
+			LIMIT ?
+		`
+		rows, err = s.db.QueryContext(ctx, sqlQuery, sessionID, fts5Query, limit)
+	}
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("FTS5 search failed: %w", err)
