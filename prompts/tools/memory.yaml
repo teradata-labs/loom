@@ -47,3 +47,44 @@ prompts:
     metadata:
       version: "v1.0"
       description: "Unified conversation memory tool description"
+
+  - id: session_memory_description
+    content: |
+      Manage sessions and access cross-session memory.
+
+      Three actions available:
+      1. list - List all sessions for the current agent with metadata
+      2. summary - Retrieve L2 memory summaries (compacted conversation history) for a session
+      3. compact - Manually trigger memory compaction for current session
+
+      Use this when:
+      - User asks about past sessions or conversations
+      - Need to view summarized conversation history
+      - Want to free up token budget by compacting current session
+      - Exploring conversation history across multiple sessions
+
+      Examples:
+
+      List recent sessions:
+        session_memory(action="list", limit=10)
+
+      Get session summary:
+        session_memory(action="summary", session_id="session-abc-123")
+
+      Compact current session to free memory:
+        session_memory(action="compact")
+
+      Force compaction even if not needed:
+        session_memory(action="compact", force=true)
+
+      L2 summaries are automatically generated when conversations grow long, preserving key context while reducing token usage. Use summary action to review historical conversation summaries from past sessions.
+    variables: {}
+    tags:
+      - tools
+      - memory
+      - unified
+      - sessions
+      - compaction
+    metadata:
+      version: "v1.0"
+      description: "Unified session memory tool description"

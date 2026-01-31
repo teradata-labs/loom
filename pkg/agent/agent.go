@@ -732,6 +732,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Progressive disclosure: Check if conversation_memory tool should be registered
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
+	a.checkAndRegisterSessionMemoryTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -909,6 +910,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// Progressive disclosure: Check if conversation_memory tool should be registered
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
+	a.checkAndRegisterSessionMemoryTool()
 
 	if err != nil {
 		// Emit failure event
@@ -1775,6 +1777,46 @@ func (a *Agent) checkAndRegisterConversationMemoryTool(sessionID string) {
 		)
 	}
 	a.tools.Register(conversationMemoryTool)
+
+	// Tool will be available in next LLM call
+	// The tool's discovery is natural - agent sees it in tool list when needed
+}
+
+// checkAndRegisterSessionMemoryTool implements progressive disclosure for session_memory tool.
+// Registers the tool after 3+ sessions accumulate, when session management becomes relevant.
+func (a *Agent) checkAndRegisterSessionMemoryTool() {
+	// Skip if tool already registered
+	if a.tools.IsRegistered("session_memory") {
+		return
+	}
+
+	// Skip if no session store
+	if a.memory.store == nil {
+		return
+	}
+
+	// Get agent ID from current agent
+	agentID := a.config.Name // Use agent name as ID
+
+	// Count sessions for this agent
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessionIDs, err := a.memory.store.LoadAgentSessions(ctx, agentID)
+	if err != nil || len(sessionIDs) < 3 {
+		return // Not enough sessions yet, tool not needed
+	}
+
+	// Progressive disclosure: Register session_memory tool
+	sessionMemoryTool := shuttle.Tool(NewSessionMemoryTool(a.memory.store, a.memory))
+	if a.prompts != nil {
+		sessionMemoryTool = shuttle.NewPromptAwareTool(
+			sessionMemoryTool,
+			a.prompts,
+			"tools.memory.session_memory_description",
+		)
+	}
+	a.tools.Register(sessionMemoryTool)
 
 	// Tool will be available in next LLM call
 	// The tool's discovery is natural - agent sees it in tool list when needed
