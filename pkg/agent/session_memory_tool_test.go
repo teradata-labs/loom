@@ -83,7 +83,9 @@ func TestSessionMemoryTool_InvalidAction(t *testing.T) {
 	tool := NewSessionMemoryTool(store, memory)
 
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", "test-session")
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "agent_id", "test-agent")
 
 	tests := []struct {
@@ -159,6 +161,7 @@ func TestSessionMemoryTool_List(t *testing.T) {
 	}))
 
 	// List sessions for test-agent
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "agent_id", agentID)
 	result, err := tool.Execute(ctx, map[string]interface{}{
 		"action": "list",
@@ -211,6 +214,7 @@ func TestSessionMemoryTool_List_WithLimit(t *testing.T) {
 	}
 
 	// List with limit=2
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "agent_id", agentID)
 	result, err := tool.Execute(ctx, map[string]interface{}{
 		"action": "list",
@@ -318,6 +322,7 @@ func TestSessionMemoryTool_Compact(t *testing.T) {
 
 	sessionID := "test-session"
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", sessionID)
 
 	// Create session with segmented memory
@@ -370,6 +375,7 @@ func TestSessionMemoryTool_Compact_NotNeeded(t *testing.T) {
 
 	sessionID := "test-session"
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", sessionID)
 
 	// Create session with minimal messages
@@ -411,6 +417,7 @@ func TestSessionMemoryTool_Compact_Force(t *testing.T) {
 
 	sessionID := "test-session"
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", sessionID)
 
 	// Create session with minimal messages

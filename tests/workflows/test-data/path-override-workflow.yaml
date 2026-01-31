@@ -9,6 +9,9 @@ metadata:
 
 spec:
   type: fork-join
+  prompt: "Test prompt for fork-join with overridden agent"
+  agent_ids:
+    - test-agent-override
   agents:
     - id: test-agent-override
       path: test-agent-1.yaml

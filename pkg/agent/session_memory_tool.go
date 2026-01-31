@@ -244,13 +244,13 @@ func (t *SessionMemoryTool) getSessionMetadata(ctx context.Context, sessionID st
 	}
 
 	return map[string]interface{}{
-		"session_id":            id,
-		"agent_id":              agentID,
-		"created_at":            fmt.Sprintf("%d", createdAt),
-		"updated_at":            fmt.Sprintf("%d", updatedAt),
-		"message_count":         messageCount,
-		"total_tokens":          totalTokens,
-		"last_message_preview":  lastMessagePreview,
+		"session_id":           id,
+		"agent_id":             agentID,
+		"created_at":           fmt.Sprintf("%d", createdAt),
+		"updated_at":           fmt.Sprintf("%d", updatedAt),
+		"message_count":        messageCount,
+		"total_tokens":         totalTokens,
+		"last_message_preview": lastMessagePreview,
 	}, nil
 }
 

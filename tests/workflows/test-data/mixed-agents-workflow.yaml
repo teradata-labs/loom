@@ -9,6 +9,13 @@ metadata:
 
 spec:
   type: parallel
+  tasks:
+    - agent_id: path-agent
+      prompt: "Task 1 for path-agent"
+    - agent_id: inline-agent
+      prompt: "Task 2 for inline-agent"
+    - agent_id: another-path-agent
+      prompt: "Task 3 for another-path-agent"
   agents:
     # Path-referenced agent
     - id: path-agent

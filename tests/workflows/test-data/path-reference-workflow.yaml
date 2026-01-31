@@ -9,6 +9,12 @@ metadata:
 
 spec:
   type: pipeline
+  initial_prompt: "Test workflow with path references"
+  stages:
+    - agent_id: test-agent-1
+      prompt_template: "Stage 1: {{input}}"
+    - agent_id: test-agent-2
+      prompt_template: "Stage 2: {{input}}"
   agents:
     - id: test-agent-1
       path: test-agent-1.yaml

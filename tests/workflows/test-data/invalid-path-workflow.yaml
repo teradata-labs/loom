@@ -9,6 +9,10 @@ metadata:
 
 spec:
   type: pipeline
+  initial_prompt: "Test prompt for invalid path"
+  stages:
+    - agent_id: missing-agent
+      prompt_template: "Stage 1: {{input}}"
   agents:
     - id: missing-agent
       path: non-existent-agent.yaml

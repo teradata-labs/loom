@@ -28,6 +28,10 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
+// Note: Using string literals for context keys to match tool implementation.
+// The SA1029 linter warning is suppressed as these keys are part of the
+// tool's API contract and must match what the tool expects.
+
 // TestConversationMemoryTool_Name verifies tool name.
 func TestConversationMemoryTool_Name(t *testing.T) {
 	memory := NewMemory()
@@ -70,6 +74,8 @@ func TestConversationMemoryTool_InvalidAction(t *testing.T) {
 	tool := NewConversationMemoryTool(memory)
 
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", "test-session")
 
 	tests := []struct {
@@ -159,6 +165,7 @@ func TestConversationMemoryTool_RecallAction(t *testing.T) {
 	tool := NewConversationMemoryTool(memory)
 
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", sessionID)
 
 	// Test recall with valid parameters
@@ -252,6 +259,7 @@ func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			if tt.sessionID != "" {
+				//nolint:staticcheck // SA1029: using string key to match tool API contract
 				ctx = context.WithValue(ctx, "session_id", tt.sessionID)
 			}
 
@@ -295,7 +303,8 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 		segMem.AddMessage(msg)
-		store.SaveMessage(context.Background(), sessionID, msg)
+		err := store.SaveMessage(context.Background(), sessionID, msg)
+		require.NoError(t, err)
 	}
 
 	// Force swap
@@ -303,6 +312,7 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 	segMem.CompactMemory()
 
 	tool := NewConversationMemoryTool(memory)
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", sessionID)
 
 	// Test with limit > 50 (should be capped at 50)
@@ -318,7 +328,8 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 
 	var resultData map[string]interface{}
 	dataStr, _ := result.Data.(string)
-	json.Unmarshal([]byte(dataStr), &resultData)
+	err = json.Unmarshal([]byte(dataStr), &resultData)
+	require.NoError(t, err)
 
 	// Should be capped at 50
 	assert.LessOrEqual(t, int(resultData["count"].(float64)), 50)
@@ -362,7 +373,8 @@ func TestConversationMemoryTool_SearchAction(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 		segMem.AddMessage(msg)
-		store.SaveMessage(context.Background(), sessionID, msg)
+		err := store.SaveMessage(context.Background(), sessionID, msg)
+		require.NoError(t, err)
 	}
 
 	// Force swap
@@ -370,6 +382,7 @@ func TestConversationMemoryTool_SearchAction(t *testing.T) {
 	segMem.CompactMemory()
 
 	tool := NewConversationMemoryTool(memory)
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", sessionID)
 
 	// Search for SQL-related messages
@@ -386,7 +399,8 @@ func TestConversationMemoryTool_SearchAction(t *testing.T) {
 
 	var resultData map[string]interface{}
 	dataStr, _ := result.Data.(string)
-	json.Unmarshal([]byte(dataStr), &resultData)
+	err = json.Unmarshal([]byte(dataStr), &resultData)
+	require.NoError(t, err)
 
 	assert.Equal(t, "search", resultData["action"])
 	assert.Equal(t, "SQL database performance", resultData["query"])
@@ -442,6 +456,7 @@ func TestConversationMemoryTool_SearchErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			if tt.sessionID != "" {
+				//nolint:staticcheck // SA1029: using string key to match tool API contract
 				ctx = context.WithValue(ctx, "session_id", tt.sessionID)
 			}
 
@@ -488,13 +503,16 @@ func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 				Timestamp: time.Now(),
 			}
 			segMem.AddMessage(msg)
-			store.SaveMessage(context.Background(), sessionID, msg)
+			err := store.SaveMessage(context.Background(), sessionID, msg)
+			require.NoError(t, err)
 		}
 	}
 
 	tool := NewConversationMemoryTool(memory)
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", "agent-session-0")
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "agent_id", agentID)
 
 	// Search across all agent sessions
@@ -511,7 +529,8 @@ func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 
 	var resultData map[string]interface{}
 	dataStr, _ := result.Data.(string)
-	json.Unmarshal([]byte(dataStr), &resultData)
+	err = json.Unmarshal([]byte(dataStr), &resultData)
+	require.NoError(t, err)
 
 	assert.Equal(t, "agent", resultData["session_scope"])
 	// Should find messages from multiple sessions
@@ -548,11 +567,13 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 		segMem.AddMessage(msg)
-		store.SaveMessage(context.Background(), sessionID, msg)
+		err := store.SaveMessage(context.Background(), sessionID, msg)
+		require.NoError(t, err)
 	}
 
 	tool := NewConversationMemoryTool(memory)
 	ctx := context.Background()
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx = context.WithValue(ctx, "session_id", "session-agent-1")
 
 	// Search across ALL sessions
@@ -569,7 +590,8 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 
 	var resultData map[string]interface{}
 	dataStr, _ := result.Data.(string)
-	json.Unmarshal([]byte(dataStr), &resultData)
+	err = json.Unmarshal([]byte(dataStr), &resultData)
+	require.NoError(t, err)
 
 	assert.Equal(t, "all", resultData["session_scope"])
 	// Should find messages from all agents
@@ -606,7 +628,8 @@ func TestConversationMemoryTool_ClearAction(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 		segMem.AddMessage(msg)
-		store.SaveMessage(context.Background(), sessionID, msg)
+		err := store.SaveMessage(context.Background(), sessionID, msg)
+		require.NoError(t, err)
 	}
 
 	// Force swap
@@ -614,8 +637,10 @@ func TestConversationMemoryTool_ClearAction(t *testing.T) {
 	segMem.CompactMemory()
 
 	// Recall messages to promote them
-	recalled, _ := segMem.RetrieveMessagesFromSwap(context.Background(), 0, 5)
-	segMem.PromoteMessagesToContext(recalled)
+	recalled, err := segMem.RetrieveMessagesFromSwap(context.Background(), 0, 5)
+	require.NoError(t, err)
+	err = segMem.PromoteMessagesToContext(recalled)
+	require.NoError(t, err)
 
 	// Verify promoted messages exist
 	promoted := segMem.GetPromotedContext()
@@ -623,6 +648,7 @@ func TestConversationMemoryTool_ClearAction(t *testing.T) {
 
 	// Create tool and clear
 	tool := NewConversationMemoryTool(memory)
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", sessionID)
 
 	input := map[string]interface{}{
@@ -635,7 +661,8 @@ func TestConversationMemoryTool_ClearAction(t *testing.T) {
 
 	var resultData map[string]interface{}
 	dataStr, _ := result.Data.(string)
-	json.Unmarshal([]byte(dataStr), &resultData)
+	err = json.Unmarshal([]byte(dataStr), &resultData)
+	require.NoError(t, err)
 
 	assert.Equal(t, "clear", resultData["action"])
 	assert.True(t, resultData["success"].(bool))
@@ -675,6 +702,7 @@ func TestConversationMemoryTool_ClearErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			if tt.sessionID != "" {
+				//nolint:staticcheck // SA1029: using string key to match tool API contract
 				ctx = context.WithValue(ctx, "session_id", tt.sessionID)
 			}
 
@@ -705,6 +733,7 @@ func TestConversationMemoryTool_SwapNotEnabled(t *testing.T) {
 	assert.False(t, segMem.IsSwapEnabled(), "Swap should be disabled")
 
 	tool := NewConversationMemoryTool(memory)
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", sessionID)
 
 	// Try recall - should fail gracefully
@@ -726,6 +755,7 @@ func TestConversationMemoryTool_SessionNotFound(t *testing.T) {
 	memory := NewMemory()
 	tool := NewConversationMemoryTool(memory)
 
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", "non-existent")
 
 	input := map[string]interface{}{
@@ -770,7 +800,8 @@ func TestConversationMemoryTool_Integration(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 		segMem.AddMessage(msg)
-		store.SaveMessage(context.Background(), sessionID, msg)
+		err := store.SaveMessage(context.Background(), sessionID, msg)
+		require.NoError(t, err)
 	}
 
 	// Force swap
@@ -778,6 +809,7 @@ func TestConversationMemoryTool_Integration(t *testing.T) {
 	segMem.CompactMemory()
 
 	tool := NewConversationMemoryTool(memory)
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", sessionID)
 
 	// 1. Recall old messages
@@ -856,7 +888,8 @@ func TestConversationMemoryTool_SearchLimitEnforcement(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 		segMem.AddMessage(msg)
-		store.SaveMessage(context.Background(), sessionID, msg)
+		err := store.SaveMessage(context.Background(), sessionID, msg)
+		require.NoError(t, err)
 	}
 
 	// Force swap
@@ -864,6 +897,7 @@ func TestConversationMemoryTool_SearchLimitEnforcement(t *testing.T) {
 	segMem.CompactMemory()
 
 	tool := NewConversationMemoryTool(memory)
+	//nolint:staticcheck // SA1029: using string key to match tool API contract
 	ctx := context.WithValue(context.Background(), "session_id", sessionID)
 
 	// Request more than 20 results
@@ -880,7 +914,8 @@ func TestConversationMemoryTool_SearchLimitEnforcement(t *testing.T) {
 
 	var resultData map[string]interface{}
 	dataStr, _ := result.Data.(string)
-	json.Unmarshal([]byte(dataStr), &resultData)
+	err = json.Unmarshal([]byte(dataStr), &resultData)
+	require.NoError(t, err)
 
 	// Count should not exceed 20
 	assert.LessOrEqual(t, int(resultData["count"].(float64)), 20)

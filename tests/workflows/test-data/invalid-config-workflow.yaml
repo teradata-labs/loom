@@ -9,6 +9,10 @@ metadata:
 
 spec:
   type: pipeline
+  initial_prompt: "Test prompt for invalid config"
+  stages:
+    - agent_id: invalid-agent
+      prompt_template: "Stage 1: {{input}}"
   agents:
     - id: invalid-agent
       path: invalid-agent.yaml
