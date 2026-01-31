@@ -366,9 +366,12 @@ communication:
     backend: sqlite
     path: "$($DataDir -replace '\\', '/')/loom.db"
 
-# Observability (optional - requires Hawk)
+# Observability (captures traces, tool executions, and LLM calls)
 observability:
-  enabled: false
+  enabled: true
+  mode: embedded
+  storage_type: sqlite
+  sqlite_path: "$DataDir\observability.db"
 
 # MCP servers (add your own)
 mcp:

@@ -17,7 +17,11 @@ spec:
         - "create agent"
         - "new agent"
         - "agent configuration"
+<<<<<<< Updated upstream
       template: |
+=======
+      template: |        
+>>>>>>> Stashed changes
         apiVersion: loom/v1
         kind: Agent
         metadata:
@@ -37,8 +41,11 @@ spec:
             - get_error_details
             - query_tool_result
             {{#additional_tools}}
+<<<<<<< Updated upstream
             - {{tool_name}}
             {{/additional_tools}}
+=======
+>>>>>>> Stashed changes
 
           llm:
             provider: anthropic
