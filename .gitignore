@@ -87,3 +87,4 @@ examples/orchestration-dogfood/dogfood
 examples/orchestration-dogfood/all_patterns_output.txt
 examples/orchestration-dogfood/dogfood
 *.tar.gz
+goteradata/
