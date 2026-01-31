@@ -987,7 +987,7 @@ func runServe(cmd *cobra.Command, args []string) {
 						memory.SetCompressionProfile(&profile)
 						logger.Info("    Compression profile configured",
 							zap.String("profile", profile.Name),
-							zap.Int("max_l1", profile.MaxL1Messages),
+							zap.Int("max_l1_tokens", profile.MaxL1Tokens),
 							zap.Int("warning_threshold", profile.WarningThresholdPercent))
 					}
 				}
@@ -1908,7 +1908,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					memory.SetCompressionProfile(&profile)
 					logger.Info("  Compression profile configured",
 						zap.String("profile", profile.Name),
-						zap.Int("max_l1", profile.MaxL1Messages),
+						zap.Int("max_l1_tokens", profile.MaxL1Tokens),
 						zap.Int("warning_threshold", profile.WarningThresholdPercent))
 				}
 			}
