@@ -326,10 +326,10 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	// Create memory with compression profile (conversational: max_l1=12)
+	// Create memory with compression profile (conversational: max_l1_tokens=9600)
 	conversationalProfile := CompressionProfile{
 		Name:                     "conversational",
-		MaxL1Tokens:            12,
+		MaxL1Tokens:              9600, // 12 messages @ 800 tokens each
 		MinL1Messages:            6,
 		WarningThresholdPercent:  70,
 		CriticalThresholdPercent: 85,

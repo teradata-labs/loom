@@ -189,7 +189,7 @@ func TestSegmentedMemory_BackwardsCompatibility(t *testing.T) {
 	// Should get balanced profile by default
 	assert.NotNil(t, sm.compressionProfile)
 	assert.Equal(t, "balanced", sm.compressionProfile.Name)
-	assert.Equal(t, 8, sm.maxL1Tokens)
+	assert.Equal(t, 6400, sm.maxL1Tokens, "Should use balanced maxL1Tokens (6400 tokens)")
 	assert.Equal(t, 4, sm.minL1Messages)
 
 	// Should function normally
