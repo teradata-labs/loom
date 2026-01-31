@@ -54,7 +54,7 @@ func TestNewSegmentedMemory(t *testing.T) {
 	assert.Equal(t, romContent, sm.romContent)
 	assert.NotNil(t, sm.tokenCounter)
 	assert.NotNil(t, sm.tokenBudget)
-	assert.Equal(t, 8, sm.maxL1Messages, "Should use balanced profile default maxL1Messages")
+	assert.Equal(t, 8, sm.maxL1Tokens, "Should use balanced profile default maxL1Messages")
 	assert.Equal(t, 4, sm.minL1Messages, "Should use balanced profile default minL1Messages")
 	assert.Equal(t, 1, sm.maxToolResults)
 	assert.Equal(t, 10, sm.maxSchemas)
@@ -90,7 +90,7 @@ func TestSegmentedMemory_AddMessage(t *testing.T) {
 
 func TestSegmentedMemory_AddMessage_Compression(t *testing.T) {
 	sm := NewSegmentedMemory("ROM content", 0, 0)
-	sm.maxL1Messages = 5 // Low limit to trigger compression
+	sm.maxL1Tokens = 5 // Low limit to trigger compression
 
 	// Add messages up to the limit
 	for i := 0; i < 10; i++ {
@@ -103,7 +103,7 @@ func TestSegmentedMemory_AddMessage_Compression(t *testing.T) {
 	}
 
 	// Should trigger compression and keep messages under maxL1Messages
-	assert.LessOrEqual(t, sm.GetL1MessageCount(), sm.maxL1Messages)
+	assert.LessOrEqual(t, sm.GetL1MessageCount(), sm.maxL1Tokens)
 
 	// L2 summary should have content (compressed old messages)
 	sm.mu.RLock()
@@ -123,7 +123,7 @@ func TestSegmentedMemory_AddMessage_AdaptiveCompression(t *testing.T) {
 		},
 	}
 	sm.SetCompressor(compressor)
-	sm.maxL1Messages = 20 // Higher limit
+	sm.maxL1Tokens = 20 // Higher limit
 
 	// Add many messages to trigger adaptive compression
 	for i := 0; i < 25; i++ {
@@ -136,7 +136,7 @@ func TestSegmentedMemory_AddMessage_AdaptiveCompression(t *testing.T) {
 	}
 
 	// Should have compressed some messages
-	assert.LessOrEqual(t, sm.GetL1MessageCount(), sm.maxL1Messages)
+	assert.LessOrEqual(t, sm.GetL1MessageCount(), sm.maxL1Tokens)
 }
 
 func TestSegmentedMemory_AddToolResult(t *testing.T) {
@@ -466,7 +466,7 @@ func TestSegmentedMemory_ConcurrentAccess(t *testing.T) {
 
 func TestSegmentedMemory_CompressionWithMockCompressor(t *testing.T) {
 	sm := NewSegmentedMemory("ROM content", 0, 0)
-	sm.maxL1Messages = 5
+	sm.maxL1Tokens = 5
 
 	compressor := &mockCompressor{
 		enabled: true,
@@ -497,7 +497,7 @@ func TestSegmentedMemory_CompressionWithMockCompressor(t *testing.T) {
 
 func TestSegmentedMemory_CompressionFallback(t *testing.T) {
 	sm := NewSegmentedMemory("ROM content", 0, 0)
-	sm.maxL1Messages = 5
+	sm.maxL1Tokens = 5
 
 	// Set compressor that errors
 	compressor := &mockCompressor{

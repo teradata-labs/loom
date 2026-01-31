@@ -65,7 +65,7 @@ func TestProfileDefaults(t *testing.T) {
 			profile, exists := ProfileDefaults[tt.profile]
 			require.True(t, exists, "Profile should exist in defaults")
 
-			assert.Equal(t, tt.expectedMaxL1, profile.MaxL1Messages)
+			assert.Equal(t, tt.expectedMaxL1, profile.MaxL1Tokens)
 			assert.Equal(t, tt.expectedMinL1, profile.MinL1Messages)
 			assert.Equal(t, tt.expectedWarning, profile.WarningThresholdPercent)
 			assert.Equal(t, tt.expectedCritical, profile.CriticalThresholdPercent)
@@ -134,13 +134,13 @@ func TestResolveCompressionProfile_Overrides(t *testing.T) {
 	// Start with data_intensive profile, override maxL1Messages
 	config := &loomv1.MemoryCompressionConfig{
 		WorkloadProfile: loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE,
-		MaxL1Messages:   10, // Override default 5
+		MaxL1Messages:   10, // Override default 5 messages → 8000 tokens
 	}
 
 	profile, err := ResolveCompressionProfile(config)
 	require.NoError(t, err)
 
-	assert.Equal(t, 10, profile.MaxL1Messages, "Should use overridden value")
+	assert.Equal(t, 8000, profile.MaxL1Tokens, "Should use overridden value: 10 messages × 800")
 	assert.Equal(t, 3, profile.MinL1Messages, "Should use profile default")
 	assert.Equal(t, 50, profile.WarningThresholdPercent, "Should use profile default")
 }
@@ -148,7 +148,7 @@ func TestResolveCompressionProfile_Overrides(t *testing.T) {
 func TestResolveCompressionProfile_FullCustomization(t *testing.T) {
 	config := &loomv1.MemoryCompressionConfig{
 		WorkloadProfile:          loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED,
-		MaxL1Messages:            15,
+		MaxL1Messages:            15, // 15 messages → 12000 tokens
 		MinL1Messages:            7,
 		WarningThresholdPercent:  55,
 		CriticalThresholdPercent: 80,
@@ -162,7 +162,7 @@ func TestResolveCompressionProfile_FullCustomization(t *testing.T) {
 	profile, err := ResolveCompressionProfile(config)
 	require.NoError(t, err)
 
-	assert.Equal(t, 15, profile.MaxL1Messages)
+	assert.Equal(t, 12000, profile.MaxL1Tokens, "Should be 15 messages × 800 tokens")
 	assert.Equal(t, 7, profile.MinL1Messages)
 	assert.Equal(t, 55, profile.WarningThresholdPercent)
 	assert.Equal(t, 80, profile.CriticalThresholdPercent)
@@ -181,7 +181,7 @@ func TestCompressionProfile_Validate(t *testing.T) {
 		{
 			name: "valid profile",
 			profile: CompressionProfile{
-				MaxL1Messages:            8,
+				MaxL1Tokens:              6400, // ~8 messages worth
 				MinL1Messages:            4,
 				WarningThresholdPercent:  60,
 				CriticalThresholdPercent: 75,
@@ -192,9 +192,9 @@ func TestCompressionProfile_Validate(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "max_l1_messages zero",
+			name: "max_l1_tokens zero",
 			profile: CompressionProfile{
-				MaxL1Messages:            0,
+				MaxL1Tokens:              0,
 				MinL1Messages:            4,
 				WarningThresholdPercent:  60,
 				CriticalThresholdPercent: 75,
@@ -203,12 +203,12 @@ func TestCompressionProfile_Validate(t *testing.T) {
 				CriticalBatchSize:        7,
 			},
 			expectError: true,
-			errorMsg:    "max_l1_messages must be positive",
+			errorMsg:    "max_l1_tokens must be positive",
 		},
 		{
-			name: "max_l1_messages too large",
+			name: "max_l1_tokens too large",
 			profile: CompressionProfile{
-				MaxL1Messages:            100,
+				MaxL1Tokens:              250000, // > 200K limit
 				MinL1Messages:            4,
 				WarningThresholdPercent:  60,
 				CriticalThresholdPercent: 75,
@@ -217,13 +217,13 @@ func TestCompressionProfile_Validate(t *testing.T) {
 				CriticalBatchSize:        7,
 			},
 			expectError: true,
-			errorMsg:    "max_l1_messages too large",
+			errorMsg:    "max_l1_tokens too large",
 		},
 		{
-			name: "min_l1_messages >= max_l1_messages",
+			name: "min_l1_messages too large",
 			profile: CompressionProfile{
-				MaxL1Messages:            8,
-				MinL1Messages:            8,
+				MaxL1Tokens:              6400,
+				MinL1Messages:            25, // > 20 limit
 				WarningThresholdPercent:  60,
 				CriticalThresholdPercent: 75,
 				NormalBatchSize:          3,
@@ -231,12 +231,12 @@ func TestCompressionProfile_Validate(t *testing.T) {
 				CriticalBatchSize:        7,
 			},
 			expectError: true,
-			errorMsg:    "min_l1_messages (8) must be less than max_l1_messages (8)",
+			errorMsg:    "min_l1_messages too large",
 		},
 		{
 			name: "warning_threshold out of range",
 			profile: CompressionProfile{
-				MaxL1Messages:            8,
+				MaxL1Tokens:              6400,
 				MinL1Messages:            4,
 				WarningThresholdPercent:  150,
 				CriticalThresholdPercent: 75,
@@ -250,7 +250,7 @@ func TestCompressionProfile_Validate(t *testing.T) {
 		{
 			name: "critical_threshold <= warning_threshold",
 			profile: CompressionProfile{
-				MaxL1Messages:            8,
+				MaxL1Tokens:              6400,
 				MinL1Messages:            4,
 				WarningThresholdPercent:  70,
 				CriticalThresholdPercent: 60,
@@ -264,7 +264,7 @@ func TestCompressionProfile_Validate(t *testing.T) {
 		{
 			name: "warning_batch_size < normal_batch_size",
 			profile: CompressionProfile{
-				MaxL1Messages:            8,
+				MaxL1Tokens:              6400,
 				MinL1Messages:            4,
 				WarningThresholdPercent:  60,
 				CriticalThresholdPercent: 75,
@@ -278,7 +278,7 @@ func TestCompressionProfile_Validate(t *testing.T) {
 		{
 			name: "critical_batch_size too large",
 			profile: CompressionProfile{
-				MaxL1Messages:            8,
+				MaxL1Tokens:              6400,
 				MinL1Messages:            4,
 				WarningThresholdPercent:  60,
 				CriticalThresholdPercent: 75,
@@ -308,8 +308,8 @@ func TestResolveCompressionProfile_InvalidProfileReturnsError(t *testing.T) {
 	// Create a config that will result in an invalid profile
 	config := &loomv1.MemoryCompressionConfig{
 		WorkloadProfile:          loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED,
-		MaxL1Messages:            2,  // Too small
-		MinL1Messages:            10, // Larger than max
+		MaxL1Messages:            2,  // 2 messages → 1600 tokens (will pass, too small validation is 0)
+		MinL1Messages:            25, // Too large (> 20)
 		WarningThresholdPercent:  60,
 		CriticalThresholdPercent: 75,
 	}

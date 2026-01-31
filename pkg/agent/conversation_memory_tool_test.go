@@ -211,10 +211,10 @@ func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 	tool := NewConversationMemoryTool(memory)
 
 	tests := []struct {
-		name       string
-		sessionID  string
-		input      map[string]interface{}
-		errCode    string
+		name        string
+		sessionID   string
+		input       map[string]interface{}
+		errCode     string
 		errContains string
 	}{
 		{

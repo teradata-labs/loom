@@ -163,7 +163,7 @@ func TestSegmentedMemory_CompressionMetrics_DataIntensive(t *testing.T) {
 		}
 
 		if len(l1Size) > 0 {
-			assert.LessOrEqual(t, l1Size[0].value, float64(profile.MaxL1Messages), "L1 size should be <= maxL1Messages")
+			assert.LessOrEqual(t, l1Size[0].value, float64(profile.MaxL1Tokens), "L1 size should be <= maxL1Messages")
 		}
 	}
 }
@@ -297,7 +297,7 @@ func TestSegmentedMemory_ProfileConfigurationEvent(t *testing.T) {
 			event := mockTracer.events[0]
 			assert.Equal(t, "memory.profile_configured", event.name)
 			assert.Equal(t, tt.profile.Name, event.attributes["profile"])
-			assert.Equal(t, tt.profile.MaxL1Messages, event.attributes["max_l1_messages"])
+			assert.Equal(t, tt.profile.MaxL1Tokens, event.attributes["max_l1_messages"])
 			assert.Equal(t, tt.profile.MinL1Messages, event.attributes["min_l1_messages"])
 			assert.Equal(t, tt.profile.WarningThresholdPercent, event.attributes["warning_threshold_percent"])
 			assert.Equal(t, tt.profile.CriticalThresholdPercent, event.attributes["critical_threshold_percent"])
@@ -327,5 +327,5 @@ func TestSegmentedMemory_NoMetricsWithoutTracer(t *testing.T) {
 	}
 
 	// Should complete without panic
-	assert.LessOrEqual(t, len(sm.l1Messages), profile.MaxL1Messages, "Compression should still work")
+	assert.LessOrEqual(t, len(sm.l1Messages), profile.MaxL1Tokens, "Compression should still work")
 }

@@ -329,7 +329,7 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	// Create memory with compression profile (conversational: max_l1=12)
 	conversationalProfile := CompressionProfile{
 		Name:                     "conversational",
-		MaxL1Messages:            12,
+		MaxL1Tokens:            12,
 		MinL1Messages:            6,
 		WarningThresholdPercent:  70,
 		CriticalThresholdPercent: 85,
@@ -379,7 +379,7 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	require.True(t, ok, "Reattached SegmentedMem should be *SegmentedMemory")
 
 	// Verify it has the correct compression profile
-	assert.Equal(t, 12, segMem2.maxL1Messages, "Should have conversational maxL1Messages")
+	assert.Equal(t, 9600, segMem2.maxL1Tokens, "Should have conversational maxL1Tokens (12 messages worth ~9600)")
 	assert.Equal(t, "conversational", segMem2.compressionProfile.Name, "Should have conversational profile")
 
 	// Add another message and verify it goes to SegmentedMemory

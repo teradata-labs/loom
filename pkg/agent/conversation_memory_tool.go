@@ -144,8 +144,8 @@ func (t *ConversationMemoryTool) executeRecall(ctx context.Context, input map[st
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
-				Code:    "SESSION_NOT_FOUND",
-				Message: fmt.Sprintf("Session %s not found. Use session_memory(action='list') to see available sessions.", sessionID),
+				Code:       "SESSION_NOT_FOUND",
+				Message:    fmt.Sprintf("Session %s not found. Use session_memory(action='list') to see available sessions.", sessionID),
 				Suggestion: "Use session_memory tool to explore session history",
 			},
 		}, nil
@@ -214,8 +214,8 @@ func (t *ConversationMemoryTool) executeRecall(ctx context.Context, input map[st
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
-				Code:    "PROMOTION_FAILED",
-				Message: fmt.Sprintf("Failed to add messages to context (token budget may be full): %v", err),
+				Code:       "PROMOTION_FAILED",
+				Message:    fmt.Sprintf("Failed to add messages to context (token budget may be full): %v", err),
 				Suggestion: "Try clearing recalled context first: conversation_memory(action='clear')",
 			},
 		}, nil
@@ -552,9 +552,9 @@ func (t *ConversationMemoryTool) executeClear(ctx context.Context, input map[str
 	segMem.ClearPromotedContext()
 
 	responseData := map[string]interface{}{
-		"action":         "clear",
-		"success":        true,
-		"cleared_count":  count,
+		"action":        "clear",
+		"success":       true,
+		"cleared_count": count,
 	}
 
 	responseJSON, _ := json.MarshalIndent(responseData, "", "  ")
