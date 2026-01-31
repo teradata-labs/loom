@@ -288,6 +288,12 @@ else
 fi
 echo ""
 
+# Create workflows directory for scheduler
+echo "Creating workflows directory for scheduler..."
+mkdir -p "$DATA_DIR/workflows"
+echo -e "${GREEN}✓ Created workflows directory at $DATA_DIR/workflows${NC}"
+echo ""
+
 # Install binaries
 echo "Installing binaries to $BIN_DIR..."
 
@@ -395,9 +401,18 @@ communication:
     backend: sqlite
     path: "$DATA_DIR/loom.db"
 
-# Observability (optional - requires Hawk)
+# Workflow scheduler (enabled for demos and automation)
+scheduler:
+  enabled: true
+  workflow_dir: "$DATA_DIR/workflows"
+  hot_reload: true
+
+# Observability (captures traces, tool executions, and LLM calls)
 observability:
-  enabled: false
+  enabled: true
+  mode: embedded
+  storage_type: sqlite
+  sqlite_path: "$DATA_DIR/observability.db"
 
 # MCP servers (add your own)
 mcp:
@@ -877,10 +892,6 @@ echo ""
 echo -e "${GREEN}Documentation:${NC} https://teradata-labs.github.io/loom/"
 echo -e "${GREEN}GitHub:${NC} https://github.com/teradata-labs/loom"
 echo -e "${GREEN}Issues:${NC} https://github.com/teradata-labs/loom/issues"
-echo ""
-echo -e "${YELLOW}Optional integrations:${NC}"
-echo -e "  • Hawk - Observability platform: https://github.com/teradata-labs/hawk"
-echo -e "  • Promptio - Prompt management: https://github.com/teradata-labs/promptio"
 echo ""
 echo -e "${GREEN}For more information, see the README.md${NC}"
 echo ""

@@ -402,3 +402,22 @@ type Context interface {
 	// ProgressCallback returns the progress callback (may be nil)
 	ProgressCallback() ProgressCallback
 }
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+// SafeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
+// This prevents gosec G115 integer overflow warnings when converting to proto int32 fields.
+// Use this when converting Go int (which may be int64) to proto int32 fields.
+func SafeInt32(n int) int32 {
+	const maxInt32 = 2147483647  // math.MaxInt32
+	const minInt32 = -2147483648 // math.MinInt32
+	if n > maxInt32 {
+		return maxInt32
+	}
+	if n < minInt32 {
+		return minInt32
+	}
+	return int32(n)
+}

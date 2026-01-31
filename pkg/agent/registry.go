@@ -456,6 +456,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
 	}
 
+	// Wrap LLM provider with instrumentation for observability
+	if r.tracer != nil {
+		llmProvider = llm.NewInstrumentedProvider(llmProvider, r.tracer)
+	}
+
 	// Build options from config
 	opts := []Option{
 		WithName(config.Name),

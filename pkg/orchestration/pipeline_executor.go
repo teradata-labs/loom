@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -267,9 +268,9 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  int32(response.Usage.TotalTokens),
-			InputTokens:  int32(response.Usage.InputTokens),
-			OutputTokens: int32(response.Usage.OutputTokens),
+			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
+			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
 			CostUsd:      response.Usage.CostUSD,
 		},
 	}

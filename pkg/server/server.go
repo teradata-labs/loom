@@ -27,6 +27,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/shuttle/metadata"
+	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -87,8 +88,8 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 			LlmCost: &loomv1.LLMCost{
 				Provider:     s.agent.GetLLMProviderName(),
 				Model:        s.agent.GetLLMModel(),
-				InputTokens:  int32(resp.Usage.InputTokens),
-				OutputTokens: int32(resp.Usage.OutputTokens),
+				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
 				CostUsd:      resp.Usage.CostUSD,
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
@@ -261,7 +262,7 @@ func convertHITLRequestToProto(info *agent.HITLRequestInfo) *loomv1.HITLRequestI
 		Question:       info.Question,
 		RequestType:    info.RequestType,
 		Priority:       info.Priority,
-		TimeoutSeconds: int32(info.Timeout.Seconds()),
+		TimeoutSeconds: types.SafeInt32(int(info.Timeout.Seconds())),
 		ContextJson:    contextJSON,
 	}
 }
@@ -480,7 +481,7 @@ func (s *Server) ListAvailableModels(ctx context.Context, req *loomv1.ListAvaila
 
 	return &loomv1.ListAvailableModelsResponse{
 		Models:     models,
-		TotalCount: int32(len(models)),
+		TotalCount: types.SafeInt32(len(models)),
 	}, nil
 }
 
@@ -672,7 +673,7 @@ func (s *Server) ListAvailableModelsLegacy(ctx context.Context, req *loomv1.List
 
 	return &loomv1.ListAvailableModelsResponse{
 		Models:     filtered,
-		TotalCount: int32(len(filtered)),
+		TotalCount: types.SafeInt32(len(filtered)),
 	}, nil
 }
 

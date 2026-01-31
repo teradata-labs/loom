@@ -36,6 +36,7 @@ import (
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
@@ -936,6 +937,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		DBPath:       dbPath,
 		LLMProvider:  llmProvider,
 		Logger:       logger,
+		Tracer:       tracer,
 		ToolRegistry: toolRegistry,
 	})
 	if err != nil {
@@ -1093,6 +1095,11 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				} else {
 					logger.Info("    Using server default LLM")
+				}
+
+				// Wrap LLM provider with instrumentation for observability
+				if tracer != nil {
+					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
 				}
 
 				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)
@@ -1360,6 +1367,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Set LLM concurrency limit to prevent rate limiting (especially for workflows with many subagents)
 	loomService.SetLLMConcurrencyLimit(2)
 	logger.Info("LLM concurrency limit configured to prevent rate limiting", zap.Int("limit", 2))
+
+	// Set observability tracer for workflow and agent tracing
+	if tracer != nil {
+		loomService.SetTracer(tracer)
+		logger.Info("Observability tracer configured on server for workflow tracing")
+	}
 
 	// Initialize tri-modal communication system
 	logger.Info("Initializing tri-modal communication system")
@@ -1937,6 +1950,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Add PermissionChecker if configured
 			if permissionChecker != nil {
 				agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
+			}
+
+			// Wrap LLM provider with instrumentation for observability
+			if tracer != nil {
+				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer)
 			}
 
 			// Create new agent

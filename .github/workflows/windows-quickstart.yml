@@ -183,8 +183,9 @@ jobs:
         with:
           name: windows-installation-logs
           path: |
-            ${{ env.USERPROFILE }}\.loom\looms.yaml
-            ${{ env.USERPROFILE }}\.local\bin\
+            ~\.loom\looms.yaml
+            ~\.local\bin\
+          if-no-files-found: warn
 
       - name: Summary
         if: success()

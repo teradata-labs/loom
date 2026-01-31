@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -90,6 +91,9 @@ type MultiAgentServer struct {
 
 	// Workflow scheduler for cron-based execution
 	scheduler *scheduler.Scheduler
+
+	// Observability tracer for workflow and agent tracing
+	tracer observability.Tracer
 
 	// Workflow sub-agent tracking for event-driven message notifications
 	workflowSubAgents   map[string]*workflowSubAgentContext // "coordinatorSessionID:agentID" → context
@@ -251,6 +255,14 @@ func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registry = registry
+}
+
+// SetTracer injects an observability tracer for workflow and agent tracing.
+// This should be called after NewMultiAgentServer() to enable observability.
+func (s *MultiAgentServer) SetTracer(tracer observability.Tracer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tracer = tracer
 }
 
 // ConfigureScheduler injects the workflow scheduler for cron-based execution.
@@ -532,7 +544,7 @@ func (s *MultiAgentServer) ListAgents(ctx context.Context, req *loomv1.ListAgent
 	agents := make([]*loomv1.AgentInfo, 0, len(s.agents))
 	for id, ag := range s.agents {
 		// Count active sessions for this agent
-		activeSessions := int32(len(ag.ListSessions()))
+		activeSessions := types.SafeInt32(len(ag.ListSessions()))
 
 		// Create metadata with description
 		metadata := make(map[string]string)
@@ -621,8 +633,8 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			LlmCost: &loomv1.LLMCost{
 				Provider:     ag.GetLLMProviderName(),
 				Model:        ag.GetLLMModel(),
-				InputTokens:  int32(resp.Usage.InputTokens),
-				OutputTokens: int32(resp.Usage.OutputTokens),
+				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
 				CostUsd:      resp.Usage.CostUSD,
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
@@ -791,7 +803,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 					Question:       event.HITLRequest.Question,
 					RequestType:    event.HITLRequest.RequestType,
 					Priority:       event.HITLRequest.Priority,
-					TimeoutSeconds: int32(event.HITLRequest.Timeout.Seconds()),
+					TimeoutSeconds: types.SafeInt32(int(event.HITLRequest.Timeout.Seconds())),
 				}
 			}
 
@@ -837,8 +849,8 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			LlmCost: &loomv1.LLMCost{
 				Provider:     ag.GetLLMProviderName(),
 				Model:        ag.GetLLMModel(),
-				InputTokens:  int32(resp.Usage.InputTokens),
-				OutputTokens: int32(resp.Usage.OutputTokens),
+				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
 				CostUsd:      resp.Usage.CostUSD,
 			},
 		},
@@ -2347,7 +2359,7 @@ func (s *MultiAgentServer) ListAvailableModels(ctx context.Context, req *loomv1.
 
 	return &loomv1.ListAvailableModelsResponse{
 		Models:     models,
-		TotalCount: int32(len(models)),
+		TotalCount: types.SafeInt32(len(models)),
 	}, nil
 }
 
@@ -2926,7 +2938,11 @@ func (s *MultiAgentServer) executeWorkflowInternalWithProgress(ctx context.Conte
 	}
 
 	// Create orchestrator with progress callback
-	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, progressCallback)
+	tracer := s.tracer
+	if tracer == nil {
+		tracer = observability.NewNoOpTracer()
+	}
+	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback)
 
 	// Execute pattern
 	result, err := orchestrator.ExecutePattern(ctx, pattern)
@@ -3133,16 +3149,19 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 }
 
 // createOrchestratorWithProgress creates an orchestrator with the given agents, configuration, and optional progress callback.
-func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, progressCallback orchestration.WorkflowProgressCallback) *orchestration.Orchestrator {
+func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback) *orchestration.Orchestrator {
 	if logger == nil {
 		logger = zap.NewNop()
+	}
+	if tracer == nil {
+		tracer = observability.NewNoOpTracer()
 	}
 
 	// Create orchestrator with configuration including progress callback
 	orchestrator := orchestration.NewOrchestrator(orchestration.Config{
 		Registry:         registry,
-		LLMProvider:      nil, // Orchestrator will use agents' LLM providers as needed
-		Tracer:           observability.NewNoOpTracer(),
+		LLMProvider:      nil,    // Orchestrator will use agents' LLM providers as needed
+		Tracer:           tracer, // Use provided tracer for observability
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
 	})
@@ -3153,6 +3172,107 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 	}
 
 	return orchestrator
+}
+
+// workflowExecutionToProto converts an internal WorkflowExecution to a proto WorkflowExecution message.
+func workflowExecutionToProto(exec *WorkflowExecution) *loomv1.WorkflowExecution {
+	return &loomv1.WorkflowExecution{
+		Id:          exec.ExecutionID,
+		Pattern:     exec.Pattern,
+		Status:      string(exec.Status),
+		Result:      exec.Result,
+		StartedAt:   exec.StartTime.Unix(),
+		CompletedAt: exec.EndTime.Unix(),
+		Error:       exec.Error,
+	}
+}
+
+// GetWorkflowExecution retrieves a specific workflow execution by ID.
+// Returns NotFound if the execution doesn't exist.
+func (s *MultiAgentServer) GetWorkflowExecution(ctx context.Context, req *loomv1.GetWorkflowExecutionRequest) (*loomv1.WorkflowExecution, error) {
+	if req.ExecutionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "execution_id is required")
+	}
+
+	// Retrieve execution from store
+	exec, err := s.workflowStore.Get(req.ExecutionId)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "workflow execution not found: %s", req.ExecutionId)
+	}
+
+	// Convert to proto message
+	return workflowExecutionToProto(exec), nil
+}
+
+// ListWorkflowExecutions lists workflow executions with optional filtering.
+// Supports filtering by status and pattern type.
+func (s *MultiAgentServer) ListWorkflowExecutions(ctx context.Context, req *loomv1.ListWorkflowExecutionsRequest) (*loomv1.ListWorkflowExecutionsResponse, error) {
+	// Get executions from store (filtered by status if provided)
+	var statusFilter WorkflowStatus
+	if req.StatusFilter != "" {
+		statusFilter = WorkflowStatus(req.StatusFilter)
+	}
+
+	executions := s.workflowStore.List(statusFilter)
+
+	// Apply pattern type filter if specified
+	var filtered []*WorkflowExecution
+	if req.PatternTypeFilter != "" {
+		for _, exec := range executions {
+			// Check if pattern type matches
+			patternType := getPatternTypeFromPattern(exec.Pattern)
+			if patternType == req.PatternTypeFilter {
+				filtered = append(filtered, exec)
+			}
+		}
+	} else {
+		filtered = executions
+	}
+
+	// Convert to proto messages
+	protoExecutions := make([]*loomv1.WorkflowExecution, 0, len(filtered))
+	for _, exec := range filtered {
+		protoExecutions = append(protoExecutions, workflowExecutionToProto(exec))
+	}
+
+	// Note: Pagination not implemented yet (page_size and page_token ignored)
+	// For now, return all matching executions
+	return &loomv1.ListWorkflowExecutionsResponse{
+		Executions:    protoExecutions,
+		NextPageToken: "", // No pagination yet
+		TotalCount:    types.SafeInt32(len(protoExecutions)),
+	}, nil
+}
+
+// getPatternTypeFromPattern extracts the pattern type name from a WorkflowPattern.
+// Returns the oneof field name (e.g., "pipeline", "debate", "fork_join").
+func getPatternTypeFromPattern(pattern *loomv1.WorkflowPattern) string {
+	if pattern == nil {
+		return ""
+	}
+
+	switch pattern.Pattern.(type) {
+	case *loomv1.WorkflowPattern_Pipeline:
+		return "pipeline"
+	case *loomv1.WorkflowPattern_Debate:
+		return "debate"
+	case *loomv1.WorkflowPattern_ForkJoin:
+		return "fork_join"
+	case *loomv1.WorkflowPattern_Parallel:
+		return "parallel"
+	case *loomv1.WorkflowPattern_Conditional:
+		return "conditional"
+	case *loomv1.WorkflowPattern_Swarm:
+		return "swarm"
+	case *loomv1.WorkflowPattern_PairProgramming:
+		return "pair_programming"
+	case *loomv1.WorkflowPattern_TeacherStudent:
+		return "teacher_student"
+	case *loomv1.WorkflowPattern_Iterative:
+		return "iterative"
+	default:
+		return ""
+	}
 }
 
 // ScheduleWorkflow creates a new scheduled workflow via RPC.
