@@ -227,24 +227,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		}
 	}
 
-	// EXPERIMENT: Long-conversation tools disabled to test scratchpad + inline metadata approach
-	// These tools (recall_conversation, search_conversation, clear_recalled_context) previously
-	// enabled agents to access long-term conversation history from swap layer.
-	// Testing hypothesis: inline metadata + scratchpad may be more effective for multi-turn tasks.
-	//
-	// recallTool := shuttle.Tool(NewRecallConversationTool(a.memory))
-	// clearTool := shuttle.Tool(NewClearRecalledContextTool(a.memory))
-	// searchTool := shuttle.Tool(NewSearchConversationTool(a.memory))
-	//
-	// if a.prompts != nil {
-	// 	recallTool = shuttle.NewPromptAwareTool(recallTool, a.prompts, "tools.memory.recall_conversation_description")
-	// 	clearTool = shuttle.NewPromptAwareTool(clearTool, a.prompts, "tools.memory.clear_recalled_context_description")
-	// 	searchTool = shuttle.NewPromptAwareTool(searchTool, a.prompts, "tools.memory.search_conversation_description")
-	// }
-	//
-	// a.tools.Register(recallTool)
-	// a.tools.Register(clearTool)
-	// a.tools.Register(searchTool)
+	// NOTE: conversation_memory tool (unified recall/search/clear) uses progressive disclosure.
+	// It registers automatically after first L2 swap event.
+	// See checkAndRegisterConversationMemoryTool() for implementation.
 
 	return a
 }
@@ -744,6 +729,10 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
+	// Progressive disclosure: Check if conversation_memory tool should be registered
+	// (after first L2 swap event)
+	a.checkAndRegisterConversationMemoryTool(sessionID)
+
 	// Calculate total duration
 	duration := time.Since(startTime)
 
@@ -916,6 +905,11 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 
 	// Run conversation loop (will emit progress events)
 	response, err := a.runConversationLoop(agentCtx)
+
+	// Progressive disclosure: Check if conversation_memory tool should be registered
+	// (after first L2 swap event)
+	a.checkAndRegisterConversationMemoryTool(sessionID)
+
 	if err != nil {
 		// Emit failure event
 		if progressCallback != nil {
@@ -1745,6 +1739,47 @@ func (a *Agent) analyzeError(result *shuttle.Result, err error) *fabric.ErrorAna
 // formatToolResult formats a tool execution result for inclusion in conversation.
 // Uses the error submission channel pattern: stores full errors in SQLite and provides
 // error references to the LLM, allowing the agent to fetch full details on demand.
+// checkAndRegisterConversationMemoryTool implements progressive disclosure for conversation_memory tool.
+// Registers the tool after first L2 swap event, when long-term storage becomes relevant.
+func (a *Agent) checkAndRegisterConversationMemoryTool(sessionID string) {
+	// Skip if tool already registered
+	if a.tools.IsRegistered("conversation_memory") {
+		return
+	}
+
+	// Get session
+	session, exists := a.memory.GetSession(sessionID)
+	if !exists {
+		return
+	}
+
+	// Check if this session supports swap
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || !segMem.IsSwapEnabled() {
+		return
+	}
+
+	// Check if swap has occurred
+	evictions, _ := segMem.GetSwapStats()
+	if evictions == 0 {
+		return // No swap yet, tool not needed
+	}
+
+	// Progressive disclosure: Register conversation_memory tool
+	conversationMemoryTool := shuttle.Tool(NewConversationMemoryTool(a.memory))
+	if a.prompts != nil {
+		conversationMemoryTool = shuttle.NewPromptAwareTool(
+			conversationMemoryTool,
+			a.prompts,
+			"tools.memory.conversation_memory_description",
+		)
+	}
+	a.tools.Register(conversationMemoryTool)
+
+	// Tool will be available in next LLM call
+	// The tool's discovery is natural - agent sees it in tool list when needed
+}
+
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
 	// Handle execution errors (tool didn't run)
 	if err != nil {

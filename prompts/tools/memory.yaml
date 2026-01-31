@@ -3,71 +3,47 @@ name: memory_tools
 namespace: loom
 ---
 prompts:
-  - id: recall_conversation_description
+  - id: conversation_memory_description
     content: |
-      Retrieve older conversation history from long-term storage when you need context from earlier in this conversation. Use this when the user references something from a previous discussion that is no longer in recent context.
+      Access conversation history from long-term storage.
+
+      Three actions available:
+      1. recall - Retrieve specific messages by offset/limit from current session
+      2. search - Search for relevant messages using natural language queries (supports session scopes)
+      3. clear - Remove recalled messages from context to free token budget
+
+      Use this when:
+      - User references earlier discussions no longer in recent context
+      - Need to find specific topics across conversation history
+      - Token budget is tight and old context needs clearing
+
+      Examples:
+
+      Recall old messages:
+        conversation_memory(action="recall", offset=0, limit=10)
+
+      Search current session:
+        conversation_memory(action="search", query="SQL performance", session_scope="current")
+
+      Search all agent sessions:
+        conversation_memory(action="search", query="database optimization", session_scope="agent", limit=5)
+
+      Clear recalled context:
+        conversation_memory(action="clear")
+
+      Session scopes:
+      - "current" (default): Search only this conversation session
+      - "agent": Search all sessions for this agent
+      - "all": Search across all sessions (requires permissions)
+
+      The search action uses BM25 + LLM semantic reranking to find conceptually relevant messages, even with different terminology.
     variables: {}
     tags:
       - tools
       - memory
+      - unified
+      - search
       - recall
     metadata:
       version: "v1.0"
-      description: "Description for the recall_conversation tool"
-
-  - id: clear_recalled_context_description
-    content: |
-      Remove previously recalled conversation history from context to free up token budget. Use this when you no longer need the older context that was loaded with recall_conversation.
-    variables: {}
-    tags:
-      - tools
-      - memory
-      - clear
-    metadata:
-      version: "v1.0"
-      description: "Description for the clear_recalled_context tool"
-
-  - id: search_conversation_description
-    content: |
-      Search conversation history using natural language queries.
-
-      Use this when you need to find relevant context from earlier in the conversation, but don't know the exact offset.
-
-      Examples:
-      - "What did we discuss about database optimization?"
-      - "Find mentions of API errors"
-      - "Search for decisions about authentication"
-
-      The tool uses semantic search to find messages that are conceptually relevant, even if they use different terminology.
-    variables: {}
-    tags:
-      - tools
-      - memory
-      - search
-    metadata:
-      version: "v1.0"
-      description: "Description for the search_conversation tool"
-
-  - id: recall_conversation_parameter_offset
-    content: |
-      Number of messages to skip from the beginning (0 = oldest messages)
-    variables: {}
-    tags:
-      - tools
-      - memory
-      - parameter
-    metadata:
-      version: "v1.0"
-      description: "Description for offset parameter"
-
-  - id: recall_conversation_parameter_limit
-    content: |
-      Maximum number of messages to retrieve (default: 10, max: 50)
-    variables: {}
-    tags:
-      - tools
-      - memory
-      - parameter
-    metadata:
-      version: "v1.0"
-      description: "Description for limit parameter"
+      description: "Unified conversation memory tool description"
