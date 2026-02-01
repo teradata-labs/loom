@@ -14,6 +14,9 @@
 package sessions
 
 import (
+	"fmt"
+	"time"
+
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -29,6 +32,73 @@ import (
 )
 
 const SessionsDialogID dialogs.DialogID = "sessions"
+
+// formatSessionInfo creates a human-readable display string for a session
+func formatSessionInfo(s session.Session) string {
+	// Format time relative to now
+	updatedAt := time.Unix(s.UpdatedAt, 0)
+	timeAgo := formatTimeAgo(updatedAt)
+
+	// Format tokens
+	totalTokens := s.CompletionTokens + s.PromptTokens
+	var tokensStr string
+	if totalTokens >= 1_000_000 {
+		tokensStr = fmt.Sprintf("%.1fM", float64(totalTokens)/1_000_000)
+	} else if totalTokens >= 1_000 {
+		tokensStr = fmt.Sprintf("%.0fK", float64(totalTokens)/1_000)
+	} else {
+		tokensStr = fmt.Sprintf("%d", totalTokens)
+	}
+
+	// Remove .0 suffix if present
+	if tokensStr[len(tokensStr)-2:] == ".0" {
+		tokensStr = tokensStr[:len(tokensStr)-2] + tokensStr[len(tokensStr)-1:]
+	}
+
+	// Format: "Title • 2h ago • 120K tokens • $0.45"
+	return fmt.Sprintf("%s • %s • %s tokens • $%.2f", s.Title, timeAgo, tokensStr, s.Cost)
+}
+
+// formatTimeAgo converts a timestamp to human-readable relative time
+func formatTimeAgo(t time.Time) string {
+	now := time.Now()
+	diff := now.Sub(t)
+
+	switch {
+	case diff < time.Minute:
+		return "just now"
+	case diff < time.Hour:
+		mins := int(diff.Minutes())
+		if mins == 1 {
+			return "1m ago"
+		}
+		return fmt.Sprintf("%dm ago", mins)
+	case diff < 24*time.Hour:
+		hours := int(diff.Hours())
+		if hours == 1 {
+			return "1h ago"
+		}
+		return fmt.Sprintf("%dh ago", hours)
+	case diff < 7*24*time.Hour:
+		days := int(diff.Hours() / 24)
+		if days == 1 {
+			return "yesterday"
+		}
+		return fmt.Sprintf("%dd ago", days)
+	case diff < 30*24*time.Hour:
+		weeks := int(diff.Hours() / 24 / 7)
+		if weeks == 1 {
+			return "1w ago"
+		}
+		return fmt.Sprintf("%dw ago", weeks)
+	default:
+		months := int(diff.Hours() / 24 / 30)
+		if months == 1 {
+			return "1mo ago"
+		}
+		return fmt.Sprintf("%dmo ago", months)
+	}
+}
 
 // SessionDialog interface for the session switching dialog
 type SessionDialog interface {
@@ -59,8 +129,10 @@ func NewSessionDialogCmp(sessions []session.Session, selectedID string) SessionD
 
 	items := make([]list.CompletionItem[session.Session], len(sessions))
 	if len(sessions) > 0 {
-		for i, session := range sessions {
-			items[i] = list.NewCompletionItem(session.Title, session, list.WithCompletionID(session.ID))
+		for i, sess := range sessions {
+			// Create human-readable display: "Title • 2h ago • 120K tokens • $0.45"
+			displayText := formatSessionInfo(sess)
+			items[i] = list.NewCompletionItem(displayText, sess, list.WithCompletionID(sess.ID))
 		}
 	}
 
