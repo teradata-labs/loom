@@ -405,9 +405,15 @@ func (q *MessageQueue) Dequeue(ctx context.Context, agentID string) (*QueueMessa
 	msg.DequeueCount++
 	q.inFlight[msg.ID] = msg
 
-	// Update database
-	if err := q.updateMessageStatus(ctx, msg.ID, QueueMessageStatusInFlight); err != nil {
-		q.logger.Warn("Failed to update message status in database", zap.Error(err))
+	// Update database with both status and dequeue count
+	now := time.Now().UnixMilli()
+	_, err := q.db.ExecContext(ctx, `
+		UPDATE message_queue
+		SET status = ?, dequeue_count = ?, updated_at = ?
+		WHERE id = ?
+	`, QueueMessageStatusInFlight, msg.DequeueCount, now, msg.ID)
+	if err != nil {
+		q.logger.Warn("Failed to update message status and dequeue count in database", zap.Error(err))
 	}
 
 	q.totalDequeued.Add(1)

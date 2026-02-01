@@ -1916,11 +1916,15 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			var err error
 			if s.messageQueue != nil {
 				var queuedMessages []string
+				var messageIDs []string
 				for {
 					msg, deqErr := s.messageQueue.Dequeue(ctx, agentID)
 					if deqErr != nil || msg == nil {
 						break // No more messages
 					}
+
+					// Track message ID for later acknowledgment
+					messageIDs = append(messageIDs, msg.ID)
 
 					// Extract content from payload
 					var content string
@@ -1952,6 +1956,21 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 					// Use the parent context directly (no timeout) to allow sub-agent full time to process
 					// The agent's own config has max_turns and timeout_seconds configured
 					_, err = ag.Chat(ctx, sessionID, allMessages)
+
+					// Acknowledge all messages after successful processing
+					if err == nil {
+						for _, msgID := range messageIDs {
+							if ackErr := s.messageQueue.Acknowledge(ctx, msgID); ackErr != nil {
+								s.logger.Warn("Failed to acknowledge message",
+									zap.String("agent", agentID),
+									zap.String("message_id", msgID),
+									zap.Error(ackErr))
+							}
+						}
+						s.logger.Info("Acknowledged all processed messages",
+							zap.String("agent", agentID),
+							zap.Int("count", len(messageIDs)))
+					}
 				} else {
 					s.logger.Debug("No queue messages to process",
 						zap.String("agent", agentID))
