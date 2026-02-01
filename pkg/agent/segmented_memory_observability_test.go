@@ -7,6 +7,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -100,15 +102,16 @@ func TestSegmentedMemory_CompressionMetrics_DataIntensive(t *testing.T) {
 	require.Len(t, mockTracer.events, 1, "Should record profile configuration event")
 	assert.Equal(t, "memory.profile_configured", mockTracer.events[0].name)
 	assert.Equal(t, "data_intensive", mockTracer.events[0].attributes["profile"])
-	assert.Equal(t, 5, mockTracer.events[0].attributes["max_l1_messages"])
+	assert.Equal(t, 4000, mockTracer.events[0].attributes["max_l1_tokens"])
 	assert.Equal(t, 50, mockTracer.events[0].attributes["warning_threshold_percent"])
 	assert.Equal(t, 70, mockTracer.events[0].attributes["critical_threshold_percent"])
 
-	// Add messages to trigger compression
+	// Add large messages to trigger token-based compression
+	// Each message ~600 tokens, 8 messages = ~4800 tokens > 4000 limit
 	for i := 0; i < 8; i++ {
 		sm.AddMessage(Message{
 			Role:    "user",
-			Content: "Test message with content to consume tokens " + string(rune(i)),
+			Content: strings.Repeat(fmt.Sprintf("Test message %d with substantial content to consume tokens ", i), 80), // ~600 tokens
 		})
 	}
 
@@ -163,7 +166,7 @@ func TestSegmentedMemory_CompressionMetrics_DataIntensive(t *testing.T) {
 		}
 
 		if len(l1Size) > 0 {
-			assert.LessOrEqual(t, l1Size[0].value, float64(profile.MaxL1Messages), "L1 size should be <= maxL1Messages")
+			assert.LessOrEqual(t, l1Size[0].value, float64(profile.MaxL1Tokens), "L1 size should be <= maxL1Messages")
 		}
 	}
 }
@@ -181,13 +184,14 @@ func TestSegmentedMemory_CompressionMetrics_ConversationalProfile(t *testing.T) 
 	// Verify profile configuration
 	require.Len(t, mockTracer.events, 1)
 	assert.Equal(t, "conversational", mockTracer.events[0].attributes["profile"])
-	assert.Equal(t, 12, mockTracer.events[0].attributes["max_l1_messages"])
+	assert.Equal(t, 9600, mockTracer.events[0].attributes["max_l1_tokens"])
 
-	// Add many messages to trigger compression
-	for i := 0; i < 15; i++ {
+	// Add many large messages to trigger compression (token-based)
+	// Each message ~700 tokens, 20 messages = ~14K tokens > 9600 limit
+	for i := 0; i < 20; i++ {
 		sm.AddMessage(Message{
 			Role:    "user",
-			Content: "Conversational message " + string(rune(i)),
+			Content: strings.Repeat(fmt.Sprintf("Conversational message %d ", i), 100), // ~700 tokens
 		})
 	}
 
@@ -297,7 +301,7 @@ func TestSegmentedMemory_ProfileConfigurationEvent(t *testing.T) {
 			event := mockTracer.events[0]
 			assert.Equal(t, "memory.profile_configured", event.name)
 			assert.Equal(t, tt.profile.Name, event.attributes["profile"])
-			assert.Equal(t, tt.profile.MaxL1Messages, event.attributes["max_l1_messages"])
+			assert.Equal(t, tt.profile.MaxL1Tokens, event.attributes["max_l1_tokens"])
 			assert.Equal(t, tt.profile.MinL1Messages, event.attributes["min_l1_messages"])
 			assert.Equal(t, tt.profile.WarningThresholdPercent, event.attributes["warning_threshold_percent"])
 			assert.Equal(t, tt.profile.CriticalThresholdPercent, event.attributes["critical_threshold_percent"])
@@ -327,5 +331,5 @@ func TestSegmentedMemory_NoMetricsWithoutTracer(t *testing.T) {
 	}
 
 	// Should complete without panic
-	assert.LessOrEqual(t, len(sm.l1Messages), profile.MaxL1Messages, "Compression should still work")
+	assert.LessOrEqual(t, len(sm.l1Messages), profile.MaxL1Tokens, "Compression should still work")
 }

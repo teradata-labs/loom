@@ -115,8 +115,8 @@ type SegmentedMemory struct {
 	patternName    string // Pattern name for tracking
 
 	// Configuration
-	maxL1Messages      int                // Max messages in L1 before compression (adaptive)
-	minL1Messages      int                // Minimum messages to keep in L1
+	maxL1Tokens        int                // Max tokens in L1 before compression (token-based, not message-based)
+	minL1Messages      int                // Minimum messages to keep in L1 (for recency)
 	maxToolResults     int                // Max tool results to keep in kernel (default: 1 for database-backed)
 	compressionProfile CompressionProfile // Compression behavior profile (thresholds, batch sizes)
 
@@ -190,8 +190,8 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		tokenBudget:        tokenBudget,
 		compressor:         nil,                           // Set via SetCompressor after initialization
 		tracer:             observability.NewNoOpTracer(), // Set via SetTracer
-		maxL1Messages:      profile.MaxL1Messages,         // Use profile value
-		minL1Messages:      profile.MinL1Messages,         // Use profile value
+		maxL1Tokens:        profile.MaxL1Tokens,           // Use profile value (token-based)
+		minL1Messages:      profile.MinL1Messages,         // Use profile value (minimum for recency)
 		maxToolResults:     1,                             // Database-backed: keep only immediate previous result
 		compressionProfile: profile,                       // Store profile for adaptive compression
 	}
@@ -229,7 +229,7 @@ func (sm *SegmentedMemory) SetTracer(tracer observability.Tracer) {
 		// Log compression profile configuration for observability
 		sm.tracer.RecordEvent(context.Background(), "memory.profile_configured", map[string]interface{}{
 			"profile":                    sm.compressionProfile.Name,
-			"max_l1_messages":            sm.compressionProfile.MaxL1Messages,
+			"max_l1_tokens":              sm.compressionProfile.MaxL1Tokens,
 			"min_l1_messages":            sm.compressionProfile.MinL1Messages,
 			"warning_threshold_percent":  sm.compressionProfile.WarningThresholdPercent,
 			"critical_threshold_percent": sm.compressionProfile.CriticalThresholdPercent,
@@ -307,11 +307,12 @@ func (sm *SegmentedMemory) AddMessage(msg Message) {
 	sm.tokenCountDirty = false
 
 	// Check if we need to compress based on two criteria:
-	// 1. L1 is at max capacity (hard limit)
-	// 2. Token budget exceeds warning threshold (profile-dependent)
+	// 1. L1 exceeds token budget (token-based, not message-based)
+	// 2. Overall token budget exceeds warning threshold (profile-dependent)
+	l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
 	budgetUsage := sm.tokenBudget.UsagePercentage()
 	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
-	shouldCompress := len(sm.l1Messages) > sm.maxL1Messages || budgetUsage > warningThreshold
+	shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
 
 	if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
 		// Adaptive compression: compress more aggressively if budget exceeds critical threshold
@@ -1119,7 +1120,7 @@ func (sm *SegmentedMemory) GetMemoryStats() map[string]interface{} {
 		"token_budget_total": total,
 		"budget_usage_pct":   budgetPct,
 		"l1_message_count":   len(sm.l1Messages),
-		"l1_max_messages":    sm.maxL1Messages,
+		"l1_max_tokens":      sm.maxL1Tokens,
 		"l1_min_messages":    sm.minL1Messages,
 		"l2_summary_length":  len(sm.l2Summary),
 		"tool_result_count":  len(sm.toolResults),

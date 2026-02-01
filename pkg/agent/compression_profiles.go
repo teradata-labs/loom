@@ -17,10 +17,12 @@ type CompressionProfile struct {
 	// Profile name (for logging and debugging)
 	Name string
 
-	// Maximum messages in L1 cache before compression triggers
-	MaxL1Messages int
+	// Maximum tokens in L1 cache before compression triggers
+	// This is the primary trigger - when L1 token count exceeds this, compression occurs
+	MaxL1Tokens int
 
-	// Minimum messages to keep in L1 after compression
+	// Minimum messages to keep in L1 after compression (for recency)
+	// Ensures at least last few exchanges are preserved even if small
 	MinL1Messages int
 
 	// Warning threshold as percentage (0-100)
@@ -42,10 +44,11 @@ type CompressionProfile struct {
 }
 
 // ProfileDefaults provides preset profiles for common workload types.
+// These are static fallback values - use NewSegmentedMemoryWithDynamicAllocation for adaptive sizing.
 var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED: {
 		Name:                     "balanced",
-		MaxL1Messages:            8,
+		MaxL1Tokens:              6400, // ~8 messages @ 800 tokens each (static fallback)
 		MinL1Messages:            4,
 		WarningThresholdPercent:  60,
 		CriticalThresholdPercent: 75,
@@ -55,7 +58,7 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 	},
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE: {
 		Name:                     "data_intensive",
-		MaxL1Messages:            5,
+		MaxL1Tokens:              4000, // ~5 messages @ 800 tokens each (static fallback)
 		MinL1Messages:            3,
 		WarningThresholdPercent:  50,
 		CriticalThresholdPercent: 70,
@@ -65,7 +68,7 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 	},
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL: {
 		Name:                     "conversational",
-		MaxL1Messages:            12,
+		MaxL1Tokens:              9600, // ~12 messages @ 800 tokens each (static fallback)
 		MinL1Messages:            6,
 		WarningThresholdPercent:  70,
 		CriticalThresholdPercent: 85,
@@ -96,8 +99,10 @@ func ResolveCompressionProfile(config *loomv1.MemoryCompressionConfig) (Compress
 	}
 
 	// Override with explicit config values (if non-zero)
+	// NOTE: Proto still uses max_l1_messages for backward compatibility
+	// Convert messages to tokens using 800 tokens per message estimate
 	if config.MaxL1Messages > 0 {
-		profile.MaxL1Messages = int(config.MaxL1Messages)
+		profile.MaxL1Tokens = int(config.MaxL1Messages) * 800
 	}
 	if config.MinL1Messages > 0 {
 		profile.MinL1Messages = int(config.MinL1Messages)
@@ -132,20 +137,20 @@ func ResolveCompressionProfile(config *loomv1.MemoryCompressionConfig) (Compress
 
 // Validate checks if the profile has valid values.
 func (p CompressionProfile) Validate() error {
-	// MaxL1Messages must be positive and reasonable
-	if p.MaxL1Messages <= 0 {
-		return fmt.Errorf("max_l1_messages must be positive, got %d", p.MaxL1Messages)
+	// MaxL1Tokens must be positive and reasonable
+	if p.MaxL1Tokens <= 0 {
+		return fmt.Errorf("max_l1_tokens must be positive, got %d", p.MaxL1Tokens)
 	}
-	if p.MaxL1Messages > 50 {
-		return fmt.Errorf("max_l1_messages too large (>50), got %d", p.MaxL1Messages)
+	if p.MaxL1Tokens > 200000 {
+		return fmt.Errorf("max_l1_tokens too large (>200K), got %d", p.MaxL1Tokens)
 	}
 
-	// MinL1Messages must be positive and less than max
+	// MinL1Messages must be positive (recency requirement)
 	if p.MinL1Messages <= 0 {
 		return fmt.Errorf("min_l1_messages must be positive, got %d", p.MinL1Messages)
 	}
-	if p.MinL1Messages >= p.MaxL1Messages {
-		return fmt.Errorf("min_l1_messages (%d) must be less than max_l1_messages (%d)", p.MinL1Messages, p.MaxL1Messages)
+	if p.MinL1Messages > 20 {
+		return fmt.Errorf("min_l1_messages too large (>20), got %d", p.MinL1Messages)
 	}
 
 	// Thresholds must be in valid range (0-100)

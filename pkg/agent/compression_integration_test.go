@@ -41,7 +41,7 @@ agent:
 
 	// Verify profile has data_intensive defaults
 	assert.Equal(t, "data_intensive", profile.Name)
-	assert.Equal(t, 5, profile.MaxL1Messages)
+	assert.Equal(t, 4000, profile.MaxL1Tokens, "Should use data_intensive MaxL1Tokens (4000)")
 	assert.Equal(t, 3, profile.MinL1Messages)
 	assert.Equal(t, 50, profile.WarningThresholdPercent)
 	assert.Equal(t, 70, profile.CriticalThresholdPercent)
@@ -59,7 +59,7 @@ agent:
 	require.True(t, ok, "Should be SegmentedMemory")
 
 	// Verify SegmentedMemory is configured with data_intensive profile values
-	assert.Equal(t, 5, segMem.maxL1Messages, "Should use data_intensive maxL1Messages")
+	assert.Equal(t, 4000, segMem.maxL1Tokens, "Should use data_intensive maxL1Tokens (4000 tokens)")
 	assert.Equal(t, 3, segMem.minL1Messages, "Should use data_intensive minL1Messages")
 	assert.Equal(t, "data_intensive", segMem.compressionProfile.Name)
 	assert.Equal(t, 50, segMem.compressionProfile.WarningThresholdPercent)
@@ -87,7 +87,7 @@ agent:
 	require.NoError(t, err)
 
 	assert.Equal(t, "conversational", profile.Name)
-	assert.Equal(t, 12, profile.MaxL1Messages)
+	assert.Equal(t, 9600, profile.MaxL1Tokens, "Should use conversational MaxL1Tokens (9600)")
 	assert.Equal(t, 6, profile.MinL1Messages)
 	assert.Equal(t, 70, profile.WarningThresholdPercent)
 	assert.Equal(t, 85, profile.CriticalThresholdPercent)
@@ -97,7 +97,7 @@ agent:
 	session := agent.memory.GetOrCreateSession("test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
-	assert.Equal(t, 12, segMem.maxL1Messages)
+	assert.Equal(t, 9600, segMem.maxL1Tokens, "Should use conversational maxL1Tokens (9600 tokens)")
 	assert.Equal(t, 6, segMem.minL1Messages)
 }
 
@@ -124,7 +124,7 @@ agent:
 	require.NoError(t, err)
 
 	// Verify overrides took effect
-	assert.Equal(t, 15, profile.MaxL1Messages, "Custom maxL1Messages should override balanced default")
+	assert.Equal(t, 12000, profile.MaxL1Tokens, "Custom max_l1_messages (15) should convert to 12000 tokens")
 	assert.Equal(t, 55, profile.WarningThresholdPercent, "Custom warning threshold should override balanced default")
 	// Non-overridden values should use balanced defaults
 	assert.Equal(t, 4, profile.MinL1Messages, "Should use balanced default minL1Messages")
@@ -134,7 +134,7 @@ agent:
 	session := agent.memory.GetOrCreateSession("test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
-	assert.Equal(t, 15, segMem.maxL1Messages)
+	assert.Equal(t, 12000, segMem.maxL1Tokens, "Should use custom MaxL1Tokens (12000 from 15 messages)")
 	assert.Equal(t, 4, segMem.minL1Messages)
 }
 
@@ -165,7 +165,7 @@ agent:
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
 	// Should use balanced profile defaults (backwards compatibility)
-	assert.Equal(t, 8, segMem.maxL1Messages, "Should default to balanced maxL1Messages")
+	assert.Equal(t, 6400, segMem.maxL1Tokens, "Should default to balanced maxL1Tokens (6400)")
 	assert.Equal(t, 4, segMem.minL1Messages, "Should default to balanced minL1Messages")
 }
 

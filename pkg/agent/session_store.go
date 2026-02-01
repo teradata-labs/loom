@@ -1324,17 +1324,35 @@ func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, 
 	// FTS5 MATCH query with BM25 ranking
 	// bm25(messages_fts5) is FTS5's built-in BM25 ranking function (lower score = more relevant)
 	// Note: FTS5 requires the actual table name in bm25(), not an alias
-	sqlQuery := `
-		SELECT m.role, m.content, m.tool_calls_json,
-		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
-		FROM messages_fts5
-		JOIN messages m ON messages_fts5.message_id = m.id
-		WHERE messages_fts5.session_id = ? AND messages_fts5.content MATCH ?
-		ORDER BY bm25(messages_fts5)
-		LIMIT ?
-	`
+	var sqlQuery string
+	var rows *sql.Rows
+	var err error
 
-	rows, err := s.db.QueryContext(ctx, sqlQuery, sessionID, fts5Query, limit)
+	if sessionID == "" {
+		// Search across ALL sessions when sessionID is empty
+		sqlQuery = `
+			SELECT m.role, m.content, m.tool_calls_json,
+			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+			FROM messages_fts5
+			JOIN messages m ON messages_fts5.message_id = m.id
+			WHERE messages_fts5.content MATCH ?
+			ORDER BY bm25(messages_fts5)
+			LIMIT ?
+		`
+		rows, err = s.db.QueryContext(ctx, sqlQuery, fts5Query, limit)
+	} else {
+		// Search within specific session
+		sqlQuery = `
+			SELECT m.role, m.content, m.tool_calls_json,
+			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+			FROM messages_fts5
+			JOIN messages m ON messages_fts5.message_id = m.id
+			WHERE messages_fts5.session_id = ? AND messages_fts5.content MATCH ?
+			ORDER BY bm25(messages_fts5)
+			LIMIT ?
+		`
+		rows, err = s.db.QueryContext(ctx, sqlQuery, sessionID, fts5Query, limit)
+	}
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("FTS5 search failed: %w", err)
@@ -1401,6 +1419,105 @@ func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, 
 //
 // This allows finding documents that contain ANY of the search terms,
 // which is more suitable for semantic search than requiring ALL terms.
+// SearchFTS5ByAgent searches messages across all sessions for a given agent using FTS5.
+// Uses BM25 ranking to return most relevant results first.
+func (s *SessionStore) SearchFTS5ByAgent(ctx context.Context, agentID, query string, limit int) ([]Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_fts5_by_agent")
+	defer s.tracer.EndSpan(span)
+
+	span.SetAttribute("agent_id", agentID)
+	span.SetAttribute("query", query)
+	span.SetAttribute("limit", fmt.Sprintf("%d", limit))
+
+	// Validate query - return empty results for invalid/empty queries
+	if strings.TrimSpace(query) == "" {
+		span.SetAttribute("query_validation", "empty_query")
+		return []Message{}, nil
+	}
+
+	// Convert multi-word query to FTS5 OR query for semantic search
+	fts5Query := convertToFTS5Query(query)
+	span.SetAttribute("fts5_query", fts5Query)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// FTS5 MATCH query with BM25 ranking, filtered by agent_id
+	// Joins messages_fts5 with messages and sessions to filter by agent
+	sqlQuery := `
+		SELECT m.role, m.content, m.tool_calls_json,
+		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+		FROM messages_fts5
+		JOIN messages m ON messages_fts5.message_id = m.id
+		JOIN sessions s ON m.session_id = s.id
+		WHERE s.agent_id = ? AND messages_fts5.content MATCH ?
+		ORDER BY bm25(messages_fts5)
+		LIMIT ?
+	`
+
+	rows, err := s.db.QueryContext(ctx, sqlQuery, agentID, fts5Query, limit)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("agent-scoped FTS5 search failed: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		var toolCallsJSON, toolUseID, toolResultJSON *string
+		var timestamp int64
+
+		err := rows.Scan(
+			&msg.Role,
+			&msg.Content,
+			&toolCallsJSON,
+			&toolUseID,
+			&toolResultJSON,
+			&timestamp,
+			&msg.TokenCount,
+			&msg.CostUSD,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("failed to scan search result: %w", err)
+		}
+
+		msg.Timestamp = time.Unix(timestamp, 0)
+
+		// Deserialize tool calls if present
+		if toolCallsJSON != nil {
+			if err := json.Unmarshal([]byte(*toolCallsJSON), &msg.ToolCalls); err != nil {
+				span.RecordError(err)
+				return nil, fmt.Errorf("failed to unmarshal tool calls: %w", err)
+			}
+		}
+
+		// Load tool_use_id if present
+		if toolUseID != nil {
+			msg.ToolUseID = *toolUseID
+		}
+
+		// Deserialize tool result if present
+		if toolResultJSON != nil {
+			if err := json.Unmarshal([]byte(*toolResultJSON), &msg.ToolResult); err != nil {
+				span.RecordError(err)
+				return nil, fmt.Errorf("failed to unmarshal tool result: %w", err)
+			}
+		}
+
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("error iterating search results: %w", err)
+	}
+
+	span.SetAttribute("results_count", fmt.Sprintf("%d", len(messages)))
+	return messages, nil
+}
+
 func convertToFTS5Query(query string) string {
 	words := strings.Fields(strings.TrimSpace(query))
 	if len(words) <= 1 {
