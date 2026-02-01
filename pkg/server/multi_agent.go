@@ -1734,11 +1734,6 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 				// Get agents with pending messages
 				agentsWithMessages := s.messageQueue.GetAgentsWithPendingMessages(ctx)
 
-				if len(agentsWithMessages) > 0 {
-					s.logger.Info("MONITOR: Found agents with pending messages",
-						zap.Strings("agents", agentsWithMessages))
-				}
-
 				for _, agentID := range agentsWithMessages {
 					// Check if this is a workflow sub-agent we're tracking
 					// Since we now use composite keys (coordinatorSessionID:agentID), we need to find matching entries
@@ -1757,34 +1752,21 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 						for _, subAgentCtx := range matchingContexts {
 							select {
 							case subAgentCtx.notifyChan <- struct{}{}:
-								s.logger.Info("MONITOR: Notified workflow agent of pending message",
-									zap.String("agent", agentID),
-									zap.String("workflow", subAgentCtx.workflowID))
+								// Notified workflow agent
 							default:
 								// Channel full, agent already has pending notification
-								s.logger.Info("MONITOR: Channel full for agent",
-									zap.String("agent", agentID))
 							}
 						}
 					} else {
 						// WORKFLOW AUTO-SPAWN: Check if this is a workflow sub-agent that needs spawning
 						// Format: "workflow-name:agent-id" (contains colon)
 						if strings.Contains(agentID, ":") {
-							s.logger.Info("MONITOR: Detected workflow sub-agent with pending messages (not yet spawned)",
-								zap.String("agent", agentID))
-
 							// Try to spawn this workflow sub-agent
 							if err := s.autoSpawnWorkflowSubAgent(ctx, agentID); err != nil {
-								s.logger.Warn("MONITOR: Failed to auto-spawn workflow sub-agent",
+								s.logger.Warn("Failed to auto-spawn workflow sub-agent",
 									zap.String("agent", agentID),
 									zap.Error(err))
-							} else {
-								s.logger.Info("MONITOR: Successfully auto-spawned workflow sub-agent",
-									zap.String("agent", agentID))
 							}
-						} else {
-							s.logger.Debug("MONITOR: Agent has pending messages but not tracked as workflow sub-agent",
-								zap.String("agent", agentID))
 						}
 					}
 				}
