@@ -115,6 +115,10 @@ type Message struct {
 	// Used for cross-session memory filtering
 	SessionContext SessionContext
 
+	// AgentID identifies which agent created this message
+	// Optional - may be empty for messages created before this field was added
+	AgentID string
+
 	// Timestamp when the message was created
 	Timestamp time.Time
 
