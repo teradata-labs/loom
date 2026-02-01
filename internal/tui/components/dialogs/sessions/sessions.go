@@ -41,22 +41,30 @@ func formatSessionInfo(s session.Session) string {
 
 	// Format tokens
 	totalTokens := s.CompletionTokens + s.PromptTokens
-	var tokensStr string
-	if totalTokens >= 1_000_000 {
-		tokensStr = fmt.Sprintf("%.1fM", float64(totalTokens)/1_000_000)
-	} else if totalTokens >= 1_000 {
-		tokensStr = fmt.Sprintf("%.0fK", float64(totalTokens)/1_000)
-	} else {
-		tokensStr = fmt.Sprintf("%d", totalTokens)
-	}
-
-	// Remove .0 suffix if present
-	if tokensStr[len(tokensStr)-2:] == ".0" {
-		tokensStr = tokensStr[:len(tokensStr)-2] + tokensStr[len(tokensStr)-1:]
-	}
+	tokensStr := formatTokenCount(totalTokens)
 
 	// Format: "Title • 2h ago • 120K tokens • $0.45"
 	return fmt.Sprintf("%s • %s • %s tokens • $%.2f", s.Title, timeAgo, tokensStr, s.Cost)
+}
+
+// formatTokenCount formats large token counts in human-readable form
+func formatTokenCount(count int) string {
+	if count >= 1_000_000 {
+		millions := float64(count) / 1_000_000
+		// Remove .0 if it's a whole number
+		if millions == float64(int(millions)) {
+			return fmt.Sprintf("%dM", int(millions))
+		}
+		return fmt.Sprintf("%.1fM", millions)
+	} else if count >= 1_000 {
+		thousands := float64(count) / 1_000
+		// Remove .0 if it's a whole number
+		if thousands == float64(int(thousands)) {
+			return fmt.Sprintf("%dK", int(thousands))
+		}
+		return fmt.Sprintf("%.1fK", thousands)
+	}
+	return fmt.Sprintf("%d", count)
 }
 
 // formatTimeAgo converts a timestamp to human-readable relative time
