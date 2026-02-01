@@ -1914,14 +1914,54 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			s.logger.Info("Sub-agent acquired LLM semaphore",
 				zap.String("agent", agentID))
 
-			// Prompt agent to check messages
-			checkPrompt := "You have pending messages. Use receive_message to check and process them now."
-			s.logger.Info("Sub-agent calling Chat() to process messages",
-				zap.String("agent", agentID))
+			// Dequeue and inject pending queue messages
+			var err error
+			if s.messageQueue != nil {
+				var queuedMessages []string
+				for {
+					msg, deqErr := s.messageQueue.Dequeue(ctx, agentID)
+					if deqErr != nil || msg == nil {
+						break // No more messages
+					}
 
-			// Use the parent context directly (no timeout) to allow sub-agent full time to process
-			// The agent's own config has max_turns and timeout_seconds configured
-			_, err := ag.Chat(ctx, sessionID, checkPrompt)
+					// Extract content from payload
+					var content string
+					if msg.Payload != nil {
+						if value := msg.Payload.GetValue(); value != nil {
+							content = string(value)
+						} else if ref := msg.Payload.GetReference(); ref != nil {
+							content = fmt.Sprintf("[Reference: %s]", ref.Id)
+						}
+					}
+					if content == "" {
+						content = "[Empty message]"
+					}
+
+					// Format with sender info
+					formatted := fmt.Sprintf(
+						"[MESSAGE from %s (type: %s)]:\n\n%s",
+						msg.FromAgent, msg.MessageType, content)
+					queuedMessages = append(queuedMessages, formatted)
+				}
+
+				if len(queuedMessages) > 0 {
+					// Inject all queued messages into the conversation
+					allMessages := strings.Join(queuedMessages, "\n\n---\n\n")
+					s.logger.Info("Sub-agent processing dequeued messages",
+						zap.String("agent", agentID),
+						zap.Int("message_count", len(queuedMessages)))
+
+					// Use the parent context directly (no timeout) to allow sub-agent full time to process
+					// The agent's own config has max_turns and timeout_seconds configured
+					_, err = ag.Chat(ctx, sessionID, allMessages)
+				} else {
+					s.logger.Debug("No queue messages to process",
+						zap.String("agent", agentID))
+				}
+			} else {
+				s.logger.Debug("Message queue not available",
+					zap.String("agent", agentID))
+			}
 
 			s.logger.Info("Sub-agent Chat() completed",
 				zap.String("agent", agentID),
