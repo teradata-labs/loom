@@ -676,59 +676,59 @@ func (m *mockAgentRegistry) GetConfig(name string) *loomv1.AgentConfig {
 // TestSendMessageAutoHealing tests the auto-healing functionality for workflow agent IDs
 func TestSendMessageAutoHealing(t *testing.T) {
 	tests := []struct {
-		name               string
-		senderAgentID      string
-		targetAgentID      string
-		registeredAgents   []string // Agent IDs registered in the mock registry
-		expectResolvedTo   string   // Expected resolved agent ID
+		name                string
+		senderAgentID       string
+		targetAgentID       string
+		registeredAgents    []string // Agent IDs registered in the mock registry
+		expectResolvedTo    string   // Expected resolved agent ID
 		shouldLogResolution bool     // Whether resolution should be logged
 	}{
 		{
-			name:             "coordinator sends to short name - auto-heals to workflow-prefixed name",
-			senderAgentID:    "time-reporter",
-			targetAgentID:    "time-printer",
-			registeredAgents: []string{"time-reporter:time-printer"},
-			expectResolvedTo: "time-reporter:time-printer",
+			name:                "coordinator sends to short name - auto-heals to workflow-prefixed name",
+			senderAgentID:       "time-reporter",
+			targetAgentID:       "time-printer",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "time-reporter:time-printer",
 			shouldLogResolution: true,
 		},
 		{
-			name:             "sub-agent sends to short name - auto-heals using workflow prefix",
-			senderAgentID:    "time-reporter:sub-agent-1",
-			targetAgentID:    "time-printer",
-			registeredAgents: []string{"time-reporter:time-printer"},
-			expectResolvedTo: "time-reporter:time-printer",
+			name:                "sub-agent sends to short name - auto-heals using workflow prefix",
+			senderAgentID:       "time-reporter:sub-agent-1",
+			targetAgentID:       "time-printer",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "time-reporter:time-printer",
 			shouldLogResolution: true,
 		},
 		{
-			name:             "short name not found - uses original (no healing)",
-			senderAgentID:    "time-reporter",
-			targetAgentID:    "non-existent-agent",
-			registeredAgents: []string{"time-reporter:time-printer"},
-			expectResolvedTo: "non-existent-agent",
+			name:                "short name not found - uses original (no healing)",
+			senderAgentID:       "time-reporter",
+			targetAgentID:       "non-existent-agent",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "non-existent-agent",
 			shouldLogResolution: false,
 		},
 		{
-			name:             "full workflow-prefixed name provided - no healing needed",
-			senderAgentID:    "time-reporter",
-			targetAgentID:    "time-reporter:time-printer",
-			registeredAgents: []string{"time-reporter:time-printer"},
-			expectResolvedTo: "time-reporter:time-printer",
+			name:                "full workflow-prefixed name provided - no healing needed",
+			senderAgentID:       "time-reporter",
+			targetAgentID:       "time-reporter:time-printer",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "time-reporter:time-printer",
 			shouldLogResolution: false,
 		},
 		{
-			name:             "regular agent (not workflow) - no healing",
-			senderAgentID:    "standalone-agent",
-			targetAgentID:    "other-agent",
-			registeredAgents: []string{"other-agent"},
-			expectResolvedTo: "other-agent",
+			name:                "regular agent (not workflow) - no healing",
+			senderAgentID:       "standalone-agent",
+			targetAgentID:       "other-agent",
+			registeredAgents:    []string{"other-agent"},
+			expectResolvedTo:    "other-agent",
 			shouldLogResolution: false,
 		},
 		{
-			name:             "nested sub-agent extracts correct workflow prefix",
-			senderAgentID:    "workflow:sub:nested",
-			targetAgentID:    "target",
-			registeredAgents: []string{"workflow:target"},
-			expectResolvedTo: "workflow:target",
+			name:                "nested sub-agent extracts correct workflow prefix",
+			senderAgentID:       "workflow:sub:nested",
+			targetAgentID:       "target",
+			registeredAgents:    []string{"workflow:target"},
+			expectResolvedTo:    "workflow:target",
 			shouldLogResolution: true,
 		},
 	}
@@ -793,11 +793,11 @@ func TestExtractWorkflowName(t *testing.T) {
 		{"time-reporter:sub:nested", "time-reporter"},
 		{"standalone-agent", "standalone-agent"},
 		{"workflow:a:b:c", "workflow"},
-		{"", ""},                 // Empty string
-		{":", ""},                // Just a colon
-		{":agent", ""},           // Starting with colon
-		{"agent:", "agent"},      // Ending with colon
-		{"a:b:c:d:e", "a"},       // Multiple colons
+		{"", ""},            // Empty string
+		{":", ""},           // Just a colon
+		{":agent", ""},      // Starting with colon
+		{"agent:", "agent"}, // Ending with colon
+		{"a:b:c:d:e", "a"},  // Multiple colons
 	}
 
 	for _, tt := range tests {
