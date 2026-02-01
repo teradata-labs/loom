@@ -1028,7 +1028,10 @@ Your role is to orchestrate the workflow execution, manage agent coordination, a
 
 Sub-agents: %s
 
-Use the workflow orchestration tools to coordinate execution across these agents.`,
+You can use session_memory to search past workflow sessions:
+- session_memory(action="list") - list your own coordinator sessions
+- session_memory(action="list", agent_id="agent-name") - list sessions for a specific sub-agent
+- session_memory(action="summary", session_id="...") - retrieve conversation summary from a session`,
 		workflowName, patternType, description, strings.Join(agentIDs, ", "))
 
 	coordinatorConfig := &loomv1.AgentConfig{
@@ -1037,7 +1040,7 @@ Use the workflow orchestration tools to coordinate execution across these agents
 		SystemPrompt: coordinatorPrompt,
 		Llm:          llmConfig,
 		Tools: &loomv1.ToolsConfig{
-			Builtin: []string{"spawn_agent", "send_message", "receive_message", "shared_memory_read", "shared_memory_write"},
+			Builtin: []string{"send_message", "publish", "shared_memory_read", "shared_memory_write", "session_memory"},
 		},
 		Memory: &loomv1.MemoryConfig{
 			Type:       "sqlite",
@@ -1067,7 +1070,7 @@ Use the workflow orchestration tools to coordinate execution across these agents
 			SystemPrompt: fmt.Sprintf("You are the %s agent in the %s workflow. Follow the workflow coordinator's instructions.", agentID, workflowName),
 			Llm:          llmConfig,
 			Tools: &loomv1.ToolsConfig{
-				Builtin: []string{"shared_memory_read", "shared_memory_write", "send_message", "receive_message"},
+				Builtin: []string{"shared_memory_read", "shared_memory_write", "send_message", "publish"},
 			},
 			Memory: &loomv1.MemoryConfig{
 				Type:       "sqlite",
