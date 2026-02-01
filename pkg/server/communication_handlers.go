@@ -48,6 +48,19 @@ func (s *MultiAgentServer) ConfigureCommunication(
 
 		// Inject communication tools (send_message, receive_message, subscribe, publish, receive_broadcast, shared_memory_write, shared_memory_read)
 		commTools := builtin.CommunicationTools(queue, bus, sharedMem, agentID)
+
+		// Configure send_message tool with registry for auto-healing agent IDs
+		if s.registry != nil {
+			for _, tool := range commTools {
+				if sendTool, ok := tool.(*builtin.SendMessageTool); ok {
+					sendTool.SetAgentRegistry(s.registry, logger)
+					logger.Debug("Configured send_message tool with agent registry for auto-healing",
+						zap.String("agent_id", agentID))
+					break
+				}
+			}
+		}
+
 		ag.RegisterTools(commTools...)
 
 		logger.Debug("Communication tools injected into agent",
