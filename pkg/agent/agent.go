@@ -706,6 +706,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	userMsg := Message{
 		Role:      "user",
 		Content:   userMessage,
+		AgentID:   a.id, // Track which agent received this message
 		Timestamp: time.Now(),
 	}
 	session.AddMessage(userMsg)
@@ -764,6 +765,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	assistantMsg := Message{
 		Role:       "assistant",
 		Content:    response.Content,
+		AgentID:    a.id, // Track which agent generated this response
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
@@ -878,6 +880,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	userMsg := Message{
 		Role:      "user",
 		Content:   userMessage,
+		AgentID:   a.id, // Track which agent received this message
 		Timestamp: time.Now(),
 	}
 	session.AddMessage(userMsg)
@@ -929,6 +932,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	assistantMsg := Message{
 		Role:       "assistant",
 		Content:    response.Content,
+		AgentID:    a.id, // Track which agent generated this response
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
@@ -1330,6 +1334,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Role:       "assistant",
 			Content:    llmResp.Content,
 			ToolCalls:  llmResp.ToolCalls,
+			AgentID:    a.id, // Track which agent generated this response
 			TokenCount: llmResp.Usage.TotalTokens,
 			CostUSD:    llmResp.Usage.CostUSD,
 			Timestamp:  time.Now(),
@@ -1494,6 +1499,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Content:    formattedResult,
 				ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 				ToolResult: result,
+				AgentID:    a.id, // Track which agent executed this tool
 				Timestamp:  time.Now(),
 			}
 			session.AddMessage(toolMsg)
@@ -1579,6 +1585,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	synthesisMsg := Message{
 		Role:      "user",
 		Content:   synthesisPrompt,
+		AgentID:   a.id, // Track which agent created this synthesis request
 		Timestamp: time.Now(),
 	}
 	session.AddMessage(synthesisMsg)

@@ -3635,10 +3635,28 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 			for i := lastMessageCount; i < len(messages); i++ {
 				msg := messages[i]
 
+				// Determine agent ID: use message's agent_id if present, otherwise fall back to session's agent_id
+				agentID := msg.AgentID
+				if agentID == "" {
+					// Fallback: use session's agent_id for backward compatibility with old messages
+					s.mu.RLock()
+					for _, ag := range s.agents {
+						if sess, ok := ag.GetSession(req.SessionId); ok {
+							agentID = sess.AgentID
+							break
+						}
+					}
+					s.mu.RUnlock()
+				}
+				// If still empty, use the requested agent ID as last resort
+				if agentID == "" {
+					agentID = req.AgentId
+				}
+
 				// Create session update
 				update := &loomv1.SessionUpdate{
 					SessionId: req.SessionId,
-					AgentId:   req.AgentId, // Use requested agent ID (since messages don't have agent_id field)
+					AgentId:   agentID, // Use message's agent_id, or session's agent_id, or fallback to requested agent_id
 					Timestamp: msg.Timestamp.Unix(),
 				}
 
