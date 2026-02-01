@@ -771,6 +771,12 @@ func TestSendMessageAutoHealing(t *testing.T) {
 				data := result.Data.(map[string]interface{})
 				assert.Equal(t, tt.expectResolvedTo, data["to_agent"],
 					"Expected message to be sent to resolved agent ID")
+			} else {
+				// For failed cases, verify the error message mentions the expected agent ID
+				if result.Error != nil {
+					assert.Contains(t, result.Error.Message, tt.expectResolvedTo,
+						"Error message should mention the expected (possibly unresolved) agent ID")
+				}
 			}
 		})
 	}
@@ -787,6 +793,11 @@ func TestExtractWorkflowName(t *testing.T) {
 		{"time-reporter:sub:nested", "time-reporter"},
 		{"standalone-agent", "standalone-agent"},
 		{"workflow:a:b:c", "workflow"},
+		{"", ""},                 // Empty string
+		{":", ""},                // Just a colon
+		{":agent", ""},           // Starting with colon
+		{"agent:", "agent"},      // Ending with colon
+		{"a:b:c:d:e", "a"},       // Multiple colons
 	}
 
 	for _, tt := range tests {
