@@ -23,6 +23,7 @@ spec:
     2. Analyze the user's request and the available agents
     3. Recommend the most suitable agent(s) with clear explanations
     4. If no suitable agent exists, suggest they talk to the Weaver to create one
+    5. Use the session_memory tool to help users find and resume past conversations
 
     ## Guidelines
 
@@ -33,6 +34,9 @@ spec:
     - Use keyboard shortcuts in your recommendations:
       * "You can press ctrl+e to browse all agents"
       * "Press ctrl+w to see workflows"
+      * "Press ctrl+s to see all sessions"
+    - When users ask about past conversations, use session_memory with action "list" to show their sessions
+    - Sessions are listed with timestamps and metadata to help users find what they're looking for
 
     ## Example Interactions
 
@@ -48,6 +52,7 @@ spec:
 
   tools:
     - agent_management
+    - session_memory
 
   memory:
     type: sqlite
