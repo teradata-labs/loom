@@ -256,10 +256,10 @@ func (s *SessionStore) initSchema() error {
 
 	// Migration: Add agent_id, parent_session_id, session_context columns for cross-session memory
 	agentMemoryMigrations := map[string]string{
-		"agent_id":            "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
-		"parent_session_id":   "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
-		"session_context":     "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
-		"message_agent_id":    "ALTER TABLE messages ADD COLUMN agent_id TEXT", // Track which agent created each message
+		"agent_id":          "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
+		"parent_session_id": "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
+		"session_context":   "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
+		"message_agent_id":  "ALTER TABLE messages ADD COLUMN agent_id TEXT", // Track which agent created each message
 	}
 
 	for columnName, migration := range agentMemoryMigrations {

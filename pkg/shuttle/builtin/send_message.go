@@ -66,7 +66,7 @@ Use this tool to:
 - Request clarifications from previous stages
 - Coordinate work between parallel agents
 
-The receiving agent can use receive_message to get your message.`
+Messages are automatically delivered to the receiving agent.`
 }
 
 func (t *SendMessageTool) InputSchema() *shuttle.JSONSchema {

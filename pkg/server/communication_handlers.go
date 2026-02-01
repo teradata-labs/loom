@@ -46,7 +46,8 @@ func (s *MultiAgentServer) ConfigureCommunication(
 		ag.SetReferenceStore(refStore)
 		ag.SetCommunicationPolicy(policy)
 
-		// Inject communication tools (send_message, receive_message, subscribe, publish, receive_broadcast, shared_memory_write, shared_memory_read)
+		// Inject communication tools (send_message, publish, shared_memory_write, shared_memory_read, presentation tools)
+		// Note: Messages are auto-injected via event-driven notifications, no manual receive tool needed
 		commTools := builtin.CommunicationTools(queue, bus, sharedMem, agentID)
 
 		// Configure send_message tool with registry for auto-healing agent IDs

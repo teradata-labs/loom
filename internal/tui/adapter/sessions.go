@@ -116,10 +116,13 @@ func protoToSession(s *loomv1.Session) session.Session {
 	}
 
 	return session.Session{
-		ID:        s.Id,
-		Title:     s.Name,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+		ID:               s.Id,
+		Title:            s.Name,
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
+		CompletionTokens: 0, // Proto Session doesn't include token counts yet
+		PromptTokens:     0,
+		Cost:             s.TotalCostUsd,
 	}
 }
 

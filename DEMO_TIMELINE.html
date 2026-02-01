@@ -1,0 +1,70 @@
+<h1 id="loom-demo-timeline">Loom Demo Timeline</h1>
+<p><strong>Duration:</strong> 1:40 (compressed from 6:24)
+<strong>Date:</strong> January 29, 2026 <strong>Version:</strong> Loom
+v1.0.2 <strong>Context:</strong> Fresh installation, no
+pre-configuration</p>
+<hr />
+<h2 id="what-happened">What Happened</h2>
+<h3 id="launch">0:00-0:03 | Launch</h3>
+<ul>
+<li>Ran <code>./bin/loom</code></li>
+<li>TUI started with Guide agent</li>
+</ul>
+<h3 id="switch-to-weaver">0:03-0:10 | Switch to Weaver</h3>
+<ul>
+<li>Selected Weaver agent from sidebar</li>
+</ul>
+<h3 id="user-request">0:10-0:20 | User Request</h3>
+<p><strong>Input:</strong> “I need an agent that knows teradata sql and
+can give me insights about my data”</p>
+<h3 id="agent-creation">0:20-0:35 | Agent Creation</h3>
+<p>Weaver executed: - 16 shell commands (explored examples directory) -
+4 tool searches (found <code>teradata_execute_sql</code>) - Read
+<code>vantage-mcp.yaml</code>, <code>database-query.yaml</code>, pattern
+files - Created agent: <code>teradata-sql-expert</code> - Wrote
+documentation file</p>
+<p>Time: 15 seconds (original: 2:21)</p>
+<h3 id="first-query">0:35-0:55 | First Query</h3>
+<p><strong>Input:</strong> “tell me about
+acc_ted_con_vw.dbp_featusg_agg_dly”</p>
+<p>Agent executed: - 3 tool searches (located
+<code>teradata_execute_sql</code> tool) - 1st SQL attempt: Failed
+(parameter type error: <code>debugMode: "false"</code> vs
+<code>false</code>) - 2nd SQL attempt: Succeeded (queried
+<code>DBC.ColumnsV</code> for 42 columns) - 3rd SQL: Queried
+<code>DBC.TablesV</code> (table metadata) - 4th SQL:
+<code>SELECT TOP 5</code> (sample data)</p>
+<p>Output: Table structure with 42 columns categorized</p>
+<h3 id="second-query">0:55-1:35 | Second Query</h3>
+<p><strong>Input:</strong> “give me usage of the 3d geospatial feature
+for 2025”</p>
+<p>Agent executed 5 SQL queries: 1. Feature discovery query 2. Account
+distribution query (8 accounts, 11 sites, 42,704 requests) 3. Temporal
+analysis: Failed (Error 3707: reserved word <code>month</code> used as
+alias) 4. Temporal analysis: Succeeded (used <code>month_num</code> and
+<code>ORDER BY 1</code>) 5. Performance metrics query 6. Comparative
+analysis query</p>
+<p>Output: Analysis showing: - 8 accounts using feature - Proximus SA: 2
+high-usage sites - November-December: 3-4x usage increase - A1 Telekom:
+High AMP CPU usage (289-493 avg) - 0.05% of standard geospatial volume -
+4 recommendations</p>
+<h3 id="end">1:35-1:40 | End</h3>
+<p>Display of final recommendations</p>
+<hr />
+<h2 id="statistics">Statistics</h2>
+<p><strong>Weaver Session (agent creation):</strong> - Time: 2:21 → 0:15
+(compressed) - Tool calls: 23 - Cost: $0.53</p>
+<p><strong>Teradata SQL Expert Session:</strong> - Time: 3:28 → 1:05
+(compressed) - Messages: 29 - Tool calls: 13 - SQL queries: 11
+attempted, 9 successful, 2 errors - Errors: Type mismatch
+(self-corrected), SQL syntax error 3707 (self-corrected) - Cost:
+$0.47</p>
+<p><strong>Total:</strong> - Time: 6:24 → 1:40 (3.8x compression) -
+Cost: $1.00 - Agents created: 1 - Tool executions: 36 - Human
+interventions: 0</p>
+<hr />
+<h2 id="data-sources">Data Sources</h2>
+<p>All data extracted by Claude from: - <code>~/.loom/loom.db</code>
+(sessions, messages, tool_executions, agents tables) -
+<code>loomdemo</code> (asciinema recording, 543 lines)</p>
+<p>Compression method: Pauses &gt; 0.8s reduced by 4x</p>

@@ -1095,11 +1095,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.workflowSubAgentsMu.Unlock()
 
 	// DO NOT register coordinator channel with MessageQueue
-	// The coordinator's StreamWeave conversation calls receive_message which would compete
-	// with the event-driven goroutine below for the same notification channel.
-	// Instead, ONLY the message queue monitor (StartMessageQueueMonitor) detects pending
-	// messages and signals the coordinator via the event-driven goroutine below.
-	// The coordinator's receive_message tool will use polling (no event-driven notifications).
+	// Messages are auto-injected when the coordinator is notified by the monitor.
+	// ONLY the message queue monitor (StartMessageQueueMonitor) detects pending
+	// messages and triggers auto-injection via the event-driven goroutine below.
 
 	s.logger.Info("Registered coordinator for event-driven message notifications (monitor-based)",
 		zap.String("coordinator", coordinatorID))
