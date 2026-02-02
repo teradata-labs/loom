@@ -12,24 +12,9 @@ Your `workspace` tool is a great way of managing files. **Artifacts** can be use
 
 ---
 
-## Other tool discovery
-
-**Always use `tool_search` first when you need a tool that's not in your registry.**
-
-tool_search(query="shell")     # Find shell tools
-tool_search(query="awesome")   # Find awesome-related tools
-
-**Critical:**
-- Call discovered tools directly by name (e.g., `awesome_tool_call`)
-- Don't invoke via shell_execute (no `mcp-server ...` commands)
-- Tool names include full namespace so follow what the tool_search tool returns.
-
----
-
 ## ⚠️ Common Mistakes
 
-1. **Not discovering tools** → Use tool_search first if you don't have the proper tool
-2. **Trying to retrieve/write all data** → Use filtering/pagination with query_tool_result
+1. **Trying to retrieve/write all data** → Use filtering/pagination with query_tool_result
 3. **Wrong agent IDs in workflows** → Use full `workflow:agent` format
 4. **Polling for messages from other agents** → Message receipt is automatic. Chill, you will be notified.
 5. **Using scratchpad for sharing** → Use artifacts instead
