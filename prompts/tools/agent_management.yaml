@@ -5,93 +5,233 @@ namespace: loom.agent
 prompts:
   - id: agent_management
     content: |
-      Manage agent lifecycle including spawning new agents, monitoring status, and coordinating
-      multi-agent workflows. Enables hierarchical agent architectures and task delegation.
+      Manages agent and workflow YAML configurations with automatic validation.
+      This tool creates, updates, reads, lists, validates, and deletes agent/workflow config files.
 
-      Use this tool to:
-      - Spawn new agents for subtasks
-      - Monitor agent status and health
-      - Coordinate multi-agent workflows
-      - Delegate tasks to specialized agents
-      - Manage agent resources and cleanup
+      **IMPORTANT**: This tool uses a STRUCTURED JSON API (v1.0+) with JSONSchema validation
+      to prevent configuration errors BEFORE execution.
 
-      Actions supported:
-      - spawn: Create a new agent instance
-      - status: Check agent health and state
-      - stop: Gracefully terminate an agent
-      - list: List all active agents
-      - send_task: Delegate task to another agent
-      - wait: Wait for agent completion
+      ## Structured Actions (v1.0+)
 
-      Agent types:
-      - Worker: General-purpose task execution
-      - Specialist: Domain-specific agents (SQL, API, etc.)
-      - Coordinator: Orchestrates other agents
-      - Monitor: Observes and reports on system state
+      ### create_agent - Create new agent configuration
+      Creates a new agent YAML file with structured JSON input.
 
-      Features:
-      - Hierarchical agent trees (parent-child relationships)
-      - Task delegation with results collection
-      - Agent isolation (separate contexts)
-      - Resource management (automatic cleanup)
-      - Status monitoring and health checks
-      - Message passing between agents
+      **Parameters:**
+      - action: "create_agent"
+      - config: JSON object with K8s-style structure
+        - metadata: {name, description, version}
+        - spec: {system_prompt, tools, llm, memory, behavior}
 
-      Best practices:
-      - Spawn agents for truly independent subtasks
-      - Use specialized agents for domain-specific work
-      - Monitor agent status before sending tasks
-      - Clean up agents when done (avoid resource leaks)
-      - Handle agent failures gracefully
-      - Use message passing instead of shared state
+      **Example:**
+      ```json
+      {
+        "action": "create_agent",
+        "config": {
+          "metadata": {
+            "name": "sql-expert",
+            "description": "SQL query optimization specialist",
+            "version": "1.0.0"
+          },
+          "spec": {
+            "system_prompt": "You are an expert in SQL query optimization...",
+            "tools": ["query_tool", "explain_tool"],
+            "llm": {
+              "provider": "anthropic",
+              "model": "claude-3-5-sonnet-20241022-v2:0",
+              "temperature": 0.7
+            },
+            "behavior": {
+              "max_turns": 25,
+              "max_tool_executions": 50
+            }
+          }
+        }
+      }
+      ```
 
-      When to use agent_management:
-      - Task requires parallel execution
-      - Need domain expertise (spawn specialist agent)
-      - Workload needs distribution across multiple agents
-      - Task isolation required (security, resource limits)
-      - Complex workflows with dependencies
+      ### create_workflow - Create new workflow configuration
+      Creates a new workflow YAML file with structured JSON input.
 
-      Common patterns:
-      - Map-reduce: Spawn workers, collect results
-      - Pipeline: Chain agents for sequential processing
-      - Fan-out: Spawn multiple agents for parallel work
-      - Supervisor: Monitor and restart failed agents
-      - Load balancing: Distribute work across agent pool
+      **Parameters:**
+      - action: "create_workflow"
+      - config: JSON object with K8s-style structure
+        - metadata: {name, description, version}
+        - spec: {type, initial_prompt, stages/tasks/agent_ids}
 
-      Examples:
-      - Spawn worker: agent_management(action="spawn", agent_type="worker", config={...})
-      - Check status: agent_management(action="status", agent_id="agent-123")
-      - Delegate task: agent_management(action="send_task", agent_id="agent-123", task="...")
-      - List agents: agent_management(action="list")
-      - Stop agent: agent_management(action="stop", agent_id="agent-123")
+      **CRITICAL**: Workflow stages use "agent_id" field (NOT "role") to reference agent configs!
 
-      Result format:
-      - agent_id: Unique agent identifier
-      - status: running, idle, stopped, failed
-      - uptime: How long agent has been running
-      - task_count: Number of tasks processed
-      - resource_usage: Memory, CPU usage
+      **Example:**
+      ```json
+      {
+        "action": "create_workflow",
+        "config": {
+          "metadata": {
+            "name": "data-pipeline",
+            "description": "Multi-stage data processing workflow"
+          },
+          "spec": {
+            "type": "pipeline",
+            "initial_prompt": "Process the data",
+            "stages": [
+              {
+                "agent_id": "data-loader",
+                "prompt_template": "Load data from source"
+              },
+              {
+                "agent_id": "data-transformer",
+                "prompt_template": "Transform {{previous}}"
+              },
+              {
+                "agent_id": "data-validator",
+                "prompt_template": "Validate {{previous}}"
+              }
+            ]
+          }
+        }
+      }
+      ```
 
-      Multi-agent coordination:
-      - Agents communicate via message passing
-      - Parent agents can spawn child agents
-      - Results flow back to parent automatically
-      - Shared state via shared_memory tools
-      - Event-driven coordination via message bus
+      ### update_agent - Update existing agent configuration
+      Updates an existing agent YAML file.
 
-      Safety:
-      - Agents inherit parent permissions
-      - Resource limits enforced per agent
-      - Automatic cleanup on parent termination
-      - Failed agents don't crash parent
+      **Parameters:**
+      - action: "update_agent"
+      - name: agent name (filename without .yaml)
+      - config: JSON object with full agent configuration
+
+      ### update_workflow - Update existing workflow configuration
+      Updates an existing workflow YAML file.
+
+      **Parameters:**
+      - action: "update_workflow"
+      - name: workflow name (filename without .yaml)
+      - config: JSON object with full workflow configuration
+
+      ## Simple Actions (Backward Compatible)
+
+      ### read - Read agent or workflow configuration
+      **Parameters:**
+      - action: "read"
+      - type: "agent" or "workflow"
+      - name: config name
+
+      ### list - List all agents or workflows
+      **Parameters:**
+      - action: "list"
+      - type: "agent" or "workflow"
+
+      ### validate - Validate YAML content
+      **Parameters:**
+      - action: "validate"
+      - type: "agent" or "workflow"
+      - content: YAML string to validate
+
+      ### delete - Delete agent or workflow
+      **Parameters:**
+      - action: "delete"
+      - type: "agent" or "workflow"
+      - name: config name
+
+      ## Workflow Pattern Types
+
+      Supported workflow patterns (spec.type):
+      - **pipeline**: Sequential stages, output flows stage to stage
+      - **fork-join**: Parallel execution, results merged at end
+      - **parallel**: Independent parallel tasks
+      - **debate**: Agents debate and reach consensus
+      - **conditional**: Branch based on condition evaluation
+      - **iterative**: Pipeline with restart capabilities
+      - **swarm**: Multiple agents collaborate on task
+
+      ## Agent ID Reference Rules
+
+      **CRITICAL - Field Validation:**
+      - Workflows reference agents using "agent_id" field
+      - Agent IDs must match agent YAML filenames (without .yaml)
+      - Example: agent file "data-loader.yaml" → agent_id: "data-loader"
+      - **NEVER use "role" field** - this will cause validation error!
+
+      ## Validation & Error Handling
+
+      The tool provides multi-layer validation:
+      1. **JSONSchema Validation** - Structure and types validated at call-time
+      2. **Semantic Validation** - Agent references, tool names checked at execute-time
+      3. **YAML Validation** - Final YAML syntax validated before writing
+
+      **Common Errors:**
+      - INVALID_FIELD: Using "role" instead of "agent_id" in workflows
+      - INVALID_AGENT_REFERENCE: Workflow references non-existent agent
+      - MISSING_FIELD: Required field not provided
+      - CONVERSION_ERROR: JSON structure invalid
+      - VALIDATION_ERROR: YAML syntax error
+      - FILE_EXISTS: Trying to create existing file (use update instead)
+
+      **Error Response Format:**
+      ```json
+      {
+        "success": false,
+        "error": {
+          "code": "INVALID_FIELD",
+          "message": "stage 0 has invalid field 'role'...",
+          "suggestion": "Replace 'role' with 'agent_id'..."
+        }
+      }
+      ```
+
+      ## Best Practices
+
+      1. **Create agents before workflows** - Workflows need to reference existing agents
+      2. **Use agent_id correctly** - Must match filename without .yaml extension
+      3. **Validate early** - Use validate action to check YAML before creating
+      4. **Read error messages** - Errors include suggestions for fixing
+      5. **Use structured API** - JSONSchema prevents most errors before execution
+      6. **Test with list** - Verify agents/workflows created successfully
+
+      ## File Locations
+
+      All files written to $LOOM_DATA_DIR (defaults to ~/.loom):
+      - Agents: $LOOM_DATA_DIR/agents/*.yaml
+      - Workflows: $LOOM_DATA_DIR/workflows/*.yaml
+
+      ## Security
+
+      - Tool restricted to weaver and guide meta-agents only
+      - Guide agent is READ-ONLY (list and read actions only)
+      - File paths validated and sandboxed to $LOOM_DATA_DIR
+      - No arbitrary file system access
+
+      ## Migration from Old API
+
+      **Old API (deprecated):**
+      ```json
+      {
+        "action": "create",
+        "type": "agent",
+        "name": "my-agent",
+        "content": "yaml string..."
+      }
+      ```
+
+      **New API (v1.0+):**
+      ```json
+      {
+        "action": "create_agent",
+        "config": {
+          "metadata": {"name": "my-agent", ...},
+          "spec": {...}
+        }
+      }
+      ```
+
+      Using old actions returns INVALID_ACTION error with migration instructions.
 
     tags:
       - tool
       - agent
-      - management
       - workflow
-      - coordination
+      - configuration
+      - yaml
+      - structured-api
     metadata:
       version: "v1.0"
-      description: "Agent lifecycle and coordination tool"
+      description: "Agent and workflow configuration management with structured JSON API"
