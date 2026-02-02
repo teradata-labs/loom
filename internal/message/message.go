@@ -49,6 +49,7 @@ type Message struct {
 	CreatedAt int64
 	Provider  string // LLM provider
 	Model     string // LLM model
+	AgentID   string // Agent ID that generated this message
 	parts     []ContentPart
 	finish    *FinishPart
 }

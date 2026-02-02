@@ -1,8 +1,8 @@
 # Weaver Architecture
 
 **Version**: v1.0.2
-**Status**: ✅ Implemented (simple agent with specialized tools)
-**Last Updated**: 2026-01-22
+**Status**: ✅ Implemented (simple agent with structured JSON API)
+**Last Updated**: 2026-02-01
 
 ## Table of Contents
 
@@ -24,10 +24,12 @@ The Weaver is Loom's **agent generation system** that creates complete agent and
 
 **Key Capabilities**:
 - **Natural Language Generation**: Creates k8s-style agent and workflow YAMLs from descriptions
-- **Upfront Validation**: Uses `agent_management` tool for schema validation before writing
+- **Structured JSON API**: Uses JSONSchema-validated structured inputs to prevent configuration errors
+- **Multi-Layer Validation**: JSONSchema (call-time), semantic (execute-time), YAML (write-time) validation
+- **Field Validation**: Validates workflow agent references use `agent_id` field (not `role`)
 - **Self-Discovery**: Uses `tool_search` to find relevant examples and tools
 - **Hot-Reload Integration**: Saves to `$LOOM_DATA_DIR/agents/` and `$LOOM_DATA_DIR/workflows/` for immediate availability
-- **Standardized Toolset**: All generated agents get core discovery tools by default
+- **Automatic Namespacing**: Workflow-scoped agents use `<workflow-name>:<role>` pattern to prevent conflicts
 
 **Design Philosophy**: **Simplicity over complexity**. The weaver is a standard agent using standard RPCs (`Weave`/`StreamWeave`). No special services, no conflict resolution system, no multi-stage pipeline. It just works.
 
@@ -214,13 +216,23 @@ if agentID != "weaver" {
 }
 ```
 
-**Actions Supported**:
-- `create`: Create new agent/workflow YAML with validation
-- `update`: Update existing YAML with validation
+**Actions Supported** (v1.0+):
+
+**Structured Actions** (JSONSchema-validated):
+- `create_agent`: Create new agent with structured JSON config
+- `create_workflow`: Create new workflow with structured JSON config
+- `update_agent`: Update existing agent with structured JSON config
+- `update_workflow`: Update existing workflow with structured JSON config
+
+**Simple Actions** (backward compatible):
 - `read`: Read existing configuration
 - `list`: List all agents or workflows
-- `validate`: Validate YAML without writing
+- `validate`: Validate YAML content
 - `delete`: Remove configuration
+
+**Deprecated Actions** (removed in v1.0):
+- `create` (with type/name/content) → use `create_agent` or `create_workflow`
+- `update` (with type/name/content) → use `update_agent` or `update_workflow`
 
 ### No Special Infrastructure
 
@@ -329,15 +341,110 @@ YAML Content                          Validation Pipeline
 ```
 
 
+## Structured JSON API (v1.0+)
+
+### Problem: Field Name Validation
+
+**Root Cause**: LLMs generated workflows with incorrect field names:
+```yaml
+# ❌ WRONG - Invalid Field
+spec:
+  stages:
+    - role: coordinator      # Invalid field!
+      prompt_template: "..."
+```
+
+Should have been:
+```yaml
+# ✅ CORRECT
+spec:
+  stages:
+    - agent_id: coordinator  # Correct field
+      prompt_template: "..."
+```
+
+**Impact**: Workflows failed at runtime because `role` field doesn't exist in schema. Error discovered after generation, requiring manual fixes.
+
+### Solution: Structured JSON with JSONSchema Validation
+
+**Design Principle**: Validate structure BEFORE execution, not after.
+
+**Implementation**:
+```
+User Request → Weaver generates JSON → JSONSchema validates → Tool executes → YAML written
+                                              ↑
+                                         Catch errors HERE
+                                         (not after file write)
+```
+
+**Example Structured Call**:
+```json
+{
+  "action": "create_workflow",
+  "config": {
+    "metadata": {"name": "my-workflow"},
+    "spec": {
+      "type": "pipeline",
+      "stages": [
+        {
+          "agent_id": "coordinator",  // JSONSchema enforces this field
+          "prompt_template": "..."
+        }
+      ]
+    }
+  }
+}
+```
+
+If LLM tries to use `role` instead of `agent_id`, JSONSchema validation fails BEFORE tool execution with clear error:
+```json
+{
+  "error": {
+    "code": "INVALID_FIELD",
+    "message": "stage 0 has invalid field 'role'...",
+    "suggestion": "Replace 'role' with 'agent_id'..."
+  }
+}
+```
+
+### Validation Layers
+
+**Layer 1: JSONSchema (Call-Time)**
+- Validates structure and types BEFORE tool execution
+- Catches wrong field names (`role` vs `agent_id`)
+- Enforces required fields
+- Prevents unknown properties
+
+**Layer 2: Semantic (Execute-Time)**
+- Validates agent references exist as files
+- Checks tool names against registry
+- Verifies workflow type validity
+- Field validation check (rejects any `role` field in workflows)
+
+**Layer 3: YAML (Write-Time)**
+- Ensures final YAML is syntactically correct
+- Validates proto field constraints
+- Confirms K8s-style structure
+
+### Benefits
+
+1. **Errors caught earlier**: Before execution, not after file write
+2. **Clear error messages**: Field-specific with suggestions
+3. **LLM-friendly**: Structured format matches LLM training
+4. **Type safety**: JSON types map to YAML types
+5. **Invalid fields prevented**: Schema doesn't define `role` field, only `agent_id`
+
+
 ## Agent Management Tool
 
 ### Design Goals
 
 1. **Security**: Restrict to weaver agent only (prevent arbitrary YAML writes)
-2. **Validation**: Catch errors before writing files
-3. **Simplicity**: Standard tool interface, no special protocols
-4. **Clarity**: LLM-friendly error messages with actionable fixes
-5. **Atomicity**: Either write valid YAML or fail completely
+2. **Validation**: Catch errors before writing files (multi-layer validation)
+3. **Structured API**: JSONSchema-validated inputs prevent configuration errors
+4. **Simplicity**: Standard tool interface, no special protocols
+5. **Clarity**: LLM-friendly error messages with actionable fixes
+6. **Atomicity**: Either write valid YAML or fail completely
 
 ### Implementation Details
 

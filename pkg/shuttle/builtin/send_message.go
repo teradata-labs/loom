@@ -8,25 +8,45 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
+
+// AgentRegistry provides read-only access to agent configurations for agent ID resolution.
+type AgentRegistry interface {
+	GetConfig(name string) *loomv1.AgentConfig
+}
 
 // SendMessageTool provides agent-to-agent messaging for workflows.
 // Enables point-to-point async communication between agents.
 type SendMessageTool struct {
-	queue   *communication.MessageQueue
-	agentID string // The agent that owns this tool
+	queue    *communication.MessageQueue
+	agentID  string // The agent that owns this tool
+	registry AgentRegistry
+	logger   *zap.Logger
 }
 
 // NewSendMessageTool creates a new send message tool for an agent.
 func NewSendMessageTool(queue *communication.MessageQueue, agentID string) *SendMessageTool {
 	return &SendMessageTool{
-		queue:   queue,
-		agentID: agentID,
+		queue:    queue,
+		agentID:  agentID,
+		registry: nil, // Will be set via SetAgentRegistry if available
+		logger:   zap.NewNop(),
+	}
+}
+
+// SetAgentRegistry sets the agent registry for agent ID resolution.
+// This enables auto-healing of short agent names to workflow-prefixed names.
+func (t *SendMessageTool) SetAgentRegistry(registry AgentRegistry, logger *zap.Logger) {
+	t.registry = registry
+	if logger != nil {
+		t.logger = logger
 	}
 }
 
@@ -46,7 +66,7 @@ Use this tool to:
 - Request clarifications from previous stages
 - Coordinate work between parallel agents
 
-The receiving agent can use receive_message to get your message.`
+Messages are automatically delivered to the receiving agent.`
 }
 
 func (t *SendMessageTool) InputSchema() *shuttle.JSONSchema {
@@ -95,6 +115,27 @@ func (t *SendMessageTool) Execute(ctx context.Context, params map[string]interfa
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
+	}
+
+	// AUTO-HEAL: Use sender's workflow context to resolve short agent names
+	// If the target is a short name (no ":"), try to resolve it using the sender's workflow context
+	originalToAgent := toAgent
+	if t.registry != nil && !strings.Contains(toAgent, ":") {
+		// Extract workflow name from sender's agent ID
+		workflowName := extractWorkflowName(t.agentID)
+		if workflowName != "" {
+			// Try workflow-prefixed name: "workflow:agent"
+			candidate := fmt.Sprintf("%s:%s", workflowName, toAgent)
+			if t.registry.GetConfig(candidate) != nil {
+				// Found! Use the resolved ID
+				toAgent = candidate
+				t.logger.Info("Auto-healed agent ID using sender's workflow context",
+					zap.String("sender", t.agentID),
+					zap.String("workflow", workflowName),
+					zap.String("original_target", originalToAgent),
+					zap.String("resolved_target", toAgent))
+			}
+		}
 	}
 
 	message, ok := params["message"].(string)
@@ -188,4 +229,22 @@ func (t *SendMessageTool) Execute(ctx context.Context, params map[string]interfa
 
 func (t *SendMessageTool) Backend() string {
 	return "" // Backend-agnostic
+}
+
+// extractWorkflowName extracts the workflow name from an agent ID.
+// Examples:
+//   - "time-reporter" → "time-reporter" (coordinator IS the workflow)
+//   - "time-reporter:time-printer" → "time-reporter" (sub-agent)
+//   - "time-reporter:sub:nested" → "time-reporter" (nested sub-agent)
+//   - "regular-agent" → "" (not a workflow agent)
+//
+// This function uses a simple heuristic: if the agent ID contains ":",
+// the workflow name is the prefix before the first ":". Otherwise,
+// we assume the agent ID itself might be a workflow coordinator.
+func extractWorkflowName(agentID string) string {
+	if idx := strings.Index(agentID, ":"); idx != -1 {
+		return agentID[:idx]
+	}
+	// For coordinator agents, the agent ID IS the workflow name
+	return agentID
 }

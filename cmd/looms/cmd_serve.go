@@ -1137,7 +1137,6 @@ func runServe(cmd *cobra.Command, args []string) {
 							"get_error_details":               true, // Error details retrieval
 							"delegate_to_agent":               true, // Coordination tool (registered elsewhere)
 							"send_message":                    true, // Communication tool (requires MessageQueue)
-							"receive_message":                 true, // Communication tool (requires MessageQueue)
 							"shared_memory_write":             true, // Communication tool (requires SharedMemoryStore)
 							"shared_memory_read":              true, // Communication tool (requires SharedMemoryStore)
 							"top_n_query":                     true, // Presentation tool

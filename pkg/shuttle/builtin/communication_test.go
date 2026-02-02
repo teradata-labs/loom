@@ -662,5 +662,171 @@ func TestMessageQueueEventDrivenNotification(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Expected notification within 100ms, but none received")
 	}
+}
 
+// mockAgentRegistry is a mock implementation of AgentRegistry for testing
+type mockAgentRegistry struct {
+	configs map[string]*loomv1.AgentConfig
+}
+
+func (m *mockAgentRegistry) GetConfig(name string) *loomv1.AgentConfig {
+	return m.configs[name]
+}
+
+// TestSendMessageAutoHealing tests the auto-healing functionality for workflow agent IDs
+func TestSendMessageAutoHealing(t *testing.T) {
+	tests := []struct {
+		name                string
+		senderAgentID       string
+		targetAgentID       string
+		registeredAgents    []string // Agent IDs registered in the mock registry
+		expectResolvedTo    string   // Expected resolved agent ID
+		shouldLogResolution bool     // Whether resolution should be logged
+	}{
+		{
+			name:                "coordinator sends to short name - auto-heals to workflow-prefixed name",
+			senderAgentID:       "time-reporter",
+			targetAgentID:       "time-printer",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "time-reporter:time-printer",
+			shouldLogResolution: true,
+		},
+		{
+			name:                "sub-agent sends to short name - auto-heals using workflow prefix",
+			senderAgentID:       "time-reporter:sub-agent-1",
+			targetAgentID:       "time-printer",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "time-reporter:time-printer",
+			shouldLogResolution: true,
+		},
+		{
+			name:                "short name not found - uses original (no healing)",
+			senderAgentID:       "time-reporter",
+			targetAgentID:       "non-existent-agent",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "non-existent-agent",
+			shouldLogResolution: false,
+		},
+		{
+			name:                "full workflow-prefixed name provided - no healing needed",
+			senderAgentID:       "time-reporter",
+			targetAgentID:       "time-reporter:time-printer",
+			registeredAgents:    []string{"time-reporter:time-printer"},
+			expectResolvedTo:    "time-reporter:time-printer",
+			shouldLogResolution: false,
+		},
+		{
+			name:                "regular agent (not workflow) - no healing",
+			senderAgentID:       "standalone-agent",
+			targetAgentID:       "other-agent",
+			registeredAgents:    []string{"other-agent"},
+			expectResolvedTo:    "other-agent",
+			shouldLogResolution: false,
+		},
+		{
+			name:                "nested sub-agent extracts correct workflow prefix",
+			senderAgentID:       "workflow:sub:nested",
+			targetAgentID:       "target",
+			registeredAgents:    []string{"workflow:target"},
+			expectResolvedTo:    "workflow:target",
+			shouldLogResolution: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create message queue
+			queue := createTestQueue(t)
+			defer queue.Close()
+
+			// Create mock registry
+			registry := &mockAgentRegistry{
+				configs: make(map[string]*loomv1.AgentConfig),
+			}
+			for _, agentID := range tt.registeredAgents {
+				registry.configs[agentID] = &loomv1.AgentConfig{
+					Name: agentID,
+				}
+			}
+
+			// Create logger to capture log output
+			logger := zap.NewNop()
+
+			// Create tool with registry
+			tool := NewSendMessageTool(queue, tt.senderAgentID)
+			tool.SetAgentRegistry(registry, logger)
+
+			// Execute tool
+			params := map[string]interface{}{
+				"to_agent": tt.targetAgentID,
+				"message":  "Test message",
+			}
+
+			result, err := tool.Execute(context.Background(), params)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			// Verify that the message was sent to the expected resolved agent ID
+			if result.Success {
+				data := result.Data.(map[string]interface{})
+				assert.Equal(t, tt.expectResolvedTo, data["to_agent"],
+					"Expected message to be sent to resolved agent ID")
+			} else {
+				// For failed cases, verify the error message mentions the expected agent ID
+				if result.Error != nil {
+					assert.Contains(t, result.Error.Message, tt.expectResolvedTo,
+						"Error message should mention the expected (possibly unresolved) agent ID")
+				}
+			}
+		})
+	}
+}
+
+// TestExtractWorkflowName tests the workflow name extraction logic
+func TestExtractWorkflowName(t *testing.T) {
+	tests := []struct {
+		agentID      string
+		expectedName string
+	}{
+		{"time-reporter", "time-reporter"},
+		{"time-reporter:time-printer", "time-reporter"},
+		{"time-reporter:sub:nested", "time-reporter"},
+		{"standalone-agent", "standalone-agent"},
+		{"workflow:a:b:c", "workflow"},
+		{"", ""},            // Empty string
+		{":", ""},           // Just a colon
+		{":agent", ""},      // Starting with colon
+		{"agent:", "agent"}, // Ending with colon
+		{"a:b:c:d:e", "a"},  // Multiple colons
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agentID, func(t *testing.T) {
+			result := extractWorkflowName(tt.agentID)
+			assert.Equal(t, tt.expectedName, result)
+		})
+	}
+}
+
+// TestSendMessageAutoHealingWithoutRegistry tests that the tool works correctly without a registry
+func TestSendMessageAutoHealingWithoutRegistry(t *testing.T) {
+	queue := createTestQueue(t)
+	defer queue.Close()
+
+	// Create tool WITHOUT setting registry
+	tool := NewSendMessageTool(queue, "sender-agent")
+
+	params := map[string]interface{}{
+		"to_agent": "receiver-agent",
+		"message":  "Test message",
+	}
+
+	result, err := tool.Execute(context.Background(), params)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Should succeed - no auto-healing, just uses original agent ID
+	assert.True(t, result.Success)
+	data := result.Data.(map[string]interface{})
+	assert.Equal(t, "receiver-agent", data["to_agent"])
 }
