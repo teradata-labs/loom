@@ -104,6 +104,18 @@ func GetAllTargets(repoRoot string) []FileTarget {
 			UpdateFunc:  updateClaudeVersion,
 			ExtractFunc: extractClaudeVersion,
 		},
+		{
+			Path:        filepath.Join(repoRoot, "docs/README.md"),
+			Description: "Documentation version reference",
+			UpdateFunc:  updateDocsReadme,
+			ExtractFunc: extractDocsReadme,
+		},
+		{
+			Path:        filepath.Join(repoRoot, "packaging/windows/chocolatey/tools/chocolateyinstall.ps1"),
+			Description: "Chocolatey install script version",
+			UpdateFunc:  updateChocolateyInstall,
+			ExtractFunc: extractChocolateyInstall,
+		},
 	}
 }
 
@@ -460,3 +472,64 @@ func extractClaudeVersion(path string) ([]string, error) {
 
 	return nil, fmt.Errorf("version not found on line 6")
 }
+
+// updateDocsReadme updates docs/README.md version reference
+func updateDocsReadme(path string, version Version) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	// Replace **Version**: vX.Y.Z pattern on line 3
+	re := regexp.MustCompile(`\*\*Version\*\*: v[0-9]+\.[0-9]+\.[0-9]+`)
+	newContent := re.ReplaceAllString(string(content), fmt.Sprintf("**Version**: %s", version.WithV()))
+
+	return os.WriteFile(path, []byte(newContent), 0644)
+}
+
+// extractDocsReadme extracts version from docs/README.md
+func extractDocsReadme(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	re := regexp.MustCompile(`\*\*Version\*\*: v([0-9]+\.[0-9]+\.[0-9]+)`)
+	matches := re.FindStringSubmatch(string(content))
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("version not found")
+	}
+
+	return []string{matches[1]}, nil
+}
+
+// updateChocolateyInstall updates chocolateyinstall.ps1 version variable
+func updateChocolateyInstall(path string, version Version) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	// Replace $version = 'X.Y.Z' pattern
+	re := regexp.MustCompile(`\$version = '[0-9]+\.[0-9]+\.[0-9]+'`)
+	newContent := re.ReplaceAllString(string(content), fmt.Sprintf("$version = '%s'", version.String()))
+
+	return os.WriteFile(path, []byte(newContent), 0644)
+}
+
+// extractChocolateyInstall extracts version from chocolateyinstall.ps1
+func extractChocolateyInstall(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	re := regexp.MustCompile(`\$version = '([0-9]+\.[0-9]+\.[0-9]+)'`)
+	matches := re.FindStringSubmatch(string(content))
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("version not found")
+	}
+
+	return []string{matches[1]}, nil
+}
+

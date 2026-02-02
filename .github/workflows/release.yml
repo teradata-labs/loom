@@ -50,6 +50,18 @@ jobs:
 
           echo "✅ All files have consistent versions!"
 
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
+
+      - name: Configure git for GPG signing
+        run: |
+          git config --global user.name "Loom Release Bot"
+          git config --global user.email "releases@teradata.com"
+          git config --global user.signingkey $(gpg --list-secret-keys --keyid-format LONG | grep sec | awk '{print $2}' | cut -d'/' -f2)
+          git config --global commit.gpgsign true
+          git config --global tag.gpgsign true
+
       - name: Generate changelog
         id: changelog
         run: |
@@ -229,11 +241,28 @@ jobs:
           tar czf ${{ matrix.output }}.tar.gz ${{ matrix.output }}
           sha256sum ${{ matrix.output }}.tar.gz > ${{ matrix.output }}.tar.gz.sha256
 
+      - name: Sign checksums (Unix)
+        if: matrix.os != 'windows-latest'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor ${{ matrix.output }}.tar.gz.sha256
+
       - name: Compress binary (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           7z a ${{ matrix.output }}.zip ${{ matrix.output }}
           Get-FileHash ${{ matrix.output }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash > ${{ matrix.output }}.zip.sha256
+
+      - name: Sign checksums (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor ${{ matrix.output }}.zip.sha256
 
       - name: Upload release assets (Unix)
         if: matrix.os != 'windows-latest'
@@ -242,6 +271,7 @@ jobs:
           files: |
             ${{ matrix.output }}.tar.gz
             ${{ matrix.output }}.tar.gz.sha256
+            ${{ matrix.output }}.tar.gz.sha256.asc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -252,6 +282,7 @@ jobs:
           files: |
             ${{ matrix.output }}.zip
             ${{ matrix.output }}.zip.sha256
+            ${{ matrix.output }}.zip.sha256.asc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -302,3 +333,34 @@ jobs:
             loom-windows-x64.zip.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-attestations:
+    name: Generate SLSA Provenance
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      id-token: write
+      contents: read
+    steps:
+      - name: Wait for release assets
+        run: sleep 15
+
+      - name: Download release artifacts
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: '*.tar.gz'
+          out-file-path: artifacts
+
+      - name: Download Windows artifacts
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: '*.zip'
+          out-file-path: artifacts
+
+      - name: Generate SLSA attestations
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'artifacts/*.tar.gz,artifacts/*.zip'

@@ -175,6 +175,47 @@ brew install https://raw.githubusercontent.com/teradata-labs/loom/main/packaging
 
 **Current Status**: Formulas are ready in `packaging/macos/homebrew/`. Use automated installer or manual build for now.
 
+### Verifying Releases
+
+All Loom releases are cryptographically signed for security. Starting with v1.1.0, you can verify releases using GPG signatures and SLSA provenance.
+
+#### Verify GPG Signatures
+
+```bash
+# Import Loom release public key (one-time setup)
+curl -sL https://raw.githubusercontent.com/teradata-labs/loom/main/loom-release-key.asc | gpg --import
+
+# Verify release tag
+git verify-tag v1.1.0
+
+# Verify checksum signature
+gpg --verify loom-linux-amd64.tar.gz.sha256.asc
+
+# Verify checksum matches
+sha256sum -c loom-linux-amd64.tar.gz.sha256
+```
+
+#### Verify SLSA Provenance (Supply Chain Security)
+
+SLSA provenance provides cryptographic proof of how binaries were built, preventing supply chain attacks.
+
+```bash
+# Install GitHub CLI if needed
+# macOS: brew install gh
+# Windows: winget install GitHub.cli
+# Linux: See https://github.com/cli/cli#installation
+
+# Verify binary provenance
+gh attestation verify loom-linux-amd64.tar.gz --owner teradata-labs
+```
+
+This verifies that:
+- The binary was built by official GitHub Actions
+- From the official teradata-labs/loom repository
+- Using the exact commit and workflow shown in the release
+
+**Note**: GPG signing and SLSA attestations are available starting with v1.1.0.
+
 ### Quick Start
 
 ```bash
