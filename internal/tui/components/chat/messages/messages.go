@@ -432,19 +432,47 @@ func (m *assistantSectionModel) Update(tea.Msg) (util.Model, tea.Cmd) {
 func (m *assistantSectionModel) View() string {
 	t := styles.CurrentTheme()
 	finishData := m.message.FinishPart()
+
+	// Calculate duration from message creation to finish time
 	finishTime := time.Unix(finishData.Time, 0)
-	duration := finishTime.Sub(m.lastUserMessageTime)
-	infoMsg := t.S().Subtle.Render(duration.String())
-	icon := t.S().Subtle.Render(styles.ModelIcon)
-	model := config.Get().GetModel()
-	if model == nil || (m.message.Model != "" && model.Model != m.message.Model) {
-		// This means the model is not configured anymore
-		model = &config.Model{
-			Name: m.message.Model,
-		}
+	createdTime := time.Unix(m.message.CreatedAt, 0)
+	duration := finishTime.Sub(createdTime)
+
+	// Format duration in a human-readable way (e.g., "1.5s", "2m", "45ms")
+	var durationStr string
+	switch {
+	case duration < time.Second:
+		durationStr = fmt.Sprintf("%dms", duration.Milliseconds())
+	case duration < time.Minute:
+		durationStr = fmt.Sprintf("%.1fs", duration.Seconds())
+	case duration < time.Hour:
+		durationStr = fmt.Sprintf("%.1fm", duration.Minutes())
+	default:
+		durationStr = fmt.Sprintf("%.1fh", duration.Hours())
 	}
-	modelFormatted := t.S().Muted.Render(model.Name)
-	assistant := fmt.Sprintf("%s %s %s", icon, modelFormatted, infoMsg)
+
+	infoMsg := t.S().Subtle.Render(durationStr)
+	icon := t.S().Subtle.Render(styles.ModelIcon)
+
+	// Use agent name if available, otherwise fall back to model name
+	agentName := m.message.AgentID
+	if agentName == "" {
+		model := config.Get().GetModel()
+		if model == nil || (m.message.Model != "" && model.Model != m.message.Model) {
+			// This means the model is not configured anymore
+			model = &config.Model{
+				Name: m.message.Model,
+			}
+		}
+		agentName = model.Name
+	} else if len(agentName) == 36 && strings.Count(agentName, "-") == 4 {
+		// Check if it's a UUID format (8-4-4-4-12 with dashes = 36 chars, 4 dashes)
+		// For workflow sub-agents, show "workflow coordinator" instead of the UUID
+		agentName = "workflow coordinator"
+	}
+
+	nameFormatted := t.S().Muted.Render(agentName)
+	assistant := fmt.Sprintf("%s %s %s", icon, nameFormatted, infoMsg)
 	return t.S().Base.PaddingLeft(2).Render(
 		core.Section(assistant, m.width-2),
 	)

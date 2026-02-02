@@ -47,12 +47,15 @@ type StageInfo struct {
 
 // ProgressToMessageWithHistory converts a WeaveProgress to a message.Message with stage history.
 // Shows completed stages with ⏺ and the current stage with ◌ (spinner).
-func ProgressToMessageWithHistory(progress *loomv1.WeaveProgress, sessionID string, messageID string, history []StageInfo) message.Message {
+// The startTimestamp should be the timestamp of the first progress event in this turn for accurate duration calculation.
+func ProgressToMessageWithHistory(progress *loomv1.WeaveProgress, sessionID string, messageID string, agentID string, startTimestamp int64, history []StageInfo) message.Message {
 	msg := message.NewMessage(
 		messageID,
 		sessionID,
 		message.Assistant,
 	)
+	msg.AgentID = agentID
+	msg.CreatedAt = startTimestamp
 
 	// Build multi-line thinking content with stage history
 	var thinkingLines []string
@@ -168,12 +171,14 @@ func ProgressToMessageWithHistory(progress *loomv1.WeaveProgress, sessionID stri
 // ProgressToMessage converts a WeaveProgress to a message.Message for display.
 // The messageID parameter should be consistent across all progress events for the same turn.
 // Deprecated: Use ProgressToMessageWithHistory for better progress tracking.
-func ProgressToMessage(progress *loomv1.WeaveProgress, sessionID string, messageID string) message.Message {
+func ProgressToMessage(progress *loomv1.WeaveProgress, sessionID string, messageID string, agentID string) message.Message {
 	msg := message.NewMessage(
 		messageID,
 		sessionID,
 		message.Assistant,
 	)
+	msg.AgentID = agentID
+	msg.CreatedAt = progress.Timestamp
 
 	// Build progress/thinking message from stage, message, and tool info
 	var progressParts []string
