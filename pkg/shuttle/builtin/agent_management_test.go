@@ -79,20 +79,6 @@ func TestAgentManagementTool_CreateAgent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", tmpDir)
 
-	validAgentYAML := `apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: test-agent
-  version: "1.0.0"
-  description: Test agent
-spec:
-  system_prompt: "You are a test agent"
-  tools:
-    - shell_execute
-  config:
-    max_turns: 10
-`
-
 	tests := []struct {
 		name        string
 		params      map[string]interface{}
@@ -102,49 +88,65 @@ spec:
 		{
 			name: "valid agent creation",
 			params: map[string]interface{}{
-				"action":  "create",
-				"type":    "agent",
-				"name":    "test-agent",
-				"content": validAgentYAML,
+				"action": "create_agent",
+				"config": map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"name":        "test-agent",
+						"description": "Test agent",
+					},
+					"spec": map[string]interface{}{
+						"system_prompt": "You are a test agent",
+						"tools":         []string{"shell_execute"},
+					},
+				},
 			},
 			expectError: false,
 		},
 		{
-			name: "invalid YAML syntax",
-			params: map[string]interface{}{
-				"action":  "create",
-				"type":    "agent",
-				"name":    "bad-agent",
-				"content": "invalid: [yaml: syntax",
-			},
-			expectError: true,
-			errorCode:   "VALIDATION_ERROR",
-		},
-		{
 			name: "missing required field",
 			params: map[string]interface{}{
-				"action": "create",
-				"type":   "agent",
-				"name":   "incomplete-agent",
-				"content": `apiVersion: loom/v1
-kind: Agent
-spec:
-  system_prompt: "Test"
-`,
+				"action": "create_agent",
+				"config": map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"name": "incomplete-agent",
+					},
+					"spec": map[string]interface{}{
+						// Missing system_prompt!
+						"tools": []string{"shell_execute"},
+					},
+				},
 			},
 			expectError: true,
-			errorCode:   "VALIDATION_ERROR",
+			errorCode:   "CONVERSION_ERROR",
 		},
 		{
 			name: "file already exists",
 			params: map[string]interface{}{
-				"action":  "create",
-				"type":    "agent",
-				"name":    "test-agent", // Same as first test
-				"content": validAgentYAML,
+				"action": "create_agent",
+				"config": map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"name":        "test-agent", // Same as first test
+						"description": "Test agent",
+					},
+					"spec": map[string]interface{}{
+						"system_prompt": "You are a test agent",
+						"tools":         []string{"shell_execute"},
+					},
+				},
 			},
 			expectError: true,
 			errorCode:   "FILE_EXISTS",
+		},
+		{
+			name: "old create action returns migration error",
+			params: map[string]interface{}{
+				"action":  "create",
+				"type":    "agent",
+				"name":    "old-style-agent",
+				"content": "some yaml",
+			},
+			expectError: true,
+			errorCode:   "INVALID_ACTION",
 		},
 	}
 
@@ -167,10 +169,13 @@ spec:
 				filePath := filepath.Join(agentsDir, "test-agent.yaml")
 				assert.FileExists(t, filePath)
 
-				// Verify content
+				// Verify YAML structure
 				content, err := os.ReadFile(filePath)
 				require.NoError(t, err)
-				assert.Equal(t, validAgentYAML, string(content))
+				yamlStr := string(content)
+				assert.Contains(t, yamlStr, "apiVersion: loom/v1")
+				assert.Contains(t, yamlStr, "kind: Agent")
+				assert.Contains(t, yamlStr, "name: test-agent")
 			}
 		})
 	}
@@ -184,52 +189,54 @@ func TestAgentManagementTool_UpdateAgent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", tmpDir)
 
-	// Create initial agent
-	agentsDir := config.GetLoomSubDir("agents")
-	err := os.MkdirAll(agentsDir, 0755)
-	require.NoError(t, err)
-
-	initialContent := `apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: update-test
-  version: "1.0.0"
-spec:
-  system_prompt: "Original"
-  tools: []
-`
-
-	filePath := filepath.Join(agentsDir, "update-test.yaml")
-	err = os.WriteFile(filePath, []byte(initialContent), 0644)
-	require.NoError(t, err)
-
-	// Test update
-	updatedContent := `apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: update-test
-  version: "2.0.0"
-spec:
-  system_prompt: "Updated"
-  tools:
-    - shell_execute
-`
-
-	params := map[string]interface{}{
-		"action":  "update",
-		"type":    "agent",
-		"name":    "update-test",
-		"content": updatedContent,
+	// Create initial agent using new API
+	createParams := map[string]interface{}{
+		"action": "create_agent",
+		"config": map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":        "update-test",
+				"description": "Original",
+			},
+			"spec": map[string]interface{}{
+				"system_prompt": "Original prompt",
+				"tools":         []string{},
+			},
+		},
 	}
 
-	result, err := tool.Execute(ctx, params)
+	result, err := tool.Execute(ctx, createParams)
 	require.NoError(t, err)
-	assert.True(t, result.Success)
+	require.True(t, result.Success, "Failed to create initial agent: %v", result.Error)
+
+	// Test update using new API
+	updateParams := map[string]interface{}{
+		"action": "update_agent",
+		"name":   "update-test",
+		"config": map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":        "update-test",
+				"description": "Updated",
+				"version":     "2.0.0",
+			},
+			"spec": map[string]interface{}{
+				"system_prompt": "Updated prompt",
+				"tools":         []string{"shell_execute"},
+			},
+		},
+	}
+
+	result, err = tool.Execute(ctx, updateParams)
+	require.NoError(t, err)
+	assert.True(t, result.Success, "Update failed: %v", result.Error)
 
 	// Verify file was updated
+	agentsDir := config.GetLoomSubDir("agents")
+	filePath := filepath.Join(agentsDir, "update-test.yaml")
 	content, err := os.ReadFile(filePath)
 	require.NoError(t, err)
-	assert.Equal(t, updatedContent, string(content))
+	yamlStr := string(content)
+	assert.Contains(t, yamlStr, "Updated prompt")
+	assert.Contains(t, yamlStr, "version: 2.0.0")
 }
 
 func TestAgentManagementTool_ReadAgent(t *testing.T) {
@@ -405,30 +412,52 @@ func TestAgentManagementTool_WorkflowOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", tmpDir)
 
-	validWorkflowYAML := `apiVersion: loom/v1
-kind: Workflow
-metadata:
-  name: test-workflow
-  version: "1.0.0"
-spec:
-  type: fork-join
-  prompt: "Test prompt"
-  agent_ids:
-    - agent1
-    - agent2
-`
+	// Create test agents first (workflows need to reference them)
+	agentsDir := config.GetLoomSubDir("agents")
+	err := os.MkdirAll(agentsDir, 0755)
+	require.NoError(t, err)
 
-	// Test create workflow
+	agent1YAML := `apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: agent1
+spec:
+  system_prompt: "Agent 1"
+  tools: []
+`
+	err = os.WriteFile(filepath.Join(agentsDir, "agent1.yaml"), []byte(agent1YAML), 0644)
+	require.NoError(t, err)
+
+	agent2YAML := `apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: agent2
+spec:
+  system_prompt: "Agent 2"
+  tools: []
+`
+	err = os.WriteFile(filepath.Join(agentsDir, "agent2.yaml"), []byte(agent2YAML), 0644)
+	require.NoError(t, err)
+
+	// Test create workflow using new API
 	params := map[string]interface{}{
-		"action":  "create",
-		"type":    "workflow",
-		"name":    "test-workflow",
-		"content": validWorkflowYAML,
+		"action": "create_workflow",
+		"config": map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":        "test-workflow",
+				"description": "Test workflow",
+			},
+			"spec": map[string]interface{}{
+				"type":      "fork-join",
+				"prompt":    "Test prompt",
+				"agent_ids": []string{"agent1", "agent2"},
+			},
+		},
 	}
 
 	result, err := tool.Execute(ctx, params)
 	require.NoError(t, err)
-	assert.True(t, result.Success)
+	assert.True(t, result.Success, "Workflow creation failed: %v", result.Error)
 
 	// Verify file was created in workflows directory
 	workflowsDir := config.GetLoomSubDir("workflows")
@@ -458,26 +487,24 @@ func TestAgentManagementTool_ConcurrentOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", tmpDir)
 
-	validYAML := `apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: concurrent-test
-spec:
-  system_prompt: "Test"
-  tools: []
-`
-
-	// Create agent first
+	// Create agent first using new API
 	params := map[string]interface{}{
-		"action":  "create",
-		"type":    "agent",
-		"name":    "concurrent-test",
-		"content": validYAML,
+		"action": "create_agent",
+		"config": map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":        "concurrent-test",
+				"description": "Test concurrent operations",
+			},
+			"spec": map[string]interface{}{
+				"system_prompt": "Test agent",
+				"tools":         []string{},
+			},
+		},
 	}
 
 	result, err := tool.Execute(ctx, params)
 	require.NoError(t, err)
-	require.True(t, result.Success)
+	require.True(t, result.Success, "Failed to create agent: %v", result.Error)
 
 	// Run concurrent reads
 	done := make(chan bool)
