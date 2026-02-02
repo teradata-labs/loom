@@ -594,23 +594,8 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		}
 	}
 
-	// Always register shell_execute tool (standard toolset)
-	// For weaver, use LOOM_DATA_DIR; for others, use current dir
-	shellTool := shuttle.Tool(builtin.NewShellExecuteTool(""))
-	if config.Name == "weaver" {
-		shellTool = builtin.NewShellExecuteTool(r.configDir)
-		r.logger.Debug("Registered shell_execute tool with LOOM_DATA_DIR",
-			zap.String("agent", config.Name),
-			zap.String("baseDir", r.configDir))
-	} else {
-		r.logger.Debug("Registered shell_execute tool",
-			zap.String("agent", config.Name))
-	}
-	// Wrap with PromptAwareTool for externalized descriptions
-	if agent.prompts != nil {
-		shellTool = shuttle.NewPromptAwareTool(shellTool, agent.prompts, "tools.shell_execute")
-	}
-	agent.RegisterTool(shellTool)
+	// shell_execute is no longer auto-registered
+	// Agents that need shell_execute must explicitly list it in config.Tools.Builtin
 
 	// Register MCP tools if configured
 	if config.Tools != nil && len(config.Tools.Mcp) > 0 && r.mcpMgr != nil {
@@ -641,14 +626,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 					zap.String("agent", config.Name))
 			}
 		}
-	} else {
-		// Backward compatibility: If no Tools.Builtin specified, register all builtin tools
-		for _, tool := range builtin.All(agent.prompts) {
-			agent.RegisterTool(tool)
-		}
 	}
+	// No backward compatibility: empty/missing tools section = zero tools (only workspace auto-registered)
 
-	// Register tool_search for dynamic tool discovery (if tool registry is available AND requested in config)
+	// Register tool_search for dynamic tool discovery (if tool registry is available AND explicitly requested in config)
 	if r.toolRegistry != nil {
 		// Check if tool_search is explicitly requested in config
 		shouldRegisterToolSearch := false
@@ -659,10 +640,8 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 					break
 				}
 			}
-		} else {
-			// Backward compatibility: If no Tools.Builtin specified, auto-register tool_search
-			shouldRegisterToolSearch = true
 		}
+		// No backward compatibility: tool_search must be explicitly listed in config
 
 		if shouldRegisterToolSearch {
 			searchTool := shuttle.Tool(toolregistry.NewSearchTool(r.toolRegistry))

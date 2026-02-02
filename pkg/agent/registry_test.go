@@ -1141,45 +1141,53 @@ func TestToolFiltering(t *testing.T) {
 	}
 }
 
-// TestToolFiltering_BackwardCompatibility verifies backward compatibility when no Tools.Builtin is specified
-func TestToolFiltering_BackwardCompatibility(t *testing.T) {
+// TestToolFiltering_NoToolsSection verifies behavior when no Tools section is specified
+// With backward compatibility removed, agents with no tools section get ONLY workspace (no builtin tools)
+func TestToolFiltering_NoToolsSection(t *testing.T) {
 	ctx := context.Background()
 	registry, tmpDir := createTestRegistry(t)
 
-	// Create agent without specifying Tools.Builtin (backward compatibility mode)
+	// Create agent without specifying Tools section (no tools = zero tools + workspace)
 	agentsDir := filepath.Join(tmpDir, "agents")
 	err := os.MkdirAll(agentsDir, 0755)
 	require.NoError(t, err)
 
-	config := createTestAgentConfig("backward_compat_test")
-	// Don't set config.Tools - it should register all builtin tools
+	config := createTestAgentConfig("no_tools_test")
+	// Don't set config.Tools - should get ONLY workspace (no shell_execute, no builtins)
 
-	err = SaveAgentConfig(config, filepath.Join(agentsDir, "backward_compat_test.yaml"))
+	err = SaveAgentConfig(config, filepath.Join(agentsDir, "no_tools_test.yaml"))
 	require.NoError(t, err)
 
 	err = registry.LoadAgents(ctx)
 	require.NoError(t, err)
 
-	agent, err := registry.CreateAgent(ctx, "backward_compat_test")
+	agent, err := registry.CreateAgent(ctx, "no_tools_test")
 	require.NoError(t, err)
 	require.NotNil(t, agent)
 
 	// Get list of registered tools
 	registeredTools := agent.ListTools()
-	t.Logf("Registered tools (backward compat): %v", registeredTools)
+	t.Logf("Registered tools (no tools section): %v", registeredTools)
 
-	// In backward compatibility mode, common builtin tools should be registered
-	expectedTools := []string{
+	// With backward compatibility removed, agents with NO tools section get ZERO tools
+	// (workspace would be registered only if artifactStore is available, which it isn't in tests)
+	// No shell_execute, no builtin tools (http_request, file_write, etc.)
+	assert.Empty(t, registeredTools, "Expected zero tools with no tools section and no artifact store")
+
+	// Verify no unexpected tools
+	unexpectedTools := []string{
+		"workspace",     // Not registered without artifactStore
+		"shell_execute", // No longer auto-registered
 		"http_request",
 		"web_search",
 		"file_write",
 		"file_read",
 		"grpc_call",
-		"shell_execute",
+		"tool_search",
 	}
 
-	for _, toolName := range expectedTools {
-		assert.Contains(t, registeredTools, toolName, "Expected builtin tool %s to be registered in backward compat mode", toolName)
+	for _, toolName := range unexpectedTools {
+		assert.NotContains(t, registeredTools, toolName, "Tool %s should NOT be auto-registered", toolName)
 	}
 }
 
