@@ -128,6 +128,8 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 
 						// Create message using the internal message format
 						msg := message.NewMessage(messageID, sessionID, message.Assistant)
+						msg.AgentID = agentID
+						msg.CreatedAt = time.Now().Unix()
 						msg.AddPart(message.ContentText{Text: newMsg.Content})
 
 						// Send as a new message event to TUI
@@ -167,7 +169,10 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 	firstMessage := true
 
 	// Generate a consistent message ID for all progress events in this turn
-	messageID := fmt.Sprintf("assistant-%d", time.Now().UnixNano())
+	// Also capture the start time for duration calculation
+	now := time.Now()
+	messageID := fmt.Sprintf("assistant-%d", now.UnixNano())
+	startTimestamp := now.Unix()
 
 	// Track stage history for building up progress display
 	var stageHistory []StageInfo
@@ -219,7 +224,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 				}
 			}
 
-			msg := ProgressToMessageWithHistory(progress, sessionID, messageID, stageHistory)
+			msg := ProgressToMessageWithHistory(progress, sessionID, messageID, agentID, startTimestamp, stageHistory)
 			eventType := pubsub.UpdatedEvent
 			if firstMessage {
 				eventType = pubsub.CreatedEvent
@@ -242,13 +247,15 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 					Provider:     progress.Cost.LlmCost.GetProvider(),
 					Model:        progress.Cost.LlmCost.GetModel(),
 				}
-				// Send session update with cost
+				// Send session update with cost and token counts
 				if c.events != nil {
 					c.events <- pubsub.Event[session.Session]{
 						Type: pubsub.UpdatedEvent,
 						Payload: session.Session{
-							ID:   sessionID,
-							Cost: progress.Cost.TotalCostUsd,
+							ID:               sessionID,
+							Cost:             progress.Cost.TotalCostUsd,
+							CompletionTokens: int(progress.Cost.LlmCost.GetOutputTokens()),
+							PromptTokens:     int(progress.Cost.LlmCost.GetInputTokens()),
 						},
 					}
 				}

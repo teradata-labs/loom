@@ -1095,11 +1095,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.workflowSubAgentsMu.Unlock()
 
 	// DO NOT register coordinator channel with MessageQueue
-	// The coordinator's StreamWeave conversation calls receive_message which would compete
-	// with the event-driven goroutine below for the same notification channel.
-	// Instead, ONLY the message queue monitor (StartMessageQueueMonitor) detects pending
-	// messages and signals the coordinator via the event-driven goroutine below.
-	// The coordinator's receive_message tool will use polling (no event-driven notifications).
+	// Messages are auto-injected when the coordinator is notified by the monitor.
+	// ONLY the message queue monitor (StartMessageQueueMonitor) detects pending
+	// messages and triggers auto-injection via the event-driven goroutine below.
 
 	s.logger.Info("Registered coordinator for event-driven message notifications (monitor-based)",
 		zap.String("coordinator", coordinatorID))
@@ -1736,11 +1734,6 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 				// Get agents with pending messages
 				agentsWithMessages := s.messageQueue.GetAgentsWithPendingMessages(ctx)
 
-				if len(agentsWithMessages) > 0 {
-					s.logger.Info("MONITOR: Found agents with pending messages",
-						zap.Strings("agents", agentsWithMessages))
-				}
-
 				for _, agentID := range agentsWithMessages {
 					// Check if this is a workflow sub-agent we're tracking
 					// Since we now use composite keys (coordinatorSessionID:agentID), we need to find matching entries
@@ -1759,34 +1752,21 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 						for _, subAgentCtx := range matchingContexts {
 							select {
 							case subAgentCtx.notifyChan <- struct{}{}:
-								s.logger.Info("MONITOR: Notified workflow agent of pending message",
-									zap.String("agent", agentID),
-									zap.String("workflow", subAgentCtx.workflowID))
+								// Notified workflow agent
 							default:
 								// Channel full, agent already has pending notification
-								s.logger.Info("MONITOR: Channel full for agent",
-									zap.String("agent", agentID))
 							}
 						}
 					} else {
 						// WORKFLOW AUTO-SPAWN: Check if this is a workflow sub-agent that needs spawning
 						// Format: "workflow-name:agent-id" (contains colon)
 						if strings.Contains(agentID, ":") {
-							s.logger.Info("MONITOR: Detected workflow sub-agent with pending messages (not yet spawned)",
-								zap.String("agent", agentID))
-
 							// Try to spawn this workflow sub-agent
 							if err := s.autoSpawnWorkflowSubAgent(ctx, agentID); err != nil {
-								s.logger.Warn("MONITOR: Failed to auto-spawn workflow sub-agent",
+								s.logger.Warn("Failed to auto-spawn workflow sub-agent",
 									zap.String("agent", agentID),
 									zap.Error(err))
-							} else {
-								s.logger.Info("MONITOR: Successfully auto-spawned workflow sub-agent",
-									zap.String("agent", agentID))
 							}
-						} else {
-							s.logger.Debug("MONITOR: Agent has pending messages but not tracked as workflow sub-agent",
-								zap.String("agent", agentID))
 						}
 					}
 				}
@@ -1914,14 +1894,73 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			s.logger.Info("Sub-agent acquired LLM semaphore",
 				zap.String("agent", agentID))
 
-			// Prompt agent to check messages
-			checkPrompt := "You have pending messages. Use receive_message to check and process them now."
-			s.logger.Info("Sub-agent calling Chat() to process messages",
-				zap.String("agent", agentID))
+			// Dequeue and inject pending queue messages
+			var err error
+			if s.messageQueue != nil {
+				var queuedMessages []string
+				var messageIDs []string
+				for {
+					msg, deqErr := s.messageQueue.Dequeue(ctx, agentID)
+					if deqErr != nil || msg == nil {
+						break // No more messages
+					}
 
-			// Use the parent context directly (no timeout) to allow sub-agent full time to process
-			// The agent's own config has max_turns and timeout_seconds configured
-			_, err := ag.Chat(ctx, sessionID, checkPrompt)
+					// Track message ID for later acknowledgment
+					messageIDs = append(messageIDs, msg.ID)
+
+					// Extract content from payload
+					var content string
+					if msg.Payload != nil {
+						if value := msg.Payload.GetValue(); value != nil {
+							content = string(value)
+						} else if ref := msg.Payload.GetReference(); ref != nil {
+							content = fmt.Sprintf("[Reference: %s]", ref.Id)
+						}
+					}
+					if content == "" {
+						content = "[Empty message]"
+					}
+
+					// Format with sender info
+					formatted := fmt.Sprintf(
+						"[MESSAGE from %s (type: %s)]:\n\n%s",
+						msg.FromAgent, msg.MessageType, content)
+					queuedMessages = append(queuedMessages, formatted)
+				}
+
+				if len(queuedMessages) > 0 {
+					// Inject all queued messages into the conversation
+					allMessages := strings.Join(queuedMessages, "\n\n---\n\n")
+					s.logger.Info("Sub-agent processing dequeued messages",
+						zap.String("agent", agentID),
+						zap.Int("message_count", len(queuedMessages)))
+
+					// Use the parent context directly (no timeout) to allow sub-agent full time to process
+					// The agent's own config has max_turns and timeout_seconds configured
+					_, err = ag.Chat(ctx, sessionID, allMessages)
+
+					// Acknowledge all messages after successful processing
+					if err == nil {
+						for _, msgID := range messageIDs {
+							if ackErr := s.messageQueue.Acknowledge(ctx, msgID); ackErr != nil {
+								s.logger.Warn("Failed to acknowledge message",
+									zap.String("agent", agentID),
+									zap.String("message_id", msgID),
+									zap.Error(ackErr))
+							}
+						}
+						s.logger.Info("Acknowledged all processed messages",
+							zap.String("agent", agentID),
+							zap.Int("count", len(messageIDs)))
+					}
+				} else {
+					s.logger.Debug("No queue messages to process",
+						zap.String("agent", agentID))
+				}
+			} else {
+				s.logger.Debug("Message queue not available",
+					zap.String("agent", agentID))
+			}
 
 			s.logger.Info("Sub-agent Chat() completed",
 				zap.String("agent", agentID),
@@ -3635,10 +3674,28 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 			for i := lastMessageCount; i < len(messages); i++ {
 				msg := messages[i]
 
+				// Determine agent ID: use message's agent_id if present, otherwise fall back to session's agent_id
+				agentID := msg.AgentID
+				if agentID == "" {
+					// Fallback: use session's agent_id for backward compatibility with old messages
+					s.mu.RLock()
+					for _, ag := range s.agents {
+						if sess, ok := ag.GetSession(req.SessionId); ok {
+							agentID = sess.AgentID
+							break
+						}
+					}
+					s.mu.RUnlock()
+				}
+				// If still empty, use the requested agent ID as last resort
+				if agentID == "" {
+					agentID = req.AgentId
+				}
+
 				// Create session update
 				update := &loomv1.SessionUpdate{
 					SessionId: req.SessionId,
-					AgentId:   req.AgentId, // Use requested agent ID (since messages don't have agent_id field)
+					AgentId:   agentID, // Use message's agent_id, or session's agent_id, or fallback to requested agent_id
 					Timestamp: msg.Timestamp.Unix(),
 				}
 

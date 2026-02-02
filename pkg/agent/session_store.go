@@ -259,12 +259,13 @@ func (s *SessionStore) initSchema() error {
 		"agent_id":          "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
 		"parent_session_id": "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL",
 		"session_context":   "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
+		"message_agent_id":  "ALTER TABLE messages ADD COLUMN agent_id TEXT", // Track which agent created each message
 	}
 
 	for columnName, migration := range agentMemoryMigrations {
 		// Check if column exists
 		var table string
-		if columnName == "session_context" {
+		if columnName == "session_context" || columnName == "message_agent_id" {
 			table = "messages"
 		} else {
 			table = "sessions"
@@ -288,6 +289,8 @@ func (s *SessionStore) initSchema() error {
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)"
 				case "session_context":
 					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_context ON messages(session_context)"
+				case "message_agent_id":
+					indexSQL = "CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id)"
 				}
 				if indexSQL != "" {
 					if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
@@ -533,9 +536,15 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Me
 		sessionContext = types.SessionContextDirect
 	}
 
+	// Handle agent_id (nullable for backward compatibility)
+	var agentID *string
+	if msg.AgentID != "" {
+		agentID = &msg.AgentID
+	}
+
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, timestamp, token_count, cost_usd)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -546,6 +555,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg Me
 		toolUseID,
 		toolResultJSON,
 		string(sessionContext),
+		agentID,
 		msg.Timestamp.Unix(),
 		msg.TokenCount,
 		msg.CostUSD,
@@ -571,7 +581,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, timestamp, token_count, cost_usd
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY timestamp ASC
@@ -589,7 +599,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		var msg Message
 		var msgID int64
 		var toolCallsJSON, toolUseID, toolResultJSON *string
-		var sessionContext sql.NullString
+		var sessionContext, agentID sql.NullString
 		var timestamp int64
 
 		err := rows.Scan(
@@ -600,6 +610,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 			&toolUseID,
 			&toolResultJSON,
 			&sessionContext,
+			&agentID,
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
@@ -611,6 +622,12 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		} else {
 			msg.SessionContext = types.SessionContextDirect // Default
 		}
+
+		// Populate agent_id from nullable database value (backward compatible)
+		if agentID.Valid {
+			msg.AgentID = agentID.String
+		}
+		// If agentID is NULL, msg.AgentID stays empty string (default zero value)
 		if err != nil {
 			span.RecordError(err)
 			return nil, fmt.Errorf("failed to scan message: %w", err)
@@ -714,7 +731,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	// 2. Parent sessions of sessions owned by this agent (coordinator, shared only)
 	query := `
 		SELECT DISTINCT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id,
-		       m.tool_result_json, m.session_context, m.timestamp, m.token_count, m.cost_usd,
+		       m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd,
 		       m.session_id
 		FROM messages m
 		WHERE (
@@ -744,7 +761,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		var msgID int64
 		var sessionID string
 		var toolCallsJSON, toolUseID, toolResultJSON *string
-		var sessionContext sql.NullString
+		var sessionContext, agentID sql.NullString
 		var timestamp int64
 
 		err := rows.Scan(
@@ -755,6 +772,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			&toolUseID,
 			&toolResultJSON,
 			&sessionContext,
+			&agentID,
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
@@ -773,6 +791,11 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			msg.SessionContext = types.SessionContext(sessionContext.String)
 		} else {
 			msg.SessionContext = types.SessionContextDirect
+		}
+
+		// Populate agent_id from nullable database value (backward compatible)
+		if agentID.Valid {
+			msg.AgentID = agentID.String
 		}
 
 		// Deserialize tool calls
@@ -843,7 +866,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	// Load messages from parent session that are relevant to sub-agents
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json,
-		       session_context, timestamp, token_count, cost_usd
+		       session_context, agent_id, timestamp, token_count, cost_usd
 		FROM messages
 		WHERE session_id = ?
 		AND session_context IN ('coordinator', 'shared')
@@ -862,7 +885,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		var msg Message
 		var msgID int64
 		var toolCallsJSON, toolUseID, toolResultJSON *string
-		var sessionContext sql.NullString
+		var sessionContext, agentID sql.NullString
 		var timestamp int64
 
 		err := rows.Scan(
@@ -873,6 +896,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 			&toolUseID,
 			&toolResultJSON,
 			&sessionContext,
+			&agentID,
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
@@ -890,6 +914,11 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 			msg.SessionContext = types.SessionContext(sessionContext.String)
 		} else {
 			msg.SessionContext = types.SessionContextDirect
+		}
+
+		// Populate agent_id from nullable database value (backward compatible)
+		if agentID.Valid {
+			msg.AgentID = agentID.String
 		}
 
 		// Deserialize tool calls
