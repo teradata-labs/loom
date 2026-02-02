@@ -1,6 +1,6 @@
 # Loom Documentation
 
-**Version**: v1.0.2
+**Version**: v1.1.0
 
 Welcome to the Loom documentation. Loom is a Go framework for building autonomous LLM agent threads with natural language agent creation, pattern-guided learning, and multi-agent orchestration.
 

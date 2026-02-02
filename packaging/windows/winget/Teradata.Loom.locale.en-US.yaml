@@ -19,12 +19,12 @@ PackageIdentifier: Teradata.Loom
 PackageLocale: en-US
 PackageName: Loom
 PackageUrl: https://github.com/teradata-labs/loom
-PackageVersion: 1.0.2
+PackageVersion: 1.1.0
 Publisher: Teradata
 PublisherSupportUrl: https://github.com/teradata-labs/loom/issues
 PublisherUrl: https://github.com/teradata-labs
-ReleaseNotes: See https://github.com/teradata-labs/loom/releases/tag/v1.0.2
-ReleaseNotesUrl: https://github.com/teradata-labs/loom/releases/tag/v1.0.2
+ReleaseNotes: See https://github.com/teradata-labs/loom/releases/tag/v1.1.0
+ReleaseNotesUrl: https://github.com/teradata-labs/loom/releases/tag/v1.1.0
 ShortDescription: LLM agent framework with natural language agent creation
 Tags:
     - ai

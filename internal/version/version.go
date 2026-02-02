@@ -15,7 +15,7 @@ package version
 
 // Version can be overridden at build time via ldflags:
 // go build -ldflags="-X github.com/teradata-labs/loom/internal/version.Version=vX.Y.Z"
-var Version = "1.0.2" // Default version
+var Version = "1.1.0" // Default version
 
 // Get returns the current version
 func Get() string {
