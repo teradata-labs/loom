@@ -104,7 +104,7 @@ func TestProgressToMessageWithHistory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := ProgressToMessageWithHistory(tt.progress, "sess_123", "msg_123", tt.history)
+			msg := ProgressToMessageWithHistory(tt.progress, "sess_123", "msg_123", "test-agent", 1000000, tt.history)
 
 			if msg.ID != "msg_123" {
 				t.Errorf("Expected message ID msg_123, got %s", msg.ID)
@@ -163,7 +163,7 @@ func TestProgressToMessageWithHistoryMultiline(t *testing.T) {
 		{Stage: loomv1.ExecutionStage_EXECUTION_STAGE_LLM_GENERATION, Done: true},
 	}
 
-	msg := ProgressToMessageWithHistory(progress, "sess_1", "msg_1", history)
+	msg := ProgressToMessageWithHistory(progress, "sess_1", "msg_1", "test-agent", 1000000, history)
 	thinking := msg.ReasoningContent().Thinking
 
 	// Should have newlines separating stages (pattern selection is hidden, so we expect 2 lines now)
@@ -223,7 +223,7 @@ func TestProgressToMessage(t *testing.T) {
 		PartialContent: "Response text",
 	}
 
-	msg := ProgressToMessage(progress, "sess_1", "msg_1")
+	msg := ProgressToMessage(progress, "sess_1", "msg_1", "test-agent")
 
 	if msg.ID != "msg_1" {
 		t.Errorf("Expected message ID msg_1, got %s", msg.ID)
@@ -293,7 +293,7 @@ func TestProgressToMessageWithPartialResult(t *testing.T) {
 		},
 	}
 
-	msg := ProgressToMessageWithHistory(progress, "sess_1", "msg_1", []StageInfo{})
+	msg := ProgressToMessageWithHistory(progress, "sess_1", "msg_1", "test-agent", 1000000, []StageInfo{})
 
 	content := msg.Content().Text
 	if content != `{"result": "success"}` {
@@ -386,7 +386,7 @@ func TestToolExecutionWithPassFailStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := ProgressToMessageWithHistory(tt.progress, "sess_1", "msg_1", tt.history)
+			msg := ProgressToMessageWithHistory(tt.progress, "sess_1", "msg_1", "test-agent", 1000000, tt.history)
 			thinking := msg.ReasoningContent().Thinking
 
 			if !strings.Contains(thinking, tt.wantToolIndicator) {
@@ -480,7 +480,7 @@ func TestLLMGenerationWithActualContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := ProgressToMessageWithHistory(tt.progress, "sess_1", "msg_1", tt.history)
+			msg := ProgressToMessageWithHistory(tt.progress, "sess_1", "msg_1", "test-agent", 1000000, tt.history)
 			thinking := msg.ReasoningContent().Thinking
 
 			if !strings.Contains(thinking, tt.wantIndicator) {
