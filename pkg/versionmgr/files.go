@@ -511,8 +511,9 @@ func updateChocolateyInstall(path string, version Version) error {
 	}
 
 	// Replace $version = 'X.Y.Z' pattern
+	// Note: $$ escapes $ in regex replacement string (prevents backreference interpretation)
 	re := regexp.MustCompile(`\$version = '[0-9]+\.[0-9]+\.[0-9]+'`)
-	newContent := re.ReplaceAllString(string(content), fmt.Sprintf("$version = '%s'", version.String()))
+	newContent := re.ReplaceAllString(string(content), fmt.Sprintf(`$$version = '%s'`, version.String()))
 
 	return os.WriteFile(path, []byte(newContent), 0644)
 }
