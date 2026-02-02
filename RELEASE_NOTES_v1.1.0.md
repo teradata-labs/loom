@@ -1,0 +1,267 @@
+# Loom v1.1.0 Release Notes
+
+## Release Status: READY FOR MANUAL STEPS
+
+All automated preparation is complete. Follow the manual steps below to complete the release.
+
+---
+
+## What Was Completed (Automated)
+
+### ✅ Task #1: Fixed Version Discrepancies
+- Enhanced version-manager to track 13 files (was 11)
+- Added tracking for:
+  - `docs/README.md` (fixed from v1.0.0 to v1.0.2, now v1.1.0)
+  - `packaging/windows/chocolatey/tools/chocolateyinstall.ps1`
+- Fixed regex bug: PowerShell `$` variable was interpreted as regex backreference
+- All 13 files now consistently show v1.1.0
+
+### ✅ Task #2: Implemented GPG Signing Infrastructure
+- Updated `.github/workflows/release.yml` with GPG signing steps
+- Added checksum signing for both Unix (.tar.gz) and Windows (.zip) binaries
+- Created placeholder `loom-release-key.asc` (needs replacement with real key)
+- Added verification documentation to README.md
+
+### ✅ Task #3: Added SLSA Provenance Attestation
+- Added `create-attestations` job to release workflow
+- Configured proper permissions (attestations: write, id-token: write)
+- Uses GitHub's built-in OIDC tokens (no secret management needed)
+- Generates provenance for all 12 binaries
+
+### ✅ Task #4: Created CHANGELOG.md
+- Comprehensive changelog documenting 185 commits since v1.0.2
+- Organized by category: Added, Fixed, Changed, Documentation
+- Includes migration guide for agent_management API changes
+- Documents all 12+ new features and 26 bug fixes
+
+### ✅ Task #5: Bumped Version to v1.1.0
+- All 13 tracked files updated to v1.1.0
+- Git commit created: "Bump version to v1.1.0"
+- Git tag created: v1.1.0
+- Verification passed: all files in sync
+
+---
+
+## Manual Steps Required
+
+### Step 1: Generate GPG Key (One-Time Setup)
+
+**IMPORTANT**: The release workflow will FAIL without this step!
+
+```bash
+# 1. Generate GPG key
+gpg --full-generate-key
+# Options:
+#   Type: RSA and RSA
+#   Size: 4096
+#   Expiration: 2 years
+#   Real name: Loom Release Bot
+#   Email: releases@teradata.com
+#   Comment: Teradata Labs Loom Release Key
+
+# 2. Export public key
+gpg --armor --export releases@teradata.com > loom-release-key.asc
+
+# 3. Replace placeholder with real key
+# Copy the generated loom-release-key.asc to repo root (overwrite placeholder)
+
+# 4. Export private key for GitHub Secret
+gpg --armor --export-secret-keys releases@teradata.com | base64 > gpg-key-base64.txt
+
+# 5. Add to GitHub Secrets (Settings → Secrets and variables → Actions)
+# - Name: GPG_PRIVATE_KEY
+#   Value: Paste contents of gpg-key-base64.txt
+# - Name: GPG_PASSPHRASE
+#   Value: The passphrase you entered during key generation
+
+# 6. Commit the real public key
+git add loom-release-key.asc
+git commit -m "Add GPG public key for release verification"
+```
+
+### Step 2: Push Release to Remote
+
+```bash
+# Push the release branch to remote
+git push origin release-updates
+
+# Or merge to main and push from there:
+git checkout main
+git merge release-updates
+git push origin main --tags
+```
+
+This will trigger:
+- `.github/workflows/release.yml` - Creates release, builds binaries, signs checksums, generates SLSA attestations
+- `.github/workflows/publish-homebrew.yml` - Updates Homebrew tap
+- `.github/workflows/chocolatey-build.yml` - Publishes to Chocolatey
+- `.github/workflows/publish-winget.yml` - Submits PR to winget-pkgs
+
+### Step 3: Monitor GitHub Actions
+
+Navigate to: https://github.com/teradata-labs/loom/actions
+
+Watch for:
+- ✅ `release.yml` completes successfully
+- ✅ All 12 binaries built and uploaded
+- ✅ 36 assets uploaded (12 binaries + 12 checksums + 12 signatures)
+- ✅ SLSA provenance attestations created
+- ✅ Homebrew PR opened
+- ✅ Chocolatey package submitted
+- ✅ winget PR opened
+
+### Step 4: Manual Scoop Submission
+
+Scoop workflow is disabled, requires manual PR:
+
+```bash
+# Fork and clone ScoopInstaller/Main
+gh repo fork ScoopInstaller/Main --clone
+cd Main
+git checkout -b loom-1.1.0
+
+# Copy manifests
+cp ~/Projects/loom-services-demo/packaging/windows/scoop/*.json bucket/
+
+# Create PR
+git add bucket/loom*.json
+git commit -m "loom: Update to 1.1.0"
+gh pr create --repo ScoopInstaller/Main \
+  --title "loom: Update to 1.1.0" \
+  --body "Updates Loom to v1.1.0
+
+Changelog: https://github.com/teradata-labs/loom/blob/main/CHANGELOG.md"
+```
+
+### Step 5: Verify Release Artifacts
+
+After release completes, verify:
+
+```bash
+# 1. Download a binary
+wget https://github.com/teradata-labs/loom/releases/download/v1.1.0/loom-linux-amd64.tar.gz
+wget https://github.com/teradata-labs/loom/releases/download/v1.1.0/loom-linux-amd64.tar.gz.sha256
+wget https://github.com/teradata-labs/loom/releases/download/v1.1.0/loom-linux-amd64.tar.gz.sha256.asc
+
+# 2. Import public key
+curl -sL https://raw.githubusercontent.com/teradata-labs/loom/main/loom-release-key.asc | gpg --import
+
+# 3. Verify GPG signature
+gpg --verify loom-linux-amd64.tar.gz.sha256.asc
+# Expected: Good signature from "Loom Release Bot"
+
+# 4. Verify checksum
+sha256sum -c loom-linux-amd64.tar.gz.sha256
+# Expected: loom-linux-amd64.tar.gz: OK
+
+# 5. Verify SLSA provenance
+gh attestation verify loom-linux-amd64.tar.gz --owner teradata-labs
+# Expected: Verification succeeded!
+```
+
+### Step 6: Test Package Installations
+
+**Homebrew** (after tap updated):
+```bash
+brew update
+brew upgrade loom loom-server
+loom --version  # Should show v1.1.0
+```
+
+**Chocolatey** (wait 1-2 hours for moderation):
+```powershell
+choco upgrade loom
+loom --version
+```
+
+**winget** (after PR merged):
+```powershell
+winget upgrade Teradata.Loom
+loom --version
+```
+
+---
+
+## Known Issues
+
+### Test Failures (Pre-Existing on Main Branch)
+
+The following test failures exist on main branch and are not regressions:
+
+1. **SwapLayer Tests** (3 failures in `pkg/agent`):
+   - `TestSwapLayerEviction`
+   - `TestSwapLayerDisabled`
+   - `TestSwapLayerL2Snapshots`
+   - Cause: FTS5 SQLite extension loading issues
+   - Impact: Does not affect production builds (tests use `-tags fts5`)
+
+2. **Docker Scheduler Tests** (7 failures in `pkg/docker`):
+   - All failures: "Cannot connect to the Docker daemon"
+   - Cause: Docker daemon not running during test execution
+   - Impact: Tests are environmental, not code defects
+
+These failures should be addressed in a future PR but do not block the v1.1.0 release as they are pre-existing.
+
+---
+
+## Release Checklist
+
+Before pushing:
+- [ ] GPG key generated and added to GitHub Secrets
+- [ ] Real public key committed to `loom-release-key.asc`
+- [ ] Reviewed CHANGELOG.md for accuracy
+- [ ] Reviewed version numbers in all files (run `just version-verify`)
+
+After pushing:
+- [ ] GitHub Actions workflows completed successfully
+- [ ] All 36 release assets uploaded (12 binaries + 12 checksums + 12 signatures)
+- [ ] SLSA attestations created
+- [ ] GPG signature verification works
+- [ ] SLSA provenance verification works
+- [ ] Homebrew tap updated
+- [ ] Chocolatey package approved
+- [ ] winget PR merged
+- [ ] Scoop PR submitted
+
+---
+
+## Files Modified
+
+```
+.github/workflows/release.yml   - GPG signing + SLSA attestation
+CHANGELOG.md                     - New file with v1.1.0 release notes
+README.md                        - Added "Verifying Releases" section
+docs/README.md                   - Fixed version from v1.0.0 to v1.1.0
+loom-release-key.asc            - Placeholder (replace with real key)
+pkg/versionmgr/files.go         - Track 13 files (was 11), fix $ escape bug
+VERSION                          - Updated to 1.1.0
+internal/version/version.go      - Updated to 1.1.0
+(and 8 other package manager files)
+```
+
+---
+
+## Timeline Estimate
+
+- Generate GPG key: 5 minutes
+- Add to GitHub Secrets: 2 minutes
+- Push and monitor workflows: 30-60 minutes
+- Package manager approvals: 1-24 hours
+- Full verification: 15 minutes
+
+**Total**: 1-2 hours of active work + package manager approval delays
+
+---
+
+## Support
+
+If issues arise during release:
+- Check GitHub Actions logs for errors
+- Verify GPG secrets are correctly set
+- Ensure SLSA attestation permissions are correct
+- Review release.yml workflow for typos
+
+For questions, see:
+- Release plan: (this was in the plan mode transcript)
+- SLSA documentation: https://slsa.dev
+- GitHub attestations: https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
