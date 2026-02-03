@@ -110,10 +110,10 @@ func (t *ManageEphemeralAgentsTool) InputSchema() *shuttle.JSONSchema {
 			"command": shuttle.NewStringSchema("Command: 'spawn' or 'despawn'").
 				WithEnum("spawn", "despawn"),
 			// Spawn parameters
-			"agent_id":         shuttle.NewStringSchema("(spawn) Agent config to spawn (e.g., 'fighter-spawnable')"),
-			"workflow_id":      shuttle.NewStringSchema("(spawn) Optional: workflow namespace (auto-generated if not provided)"),
-			"initial_message":  shuttle.NewStringSchema("(spawn) Optional: first message to send to spawned agent"),
-			"auto_subscribe":   shuttle.NewArraySchema("(spawn) Optional: topics to auto-subscribe", shuttle.NewStringSchema("Topic name")),
+			"agent_id":        shuttle.NewStringSchema("(spawn) Agent config to spawn (e.g., 'fighter-spawnable')"),
+			"workflow_id":     shuttle.NewStringSchema("(spawn) Optional: workflow namespace (auto-generated if not provided)"),
+			"initial_message": shuttle.NewStringSchema("(spawn) Optional: first message to send to spawned agent"),
+			"auto_subscribe":  shuttle.NewArraySchema("(spawn) Optional: topics to auto-subscribe", shuttle.NewStringSchema("Topic name")),
 			// Despawn parameters
 			"sub_agent_id": shuttle.NewStringSchema("(despawn) Full ID of sub-agent to despawn (e.g., 'workflow:agent-name')"),
 			"reason":       shuttle.NewStringSchema("(despawn) Optional: reason for despawn"),

@@ -22,8 +22,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -180,26 +178,6 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Sanitize tool schemas to remove problematic fields
 	// Azure OpenAI is strict about: empty arrays, empty defaults, etc.
 	apiTools = SanitizeToolSchemas(apiTools)
-
-	// Validate tool schemas for Azure OpenAI compatibility (for debugging)
-	if len(apiTools) > 0 {
-		validationErrors := ValidateToolSchemas(apiTools)
-
-		// Always write debug info to file for troubleshooting
-		writeDebugToFile(apiTools, validationErrors)
-
-		// ALWAYS print debug info to console
-		fmt.Printf("\n=== AZURE OPENAI DEBUG: %d TOOLS ===\n", len(apiTools))
-		if len(validationErrors) > 0 {
-			fmt.Printf("VALIDATION WARNINGS:\n")
-			for _, err := range validationErrors {
-				fmt.Printf("  - %s\n", err)
-			}
-		}
-		fmt.Printf("\n=== TOOL SCHEMAS ===\n")
-		fmt.Printf("%s\n", DumpToolSchemasJSON(apiTools))
-		fmt.Printf("Debug written to: ~/.loom/azure_schema_debug.txt\n\n")
-	}
 
 	// Build request (same as OpenAI)
 	req := &openai.ChatCompletionRequest{
@@ -424,10 +402,10 @@ func (c *Client) usesMaxCompletionTokens() bool {
 	// Check if this is an old model that explicitly requires max_tokens
 	// These are the only models that DON'T support max_completion_tokens:
 	oldModels := []string{
-		"gpt-4-0613",     // Original GPT-4
-		"gpt-4-32k",      // GPT-4 32k context
-		"gpt-35-turbo",   // GPT-3.5-turbo (Azure naming)
-		"gpt-3.5-turbo",  // GPT-3.5-turbo (OpenAI naming)
+		"gpt-4-0613",    // Original GPT-4
+		"gpt-4-32k",     // GPT-4 32k context
+		"gpt-35-turbo",  // GPT-3.5-turbo (Azure naming)
+		"gpt-3.5-turbo", // GPT-3.5-turbo (OpenAI naming)
 	}
 
 	modelLower := toLower(c.modelName)
@@ -859,32 +837,3 @@ var _ llmtypes.LLMProvider = (*Client)(nil)
 
 // Ensure Client implements StreamingLLMProvider interface.
 var _ llmtypes.StreamingLLMProvider = (*Client)(nil)
-
-// writeDebugToFile writes schema validation info to ~/.loom/azure_schema_debug.txt
-func writeDebugToFile(tools []openai.Tool, errors []string) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return // Silent fail - this is just debug logging
-	}
-
-	debugPath := filepath.Join(homeDir, ".loom", "azure_schema_debug.txt")
-
-	var content strings.Builder
-	content.WriteString("=== AZURE OPENAI SCHEMA DEBUG ===\n")
-	content.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().Format(time.RFC3339)))
-
-	if len(errors) > 0 {
-		content.WriteString("VALIDATION WARNINGS:\n")
-		for _, err := range errors {
-			content.WriteString(fmt.Sprintf("  - %s\n", err))
-		}
-		content.WriteString("\n")
-	} else {
-		content.WriteString("No validation warnings detected.\n\n")
-	}
-
-	content.WriteString(DumpToolSchemasJSON(tools))
-
-	// Write to file (overwrite each time)
-	_ = os.WriteFile(debugPath, []byte(content.String()), 0644)
-}
