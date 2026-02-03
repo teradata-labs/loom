@@ -1,0 +1,86 @@
+# Example backend configuration for AWS CloudFormation MCP server
+# This demonstrates using the official AWS CloudFormation MCP server
+# to manage CloudFormation stacks, templates, and resources.
+#
+# Prerequisites:
+# - UV/UVX installed (pip install uv or brew install uv)
+# - AWS credentials configured (via ~/.aws/credentials or environment variables)
+# - Required IAM permissions for CloudFormation operations
+#
+# Usage: Reference this file in your looms.yaml agent configuration
+
+apiVersion: loom/v1
+kind: Backend
+name: aws-cloudformation-mcp
+type: mcp
+description: AWS CloudFormation stack and template management via MCP
+
+# MCP configuration for AWS CloudFormation server
+mcp:
+  # Command to execute the MCP server via UVX (Python package runner)
+  # Note: Requires uv/uvx to be installed (pip install uv)
+  command: uvx
+
+  # Command arguments - runs the AWS Labs CloudFormation MCP server
+  args:
+    - awslabs.cfn-mcp-server@latest
+
+  # Environment variables for AWS credentials and configuration
+  # Options:
+  # 1. Use default AWS credentials (recommended):
+  #    AWS CLI/SDK will automatically use ~/.aws/credentials or instance profile
+  # 2. Explicit credentials (not recommended for security):
+  #    AWS_ACCESS_KEY_ID: your-access-key-id
+  #    AWS_SECRET_ACCESS_KEY: your-secret-access-key
+  # 3. AWS profile:
+  #    AWS_PROFILE: your-profile-name
+  env:
+    AWS_PROFILE: default
+    AWS_REGION: us-east-1
+    FASTMCP_LOG_LEVEL: ERROR
+
+  # Transport type: stdio (recommended for local MCP servers)
+  transport: stdio
+
+  # Enable this server (default: false for safety)
+  # Set to true to activate this MCP server
+  enabled: true
+
+# MCP backends automatically support these capabilities
+capabilities:
+  query_execution: false
+  schema_discovery: false
+  metadata: true
+  resource_listing: true
+  custom_operations: true
+
+# CloudFormation MCP Server Features:
+# - List CloudFormation stacks with filtering options
+# - Describe stack details, resources, and events
+# - Create new stacks from templates
+# - Update existing stacks
+# - Delete stacks
+# - Validate CloudFormation templates
+# - Get template summaries and parameters
+# - Manage stack sets (multi-region/multi-account deployments)
+
+# Security Notes:
+# - This server requires AWS credentials with CloudFormation permissions
+# - Use IAM roles with least-privilege permissions
+# - Avoid hardcoding credentials in this file
+# - Consider using AWS profile or instance/container credentials
+# - Set enabled: false when not actively using to prevent accidental activation
+
+# IAM Permissions Required (minimum):
+# - cloudformation:ListStacks
+# - cloudformation:DescribeStacks
+# - cloudformation:DescribeStackResources
+# - cloudformation:DescribeStackEvents
+# - cloudformation:GetTemplate
+# - cloudformation:ValidateTemplate
+#
+# For stack creation/updates/deletion, additionally:
+# - cloudformation:CreateStack
+# - cloudformation:UpdateStack
+# - cloudformation:DeleteStack
+# - Plus permissions for resources created by templates (EC2, S3, IAM, etc.)
