@@ -164,12 +164,12 @@ jobs:
           fi
 
           # Check for proper permissions
-          if ! grep -A5 "create-attestations:" .github/workflows/release.yml | grep -q "attestations: write"; then
+          if ! grep -A10 "create-attestations:" .github/workflows/release.yml | grep -q "attestations: write"; then
             echo "❌ Missing 'attestations: write' permission"
             exit 1
           fi
 
-          if ! grep -A5 "create-attestations:" .github/workflows/release.yml | grep -q "id-token: write"; then
+          if ! grep -A10 "create-attestations:" .github/workflows/release.yml | grep -q "id-token: write"; then
             echo "❌ Missing 'id-token: write' permission"
             exit 1
           fi
