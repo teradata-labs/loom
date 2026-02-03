@@ -533,4 +533,3 @@ func extractChocolateyInstall(path string) ([]string, error) {
 
 	return []string{matches[1]}, nil
 }
-
