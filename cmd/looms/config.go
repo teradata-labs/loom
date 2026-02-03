@@ -17,10 +17,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/zalando/go-keyring"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -595,6 +597,97 @@ type SchedulerConfig struct {
 	HotReload bool `mapstructure:"hot_reload"`
 }
 
+// fixMCPEnvCase restores the original case of MCP environment variable keys.
+// Viper lowercases all keys when reading YAML, which breaks env vars like WORKSPACES_API_URL.
+// This function reads the YAML file directly to extract the original case.
+func fixMCPEnvCase(config *Config, configFile string) error {
+	// Validate and sanitize config file path to prevent path traversal attacks
+	if configFile == "" {
+		return fmt.Errorf("config file path is empty")
+	}
+
+	// Clean the path to prevent path traversal (removes ../, ./, etc.)
+	cleanPath := filepath.Clean(configFile)
+
+	// Ensure the path is absolute (Viper should always return absolute paths)
+	if !filepath.IsAbs(cleanPath) {
+		return fmt.Errorf("config file path must be absolute: %s", cleanPath)
+	}
+
+	// Read the YAML file directly
+	// #nosec G304 -- cleanPath is from viper.ConfigFileUsed() (already loaded and validated),
+	// sanitized with filepath.Clean(), and validated as absolute path. User controls this via
+	// --config flag anyway, so no additional security risk beyond what user already has.
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	// Parse as generic YAML (preserves case)
+	var rawConfig map[string]interface{}
+	if err := yaml.Unmarshal(data, &rawConfig); err != nil {
+		return fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	// Navigate to mcp.servers section
+	mcpSection, ok := rawConfig["mcp"].(map[string]interface{})
+	if !ok {
+		return nil // No MCP section, nothing to fix
+	}
+
+	serversSection, ok := mcpSection["servers"].(map[string]interface{})
+	if !ok {
+		return nil // No servers section, nothing to fix
+	}
+
+	// For each MCP server in the config
+	for serverName, serverConfig := range config.MCP.Servers {
+		// Get the raw server config from YAML (preserves case)
+		rawServerConfig, ok := serversSection[serverName].(map[string]interface{})
+		if !ok {
+			continue // Server not in YAML, skip
+		}
+
+		// Get the env section (preserves case)
+		rawEnv, ok := rawServerConfig["env"].(map[string]interface{})
+		if !ok {
+			continue // No env section, skip
+		}
+
+		// Fix case for env vars from YAML while preserving vars from other sources
+		// (e.g., environment variable overrides via Viper's AutomaticEnv)
+		for originalKey, value := range rawEnv {
+			// Convert value to string
+			var strValue string
+			switch v := value.(type) {
+			case string:
+				strValue = v
+			case int, int64, float64, bool:
+				strValue = fmt.Sprintf("%v", v)
+			default:
+				strValue = fmt.Sprintf("%v", v)
+			}
+
+			// Find and replace the lowercased version with correct case
+			// Viper lowercases YAML keys, so we need to find the lowercased key
+			lowercasedKey := strings.ToLower(originalKey)
+
+			// If the lowercased key exists and is different from original, replace it
+			if _, exists := serverConfig.Env[lowercasedKey]; exists && lowercasedKey != originalKey {
+				delete(serverConfig.Env, lowercasedKey)
+			}
+
+			// Set with original case (updates value if key already exists with correct case)
+			serverConfig.Env[originalKey] = strValue
+		}
+
+		// Update the config
+		config.MCP.Servers[serverName] = serverConfig
+	}
+
+	return nil
+}
+
 // LoadConfig loads configuration from multiple sources with proper priority:
 // 1. Command line flags (highest priority)
 // 2. Config file
@@ -632,6 +725,8 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	viper.AutomaticEnv()
 
 	// Unmarshal config
+	// Note: Viper lowercases all keys, including map keys. This is fixed later
+	// by fixMCPEnvCase() which restores original case from YAML for MCP env vars.
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
@@ -644,6 +739,16 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Load secrets from keyring if not provided via CLI/env
 	// Non-fatal: keyring might not be available - user can provide secrets via CLI/env
 	_ = loadSecretsFromKeyring(&config)
+
+	// Fix MCP environment variable case (Viper lowercases all keys)
+	// This must be done after unmarshal to restore original case from YAML
+	configFile := viper.ConfigFileUsed()
+	if configFile != "" {
+		if err := fixMCPEnvCase(&config, configFile); err != nil {
+			// Non-fatal: log warning but don't fail
+			fmt.Fprintf(os.Stderr, "Warning: failed to restore MCP env var case: %v\n", err)
+		}
+	}
 
 	return &config, nil
 }
