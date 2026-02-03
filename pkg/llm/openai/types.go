@@ -18,18 +18,19 @@ package openai
 
 // ChatCompletionRequest represents a request to the OpenAI chat completions API.
 type ChatCompletionRequest struct {
-	Model            string                 `json:"model"`
-	Messages         []ChatMessage          `json:"messages"`
-	Temperature      float64                `json:"temperature,omitempty"`
-	MaxTokens        int                    `json:"max_tokens,omitempty"`
-	TopP             float64                `json:"top_p,omitempty"`
-	FrequencyPenalty float64                `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float64                `json:"presence_penalty,omitempty"`
-	Tools            []Tool                 `json:"tools,omitempty"`
-	ToolChoice       interface{}            `json:"tool_choice,omitempty"` // "auto", "none", or {"type": "function", "function": {"name": "..."}}
-	Stream           bool                   `json:"stream,omitempty"`
-	User             string                 `json:"user,omitempty"`
-	ResponseFormat   map[string]interface{} `json:"response_format,omitempty"`
+	Model               string                 `json:"model"`
+	Messages            []ChatMessage          `json:"messages"`
+	Temperature         float64                `json:"temperature,omitempty"`
+	MaxTokens           int                    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"` // Azure OpenAI newer models
+	TopP                float64                `json:"top_p,omitempty"`
+	FrequencyPenalty    float64                `json:"frequency_penalty,omitempty"`
+	PresencePenalty     float64                `json:"presence_penalty,omitempty"`
+	Tools               []Tool                 `json:"tools,omitempty"`
+	ToolChoice          interface{}            `json:"tool_choice,omitempty"` // "auto", "none", or {"type": "function", "function": {"name": "..."}}
+	Stream              bool                   `json:"stream,omitempty"`
+	User                string                 `json:"user,omitempty"`
+	ResponseFormat      map[string]interface{} `json:"response_format,omitempty"`
 }
 
 // ChatMessage represents a message in the conversation.

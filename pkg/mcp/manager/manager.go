@@ -100,12 +100,21 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // startServer initializes a single MCP server connection.
 func (m *Manager) startServer(ctx context.Context, name string, config ServerConfig) error {
-	// Add default timeout for the entire server startup if not specified
+	// Add timeout for the entire server startup
 	// This prevents hanging on unreachable servers
-	startCtx := ctx
-	if config.Timeout == "" {
+	var cancel context.CancelFunc
+	var startCtx context.Context
+
+	if config.Timeout != "" {
+		// Use configured timeout
+		timeout, err := time.ParseDuration(config.Timeout)
+		if err != nil {
+			return fmt.Errorf("invalid timeout: %w", err)
+		}
+		startCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	} else {
 		// Default 15 second timeout for server startup
-		var cancel context.CancelFunc
 		startCtx, cancel = context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 	}
@@ -150,24 +159,14 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 		Logger:    m.logger.With(zap.String("server", name)),
 	})
 
-	// Initialize with timeout (use config timeout if specified, otherwise use startCtx which has default timeout)
-	initCtx := startCtx
-	if config.Timeout != "" {
-		timeout, err := time.ParseDuration(config.Timeout)
-		if err != nil {
-			return fmt.Errorf("invalid timeout: %w", err)
-		}
-		var cancel context.CancelFunc
-		initCtx, cancel = context.WithTimeout(startCtx, timeout)
-		defer cancel()
-	}
+	// Initialize with the timeout context
 
 	clientInfo := protocol.Implementation{
 		Name:    m.config.ClientInfo.Name,
 		Version: m.config.ClientInfo.Version,
 	}
 
-	if err := mcpClient.Initialize(initCtx, clientInfo); err != nil {
+	if err := mcpClient.Initialize(startCtx, clientInfo); err != nil {
 		trans.Close()
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
