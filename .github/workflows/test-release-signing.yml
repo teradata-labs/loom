@@ -1,0 +1,199 @@
+name: Test Release Signing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/test-release-signing.yml'
+
+jobs:
+  test-gpg-signing:
+    name: Test GPG Signing Process
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Generate test GPG key
+        run: |
+          # Generate a test key non-interactively
+          cat > /tmp/gpg-batch << 'EOF'
+          %no-protection
+          Key-Type: RSA
+          Key-Length: 4096
+          Name-Real: Test Loom Release Bot
+          Name-Email: test-releases@teradata.com
+          Expire-Date: 0
+          %commit
+          EOF
+
+          gpg --batch --generate-key /tmp/gpg-batch
+
+          echo "✅ Test GPG key generated"
+          gpg --list-keys test-releases@teradata.com
+
+      - name: Export test key
+        run: |
+          # Export public key
+          gpg --armor --export test-releases@teradata.com > test-key.asc
+          echo "Public key size: $(wc -c < test-key.asc) bytes"
+
+          # Export and encode private key (simulating the secret)
+          gpg --armor --export-secret-keys test-releases@teradata.com | base64 > test-key-private-base64.txt
+          echo "Private key (base64) size: $(wc -c < test-key-private-base64.txt) bytes"
+
+          echo "✅ Keys exported successfully"
+
+      - name: Test key import (simulate workflow step)
+        run: |
+          # Simulate what happens in release workflow
+          TEST_PRIVATE_KEY=$(cat test-key-private-base64.txt)
+          echo "$TEST_PRIVATE_KEY" | base64 -d | gpg --import --batch --yes
+
+          echo "✅ Key import successful"
+          gpg --list-secret-keys
+
+      - name: Create test files to sign
+        run: |
+          # Create test binary and checksum
+          echo "This is a test binary" > test-binary.tar.gz
+          sha256sum test-binary.tar.gz > test-binary.tar.gz.sha256
+
+          echo "Test files created:"
+          ls -lh test-binary*
+
+      - name: Test signing process
+        run: |
+          # Sign the checksum (no passphrase for test key)
+          gpg --batch --yes --detach-sign --armor test-binary.tar.gz.sha256
+
+          if [ ! -f test-binary.tar.gz.sha256.asc ]; then
+            echo "❌ Signature file not created!"
+            exit 1
+          fi
+
+          echo "✅ Signature created successfully"
+          ls -lh test-binary.tar.gz.sha256.asc
+
+          echo ""
+          echo "Signature contents:"
+          cat test-binary.tar.gz.sha256.asc
+
+      - name: Test signature verification
+        run: |
+          # Verify the signature
+          gpg --verify test-binary.tar.gz.sha256.asc
+
+          echo "✅ Signature verification successful"
+
+      - name: Test checksum verification
+        run: |
+          # Verify the checksum
+          sha256sum -c test-binary.tar.gz.sha256
+
+          echo "✅ Checksum verification successful"
+
+      - name: Validate release.yml syntax
+        run: |
+          echo "Checking release.yml for GPG signing steps..."
+
+          # Check for GPG import step
+          if ! grep -q "Import GPG key" .github/workflows/release.yml; then
+            echo "❌ Missing 'Import GPG key' step"
+            exit 1
+          fi
+
+          # Check for signing steps
+          if ! grep -q "Sign checksums (Unix)" .github/workflows/release.yml; then
+            echo "❌ Missing 'Sign checksums (Unix)' step"
+            exit 1
+          fi
+
+          if ! grep -q "Sign checksums (Windows)" .github/workflows/release.yml; then
+            echo "❌ Missing 'Sign checksums (Windows)' step"
+            exit 1
+          fi
+
+          # Check for .asc file uploads
+          if ! grep -q "\.asc" .github/workflows/release.yml; then
+            echo "❌ Missing .asc file uploads"
+            exit 1
+          fi
+
+          echo "✅ All GPG signing steps present in release.yml"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ GPG Signing Test Summary"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✓ Test GPG key generation"
+          echo "✓ Key export (public + private base64)"
+          echo "✓ Key import from base64 (workflow simulation)"
+          echo "✓ File signing (.asc creation)"
+          echo "✓ Signature verification"
+          echo "✓ Checksum verification"
+          echo "✓ release.yml workflow validation"
+          echo ""
+          echo "🎯 The signing process is ready for production!"
+          echo ""
+          echo "Next steps:"
+          echo "1. Generate real GPG key (see RELEASE_NOTES_v1.1.0.md)"
+          echo "2. Add GPG_PRIVATE_KEY and GPG_PASSPHRASE to GitHub Secrets"
+          echo "3. Replace loom-release-key.asc with real public key"
+          echo "4. Merge PR and push v1.1.0 tag to trigger release"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  test-slsa-workflow:
+    name: Test SLSA Attestation Workflow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Validate SLSA job syntax
+        run: |
+          echo "Checking release.yml for SLSA attestation job..."
+
+          # Check for attestations job
+          if ! grep -q "create-attestations:" .github/workflows/release.yml; then
+            echo "❌ Missing 'create-attestations' job"
+            exit 1
+          fi
+
+          # Check for proper permissions
+          if ! grep -A5 "create-attestations:" .github/workflows/release.yml | grep -q "attestations: write"; then
+            echo "❌ Missing 'attestations: write' permission"
+            exit 1
+          fi
+
+          if ! grep -A5 "create-attestations:" .github/workflows/release.yml | grep -q "id-token: write"; then
+            echo "❌ Missing 'id-token: write' permission"
+            exit 1
+          fi
+
+          # Check for attest action
+          if ! grep -q "actions/attest-build-provenance@v2" .github/workflows/release.yml; then
+            echo "❌ Missing attest-build-provenance action"
+            exit 1
+          fi
+
+          echo "✅ SLSA attestation job properly configured"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ SLSA Attestation Test Summary"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✓ create-attestations job exists"
+          echo "✓ Proper permissions configured"
+          echo "✓ actions/attest-build-provenance@v2 action used"
+          echo ""
+          echo "🎯 SLSA provenance will be generated automatically!"
+          echo ""
+          echo "Note: SLSA attestations use GitHub's OIDC tokens"
+          echo "No secrets needed - it works out of the box!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
