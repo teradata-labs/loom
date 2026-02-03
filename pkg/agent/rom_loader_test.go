@@ -16,15 +16,13 @@ func TestLoadROMContent_BaseOnly(t *testing.T) {
 	if len(content) == 0 {
 		t.Fatal("Base ROM should not be empty")
 	}
-	if len(content) < 1500 {
-		t.Fatalf("Base ROM should be ~2KB, got %d bytes", len(content))
+	// Base ROM is ~1KB after removing tool_search directives
+	if len(content) < 900 {
+		t.Fatalf("Base ROM should be ~1KB, got %d bytes", len(content))
 	}
 	// Should contain START_HERE content
 	if !strings.Contains(content, "START HERE") {
 		t.Fatal("Base ROM should contain START_HERE content")
-	}
-	if !strings.Contains(content, "tool discovery") {
-		t.Fatal("Base ROM should contain tool discovery section")
 	}
 	// Should NOT contain domain-specific content
 	if strings.Contains(content, "DOMAIN-SPECIFIC KNOWLEDGE") {
@@ -136,9 +134,9 @@ func TestGetROMSize_BaseOnly(t *testing.T) {
 	if size == 0 {
 		t.Fatal("Base ROM size should not be 0")
 	}
-	// Base ROM now ~2KB (consolidated to remove duplication with system.yaml)
-	if size < 1500 {
-		t.Fatalf("Base ROM should be ~2KB, got %d bytes", size)
+	// Base ROM is ~1KB after removing tool_search directives
+	if size < 900 {
+		t.Fatalf("Base ROM should be ~1KB, got %d bytes", size)
 	}
 	t.Logf("Base ROM size: %d bytes", size)
 }
@@ -169,9 +167,9 @@ func TestGetBaseROMSize(t *testing.T) {
 	if size == 0 {
 		t.Fatal("Base ROM size should not be 0")
 	}
-	// Base ROM now ~2KB (consolidated to remove duplication with system.yaml)
-	if size < 1500 {
-		t.Fatalf("Base ROM should be ~2KB, got %d bytes", size)
+	// Base ROM is ~1KB after removing tool_search directives
+	if size < 900 {
+		t.Fatalf("Base ROM should be ~1KB, got %d bytes", size)
 	}
 	t.Logf("Base ROM size: %d bytes", size)
 }

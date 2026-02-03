@@ -525,3 +525,89 @@ func (m *mockShuttleTool) Execute(ctx context.Context, params map[string]interfa
 func (m *mockShuttleTool) Backend() string {
 	return ""
 }
+
+func TestConvertTools_WithNilProperties(t *testing.T) {
+	// Test that object schemas with nil properties are converted to empty properties maps
+	// This is required by Azure OpenAI - object types must always have a properties field
+	mockTool := &mockShuttleTool{
+		name:        "manage_ephemeral_agents",
+		description: "Manage ephemeral agents",
+		schema: &shuttle.JSONSchema{
+			Type: "object",
+			Properties: map[string]*shuttle.JSONSchema{
+				"command": {
+					Type:        "string",
+					Description: "Command to execute",
+				},
+				"metadata": {
+					Type:        "object",
+					Description: "Optional metadata",
+					Properties:  nil, // This should be converted to empty map
+				},
+			},
+			Required: []string{"command"},
+		},
+	}
+
+	apiTools := convertTools([]shuttle.Tool{mockTool})
+
+	require.Len(t, apiTools, 1)
+	tool := apiTools[0]
+
+	// Verify function definition
+	assert.Equal(t, "function", tool.Type)
+	assert.Equal(t, "manage_ephemeral_agents", tool.Function.Name)
+	assert.Equal(t, "Manage ephemeral agents", tool.Function.Description)
+
+	// Verify parameters
+	params := tool.Function.Parameters
+	assert.Equal(t, "object", params["type"])
+
+	// Verify properties exist
+	properties, ok := params["properties"].(map[string]interface{})
+	require.True(t, ok)
+
+	// Verify command property
+	command, ok := properties["command"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "string", command["type"])
+
+	// Verify metadata property has empty properties map (not nil)
+	metadata, ok := properties["metadata"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "object", metadata["type"])
+
+	// OpenAI behavior: properties field is OMITTED (not present) when nil
+	_, hasProps := metadata["properties"]
+	assert.False(t, hasProps, "metadata should NOT have properties field when nil (OpenAI behavior)")
+
+	// Verify required field
+	required, ok := params["required"].([]string)
+	require.True(t, ok)
+	assert.Equal(t, []string{"command"}, required)
+}
+
+func TestConvertTools_TopLevelNilProperties(t *testing.T) {
+	// Test that top-level object schema with nil properties gets empty properties map
+	mockTool := &mockShuttleTool{
+		name:        "empty_object_tool",
+		description: "Tool with empty object schema",
+		schema: &shuttle.JSONSchema{
+			Type:       "object",
+			Properties: nil, // Top-level nil properties
+		},
+	}
+
+	apiTools := convertTools([]shuttle.Tool{mockTool})
+
+	require.Len(t, apiTools, 1)
+	tool := apiTools[0]
+
+	// Verify parameters
+	params := tool.Function.Parameters
+	assert.Equal(t, "object", params["type"])
+
+	// OpenAI behavior: properties field is OMITTED (not present) when nil
+	_, hasProps := params["properties"]
+	assert.False(t, hasProps, "top-level object should NOT have properties field when nil (OpenAI behavior)")
+}

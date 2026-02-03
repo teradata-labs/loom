@@ -328,26 +328,16 @@ func TestServer_ListTools_Empty(t *testing.T) {
 		t.Fatalf("ListTools failed: %v", err)
 	}
 
-	// Agent has 1 built-in tool: shell_execute
+	// Agent has NO built-in tools auto-registered (zero-tools policy)
+	// Note: shell_execute auto-registration removed in Azure 11-tool bug fix
+	// Note: Tools must be explicitly configured in agent config
 	// Note: query_tool_result uses progressive disclosure (registered after first large result)
 	// Note: get_error_details uses progressive disclosure (registered after first error)
 	// Note: get_tool_result removed - inline metadata makes it unnecessary
 	// Note: recall_conversation, clear_recalled_context, search_conversation removed in scratchpad experiment
 	// Note: record_finding removed - replaced by automatic extraction
-	if len(resp.Tools) != 1 {
-		t.Errorf("Expected 1 built-in tool, got: %d", len(resp.Tools))
-	}
-
-	// Verify built-in tools are present
-	toolNames := make(map[string]bool)
-	for _, tool := range resp.Tools {
-		toolNames[tool.Name] = true
-	}
-	expectedTools := []string{"shell_execute"}
-	for _, expected := range expectedTools {
-		if !toolNames[expected] {
-			t.Errorf("Expected built-in tool '%s' not found", expected)
-		}
+	if len(resp.Tools) != 0 {
+		t.Errorf("Expected 0 built-in tools (zero-tools policy), got: %d", len(resp.Tools))
 	}
 }
 

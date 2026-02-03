@@ -175,12 +175,23 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Convert tools to OpenAI format (Azure uses same structure)
 	apiTools := convertTools(tools)
 
+	// Sanitize tool schemas to remove problematic fields
+	// Azure OpenAI is strict about: empty arrays, empty defaults, etc.
+	apiTools = SanitizeToolSchemas(apiTools)
+
 	// Build request (same as OpenAI)
 	req := &openai.ChatCompletionRequest{
 		Model:       c.deploymentID, // Azure ignores this but include for completeness
 		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
+	}
+
+	// Azure OpenAI: Newer models (gpt-4o, gpt-4-turbo-2024-04-09+) require max_completion_tokens
+	// Older models (gpt-4, gpt-35-turbo) require max_tokens
+	if c.usesMaxCompletionTokens() {
+		req.MaxCompletionTokens = c.maxTokens
+	} else {
+		req.MaxTokens = c.maxTokens
 	}
 
 	if len(apiTools) > 0 {
@@ -372,6 +383,44 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 	return inputCost + outputCost
 }
 
+// usesMaxCompletionTokens returns true if this deployment requires max_completion_tokens
+// instead of max_tokens.
+//
+// Azure OpenAI behavior:
+// - API version 2024-08-01-preview and later: uses max_completion_tokens
+// - Newer models (gpt-4o, gpt-5+, o1, o3, etc.): use max_completion_tokens
+// - Older models (gpt-4, gpt-35-turbo): use max_tokens
+//
+// Strategy: Default to max_completion_tokens (forward-compatible) unless we detect
+// an explicitly old model that requires max_tokens.
+func (c *Client) usesMaxCompletionTokens() bool {
+	// Check API version (2024-08-01-preview and later always use max_completion_tokens)
+	if c.apiVersion >= "2024-08-01" {
+		return true
+	}
+
+	// Check if this is an old model that explicitly requires max_tokens
+	// These are the only models that DON'T support max_completion_tokens:
+	oldModels := []string{
+		"gpt-4-0613",    // Original GPT-4
+		"gpt-4-32k",     // GPT-4 32k context
+		"gpt-35-turbo",  // GPT-3.5-turbo (Azure naming)
+		"gpt-3.5-turbo", // GPT-3.5-turbo (OpenAI naming)
+	}
+
+	modelLower := toLower(c.modelName)
+	for _, oldModel := range oldModels {
+		// Exact match or starts with the old model name
+		if modelLower == toLower(oldModel) || contains(modelLower, toLower(oldModel)) {
+			return false // Use max_tokens for old models
+		}
+	}
+
+	// Default to max_completion_tokens for all other models (forward-compatible)
+	// This covers: gpt-4o, gpt-4o-mini, gpt-5+, o1, o3, gpt-4-turbo, and future models
+	return true
+}
+
 // inferModelFromDeployment attempts to infer the model name from deployment ID.
 // Common patterns: "gpt-4o-deployment" -> "gpt-4o", "my-gpt4-turbo" -> "gpt-4-turbo"
 func inferModelFromDeployment(deploymentID string) string {
@@ -504,6 +553,7 @@ func convertTools(tools []shuttle.Tool) []openai.Tool {
 				params["type"] = "object"
 			}
 
+			// Add properties only if they exist (same as regular OpenAI)
 			if schema.Properties != nil {
 				params["properties"] = convertSchemaProperties(schema.Properties)
 			}
@@ -540,6 +590,7 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 		if schema.Default != nil {
 			propMap["default"] = schema.Default
 		}
+		// Add properties/items only if they exist (same as regular OpenAI)
 		if schema.Properties != nil {
 			propMap["properties"] = convertSchemaProperties(schema.Properties)
 		}
@@ -566,12 +617,21 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	apiMessages := convertMessages(messages)
 	apiTools := convertTools(tools)
 
+	// Sanitize tool schemas (same as non-streaming)
+	apiTools = SanitizeToolSchemas(apiTools)
+
 	req := &openai.ChatCompletionRequest{
 		Model:       c.deploymentID,
 		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
 		Stream:      true, // Enable streaming
+	}
+
+	// Azure OpenAI: Newer models require max_completion_tokens instead of max_tokens
+	if c.usesMaxCompletionTokens() {
+		req.MaxCompletionTokens = c.maxTokens
+	} else {
+		req.MaxTokens = c.maxTokens
 	}
 
 	if len(apiTools) > 0 {
