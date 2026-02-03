@@ -23,7 +23,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/teradata-labs/loom/pkg/communication"
-	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -189,13 +188,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		// See formatToolResult() for automatic registration when large results are stored
 	}
 
-	// Auto-register shell_execute tool (standard toolset)
-	// Uses LOOM_DATA_DIR as baseDir for consistent artifact/data management
-	shellTool := shuttle.Tool(builtin.NewShellExecuteTool(config.GetLoomDataDir()))
-	if a.prompts != nil {
-		shellTool = shuttle.NewPromptAwareTool(shellTool, a.prompts, "tools.shell_execute")
-	}
-	a.tools.Register(shellTool)
+	// shell_execute is no longer auto-registered in NewAgent
+	// Agents that need shell_execute must explicitly list it in config.Tools.Builtin
+	// Registration happens in AgentRegistry.CreateAgent() based on config
 
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction

@@ -633,13 +633,19 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 
 		// Validate provider is supported
 		validProviders := map[string]bool{
-			"anthropic": true,
-			"bedrock":   true,
-			"ollama":    true,
+			"anthropic":    true,
+			"bedrock":      true,
+			"ollama":       true,
+			"openai":       true,
+			"azure-openai": true,
+			"azureopenai":  true,
+			"mistral":      true,
+			"gemini":       true,
+			"huggingface":  true,
 		}
 		provider := strings.ToLower(config.Llm.Provider)
 		if !validProviders[provider] {
-			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, ollama)", config.Llm.Provider)
+			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
 		}
 
 		// Validate temperature range
