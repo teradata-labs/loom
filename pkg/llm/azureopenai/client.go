@@ -188,16 +188,17 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		// Always write debug info to file for troubleshooting
 		writeDebugToFile(apiTools, validationErrors)
 
+		// ALWAYS print debug info to console
+		fmt.Printf("\n=== AZURE OPENAI DEBUG: %d TOOLS ===\n", len(apiTools))
 		if len(validationErrors) > 0 {
-			// Log validation errors for debugging
-			fmt.Printf("\n=== AZURE OPENAI SCHEMA VALIDATION WARNINGS ===\n")
+			fmt.Printf("VALIDATION WARNINGS:\n")
 			for _, err := range validationErrors {
 				fmt.Printf("  - %s\n", err)
 			}
-			fmt.Printf("\n=== SANITIZED TOOL SCHEMAS ===\n")
-			fmt.Printf("%s\n", DumpToolSchemasJSON(apiTools))
-			fmt.Printf("\nDebug info written to: ~/.loom/azure_schema_debug.txt\n\n")
 		}
+		fmt.Printf("\n=== TOOL SCHEMAS ===\n")
+		fmt.Printf("%s\n", DumpToolSchemasJSON(apiTools))
+		fmt.Printf("Debug written to: ~/.loom/azure_schema_debug.txt\n\n")
 	}
 
 	// Build request (same as OpenAI)

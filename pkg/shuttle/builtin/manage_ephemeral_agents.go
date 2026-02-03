@@ -108,20 +108,15 @@ func (t *ManageEphemeralAgentsTool) InputSchema() *shuttle.JSONSchema {
 		"Parameters for managing ephemeral agents",
 		map[string]*shuttle.JSONSchema{
 			"command": shuttle.NewStringSchema("Command: 'spawn' or 'despawn'").
-				WithEnum([]string{"spawn", "despawn"}),
+				WithEnum("spawn", "despawn"),
 			// Spawn parameters
-			"agent_id": shuttle.NewStringSchema("(spawn) Agent config to spawn (e.g., 'fighter-spawnable')"),
-			"workflow_id": shuttle.NewStringSchema("(spawn) Optional: workflow namespace (auto-generated if not provided)").
-				WithDefault(""),
-			"initial_message": shuttle.NewStringSchema("(spawn) Optional: first message to send to spawned agent").
-				WithDefault(""),
-			"auto_subscribe": shuttle.NewArraySchema("(spawn) Optional: topics to auto-subscribe", shuttle.NewStringSchema("Topic name")),
-			// metadata removed - Azure OpenAI doesn't support object schemas with additionalProperties
-			// Users can pass metadata as part of initial_message or workflow_id instead
+			"agent_id":         shuttle.NewStringSchema("(spawn) Agent config to spawn (e.g., 'fighter-spawnable')"),
+			"workflow_id":      shuttle.NewStringSchema("(spawn) Optional: workflow namespace (auto-generated if not provided)"),
+			"initial_message":  shuttle.NewStringSchema("(spawn) Optional: first message to send to spawned agent"),
+			"auto_subscribe":   shuttle.NewArraySchema("(spawn) Optional: topics to auto-subscribe", shuttle.NewStringSchema("Topic name")),
 			// Despawn parameters
 			"sub_agent_id": shuttle.NewStringSchema("(despawn) Full ID of sub-agent to despawn (e.g., 'workflow:agent-name')"),
-			"reason": shuttle.NewStringSchema("(despawn) Optional: reason for despawn").
-				WithDefault(""),
+			"reason":       shuttle.NewStringSchema("(despawn) Optional: reason for despawn"),
 		},
 		[]string{"command"}, // Only command is required
 	)
