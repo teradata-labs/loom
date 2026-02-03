@@ -212,30 +212,31 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Run each fuzz test individually with timeout
-          go test -tags fts5 -fuzz='^FuzzTokenCounter$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzTokenCounter had issues"
-          go test -tags fts5 -fuzz='^FuzzCompressionProfile$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzCompressionProfile had issues"
-          go test -tags fts5 -fuzz='^FuzzConfigLoaderYAML$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzConfigLoaderYAML had issues"
+          # Use -run=^$ to skip regular tests and only run fuzz tests
+          go test -tags fts5 -run=^$ -fuzz='^FuzzTokenCounter$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzTokenCounter had issues"
+          go test -tags fts5 -run=^$ -fuzz='^FuzzCompressionProfile$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzCompressionProfile had issues"
+          go test -tags fts5 -run=^$ -fuzz='^FuzzConfigLoaderYAML$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzConfigLoaderYAML had issues"
 
           echo "✅ Agent package fuzz tests completed" >> $GITHUB_STEP_SUMMARY
 
       - name: Run fuzz tests (prompts package)
         run: |
-          go test -fuzz='^FuzzPromptInterpolation$' -fuzztime=30s ./pkg/prompts || echo "::warning::FuzzPromptInterpolation had issues"
-          go test -fuzz='^FuzzEscapeString$' -fuzztime=30s ./pkg/prompts || echo "::warning::FuzzEscapeString had issues"
+          go test -run=^$ -fuzz='^FuzzPromptInterpolation$' -fuzztime=30s ./pkg/prompts || echo "::warning::FuzzPromptInterpolation had issues"
+          go test -run=^$ -fuzz='^FuzzEscapeString$' -fuzztime=30s ./pkg/prompts || echo "::warning::FuzzEscapeString had issues"
 
           echo "✅ Prompts package fuzz tests completed" >> $GITHUB_STEP_SUMMARY
 
       - name: Run fuzz tests (observability package)
         run: |
-          go test -fuzz='^FuzzSpanAttributes$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzSpanAttributes had issues"
-          go test -fuzz='^FuzzSpanTimestamps$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzSpanTimestamps had issues"
+          go test -run=^$ -fuzz='^FuzzSpanAttributes$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzSpanAttributes had issues"
+          go test -run=^$ -fuzz='^FuzzSpanTimestamps$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzSpanTimestamps had issues"
 
           echo "✅ Observability package fuzz tests completed" >> $GITHUB_STEP_SUMMARY
 
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
-          go test -tags hawk -fuzz='^FuzzPrivacyRedaction$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzPrivacyRedaction had issues"
-          go test -tags hawk -fuzz='^FuzzEmailPattern$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzEmailPattern had issues"
+          go test -tags hawk -run=^$ -fuzz='^FuzzPrivacyRedaction$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzPrivacyRedaction had issues"
+          go test -tags hawk -run=^$ -fuzz='^FuzzEmailPattern$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzEmailPattern had issues"
 
           echo "✅ Privacy fuzz tests completed" >> $GITHUB_STEP_SUMMARY
 
