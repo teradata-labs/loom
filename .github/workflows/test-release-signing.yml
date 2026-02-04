@@ -44,7 +44,8 @@ jobs:
           echo "Public key size: $(wc -c < test-key.asc) bytes"
 
           # Export and encode private key (simulating the secret)
-          gpg --armor --export-secret-keys test-releases@teradata.com | base64 > test-key-private-base64.txt
+          # Need to provide passphrase for private key export
+          echo "test-passphrase-12345" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --armor --export-secret-keys test-releases@teradata.com | base64 > test-key-private-base64.txt
           echo "Private key (base64) size: $(wc -c < test-key-private-base64.txt) bytes"
 
           echo "✅ Keys exported successfully"
@@ -52,8 +53,7 @@ jobs:
       - name: Test key import (simulate workflow step)
         run: |
           # Simulate what happens in release workflow
-          TEST_PRIVATE_KEY=$(cat test-key-private-base64.txt)
-          echo "$TEST_PRIVATE_KEY" | base64 -d | gpg --import --batch --yes
+          base64 -d test-key-private-base64.txt | gpg --import --batch --yes
 
           echo "✅ Key import successful"
           gpg --list-secret-keys
