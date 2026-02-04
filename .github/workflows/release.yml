@@ -257,7 +257,7 @@ jobs:
 
           # Sign checksum with validation
           CHECKSUM_FILE="${{ matrix.output }}.tar.gz.sha256"
-          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
           if [ ! -f "$CHECKSUM_FILE.asc" ]; then
             echo "::error::GPG signature file not created"
             exit 1
@@ -286,7 +286,7 @@ jobs:
 
           # Sign checksum with validation
           CHECKSUM_FILE="${{ matrix.output }}.zip.sha256"
-          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
           if [ ! -f "$CHECKSUM_FILE.asc" ]; then
             echo "::error::GPG signature file not created"
             exit 1
@@ -394,7 +394,7 @@ jobs:
 
           # Sign checksum with validation
           CHECKSUM_FILE="loom-windows-x64.zip.sha256"
-          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
           if [ ! -f "$CHECKSUM_FILE.asc" ]; then
             echo "::error::GPG signature file not created"
             exit 1

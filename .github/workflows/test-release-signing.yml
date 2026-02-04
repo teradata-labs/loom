@@ -70,7 +70,7 @@ jobs:
       - name: Test signing process with passphrase
         run: |
           # Sign the checksum using passphrase (matching production setup)
-          echo "test-passphrase-12345" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor test-binary.tar.gz.sha256
+          echo "test-passphrase-12345" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --detach-sign --armor test-binary.tar.gz.sha256
 
           if [ ! -f test-binary.tar.gz.sha256.asc ]; then
             echo "❌ Signature file not created!"
