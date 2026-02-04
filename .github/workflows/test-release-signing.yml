@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 
       - name: Generate test GPG key with passphrase
         run: |
@@ -102,9 +102,9 @@ jobs:
         run: |
           echo "Checking release.yml for GPG signing steps..."
 
-          # Check for GPG import step
-          if ! grep -q "Import GPG key" .github/workflows/release.yml; then
-            echo "❌ Missing 'Import GPG key' step"
+          # Check for GPG setup step (composite action)
+          if ! grep -q "Setup GPG" .github/workflows/release.yml; then
+            echo "❌ Missing 'Setup GPG' step"
             exit 1
           fi
 
@@ -155,7 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 
       - name: Validate SLSA job syntax
         run: |
@@ -178,8 +178,8 @@ jobs:
             exit 1
           fi
 
-          # Check for attest action
-          if ! grep -q "actions/attest-build-provenance@v2" .github/workflows/release.yml; then
+          # Check for attest action (SHA-pinned or tag)
+          if ! grep -q "actions/attest-build-provenance" .github/workflows/release.yml; then
             echo "❌ Missing attest-build-provenance action"
             exit 1
           fi
