@@ -431,6 +431,60 @@ ReleaseNotesUrl: https://github.com/teradata-labs/loom/releases/tag/v1.2.3
 	}
 }
 
+// TestWingetVersion tests Winget version manifest (Teradata.Loom.yaml) update/extract
+func TestWingetVersion(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputContent  string
+		updateVersion Version
+		expectExtract []string
+	}{
+		{
+			name: "standard version manifest",
+			inputContent: `PackageIdentifier: Teradata.Loom
+PackageVersion: 1.2.3
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0
+`,
+			updateVersion: Version{Major: 2, Minor: 0, Patch: 0},
+			expectExtract: []string{"1.2.3"},
+		},
+		{
+			name: "version with extra whitespace",
+			inputContent: `PackageIdentifier: Teradata.Loom
+PackageVersion: 1.0.0
+DefaultLocale: en-US
+`,
+			updateVersion: Version{Major: 3, Minor: 1, Patch: 4},
+			expectExtract: []string{"1.0.0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			testFile := filepath.Join(tmpDir, "Teradata.Loom.yaml")
+
+			// Test extract
+			require.NoError(t, os.WriteFile(testFile, []byte(tt.inputContent), 0644))
+			extracted, err := extractWingetVersion(testFile)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectExtract, extracted)
+
+			// Test update
+			err = updateWingetVersion(testFile, tt.updateVersion)
+			require.NoError(t, err)
+
+			content, err := os.ReadFile(testFile)
+			require.NoError(t, err)
+			result := string(content)
+
+			assert.Contains(t, result, "PackageVersion: "+tt.updateVersion.String())
+		})
+	}
+}
+
 // TestReadmeVersion tests README.md version badge update/extract
 func TestReadmeVersion(t *testing.T) {
 	tests := []struct {
@@ -630,6 +684,7 @@ func TestMissingFile(t *testing.T) {
 		{"extractScoopManifest", extractScoopManifest},
 		{"extractWingetInstaller", extractWingetInstaller},
 		{"extractWingetLocale", extractWingetLocale},
+		{"extractWingetVersion", extractWingetVersion},
 		{"extractReadmeVersion", extractReadmeVersion},
 		{"extractClaudeVersion", extractClaudeVersion},
 		{"extractDocsReadme", extractDocsReadme},

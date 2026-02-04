@@ -5,13 +5,16 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
+env:
+  GPG_EMAIL: 'releases@teradata.com'
+  GIT_USER_NAME: 'Loom Release Bot'
 
 jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -50,17 +53,14 @@ jobs:
 
           echo "✅ All files have consistent versions!"
 
-      - name: Import GPG key
-        run: |
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
-
-      - name: Configure git for GPG signing
-        run: |
-          git config --global user.name "Loom Release Bot"
-          git config --global user.email "releases@teradata.com"
-          git config --global user.signingkey $(gpg --list-secret-keys --keyid-format LONG | grep sec | awk '{print $2}' | cut -d'/' -f2)
-          git config --global commit.gpgsign true
-          git config --global tag.gpgsign true
+      - name: Setup GPG
+        uses: ./.github/actions/setup-gpg
+        with:
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-email: ${{ env.GPG_EMAIL }}
+          gpg-email: ${{ env.GPG_EMAIL }}
+          git-user-name: ${{ env.GIT_USER_NAME }}
+          configure-git: 'true'
 
       - name: Generate changelog
         id: changelog
@@ -85,7 +85,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b  # v2.5.0
         with:
           body: |
             ## What's Changed
@@ -137,6 +137,8 @@ jobs:
     name: Build Binaries
     needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
@@ -227,6 +229,12 @@ jobs:
       - name: Generate Weaver Template
         run: go run ./cmd/generate-weaver
 
+      - name: Setup GPG
+        uses: ./.github/actions/setup-gpg
+        with:
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-email: ${{ env.GPG_EMAIL }}
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -247,13 +255,6 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
-
-          # Import GPG key with validation
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
-          if ! gpg --list-secret-keys | grep -q "releases@teradata.com"; then
-            echo "::error::GPG key import failed"
-            exit 1
-          fi
 
           # Sign checksum with validation
           CHECKSUM_FILE="${{ matrix.output }}.tar.gz.sha256"
@@ -277,13 +278,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Import GPG key with validation
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
-          if ! gpg --list-secret-keys | grep -q "releases@teradata.com"; then
-            echo "::error::GPG key import failed"
-            exit 1
-          fi
-
           # Sign checksum with validation
           CHECKSUM_FILE="${{ matrix.output }}.zip.sha256"
           echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
@@ -294,7 +288,7 @@ jobs:
 
       - name: Upload release assets (Unix)
         if: matrix.os != 'windows-latest'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b  # v2.5.0
         with:
           files: |
             ${{ matrix.output }}.tar.gz
@@ -305,7 +299,7 @@ jobs:
 
       - name: Upload release assets (Windows)
         if: matrix.os == 'windows-latest'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b  # v2.5.0
         with:
           files: |
             ${{ matrix.output }}.zip
@@ -318,44 +312,31 @@ jobs:
     name: Create Combined Windows Package
     needs: build-binaries
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
       - name: Wait for Windows binaries to be available
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          poll_for_asset() {
-            local asset_name="$1"
-            local max_attempts=30
-            local attempt=0
-
-            echo "Polling for asset: $asset_name"
-            while [ $attempt -lt $max_attempts ]; do
-              if gh release view "${{ github.ref_name }}" --json assets \
-                 --jq ".assets[].name" | grep -q "^${asset_name}$"; then
-                echo "✅ Asset available: $asset_name"
-                return 0
-              fi
-              attempt=$((attempt + 1))
-              sleep 2
-            done
-
-            echo "::error::Timeout waiting for asset: $asset_name"
-            return 1
-          }
+          chmod +x .github/scripts/poll-release-asset.sh
 
           # Wait for both Windows binaries
-          poll_for_asset "loom-windows-amd64.exe.zip"
-          poll_for_asset "looms-windows-amd64.exe.zip"
+          .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "loom-windows-amd64.exe.zip"
+          .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "looms-windows-amd64.exe.zip"
 
       - name: Download loom Windows binary
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
         with:
           tag: ${{ github.ref_name }}
           fileName: loom-windows-amd64.exe.zip
 
       - name: Download looms Windows binary
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
         with:
           tag: ${{ github.ref_name }}
           fileName: looms-windows-amd64.exe.zip
@@ -364,6 +345,12 @@ jobs:
         run: |
           Expand-Archive -Path loom-windows-amd64.exe.zip -DestinationPath . -Force
           Expand-Archive -Path looms-windows-amd64.exe.zip -DestinationPath . -Force
+
+      - name: Setup GPG
+        uses: ./.github/actions/setup-gpg
+        with:
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-email: ${{ env.GPG_EMAIL }}
 
       - name: Create combined package
         run: |
@@ -385,13 +372,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Import GPG key with validation
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
-          if ! gpg --list-secret-keys | grep -q "releases@teradata.com"; then
-            echo "::error::GPG key import failed"
-            exit 1
-          fi
-
           # Sign checksum with validation
           CHECKSUM_FILE="loom-windows-x64.zip.sha256"
           echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
@@ -403,7 +383,7 @@ jobs:
           echo "✅ Combined package checksum signed"
 
       - name: Upload combined package
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b  # v2.5.0
         with:
           files: |
             loom-windows-x64.zip
@@ -421,49 +401,36 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
       - name: Wait for all release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          poll_for_asset() {
-            local asset_name="$1"
-            local max_attempts=30
-            local attempt=0
-
-            while [ $attempt -lt $max_attempts ]; do
-              if gh release view "${{ github.ref_name }}" --json assets \
-                 --jq ".assets[].name" | grep -q "^${asset_name}$"; then
-                return 0
-              fi
-              attempt=$((attempt + 1))
-              sleep 2
-            done
-
-            echo "::error::Timeout waiting for asset: $asset_name"
-            return 1
-          }
+          chmod +x .github/scripts/poll-release-asset.sh
 
           # Wait for combined Windows package (created by create-combined-windows-package job)
           echo "Polling for combined Windows package..."
-          poll_for_asset "loom-windows-x64.zip"
-          poll_for_asset "loom-windows-x64.zip.sha256"
+          .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "loom-windows-x64.zip"
+          .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "loom-windows-x64.zip.sha256"
 
           # Wait for a few key binaries to ensure all are uploaded
           echo "Polling for sample Unix binaries..."
-          poll_for_asset "loom-linux-amd64.tar.gz"
-          poll_for_asset "loom-darwin-arm64.tar.gz"
+          .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "loom-linux-amd64.tar.gz"
+          .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "loom-darwin-arm64.tar.gz"
 
           echo "✅ All required assets are available"
 
       - name: Download release artifacts
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
         with:
           tag: ${{ github.ref_name }}
           fileName: '*.tar.gz'
           out-file-path: artifacts
 
       - name: Download Windows artifacts
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
         with:
           tag: ${{ github.ref_name }}
           fileName: '*.zip'

@@ -1,0 +1,48 @@
+name: 'Setup GPG'
+description: 'Import and configure GPG key for signing'
+inputs:
+  gpg-private-key:
+    description: 'Base64-encoded GPG private key'
+    required: true
+  gpg-email:
+    description: 'Email address associated with GPG key'
+    required: false
+    default: 'releases@teradata.com'
+  configure-git:
+    description: 'Whether to configure git for GPG signing'
+    required: false
+    default: 'false'
+  git-user-name:
+    description: 'Git user name for commits'
+    required: false
+    default: 'Loom Release Bot'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Import GPG key
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "${{ inputs.gpg-private-key }}" | base64 -d | gpg --import --batch --yes
+
+        # Validate import
+        if ! gpg --list-secret-keys | grep -q "${{ inputs.gpg-email }}"; then
+          echo "::error::GPG key import failed - key for ${{ inputs.gpg-email }} not found"
+          exit 1
+        fi
+
+        echo "✅ GPG key imported successfully for ${{ inputs.gpg-email }}"
+
+    - name: Configure git for GPG signing
+      if: inputs.configure-git == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config --global user.name "${{ inputs.git-user-name }}"
+        git config --global user.email "${{ inputs.gpg-email }}"
+        git config --global user.signingkey $(gpg --list-secret-keys --keyid-format LONG | grep sec | awk '{print $2}' | cut -d'/' -f2)
+        git config --global commit.gpgsign true
+        git config --global tag.gpgsign true
+
+        echo "✅ Git configured for GPG signing"
