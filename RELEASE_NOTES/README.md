@@ -36,9 +36,9 @@ To verify releases, see the verification instructions in each release note.
 
 ## Past Releases
 
-- [v1.0.2](../CHANGELOG.md#102) - See CHANGELOG.md
-- [v1.0.1](../CHANGELOG.md#101) - See CHANGELOG.md
-- [v1.0.0](../CHANGELOG.md#100) - See CHANGELOG.md
+- **v1.0.2** (2026-01-15) - Package distribution fixes - See CHANGELOG.md
+- **v1.0.1** (2026-01-14) - Database migration fixes - See CHANGELOG.md
+- **v1.0.0** (2026-01-09) - Initial release - See CHANGELOG.md
 
 ## Contributing
 

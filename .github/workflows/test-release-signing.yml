@@ -18,22 +18,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Generate test GPG key
+      - name: Generate test GPG key with passphrase
         run: |
-          # Generate a test key non-interactively
+          # Generate a test key with passphrase (matching production setup)
           cat > /tmp/gpg-batch << 'EOF'
-          %no-protection
+          %echo Generating test GPG key with passphrase
           Key-Type: RSA
           Key-Length: 4096
           Name-Real: Test Loom Release Bot
           Name-Email: test-releases@teradata.com
           Expire-Date: 0
+          Passphrase: test-passphrase-12345
           %commit
           EOF
 
           gpg --batch --generate-key /tmp/gpg-batch
 
-          echo "✅ Test GPG key generated"
+          echo "✅ Test GPG key generated with passphrase"
           gpg --list-keys test-releases@teradata.com
 
       - name: Export test key
@@ -66,17 +67,17 @@ jobs:
           echo "Test files created:"
           ls -lh test-binary*
 
-      - name: Test signing process
+      - name: Test signing process with passphrase
         run: |
-          # Sign the checksum (no passphrase for test key)
-          gpg --batch --yes --detach-sign --armor test-binary.tar.gz.sha256
+          # Sign the checksum using passphrase (matching production setup)
+          echo "test-passphrase-12345" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor test-binary.tar.gz.sha256
 
           if [ ! -f test-binary.tar.gz.sha256.asc ]; then
             echo "❌ Signature file not created!"
             exit 1
           fi
 
-          echo "✅ Signature created successfully"
+          echo "✅ Signature created successfully using passphrase"
           ls -lh test-binary.tar.gz.sha256.asc
 
           echo ""

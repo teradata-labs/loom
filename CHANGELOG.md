@@ -152,19 +152,19 @@ The `agent_management` tool now uses structured JSON for better type safety and 
 
 ---
 
-## [1.0.2] - 2025-XX-XX
+## [1.0.2] - 2026-01-15
 
 ### Fixed
 - Various bug fixes and improvements
 - Package distribution fixes
 
-## [1.0.1] - 2025-XX-XX
+## [1.0.1] - 2026-01-14
 
 ### Fixed
 - Database migration issues
 - Initial release stability improvements
 
-## [1.0.0] - 2025-XX-XX
+## [1.0.0] - 2026-01-09
 
 ### Added
 - Initial release of Loom

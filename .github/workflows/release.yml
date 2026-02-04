@@ -246,8 +246,22 @@ jobs:
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          set -euo pipefail
+
+          # Import GPG key with validation
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
-          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor ${{ matrix.output }}.tar.gz.sha256
+          if ! gpg --list-secret-keys | grep -q "releases@teradata.com"; then
+            echo "::error::GPG key import failed"
+            exit 1
+          fi
+
+          # Sign checksum with validation
+          CHECKSUM_FILE="${{ matrix.output }}.tar.gz.sha256"
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
+          if [ ! -f "$CHECKSUM_FILE.asc" ]; then
+            echo "::error::GPG signature file not created"
+            exit 1
+          fi
 
       - name: Compress binary (Windows)
         if: matrix.os == 'windows-latest'
@@ -261,8 +275,22 @@ jobs:
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          set -euo pipefail
+
+          # Import GPG key with validation
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
-          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor ${{ matrix.output }}.zip.sha256
+          if ! gpg --list-secret-keys | grep -q "releases@teradata.com"; then
+            echo "::error::GPG key import failed"
+            exit 1
+          fi
+
+          # Sign checksum with validation
+          CHECKSUM_FILE="${{ matrix.output }}.zip.sha256"
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
+          if [ ! -f "$CHECKSUM_FILE.asc" ]; then
+            echo "::error::GPG signature file not created"
+            exit 1
+          fi
 
       - name: Upload release assets (Unix)
         if: matrix.os != 'windows-latest'
@@ -291,9 +319,34 @@ jobs:
     needs: build-binaries
     runs-on: windows-latest
     steps:
-      - name: Wait for release assets to be available
-        shell: pwsh
-        run: Start-Sleep -Seconds 10
+      - name: Wait for Windows binaries to be available
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          poll_for_asset() {
+            local asset_name="$1"
+            local max_attempts=30
+            local attempt=0
+
+            echo "Polling for asset: $asset_name"
+            while [ $attempt -lt $max_attempts ]; do
+              if gh release view "${{ github.ref_name }}" --json assets \
+                 --jq ".assets[].name" | grep -q "^${asset_name}$"; then
+                echo "✅ Asset available: $asset_name"
+                return 0
+              fi
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+
+            echo "::error::Timeout waiting for asset: $asset_name"
+            return 1
+          }
+
+          # Wait for both Windows binaries
+          poll_for_asset "loom-windows-amd64.exe.zip"
+          poll_for_asset "looms-windows-amd64.exe.zip"
 
       - name: Download loom Windows binary
         uses: robinraju/release-downloader@v1
@@ -325,26 +378,82 @@ jobs:
           Write-Host "Combined package SHA256:"
           Get-Content loom-windows-x64.zip.sha256
 
+      - name: Sign combined package checksum
+        shell: bash
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # Import GPG key with validation
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --import --batch --yes
+          if ! gpg --list-secret-keys | grep -q "releases@teradata.com"; then
+            echo "::error::GPG key import failed"
+            exit 1
+          fi
+
+          # Sign checksum with validation
+          CHECKSUM_FILE="loom-windows-x64.zip.sha256"
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --detach-sign --armor "$CHECKSUM_FILE"
+          if [ ! -f "$CHECKSUM_FILE.asc" ]; then
+            echo "::error::GPG signature file not created"
+            exit 1
+          fi
+
+          echo "✅ Combined package checksum signed"
+
       - name: Upload combined package
         uses: softprops/action-gh-release@v2
         with:
           files: |
             loom-windows-x64.zip
             loom-windows-x64.zip.sha256
+            loom-windows-x64.zip.sha256.asc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   create-attestations:
     name: Generate SLSA Provenance
-    needs: build-binaries
+    needs: create-combined-windows-package
     runs-on: ubuntu-latest
     permissions:
       attestations: write
       id-token: write
       contents: read
     steps:
-      - name: Wait for release assets
-        run: sleep 15
+      - name: Wait for all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          poll_for_asset() {
+            local asset_name="$1"
+            local max_attempts=30
+            local attempt=0
+
+            while [ $attempt -lt $max_attempts ]; do
+              if gh release view "${{ github.ref_name }}" --json assets \
+                 --jq ".assets[].name" | grep -q "^${asset_name}$"; then
+                return 0
+              fi
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+
+            echo "::error::Timeout waiting for asset: $asset_name"
+            return 1
+          }
+
+          # Wait for combined Windows package (created by create-combined-windows-package job)
+          echo "Polling for combined Windows package..."
+          poll_for_asset "loom-windows-x64.zip"
+          poll_for_asset "loom-windows-x64.zip.sha256"
+
+          # Wait for a few key binaries to ensure all are uploaded
+          echo "Polling for sample Unix binaries..."
+          poll_for_asset "loom-linux-amd64.tar.gz"
+          poll_for_asset "loom-darwin-arm64.tar.gz"
+
+          echo "✅ All required assets are available"
 
       - name: Download release artifacts
         uses: robinraju/release-downloader@v1

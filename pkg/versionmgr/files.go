@@ -116,6 +116,12 @@ func GetAllTargets(repoRoot string) []FileTarget {
 			UpdateFunc:  updateChocolateyInstall,
 			ExtractFunc: extractChocolateyInstall,
 		},
+		{
+			Path:        filepath.Join(repoRoot, "packaging/windows/winget/Teradata.Loom.yaml"),
+			Description: "Winget version manifest",
+			UpdateFunc:  updateWingetVersion,
+			ExtractFunc: extractWingetVersion,
+		},
 	}
 }
 
@@ -529,6 +535,36 @@ func extractChocolateyInstall(path string) ([]string, error) {
 	matches := re.FindStringSubmatch(string(content))
 	if len(matches) < 2 {
 		return nil, fmt.Errorf("version not found")
+	}
+
+	return []string{matches[1]}, nil
+}
+
+// updateWingetVersion updates Teradata.Loom.yaml version manifest
+func updateWingetVersion(path string, version Version) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	re := regexp.MustCompile(`PackageVersion: [0-9]+\.[0-9]+\.[0-9]+`)
+	newContent := re.ReplaceAllString(string(content),
+		fmt.Sprintf("PackageVersion: %s", version.String()))
+
+	return os.WriteFile(path, []byte(newContent), 0644)
+}
+
+// extractWingetVersion extracts version from Teradata.Loom.yaml
+func extractWingetVersion(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	re := regexp.MustCompile(`PackageVersion: ([0-9]+\.[0-9]+\.[0-9]+)`)
+	matches := re.FindStringSubmatch(string(content))
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("PackageVersion not found")
 	}
 
 	return []string{matches[1]}, nil

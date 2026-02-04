@@ -21,9 +21,32 @@ winget uninstall Teradata.Loom
 
 winget uses a multi-file YAML structure:
 
-- **Teradata.Loom.yaml**: Version manifest (root file)
-- **Teradata.Loom.locale.en-US.yaml**: Package metadata and descriptions
-- **Teradata.Loom.installer.yaml**: Download URLs and installation instructions
+- **Teradata.Loom.yaml**: Version manifest (root file, tracked by version-manager)
+- **Teradata.Loom.locale.en-US.yaml**: Package metadata and descriptions (tracked by version-manager)
+- **Teradata.Loom.installer.yaml**: Download URLs and installation instructions (tracked by version-manager)
+
+## Pre-Release vs Released Manifests
+
+### SHA256 Placeholders
+
+Before a release is built, the installer manifest contains a placeholder SHA256 hash (all zeros):
+
+```yaml
+InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+```
+
+**This is intentional.** The release workflow computes the actual hash from the combined package and updates it during the release process.
+
+### Version Bumps
+
+When running `just bump-{major|minor|patch}`, the version-manager automatically updates:
+- ✅ `PackageVersion` in all 3 YAML files
+- ✅ `InstallerUrl` in installer.yaml
+- ✅ `ReleaseNotesUrl` in locale.yaml
+
+**Not updated by version-manager** (set during release):
+- InstallerSha256 (computed from actual binary)
+- ReleaseDate (set to release date)
 
 ## Updating for New Releases
 

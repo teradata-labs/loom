@@ -1,0 +1,5 @@
+PackageIdentifier: Teradata.Loom
+PackageVersion: 1.2.3
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/teradata-labs/loom/releases/download/v1.2.3/loom-windows-amd64.zip

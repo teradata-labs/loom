@@ -1,0 +1,5 @@
+PackageIdentifier: Teradata.Loom
+PackageVersion: 1.2.3
+PackageLocale: en-US
+ReleaseNotes: See https://github.com/teradata-labs/loom/releases/tag/v1.2.3
+ReleaseNotesUrl: https://github.com/teradata-labs/loom/releases/tag/v1.2.3
