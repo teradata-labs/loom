@@ -152,7 +152,7 @@ func FuzzSpanAttributesConcurrent(f *testing.F) {
 				span.SetAttribute(key, value)
 
 				// Verify the span is valid
-				if span.Attributes == nil || len(span.Attributes) == 0 {
+				if len(span.Attributes) == 0 {
 					t.Errorf("span attributes not set correctly")
 					return
 				}
