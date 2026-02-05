@@ -18,10 +18,14 @@ Write-Host "Fetching checksums for version $Version..." -ForegroundColor Cyan
 try {
     # Fetch checksums (decode byte array as UTF-8)
     $loomResponse = Invoke-WebRequest -Uri $loomChecksumUrl -UseBasicParsing
-    $loomChecksum = [System.Text.Encoding]::UTF8.GetString($loomResponse.Content).Trim()
+    $loomChecksumRaw = [System.Text.Encoding]::UTF8.GetString($loomResponse.Content).Trim()
+    # Extract only first 64 hex chars (sha256 files often include filename after hash)
+    $loomChecksum = ($loomChecksumRaw -split '\s+')[0].Substring(0, [Math]::Min(64, $loomChecksumRaw.Length))
 
     $loomsResponse = Invoke-WebRequest -Uri $loomsChecksumUrl -UseBasicParsing
-    $loomsChecksum = [System.Text.Encoding]::UTF8.GetString($loomsResponse.Content).Trim()
+    $loomsChecksumRaw = [System.Text.Encoding]::UTF8.GetString($loomsResponse.Content).Trim()
+    # Extract only first 64 hex chars (sha256 files often include filename after hash)
+    $loomsChecksum = ($loomsChecksumRaw -split '\s+')[0].Substring(0, [Math]::Min(64, $loomsChecksumRaw.Length))
 
     Write-Host "✓ loom checksum: $loomChecksum" -ForegroundColor Green
     Write-Host "✓ looms checksum: $loomsChecksum" -ForegroundColor Green
@@ -39,8 +43,8 @@ try {
     # Update looms checksum (second occurrence)
     $content = $content -replace "(\`$packageArgs\['checksum64'\] = ')[0-9a-fA-F]{64}('.*?# looms server)", "`$1$loomsChecksum`$2"
 
-    # Write updated content
-    $content | Set-Content $scriptPath -NoNewline
+    # Write updated content (keep newlines intact!)
+    Set-Content -Path $scriptPath -Value $content -NoNewline:$false
 
     Write-Host ""
     Write-Host "✅ Successfully updated chocolateyinstall.ps1" -ForegroundColor Green
