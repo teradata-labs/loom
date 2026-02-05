@@ -16,9 +16,12 @@ $loomsChecksumUrl = "$baseUrl/looms-windows-amd64.exe.zip.sha256"
 Write-Host "Fetching checksums for version $Version..." -ForegroundColor Cyan
 
 try {
-    # Fetch checksums (convert byte array to string first)
-    $loomChecksum = ([string](Invoke-WebRequest -Uri $loomChecksumUrl -UseBasicParsing).Content).Trim()
-    $loomsChecksum = ([string](Invoke-WebRequest -Uri $loomsChecksumUrl -UseBasicParsing).Content).Trim()
+    # Fetch checksums (decode byte array as UTF-8)
+    $loomResponse = Invoke-WebRequest -Uri $loomChecksumUrl -UseBasicParsing
+    $loomChecksum = [System.Text.Encoding]::UTF8.GetString($loomResponse.Content).Trim()
+
+    $loomsResponse = Invoke-WebRequest -Uri $loomsChecksumUrl -UseBasicParsing
+    $loomsChecksum = [System.Text.Encoding]::UTF8.GetString($loomsResponse.Content).Trim()
 
     Write-Host "✓ loom checksum: $loomChecksum" -ForegroundColor Green
     Write-Host "✓ looms checksum: $loomsChecksum" -ForegroundColor Green
