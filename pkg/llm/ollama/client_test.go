@@ -26,6 +26,20 @@ import (
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 )
 
+// mockShowResponse writes a /api/show response indicating tool support.
+// Returns true if it handled the request (path was /api/show).
+func mockShowResponse(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path == "/api/show" {
+		resp := map[string]string{
+			"template": `{{ if .Tools }}tools{{ end }}{{ .Prompt }}`,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return true
+	}
+	return false
+}
+
 func TestNewClient(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -81,6 +95,9 @@ func TestClient_NameAndModel(t *testing.T) {
 func TestClient_Chat_SimpleText(t *testing.T) {
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockShowResponse(w, r) {
+			return
+		}
 		assert.Equal(t, "/api/chat", r.URL.Path)
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
@@ -143,6 +160,9 @@ func TestClient_Chat_SimpleText(t *testing.T) {
 func TestClient_Chat_MultiTurn(t *testing.T) {
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockShowResponse(w, r) {
+			return
+		}
 		// Verify request has multiple messages
 		var req chatRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
@@ -188,6 +208,9 @@ func TestClient_Chat_MultiTurn(t *testing.T) {
 func TestClient_Chat_WithToolResult(t *testing.T) {
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockShowResponse(w, r) {
+			return
+		}
 		// Verify request includes tool result as tool message (native format)
 		var req chatRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
@@ -232,6 +255,9 @@ func TestClient_Chat_WithToolResult(t *testing.T) {
 func TestClient_Chat_OptionsSet(t *testing.T) {
 	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockShowResponse(w, r) {
+			return
+		}
 		// Verify options are set correctly
 		var req chatRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
@@ -306,6 +332,9 @@ func TestClient_Chat_ErrorHandling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mockShowResponse(w, r) {
+					return
+				}
 				w.WriteHeader(tt.statusCode)
 				_, _ = w.Write([]byte(tt.body))
 			}))
@@ -423,6 +452,9 @@ func TestClient_Chat_WithToolCalls(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mockShowResponse(w, r) {
+					return
+				}
 				// Return mock response with tool call
 				resp := chatResponse{
 					Model:     "llama3.1",
@@ -473,6 +505,78 @@ func TestClient_Chat_WithToolCalls(t *testing.T) {
 			assert.Equal(t, tt.expectedParams, toolCall.Input, tt.description)
 		})
 	}
+}
+
+func TestClient_SupportsNativeTools_ProbeDetectsToolTemplate(t *testing.T) {
+	// Mock Ollama /api/show that returns a template with tool markers
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			resp := map[string]string{
+				"template": `{{ if .System }}{{ .System }}{{ end }}{{ if .Tools }}Available tools: {{ .Tools }}{{ end }}{{ .Prompt }}`,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		Endpoint: server.URL,
+		Model:    "some-unknown-model:14b",
+	})
+
+	// Should detect tool support dynamically despite not being in fallback list
+	assert.True(t, client.supportsNativeTools(), "should detect tool support from template")
+	assert.True(t, client.nativeToolsProbed, "probe flag should be set")
+}
+
+func TestClient_SupportsNativeTools_ProbeNoToolTemplate(t *testing.T) {
+	// Mock Ollama /api/show that returns a template WITHOUT tool markers
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			resp := map[string]string{
+				"template": `{{ if .System }}{{ .System }}{{ end }}{{ .Prompt }}`,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		Endpoint: server.URL,
+		Model:    "some-unknown-model:14b",
+	})
+
+	assert.False(t, client.supportsNativeTools(), "should detect no tool support")
+}
+
+func TestClient_SupportsNativeTools_ProbeFallsBackToStaticList(t *testing.T) {
+	// No server running — probe will fail, should fall back to static list
+	client := NewClient(Config{
+		Endpoint: "http://localhost:1", // unreachable
+		Model:    "qwen3:8b",
+		Timeout:  1 * time.Second,
+	})
+
+	assert.True(t, client.supportsNativeTools(), "qwen3 should match fallback list")
+}
+
+func TestClient_SupportsNativeTools_ExplicitModes(t *testing.T) {
+	client := NewClient(Config{Model: "unknown-model", ToolMode: ToolModeNative})
+	assert.True(t, client.supportsNativeTools())
+
+	client = NewClient(Config{Model: "llama3.1", ToolMode: ToolModePrompt})
+	assert.False(t, client.supportsNativeTools())
+}
+
+func TestClient_GetDefaultMaxTokens_30B(t *testing.T) {
+	assert.Equal(t, 6144, getDefaultMaxTokens("qwen3-coder:30b"))
+	assert.Equal(t, 6144, getDefaultMaxTokens("some-model:34b"))
+	assert.Equal(t, 8192, getDefaultMaxTokens("llama3.3:70b"))
+	assert.Equal(t, 4096, getDefaultMaxTokens("qwen3:8b"))
 }
 
 func TestClient_CleanJSONString(t *testing.T) {
