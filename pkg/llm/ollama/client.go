@@ -38,26 +38,34 @@ var (
 
 // Client implements the LLMProvider interface for Ollama.
 type Client struct {
-	endpoint    string
-	model       string
-	httpClient  *http.Client
-	maxTokens   int
-	temperature float64
-	toolMode    ToolMode
-	rateLimiter *llm.RateLimiter
+	endpoint           string
+	model              string
+	httpClient         *http.Client
+	maxTokens          int
+	temperature        float64
+	toolMode           ToolMode
+	rateLimiter        *llm.RateLimiter
+	nativeToolsProbed  bool // true once we've probed the model
+	nativeToolsSupport bool // cached result from /api/show probe
 }
 
-// Models known to support native tool calling (Ollama v0.12.3+)
-var toolSupportedModels = map[string]bool{
+// fallbackToolSupportedModels is used when the /api/show probe fails (e.g. Ollama
+// is unreachable at client creation time). Prefer the dynamic probe.
+var fallbackToolSupportedModels = map[string]bool{
 	"llama3.3":      true,
 	"llama3.2":      true,
 	"llama3.1":      true,
 	"qwen2.5":       true,
 	"qwen2.5-coder": true,
+	"qwen3":         true,
+	"qwen3-coder":   true,
 	"mistral":       true,
+	"mistral-small": true,
 	"mixtral":       true,
 	"deepseek-r1":   true,
 	"functionary":   true,
+	"command-r":     true,
+	"phi4":          true,
 }
 
 // ToolMode defines how tools are handled.
@@ -98,7 +106,8 @@ func getDefaultMaxTokens(model string) int {
 
 	// Medium models (13B-32B parameters) - balanced outputs
 	if strings.Contains(modelLower, "13b") || strings.Contains(modelLower, "14b") ||
-		strings.Contains(modelLower, "20b") || strings.Contains(modelLower, "32b") {
+		strings.Contains(modelLower, "20b") || strings.Contains(modelLower, "30b") ||
+		strings.Contains(modelLower, "32b") || strings.Contains(modelLower, "34b") {
 		return 6144 // 6K for medium models
 	}
 
@@ -167,6 +176,8 @@ func (c *Client) Model() string {
 }
 
 // supportsNativeTools checks if the model supports native tool calling.
+// In auto mode it first tries a dynamic probe via Ollama's /api/show endpoint,
+// falling back to a static model list if the probe fails.
 func (c *Client) supportsNativeTools() bool {
 	// Check if explicitly set to native or prompt mode
 	if c.toolMode == ToolModeNative {
@@ -176,15 +187,72 @@ func (c *Client) supportsNativeTools() bool {
 		return false
 	}
 
-	// Auto mode: check model compatibility
-	// Extract base model name (remove version/variant suffixes)
+	// Auto mode: use cached probe result if available
+	if c.nativeToolsProbed {
+		return c.nativeToolsSupport
+	}
+
+	// Try dynamic detection via /api/show
+	if result, ok := c.probeToolSupport(); ok {
+		c.nativeToolsProbed = true
+		c.nativeToolsSupport = result
+		return result
+	}
+
+	// Fallback: static model list (probe failed, e.g. network issue)
 	model := c.model
-	for baseModel := range toolSupportedModels {
+	for baseModel := range fallbackToolSupportedModels {
 		if len(model) >= len(baseModel) && model[:len(baseModel)] == baseModel {
+			c.nativeToolsProbed = true
+			c.nativeToolsSupport = true
 			return true
 		}
 	}
+
+	c.nativeToolsProbed = true
+	c.nativeToolsSupport = false
 	return false
+}
+
+// probeToolSupport queries Ollama's /api/show endpoint to check if the model
+// template contains tool-handling directives (e.g. {{- if .Tools }}).
+// Returns (supportsTools, probeSucceeded).
+func (c *Client) probeToolSupport() (bool, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	body, err := json.Marshal(map[string]string{"name": c.model})
+	if err != nil {
+		return false, false
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/show", bytes.NewReader(body))
+	if err != nil {
+		return false, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+
+	var showResp struct {
+		Template string `json:"template"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&showResp); err != nil {
+		return false, false
+	}
+
+	// Ollama models with tool support include tool-handling blocks in their template
+	hasTools := strings.Contains(showResp.Template, ".Tools") ||
+		strings.Contains(showResp.Template, "tools")
+	return hasTools, true
 }
 
 // Chat sends a conversation to Ollama and returns the response.

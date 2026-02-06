@@ -14,6 +14,13 @@
 package factory
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -263,4 +270,98 @@ func (r *ModelRegistry) GetAvailableModels(factory *ProviderFactory) []*loomv1.M
 	}
 
 	return available
+}
+
+// ollamaTagsResponse represents Ollama's /api/tags response.
+type ollamaTagsResponse struct {
+	Models []ollamaModelEntry `json:"models"`
+}
+
+// ollamaModelEntry represents a single model from Ollama's /api/tags.
+type ollamaModelEntry struct {
+	Name       string `json:"name"`
+	Model      string `json:"model"`
+	ModifiedAt string `json:"modified_at"`
+	Size       int64  `json:"size"`
+}
+
+// DiscoverOllamaModels queries the local Ollama instance's /api/tags endpoint
+// and returns ModelInfo entries for all installed models. This replaces the
+// hardcoded Ollama model list with whatever is actually available.
+func (r *ModelRegistry) DiscoverOllamaModels(endpoint string) error {
+	if endpoint == "" {
+		endpoint = os.Getenv("OLLAMA_ENDPOINT")
+	}
+	if endpoint == "" {
+		endpoint = os.Getenv("OLLAMA_BASE_URL")
+	}
+	if endpoint == "" {
+		endpoint = "http://localhost:11434"
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(endpoint + "/api/tags")
+	if err != nil {
+		return fmt.Errorf("failed to reach Ollama at %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Ollama /api/tags returned status %d", resp.StatusCode)
+	}
+
+	var tagsResp ollamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+		return fmt.Errorf("failed to decode Ollama /api/tags response: %w", err)
+	}
+
+	if len(tagsResp.Models) == 0 {
+		return nil // No models installed, keep static defaults
+	}
+
+	// Replace static Ollama entries with discovered models
+	discovered := make([]*loomv1.ModelInfo, 0, len(tagsResp.Models))
+	for _, m := range tagsResp.Models {
+		modelID := m.Name
+		displayName := formatOllamaDisplayName(modelID)
+		capabilities := []string{"text", "tool-use"} // Ollama tool support is probed at runtime
+
+		discovered = append(discovered, &loomv1.ModelInfo{
+			Id:                  modelID,
+			Name:                displayName,
+			Provider:            "ollama",
+			Capabilities:        capabilities,
+			ContextWindow:       128000, // Most Ollama models support 128K
+			CostPer_1MInputUsd:  0.0,
+			CostPer_1MOutputUsd: 0.0,
+			Available:           true,
+		})
+	}
+
+	r.models["ollama"] = discovered
+	return nil
+}
+
+// formatOllamaDisplayName creates a human-readable name from an Ollama model tag.
+// e.g. "qwen3-coder:30b" -> "Qwen3 Coder 30B (Ollama)"
+func formatOllamaDisplayName(modelID string) string {
+	// Split on colon to separate name from tag
+	parts := strings.SplitN(modelID, ":", 2)
+	name := parts[0]
+	tag := ""
+	if len(parts) > 1 {
+		tag = strings.ToUpper(parts[1])
+	}
+
+	// Capitalize first letter of name
+	if len(name) > 0 {
+		name = strings.ToUpper(name[:1]) + name[1:]
+	}
+	// Replace hyphens with spaces for readability
+	name = strings.ReplaceAll(name, "-", " ")
+
+	if tag != "" && tag != "LATEST" {
+		return fmt.Sprintf("%s %s (Ollama)", name, tag)
+	}
+	return fmt.Sprintf("%s (Ollama)", name)
 }
