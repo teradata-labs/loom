@@ -77,7 +77,7 @@ generate-weaver:
     @go run ./cmd/generate-weaver
 
 # Build all binaries
-build: generate-weaver build-server build-tui
+build: generate-weaver build-server build-tui build-mcp
     @echo "✅ All binaries built successfully!"
 
 # Build server only
@@ -180,8 +180,15 @@ install: build install-patterns install-docs
     echo "Connect with the TUI:"
     echo "  loom"
 
-# Build all variants (server, tui, standalone)
-build-all: build-server build-tui build-standalone
+# Build MCP bridge binary
+build-mcp: proto
+    @echo "Building Loom MCP bridge (loom-mcp)..."
+    @mkdir -p bin
+    GOWORK=off go build -tags fts5 -o bin/loom-mcp ./cmd/loom-mcp
+    @echo "✅ MCP binary: bin/loom-mcp"
+
+# Build all variants (server, tui, standalone, mcp)
+build-all: build-server build-tui build-standalone build-mcp
     @echo "✅ All build variants complete!"
     @ls -lh bin/
 
@@ -279,7 +286,7 @@ clean:
     # Clean any databases in project root
     rm -f *.db *.sqlite *.sqlite3
     # Clean any stray binaries in project root
-    rm -f loom looms loom-standalone
+    rm -f loom looms loom-standalone loom-mcp
     echo "✅ Clean complete"
 
 # Clean and regenerate everything
@@ -346,6 +353,9 @@ race-check:
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/agent
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/observability
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/prompts
+    GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/server
+    GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/transport
+    GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/apps
 
 # Run specific tests matching pattern
 test-run pattern:

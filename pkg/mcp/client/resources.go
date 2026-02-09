@@ -87,7 +87,10 @@ func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
 	}
 
 	params := map[string]string{"uri": uri}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("failed to marshal subscribe params: %w", err)
+	}
 
 	req := &protocol.Request{
 		JSONRPC: protocol.JSONRPCVersion,
@@ -96,14 +99,17 @@ func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
 		Params:  paramsJSON,
 	}
 
-	_, err := c.sendRequest(ctx, req)
+	_, err = c.sendRequest(ctx, req)
 	return err
 }
 
 // UnsubscribeResource unsubscribes from resource changes
 func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
 	params := map[string]string{"uri": uri}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("failed to marshal unsubscribe params: %w", err)
+	}
 
 	req := &protocol.Request{
 		JSONRPC: protocol.JSONRPCVersion,
@@ -112,6 +118,6 @@ func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
 		Params:  paramsJSON,
 	}
 
-	_, err := c.sendRequest(ctx, req)
+	_, err = c.sendRequest(ctx, req)
 	return err
 }

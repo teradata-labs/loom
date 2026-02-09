@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loom Conversation Viewer</title>
+<style>
+  :root {
+    --bg-primary: #1a1b26;
+    --bg-secondary: #24283b;
+    --bg-hover: #2f3349;
+    --text-primary: #c0caf5;
+    --text-secondary: #565f89;
+    --text-muted: #414868;
+    --accent: #7aa2f7;
+    --accent-dim: #3d59a1;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --error: #f7768e;
+    --border: #3b4261;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.6;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  .app {
+    display: flex;
+    height: 100vh;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: 260px;
+    min-width: 260px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+  }
+
+  .session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .session-item {
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 4px;
+    transition: background 0.15s;
+  }
+
+  .session-item:hover { background: var(--bg-hover); }
+  .session-item.active { background: var(--accent-dim); }
+
+  .session-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
+  /* Main content */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .header-title {
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .header-status {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+
+  .message {
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    border-left: 3px solid var(--border);
+  }
+
+  .message.user { border-left-color: var(--accent); }
+  .message.assistant { border-left-color: var(--success); }
+  .message.system { border-left-color: var(--warning); }
+  .message.tool { border-left-color: var(--text-secondary); }
+
+  .message-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .role-badge {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .role-badge.user { background: var(--accent-dim); color: var(--accent); }
+  .role-badge.assistant { background: #1a2e1a; color: var(--success); }
+  .role-badge.system { background: #2e2a1a; color: var(--warning); }
+  .role-badge.tool { background: var(--bg-hover); color: var(--text-secondary); }
+
+  .message-time {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .message-content {
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .message-content code {
+    font-family: var(--font-mono);
+    background: var(--bg-primary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+
+  .tool-call {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .tool-call-name {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .tool-call-args {
+    color: var(--text-secondary);
+    margin-top: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  /* Empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+  }
+
+  .empty-state h2 {
+    font-size: 18px;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+  }
+
+  .empty-state p {
+    font-size: 13px;
+  }
+
+  /* Loading */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-secondary);
+  }
+
+  .loading::after {
+    content: '';
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-left: 8px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="sidebar">
+    <div class="sidebar-header">Sessions</div>
+    <div class="session-list" id="session-list">
+      <div class="loading" id="sessions-loading">Loading sessions</div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="header" id="header" style="display:none">
+      <div class="header-title" id="header-title"></div>
+      <div class="header-status" id="header-status"></div>
+    </div>
+    <div class="messages" id="messages">
+      <div class="empty-state">
+        <h2>Loom Conversation Viewer</h2>
+        <p>Select a session to view its conversation history</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // MCP Apps postMessage protocol
+  let requestId = 0;
+  const pending = new Map();
+  let trustedOrigin = null; // Trust-on-first-use: set from first valid response
+
+  function sendMCPRequest(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++requestId;
+      pending.set(id, { resolve, reject });
+      // Use trustedOrigin if established, otherwise '*' for the initial handshake.
+      // The host origin is not known at build time because this app runs as an
+      // embedded MCP Apps resource (ui:// scheme). After the first valid response,
+      // trustedOrigin locks communication to that origin only.
+      var targetOrigin = trustedOrigin || '*';
+      window.parent.postMessage({
+        jsonrpc: '2.0',
+        id: id,
+        method: method,
+        params: params || {}
+      }, targetOrigin);
+
+      // Timeout after 30s
+      setTimeout(() => {
+        if (pending.has(id)) {
+          pending.delete(id);
+          reject(new Error('Request timed out: ' + method));
+        }
+      }, 30000);
+    });
+  }
+
+  // Handle responses from host
+  window.addEventListener('message', function(event) {
+    // Origin validation: after trust is established, reject messages from other origins
+    if (trustedOrigin && event.origin !== trustedOrigin) return;
+
+    const data = event.data;
+
+    // Validate message structure: must be a JSON-RPC 2.0 message
+    if (!data || typeof data !== 'object' || data.jsonrpc !== '2.0') return;
+
+    // Response to our request: id must be numeric and match a pending request
+    if (typeof data.id === 'number' && pending.has(data.id)) {
+      // Trust-on-first-use: lock to the origin of the first valid response
+      if (!trustedOrigin && event.origin) {
+        trustedOrigin = event.origin;
+      }
+      const { resolve, reject } = pending.get(data.id);
+      pending.delete(data.id);
+      if (data.error) {
+        reject(new Error(data.error.message || 'Unknown error'));
+      } else {
+        resolve(data.result);
+      }
+      return;
+    }
+
+    // Notifications from host: method must be a known ui/ notification
+    if (typeof data.method === 'string' && data.method.startsWith('ui/notifications/')) {
+      if (data.method === 'ui/notifications/tool-result') {
+        handleToolResult(data.params);
+      } else if (data.method === 'ui/notifications/host-context-changed') {
+        handleThemeChange(data.params);
+      }
+    }
+  });
+
+  // Initialize the MCP Apps connection
+  async function initialize() {
+    try {
+      await sendMCPRequest('ui/initialize', {
+        appUri: 'ui://loom/conversation-viewer',
+        capabilities: { resize: true }
+      });
+    } catch (e) {
+      // Host may not support ui/initialize - continue anyway
+      console.warn('ui/initialize not supported:', e.message);
+    }
+    loadSessions();
+  }
+
+  // Load sessions via MCP tool call
+  async function loadSessions() {
+    try {
+      const result = await sendMCPRequest('tools/call', {
+        name: 'loom_list_sessions',
+        arguments: {}
+      });
+
+      const sessions = parseToolResult(result);
+      renderSessions(sessions);
+    } catch (e) {
+      document.getElementById('sessions-loading').textContent = 'Failed to load sessions';
+      console.error('Failed to load sessions:', e);
+    }
+  }
+
+  // Load conversation history for a session
+  async function loadConversation(sessionId, agentId) {
+    const messagesEl = document.getElementById('messages');
+    messagesEl.innerHTML = '<div class="loading">Loading conversation</div>';
+
+    try {
+      const result = await sendMCPRequest('tools/call', {
+        name: 'loom_get_conversation_history',
+        arguments: { session_id: sessionId, agent_id: agentId || '' }
+      });
+
+      const history = parseToolResult(result);
+      renderMessages(history);
+    } catch (e) {
+      messagesEl.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+  }
+
+  // Parse tool result content
+  function parseToolResult(result) {
+    if (!result || !result.content) return null;
+
+    for (const item of result.content) {
+      if (item.type === 'text' && item.text) {
+        try {
+          return JSON.parse(item.text);
+        } catch (e) {
+          return item.text;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Render session list
+  function renderSessions(data) {
+    const listEl = document.getElementById('session-list');
+    listEl.innerHTML = '';
+
+    const sessions = Array.isArray(data) ? data : (data && data.sessions ? data.sessions : []);
+
+    if (sessions.length === 0) {
+      listEl.innerHTML = '<div class="empty-state"><p>No sessions found</p></div>';
+      return;
+    }
+
+    sessions.forEach(function(session) {
+      const el = document.createElement('div');
+      el.className = 'session-item';
+      el.dataset.sessionId = session.session_id || session.id || '';
+      el.dataset.agentId = session.agent_id || '';
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'session-name';
+      nameEl.textContent = session.agent_id || session.session_id || 'Unknown';
+      el.appendChild(nameEl);
+
+      const metaEl = document.createElement('div');
+      metaEl.className = 'session-meta';
+      const msgCount = session.message_count || session.turn_count || 0;
+      metaEl.textContent = msgCount + ' messages';
+      if (session.created_at) {
+        metaEl.textContent += ' \u00b7 ' + formatTime(session.created_at);
+      }
+      el.appendChild(metaEl);
+
+      el.addEventListener('click', function() {
+        // Update active state
+        document.querySelectorAll('.session-item').forEach(function(s) { s.classList.remove('active'); });
+        el.classList.add('active');
+
+        // Show header
+        const header = document.getElementById('header');
+        header.style.display = 'flex';
+        document.getElementById('header-title').textContent = session.agent_id || 'Session';
+        document.getElementById('header-status').textContent = 'Session: ' + (session.session_id || '').substring(0, 8);
+
+        loadConversation(el.dataset.sessionId, el.dataset.agentId);
+      });
+
+      listEl.appendChild(el);
+    });
+  }
+
+  // Render conversation messages
+  function renderMessages(data) {
+    const messagesEl = document.getElementById('messages');
+    messagesEl.innerHTML = '';
+
+    const messages = Array.isArray(data) ? data : (data && data.messages ? data.messages : []);
+
+    if (messages.length === 0) {
+      messagesEl.innerHTML = '<div class="empty-state"><p>No messages in this session</p></div>';
+      return;
+    }
+
+    messages.forEach(function(msg) {
+      const el = document.createElement('div');
+      const role = (msg.role || 'system').toLowerCase();
+      el.className = 'message ' + role;
+
+      // Header with role badge and timestamp
+      const headerEl = document.createElement('div');
+      headerEl.className = 'message-header';
+
+      const badge = document.createElement('span');
+      badge.className = 'role-badge ' + role;
+      badge.textContent = role;
+      headerEl.appendChild(badge);
+
+      if (msg.timestamp || msg.created_at) {
+        const timeEl = document.createElement('span');
+        timeEl.className = 'message-time';
+        timeEl.textContent = formatTime(msg.timestamp || msg.created_at);
+        headerEl.appendChild(timeEl);
+      }
+
+      el.appendChild(headerEl);
+
+      // Content
+      const contentEl = document.createElement('div');
+      contentEl.className = 'message-content';
+      contentEl.textContent = extractContent(msg);
+      el.appendChild(contentEl);
+
+      // Tool calls
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        msg.tool_calls.forEach(function(tc) {
+          const toolEl = document.createElement('div');
+          toolEl.className = 'tool-call';
+
+          const nameEl = document.createElement('div');
+          nameEl.className = 'tool-call-name';
+          nameEl.textContent = tc.name || tc.function_name || 'unknown tool';
+          toolEl.appendChild(nameEl);
+
+          if (tc.arguments || tc.input) {
+            const argsEl = document.createElement('div');
+            argsEl.className = 'tool-call-args';
+            const args = tc.arguments || tc.input;
+            argsEl.textContent = typeof args === 'string' ? args : JSON.stringify(args, null, 2);
+            toolEl.appendChild(argsEl);
+          }
+
+          el.appendChild(toolEl);
+        });
+      }
+
+      messagesEl.appendChild(el);
+    });
+
+    // Scroll to bottom
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // Handle incoming tool results
+  function handleToolResult(params) {
+    // Auto-refresh if it's a weave result
+    if (params && params.toolName && params.toolName.startsWith('loom_')) {
+      const activeSession = document.querySelector('.session-item.active');
+      if (activeSession) {
+        loadConversation(activeSession.dataset.sessionId, activeSession.dataset.agentId);
+      }
+    }
+  }
+
+  // Handle theme changes from host
+  function handleThemeChange(params) {
+    if (!params || !params.theme) return;
+    const root = document.documentElement;
+    if (params.theme === 'light') {
+      root.style.setProperty('--bg-primary', '#ffffff');
+      root.style.setProperty('--bg-secondary', '#f5f5f5');
+      root.style.setProperty('--bg-hover', '#eeeeee');
+      root.style.setProperty('--text-primary', '#1a1a2e');
+      root.style.setProperty('--text-secondary', '#6b7280');
+      root.style.setProperty('--text-muted', '#9ca3af');
+      root.style.setProperty('--border', '#e5e7eb');
+    }
+  }
+
+  // Helpers
+  function extractContent(msg) {
+    if (typeof msg.content === 'string') return msg.content;
+    if (Array.isArray(msg.content)) {
+      return msg.content.map(function(c) {
+        if (typeof c === 'string') return c;
+        return c.text || c.content || JSON.stringify(c);
+      }).join('\n');
+    }
+    if (msg.text) return msg.text;
+    return '';
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+      return ts;
+    }
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  // Notify host of size changes
+  function notifySize() {
+    try {
+      sendMCPRequest('ui/notifications/size-changed', {
+        width: document.body.scrollWidth,
+        height: document.body.scrollHeight
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  // Start
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initialize);
+  } else {
+    initialize();
+  }
+
+  // Observe resize
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(notifySize).observe(document.body);
+  }
+})();
+</script>
+</body>
+</html>

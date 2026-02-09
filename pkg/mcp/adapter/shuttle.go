@@ -27,11 +27,16 @@ import (
 	"time"
 	"unicode"
 
+	"go.uber.org/zap"
+
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 )
+
+// debugBedrockTools is cached at package init to avoid repeated os.Getenv calls.
+var debugBedrockTools = os.Getenv("LOOM_DEBUG_BEDROCK_TOOLS") == "1"
 
 // Result truncation and caching configuration
 const (
@@ -97,17 +102,19 @@ type TruncationConfig struct {
 
 // MCPToolAdapter wraps an MCP tool as a shuttle.Tool
 type MCPToolAdapter struct {
-	client       *client.Client
-	tool         protocol.Tool
-	serverName   string                     // Used as backend identifier
-	truncation   TruncationConfig           // Result truncation settings
-	sqlStore     *storage.SQLResultStore    // For storing large SQL results
-	sharedMemory *storage.SharedMemoryStore // For storing other large data
+	client        *client.Client
+	tool          protocol.Tool
+	serverName    string                     // Used as backend identifier
+	truncation    TruncationConfig           // Result truncation settings
+	sqlStore      *storage.SQLResultStore    // For storing large SQL results
+	sharedMemory  *storage.SharedMemoryStore // For storing other large data
+	uiResourceURI string                     // From tool._meta.ui.resourceUri (MCP Apps)
+	logger        *zap.Logger                // Structured logger (defaults to no-op)
 }
 
 // NewMCPToolAdapter creates a new adapter that wraps an MCP tool
 func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName string) *MCPToolAdapter {
-	return &MCPToolAdapter{
+	adapter := &MCPToolAdapter{
 		client:     client,
 		tool:       tool,
 		serverName: serverName,
@@ -116,9 +123,17 @@ func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName str
 			MaxResultRows:  DefaultMaxResultRows,
 			Enabled:        true, // Enable by default
 		},
-		sqlStore:     nil, // Will be set by SetSQLResultStore if needed
-		sharedMemory: nil, // Will be set by SetSharedMemory if needed
+		sqlStore:     nil,          // Will be set by SetSQLResultStore if needed
+		sharedMemory: nil,          // Will be set by SetSharedMemory if needed
+		logger:       zap.NewNop(), // No-op by default; use SetLogger to enable
 	}
+
+	// Extract UI metadata from tool._meta.ui if present (MCP Apps)
+	if uiMeta := protocol.GetUIToolMeta(tool); uiMeta != nil {
+		adapter.uiResourceURI = uiMeta.ResourceURI
+	}
+
+	return adapter
 }
 
 // SetSQLResultStore configures SQL result store for this adapter.
@@ -133,6 +148,14 @@ func (a *MCPToolAdapter) SetSharedMemory(store *storage.SharedMemoryStore) {
 	a.sharedMemory = store
 }
 
+// SetLogger configures the structured logger for this adapter.
+// If not called, a no-op logger is used.
+func (a *MCPToolAdapter) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		a.logger = logger
+	}
+}
+
 // NewMCPToolAdapterWithConfig creates a new adapter with custom truncation config
 func NewMCPToolAdapterWithConfig(client *client.Client, tool protocol.Tool, serverName string, config TruncationConfig) *MCPToolAdapter {
 	if config.MaxResultBytes == 0 {
@@ -141,12 +164,20 @@ func NewMCPToolAdapterWithConfig(client *client.Client, tool protocol.Tool, serv
 	if config.MaxResultRows == 0 {
 		config.MaxResultRows = DefaultMaxResultRows
 	}
-	return &MCPToolAdapter{
+	adapter := &MCPToolAdapter{
 		client:     client,
 		tool:       tool,
 		serverName: serverName,
 		truncation: config,
+		logger:     zap.NewNop(), // No-op by default; use SetLogger to enable
 	}
+
+	// Extract UI metadata from tool._meta.ui if present (MCP Apps)
+	if uiMeta := protocol.GetUIToolMeta(tool); uiMeta != nil {
+		adapter.uiResourceURI = uiMeta.ResourceURI
+	}
+
+	return adapter
 }
 
 // Name implements shuttle.Tool
@@ -204,12 +235,18 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 	// This is critical for Bedrock which strictly validates schemas
 	normalized := shuttle.NormalizeSchema(&shuttleSchema)
 
-	// Debug logging to see what MCP provides and what we convert to
-	if os.Getenv("LOOM_DEBUG_BEDROCK_TOOLS") == "1" {
+	// Debug logging to see what MCP provides and what we convert to.
+	// Uses package-level cached env var to avoid per-call os.Getenv overhead.
+	// Logs to zap (stderr) instead of fmt.Printf (stdout) to avoid corrupting
+	// the MCP stdio transport channel.
+	if debugBedrockTools {
 		mcpJSON, _ := json.MarshalIndent(a.tool.InputSchema, "", "  ")
 		normalizedJSON, _ := json.MarshalIndent(normalized, "", "  ")
-		fmt.Printf("[MCP] Tool: %s\nOriginal schema:\n%s\nNormalized:\n%s\n\n",
-			a.tool.Name, string(mcpJSON), string(normalizedJSON))
+		a.logger.Debug("MCP tool schema normalization",
+			zap.String("tool", a.tool.Name),
+			zap.String("original_schema", string(mcpJSON)),
+			zap.String("normalized_schema", string(normalizedJSON)),
+		)
 	}
 
 	return normalized
@@ -279,6 +316,15 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// This prevents 510KB results from entering context
 	if a.sqlStore != nil {
 		if sqlData, isSQLResult := a.detectAndExtractSQLResult(data); isSQLResult {
+			// Safely extract row and column counts using comma-ok pattern
+			// to avoid panics if the type structure is unexpected.
+			rows, rowsOK := sqlData["rows"].([]interface{})
+			columns, colsOK := sqlData["columns"].([]interface{})
+			if !rowsOK || !colsOK {
+				// Type mismatch despite detection -- fall through to normal result handling
+				goto normalResult
+			}
+
 			// Generate unique ID for this result
 			resultID := fmt.Sprintf("mcp_%s_%d", a.serverName, time.Now().UnixNano())
 
@@ -294,17 +340,18 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 						"mcp_server":    a.serverName,
 						"tool_name":     a.tool.Name,
 						"sql_result":    true,
-						"rows":          len(sqlData["rows"].([]interface{})),
-						"columns":       len(sqlData["columns"].([]interface{})),
+						"rows":          len(rows),
+						"columns":       len(columns),
 						"stored_in_sql": true,
 					},
-					Data: fmt.Sprintf("✓ Query returned %d rows (%d columns). Use query_tool_result to filter/paginate.",
-						len(sqlData["rows"].([]interface{})), len(sqlData["columns"].([]interface{}))),
+					Data: fmt.Sprintf("Query returned %d rows (%d columns). Use query_tool_result to filter/paginate.",
+						len(rows), len(columns)),
 				}, nil
 			}
 			// If storage failed, fall through to normal truncation
 		}
 	}
+normalResult:
 
 	// Apply result truncation (#1: Truncate Tool Results)
 	var truncated bool
@@ -344,6 +391,16 @@ func (a *MCPToolAdapter) Backend() string {
 	// Use server name as backend identifier
 	// This allows backend-specific routing if needed
 	return fmt.Sprintf("mcp:%s", a.serverName)
+}
+
+// HasUI returns true if this tool has an associated MCP Apps UI resource.
+func (a *MCPToolAdapter) HasUI() bool {
+	return a.uiResourceURI != ""
+}
+
+// UIResourceURI returns the URI of the associated UI resource, or empty string.
+func (a *MCPToolAdapter) UIResourceURI() string {
+	return a.uiResourceURI
 }
 
 // convertMCPContent converts MCP Content array to shuttle-compatible data
