@@ -436,6 +436,6 @@ jobs:
           out-file-path: artifacts
 
       - name: Generate SLSA attestations
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2.4.0
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f  # v3.2.0
         with:
           subject-path: 'artifacts/*.tar.gz,artifacts/*.zip'
