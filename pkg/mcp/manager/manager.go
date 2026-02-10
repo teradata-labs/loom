@@ -167,7 +167,7 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 	}
 
 	if err := mcpClient.Initialize(startCtx, clientInfo); err != nil {
-		trans.Close()
+		_ = trans.Close()
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
 

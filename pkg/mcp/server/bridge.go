@@ -120,7 +120,7 @@ func (b *LoomBridge) buildTransportCredentials() (credentials.TransportCredentia
 	}
 
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: b.tlsSkipVerify, //nolint:gosec // opt-in via WithTLS
+		InsecureSkipVerify: b.tlsSkipVerify, // #nosec G402 -- opt-in via WithTLS option
 	}
 
 	if b.tlsCertFile != "" {

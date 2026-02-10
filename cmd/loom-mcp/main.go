@@ -148,7 +148,7 @@ func buildLogger(logFile, logLevel string) (*zap.Logger, error) {
 
 	var output zapcore.WriteSyncer
 	if logFile != "" {
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // #nosec G304 -- log file path from CLI flag
 		if err != nil {
 			return nil, fmt.Errorf("open log file %s: %w", logFile, err)
 		}
