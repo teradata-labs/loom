@@ -18,11 +18,12 @@ Complete reference for connecting Loom to Ollama for local LLM inference.
 8. [Tool Calling Support](#tool-calling-support)
 9. [Performance Considerations](#performance-considerations)
 10. [Model Selection Guide](#model-selection-guide)
-11. [Advanced Configuration](#advanced-configuration)
-12. [Comparison: Ollama vs Cloud LLMs](#comparison-ollama-vs-cloud-llms)
-13. [Error Codes](#error-codes)
-14. [Best Practices](#best-practices)
-15. [See Also](#see-also)
+11. [Dynamic Model Discovery](#dynamic-model-discovery)
+12. [Advanced Configuration](#advanced-configuration)
+13. [Comparison: Ollama vs Cloud LLMs](#comparison-ollama-vs-cloud-llms)
+14. [Error Codes](#error-codes)
+15. [Best Practices](#best-practices)
+16. [See Also](#see-also)
 
 
 ## Quick Reference
@@ -46,18 +47,18 @@ llm:
 |-------|------|---------|----------|--------------|
 | `llama3.3:70b` | 70B | 128k | Latest Meta model, excellent quality | `ollama pull llama3.3:70b` |
 | `llama3.1` | 8B | 128k | General purpose (recommended) | `ollama pull llama3.1` |
+| `qwen3:8b` | 8B | 128k | Strong reasoning, tool use | `ollama pull qwen3:8b` |
+| `qwen3-coder:30b` | 30B | 128k | Code generation, large context | `ollama pull qwen3-coder:30b` |
 | `qwen2.5-coder` | 7B/32B | 32k | Code generation | `ollama pull qwen2.5-coder` |
+| `mistral-small3.1` | 24B | 128k | Instruction following, tool use | `ollama pull mistral-small3.1` |
 | `deepseek-r1:7b` | 7B | 32k | Advanced reasoning | `ollama pull deepseek-r1:7b` |
-| `mistral` | 7B | 8k | Instruction following | `ollama pull mistral` |
-| `gemma2:9b` | 9B | 8k | Google's open model | `ollama pull gemma2:9b` |
 | `phi4` | 14B | 16k | Microsoft's reasoning model | `ollama pull phi4` |
-| `phi3` | 3.8B | 4k | Lightweight, fast | `ollama pull phi3` |
 
 ### Tool Calling Modes
 
 | Mode | Behavior | When to Use | Ollama Version |
 |------|----------|-------------|----------------|
-| `auto` | Auto-detect native support | **Recommended** - Works with all models | Any |
+| `auto` | Probe model via `/api/show`, fallback to known-models list | **Recommended** - Works with any model | Any |
 | `native` | Force native tool calling API | When model supports it | v0.12.3+ |
 | `prompt` | Prompt-based workaround | Older Ollama or unsupported models | Any |
 
@@ -170,15 +171,18 @@ Pull models before using them:
 # Recommended: Llama 3.1 8B (fast, good quality)
 ollama pull llama3.1
 
-# Alternative: Mistral 7B (excellent instruction following)
-ollama pull mistral
+# Strong reasoning and tool use
+ollama pull qwen3:8b
 
-# Code-focused: Qwen2.5 Coder 7B
+# Code-focused models
+ollama pull qwen3-coder:30b
 ollama pull qwen2.5-coder
 
+# Instruction following with tool support
+ollama pull mistral-small3.1
+
 # Larger models (require more RAM/GPU):
-ollama pull llama3.1:70b
-ollama pull mixtral:8x7b
+ollama pull llama3.3:70b
 ```
 
 Verify models are installed:
@@ -282,13 +286,18 @@ temperature: 0.7  # Balanced
 #### max_tokens
 
 **Type**: `int`
-**Default**: `4096`
+**Default**: Model-aware (see below)
 **Range**: `1` - model's context window
 **Required**: No
 
-Maximum response length in tokens.
+Maximum response length in tokens. If not set, Loom selects a default based on model size:
+
+- **70B+**: 8192 (e.g., `llama3.3:70b`, `qwen2.5:72b`)
+- **13B-34B**: 6144 (e.g., `qwen3-coder:30b`, `phi4`, `mistral-small3.1`)
+- **7B-8B**: 4096 (e.g., `llama3.1`, `qwen3:8b`, `mistral`)
 
 **Constraints**:
+
 - Cannot exceed model's context window (typically 8k-128k)
 - Larger values increase latency and memory usage
 - Reduce for faster responses on CPU
@@ -331,7 +340,7 @@ Tool calling mode for Ollama.
 
 | Mode | Behavior | When to Use |
 |------|----------|-------------|
-| `auto` | Auto-detect if model supports native tools | **Recommended** - Works with all models |
+| `auto` | Probe model template via `/api/show`, fallback to known-models list | **Recommended** - Works with any model |
 | `native` | Force native tool calling API | When you know model supports it (Ollama v0.12.3+) |
 | `prompt` | Prompt-based tool calling fallback | For older Ollama or unsupported models |
 
@@ -340,27 +349,27 @@ Tool calling mode for Ollama.
 ollama_tool_mode: auto  # Recommended
 ```
 
-**See**: [Tool Calling Support](#tool-calling-support) for details
+**See**: [Tool Calling Support](#tool-calling-support) and [Dynamic Model Discovery](#dynamic-model-discovery) for details
 
 
 ### Available Models
 
-Popular models for Loom:
+Loom dynamically discovers installed Ollama models via `/api/tags`. Any model you pull will appear in the model registry automatically. Below are popular models verified to work with Loom:
 
 | Model | Size | Context | Best For | Pull Command |
 |-------|------|---------|----------|--------------|
 | **Llama 3.3** | 70B | 128k | Latest Meta model, excellent quality | `ollama pull llama3.3:70b` |
-| **Llama 3.1** | 8B | 128k | General purpose, reliable (recommended) | `ollama pull llama3.1` |
+| **Llama 3.1** | 8B | 128k | General purpose, reliable | `ollama pull llama3.1` |
+| **Qwen 3** | 8B | 128k | Strong reasoning, tool use | `ollama pull qwen3:8b` |
+| **Qwen 3 Coder** | 30B | 128k | Code generation, large context | `ollama pull qwen3-coder:30b` |
+| **Qwen 2.5 Coder** | 7B/32B | 32k | Code generation & understanding | `ollama pull qwen2.5-coder` |
+| **Mistral Small 3.1** | 24B | 128k | Instruction following, tool use | `ollama pull mistral-small3.1` |
 | **DeepSeek-R1** | 7B/70B | 32k | Advanced reasoning, math & logic | `ollama pull deepseek-r1:7b` |
-| **Qwen2.5-Coder** | 7B/32B | 32k | Code generation & understanding | `ollama pull qwen2.5-coder` |
-| **DeepSeek-Coder-V2** | 16B | 64k | Advanced code tasks | `ollama pull deepseek-coder-v2` |
-| **Mistral** | 7B | 8k | Instruction following | `ollama pull mistral` |
+| **Command-R** | 35B | 128k | RAG, tool use | `ollama pull command-r` |
 | **Mixtral** | 8x7B (47B total) | 32k | Mixture of experts | `ollama pull mixtral:8x7b` |
-| **Gemma 2** | 9B/27B | 8k | Google's latest open model | `ollama pull gemma2:9b` |
-| **Phi-4** | 14B | 16k | Microsoft's latest, strong reasoning | `ollama pull phi4` |
-| **Phi-3** | 3.8B | 4k | Fast, lightweight | `ollama pull phi3` |
+| **Phi-4** | 14B | 16k | Microsoft's reasoning model | `ollama pull phi4` |
 
-See [Ollama Model Library](https://ollama.com/library) for all available models.
+See [Ollama Model Library](https://ollama.com/library) for all available models. Any model you pull is automatically detected by Loom — no configuration changes needed.
 
 
 ## Testing Your Setup
@@ -434,13 +443,16 @@ grpcurl -plaintext -d '{"query": "What is 2+2?"}' \
 
 Loom supports Ollama's native tool calling API (requires Ollama v0.12.3 or later).
 
-**Supported Models**:
-- **Llama 3.3** - Full native tool calling
-- **Llama 3.2** - Full native tool calling
-- **Llama 3.1** - Full native tool calling
-- **Qwen 2.5** (all variants) - Excellent tool calling
-- **Mistral** / **Mixtral** - Native tool calling
+**Tool support is detected dynamically.** Loom probes Ollama's `/api/show` endpoint to check if a model's template includes tool-handling directives. Any Ollama model with tool support in its template will work automatically — no hardcoded model list required.
+
+**Known-working model families** (used as fallback when probe fails):
+
+- **Llama 3.x** (3.1, 3.2, 3.3) - Full native tool calling
+- **Qwen 2.5 / Qwen 3** (all variants including coder) - Excellent tool calling
+- **Mistral / Mistral Small / Mixtral** - Native tool calling
 - **DeepSeek-R1** - Tool calling with reasoning
+- **Command-R** - Tool calling support
+- **Phi 4** - Microsoft's reasoning model
 - **Functionary** - Specialized for function calling
 
 ### Tool Mode Configuration
@@ -458,14 +470,16 @@ llm:
 
 | Mode | Behavior | When to Use |
 |------|----------|-------------|
-| `auto` | Automatically detect if model supports native tools | **Recommended** - Works with all models |
+| `auto` | Probe model template, then fallback to known-models list | **Recommended** - Works with any model |
 | `native` | Force native tool calling API | When you know your model supports it (Ollama v0.12.3+) |
 | `prompt` | Use prompt-based tool calling | For older Ollama versions or unsupported models |
 
 **How `auto` mode works**:
-1. Loom checks Ollama version via API
-2. If v0.12.3+, tests native tool calling
-3. Falls back to prompt mode if unsupported
+
+1. On first tool call, Loom queries Ollama's `/api/show` for the model's template
+2. If the template contains tool-handling directives (e.g., `{{ .Tools }}`), native tools are enabled
+3. If the probe fails (e.g., Ollama unreachable), falls back to a static known-models list
+4. Result is cached for the client's lifetime — no repeated probes
 
 
 ### Checking Tool Support
@@ -540,9 +554,10 @@ ollama pull qwen2.5
 | Model | Tool Support | Quality | Speed | Recommendation |
 |-------|--------------|---------|-------|----------------|
 | **Llama 3.3 70B** | Excellent | Excellent | Medium | Best overall quality |
-| **Qwen 2.5** | Excellent | Very Good | Fast | **Recommended** for most use cases |
+| **Qwen 3 8B** | Excellent | Very Good | Fast | **Recommended** for most use cases |
+| **Qwen 3 Coder 30B** | Excellent | Excellent | Medium | Best for code tasks |
+| **Mistral Small 3.1** | Excellent | Very Good | Medium | Strong instruction following |
 | **Llama 3.1 8B** | Good | Good | Very Fast | Good for development |
-| **Functionary** | Specialized | Good | Fast | Optimized for tools |
 | **DeepSeek-R1** | Good | Excellent | Slow | Best for reasoning tasks |
 
 
@@ -655,23 +670,54 @@ All inference runs locally - no API costs. Your only costs are:
 | Use Case | Recommended Model | Why |
 |----------|------------------|-----|
 | Development/Testing | `llama3.1` (8B) | Fast, good quality, low resource usage |
-| Code Generation | `qwen2.5-coder` or `deepseek-coder-v2` | Optimized for code understanding |
+| General purpose | `qwen3:8b` | Strong reasoning, tool use, fast |
+| Code Generation | `qwen3-coder:30b` or `qwen2.5-coder` | Optimized for code understanding |
 | Math & Reasoning | `deepseek-r1` | Advanced reasoning capabilities |
 | Production/Quality | `llama3.3:70b` | Latest Meta model, excellent quality |
-| Low-resource devices | `phi3` (3.8B) | Smallest viable model |
-| Balanced performance | `gemma2:9b` or `phi4` | Good quality, moderate size |
+| Instruction following | `mistral-small3.1` | Strong tool support, balanced size |
+| Balanced performance | `phi4` | Good quality, moderate size |
 
 
 ### By Hardware
 
 | Hardware | Recommended Model |
 |----------|------------------|
-| Laptop (8GB RAM, no GPU) | `phi3` or `llama3.1:7b-q4_0` |
-| Desktop (16GB RAM, no GPU) | `llama3.1`, `mistral`, or `gemma2:9b` |
-| Desktop (NVIDIA RTX 3060) | `phi4`, `gemma2:9b`, or `deepseek-r1:7b` |
-| Workstation (RTX 4090) | `llama3.3:70b`, `mixtral:8x7b`, or `deepseek-r1:70b` |
-| Mac M1/M2 (16GB+) | `llama3.1`, `qwen2.5-coder`, or `phi4` |
-| Mac M3/M4 Pro (32GB+) | `gemma2:27b` or `qwen2.5-coder:32b` |
+| Laptop (8GB RAM, no GPU) | `llama3.1:7b-q4_0` or `qwen3:8b` |
+| Desktop (16GB RAM, no GPU) | `llama3.1`, `qwen3:8b`, or `mistral-small3.1` |
+| Desktop (NVIDIA RTX 3060) | `phi4`, `qwen3:8b`, or `deepseek-r1:7b` |
+| Workstation (RTX 4090) | `llama3.3:70b`, `qwen3-coder:30b`, or `deepseek-r1:70b` |
+| Mac M1/M2 (16GB+) | `llama3.1`, `qwen3:8b`, or `phi4` |
+| Mac M3/M4 Pro (32GB+) | `qwen3-coder:30b` or `mistral-small3.1` |
+
+
+## Dynamic Model Discovery
+
+Loom automatically discovers your installed Ollama models — no manual registry updates needed.
+
+### How It Works
+
+1. **Model Registry**: At startup, Loom queries Ollama's `/api/tags` endpoint to discover all installed models
+2. **Tool Support Probe**: On first tool call, Loom queries `/api/show` for the model's template to detect tool support
+3. **Fallback**: If Ollama is unreachable, Loom uses a static list of known-working models
+4. **Max Tokens**: Automatically scaled based on model size (7B→4096, 13-34B→6144, 70B+→8192)
+
+### What This Means
+
+- **Pull any model** — it appears in Loom automatically
+- **Tool support detected at runtime** — no hardcoded model allowlists
+- **New model families work immediately** — no Loom update required
+- **Graceful degradation** — static fallbacks if Ollama probe fails
+
+### Verifying Discovered Models
+
+```bash
+# See what Ollama has installed (same data Loom discovers)
+ollama list
+
+# Check if a model's template supports tools
+ollama show qwen3:8b --template
+# Look for {{ .Tools }} or similar directives
+```
 
 
 ## Advanced Configuration
@@ -994,12 +1040,13 @@ timeout_seconds: 300  # 5 minutes
 ## Best Practices
 
 1. **Development/Testing**: Use Ollama to avoid API costs during development
-2. **Tool Calling**: Use Ollama v0.12.3+ with supported models for native tool calling
-3. **Hybrid**: Use Ollama for privacy-sensitive data, cloud for production scale
-4. **Model Selection**: Start with `llama3.1:8b` for testing, `qwen2.5` or `llama3.3:70b` for production
-5. **GPU**: Invest in GPU for serious local LLM work (especially for 70B+ models)
-6. **Monitoring**: Track inference speed and tool calling accuracy to detect performance issues
-7. **Tool Mode**: Use `auto` mode to automatically detect native tool support
+2. **Tool Mode**: Use `auto` mode — Loom probes the model dynamically and caches the result
+3. **Model Selection**: Start with `qwen3:8b` or `llama3.1` for testing, `llama3.3:70b` for quality
+4. **Code Tasks**: Use `qwen3-coder:30b` or `qwen2.5-coder` for code generation and analysis
+5. **Hybrid**: Use Ollama for privacy-sensitive data, cloud for production scale
+6. **GPU**: Invest in GPU for serious local LLM work (especially for 13B+ models)
+7. **Monitoring**: Track inference speed and tool calling accuracy to detect performance issues
+8. **Any Model Works**: Loom discovers models dynamically — pull any Ollama model and it works
 
 
 ## See Also
