@@ -16,14 +16,14 @@ require (
 	charm.land/lipgloss/v2 v2.0.0-beta.3.0.20251205162909-7869489d8971
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/alecthomas/chroma/v2 v2.23.1
-	github.com/anthropics/anthropic-sdk-go v1.20.0
+	github.com/anthropics/anthropic-sdk-go v1.22.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.7
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.48.0
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.49.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20251212194010-b927aa605560
-	github.com/charmbracelet/x/ansi v0.11.4
+	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
 	github.com/disintegration/imageorient v0.0.0-20180920195336-8147d86e83ec
 	github.com/docker/docker v28.5.2+incompatible
@@ -31,7 +31,7 @@ require (
 	github.com/go-acme/lego/v4 v4.31.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jhump/protoreflect v1.18.0
-	github.com/klauspost/compress v1.18.3
+	github.com/klauspost/compress v1.18.4
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/lib/pq v1.11.1
 	github.com/lucasb-eyer/go-colorful v1.3.0
@@ -82,9 +82,9 @@ require (
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
-	github.com/clipperhouse/displaywidth v0.7.0 // indirect
+	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
-	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
+	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
@@ -108,7 +108,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/miekg/dns v1.1.69 // indirect
-	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
