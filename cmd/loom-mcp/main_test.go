@@ -34,7 +34,7 @@ func TestParseLogLevel(t *testing.T) {
 		{"info", zap.InfoLevel},
 		{"warn", zap.WarnLevel},
 		{"error", zap.ErrorLevel},
-		{"", zap.InfoLevel},       // default
+		{"", zap.InfoLevel},        // default
 		{"unknown", zap.InfoLevel}, // unrecognized falls back to info
 		{"DEBUG", zap.InfoLevel},   // case-sensitive, falls back to info
 	}

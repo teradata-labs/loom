@@ -42,7 +42,7 @@ type MCPServer struct {
 	logger             *zap.Logger
 	mu                 sync.RWMutex
 	clientInfo         *protocol.Implementation     // Stored after initialize
-	clientCapabilities *protocol.ClientCapabilities  // Stored after initialize
+	clientCapabilities *protocol.ClientCapabilities // Stored after initialize
 }
 
 // Option configures an MCPServer.
