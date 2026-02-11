@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
@@ -115,7 +116,12 @@ func (b *LoomBridge) handleAnswerClarification(ctx context.Context, args map[str
 // ============================================================================
 
 func (b *LoomBridge) handleRegisterTool(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
-	return callGRPC(ctx, b.requestTimeout, args,
+	// RegisterToolRequest expects a nested "tool" field with ToolDefinition.
+	// Wrap flat MCP args (name, description, input_schema_json) into the nested structure.
+	wrapped := map[string]interface{}{
+		"tool": args,
+	}
+	return callGRPC(ctx, b.requestTimeout, wrapped,
 		func() *loomv1.RegisterToolRequest { return &loomv1.RegisterToolRequest{} },
 		b.client.RegisterTool,
 	)
@@ -327,6 +333,11 @@ func (b *LoomBridge) handleGetArtifact(ctx context.Context, args map[string]inte
 }
 
 func (b *LoomBridge) handleUploadArtifact(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	// UploadArtifactRequest.content is a bytes field. Proto JSON expects base64.
+	// MCP clients send plain text, so we base64-encode it for protojson compatibility.
+	if content, ok := args["content"].(string); ok {
+		args["content"] = base64.StdEncoding.EncodeToString([]byte(content))
+	}
 	return callGRPC(ctx, b.requestTimeout, args,
 		func() *loomv1.UploadArtifactRequest { return &loomv1.UploadArtifactRequest{} },
 		b.client.UploadArtifact,

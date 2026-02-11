@@ -95,6 +95,13 @@ type MultiAgentServer struct {
 	// Observability tracer for workflow and agent tracing
 	tracer observability.Tracer
 
+	// Local trace store for GetTrace RPC (the Tracer interface does not expose retrieval)
+	traceStoreLocal *traceStore
+
+	// Pending tool permission requests for HITL workflows (mirrors pendingQuestions pattern)
+	pendingPermissions   map[string]*pendingPermission
+	pendingPermissionsMu sync.RWMutex
+
 	// Workflow sub-agent tracking for event-driven message notifications
 	workflowSubAgents   map[string]*workflowSubAgentContext // "coordinatorSessionID:agentID" → context
 	workflowSubAgentsMu sync.RWMutex
@@ -106,6 +113,9 @@ type MultiAgentServer struct {
 	// LLM concurrency control to prevent rate limiting
 	llmSemaphore        chan struct{} // Semaphore to limit concurrent LLM calls
 	llmConcurrencyLimit int           // Max concurrent LLM calls (configurable)
+
+	// Agent lifecycle state tracking (created_at, status, config, etc.)
+	agentStates map[string]*agentState
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -195,6 +205,8 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store *agent.SessionSto
 		spawnedAgents:                     make(map[string]*spawnedAgentContext),     // Initialize spawned sub-agent tracking
 		llmConcurrencyLimit:               defaultLLMConcurrency,
 		llmSemaphore:                      make(chan struct{}, defaultLLMConcurrency),
+		agentStates:                       make(map[string]*agentState),
+		traceStoreLocal:                   newTraceStore(1 * time.Hour), // Eagerly initialize trace store for GetTrace RPC
 	}
 }
 
@@ -259,10 +271,17 @@ func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 
 // SetTracer injects an observability tracer for workflow and agent tracing.
 // This should be called after NewMultiAgentServer() to enable observability.
+// Also ensures traceStoreLocal is initialized so GetTrace RPC works.
 func (s *MultiAgentServer) SetTracer(tracer observability.Tracer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tracer = tracer
+	// Ensure trace store is initialized for GetTrace RPC support.
+	// NewMultiAgentServer already initializes it, but this is a safety net
+	// for servers constructed without the constructor (e.g., tests).
+	if s.traceStoreLocal == nil {
+		s.traceStoreLocal = newTraceStore(1 * time.Hour)
+	}
 }
 
 // ConfigureScheduler injects the workflow scheduler for cron-based execution.
@@ -618,10 +637,38 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			zap.Error(err))
 	}
 
+	// Start a trace span for the Weave operation if tracer is configured
+	s.mu.RLock()
+	tracer := s.tracer
+	s.mu.RUnlock()
+
+	var span *observability.Span
+	if tracer != nil {
+		ctx, span = tracer.StartSpan(ctx, "server.Weave",
+			observability.WithAttribute(observability.AttrSessionID, sessionID),
+			observability.WithAttribute("agent.id", agentID),
+			observability.WithAttribute("query.length", len(req.Query)),
+		)
+	}
+
 	// Execute agent chat
 	resp, err := ag.Chat(ctx, sessionID, req.Query)
 	if err != nil {
+		if span != nil {
+			span.RecordError(err)
+			tracer.EndSpan(span)
+			s.RecordTraceSpan(span)
+		}
 		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
+	}
+
+	// End trace span and record it to the local store for GetTrace retrieval
+	if span != nil {
+		span.SetAttribute("response.length", len(resp.Content))
+		span.SetAttribute("usage.input_tokens", resp.Usage.InputTokens)
+		span.SetAttribute("usage.output_tokens", resp.Usage.OutputTokens)
+		tracer.EndSpan(span)
+		s.RecordTraceSpan(span)
 	}
 
 	// Convert response to proto format

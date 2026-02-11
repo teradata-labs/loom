@@ -1072,6 +1072,15 @@ func (r *Registry) StopAgent(ctx context.Context, nameOrID string) error {
 	return nil
 }
 
+// RemoveAgentRuntime removes the in-memory agent instance from the registry
+// without deleting database records or config files. This is used during
+// agent reload to clear the "already running" check before recreating.
+func (r *Registry) RemoveAgentRuntime(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.agents, name)
+}
+
 // GetAgent returns a running agent instance by name or GUID
 func (r *Registry) GetAgent(ctx context.Context, nameOrID string) (*Agent, error) {
 	// First try direct name lookup

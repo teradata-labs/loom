@@ -163,21 +163,24 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		), conversationViewerURI, mv, weaveAnn),
 
 		// Patterns
-		tool("loom_load_patterns", "Load pattern definitions from a directory.", objectSchema(
-			prop("directory", "string", "Path to directory containing pattern YAML files"),
+		tool("loom_load_patterns", "Load pattern definitions from a directory or repository.", objectSchema(
+			prop("source", "string", "Directory path or repository URL containing pattern YAML files"),
+			prop("domains", "array", "Domain filters (sql, api, document, etc.)"),
+			prop("force_reload", "boolean", "Force reload, clearing cache"),
+			prop("agent_id", "string", "Agent ID to load patterns for (optional, loads for all if not specified)"),
 		), "", mv, mut),
 		tool("loom_list_patterns", "List available patterns with optional filtering.", objectSchema(
 			prop("category", "string", "Filter by category (optional)"),
 			prop("tag", "string", "Filter by tag (optional)"),
+			prop("search", "string", "Search query to filter patterns by name/description"),
 		), "", mv, ro),
 		tool("loom_get_pattern", "Get a specific pattern by name.", objectSchema(
 			reqProp("name", "string", "Pattern name"),
 		), "", mv, ro),
 		tool("loom_create_pattern", "Create a new pattern at runtime.", objectSchema(
 			reqProp("name", "string", "Pattern name"),
-			prop("description", "string", "Pattern description"),
-			prop("template", "string", "Pattern template content"),
-			prop("category", "string", "Pattern category"),
+			prop("agent_id", "string", "Agent ID to create pattern for"),
+			prop("yaml_content", "string", "Pattern YAML content"),
 		), "", mv, mut),
 
 		// Sessions
@@ -188,7 +191,8 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 			reqProp("session_id", "string", "Session ID to retrieve"),
 		), conversationViewerURI, mv, ro),
 		tool("loom_list_sessions", "List all conversation sessions.", objectSchema(
-			prop("agent_id", "string", "Filter by agent ID (optional)"),
+			prop("state", "string", "Filter by state (optional)"),
+			prop("backend", "string", "Filter by backend (optional)"),
 		), "", mv, ro),
 		tool("loom_delete_session", "Delete a session and its history.", objectSchema(
 			reqProp("session_id", "string", "Session ID to delete"),
@@ -207,6 +211,7 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		tool("loom_register_tool", "Register a new tool dynamically.", objectSchema(
 			reqProp("name", "string", "Tool name"),
 			prop("description", "string", "Tool description"),
+			prop("input_schema_json", "string", "Input schema as JSON string (optional)"),
 		), "", mv, mut),
 		tool("loom_list_tools", "List all registered tools.", objectSchema(), "", mv, ro),
 		tool("loom_get_health", "Get health status of the Loom server.", objectSchema(), "", mv, ro),
@@ -220,7 +225,8 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 
 		// Agent Management
 		tool("loom_create_agent", "Create an agent from configuration.", objectSchema(
-			reqProp("config_path", "string", "Path to agent configuration file"),
+			prop("config", "object", "Inline agent configuration (name, description, llm, system_prompt, tools, memory, behavior, metadata)"),
+			prop("config_path", "string", "Path to agent configuration YAML file (alternative to inline config)"),
 		), "", mv, mut),
 		tool("loom_list_agents", "List all registered agents.", objectSchema(), "", mv, ro),
 		tool("loom_get_agent", "Get agent information.", objectSchema(
@@ -234,40 +240,45 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		), "", mv, mut),
 		tool("loom_delete_agent", "Delete an agent.", objectSchema(
 			reqProp("agent_id", "string", "Agent ID"),
+			prop("force", "boolean", "Force delete even if running"),
 		), "", mv, del),
 		tool("loom_reload_agent", "Hot-reload agent configuration without stopping.", objectSchema(
 			reqProp("agent_id", "string", "Agent ID"),
+			prop("config", "object", "New agent configuration to apply"),
+			prop("reload_from_file", "boolean", "Reload from original config file instead"),
 		), "", mv, mut),
 
 		// Models
 		tool("loom_switch_model", "Switch the LLM model for a session.", objectSchema(
-			reqProp("model_id", "string", "Model identifier (e.g. claude-3-5-sonnet)"),
+			reqProp("model", "string", "Specific model name (e.g. claude-sonnet-4.5, llama3)"),
 			prop("session_id", "string", "Session ID (optional)"),
+			prop("agent_id", "string", "Agent ID (optional, uses session's current agent if not specified)"),
+			prop("provider", "string", "Model provider (anthropic, bedrock, ollama, etc.)"),
+			prop("preserve_context", "boolean", "Preserve conversation context (default: true)"),
 		), "", mv, mut),
 		tool("loom_list_models", "List all available LLM models.", objectSchema(), "", mv, ro),
 
 		// Workflow Orchestration
 		tool("loom_execute_workflow", "Execute a multi-agent workflow.", objectSchema(
-			reqProp("workflow_name", "string", "Name of the workflow to execute"),
-			prop("input", "string", "Input data for the workflow"),
-			prop("parameters", "object", "Additional workflow parameters"),
+			prop("registry_id", "string", "Agent registry to use for agent lookup"),
+			prop("variables", "object", "Variables for prompt interpolation"),
+			prop("timeout_seconds", "integer", "Execution timeout in seconds"),
+			prop("enable_trace", "boolean", "Enable execution tracing"),
 		), "", mv, mut),
 		tool("loom_get_workflow_execution", "Get a workflow execution.", objectSchema(
 			reqProp("execution_id", "string", "Workflow execution ID"),
 		), "", mv, ro),
 		tool("loom_list_workflow_executions", "List workflow executions.", objectSchema(
-			prop("workflow_name", "string", "Filter by workflow name (optional)"),
-			prop("status", "string", "Filter by status (optional)"),
+			prop("status_filter", "string", "Filter by status (optional)"),
+			prop("pattern_type_filter", "string", "Filter by pattern type (optional)"),
+			prop("page_size", "integer", "Page size"),
+			prop("page_token", "string", "Page token for pagination"),
 		), "", mv, ro),
 		tool("loom_schedule_workflow", "Create a scheduled workflow.", objectSchema(
-			reqProp("workflow_name", "string", "Workflow to schedule"),
-			reqProp("cron", "string", "Cron expression for scheduling"),
-			prop("input", "string", "Input data"),
+			reqProp("workflow_name", "string", "Workflow name"),
 		), "", mv, mut),
 		tool("loom_update_scheduled_workflow", "Update an existing scheduled workflow.", objectSchema(
 			reqProp("schedule_id", "string", "Schedule ID to update"),
-			prop("cron", "string", "New cron expression"),
-			prop("input", "string", "New input data"),
 		), "", mv, mut),
 		tool("loom_get_scheduled_workflow", "Get a scheduled workflow by ID.", objectSchema(
 			reqProp("schedule_id", "string", "Schedule ID"),
@@ -291,27 +302,32 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 
 		// Artifacts
 		tool("loom_list_artifacts", "List artifacts with optional filtering.", objectSchema(
-			prop("session_id", "string", "Filter by session (optional)"),
-			prop("agent_id", "string", "Filter by agent (optional)"),
-			prop("artifact_type", "string", "Filter by type (optional)"),
+			prop("source", "string", "Filter by source: user, generated, or agent (optional)"),
+			prop("content_type", "string", "Filter by MIME type, e.g. text/csv (optional)"),
+			prop("limit", "integer", "Maximum number of results (default: 50)"),
 		), "", mv, ro),
 		tool("loom_get_artifact", "Get artifact metadata.", objectSchema(
-			reqProp("artifact_id", "string", "Artifact ID"),
+			reqProp("id", "string", "Artifact ID"),
+			prop("name", "string", "Artifact name (alternative lookup if ID not provided)"),
 		), "", mv, ro),
 		tool("loom_upload_artifact", "Upload a file to artifact storage.", objectSchema(
-			reqProp("name", "string", "Artifact name"),
-			reqProp("content", "string", "Artifact content (text or base64)"),
-			prop("mime_type", "string", "MIME type (optional)"),
-			prop("session_id", "string", "Associated session (optional)"),
+			reqProp("name", "string", "Artifact filename"),
+			reqProp("content", "string", "Artifact content (text, will be encoded to bytes)"),
+			prop("source", "string", "Source: user, generated, or agent"),
+			prop("source_agent_id", "string", "Agent ID if generated by an agent (optional)"),
+			prop("purpose", "string", "Human-readable purpose/description (optional)"),
 		), "", mv, mut),
 		tool("loom_delete_artifact", "Delete an artifact.", objectSchema(
-			reqProp("artifact_id", "string", "Artifact ID"),
+			reqProp("id", "string", "Artifact ID"),
+			prop("hard_delete", "boolean", "Physically delete the file (default: soft delete)"),
 		), "", mv, del),
-		tool("loom_search_artifacts", "Search artifacts by content.", objectSchema(
-			reqProp("query", "string", "Search query"),
+		tool("loom_search_artifacts", "Search artifacts by content (FTS5 full-text search).", objectSchema(
+			reqProp("query", "string", "Search query (FTS5 syntax supported)"),
+			prop("limit", "integer", "Maximum results (default: 20)"),
 		), "", mv, ro),
 		tool("loom_get_artifact_content", "Read artifact file content.", objectSchema(
-			reqProp("artifact_id", "string", "Artifact ID"),
+			reqProp("id", "string", "Artifact ID"),
+			prop("encoding", "string", "Output encoding: text or base64 (default: text)"),
 		), "", mv, ro),
 		tool("loom_get_artifact_stats", "Get artifact storage statistics.", objectSchema(), "", mv, ro),
 	}

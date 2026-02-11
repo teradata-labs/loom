@@ -52,6 +52,8 @@ type mockLoomClient struct {
 	listToolsFunc               func(ctx context.Context, in *loomv1.ListToolsRequest, opts ...grpc.CallOption) (*loomv1.ListToolsResponse, error)
 	listModelsFunc              func(ctx context.Context, in *loomv1.ListAvailableModelsRequest, opts ...grpc.CallOption) (*loomv1.ListAvailableModelsResponse, error)
 	deleteScheduledWorkflowFunc func(ctx context.Context, in *loomv1.DeleteScheduledWorkflowRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	registerToolFunc            func(ctx context.Context, in *loomv1.RegisterToolRequest, opts ...grpc.CallOption) (*loomv1.RegisterToolResponse, error)
+	uploadArtifactFunc          func(ctx context.Context, in *loomv1.UploadArtifactRequest, opts ...grpc.CallOption) (*loomv1.UploadArtifactResponse, error)
 }
 
 func (m *mockLoomClient) GetHealth(ctx context.Context, in *loomv1.GetHealthRequest, opts ...grpc.CallOption) (*loomv1.HealthStatus, error) {
@@ -108,6 +110,22 @@ func (m *mockLoomClient) DeleteScheduledWorkflow(ctx context.Context, in *loomv1
 		return m.deleteScheduledWorkflowFunc(ctx, in, opts...)
 	}
 	return &emptypb.Empty{}, nil
+}
+
+func (m *mockLoomClient) RegisterTool(ctx context.Context, in *loomv1.RegisterToolRequest, opts ...grpc.CallOption) (*loomv1.RegisterToolResponse, error) {
+	if m.registerToolFunc != nil {
+		return m.registerToolFunc(ctx, in, opts...)
+	}
+	return &loomv1.RegisterToolResponse{Success: true}, nil
+}
+
+func (m *mockLoomClient) UploadArtifact(ctx context.Context, in *loomv1.UploadArtifactRequest, opts ...grpc.CallOption) (*loomv1.UploadArtifactResponse, error) {
+	if m.uploadArtifactFunc != nil {
+		return m.uploadArtifactFunc(ctx, in, opts...)
+	}
+	return &loomv1.UploadArtifactResponse{
+		Artifact: &loomv1.Artifact{Id: "mock-id", Name: in.Name},
+	}, nil
 }
 
 func TestLoomBridge_ListTools(t *testing.T) {
@@ -746,6 +764,65 @@ func TestNewLoomBridge_WithTLS_InvalidCert(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "configure transport credentials")
+}
+
+func TestLoomBridge_CallTool_RegisterTool_WrapsInToolField(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	var capturedReq *loomv1.RegisterToolRequest
+	mockClient := &mockLoomClient{
+		registerToolFunc: func(_ context.Context, in *loomv1.RegisterToolRequest, _ ...grpc.CallOption) (*loomv1.RegisterToolResponse, error) {
+			capturedReq = in
+			return &loomv1.RegisterToolResponse{Success: true}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_register_tool", map[string]interface{}{
+		"name":        "my-tool",
+		"description": "A test tool",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+
+	// Verify the flat args were wrapped into the nested tool field
+	require.NotNil(t, capturedReq)
+	require.NotNil(t, capturedReq.Tool)
+	assert.Equal(t, "my-tool", capturedReq.Tool.Name)
+	assert.Equal(t, "A test tool", capturedReq.Tool.Description)
+}
+
+func TestLoomBridge_CallTool_UploadArtifact_Base64EncodesContent(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	var capturedReq *loomv1.UploadArtifactRequest
+	mockClient := &mockLoomClient{
+		uploadArtifactFunc: func(_ context.Context, in *loomv1.UploadArtifactRequest, _ ...grpc.CallOption) (*loomv1.UploadArtifactResponse, error) {
+			capturedReq = in
+			return &loomv1.UploadArtifactResponse{
+				Artifact: &loomv1.Artifact{Id: "test-id", Name: in.Name},
+			}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_upload_artifact", map[string]interface{}{
+		"name":    "test.sql",
+		"content": "SELECT * FROM users;",
+		"source":  "user",
+		"purpose": "testing",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+
+	// Verify content was correctly base64-encoded then decoded by protojson
+	require.NotNil(t, capturedReq)
+	assert.Equal(t, "test.sql", capturedReq.Name)
+	assert.Equal(t, "SELECT * FROM users;", string(capturedReq.Content))
+	assert.Equal(t, "user", capturedReq.Source)
+	assert.Equal(t, "testing", capturedReq.Purpose)
 }
 
 // generateSelfSignedCACert creates a minimal self-signed CA certificate in PEM

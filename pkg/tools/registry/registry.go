@@ -224,6 +224,15 @@ func (r *Registry) IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, er
 	return resp, nil
 }
 
+// RegisterTool registers or updates a single tool in the database.
+// This is the exported entry point for registering custom tools via the gRPC API.
+// Thread-safe: acquires write lock before database access.
+func (r *Registry) RegisterTool(ctx context.Context, tool *loomv1.IndexedTool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.upsertTool(ctx, tool)
+}
+
 // upsertTool inserts or updates a tool in the database.
 func (r *Registry) upsertTool(ctx context.Context, tool *loomv1.IndexedTool) error {
 	capabilities, _ := json.Marshal(tool.Capabilities)
