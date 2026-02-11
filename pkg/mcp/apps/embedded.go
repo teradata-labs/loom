@@ -23,15 +23,31 @@ import (
 //go:embed html/conversation-viewer.html
 var conversationViewerHTML []byte
 
+//go:embed html/data-chart.html
+var dataChartHTML []byte
+
 // RegisterEmbeddedApps registers all built-in MCP App HTML resources.
 // Returns an error if any registration fails (e.g., duplicate URI on second call).
 func RegisterEmbeddedApps(registry *UIResourceRegistry) error {
-	return registry.Register(&UIResource{
+	if err := registry.Register(&UIResource{
 		URI:         "ui://loom/conversation-viewer",
 		Name:        "Conversation Viewer",
 		Description: "Interactive viewer for Loom agent conversations, sessions, and tool call history",
 		MIMEType:    protocol.ResourceMIME,
 		HTML:        conversationViewerHTML,
+		Meta: &protocol.UIResourceMeta{
+			PrefersBorder: boolPtr(true),
+		},
+	}); err != nil {
+		return err
+	}
+
+	return registry.Register(&UIResource{
+		URI:         "ui://loom/data-chart",
+		Name:        "Data Chart",
+		Description: "Interactive chart for visualizing time-series data from Loom agent queries",
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        dataChartHTML,
 		Meta: &protocol.UIResourceMeta{
 			PrefersBorder: boolPtr(true),
 		},

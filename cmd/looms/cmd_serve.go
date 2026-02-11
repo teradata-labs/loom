@@ -932,9 +932,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Create registry to load meta-agent generated configs
+	// MCPManager is required for agents that declare MCP tools in their config
+	var mcpMgrForRegistry *manager.Manager
+	if mcpManager != nil {
+		mcpMgrForRegistry = mcpManager.GetManager()
+	}
 	registry, err = agent.NewRegistry(agent.RegistryConfig{
 		ConfigDir:    configDir,
 		DBPath:       dbPath,
+		MCPManager:   mcpMgrForRegistry,
 		LLMProvider:  llmProvider,
 		Logger:       logger,
 		Tracer:       tracer,

@@ -11,13 +11,18 @@ spec:
     max_tokens: 8000
   
   tools:
-    - shell_execute
-    - tool_search
-    - get_error_detail
-    - query_tool_result
-    - search_conversation
-    - recall_conversation
-    - clear_recalled_context
+    builtin:
+      - shell_execute
+      - tool_search
+      - get_error_detail
+      - query_tool_result
+      - search_conversation
+      - recall_conversation
+      - clear_recalled_context
+    mcp:
+      - server: vantage-mcp
+        tools:
+          - teradata_execute_sql
 
   config:
     max_turns: 25

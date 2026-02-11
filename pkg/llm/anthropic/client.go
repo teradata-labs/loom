@@ -59,6 +59,7 @@ type Client struct {
 	maxTokens   int
 	temperature float64
 	rateLimiter *llm.RateLimiter
+	toolNameMap map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Anthropic client.
@@ -142,7 +143,8 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Extract system messages and convert to Anthropic format
 	systemPrompt, apiMessages := c.convertMessages(messages)
 
-	// Convert tools to Anthropic format
+	// Convert tools to Anthropic format with name sanitization
+	c.toolNameMap = make(map[string]string)
 	apiTools := c.convertTools(tools)
 
 	// Build request
@@ -239,12 +241,12 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message
 				})
 			}
 
-			// Add tool calls if present
+			// Add tool calls if present (sanitize names for API compatibility)
 			for _, tc := range msg.ToolCalls {
 				content = append(content, ContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
-					Name:  tc.Name,
+					Name:  llm.SanitizeToolName(tc.Name),
 					Input: tc.Input,
 				})
 			}
@@ -278,12 +280,19 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message
 }
 
 // convertTools converts shuttle tools to Anthropic format.
+// Tool names are sanitized to replace colons with underscores for provider compatibility.
 func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 	var apiTools []Tool
 
 	for _, tool := range tools {
+		originalName := tool.Name()
+		sanitizedName := llm.SanitizeToolName(originalName)
+		if c.toolNameMap != nil {
+			c.toolNameMap[sanitizedName] = originalName
+		}
+
 		apiTool := Tool{
-			Name:        tool.Name(),
+			Name:        sanitizedName,
 			Description: tool.Description(),
 		}
 
@@ -362,7 +371,7 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 		case "tool_use":
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    block.ID,
-				Name:  block.Name,
+				Name:  llm.ReverseToolName(c.toolNameMap, block.Name),
 				Input: block.Input,
 			})
 		}
@@ -390,6 +399,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// 1. Build request body (extract system messages and convert to Anthropic format)
 	systemPrompt, apiMessages := c.convertMessages(messages)
+	c.toolNameMap = make(map[string]string)
 	apiTools := c.convertTools(tools)
 
 	req := &MessagesRequest{
@@ -498,7 +508,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
 						ID:   event.ContentBlock.ID,
-						Name: event.ContentBlock.Name,
+						Name: llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
 					})
 				}
 

@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -140,13 +141,13 @@ func (c *Client) convertMessagesToConverse(messages []llmtypes.Message) ([]bedro
 				contentBlocks = append(contentBlocks, &bedrocktypes.ContentBlockMemberToolUse{
 					Value: bedrocktypes.ToolUseBlock{
 						ToolUseId: aws.String(tc.ID),
-						Name:      aws.String(sanitizeToolName(tc.Name)),
+						Name:      aws.String(llm.SanitizeToolName(tc.Name)),
 						Input:     inputDoc,
 					},
 				})
 
 				// Store name mapping for later
-				c.toolNameMap[sanitizeToolName(tc.Name)] = tc.Name
+				c.toolNameMap[llm.SanitizeToolName(tc.Name)] = tc.Name
 			}
 
 			if len(contentBlocks) > 0 {
@@ -203,7 +204,7 @@ func (c *Client) convertToolsToConverse(tools []shuttle.Tool) *bedrocktypes.Tool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
-		sanitizedName := sanitizeToolName(originalName)
+		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
 		c.toolNameMap[sanitizedName] = originalName

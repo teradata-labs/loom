@@ -691,12 +691,6 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 
 // StreamWeave streams agent execution progress.
 func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) error {
-	// Debug: log what agent ID we received
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] StreamWeave: received agentID='%s', sessionID='%s' in request\n", time.Now().Format("15:04:05"), req.AgentId, req.SessionId)
-		_ = f.Close()
-	}
-
 	// Validate query
 	if req.Query == "" {
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
@@ -706,12 +700,6 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	ag, resolvedAgentID, err := s.getAgent(req.AgentId)
 	if err != nil {
 		return err
-	}
-
-	// Debug: log which agent was resolved
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] StreamWeave: resolved to agentID='%s' (default='%s')\n", time.Now().Format("15:04:05"), resolvedAgentID, s.defaultAgentID)
-		_ = f.Close()
 	}
 
 	// Generate session ID if not provided
@@ -776,40 +764,9 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		}
 	}
 
-	// Debug: log agent execution details
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] StreamWeave: About to execute agent.ChatWithProgress with sessionID='%s'\n", time.Now().Format("15:04:05"), sessionID)
-		// Log agent details
-		if ag != nil {
-			fmt.Fprintf(f, "[%s] StreamWeave: Agent object pointer: %p\n", time.Now().Format("15:04:05"), ag)
-			// Try to get agent config
-			if config := ag.GetConfig(); config != nil {
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent name='%s', description='%s'\n", time.Now().Format("15:04:05"), config.Name, config.Description)
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent system_prompt length=%d chars\n", time.Now().Format("15:04:05"), len(config.SystemPrompt))
-				if len(config.SystemPrompt) > 0 {
-					preview := config.SystemPrompt
-					if len(preview) > 100 {
-						preview = preview[:100] + "..."
-					}
-					fmt.Fprintf(f, "[%s] StreamWeave: Agent system_prompt preview='%s'\n", time.Now().Format("15:04:05"), preview)
-				}
-			}
-		}
-		_ = f.Close()
-	}
-
 	// Execute agent with progress callback
 	go func() {
 		resp, err := ag.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
-		// Debug: log response
-		if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-			if resp != nil {
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent responded, response length=%d chars\n", time.Now().Format("15:04:05"), len(resp.Content))
-			} else {
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent response was nil, error=%v\n", time.Now().Format("15:04:05"), err)
-			}
-			_ = f.Close()
-		}
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan)
 	}()
@@ -2451,22 +2408,10 @@ func (s *MultiAgentServer) ListAvailableModels(ctx context.Context, req *loomv1.
 
 // CreateSession creates a new conversation session for an agent.
 func (s *MultiAgentServer) CreateSession(ctx context.Context, req *loomv1.CreateSessionRequest) (*loomv1.Session, error) {
-	// Debug: log what agent ID we received
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] CreateSession: received agentID='%s' in request\n", time.Now().Format("15:04:05"), req.AgentId)
-		_ = f.Close()
-	}
-
 	// Get agent (use agent_id if specified, otherwise default)
-	ag, resolvedAgentID, err := s.getAgent(req.AgentId)
+	ag, _, err := s.getAgent(req.AgentId)
 	if err != nil {
 		return nil, err
-	}
-
-	// Debug: log which agent was resolved
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] CreateSession: resolved to agentID='%s' (default='%s')\n", time.Now().Format("15:04:05"), resolvedAgentID, s.defaultAgentID)
-		_ = f.Close()
 	}
 
 	sessionID := GenerateSessionID()

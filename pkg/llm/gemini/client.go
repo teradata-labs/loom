@@ -44,6 +44,7 @@ type Client struct {
 	maxTokens   int
 	temperature float64
 	rateLimiter *llm.RateLimiter
+	toolNameMap map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Gemini client.
@@ -125,8 +126,9 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert tools to Gemini format
 	var functionDeclarations []FunctionDeclaration
+	c.toolNameMap = make(map[string]string)
 	if len(tools) > 0 {
-		functionDeclarations = convertTools(tools)
+		functionDeclarations = convertTools(tools, c.toolNameMap)
 	}
 
 	// Build request
@@ -264,9 +266,10 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 
 			if part.FunctionCall != nil {
 				llmResp.StopReason = "tool_use"
+				reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 				llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
-					ID:    part.FunctionCall.Name, // Gemini doesn't provide call IDs
-					Name:  part.FunctionCall.Name,
+					ID:    reversedName, // Gemini doesn't provide call IDs
+					Name:  reversedName,
 					Input: part.FunctionCall.Args,
 				})
 			}
@@ -392,7 +395,7 @@ func convertMessages(messages []llmtypes.Message) []Content {
 			for _, tc := range msg.ToolCalls {
 				parts = append(parts, Part{
 					FunctionCall: &FunctionCall{
-						Name: tc.Name,
+						Name: llm.SanitizeToolName(tc.Name),
 						Args: tc.Input,
 					},
 				})
@@ -424,12 +427,18 @@ func convertMessages(messages []llmtypes.Message) []Content {
 	return contents
 }
 
-func convertTools(tools []shuttle.Tool) []FunctionDeclaration {
+func convertTools(tools []shuttle.Tool, nameMap map[string]string) []FunctionDeclaration {
 	var declarations []FunctionDeclaration
 
 	for _, tool := range tools {
+		originalName := tool.Name()
+		sanitizedName := llm.SanitizeToolName(originalName)
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
+		}
+
 		decl := FunctionDeclaration{
-			Name:        tool.Name(),
+			Name:        sanitizedName,
 			Description: tool.Description(),
 		}
 
@@ -491,8 +500,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 1. Build request body (reuse existing message and tool conversion)
 	contents := convertMessages(messages)
 	var functionDeclarations []FunctionDeclaration
+	c.toolNameMap = make(map[string]string)
 	if len(tools) > 0 {
-		functionDeclarations = convertTools(tools)
+		functionDeclarations = convertTools(tools, c.toolNameMap)
 	}
 
 	req := &GenerateContentRequest{

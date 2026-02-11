@@ -46,6 +46,7 @@ type Client struct {
 	maxTokens   int
 	temperature float64
 	rateLimiter *llm.RateLimiter
+	toolNameMap map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the OpenAI client.
@@ -146,7 +147,8 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Convert messages to OpenAI format
 	apiMessages := c.convertMessages(messages)
 
-	// Convert tools to OpenAI format
+	// Convert tools to OpenAI format with name sanitization
+	c.toolNameMap = make(map[string]string)
 	apiTools := c.convertTools(tools)
 
 	// Build request
@@ -256,7 +258,7 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 						ID:   tc.ID,
 						Type: "function",
 						Function: FunctionCall{
-							Name:      tc.Name,
+							Name:      llm.SanitizeToolName(tc.Name),
 							Arguments: string(argsJSON),
 						},
 					})
@@ -280,14 +282,22 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 }
 
 // convertTools converts shuttle tools to OpenAI format.
+// Tool names are sanitized to replace colons (MCP namespace separator)
+// with underscores for provider compatibility.
 func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 	var apiTools []Tool
 
 	for _, tool := range tools {
+		originalName := tool.Name()
+		sanitizedName := llm.SanitizeToolName(originalName)
+		if c.toolNameMap != nil {
+			c.toolNameMap[sanitizedName] = originalName
+		}
+
 		apiTool := Tool{
 			Type: "function",
 			Function: FunctionDef{
-				Name:        tool.Name(),
+				Name:        sanitizedName,
 				Description: tool.Description(),
 			},
 		}
@@ -407,7 +417,7 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse) *llmtypes.LLMResp
 
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    tc.ID,
-				Name:  tc.Function.Name,
+				Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
 				Input: input,
 			})
 		}
@@ -463,6 +473,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// 1. Build request body (reuse existing message and tool conversion)
 	apiMessages := c.convertMessages(messages)
+	c.toolNameMap = make(map[string]string)
 	apiTools := c.convertTools(tools)
 
 	req := &ChatCompletionRequest{
@@ -573,10 +584,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {
-						// New tool call
+						// New tool call - map sanitized name back to original
 						toolCallMap[idx] = &llmtypes.ToolCall{
 							ID:    tcDelta.ID,
-							Name:  tcDelta.Function.Name,
+							Name:  llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name),
 							Input: make(map[string]interface{}),
 						}
 					}

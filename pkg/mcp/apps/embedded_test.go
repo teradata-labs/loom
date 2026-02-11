@@ -53,22 +53,34 @@ func TestRegisterEmbeddedApps(t *testing.T) {
 	err := RegisterEmbeddedApps(registry)
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, registry.Count())
+	assert.Equal(t, 2, registry.Count())
 
-	// Verify conversation viewer is registered
+	// Verify all apps are registered
 	resources := registry.List()
-	require.Len(t, resources, 1)
+	require.Len(t, resources, 2)
 
+	// Resources are sorted by URI
 	assert.Equal(t, "ui://loom/conversation-viewer", resources[0].URI)
 	assert.Equal(t, "Conversation Viewer", resources[0].Name)
 	assert.Equal(t, protocol.ResourceMIME, resources[0].MimeType)
 
-	// Verify it can be read
+	assert.Equal(t, "ui://loom/data-chart", resources[1].URI)
+	assert.Equal(t, "Data Chart", resources[1].Name)
+	assert.Equal(t, protocol.ResourceMIME, resources[1].MimeType)
+
+	// Verify conversation viewer can be read
 	result, err := registry.Read("ui://loom/conversation-viewer")
 	require.NoError(t, err)
 	require.Len(t, result.Contents, 1)
 	assert.Contains(t, result.Contents[0].Text, "<!DOCTYPE html>")
 	assert.Equal(t, protocol.ResourceMIME, result.Contents[0].MimeType)
+
+	// Verify data chart can be read
+	result, err = registry.Read("ui://loom/data-chart")
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+	assert.Contains(t, result.Contents[0].Text, "<!DOCTYPE html>")
+	assert.Contains(t, result.Contents[0].Text, "chart.js")
 }
 
 func TestRegisterEmbeddedApps_Idempotent(t *testing.T) {
@@ -81,6 +93,6 @@ func TestRegisterEmbeddedApps_Idempotent(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already registered")
 
-	// Should still have exactly 1 resource
-	assert.Equal(t, 1, registry.Count())
+	// Should still have exactly 2 resources (first call succeeded)
+	assert.Equal(t, 2, registry.Count())
 }
