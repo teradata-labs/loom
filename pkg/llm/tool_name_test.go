@@ -37,7 +37,7 @@ func TestSanitizeToolName(t *testing.T) {
 func TestReverseToolName(t *testing.T) {
 	nameMap := map[string]string{
 		"vantage-mcp_execute_sql": "vantage-mcp:execute_sql",
-		"fs_read_file":           "fs:read_file",
+		"fs_read_file":            "fs:read_file",
 	}
 
 	// Found in map

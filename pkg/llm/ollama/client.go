@@ -47,7 +47,7 @@ type Client struct {
 	rateLimiter        *llm.RateLimiter
 	nativeToolsProbed  bool              // true once we've probed the model
 	nativeToolsSupport bool              // cached result from /api/show probe
-	toolNameMap        map[string]string  // sanitized name → original name
+	toolNameMap        map[string]string // sanitized name → original name
 }
 
 // fallbackToolSupportedModels is used when the /api/show probe fails (e.g. Ollama
