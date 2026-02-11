@@ -221,25 +221,67 @@ function renderChart(data) {
   const maxIdx = values.indexOf(max);
   const recent = values.slice(-3).reduce((a, b) => a + b, 0);
 
-  document.getElementById('stats').innerHTML = `
-    <div class="stat-card">
-      <div class="stat-label">Total Requests</div>
-      <div class="stat-value accent">${total.toLocaleString()}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Peak Month</div>
-      <div class="stat-value warning">${max.toLocaleString()}</div>
-      <div class="stat-label" style="margin-top:4px">${data.labels[maxIdx]}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Last 3 Months</div>
-      <div class="stat-value success">${recent.toLocaleString()}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Date Range</div>
-      <div class="stat-value accent" style="font-size:16px">${data.labels[0]} to ${data.labels[data.labels.length-1]}</div>
-    </div>
-  `;
+  const statsContainer = document.getElementById('stats');
+  // Clear existing stats content
+  statsContainer.innerHTML = '';
+
+  // Total Requests card
+  const totalCard = document.createElement('div');
+  totalCard.className = 'stat-card';
+  const totalLabel = document.createElement('div');
+  totalLabel.className = 'stat-label';
+  totalLabel.textContent = 'Total Requests';
+  const totalValue = document.createElement('div');
+  totalValue.className = 'stat-value accent';
+  totalValue.textContent = total.toLocaleString();
+  totalCard.appendChild(totalLabel);
+  totalCard.appendChild(totalValue);
+  statsContainer.appendChild(totalCard);
+
+  // Peak Month card
+  const peakCard = document.createElement('div');
+  peakCard.className = 'stat-card';
+  const peakLabel = document.createElement('div');
+  peakLabel.className = 'stat-label';
+  peakLabel.textContent = 'Peak Month';
+  const peakValue = document.createElement('div');
+  peakValue.className = 'stat-value warning';
+  peakValue.textContent = max.toLocaleString();
+  const peakMonthLabel = document.createElement('div');
+  peakMonthLabel.className = 'stat-label';
+  peakMonthLabel.style.marginTop = '4px';
+  peakMonthLabel.textContent = data.labels[maxIdx];
+  peakCard.appendChild(peakLabel);
+  peakCard.appendChild(peakValue);
+  peakCard.appendChild(peakMonthLabel);
+  statsContainer.appendChild(peakCard);
+
+  // Last 3 Months card
+  const recentCard = document.createElement('div');
+  recentCard.className = 'stat-card';
+  const recentLabel = document.createElement('div');
+  recentLabel.className = 'stat-label';
+  recentLabel.textContent = 'Last 3 Months';
+  const recentValue = document.createElement('div');
+  recentValue.className = 'stat-value success';
+  recentValue.textContent = recent.toLocaleString();
+  recentCard.appendChild(recentLabel);
+  recentCard.appendChild(recentValue);
+  statsContainer.appendChild(recentCard);
+
+  // Date Range card
+  const rangeCard = document.createElement('div');
+  rangeCard.className = 'stat-card';
+  const rangeLabel = document.createElement('div');
+  rangeLabel.className = 'stat-label';
+  rangeLabel.textContent = 'Date Range';
+  const rangeValue = document.createElement('div');
+  rangeValue.className = 'stat-value accent';
+  rangeValue.style.fontSize = '16px';
+  rangeValue.textContent = data.labels[0] + ' to ' + data.labels[data.labels.length - 1];
+  rangeCard.appendChild(rangeLabel);
+  rangeCard.appendChild(rangeValue);
+  statsContainer.appendChild(rangeCard);
 
   // Create chart
   const ctx = document.getElementById('mainChart').getContext('2d');
