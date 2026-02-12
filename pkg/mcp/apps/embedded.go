@@ -26,6 +26,12 @@ var conversationViewerHTML []byte
 //go:embed html/data-chart.html
 var dataChartHTML []byte
 
+//go:embed html/data-quality-dashboard.html
+var dataQualityDashboardHTML []byte
+
+//go:embed html/explain-plan-visualizer.html
+var explainPlanVisualizerHTML []byte
+
 // RegisterEmbeddedApps registers all built-in MCP App HTML resources.
 // Returns an error if any registration fails (e.g., duplicate URI on second call).
 func RegisterEmbeddedApps(registry *UIResourceRegistry) error {
@@ -42,12 +48,38 @@ func RegisterEmbeddedApps(registry *UIResourceRegistry) error {
 		return err
 	}
 
-	return registry.Register(&UIResource{
+	if err := registry.Register(&UIResource{
 		URI:         "ui://loom/data-chart",
 		Name:        "Data Chart",
 		Description: "Interactive chart for visualizing time-series data from Loom agent queries",
 		MIMEType:    protocol.ResourceMIME,
 		HTML:        dataChartHTML,
+		Meta: &protocol.UIResourceMeta{
+			PrefersBorder: boolPtr(true),
+		},
+	}); err != nil {
+		return err
+	}
+
+	if err := registry.Register(&UIResource{
+		URI:         "ui://loom/data-quality-dashboard",
+		Name:        "Data Quality Dashboard",
+		Description: "Interactive dashboard for visualizing data quality metrics across Teradata database tables",
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        dataQualityDashboardHTML,
+		Meta: &protocol.UIResourceMeta{
+			PrefersBorder: boolPtr(true),
+		},
+	}); err != nil {
+		return err
+	}
+
+	return registry.Register(&UIResource{
+		URI:         "ui://loom/explain-plan-visualizer",
+		Name:        "EXPLAIN Plan Visualizer",
+		Description: "Interactive DAG visualization of Teradata EXPLAIN plan output with cost analysis",
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        explainPlanVisualizerHTML,
 		Meta: &protocol.UIResourceMeta{
 			PrefersBorder: boolPtr(true),
 		},
