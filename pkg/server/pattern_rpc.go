@@ -177,7 +177,7 @@ func (s *MultiAgentServer) loadPatternsForAgent(agentID, source string, domains 
 		}
 	}
 
-	return int32(min(len(names), math.MaxInt32)), names, loadErrors, nil
+	return safeIntToInt32(len(names)), names, loadErrors, nil
 }
 
 // filterSummariesByDomains filters pattern summaries to only include those matching the given domains.
@@ -261,7 +261,7 @@ func (s *MultiAgentServer) ListPatterns(ctx context.Context, req *loomv1.ListPat
 
 	return &loomv1.ListPatternsResponse{
 		Patterns:   protoPatterns,
-		TotalCount: int32(min(len(protoPatterns), math.MaxInt32)),
+		TotalCount: safeIntToInt32(len(protoPatterns)),
 	}, nil
 }
 
@@ -395,4 +395,13 @@ func summaryToProto(s *patterns.PatternSummary) *loomv1.Pattern {
 	}
 
 	return proto
+}
+
+// safeIntToInt32 converts an int to int32, clamping to math.MaxInt32 to
+// prevent integer overflow. This satisfies gosec G115.
+func safeIntToInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n) // #nosec G115 -- bounds checked above
 }
