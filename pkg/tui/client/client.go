@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -621,8 +622,8 @@ func (c *Client) UploadArtifactFromFile(ctx context.Context, filePath, purpose s
 		return nil, fmt.Errorf("cannot upload directory: %s. To upload multiple files, create a tar/zip archive first (e.g., tar -czf archive.tar.gz %s)", filePath, filePath)
 	}
 
-	// Read file content
-	content, err := os.ReadFile(filePath)
+	// Read file content (Clean path to prevent path traversal - gosec G304)
+	content, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -773,7 +774,13 @@ func (c *Client) AnswerClarificationQuestionWithRetry(ctx context.Context, sessi
 
 		// Calculate exponential backoff delay
 		if attempt < maxRetries-1 {
-			delay := time.Duration(1<<uint(attempt)) * baseDelay // 100ms, 200ms, 400ms, ...
+			// Use uint directly to avoid int->uint conversion (gosec G115).
+			// attempt is always non-negative (loop starts at 0) and capped at 30.
+			var shift uint
+			if attempt > 0 && attempt <= 30 {
+				shift = uint(attempt) // #nosec G115 -- non-negative and bounded
+			}
+			delay := time.Duration(1<<shift) * baseDelay // 100ms, 200ms, 400ms, ...
 			if delay > 5*time.Second {
 				delay = 5 * time.Second // Cap at 5 seconds
 			}

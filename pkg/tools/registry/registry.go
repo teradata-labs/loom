@@ -81,7 +81,7 @@ func New(cfg Config) (*Registry, error) {
 
 	// Initialize schema
 	if err := r.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close() // Best-effort cleanup; initSchema error takes priority
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -201,11 +201,11 @@ func (r *Registry) IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, er
 		// Update counts
 		switch indexer.Source() {
 		case loomv1.ToolSource_TOOL_SOURCE_BUILTIN:
-			resp.BuiltinCount = int32(len(tools))
+			resp.BuiltinCount = types.SafeInt32(len(tools))
 		case loomv1.ToolSource_TOOL_SOURCE_MCP:
-			resp.McpCount += int32(len(tools))
+			resp.McpCount += types.SafeInt32(len(tools))
 		case loomv1.ToolSource_TOOL_SOURCE_CUSTOM:
-			resp.CustomCount = int32(len(tools))
+			resp.CustomCount = types.SafeInt32(len(tools))
 		}
 
 		// Update source tracking
@@ -298,7 +298,7 @@ func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (
 		return nil, fmt.Errorf("FTS search failed: %w", err)
 	}
 	metadata.FtsRetrievalMs = time.Since(ftsStart).Milliseconds()
-	metadata.CandidatesRetrieved = int32(len(candidates))
+	metadata.CandidatesRetrieved = types.SafeInt32(len(candidates))
 
 	// Stage 3: LLM re-ranking (for BALANCED and ACCURATE modes)
 	var results []*loomv1.ToolSearchResult
