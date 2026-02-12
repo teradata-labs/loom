@@ -18,6 +18,7 @@ package loom.v1;
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "loom/v1/agent_config.proto";
+import "loom/v1/apps.proto";
 import "loom/v1/bus.proto";
 import "loom/v1/communication.proto";
 import "loom/v1/orchestration.proto";
@@ -522,6 +523,18 @@ service LoomService {
   // GetArtifactStats retrieves storage statistics.
   rpc GetArtifactStats(GetArtifactStatsRequest) returns (GetArtifactStatsResponse) {
     option (google.api.http) = {get: "/v1/artifacts/stats"};
+  }
+
+  // MCP UI Apps
+
+  // ListUIApps lists all available UI apps.
+  rpc ListUIApps(ListUIAppsRequest) returns (ListUIAppsResponse) {
+    option (google.api.http) = {get: "/v1/apps"};
+  }
+
+  // GetUIApp retrieves a specific UI app by name, including its HTML content.
+  rpc GetUIApp(GetUIAppRequest) returns (GetUIAppResponse) {
+    option (google.api.http) = {get: "/v1/apps/{name}"};
   }
 }
 

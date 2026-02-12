@@ -46,6 +46,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -1379,6 +1380,16 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Observability tracer configured on server for workflow tracing")
 	}
 
+	// Register embedded MCP UI apps for gRPC access (ListUIApps/GetUIApp RPCs)
+	uiRegistry := apps.NewUIResourceRegistry()
+	if err := apps.RegisterEmbeddedApps(uiRegistry); err != nil {
+		logger.Error("Failed to register some embedded UI apps", zap.Error(err))
+	}
+	if uiRegistry.Count() > 0 {
+		loomService.SetAppProvider(uiRegistry)
+		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
 	// Initialize tri-modal communication system
 	logger.Info("Initializing tri-modal communication system")
 
@@ -1669,9 +1680,28 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Workflow scheduler initialization complete")
 
+	// Always set server config so GetServerConfig RPC returns network info.
+	// The TUI "Browse Apps" command uses Network.HttpAddress to build app URLs.
+	{
+		grpcAddr := fmt.Sprintf("%s:%d", config.Server.Host, config.Server.Port)
+		httpAddr := ""
+		httpEnabled := config.Server.HTTPPort > 0
+		if httpEnabled {
+			httpAddr = fmt.Sprintf("%s:%d", config.Server.Host, config.Server.HTTPPort)
+		}
+		loomService.SetServerConfig(&loomv1.ServerConfig{
+			Name: "looms",
+			Network: &loomv1.NetworkConfig{
+				GrpcAddress: grpcAddr,
+				HttpAddress: httpAddr,
+				HttpEnabled: httpEnabled,
+			},
+		})
+	}
+
 	// Configure TLS if enabled
 	if tlsManager != nil {
-		// Build ServerConfig proto message with TLS config
+		// Build TLS proto config
 		tlsProtoConfig := &loomv1.TLSConfig{
 			Enabled: true,
 			Mode:    config.Server.TLS.Mode,
@@ -1705,12 +1735,9 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		serverConfig := &loomv1.ServerConfig{
-			Name: "looms",
-			Tls:  tlsProtoConfig,
-		}
-
-		loomService.ConfigureTLS(tlsManager, serverConfig)
+		loomService.ConfigureTLS(tlsManager, &loomv1.ServerConfig{
+			Tls: tlsProtoConfig,
+		})
 	}
 
 	// Configure shared memory if enabled
@@ -2167,6 +2194,13 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 
 		httpSrv = server.NewHTTPServerWithCORS(loomService, httpAddr, addr, logger, corsConfig)
+
+		// Wire UI apps to HTTP endpoint for browser access
+		if uiRegistry != nil && uiRegistry.Count() > 0 {
+			httpSrv.SetAppHTMLProvider(uiRegistry)
+			logger.Info("UI apps available via HTTP",
+				zap.String("url", fmt.Sprintf("http://%s/apps/", httpAddr)))
+		}
 
 		go func() {
 			logger.Info("Starting HTTP/SSE server", zap.String("address", httpAddr))

@@ -700,6 +700,24 @@ func (c *Client) GetArtifactStats(ctx context.Context) (*loomv1.GetArtifactStats
 	return resp, nil
 }
 
+// ListUIApps lists all available UI apps from the server.
+func (c *Client) ListUIApps(ctx context.Context) ([]*loomv1.UIApp, error) {
+	resp, err := c.client.ListUIApps(ctx, &loomv1.ListUIAppsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list UI apps: %w", err)
+	}
+	return resp.Apps, nil
+}
+
+// GetServerConfig retrieves the current server configuration.
+func (c *Client) GetServerConfig(ctx context.Context) (*loomv1.ServerConfig, error) {
+	resp, err := c.client.GetServerConfig(ctx, &loomv1.GetServerConfigRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get server config: %w", err)
+	}
+	return resp, nil
+}
+
 // AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.
 // This is used by the TUI to respond to EventQuestionAsked progress events.
 func (c *Client) AnswerClarificationQuestion(ctx context.Context, sessionID, questionID, answer, agentID string) error {

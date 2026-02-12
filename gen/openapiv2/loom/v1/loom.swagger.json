@@ -284,6 +284,61 @@
         ]
       }
     },
+    "/v1/apps": {
+      "get": {
+        "summary": "ListUIApps lists all available UI apps.",
+        "operationId": "LoomService_ListUIApps",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListUIAppsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/apps/{name}": {
+      "get": {
+        "summary": "GetUIApp retrieves a specific UI app by name, including its HTML content.",
+        "operationId": "LoomService_GetUIApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetUIAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "App short name (e.g., \"data-chart\")",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/artifacts": {
       "get": {
         "summary": "ListArtifacts lists artifacts with optional filtering.",
@@ -4413,6 +4468,21 @@
       },
       "description": "GetSharedMemoryResponse returns the requested value."
     },
+    "v1GetUIAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/v1UIApp",
+          "title": "App metadata"
+        },
+        "content": {
+          "type": "string",
+          "format": "byte",
+          "title": "HTML content (always populated)"
+        }
+      },
+      "description": "GetUIAppResponse returns the app metadata and HTML content."
+    },
     "v1HITLRequestInfo": {
       "type": "object",
       "properties": {
@@ -4865,6 +4935,25 @@
         }
       },
       "description": "ListTopicsResponse returns all matching topics."
+    },
+    "v1ListUIAppsResponse": {
+      "type": "object",
+      "properties": {
+        "apps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1UIApp"
+          },
+          "title": "Available UI apps"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count"
+        }
+      },
+      "description": "ListUIAppsResponse returns the list of UI apps."
     },
     "v1ListWorkflowExecutionsResponse": {
       "type": "object",
@@ -7647,6 +7736,36 @@
         }
       },
       "description": "Trace contains execution trace for observability."
+    },
+    "v1UIApp": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "Short name identifier (e.g., \"data-chart\")"
+        },
+        "uri": {
+          "type": "string",
+          "title": "Full URI in ui:// scheme (e.g., \"ui://loom/data-chart\")"
+        },
+        "displayName": {
+          "type": "string",
+          "title": "Human-readable display name (e.g., \"Data Chart\")"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description of what this app does"
+        },
+        "mimeType": {
+          "type": "string",
+          "title": "MIME type (typically \"text/html\")"
+        },
+        "prefersBorder": {
+          "type": "boolean",
+          "title": "Whether the app prefers a bordered container"
+        }
+      },
+      "description": "UIApp represents an interactive HTML application exposed by the MCP server."
     },
     "v1UnsubscribeRequest": {
       "type": "object",

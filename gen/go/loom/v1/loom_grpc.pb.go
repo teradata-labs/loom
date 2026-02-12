@@ -107,6 +107,8 @@ const (
 	LoomService_SearchArtifacts_FullMethodName             = "/loom.v1.LoomService/SearchArtifacts"
 	LoomService_GetArtifactContent_FullMethodName          = "/loom.v1.LoomService/GetArtifactContent"
 	LoomService_GetArtifactStats_FullMethodName            = "/loom.v1.LoomService/GetArtifactStats"
+	LoomService_ListUIApps_FullMethodName                  = "/loom.v1.LoomService/ListUIApps"
+	LoomService_GetUIApp_FullMethodName                    = "/loom.v1.LoomService/GetUIApp"
 )
 
 // LoomServiceClient is the client API for LoomService service.
@@ -270,6 +272,10 @@ type LoomServiceClient interface {
 	GetArtifactContent(ctx context.Context, in *GetArtifactContentRequest, opts ...grpc.CallOption) (*GetArtifactContentResponse, error)
 	// GetArtifactStats retrieves storage statistics.
 	GetArtifactStats(ctx context.Context, in *GetArtifactStatsRequest, opts ...grpc.CallOption) (*GetArtifactStatsResponse, error)
+	// ListUIApps lists all available UI apps.
+	ListUIApps(ctx context.Context, in *ListUIAppsRequest, opts ...grpc.CallOption) (*ListUIAppsResponse, error)
+	// GetUIApp retrieves a specific UI app by name, including its HTML content.
+	GetUIApp(ctx context.Context, in *GetUIAppRequest, opts ...grpc.CallOption) (*GetUIAppResponse, error)
 }
 
 type loomServiceClient struct {
@@ -1064,6 +1070,26 @@ func (c *loomServiceClient) GetArtifactStats(ctx context.Context, in *GetArtifac
 	return out, nil
 }
 
+func (c *loomServiceClient) ListUIApps(ctx context.Context, in *ListUIAppsRequest, opts ...grpc.CallOption) (*ListUIAppsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListUIAppsResponse)
+	err := c.cc.Invoke(ctx, LoomService_ListUIApps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) GetUIApp(ctx context.Context, in *GetUIAppRequest, opts ...grpc.CallOption) (*GetUIAppResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetUIAppResponse)
+	err := c.cc.Invoke(ctx, LoomService_GetUIApp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomServiceServer is the server API for LoomService service.
 // All implementations must embed UnimplementedLoomServiceServer
 // for forward compatibility.
@@ -1225,6 +1251,10 @@ type LoomServiceServer interface {
 	GetArtifactContent(context.Context, *GetArtifactContentRequest) (*GetArtifactContentResponse, error)
 	// GetArtifactStats retrieves storage statistics.
 	GetArtifactStats(context.Context, *GetArtifactStatsRequest) (*GetArtifactStatsResponse, error)
+	// ListUIApps lists all available UI apps.
+	ListUIApps(context.Context, *ListUIAppsRequest) (*ListUIAppsResponse, error)
+	// GetUIApp retrieves a specific UI app by name, including its HTML content.
+	GetUIApp(context.Context, *GetUIAppRequest) (*GetUIAppResponse, error)
 	mustEmbedUnimplementedLoomServiceServer()
 }
 
@@ -1453,6 +1483,12 @@ func (UnimplementedLoomServiceServer) GetArtifactContent(context.Context, *GetAr
 }
 func (UnimplementedLoomServiceServer) GetArtifactStats(context.Context, *GetArtifactStatsRequest) (*GetArtifactStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetArtifactStats not implemented")
+}
+func (UnimplementedLoomServiceServer) ListUIApps(context.Context, *ListUIAppsRequest) (*ListUIAppsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListUIApps not implemented")
+}
+func (UnimplementedLoomServiceServer) GetUIApp(context.Context, *GetUIAppRequest) (*GetUIAppResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetUIApp not implemented")
 }
 func (UnimplementedLoomServiceServer) mustEmbedUnimplementedLoomServiceServer() {}
 func (UnimplementedLoomServiceServer) testEmbeddedByValue()                     {}
@@ -2747,6 +2783,42 @@ func _LoomService_GetArtifactStats_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_ListUIApps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUIAppsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ListUIApps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ListUIApps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ListUIApps(ctx, req.(*ListUIAppsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_GetUIApp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUIAppRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).GetUIApp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_GetUIApp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).GetUIApp(ctx, req.(*GetUIAppRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LoomService_ServiceDesc is the grpc.ServiceDesc for LoomService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3021,6 +3093,14 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetArtifactStats",
 			Handler:    _LoomService_GetArtifactStats_Handler,
+		},
+		{
+			MethodName: "ListUIApps",
+			Handler:    _LoomService_ListUIApps_Handler,
+		},
+		{
+			MethodName: "GetUIApp",
+			Handler:    _LoomService_GetUIApp_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

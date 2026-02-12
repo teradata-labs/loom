@@ -291,8 +291,11 @@ func TestLoomBridge_ListResources(t *testing.T) {
 
 	resources, err := bridge.ListResources(context.Background())
 	require.NoError(t, err)
-	require.Len(t, resources, 1)
-	assert.Equal(t, "ui://loom/conversation-viewer", resources[0].URI)
+	require.Len(t, resources, 2) // Both conversation-viewer and data-chart should be registered
+	// Check that both apps are present (order may vary due to map iteration)
+	uris := []string{resources[0].URI, resources[1].URI}
+	assert.Contains(t, uris, "ui://loom/conversation-viewer")
+	assert.Contains(t, uris, "ui://loom/data-chart")
 	assert.Equal(t, protocol.ResourceMIME, resources[0].MimeType)
 }
 

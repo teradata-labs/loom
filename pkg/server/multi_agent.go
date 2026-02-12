@@ -116,6 +116,9 @@ type MultiAgentServer struct {
 
 	// Agent lifecycle state tracking (created_at, status, config, etc.)
 	agentStates map[string]*agentState
+
+	// UI App provider for ListUIApps/GetUIApp RPCs
+	appProvider AppProvider
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -324,13 +327,25 @@ func (s *MultiAgentServer) SharedMemoryStore() *storage.SharedMemoryStore {
 	return s.sharedMemory
 }
 
-// ConfigureTLS sets the TLS manager and server configuration for this server.
-// This should be called after NewMultiAgentServer() if TLS is enabled.
+// SetServerConfig sets the server configuration (network, metadata, etc.).
+// This should be called after NewMultiAgentServer() to populate GetServerConfig responses.
+func (s *MultiAgentServer) SetServerConfig(config *loomv1.ServerConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serverConfig = config
+}
+
+// ConfigureTLS sets the TLS manager and merges TLS config into the server configuration.
+// This should be called after SetServerConfig() if TLS is enabled.
 func (s *MultiAgentServer) ConfigureTLS(manager *tls.Manager, config *loomv1.ServerConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tlsManager = manager
-	s.serverConfig = config
+	if s.serverConfig != nil {
+		s.serverConfig.Tls = config.GetTls()
+	} else {
+		s.serverConfig = config
+	}
 }
 
 // SetClarificationConfig sets the clarification question timeout configuration.

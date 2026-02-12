@@ -252,3 +252,191 @@ func TestUIResourceRegistry_ConcurrentWriteRead(t *testing.T) {
 	// All 20 unique URIs should be registered (Register rejects duplicates)
 	assert.Equal(t, 20, registry.Count())
 }
+
+func TestUIResourceRegistry_Get(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_ = registry.Register(&UIResource{
+		URI:      "ui://test/app",
+		Name:     "Test App",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>test</html>"),
+	})
+
+	res, err := registry.Get("ui://test/app")
+	require.NoError(t, err)
+	assert.Equal(t, "Test App", res.Name)
+	assert.Equal(t, "ui://test/app", res.URI)
+}
+
+func TestUIResourceRegistry_Get_NotFound(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, err := registry.Get("ui://test/nonexistent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestUIResourceRegistry_AppNames(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_ = registry.Register(&UIResource{URI: "ui://loom/data-chart", Name: "Data Chart", HTML: []byte("a")})
+	_ = registry.Register(&UIResource{URI: "ui://loom/conversation-viewer", Name: "Conv Viewer", HTML: []byte("b")})
+
+	names := registry.AppNames()
+	require.Len(t, names, 2)
+	assert.Equal(t, "conversation-viewer", names[0])
+	assert.Equal(t, "data-chart", names[1])
+}
+
+func TestUIResourceRegistry_AppNames_Empty(t *testing.T) {
+	registry := NewUIResourceRegistry()
+	names := registry.AppNames()
+	assert.Empty(t, names)
+}
+
+func TestUIResourceRegistry_AppHTML(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	expected := []byte("<html>chart</html>")
+	_ = registry.Register(&UIResource{URI: "ui://loom/data-chart", Name: "Data Chart", HTML: expected})
+
+	html, err := registry.AppHTML("data-chart")
+	require.NoError(t, err)
+	assert.Equal(t, expected, html)
+}
+
+func TestUIResourceRegistry_AppHTML_NotFound(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, err := registry.AppHTML("nonexistent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestUIResourceRegistry_ListAppInfo(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	prefersBorder := true
+	_ = registry.Register(&UIResource{
+		URI:         "ui://loom/data-chart",
+		Name:        "Data Chart",
+		Description: "Charts data",
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        []byte("<html>chart</html>"),
+		Meta:        &protocol.UIResourceMeta{PrefersBorder: &prefersBorder},
+	})
+	_ = registry.Register(&UIResource{
+		URI:         "ui://loom/conversation-viewer",
+		Name:        "Conversation Viewer",
+		Description: "Views conversations",
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        []byte("<html>viewer</html>"),
+	})
+
+	infos := registry.ListAppInfo()
+	require.Len(t, infos, 2)
+
+	// Sorted by name
+	assert.Equal(t, "conversation-viewer", infos[0].Name)
+	assert.Equal(t, "Conversation Viewer", infos[0].DisplayName)
+	assert.Equal(t, "ui://loom/conversation-viewer", infos[0].URI)
+	assert.False(t, infos[0].PrefersBorder)
+
+	assert.Equal(t, "data-chart", infos[1].Name)
+	assert.Equal(t, "Data Chart", infos[1].DisplayName)
+	assert.True(t, infos[1].PrefersBorder)
+}
+
+func TestUIResourceRegistry_GetAppHTML(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	prefersBorder := true
+	expected := []byte("<html>chart</html>")
+	_ = registry.Register(&UIResource{
+		URI:         "ui://loom/data-chart",
+		Name:        "Data Chart",
+		Description: "Charts",
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        expected,
+		Meta:        &protocol.UIResourceMeta{PrefersBorder: &prefersBorder},
+	})
+
+	html, info, err := registry.GetAppHTML("data-chart")
+	require.NoError(t, err)
+	assert.Equal(t, expected, html)
+	assert.Equal(t, "data-chart", info.Name)
+	assert.Equal(t, "Data Chart", info.DisplayName)
+	assert.True(t, info.PrefersBorder)
+}
+
+func TestUIResourceRegistry_GetAppHTML_NotFound(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, _, err := registry.GetAppHTML("nonexistent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestExtractAppName(t *testing.T) {
+	tests := []struct {
+		uri      string
+		expected string
+	}{
+		{"ui://loom/data-chart", "data-chart"},
+		{"ui://loom/conversation-viewer", "conversation-viewer"},
+		{"ui://test/app", "app"},
+		{"no-slash", "no-slash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.uri, func(t *testing.T) {
+			assert.Equal(t, tt.expected, extractAppName(tt.uri))
+		})
+	}
+}
+
+func TestUIResourceRegistry_ConcurrentNewMethods(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	prefersBorder := true
+	_ = registry.Register(&UIResource{
+		URI:      "ui://loom/data-chart",
+		Name:     "Data Chart",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>chart</html>"),
+		Meta:     &protocol.UIResourceMeta{PrefersBorder: &prefersBorder},
+	})
+	_ = registry.Register(&UIResource{
+		URI:      "ui://loom/conversation-viewer",
+		Name:     "Conv Viewer",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>viewer</html>"),
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			switch i % 5 {
+			case 0:
+				names := registry.AppNames()
+				assert.Len(t, names, 2)
+			case 1:
+				_, err := registry.AppHTML("data-chart")
+				assert.NoError(t, err)
+			case 2:
+				infos := registry.ListAppInfo()
+				assert.Len(t, infos, 2)
+			case 3:
+				_, _, err := registry.GetAppHTML("data-chart")
+				assert.NoError(t, err)
+			case 4:
+				_, err := registry.Get("ui://loom/data-chart")
+				assert.NoError(t, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+}

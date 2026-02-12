@@ -83,6 +83,7 @@ type (
 	ToggleCompactModeMsg  struct{}
 	OpenExternalEditorMsg struct{}
 	ToggleYoloModeMsg     struct{}
+	OpenBrowseAppsMsg     struct{}
 )
 
 func NewCommandDialog(sessionID string) CommandsDialog {
@@ -341,6 +342,15 @@ func (c *commandDialogCmp) defaultCommands() []Command {
 			},
 		})
 	}
+
+	commands = append(commands, Command{
+		ID:          "browse_apps",
+		Title:       "Browse Apps",
+		Description: "Open MCP apps in browser",
+		Handler: func(cmd Command) tea.Cmd {
+			return util.CmdHandler(OpenBrowseAppsMsg{})
+		},
+	})
 
 	return append(commands, []Command{
 		{

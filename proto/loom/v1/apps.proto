@@ -1,0 +1,58 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// UIApp represents an interactive HTML application exposed by the MCP server.
+message UIApp {
+  // Short name identifier (e.g., "data-chart")
+  string name = 1;
+
+  // Full URI in ui:// scheme (e.g., "ui://loom/data-chart")
+  string uri = 2;
+
+  // Human-readable display name (e.g., "Data Chart")
+  string display_name = 3;
+
+  // Description of what this app does
+  string description = 4;
+
+  // MIME type (typically "text/html")
+  string mime_type = 5;
+
+  // Whether the app prefers a bordered container
+  bool prefers_border = 6;
+}
+
+// ListUIAppsRequest lists all available UI apps.
+message ListUIAppsRequest {}
+
+// ListUIAppsResponse returns the list of UI apps.
+message ListUIAppsResponse {
+  // Available UI apps
+  repeated UIApp apps = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// GetUIAppRequest retrieves a specific UI app by name.
+message GetUIAppRequest {
+  // App short name (e.g., "data-chart")
+  string name = 1;
+}
+
+// GetUIAppResponse returns the app metadata and HTML content.
+message GetUIAppResponse {
+  // App metadata
+  UIApp app = 1;
+
+  // HTML content (always populated)
+  bytes content = 2;
+}
