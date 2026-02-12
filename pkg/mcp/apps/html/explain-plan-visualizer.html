@@ -418,7 +418,7 @@
     // Clear detail panel
     var panel = document.getElementById('detailPanel');
     panel.className = 'detail-panel';
-    panel.innerHTML = '';
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
     selectedStepId = null;
   }
 
