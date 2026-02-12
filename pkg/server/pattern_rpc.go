@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -176,7 +177,7 @@ func (s *MultiAgentServer) loadPatternsForAgent(agentID, source string, domains 
 		}
 	}
 
-	return int32(len(names)), names, loadErrors, nil
+	return int32(min(len(names), math.MaxInt32)), names, loadErrors, nil
 }
 
 // filterSummariesByDomains filters pattern summaries to only include those matching the given domains.
@@ -260,7 +261,7 @@ func (s *MultiAgentServer) ListPatterns(ctx context.Context, req *loomv1.ListPat
 
 	return &loomv1.ListPatternsResponse{
 		Patterns:   protoPatterns,
-		TotalCount: int32(len(protoPatterns)),
+		TotalCount: int32(min(len(protoPatterns), math.MaxInt32)),
 	}, nil
 }
 
