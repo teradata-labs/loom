@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"regexp"
+	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
@@ -18,6 +19,12 @@ import (
 
 // appNameRegex validates app names: lowercase alphanumeric, hyphens, 1-63 chars.
 var appNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// reservedAppNames are names that cannot be used for apps because they
+// collide with HTTP gateway routes (e.g. GET /v1/apps/component-types).
+var reservedAppNames = map[string]bool{
+	"component-types": true,
+}
 
 // AppProvider provides UI app information to the gRPC server.
 // Implemented by UIResourceRegistry to avoid tight coupling between
@@ -116,6 +123,10 @@ func (s *MultiAgentServer) CreateUIApp(ctx context.Context, req *loomv1.CreateUI
 		return nil, status.Errorf(codes.InvalidArgument,
 			"invalid app name %q: must match ^[a-z0-9][a-z0-9-]{0,62}$", req.Name)
 	}
+	if reservedAppNames[req.Name] {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"app name %q is reserved (collides with HTTP route)", req.Name)
+	}
 	if req.Spec == nil {
 		return nil, status.Error(codes.InvalidArgument, "spec is required")
 	}
@@ -147,7 +158,17 @@ func (s *MultiAgentServer) CreateUIApp(ctx context.Context, req *loomv1.CreateUI
 	// Create app in registry
 	info, overwritten, err := provider.CreateApp(req.Name, displayName, req.Description, html, req.Overwrite)
 	if err != nil {
-		return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "already exists"):
+			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		case strings.Contains(errMsg, "cannot overwrite embedded"):
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+		case strings.Contains(errMsg, "limit reached"):
+			return nil, status.Errorf(codes.ResourceExhausted, "%v", err)
+		default:
+			return nil, status.Errorf(codes.Internal, "%v", err)
+		}
 	}
 
 	if s.logger != nil {

@@ -28,6 +28,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/shuttle/metadata"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -317,7 +318,9 @@ func (s *Server) DeleteSession(ctx context.Context, req *loomv1.DeleteSessionReq
 	if s.sessionStore != nil {
 		if err := s.sessionStore.DeleteSession(ctx, req.SessionId); err != nil {
 			// Log but don't fail
-			fmt.Printf("Failed to delete session from store: %v\n", err)
+			zap.L().Warn("failed to delete session from persistent store",
+				zap.String("session_id", req.SessionId),
+				zap.Error(err))
 		}
 	}
 

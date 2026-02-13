@@ -2297,7 +2297,9 @@ func (s *MultiAgentServer) StopHotReload() error {
 	for agentID, hotReloader := range s.hotReloaders {
 		if err := hotReloader.Stop(); err != nil {
 			// Log error but continue stopping others
-			fmt.Printf("Error stopping hot-reloader for agent %s: %v\n", agentID, err)
+			s.logger.Error("failed to stop hot-reloader for agent",
+				zap.String("agent_id", agentID),
+				zap.Error(err))
 		}
 	}
 
@@ -2556,7 +2558,9 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 	if s.sessionStore != nil {
 		if err := s.sessionStore.DeleteSession(ctx, req.SessionId); err != nil {
 			// Log but don't fail
-			fmt.Printf("Failed to delete session from store: %v\n", err)
+			s.logger.Warn("failed to delete session from persistent store",
+				zap.String("session_id", req.SessionId),
+				zap.Error(err))
 		}
 	}
 

@@ -140,6 +140,21 @@ func TestCreateUIAppTool_InvalidName(t *testing.T) {
 	}
 }
 
+func TestCreateUIAppTool_ReservedName(t *testing.T) {
+	tools := UIAppTools(&mockAppCompiler{}, &mockAppProvider{
+		infos: []apps.AppInfo{}, html: map[string][]byte{},
+	})
+	result, err := tools[0].Execute(context.Background(), map[string]interface{}{
+		"name": "component-types",
+		"spec": map[string]interface{}{"version": "1.0", "title": "Test"},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "INVALID_PARAMS", result.Error.Code)
+	assert.Contains(t, result.Error.Message, "reserved")
+}
+
 func TestCreateUIAppTool_MissingSpec(t *testing.T) {
 	tools := UIAppTools(&mockAppCompiler{}, &mockAppProvider{
 		infos: []apps.AppInfo{}, html: map[string][]byte{},

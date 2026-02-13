@@ -117,6 +117,17 @@ func (t *createUIAppTool) Execute(ctx context.Context, params map[string]interfa
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
+	if reservedAppNames[name] {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_PARAMS",
+				Message:    fmt.Sprintf("app name %q is reserved (collides with HTTP route)", name),
+				Suggestion: "Choose a different name",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
 
 	// Extract spec
 	specMap, ok := params["spec"].(map[string]interface{})
