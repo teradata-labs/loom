@@ -136,6 +136,8 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 | EXPLAIN Plan Visualizer | SVG DAG rendering of Teradata EXPLAIN plans with cost coloring |
 | Data Quality Dashboard | Completeness, uniqueness, distribution, and outlier analysis |
 
+**Dynamic App Creation**: Agents and MCP clients can create custom dashboards at runtime from a declarative JSON spec with 14 component types (stat cards, charts, tables, heatmaps, DAGs, etc.). Up to 100 dynamic apps, compiled to secure standalone HTML with the Tokyonight Dark theme. See [MCP Apps Guide](docs/guides/mcp-apps-guide.md).
+
 ### Built-in Tools
 
 | Tool | Description |
@@ -268,6 +270,8 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 | Learning Agents | [docs/guides/learning-agent-guide.md](docs/guides/learning-agent-guide.md) |
 | Observability (Hawk) | [docs/guides/integration/observability.md](docs/guides/integration/observability.md) |
 | Streaming | [docs/reference/streaming.md](docs/reference/streaming.md) |
+| MCP Apps Guide | [docs/guides/mcp-apps-guide.md](docs/guides/mcp-apps-guide.md) |
+| MCP Apps Reference | [docs/reference/mcp-apps.md](docs/reference/mcp-apps.md) |
 | API Reference | [pkg.go.dev](https://pkg.go.dev/github.com/teradata-labs/loom) |
 | Examples | [examples/](examples/) |
 

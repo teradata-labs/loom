@@ -69,12 +69,15 @@
     fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
   });
 
-  // Named color map -- accepts named tokens or raw hex passthrough
+  // Named color map -- accepts named tokens or raw hex passthrough.
+  // These 6 colors match the CSS custom properties in app-template.html.
   const NAMED_COLORS = Object.freeze({
     accent:  '#7aa2f7',
     success: '#9ece6a',
     warning: '#e0af68',
     error:   '#f7768e',
+    cyan:    '#7dcfff',
+    magenta: '#bb9af7',
   });
 
   function resolveColor(color, fallback) {
@@ -180,21 +183,45 @@
 
   function applyLayout(container, layout) {
     if (!layout) return;
-    const type = layout.type || 'stack';
-    if (type === 'grid') {
+
+    // The spec layout field is a string ("stack", "grid-2", "grid-3").
+    // Also support object form {type, gap, columns, direction} for future use.
+    var type, gap, direction, columns;
+    if (typeof layout === 'string') {
+      type = layout;
+      gap = '24px';
+    } else if (typeof layout === 'object') {
+      type = layout.type || 'stack';
+      gap = layout.gap || '24px';
+      direction = layout.direction;
+      columns = layout.columns;
+    } else {
+      return;
+    }
+
+    if (type === 'grid-2') {
       container.style.display = 'grid';
-      container.style.gap = layout.gap || '24px';
-      if (layout.columns) {
-        container.style.gridTemplateColumns = 'repeat(' + Math.max(1, Number(layout.columns) || 1) + ', 1fr)';
+      container.style.gap = gap;
+      // minmax gives responsive collapse to single column on narrow viewports
+      container.style.gridTemplateColumns = 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))';
+    } else if (type === 'grid-3') {
+      container.style.display = 'grid';
+      container.style.gap = gap;
+      container.style.gridTemplateColumns = 'repeat(auto-fit, minmax(min(100%, 250px), 1fr))';
+    } else if (type === 'grid') {
+      container.style.display = 'grid';
+      container.style.gap = gap;
+      if (columns) {
+        container.style.gridTemplateColumns = 'repeat(' + Math.max(1, Number(columns) || 1) + ', 1fr)';
       } else {
         container.style.gridTemplateColumns = 'repeat(auto-fit, minmax(320px, 1fr))';
       }
     } else {
       // stack (default) = vertical flex
       container.style.display = 'flex';
-      container.style.flexDirection = layout.direction === 'horizontal' ? 'row' : 'column';
-      container.style.gap = layout.gap || '24px';
-      if (layout.direction === 'horizontal') {
+      container.style.flexDirection = direction === 'horizontal' ? 'row' : 'column';
+      container.style.gap = gap;
+      if (direction === 'horizontal') {
         container.style.flexWrap = 'wrap';
       }
     }
