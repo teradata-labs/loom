@@ -181,7 +181,7 @@ func (v *AgentValidator) validateRequiredFields(config *agent.AgentConfigYAML, r
 			Field:      "agent.llm.model",
 			Message:    "LLM model is required",
 			Type:       "required_field",
-			Suggestion: "Specify model name (e.g., 'claude-3-5-sonnet-20250131')",
+			Suggestion: "Specify model name (e.g., 'claude-sonnet-4-5-20250929')",
 		})
 	}
 }
@@ -337,7 +337,7 @@ func (v *AgentValidator) validateLLMConfig(config *agent.AgentConfigYAML, result
 
 	// Warn about deprecated models (example - expand as needed)
 	deprecatedModels := map[string]string{
-		"claude-2":     "Use claude-3-5-sonnet-20250131 instead",
+		"claude-2":     "Use claude-sonnet-4-5-20250929 instead",
 		"gpt-3.5":      "Consider gpt-4 for better quality",
 		"text-davinci": "Use chat models instead",
 	}
