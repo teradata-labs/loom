@@ -777,7 +777,7 @@ func setDefaults() {
 
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
-	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250514")
+	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")

@@ -82,7 +82,7 @@ func (b *AgentBuilder) WithAnthropicLLM(apiKey string) *AgentBuilder {
 func (b *AgentBuilder) WithBedrockLLM(region string) *AgentBuilder {
 	client, err := bedrock.NewClient(bedrock.Config{
 		Region:  region,
-		ModelID: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+		ModelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	})
 	if err != nil {
 		// Store error for Build() to return

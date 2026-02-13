@@ -13,6 +13,8 @@
 // limitations under the License.
 package anthropic
 
+import "encoding/json"
+
 // MessagesRequest represents a request to the Anthropic Messages API.
 type MessagesRequest struct {
 	Model       string    `json:"model"`
@@ -42,6 +44,7 @@ type Message struct {
 }
 
 // ContentBlock represents a content block in a message.
+// Uses custom MarshalJSON to ensure tool_use blocks always include "input": {}.
 type ContentBlock struct {
 	Type      string                 `json:"type"`
 	Text      string                 `json:"text,omitempty"`
@@ -51,6 +54,44 @@ type ContentBlock struct {
 	ToolUseID string                 `json:"tool_use_id,omitempty"`
 	Content   string                 `json:"content,omitempty"`
 	Source    *ImageSource           `json:"source,omitempty"` // For image content blocks
+}
+
+// MarshalJSON implements custom JSON marshaling for ContentBlock.
+// Anthropic's API requires tool_use blocks to always have "input" present (even if empty {}).
+// Go's omitempty treats empty maps the same as nil, so we handle this explicitly.
+func (cb ContentBlock) MarshalJSON() ([]byte, error) {
+	m := map[string]interface{}{
+		"type": cb.Type,
+	}
+	if cb.Text != "" {
+		m["text"] = cb.Text
+	}
+	if cb.ID != "" {
+		m["id"] = cb.ID
+	}
+	if cb.Name != "" {
+		m["name"] = cb.Name
+	}
+	if cb.Type == "tool_use" {
+		// Anthropic API requires "input" to always be present for tool_use blocks
+		if len(cb.Input) == 0 {
+			m["input"] = map[string]interface{}{}
+		} else {
+			m["input"] = cb.Input
+		}
+	} else if len(cb.Input) > 0 {
+		m["input"] = cb.Input
+	}
+	if cb.ToolUseID != "" {
+		m["tool_use_id"] = cb.ToolUseID
+	}
+	if cb.Content != "" {
+		m["content"] = cb.Content
+	}
+	if cb.Source != nil {
+		m["source"] = cb.Source
+	}
+	return json.Marshal(m)
 }
 
 // ImageSource represents an image source in a content block.
@@ -93,7 +134,8 @@ type StreamEvent struct {
 
 // StreamDelta represents a delta in a streaming event.
 type StreamDelta struct {
-	Type       string `json:"type,omitempty"`        // text_delta, input_json_delta
-	Text       string `json:"text,omitempty"`        // For text deltas
-	StopReason string `json:"stop_reason,omitempty"` // For message_delta events
+	Type        string `json:"type,omitempty"`         // text_delta, input_json_delta
+	Text        string `json:"text,omitempty"`         // For text deltas
+	PartialJSON string `json:"partial_json,omitempty"` // For input_json_delta (tool input streaming)
+	StopReason  string `json:"stop_reason,omitempty"`  // For message_delta events
 }
