@@ -330,7 +330,12 @@ func (lib *Library) loadFromFilesystem(name string) (*Pattern, error) {
 	}
 
 	for _, path := range possiblePaths {
-		data, err := os.ReadFile(path)
+		cleanPath := filepath.Clean(path)
+		// Prevent directory traversal: resolved path must stay within patternsDir
+		if lib.patternsDir != "" && !strings.HasPrefix(cleanPath, filepath.Clean(lib.patternsDir)+string(filepath.Separator)) {
+			continue
+		}
+		data, err := os.ReadFile(cleanPath) // #nosec G304 -- path validated above
 		if err == nil {
 			relPath := path
 			if lib.patternsDir != "" && strings.HasPrefix(path, lib.patternsDir) {

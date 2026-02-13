@@ -2159,7 +2159,7 @@ func (s *MultiAgentServer) CreatePattern(ctx context.Context, req *loomv1.Create
 
 	// Step 2: Atomic rename (replaces existing file if any)
 	if err := os.Rename(tempFile, patternFile); err != nil {
-		os.Remove(tempFile) // Clean up temp file
+		_ = os.Remove(tempFile) // Clean up temp file; best-effort
 		return &loomv1.CreatePatternResponse{
 			Success: false,
 			Error:   fmt.Sprintf("failed to rename temp file: %v", err),
