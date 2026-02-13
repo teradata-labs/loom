@@ -907,6 +907,23 @@
     return container;
   }
 
+  // --- heatmap color scales ---
+  // String shortcuts map to {low, high} pairs using the Tokyonight palette.
+  const HEATMAP_SCALES = Object.freeze({
+    blue:  { low: THEME.surface, high: NAMED_COLORS.cyan },
+    green: { low: THEME.surface, high: NAMED_COLORS.success },
+    red:   { low: THEME.surface, high: NAMED_COLORS.error },
+  });
+
+  function resolveHeatmapScale(scale) {
+    if (!scale) return { low: NAMED_COLORS.success, high: NAMED_COLORS.error };
+    if (typeof scale === 'string') {
+      return HEATMAP_SCALES[scale] || HEATMAP_SCALES.blue;
+    }
+    // Object form: {low, high} with optional named color resolution
+    return { low: scale.low || NAMED_COLORS.success, high: scale.high || NAMED_COLORS.error };
+  }
+
   // --- heatmap ---
   function renderHeatmap(props) {
     const wrapper = createElement('div', {
@@ -928,7 +945,7 @@
     const rowLabels = Array.isArray(props.rowLabels) ? props.rowLabels : [];
     const columnLabels = Array.isArray(props.columnLabels) ? props.columnLabels : [];
     const values = Array.isArray(props.values) ? props.values : [];
-    const colorScale = props.colorScale || { low: NAMED_COLORS.success, high: NAMED_COLORS.error };
+    const colorScale = resolveHeatmapScale(props.colorScale);
 
     const grid = createElement('div', {
       style: {
