@@ -26,6 +26,14 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 )
 
+const (
+	// DefaultMaxDynamic is the maximum number of dynamic (agent-created) apps.
+	DefaultMaxDynamic = 100
+
+	// DefaultMaxTotalBytes is the maximum total HTML bytes for dynamic apps (50 MB).
+	DefaultMaxTotalBytes int64 = 50 * 1024 * 1024
+)
+
 // UIResource represents an HTML app that can be rendered by an MCP client.
 type UIResource struct {
 	URI         string                   // ui:// URI identifying this resource
@@ -34,20 +42,36 @@ type UIResource struct {
 	MIMEType    string                   // MIME type (typically protocol.ResourceMIME)
 	HTML        []byte                   // Raw HTML content
 	Meta        *protocol.UIResourceMeta // Security and display metadata
+	Dynamic     bool                     // true = agent-created, false = embedded
 }
 
 // UIResourceRegistry manages UI resources that the MCP server exposes.
 // Thread-safe for concurrent access.
 type UIResourceRegistry struct {
-	resources map[string]*UIResource
-	mu        sync.RWMutex
+	resources     map[string]*UIResource
+	mu            sync.RWMutex
+	onChange      func() // Called outside lock after mutations
+	maxDynamic    int    // Max dynamic apps (default 100)
+	maxTotalBytes int64  // Max total HTML bytes for dynamic apps (default 50MB)
 }
 
 // NewUIResourceRegistry creates a new empty registry.
 func NewUIResourceRegistry() *UIResourceRegistry {
 	return &UIResourceRegistry{
-		resources: make(map[string]*UIResource),
+		resources:     make(map[string]*UIResource),
+		maxDynamic:    DefaultMaxDynamic,
+		maxTotalBytes: DefaultMaxTotalBytes,
 	}
+}
+
+// SetOnChange registers a callback that is invoked after any mutation
+// (Upsert, Delete). The callback is called outside the lock to prevent
+// deadlocks. Only one callback can be registered; a new call replaces
+// the previous one.
+func (r *UIResourceRegistry) SetOnChange(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onChange = fn
 }
 
 // Register adds a UI resource to the registry.
@@ -69,6 +93,90 @@ func (r *UIResourceRegistry) Register(res *UIResource) error {
 
 	r.resources[res.URI] = res
 	return nil
+}
+
+// Upsert creates or replaces a dynamic UI resource. It rejects overwrites of
+// embedded (non-dynamic) resources. Returns true if a new resource was created,
+// false if an existing dynamic resource was replaced.
+func (r *UIResourceRegistry) Upsert(res *UIResource) (created bool, err error) {
+	if res == nil {
+		return false, fmt.Errorf("resource cannot be nil")
+	}
+	if res.URI == "" {
+		return false, fmt.Errorf("resource URI cannot be empty")
+	}
+	if !res.Dynamic {
+		return false, fmt.Errorf("only dynamic resources can be upserted")
+	}
+
+	var notify func()
+
+	r.mu.Lock()
+	existing, exists := r.resources[res.URI]
+	if exists && !existing.Dynamic {
+		r.mu.Unlock()
+		return false, fmt.Errorf("cannot overwrite embedded resource: %s", res.URI)
+	}
+
+	// Capacity checks for new resources
+	if !exists {
+		dynCount, dynBytes := r.dynamicStatsLocked()
+		if dynCount >= r.maxDynamic {
+			r.mu.Unlock()
+			return false, fmt.Errorf("dynamic app limit reached (%d)", r.maxDynamic)
+		}
+		if dynBytes+int64(len(res.HTML)) > r.maxTotalBytes {
+			r.mu.Unlock()
+			return false, fmt.Errorf("dynamic app total size limit reached (%d bytes)", r.maxTotalBytes)
+		}
+	}
+
+	r.resources[res.URI] = res
+	created = !exists
+	notify = r.onChange
+	r.mu.Unlock()
+
+	if notify != nil {
+		notify()
+	}
+	return created, nil
+}
+
+// Delete removes a dynamic UI resource by URI. Rejects deletion of embedded resources.
+func (r *UIResourceRegistry) Delete(uri string) error {
+	var notify func()
+
+	r.mu.Lock()
+	existing, exists := r.resources[uri]
+	if !exists {
+		r.mu.Unlock()
+		return fmt.Errorf("resource not found: %s", uri)
+	}
+	if !existing.Dynamic {
+		r.mu.Unlock()
+		return fmt.Errorf("cannot delete embedded resource: %s", uri)
+	}
+
+	delete(r.resources, uri)
+	notify = r.onChange
+	r.mu.Unlock()
+
+	if notify != nil {
+		notify()
+	}
+	return nil
+}
+
+// dynamicStatsLocked returns the count and total HTML bytes of dynamic resources.
+// Must be called with r.mu held.
+func (r *UIResourceRegistry) dynamicStatsLocked() (count int, totalBytes int64) {
+	for _, res := range r.resources {
+		if res.Dynamic {
+			count++
+			totalBytes += int64(len(res.HTML))
+		}
+	}
+	return count, totalBytes
 }
 
 // List returns all registered resources as MCP Resource objects.
@@ -191,6 +299,7 @@ type AppInfo struct {
 	Description   string
 	MimeType      string
 	PrefersBorder bool
+	Dynamic       bool
 }
 
 // ListAppInfo returns metadata for all registered apps, sorted by name.
@@ -206,6 +315,7 @@ func (r *UIResourceRegistry) ListAppInfo() []AppInfo {
 			DisplayName: res.Name,
 			Description: res.Description,
 			MimeType:    res.MIMEType,
+			Dynamic:     res.Dynamic,
 		}
 		if res.Meta != nil && res.Meta.PrefersBorder != nil {
 			info.PrefersBorder = *res.Meta.PrefersBorder
@@ -232,6 +342,7 @@ func (r *UIResourceRegistry) GetAppHTML(name string) ([]byte, *AppInfo, error) {
 				DisplayName: res.Name,
 				Description: res.Description,
 				MimeType:    res.MIMEType,
+				Dynamic:     res.Dynamic,
 			}
 			if res.Meta != nil && res.Meta.PrefersBorder != nil {
 				info.PrefersBorder = *res.Meta.PrefersBorder
@@ -242,12 +353,124 @@ func (r *UIResourceRegistry) GetAppHTML(name string) ([]byte, *AppInfo, error) {
 	return nil, nil, fmt.Errorf("app not found: %s", name)
 }
 
-// extractAppName extracts the short app name from a ui:// URI.
+// CreateApp creates a dynamic app from compiled HTML. It builds the UIResource,
+// registers it via Upsert, and returns the app info. This implements the
+// AppProvider interface for the gRPC server.
+func (r *UIResourceRegistry) CreateApp(name, displayName, description string, html []byte, overwrite bool) (*AppInfo, bool, error) {
+	uri := "ui://loom/" + name
+	res := &UIResource{
+		URI:         uri,
+		Name:        displayName,
+		Description: description,
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        html,
+		Meta: &protocol.UIResourceMeta{
+			PrefersBorder: boolPtrTrue(),
+		},
+		Dynamic: true,
+	}
+
+	// Check if exists and not overwrite
+	r.mu.RLock()
+	existing, exists := r.resources[uri]
+	r.mu.RUnlock()
+
+	if exists && !overwrite {
+		if existing.Dynamic {
+			return nil, false, fmt.Errorf("app already exists: %s (use overwrite=true to replace)", name)
+		}
+		return nil, false, fmt.Errorf("cannot overwrite embedded app: %s", name)
+	}
+
+	created, err := r.Upsert(res)
+	if err != nil {
+		return nil, false, err
+	}
+
+	info := &AppInfo{
+		Name:          name,
+		URI:           uri,
+		DisplayName:   displayName,
+		Description:   description,
+		MimeType:      protocol.ResourceMIME,
+		PrefersBorder: true,
+		Dynamic:       true,
+	}
+	return info, !created, nil
+}
+
+// UpdateApp updates an existing dynamic app with new HTML. Returns an error
+// if the app doesn't exist or is embedded.
+func (r *UIResourceRegistry) UpdateApp(name, displayName, description string, html []byte) (*AppInfo, error) {
+	uri := "ui://loom/" + name
+
+	r.mu.RLock()
+	existing, exists := r.resources[uri]
+	r.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("app not found: %s", name)
+	}
+	if !existing.Dynamic {
+		return nil, fmt.Errorf("cannot update embedded app: %s", name)
+	}
+
+	// Use existing values for empty fields
+	if displayName == "" {
+		displayName = existing.Name
+	}
+	if description == "" {
+		description = existing.Description
+	}
+
+	res := &UIResource{
+		URI:         uri,
+		Name:        displayName,
+		Description: description,
+		MIMEType:    protocol.ResourceMIME,
+		HTML:        html,
+		Meta: &protocol.UIResourceMeta{
+			PrefersBorder: boolPtrTrue(),
+		},
+		Dynamic: true,
+	}
+
+	if _, err := r.Upsert(res); err != nil {
+		return nil, err
+	}
+
+	return &AppInfo{
+		Name:          name,
+		URI:           uri,
+		DisplayName:   displayName,
+		Description:   description,
+		MimeType:      protocol.ResourceMIME,
+		PrefersBorder: true,
+		Dynamic:       true,
+	}, nil
+}
+
+// DeleteApp deletes a dynamic app by short name.
+func (r *UIResourceRegistry) DeleteApp(name string) error {
+	return r.Delete("ui://loom/" + name)
+}
+
+func boolPtrTrue() *bool {
+	b := true
+	return &b
+}
+
+// ExtractAppName extracts the short app name from a ui:// URI.
 // For example, "ui://loom/data-chart" returns "data-chart".
-func extractAppName(uri string) string {
+func ExtractAppName(uri string) string {
 	// Find last "/" and return everything after it
 	if idx := strings.LastIndex(uri, "/"); idx >= 0 {
 		return uri[idx+1:]
 	}
 	return uri
+}
+
+// extractAppName is an unexported alias for internal callers.
+func extractAppName(uri string) string {
+	return ExtractAppName(uri)
 }

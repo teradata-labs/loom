@@ -109,6 +109,10 @@ const (
 	LoomService_GetArtifactStats_FullMethodName            = "/loom.v1.LoomService/GetArtifactStats"
 	LoomService_ListUIApps_FullMethodName                  = "/loom.v1.LoomService/ListUIApps"
 	LoomService_GetUIApp_FullMethodName                    = "/loom.v1.LoomService/GetUIApp"
+	LoomService_CreateUIApp_FullMethodName                 = "/loom.v1.LoomService/CreateUIApp"
+	LoomService_UpdateUIApp_FullMethodName                 = "/loom.v1.LoomService/UpdateUIApp"
+	LoomService_DeleteUIApp_FullMethodName                 = "/loom.v1.LoomService/DeleteUIApp"
+	LoomService_ListComponentTypes_FullMethodName          = "/loom.v1.LoomService/ListComponentTypes"
 )
 
 // LoomServiceClient is the client API for LoomService service.
@@ -276,6 +280,15 @@ type LoomServiceClient interface {
 	ListUIApps(ctx context.Context, in *ListUIAppsRequest, opts ...grpc.CallOption) (*ListUIAppsResponse, error)
 	// GetUIApp retrieves a specific UI app by name, including its HTML content.
 	GetUIApp(ctx context.Context, in *GetUIAppRequest, opts ...grpc.CallOption) (*GetUIAppResponse, error)
+	// CreateUIApp creates a dynamic UI app from a declarative spec.
+	CreateUIApp(ctx context.Context, in *CreateUIAppRequest, opts ...grpc.CallOption) (*CreateUIAppResponse, error)
+	// UpdateUIApp updates an existing dynamic UI app's spec.
+	UpdateUIApp(ctx context.Context, in *UpdateUIAppRequest, opts ...grpc.CallOption) (*UpdateUIAppResponse, error)
+	// DeleteUIApp deletes a dynamic UI app.
+	DeleteUIApp(ctx context.Context, in *DeleteUIAppRequest, opts ...grpc.CallOption) (*DeleteUIAppResponse, error)
+	// ListComponentTypes returns the catalog of available component types
+	// for building dynamic UI apps.
+	ListComponentTypes(ctx context.Context, in *ListComponentTypesRequest, opts ...grpc.CallOption) (*ListComponentTypesResponse, error)
 }
 
 type loomServiceClient struct {
@@ -1090,6 +1103,46 @@ func (c *loomServiceClient) GetUIApp(ctx context.Context, in *GetUIAppRequest, o
 	return out, nil
 }
 
+func (c *loomServiceClient) CreateUIApp(ctx context.Context, in *CreateUIAppRequest, opts ...grpc.CallOption) (*CreateUIAppResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateUIAppResponse)
+	err := c.cc.Invoke(ctx, LoomService_CreateUIApp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) UpdateUIApp(ctx context.Context, in *UpdateUIAppRequest, opts ...grpc.CallOption) (*UpdateUIAppResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateUIAppResponse)
+	err := c.cc.Invoke(ctx, LoomService_UpdateUIApp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) DeleteUIApp(ctx context.Context, in *DeleteUIAppRequest, opts ...grpc.CallOption) (*DeleteUIAppResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteUIAppResponse)
+	err := c.cc.Invoke(ctx, LoomService_DeleteUIApp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) ListComponentTypes(ctx context.Context, in *ListComponentTypesRequest, opts ...grpc.CallOption) (*ListComponentTypesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListComponentTypesResponse)
+	err := c.cc.Invoke(ctx, LoomService_ListComponentTypes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomServiceServer is the server API for LoomService service.
 // All implementations must embed UnimplementedLoomServiceServer
 // for forward compatibility.
@@ -1255,6 +1308,15 @@ type LoomServiceServer interface {
 	ListUIApps(context.Context, *ListUIAppsRequest) (*ListUIAppsResponse, error)
 	// GetUIApp retrieves a specific UI app by name, including its HTML content.
 	GetUIApp(context.Context, *GetUIAppRequest) (*GetUIAppResponse, error)
+	// CreateUIApp creates a dynamic UI app from a declarative spec.
+	CreateUIApp(context.Context, *CreateUIAppRequest) (*CreateUIAppResponse, error)
+	// UpdateUIApp updates an existing dynamic UI app's spec.
+	UpdateUIApp(context.Context, *UpdateUIAppRequest) (*UpdateUIAppResponse, error)
+	// DeleteUIApp deletes a dynamic UI app.
+	DeleteUIApp(context.Context, *DeleteUIAppRequest) (*DeleteUIAppResponse, error)
+	// ListComponentTypes returns the catalog of available component types
+	// for building dynamic UI apps.
+	ListComponentTypes(context.Context, *ListComponentTypesRequest) (*ListComponentTypesResponse, error)
 	mustEmbedUnimplementedLoomServiceServer()
 }
 
@@ -1489,6 +1551,18 @@ func (UnimplementedLoomServiceServer) ListUIApps(context.Context, *ListUIAppsReq
 }
 func (UnimplementedLoomServiceServer) GetUIApp(context.Context, *GetUIAppRequest) (*GetUIAppResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUIApp not implemented")
+}
+func (UnimplementedLoomServiceServer) CreateUIApp(context.Context, *CreateUIAppRequest) (*CreateUIAppResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateUIApp not implemented")
+}
+func (UnimplementedLoomServiceServer) UpdateUIApp(context.Context, *UpdateUIAppRequest) (*UpdateUIAppResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateUIApp not implemented")
+}
+func (UnimplementedLoomServiceServer) DeleteUIApp(context.Context, *DeleteUIAppRequest) (*DeleteUIAppResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteUIApp not implemented")
+}
+func (UnimplementedLoomServiceServer) ListComponentTypes(context.Context, *ListComponentTypesRequest) (*ListComponentTypesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListComponentTypes not implemented")
 }
 func (UnimplementedLoomServiceServer) mustEmbedUnimplementedLoomServiceServer() {}
 func (UnimplementedLoomServiceServer) testEmbeddedByValue()                     {}
@@ -2819,6 +2893,78 @@ func _LoomService_GetUIApp_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_CreateUIApp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateUIAppRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).CreateUIApp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_CreateUIApp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).CreateUIApp(ctx, req.(*CreateUIAppRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_UpdateUIApp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateUIAppRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).UpdateUIApp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_UpdateUIApp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).UpdateUIApp(ctx, req.(*UpdateUIAppRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_DeleteUIApp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteUIAppRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).DeleteUIApp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_DeleteUIApp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).DeleteUIApp(ctx, req.(*DeleteUIAppRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_ListComponentTypes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListComponentTypesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ListComponentTypes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ListComponentTypes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ListComponentTypes(ctx, req.(*ListComponentTypesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LoomService_ServiceDesc is the grpc.ServiceDesc for LoomService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3101,6 +3247,22 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUIApp",
 			Handler:    _LoomService_GetUIApp_Handler,
+		},
+		{
+			MethodName: "CreateUIApp",
+			Handler:    _LoomService_CreateUIApp_Handler,
+		},
+		{
+			MethodName: "UpdateUIApp",
+			Handler:    _LoomService_UpdateUIApp_Handler,
+		},
+		{
+			MethodName: "DeleteUIApp",
+			Handler:    _LoomService_DeleteUIApp_Handler,
+		},
+		{
+			MethodName: "ListComponentTypes",
+			Handler:    _LoomService_ListComponentTypes_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

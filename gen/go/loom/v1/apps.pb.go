@@ -14,6 +14,7 @@ package loomv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -41,6 +42,8 @@ type UIApp struct {
 	MimeType string `protobuf:"bytes,5,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
 	// Whether the app prefers a bordered container
 	PrefersBorder bool `protobuf:"varint,6,opt,name=prefers_border,json=prefersBorder,proto3" json:"prefers_border,omitempty"`
+	// Whether the app was dynamically created by an agent (vs embedded)
+	Dynamic       bool `protobuf:"varint,7,opt,name=dynamic,proto3" json:"dynamic,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -113,6 +116,13 @@ func (x *UIApp) GetMimeType() string {
 func (x *UIApp) GetPrefersBorder() bool {
 	if x != nil {
 		return x.PrefersBorder
+	}
+	return false
+}
+
+func (x *UIApp) GetDynamic() bool {
+	if x != nil {
+		return x.Dynamic
 	}
 	return false
 }
@@ -310,18 +320,727 @@ func (x *GetUIAppResponse) GetContent() []byte {
 	return nil
 }
 
+// UIAppSpec is a declarative JSON-based specification for building interactive
+// MCP UI apps. Agents generate specs; the server compiles them to HTML.
+type UIAppSpec struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Spec version (currently "1.0")
+	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// Header title
+	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// Subtitle / description shown below the title
+	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// Layout mode: "stack" (default), "grid-2", "grid-3"
+	Layout string `protobuf:"bytes,4,opt,name=layout,proto3" json:"layout,omitempty"`
+	// Component tree
+	Components []*UIComponent `protobuf:"bytes,5,rep,name=components,proto3" json:"components,omitempty"`
+	// postMessage type for dynamic updates
+	DataType string `protobuf:"bytes,6,opt,name=data_type,json=dataType,proto3" json:"data_type,omitempty"`
+	// Badge text (default: "MCP App")
+	Badge         string `protobuf:"bytes,7,opt,name=badge,proto3" json:"badge,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UIAppSpec) Reset() {
+	*x = UIAppSpec{}
+	mi := &file_loom_v1_apps_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UIAppSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UIAppSpec) ProtoMessage() {}
+
+func (x *UIAppSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UIAppSpec.ProtoReflect.Descriptor instead.
+func (*UIAppSpec) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *UIAppSpec) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *UIAppSpec) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *UIAppSpec) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *UIAppSpec) GetLayout() string {
+	if x != nil {
+		return x.Layout
+	}
+	return ""
+}
+
+func (x *UIAppSpec) GetComponents() []*UIComponent {
+	if x != nil {
+		return x.Components
+	}
+	return nil
+}
+
+func (x *UIAppSpec) GetDataType() string {
+	if x != nil {
+		return x.DataType
+	}
+	return ""
+}
+
+func (x *UIAppSpec) GetBadge() string {
+	if x != nil {
+		return x.Badge
+	}
+	return ""
+}
+
+// UIComponent is a single renderable element in the component tree.
+// Uses the type/props/children pattern (inspired by json-render).
+type UIComponent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Component type discriminator (e.g., "stat-cards", "chart", "table")
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Type-specific properties. Uses Struct for extensibility --
+	// adding a new component type requires only Go validation + JS renderer,
+	// not proto changes.
+	Props *structpb.Struct `protobuf:"bytes,2,opt,name=props,proto3" json:"props,omitempty"`
+	// Nested components (used by layout components: section, tabs)
+	Children []*UIComponent `protobuf:"bytes,3,rep,name=children,proto3" json:"children,omitempty"`
+	// Optional ID for data-binding targeting (postMessage updates)
+	Id            string `protobuf:"bytes,4,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UIComponent) Reset() {
+	*x = UIComponent{}
+	mi := &file_loom_v1_apps_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UIComponent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UIComponent) ProtoMessage() {}
+
+func (x *UIComponent) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UIComponent.ProtoReflect.Descriptor instead.
+func (*UIComponent) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *UIComponent) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *UIComponent) GetProps() *structpb.Struct {
+	if x != nil {
+		return x.Props
+	}
+	return nil
+}
+
+func (x *UIComponent) GetChildren() []*UIComponent {
+	if x != nil {
+		return x.Children
+	}
+	return nil
+}
+
+func (x *UIComponent) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// CreateUIAppRequest creates a new dynamic MCP UI app from a declarative spec.
+type CreateUIAppRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// URL-safe short name (e.g., "revenue-analysis")
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Human-readable display name
+	DisplayName string `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	// Description of what this app shows
+	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// Declarative app specification
+	Spec *UIAppSpec `protobuf:"bytes,4,opt,name=spec,proto3" json:"spec,omitempty"`
+	// Overwrite an existing dynamic app with the same name
+	Overwrite     bool `protobuf:"varint,5,opt,name=overwrite,proto3" json:"overwrite,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateUIAppRequest) Reset() {
+	*x = CreateUIAppRequest{}
+	mi := &file_loom_v1_apps_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateUIAppRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateUIAppRequest) ProtoMessage() {}
+
+func (x *CreateUIAppRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateUIAppRequest.ProtoReflect.Descriptor instead.
+func (*CreateUIAppRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *CreateUIAppRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateUIAppRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *CreateUIAppRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CreateUIAppRequest) GetSpec() *UIAppSpec {
+	if x != nil {
+		return x.Spec
+	}
+	return nil
+}
+
+func (x *CreateUIAppRequest) GetOverwrite() bool {
+	if x != nil {
+		return x.Overwrite
+	}
+	return false
+}
+
+// CreateUIAppResponse returns the created app and its compiled HTML.
+type CreateUIAppResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Created app metadata
+	App *UIApp `protobuf:"bytes,1,opt,name=app,proto3" json:"app,omitempty"`
+	// Compiled HTML content (avoids a second GetUIApp call)
+	Content []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	// Whether an existing app was overwritten
+	Overwritten   bool `protobuf:"varint,3,opt,name=overwritten,proto3" json:"overwritten,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateUIAppResponse) Reset() {
+	*x = CreateUIAppResponse{}
+	mi := &file_loom_v1_apps_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateUIAppResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateUIAppResponse) ProtoMessage() {}
+
+func (x *CreateUIAppResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateUIAppResponse.ProtoReflect.Descriptor instead.
+func (*CreateUIAppResponse) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *CreateUIAppResponse) GetApp() *UIApp {
+	if x != nil {
+		return x.App
+	}
+	return nil
+}
+
+func (x *CreateUIAppResponse) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *CreateUIAppResponse) GetOverwritten() bool {
+	if x != nil {
+		return x.Overwritten
+	}
+	return false
+}
+
+// UpdateUIAppRequest updates an existing dynamic app's spec.
+type UpdateUIAppRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// App name to update
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// New display name (empty = keep existing)
+	DisplayName string `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	// New description (empty = keep existing)
+	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// New spec (required)
+	Spec          *UIAppSpec `protobuf:"bytes,4,opt,name=spec,proto3" json:"spec,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateUIAppRequest) Reset() {
+	*x = UpdateUIAppRequest{}
+	mi := &file_loom_v1_apps_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateUIAppRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateUIAppRequest) ProtoMessage() {}
+
+func (x *UpdateUIAppRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateUIAppRequest.ProtoReflect.Descriptor instead.
+func (*UpdateUIAppRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *UpdateUIAppRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *UpdateUIAppRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *UpdateUIAppRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *UpdateUIAppRequest) GetSpec() *UIAppSpec {
+	if x != nil {
+		return x.Spec
+	}
+	return nil
+}
+
+// UpdateUIAppResponse returns the updated app and its compiled HTML.
+type UpdateUIAppResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Updated app metadata
+	App *UIApp `protobuf:"bytes,1,opt,name=app,proto3" json:"app,omitempty"`
+	// Compiled HTML content
+	Content       []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateUIAppResponse) Reset() {
+	*x = UpdateUIAppResponse{}
+	mi := &file_loom_v1_apps_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateUIAppResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateUIAppResponse) ProtoMessage() {}
+
+func (x *UpdateUIAppResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateUIAppResponse.ProtoReflect.Descriptor instead.
+func (*UpdateUIAppResponse) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *UpdateUIAppResponse) GetApp() *UIApp {
+	if x != nil {
+		return x.App
+	}
+	return nil
+}
+
+func (x *UpdateUIAppResponse) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+// DeleteUIAppRequest deletes a dynamic app.
+type DeleteUIAppRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// App name to delete
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUIAppRequest) Reset() {
+	*x = DeleteUIAppRequest{}
+	mi := &file_loom_v1_apps_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUIAppRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUIAppRequest) ProtoMessage() {}
+
+func (x *DeleteUIAppRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUIAppRequest.ProtoReflect.Descriptor instead.
+func (*DeleteUIAppRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DeleteUIAppRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+// DeleteUIAppResponse confirms deletion.
+type DeleteUIAppResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether the app was deleted
+	Deleted       bool `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUIAppResponse) Reset() {
+	*x = DeleteUIAppResponse{}
+	mi := &file_loom_v1_apps_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUIAppResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUIAppResponse) ProtoMessage() {}
+
+func (x *DeleteUIAppResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUIAppResponse.ProtoReflect.Descriptor instead.
+func (*DeleteUIAppResponse) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *DeleteUIAppResponse) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+// ListComponentTypesRequest requests the catalog of available component types.
+type ListComponentTypesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListComponentTypesRequest) Reset() {
+	*x = ListComponentTypesRequest{}
+	mi := &file_loom_v1_apps_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListComponentTypesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListComponentTypesRequest) ProtoMessage() {}
+
+func (x *ListComponentTypesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListComponentTypesRequest.ProtoReflect.Descriptor instead.
+func (*ListComponentTypesRequest) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{13}
+}
+
+// ComponentType describes a single component type in the catalog.
+type ComponentType struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Component type name (e.g., "stat-cards")
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// What this component renders
+	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// Category: "display", "layout", "complex"
+	Category string `protobuf:"bytes,3,opt,name=category,proto3" json:"category,omitempty"`
+	// JSON Schema for props (as Struct for flexibility)
+	PropsSchema *structpb.Struct `protobuf:"bytes,4,opt,name=props_schema,json=propsSchema,proto3" json:"props_schema,omitempty"`
+	// Example JSON usage
+	ExampleJson   string `protobuf:"bytes,5,opt,name=example_json,json=exampleJson,proto3" json:"example_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ComponentType) Reset() {
+	*x = ComponentType{}
+	mi := &file_loom_v1_apps_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ComponentType) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ComponentType) ProtoMessage() {}
+
+func (x *ComponentType) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ComponentType.ProtoReflect.Descriptor instead.
+func (*ComponentType) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ComponentType) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *ComponentType) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *ComponentType) GetCategory() string {
+	if x != nil {
+		return x.Category
+	}
+	return ""
+}
+
+func (x *ComponentType) GetPropsSchema() *structpb.Struct {
+	if x != nil {
+		return x.PropsSchema
+	}
+	return nil
+}
+
+func (x *ComponentType) GetExampleJson() string {
+	if x != nil {
+		return x.ExampleJson
+	}
+	return ""
+}
+
+// ListComponentTypesResponse returns the full catalog of component types.
+type ListComponentTypesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Available component types
+	Types         []*ComponentType `protobuf:"bytes,1,rep,name=types,proto3" json:"types,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListComponentTypesResponse) Reset() {
+	*x = ListComponentTypesResponse{}
+	mi := &file_loom_v1_apps_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListComponentTypesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListComponentTypesResponse) ProtoMessage() {}
+
+func (x *ListComponentTypesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_apps_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListComponentTypesResponse.ProtoReflect.Descriptor instead.
+func (*ListComponentTypesResponse) Descriptor() ([]byte, []int) {
+	return file_loom_v1_apps_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ListComponentTypesResponse) GetTypes() []*ComponentType {
+	if x != nil {
+		return x.Types
+	}
+	return nil
+}
+
 var File_loom_v1_apps_proto protoreflect.FileDescriptor
 
 const file_loom_v1_apps_proto_rawDesc = "" +
 	"\n" +
-	"\x12loom/v1/apps.proto\x12\aloom.v1\"\xb6\x01\n" +
+	"\x12loom/v1/apps.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xd0\x01\n" +
 	"\x05UIApp\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12!\n" +
 	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\x12 \n" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12\x1b\n" +
 	"\tmime_type\x18\x05 \x01(\tR\bmimeType\x12%\n" +
-	"\x0eprefers_border\x18\x06 \x01(\bR\rprefersBorder\"\x13\n" +
+	"\x0eprefers_border\x18\x06 \x01(\bR\rprefersBorder\x12\x18\n" +
+	"\adynamic\x18\a \x01(\bR\adynamic\"\x13\n" +
 	"\x11ListUIAppsRequest\"Y\n" +
 	"\x12ListUIAppsResponse\x12\"\n" +
 	"\x04apps\x18\x01 \x03(\v2\x0e.loom.v1.UIAppR\x04apps\x12\x1f\n" +
@@ -331,7 +1050,53 @@ const file_loom_v1_apps_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"N\n" +
 	"\x10GetUIAppResponse\x12 \n" +
 	"\x03app\x18\x01 \x01(\v2\x0e.loom.v1.UIAppR\x03app\x12\x18\n" +
-	"\acontent\x18\x02 \x01(\fR\acontentB5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\acontent\x18\x02 \x01(\fR\acontent\"\xde\x01\n" +
+	"\tUIAppSpec\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x16\n" +
+	"\x06layout\x18\x04 \x01(\tR\x06layout\x124\n" +
+	"\n" +
+	"components\x18\x05 \x03(\v2\x14.loom.v1.UIComponentR\n" +
+	"components\x12\x1b\n" +
+	"\tdata_type\x18\x06 \x01(\tR\bdataType\x12\x14\n" +
+	"\x05badge\x18\a \x01(\tR\x05badge\"\x92\x01\n" +
+	"\vUIComponent\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12-\n" +
+	"\x05props\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x05props\x120\n" +
+	"\bchildren\x18\x03 \x03(\v2\x14.loom.v1.UIComponentR\bchildren\x12\x0e\n" +
+	"\x02id\x18\x04 \x01(\tR\x02id\"\xb3\x01\n" +
+	"\x12CreateUIAppRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12&\n" +
+	"\x04spec\x18\x04 \x01(\v2\x12.loom.v1.UIAppSpecR\x04spec\x12\x1c\n" +
+	"\toverwrite\x18\x05 \x01(\bR\toverwrite\"s\n" +
+	"\x13CreateUIAppResponse\x12 \n" +
+	"\x03app\x18\x01 \x01(\v2\x0e.loom.v1.UIAppR\x03app\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\x12 \n" +
+	"\voverwritten\x18\x03 \x01(\bR\voverwritten\"\x95\x01\n" +
+	"\x12UpdateUIAppRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12&\n" +
+	"\x04spec\x18\x04 \x01(\v2\x12.loom.v1.UIAppSpecR\x04spec\"Q\n" +
+	"\x13UpdateUIAppResponse\x12 \n" +
+	"\x03app\x18\x01 \x01(\v2\x0e.loom.v1.UIAppR\x03app\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\"(\n" +
+	"\x12DeleteUIAppRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"/\n" +
+	"\x13DeleteUIAppResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted\"\x1b\n" +
+	"\x19ListComponentTypesRequest\"\xc0\x01\n" +
+	"\rComponentType\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1a\n" +
+	"\bcategory\x18\x03 \x01(\tR\bcategory\x12:\n" +
+	"\fprops_schema\x18\x04 \x01(\v2\x17.google.protobuf.StructR\vpropsSchema\x12!\n" +
+	"\fexample_json\x18\x05 \x01(\tR\vexampleJson\"J\n" +
+	"\x1aListComponentTypesResponse\x12,\n" +
+	"\x05types\x18\x01 \x03(\v2\x16.loom.v1.ComponentTypeR\x05typesB5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_apps_proto_rawDescOnce sync.Once
@@ -345,22 +1110,43 @@ func file_loom_v1_apps_proto_rawDescGZIP() []byte {
 	return file_loom_v1_apps_proto_rawDescData
 }
 
-var file_loom_v1_apps_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_loom_v1_apps_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_loom_v1_apps_proto_goTypes = []any{
-	(*UIApp)(nil),              // 0: loom.v1.UIApp
-	(*ListUIAppsRequest)(nil),  // 1: loom.v1.ListUIAppsRequest
-	(*ListUIAppsResponse)(nil), // 2: loom.v1.ListUIAppsResponse
-	(*GetUIAppRequest)(nil),    // 3: loom.v1.GetUIAppRequest
-	(*GetUIAppResponse)(nil),   // 4: loom.v1.GetUIAppResponse
+	(*UIApp)(nil),                      // 0: loom.v1.UIApp
+	(*ListUIAppsRequest)(nil),          // 1: loom.v1.ListUIAppsRequest
+	(*ListUIAppsResponse)(nil),         // 2: loom.v1.ListUIAppsResponse
+	(*GetUIAppRequest)(nil),            // 3: loom.v1.GetUIAppRequest
+	(*GetUIAppResponse)(nil),           // 4: loom.v1.GetUIAppResponse
+	(*UIAppSpec)(nil),                  // 5: loom.v1.UIAppSpec
+	(*UIComponent)(nil),                // 6: loom.v1.UIComponent
+	(*CreateUIAppRequest)(nil),         // 7: loom.v1.CreateUIAppRequest
+	(*CreateUIAppResponse)(nil),        // 8: loom.v1.CreateUIAppResponse
+	(*UpdateUIAppRequest)(nil),         // 9: loom.v1.UpdateUIAppRequest
+	(*UpdateUIAppResponse)(nil),        // 10: loom.v1.UpdateUIAppResponse
+	(*DeleteUIAppRequest)(nil),         // 11: loom.v1.DeleteUIAppRequest
+	(*DeleteUIAppResponse)(nil),        // 12: loom.v1.DeleteUIAppResponse
+	(*ListComponentTypesRequest)(nil),  // 13: loom.v1.ListComponentTypesRequest
+	(*ComponentType)(nil),              // 14: loom.v1.ComponentType
+	(*ListComponentTypesResponse)(nil), // 15: loom.v1.ListComponentTypesResponse
+	(*structpb.Struct)(nil),            // 16: google.protobuf.Struct
 }
 var file_loom_v1_apps_proto_depIdxs = []int32{
-	0, // 0: loom.v1.ListUIAppsResponse.apps:type_name -> loom.v1.UIApp
-	0, // 1: loom.v1.GetUIAppResponse.app:type_name -> loom.v1.UIApp
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0,  // 0: loom.v1.ListUIAppsResponse.apps:type_name -> loom.v1.UIApp
+	0,  // 1: loom.v1.GetUIAppResponse.app:type_name -> loom.v1.UIApp
+	6,  // 2: loom.v1.UIAppSpec.components:type_name -> loom.v1.UIComponent
+	16, // 3: loom.v1.UIComponent.props:type_name -> google.protobuf.Struct
+	6,  // 4: loom.v1.UIComponent.children:type_name -> loom.v1.UIComponent
+	5,  // 5: loom.v1.CreateUIAppRequest.spec:type_name -> loom.v1.UIAppSpec
+	0,  // 6: loom.v1.CreateUIAppResponse.app:type_name -> loom.v1.UIApp
+	5,  // 7: loom.v1.UpdateUIAppRequest.spec:type_name -> loom.v1.UIAppSpec
+	0,  // 8: loom.v1.UpdateUIAppResponse.app:type_name -> loom.v1.UIApp
+	16, // 9: loom.v1.ComponentType.props_schema:type_name -> google.protobuf.Struct
+	14, // 10: loom.v1.ListComponentTypesResponse.types:type_name -> loom.v1.ComponentType
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_apps_proto_init() }
@@ -374,7 +1160,7 @@ func file_loom_v1_apps_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_apps_proto_rawDesc), len(file_loom_v1_apps_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

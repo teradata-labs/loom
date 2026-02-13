@@ -73,6 +73,12 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 		"loom_resume_schedule":            b.handleResumeSchedule,
 		"loom_get_schedule_history":       b.handleGetScheduleHistory,
 
+		// UI Apps
+		"loom_create_app":             b.handleCreateUIApp,
+		"loom_update_app":             b.handleUpdateUIApp,
+		"loom_delete_app":             b.handleDeleteUIApp,
+		"loom_list_component_types":   b.handleListComponentTypes,
+
 		// Artifacts
 		"loom_list_artifacts":       b.handleListArtifacts,
 		"loom_get_artifact":         b.handleGetArtifact,
@@ -299,6 +305,25 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 		tool("loom_get_schedule_history", "Get execution history for a schedule.", objectSchema(
 			reqProp("schedule_id", "string", "Schedule ID"),
 		), "", mv, ro),
+
+		// UI Apps
+		tool("loom_create_app", "Create an interactive MCP UI app from a declarative JSON spec. Use loom_list_component_types to discover available components and their prop schemas.", objectSchema(
+			reqProp("name", "string", "URL-safe short name (lowercase alphanumeric and hyphens, e.g. 'revenue-analysis')"),
+			prop("display_name", "string", "Human-readable display name"),
+			prop("description", "string", "Description of what this app shows"),
+			reqProp("spec", "object", "Declarative app spec: {version: '1.0', title, layout, components: [{type, props, children?, id?}]}"),
+			prop("overwrite", "boolean", "Overwrite an existing dynamic app with the same name (default: false)"),
+		), "", mv, mut),
+		tool("loom_update_app", "Update an existing dynamic MCP UI app's spec.", objectSchema(
+			reqProp("name", "string", "App name to update"),
+			prop("display_name", "string", "New display name (empty = keep existing)"),
+			prop("description", "string", "New description (empty = keep existing)"),
+			reqProp("spec", "object", "New declarative app spec"),
+		), "", mv, mut),
+		tool("loom_delete_app", "Delete a dynamic MCP UI app.", objectSchema(
+			reqProp("name", "string", "App name to delete"),
+		), "", mv, del),
+		tool("loom_list_component_types", "List available UI component types for building dynamic MCP apps. Returns type names, descriptions, prop schemas, and examples.", objectSchema(), "", mv, ro),
 
 		// Artifacts
 		tool("loom_list_artifacts", "List artifacts with optional filtering.", objectSchema(

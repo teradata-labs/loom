@@ -27,7 +27,7 @@ import (
 // ============================================================================
 
 func (b *LoomBridge) handleWeave(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
-	return callGRPC(ctx, b.requestTimeout, args,
+	return callGRPC(ctx, WeaveRequestTimeout, args,
 		func() *loomv1.WeaveRequest { return &loomv1.WeaveRequest{} },
 		b.client.Weave,
 	)
@@ -311,6 +311,50 @@ func (b *LoomBridge) handleGetScheduleHistory(ctx context.Context, args map[stri
 	return callGRPC(ctx, b.requestTimeout, args,
 		func() *loomv1.GetScheduleHistoryRequest { return &loomv1.GetScheduleHistoryRequest{} },
 		b.client.GetScheduleHistory,
+	)
+}
+
+// ============================================================================
+// Tool handlers - UI Apps
+// ============================================================================
+
+func (b *LoomBridge) handleCreateUIApp(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	result, err := callGRPC(ctx, b.requestTimeout, args,
+		func() *loomv1.CreateUIAppRequest { return &loomv1.CreateUIAppRequest{} },
+		b.client.CreateUIApp,
+	)
+	if err == nil && b.mcpServer != nil {
+		b.mcpServer.NotifyResourceListChanged()
+	}
+	return result, err
+}
+
+func (b *LoomBridge) handleUpdateUIApp(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	result, err := callGRPC(ctx, b.requestTimeout, args,
+		func() *loomv1.UpdateUIAppRequest { return &loomv1.UpdateUIAppRequest{} },
+		b.client.UpdateUIApp,
+	)
+	if err == nil && b.mcpServer != nil {
+		b.mcpServer.NotifyResourceListChanged()
+	}
+	return result, err
+}
+
+func (b *LoomBridge) handleDeleteUIApp(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	result, err := callGRPC(ctx, b.requestTimeout, args,
+		func() *loomv1.DeleteUIAppRequest { return &loomv1.DeleteUIAppRequest{} },
+		b.client.DeleteUIApp,
+	)
+	if err == nil && b.mcpServer != nil {
+		b.mcpServer.NotifyResourceListChanged()
+	}
+	return result, err
+}
+
+func (b *LoomBridge) handleListComponentTypes(ctx context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	return callGRPC(ctx, b.requestTimeout, args,
+		func() *loomv1.ListComponentTypesRequest { return &loomv1.ListComponentTypesRequest{} },
+		b.client.ListComponentTypes,
 	)
 }
 

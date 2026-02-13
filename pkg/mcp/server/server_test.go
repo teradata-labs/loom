@@ -522,6 +522,91 @@ func TestMCPServer_HandleInitialize_InvalidParams(t *testing.T) {
 	assert.Equal(t, protocol.InvalidParams, resp.Error.Code)
 }
 
+func TestMCPServer_NotifyResourceListChanged(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	s := NewMCPServer("test", "1.0.0", logger)
+
+	// Send a notification
+	s.NotifyResourceListChanged()
+
+	// Read from the channel
+	select {
+	case notif := <-s.notifyCh:
+		var msg struct {
+			JSONRPC string          `json:"jsonrpc"`
+			Method  string          `json:"method"`
+			ID      json.RawMessage `json:"id,omitempty"`
+		}
+		err := json.Unmarshal(notif, &msg)
+		require.NoError(t, err)
+		assert.Equal(t, "2.0", msg.JSONRPC)
+		assert.Equal(t, "notifications/resources/list_changed", msg.Method)
+		assert.Nil(t, msg.ID) // Notifications have no id
+	default:
+		t.Fatal("expected notification in channel")
+	}
+}
+
+func TestMCPServer_NotifyResourceListChanged_ChannelFull(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	s := NewMCPServer("test", "1.0.0", logger)
+
+	// Fill the channel (capacity 16)
+	for i := 0; i < 16; i++ {
+		s.NotifyResourceListChanged()
+	}
+
+	// One more should be dropped (not panic or block)
+	s.NotifyResourceListChanged()
+
+	// Verify channel is still full
+	assert.Len(t, s.notifyCh, 16)
+}
+
+func TestMCPServer_NotifyResourceListChanged_Concurrent(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	s := NewMCPServer("test", "1.0.0", logger)
+
+	// Drain channel in background to prevent blocking
+	stopDrain := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-s.notifyCh:
+			case <-stopDrain:
+				return
+			}
+		}
+	}()
+
+	// Send from multiple goroutines concurrently - the race detector is the
+	// primary assertion here (no data races allowed).
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.NotifyResourceListChanged()
+		}()
+	}
+	wg.Wait()
+	close(stopDrain)
+}
+
+func TestMCPServer_WithResourceProvider_ListChanged(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	provider := &mockResourceProvider{
+		resources: []protocol.Resource{
+			{URI: "ui://test/resource", Name: "test"},
+		},
+	}
+
+	s := NewMCPServer("test", "1.0.0", logger, WithResourceProvider(provider))
+
+	require.NotNil(t, s.capabilities.Resources)
+	assert.True(t, s.capabilities.Resources.ListChanged, "ListChanged should be true when resource provider is configured")
+}
+
 func TestMCPServer_ConcurrentHandleMessage(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	provider := &mockToolProvider{

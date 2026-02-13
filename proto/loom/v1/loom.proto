@@ -536,6 +536,33 @@ service LoomService {
   rpc GetUIApp(GetUIAppRequest) returns (GetUIAppResponse) {
     option (google.api.http) = {get: "/v1/apps/{name}"};
   }
+
+  // CreateUIApp creates a dynamic UI app from a declarative spec.
+  rpc CreateUIApp(CreateUIAppRequest) returns (CreateUIAppResponse) {
+    option (google.api.http) = {
+      post: "/v1/apps"
+      body: "*"
+    };
+  }
+
+  // UpdateUIApp updates an existing dynamic UI app's spec.
+  rpc UpdateUIApp(UpdateUIAppRequest) returns (UpdateUIAppResponse) {
+    option (google.api.http) = {
+      put: "/v1/apps/{name}"
+      body: "*"
+    };
+  }
+
+  // DeleteUIApp deletes a dynamic UI app.
+  rpc DeleteUIApp(DeleteUIAppRequest) returns (DeleteUIAppResponse) {
+    option (google.api.http) = {delete: "/v1/apps/{name}"};
+  }
+
+  // ListComponentTypes returns the catalog of available component types
+  // for building dynamic UI apps.
+  rpc ListComponentTypes(ListComponentTypesRequest) returns (ListComponentTypesResponse) {
+    option (google.api.http) = {get: "/v1/apps/component-types"};
+  }
 }
 
 // WeaveRequest initiates a query execution.

@@ -54,6 +54,12 @@ type mockLoomClient struct {
 	deleteScheduledWorkflowFunc func(ctx context.Context, in *loomv1.DeleteScheduledWorkflowRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	registerToolFunc            func(ctx context.Context, in *loomv1.RegisterToolRequest, opts ...grpc.CallOption) (*loomv1.RegisterToolResponse, error)
 	uploadArtifactFunc          func(ctx context.Context, in *loomv1.UploadArtifactRequest, opts ...grpc.CallOption) (*loomv1.UploadArtifactResponse, error)
+	listUIAppsFunc              func(ctx context.Context, in *loomv1.ListUIAppsRequest, opts ...grpc.CallOption) (*loomv1.ListUIAppsResponse, error)
+	getUIAppFunc                func(ctx context.Context, in *loomv1.GetUIAppRequest, opts ...grpc.CallOption) (*loomv1.GetUIAppResponse, error)
+	createUIAppFunc             func(ctx context.Context, in *loomv1.CreateUIAppRequest, opts ...grpc.CallOption) (*loomv1.CreateUIAppResponse, error)
+	updateUIAppFunc             func(ctx context.Context, in *loomv1.UpdateUIAppRequest, opts ...grpc.CallOption) (*loomv1.UpdateUIAppResponse, error)
+	deleteUIAppFunc             func(ctx context.Context, in *loomv1.DeleteUIAppRequest, opts ...grpc.CallOption) (*loomv1.DeleteUIAppResponse, error)
+	listComponentTypesFunc      func(ctx context.Context, in *loomv1.ListComponentTypesRequest, opts ...grpc.CallOption) (*loomv1.ListComponentTypesResponse, error)
 }
 
 func (m *mockLoomClient) GetHealth(ctx context.Context, in *loomv1.GetHealthRequest, opts ...grpc.CallOption) (*loomv1.HealthStatus, error) {
@@ -128,6 +134,52 @@ func (m *mockLoomClient) UploadArtifact(ctx context.Context, in *loomv1.UploadAr
 	}, nil
 }
 
+func (m *mockLoomClient) ListUIApps(ctx context.Context, in *loomv1.ListUIAppsRequest, opts ...grpc.CallOption) (*loomv1.ListUIAppsResponse, error) {
+	if m.listUIAppsFunc != nil {
+		return m.listUIAppsFunc(ctx, in, opts...)
+	}
+	return &loomv1.ListUIAppsResponse{}, nil
+}
+
+func (m *mockLoomClient) GetUIApp(ctx context.Context, in *loomv1.GetUIAppRequest, opts ...grpc.CallOption) (*loomv1.GetUIAppResponse, error) {
+	if m.getUIAppFunc != nil {
+		return m.getUIAppFunc(ctx, in, opts...)
+	}
+	return nil, status.Error(codes.NotFound, "app not found")
+}
+
+func (m *mockLoomClient) CreateUIApp(ctx context.Context, in *loomv1.CreateUIAppRequest, opts ...grpc.CallOption) (*loomv1.CreateUIAppResponse, error) {
+	if m.createUIAppFunc != nil {
+		return m.createUIAppFunc(ctx, in, opts...)
+	}
+	return &loomv1.CreateUIAppResponse{
+		App: &loomv1.UIApp{Name: in.Name, Uri: "ui://loom/" + in.Name, Dynamic: true},
+	}, nil
+}
+
+func (m *mockLoomClient) UpdateUIApp(ctx context.Context, in *loomv1.UpdateUIAppRequest, opts ...grpc.CallOption) (*loomv1.UpdateUIAppResponse, error) {
+	if m.updateUIAppFunc != nil {
+		return m.updateUIAppFunc(ctx, in, opts...)
+	}
+	return &loomv1.UpdateUIAppResponse{
+		App: &loomv1.UIApp{Name: in.Name, Uri: "ui://loom/" + in.Name, Dynamic: true},
+	}, nil
+}
+
+func (m *mockLoomClient) DeleteUIApp(ctx context.Context, in *loomv1.DeleteUIAppRequest, opts ...grpc.CallOption) (*loomv1.DeleteUIAppResponse, error) {
+	if m.deleteUIAppFunc != nil {
+		return m.deleteUIAppFunc(ctx, in, opts...)
+	}
+	return &loomv1.DeleteUIAppResponse{Deleted: true}, nil
+}
+
+func (m *mockLoomClient) ListComponentTypes(ctx context.Context, in *loomv1.ListComponentTypesRequest, opts ...grpc.CallOption) (*loomv1.ListComponentTypesResponse, error) {
+	if m.listComponentTypesFunc != nil {
+		return m.listComponentTypesFunc(ctx, in, opts...)
+	}
+	return &loomv1.ListComponentTypesResponse{}, nil
+}
+
 func TestLoomBridge_ListTools(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockClient := &mockLoomClient{}
@@ -159,6 +211,10 @@ func TestLoomBridge_ListTools(t *testing.T) {
 		"loom_execute_workflow",
 		"loom_list_artifacts",
 		"loom_get_conversation_history",
+		"loom_create_app",
+		"loom_update_app",
+		"loom_delete_app",
+		"loom_list_component_types",
 	}
 
 	for _, expected := range expectedTools {
@@ -291,11 +347,16 @@ func TestLoomBridge_ListResources(t *testing.T) {
 
 	resources, err := bridge.ListResources(context.Background())
 	require.NoError(t, err)
-	require.Len(t, resources, 2) // Both conversation-viewer and data-chart should be registered
-	// Check that both apps are present (order may vary due to map iteration)
-	uris := []string{resources[0].URI, resources[1].URI}
+	require.Len(t, resources, 4) // All 4 embedded apps should be registered
+	// Check that all apps are present (order may vary due to map iteration)
+	uris := make([]string, len(resources))
+	for i, r := range resources {
+		uris[i] = r.URI
+	}
 	assert.Contains(t, uris, "ui://loom/conversation-viewer")
 	assert.Contains(t, uris, "ui://loom/data-chart")
+	assert.Contains(t, uris, "ui://loom/data-quality-dashboard")
+	assert.Contains(t, uris, "ui://loom/explain-plan-visualizer")
 	assert.Equal(t, protocol.ResourceMIME, resources[0].MimeType)
 }
 
@@ -555,6 +616,7 @@ func TestLoomBridge_ToolAnnotations(t *testing.T) {
 		"loom_get_scheduled_workflow", "loom_list_scheduled_workflows", "loom_get_schedule_history",
 		"loom_list_artifacts", "loom_get_artifact", "loom_get_artifact_content",
 		"loom_get_artifact_stats", "loom_search_artifacts",
+		"loom_list_component_types",
 	}
 	for _, name := range readOnlyTools {
 		tool, ok := toolMap[name]
@@ -574,6 +636,7 @@ func TestLoomBridge_ToolAnnotations(t *testing.T) {
 		"loom_delete_agent",
 		"loom_delete_scheduled_workflow",
 		"loom_delete_artifact",
+		"loom_delete_app",
 	}
 	for _, name := range destructiveTools {
 		tool, ok := toolMap[name]
@@ -607,6 +670,7 @@ func TestLoomBridge_ToolAnnotations(t *testing.T) {
 		"loom_schedule_workflow", "loom_update_scheduled_workflow",
 		"loom_trigger_scheduled_workflow", "loom_pause_schedule", "loom_resume_schedule",
 		"loom_upload_artifact",
+		"loom_create_app", "loom_update_app",
 	}
 	for _, name := range mutatingTools {
 		tool, ok := toolMap[name]
@@ -617,6 +681,217 @@ func TestLoomBridge_ToolAnnotations(t *testing.T) {
 		require.NotNilf(t, tool.Annotations.DestructiveHint, "tool %s should have destructiveHint", name)
 		assert.Falsef(t, *tool.Annotations.DestructiveHint, "tool %s should have destructiveHint=false", name)
 	}
+}
+
+// ============================================================================
+// CallTool tests for UI App tools
+// ============================================================================
+
+func TestLoomBridge_CallTool_CreateUIApp(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		createUIAppFunc: func(_ context.Context, in *loomv1.CreateUIAppRequest, _ ...grpc.CallOption) (*loomv1.CreateUIAppResponse, error) {
+			return &loomv1.CreateUIAppResponse{
+				App: &loomv1.UIApp{
+					Name:        in.Name,
+					DisplayName: in.DisplayName,
+					Description: in.Description,
+					Uri:         "ui://loom/" + in.Name,
+					Dynamic:     true,
+				},
+			}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_create_app", map[string]interface{}{
+		"name":         "test-app",
+		"display_name": "Test",
+		"description":  "desc",
+		"spec":         map[string]interface{}{"version": "1.0", "title": "Test"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	assert.Contains(t, result.Content[0].Text, "test-app")
+	assert.Contains(t, result.Content[0].Text, "ui://loom/test-app")
+}
+
+func TestLoomBridge_CallTool_UpdateUIApp(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		updateUIAppFunc: func(_ context.Context, in *loomv1.UpdateUIAppRequest, _ ...grpc.CallOption) (*loomv1.UpdateUIAppResponse, error) {
+			return &loomv1.UpdateUIAppResponse{
+				App: &loomv1.UIApp{
+					Name:        in.Name,
+					DisplayName: in.DisplayName,
+					Uri:         "ui://loom/" + in.Name,
+					Dynamic:     true,
+				},
+			}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_update_app", map[string]interface{}{
+		"name":         "test-app",
+		"display_name": "Updated",
+		"spec":         map[string]interface{}{"version": "1.0", "title": "Updated"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	assert.Contains(t, result.Content[0].Text, "test-app")
+	assert.Contains(t, result.Content[0].Text, "Updated")
+}
+
+func TestLoomBridge_CallTool_DeleteUIApp(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		deleteUIAppFunc: func(_ context.Context, _ *loomv1.DeleteUIAppRequest, _ ...grpc.CallOption) (*loomv1.DeleteUIAppResponse, error) {
+			return &loomv1.DeleteUIAppResponse{Deleted: true}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_delete_app", map[string]interface{}{
+		"name": "test-app",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	assert.Contains(t, result.Content[0].Text, `"deleted":true`)
+}
+
+func TestLoomBridge_CallTool_ListComponentTypes(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		listComponentTypesFunc: func(_ context.Context, _ *loomv1.ListComponentTypesRequest, _ ...grpc.CallOption) (*loomv1.ListComponentTypesResponse, error) {
+			return &loomv1.ListComponentTypesResponse{
+				Types: []*loomv1.ComponentType{
+					{Type: "stat-cards", Description: "Key metric cards", Category: "display"},
+					{Type: "table", Description: "Data table", Category: "display"},
+				},
+			}, nil
+		},
+	}
+
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_list_component_types", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	assert.Contains(t, result.Content[0].Text, "stat-cards")
+	assert.Contains(t, result.Content[0].Text, "table")
+}
+
+// ============================================================================
+// App mutation notification tests
+// ============================================================================
+
+func TestLoomBridge_CallTool_AppMutations_SendNotification(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	tests := []struct {
+		name     string
+		toolName string
+		args     map[string]interface{}
+		mock     *mockLoomClient
+	}{
+		{
+			name:     "create app sends notification",
+			toolName: "loom_create_app",
+			args: map[string]interface{}{
+				"name": "notify-test",
+				"spec": map[string]interface{}{"version": "1.0", "title": "Test"},
+			},
+			mock: &mockLoomClient{
+				createUIAppFunc: func(_ context.Context, in *loomv1.CreateUIAppRequest, _ ...grpc.CallOption) (*loomv1.CreateUIAppResponse, error) {
+					return &loomv1.CreateUIAppResponse{
+						App: &loomv1.UIApp{Name: in.Name, Uri: "ui://loom/" + in.Name, Dynamic: true},
+					}, nil
+				},
+			},
+		},
+		{
+			name:     "update app sends notification",
+			toolName: "loom_update_app",
+			args: map[string]interface{}{
+				"name": "notify-test",
+				"spec": map[string]interface{}{"version": "1.0", "title": "Updated"},
+			},
+			mock: &mockLoomClient{
+				updateUIAppFunc: func(_ context.Context, in *loomv1.UpdateUIAppRequest, _ ...grpc.CallOption) (*loomv1.UpdateUIAppResponse, error) {
+					return &loomv1.UpdateUIAppResponse{
+						App: &loomv1.UIApp{Name: in.Name, Uri: "ui://loom/" + in.Name, Dynamic: true},
+					}, nil
+				},
+			},
+		},
+		{
+			name:     "delete app sends notification",
+			toolName: "loom_delete_app",
+			args: map[string]interface{}{
+				"name": "notify-test",
+			},
+			mock: &mockLoomClient{
+				deleteUIAppFunc: func(_ context.Context, _ *loomv1.DeleteUIAppRequest, _ ...grpc.CallOption) (*loomv1.DeleteUIAppResponse, error) {
+					return &loomv1.DeleteUIAppResponse{Deleted: true}, nil
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mcpServer := NewMCPServer("test", "0.0.1", logger)
+			bridge := NewLoomBridgeFromClient(tc.mock, nil, logger)
+			bridge.SetMCPServer(mcpServer)
+
+			result, err := bridge.CallTool(context.Background(), tc.toolName, tc.args)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.False(t, result.IsError)
+
+			// The MCPServer should have a notification enqueued on its notifyCh.
+			select {
+			case notif := <-mcpServer.notifyCh:
+				assert.Contains(t, string(notif), "notifications/resources/list_changed")
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("expected a resources/list_changed notification but none was received")
+			}
+		})
+	}
+}
+
+func TestLoomBridge_CallTool_AppMutations_NoNotificationWithoutMCPServer(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	mockClient := &mockLoomClient{
+		createUIAppFunc: func(_ context.Context, in *loomv1.CreateUIAppRequest, _ ...grpc.CallOption) (*loomv1.CreateUIAppResponse, error) {
+			return &loomv1.CreateUIAppResponse{
+				App: &loomv1.UIApp{Name: in.Name, Uri: "ui://loom/" + in.Name, Dynamic: true},
+			}, nil
+		},
+	}
+
+	// Bridge with no MCPServer set -- should not panic.
+	bridge := NewLoomBridgeFromClient(mockClient, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_create_app", map[string]interface{}{
+		"name": "no-server-test",
+		"spec": map[string]interface{}{"version": "1.0", "title": "Test"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
 }
 
 // ============================================================================

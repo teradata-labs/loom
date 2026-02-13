@@ -43,6 +43,7 @@ type MCPServer struct {
 	mu                 sync.RWMutex
 	clientInfo         *protocol.Implementation     // Stored after initialize
 	clientCapabilities *protocol.ClientCapabilities // Stored after initialize
+	notifyCh           chan []byte                   // Buffered channel for outgoing notifications
 }
 
 // Option configures an MCPServer.
@@ -58,9 +59,12 @@ func WithToolProvider(p ToolProvider) Option {
 }
 
 // WithResourceProvider registers a ResourceProvider and enables the resources capability.
+// Sets ListChanged: true to indicate the server may send resource list change notifications.
 func WithResourceProvider(p ResourceProvider) Option {
 	return func(s *MCPServer) {
-		s.capabilities.Resources = &protocol.ResourcesCapability{}
+		s.capabilities.Resources = &protocol.ResourcesCapability{
+			ListChanged: true,
+		}
 		s.RegisterHandler("resources/list", newResourcesListHandler(p))
 		s.RegisterHandler("resources/read", newResourcesReadHandler(p))
 	}
@@ -86,6 +90,7 @@ func NewMCPServer(name, version string, logger *zap.Logger, opts ...Option) *MCP
 		},
 		handlers: make(map[string]MethodHandler),
 		logger:   logger,
+		notifyCh: make(chan []byte, 16),
 	}
 
 	// Register built-in handlers
@@ -182,41 +187,57 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte) ([]byte, erro
 }
 
 // Serve runs the server's read loop on the given transport until the context
-// is cancelled or the transport is closed.
+// is cancelled or the transport is closed. It concurrently handles incoming
+// messages and dispatches outgoing notifications via the notification channel.
 func (s *MCPServer) Serve(ctx context.Context, t transport.Transport) error {
 	s.logger.Info("MCP server starting", zap.String("name", s.info.Name), zap.String("version", s.info.Version))
+
+	// Use a goroutine for receiving to enable select on both receive and notify channels.
+	msgCh := make(chan []byte)
+	errCh := make(chan error, 1)
+	go func() {
+		for {
+			msg, err := t.Receive(ctx)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			msgCh <- msg
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			s.logger.Info("MCP server stopping (context cancelled)")
 			return ctx.Err()
-		default:
-		}
 
-		msg, err := t.Receive(ctx)
-		if err != nil {
+		case err := <-errCh:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			s.logger.Error("receive error", zap.Error(err))
 			return fmt.Errorf("receive error: %w", err)
-		}
 
-		resp, err := s.HandleMessage(ctx, msg)
-		if err != nil {
-			s.logger.Error("handle error", zap.Error(err))
-			continue
-		}
+		case msg := <-msgCh:
+			resp, err := s.HandleMessage(ctx, msg)
+			if err != nil {
+				s.logger.Error("handle error", zap.Error(err))
+				continue
+			}
+			if resp == nil {
+				continue
+			}
+			if err := t.Send(ctx, resp); err != nil {
+				s.logger.Error("send error", zap.Error(err))
+				return fmt.Errorf("send error: %w", err)
+			}
 
-		if resp == nil {
-			// Notification - no response needed
-			continue
-		}
-
-		if err := t.Send(ctx, resp); err != nil {
-			s.logger.Error("send error", zap.Error(err))
-			return fmt.Errorf("send error: %w", err)
+		case notif := <-s.notifyCh:
+			if err := t.Send(ctx, notif); err != nil {
+				s.logger.Error("notification send error", zap.Error(err))
+				return fmt.Errorf("notification send error: %w", err)
+			}
 		}
 	}
 }
@@ -288,6 +309,37 @@ func (s *MCPServer) ClientCapabilities() *protocol.ClientCapabilities {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.clientCapabilities
+}
+
+// NotifyResourceListChanged enqueues a resources/list_changed notification.
+// The notification is sent asynchronously via the Serve() select loop.
+// If the channel is full the notification is dropped with a warning log.
+func (s *MCPServer) NotifyResourceListChanged() {
+	notif, err := marshalNotification("notifications/resources/list_changed", nil)
+	if err != nil {
+		s.logger.Error("failed to marshal resource list changed notification", zap.Error(err))
+		return
+	}
+	select {
+	case s.notifyCh <- notif:
+		s.logger.Debug("enqueued resources/list_changed notification")
+	default:
+		s.logger.Warn("notification channel full, dropping resources/list_changed")
+	}
+}
+
+// marshalNotification creates a JSON-RPC notification (no id field).
+func marshalNotification(method string, params interface{}) ([]byte, error) {
+	msg := struct {
+		JSONRPC string      `json:"jsonrpc"`
+		Method  string      `json:"method"`
+		Params  interface{} `json:"params,omitempty"`
+	}{
+		JSONRPC: protocol.JSONRPCVersion,
+		Method:  method,
+		Params:  params,
+	}
+	return json.Marshal(msg)
 }
 
 // marshalResponse creates a JSON-RPC response.

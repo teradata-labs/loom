@@ -38,6 +38,10 @@ import (
 // made through the bridge. Callers can override this with BridgeOption.
 const DefaultRequestTimeout = 30 * time.Second
 
+// WeaveRequestTimeout is a longer timeout for Weave/StreamWeave RPCs,
+// which involve multi-step agent execution (LLM calls + tool use).
+const WeaveRequestTimeout = 5 * time.Minute
+
 // LoomBridge maps Loom's gRPC API to MCP tool and resource providers.
 // It connects to a running looms server and exposes its capabilities
 // as MCP tools for clients like Claude Desktop.
@@ -45,6 +49,7 @@ type LoomBridge struct {
 	conn           *grpc.ClientConn
 	client         loomv1.LoomServiceClient
 	uiRegistry     *apps.UIResourceRegistry
+	mcpServer      *MCPServer // for sending resource notifications after app mutations
 	logger         *zap.Logger
 	requestTimeout time.Duration          // per-RPC timeout for gRPC calls
 	tlsCertFile    string                 // optional path to CA certificate for TLS
@@ -62,6 +67,20 @@ func WithRequestTimeout(d time.Duration) BridgeOption {
 	return func(b *LoomBridge) {
 		b.requestTimeout = d
 	}
+}
+
+// WithMCPServer sets the MCPServer reference so the bridge can send
+// resource list change notifications after app mutations (create/update/delete).
+func WithMCPServer(s *MCPServer) BridgeOption {
+	return func(b *LoomBridge) {
+		b.mcpServer = s
+	}
+}
+
+// SetMCPServer sets the MCPServer reference after construction. This is useful
+// when the MCPServer is created after the bridge (common in main.go wiring).
+func (b *LoomBridge) SetMCPServer(s *MCPServer) {
+	b.mcpServer = s
 }
 
 // WithTLS configures TLS for the gRPC connection to the looms server.
@@ -185,19 +204,83 @@ func (b *LoomBridge) CallTool(ctx context.Context, name string, args map[string]
 }
 
 // ListResources implements ResourceProvider.
-func (b *LoomBridge) ListResources(_ context.Context) ([]protocol.Resource, error) {
-	if b.uiRegistry == nil {
-		return []protocol.Resource{}, nil
+// Returns embedded apps from the local registry merged with dynamic apps from the
+// gRPC server. The server is authoritative for dynamic apps; the local registry is
+// authoritative for embedded apps.
+func (b *LoomBridge) ListResources(ctx context.Context) ([]protocol.Resource, error) {
+	// 1. Get embedded apps from local registry (always available, fast)
+	var local []protocol.Resource
+	if b.uiRegistry != nil {
+		local = b.uiRegistry.List()
 	}
-	return b.uiRegistry.List(), nil
+
+	// 2. Get all apps (including dynamic) from server via gRPC
+	rpcCtx, cancel := context.WithTimeout(ctx, b.requestTimeout)
+	defer cancel()
+
+	resp, err := b.client.ListUIApps(rpcCtx, &loomv1.ListUIAppsRequest{})
+	if err != nil {
+		// Server unreachable -- fall back to local-only
+		b.logger.Warn("failed to list server apps, using local only", zap.Error(err))
+		return local, nil
+	}
+
+	// 3. Merge: local registry has embedded apps, server response adds dynamic ones.
+	//    Build a set of local URIs to avoid duplicates.
+	localURIs := make(map[string]bool, len(local))
+	for _, r := range local {
+		localURIs[r.URI] = true
+	}
+
+	for _, app := range resp.Apps {
+		if app.Dynamic && !localURIs[app.Uri] {
+			local = append(local, protocol.Resource{
+				URI:         app.Uri,
+				Name:        app.DisplayName,
+				Description: app.Description,
+				MimeType:    app.MimeType,
+			})
+		}
+	}
+
+	return local, nil
 }
 
 // ReadResource implements ResourceProvider.
-func (b *LoomBridge) ReadResource(_ context.Context, uri string) (*protocol.ReadResourceResult, error) {
-	if b.uiRegistry == nil {
-		return nil, fmt.Errorf("no UI registry configured")
+// Reads from the local registry first (embedded apps). If not found locally,
+// proxies the request to the gRPC server (dynamic apps).
+func (b *LoomBridge) ReadResource(ctx context.Context, uri string) (*protocol.ReadResourceResult, error) {
+	// 1. Try local registry first (embedded apps)
+	if b.uiRegistry != nil {
+		if result, err := b.uiRegistry.Read(uri); err == nil {
+			return result, nil
+		}
 	}
-	return b.uiRegistry.Read(uri)
+
+	// 2. Not found locally -- proxy to server (dynamic apps)
+	name := apps.ExtractAppName(uri)
+	rpcCtx, cancel := context.WithTimeout(ctx, b.requestTimeout)
+	defer cancel()
+
+	resp, err := b.client.GetUIApp(rpcCtx, &loomv1.GetUIAppRequest{Name: name})
+	if err != nil {
+		return nil, fmt.Errorf("resource not found %s: %w", uri, err)
+	}
+
+	mimeType := protocol.ResourceMIME
+	if resp.App != nil && resp.App.MimeType != "" {
+		mimeType = resp.App.MimeType
+	}
+
+	return &protocol.ReadResourceResult{
+		Contents: []protocol.ResourceContents{
+			{
+				URI:      uri,
+				MimeType: mimeType,
+				Text:     string(resp.Content),
+			},
+		},
+	}, nil
 }
 
 // toolHandler is a function that handles a specific tool call.

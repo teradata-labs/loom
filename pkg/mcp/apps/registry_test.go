@@ -391,9 +391,517 @@ func TestExtractAppName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.uri, func(t *testing.T) {
-			assert.Equal(t, tt.expected, extractAppName(tt.uri))
+			assert.Equal(t, tt.expected, ExtractAppName(tt.uri))
 		})
 	}
+}
+
+// --- Upsert Tests ---
+
+func TestUIResourceRegistry_Upsert_Create(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	res := &UIResource{
+		URI:      "ui://loom/my-dynamic-app",
+		Name:     "My Dynamic App",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>dynamic</html>"),
+		Dynamic:  true,
+	}
+
+	created, err := registry.Upsert(res)
+	require.NoError(t, err)
+	assert.True(t, created, "first upsert should report created=true")
+	assert.Equal(t, 1, registry.Count())
+
+	// Verify the resource was stored correctly
+	got, err := registry.Get("ui://loom/my-dynamic-app")
+	require.NoError(t, err)
+	assert.Equal(t, "My Dynamic App", got.Name)
+	assert.True(t, got.Dynamic)
+}
+
+func TestUIResourceRegistry_Upsert_Replace(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	// Create initial dynamic resource
+	res1 := &UIResource{
+		URI:      "ui://loom/my-app",
+		Name:     "My App v1",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>v1</html>"),
+		Dynamic:  true,
+	}
+	created, err := registry.Upsert(res1)
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	// Replace with updated content
+	res2 := &UIResource{
+		URI:      "ui://loom/my-app",
+		Name:     "My App v2",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>v2</html>"),
+		Dynamic:  true,
+	}
+	created, err = registry.Upsert(res2)
+	require.NoError(t, err)
+	assert.False(t, created, "second upsert should report created=false (replaced)")
+	assert.Equal(t, 1, registry.Count(), "replacing should not change count")
+
+	// Verify the resource was updated
+	got, err := registry.Get("ui://loom/my-app")
+	require.NoError(t, err)
+	assert.Equal(t, "My App v2", got.Name)
+	assert.Equal(t, []byte("<html>v2</html>"), got.HTML)
+}
+
+func TestUIResourceRegistry_Upsert_RejectEmbedded(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	// Register an embedded (non-dynamic) resource
+	err := registry.Register(&UIResource{
+		URI:      "ui://loom/embedded-app",
+		Name:     "Embedded App",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>embedded</html>"),
+		Dynamic:  false,
+	})
+	require.NoError(t, err)
+
+	// Attempt to overwrite with a dynamic resource via Upsert
+	res := &UIResource{
+		URI:      "ui://loom/embedded-app",
+		Name:     "Overwritten App",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>overwritten</html>"),
+		Dynamic:  true,
+	}
+	_, err = registry.Upsert(res)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot overwrite embedded resource")
+
+	// Verify the original resource is unchanged
+	got, err := registry.Get("ui://loom/embedded-app")
+	require.NoError(t, err)
+	assert.Equal(t, "Embedded App", got.Name)
+}
+
+func TestUIResourceRegistry_Upsert_RejectNonDynamic(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	// Upsert requires Dynamic=true
+	res := &UIResource{
+		URI:      "ui://loom/static",
+		Name:     "Static",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>static</html>"),
+		Dynamic:  false,
+	}
+	_, err := registry.Upsert(res)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only dynamic resources can be upserted")
+}
+
+func TestUIResourceRegistry_Upsert_NilResource(t *testing.T) {
+	registry := NewUIResourceRegistry()
+	_, err := registry.Upsert(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resource cannot be nil")
+}
+
+func TestUIResourceRegistry_Upsert_EmptyURI(t *testing.T) {
+	registry := NewUIResourceRegistry()
+	_, err := registry.Upsert(&UIResource{URI: "", Dynamic: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resource URI cannot be empty")
+}
+
+func TestUIResourceRegistry_Upsert_CapacityLimit(t *testing.T) {
+	registry := NewUIResourceRegistry()
+	// Override maxDynamic to a small number for testing
+	registry.maxDynamic = 2
+
+	for i := 0; i < 2; i++ {
+		res := &UIResource{
+			URI:      fmt.Sprintf("ui://loom/app-%d", i),
+			Name:     fmt.Sprintf("App %d", i),
+			MIMEType: protocol.ResourceMIME,
+			HTML:     []byte("<html>app</html>"),
+			Dynamic:  true,
+		}
+		_, err := registry.Upsert(res)
+		require.NoError(t, err)
+	}
+
+	// Third should be rejected
+	res := &UIResource{
+		URI:      "ui://loom/app-3",
+		Name:     "App 3",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>app</html>"),
+		Dynamic:  true,
+	}
+	_, err := registry.Upsert(res)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dynamic app limit reached")
+	assert.Equal(t, 2, registry.Count(), "count should remain at limit")
+}
+
+func TestUIResourceRegistry_Upsert_BytesCapacityLimit(t *testing.T) {
+	registry := NewUIResourceRegistry()
+	// Set very small byte limit
+	registry.maxTotalBytes = 100
+
+	res1 := &UIResource{
+		URI:      "ui://loom/app-1",
+		Name:     "App 1",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     make([]byte, 80), // 80 bytes
+		Dynamic:  true,
+	}
+	_, err := registry.Upsert(res1)
+	require.NoError(t, err)
+
+	// Second should be rejected (80 + 30 = 110 > 100)
+	res2 := &UIResource{
+		URI:      "ui://loom/app-2",
+		Name:     "App 2",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     make([]byte, 30),
+		Dynamic:  true,
+	}
+	_, err = registry.Upsert(res2)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "total size limit reached")
+}
+
+// --- Delete Tests ---
+
+func TestUIResourceRegistry_Delete_Dynamic(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	res := &UIResource{
+		URI:      "ui://loom/to-delete",
+		Name:     "To Delete",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>bye</html>"),
+		Dynamic:  true,
+	}
+	_, err := registry.Upsert(res)
+	require.NoError(t, err)
+	assert.Equal(t, 1, registry.Count())
+
+	err = registry.Delete("ui://loom/to-delete")
+	require.NoError(t, err)
+	assert.Equal(t, 0, registry.Count())
+
+	// Verify the resource is actually gone
+	_, err = registry.Get("ui://loom/to-delete")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestUIResourceRegistry_Delete_RejectEmbedded(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	err := registry.Register(&UIResource{
+		URI:      "ui://loom/embedded",
+		Name:     "Embedded",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>embedded</html>"),
+		Dynamic:  false,
+	})
+	require.NoError(t, err)
+
+	err = registry.Delete("ui://loom/embedded")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot delete embedded resource")
+
+	// Resource should still exist
+	assert.Equal(t, 1, registry.Count())
+}
+
+func TestUIResourceRegistry_Delete_NotFound(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	err := registry.Delete("ui://loom/nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// --- SetOnChange Tests ---
+
+func TestUIResourceRegistry_SetOnChange(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	callCount := 0
+	registry.SetOnChange(func() {
+		callCount++
+	})
+
+	// Upsert should fire callback
+	res := &UIResource{
+		URI:      "ui://loom/callback-test",
+		Name:     "Callback Test",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>test</html>"),
+		Dynamic:  true,
+	}
+	_, err := registry.Upsert(res)
+	require.NoError(t, err)
+	assert.Equal(t, 1, callCount, "onChange should fire after Upsert create")
+
+	// Upsert again (replace) should fire callback again
+	res2 := &UIResource{
+		URI:      "ui://loom/callback-test",
+		Name:     "Callback Test v2",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>test v2</html>"),
+		Dynamic:  true,
+	}
+	_, err = registry.Upsert(res2)
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount, "onChange should fire after Upsert replace")
+
+	// Delete should fire callback
+	err = registry.Delete("ui://loom/callback-test")
+	require.NoError(t, err)
+	assert.Equal(t, 3, callCount, "onChange should fire after Delete")
+
+	// Register (the original method) does NOT fire onChange
+	err = registry.Register(&UIResource{
+		URI:     "ui://loom/register-test",
+		Name:    "Register Test",
+		HTML:    []byte("<html>reg</html>"),
+		Dynamic: false,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, callCount, "onChange should NOT fire after Register")
+}
+
+func TestUIResourceRegistry_SetOnChange_ReplaceCallback(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	firstCalled := false
+	registry.SetOnChange(func() {
+		firstCalled = true
+	})
+
+	secondCalled := false
+	registry.SetOnChange(func() {
+		secondCalled = true
+	})
+
+	res := &UIResource{
+		URI:      "ui://loom/replace-cb",
+		Name:     "Replace CB",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>test</html>"),
+		Dynamic:  true,
+	}
+	_, err := registry.Upsert(res)
+	require.NoError(t, err)
+
+	assert.False(t, firstCalled, "first callback should not be called after replacement")
+	assert.True(t, secondCalled, "second callback should be called")
+}
+
+// --- CreateApp Tests ---
+
+func TestUIResourceRegistry_CreateApp(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	info, overwritten, err := registry.CreateApp("test-app", "Test App", "A test app", []byte("<html>test</html>"), false)
+	require.NoError(t, err)
+	assert.False(t, overwritten)
+	require.NotNil(t, info)
+	assert.Equal(t, "test-app", info.Name)
+	assert.Equal(t, "ui://loom/test-app", info.URI)
+	assert.Equal(t, "Test App", info.DisplayName)
+	assert.Equal(t, "A test app", info.Description)
+	assert.True(t, info.Dynamic)
+	assert.True(t, info.PrefersBorder)
+	assert.Equal(t, protocol.ResourceMIME, info.MimeType)
+
+	// Verify it's in the registry
+	assert.Equal(t, 1, registry.Count())
+	got, err := registry.Get("ui://loom/test-app")
+	require.NoError(t, err)
+	assert.True(t, got.Dynamic)
+}
+
+func TestUIResourceRegistry_CreateApp_DuplicateWithoutOverwrite(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, _, err := registry.CreateApp("test-app", "Test App", "desc", []byte("<html>v1</html>"), false)
+	require.NoError(t, err)
+
+	// Second create without overwrite should fail
+	_, _, err = registry.CreateApp("test-app", "Test App v2", "desc", []byte("<html>v2</html>"), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+func TestUIResourceRegistry_CreateApp_DuplicateWithOverwrite(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, _, err := registry.CreateApp("test-app", "Test App", "desc", []byte("<html>v1</html>"), false)
+	require.NoError(t, err)
+
+	// With overwrite=true, should succeed
+	info, _, err := registry.CreateApp("test-app", "Test App v2", "desc v2", []byte("<html>v2</html>"), true)
+	require.NoError(t, err)
+	assert.Equal(t, "Test App v2", info.DisplayName)
+	assert.Equal(t, 1, registry.Count())
+}
+
+func TestUIResourceRegistry_CreateApp_RejectOverwriteEmbedded(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	// Register an embedded app
+	err := registry.Register(&UIResource{
+		URI:      "ui://loom/embedded",
+		Name:     "Embedded",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>embedded</html>"),
+		Dynamic:  false,
+	})
+	require.NoError(t, err)
+
+	// CreateApp should not overwrite embedded, even without overwrite flag
+	_, _, err = registry.CreateApp("embedded", "New", "desc", []byte("<html>new</html>"), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot overwrite embedded app")
+}
+
+// --- UpdateApp Tests ---
+
+func TestUIResourceRegistry_UpdateApp(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	// First create a dynamic app
+	_, _, err := registry.CreateApp("my-app", "My App", "Original desc", []byte("<html>v1</html>"), false)
+	require.NoError(t, err)
+
+	// Update it
+	info, err := registry.UpdateApp("my-app", "My App Updated", "Updated desc", []byte("<html>v2</html>"))
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Equal(t, "My App Updated", info.DisplayName)
+	assert.Equal(t, "Updated desc", info.Description)
+	assert.True(t, info.Dynamic)
+
+	// Verify stored content
+	html, _, err := registry.GetAppHTML("my-app")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("<html>v2</html>"), html)
+}
+
+func TestUIResourceRegistry_UpdateApp_NotFound(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, err := registry.UpdateApp("nonexistent", "Name", "Desc", []byte("<html>x</html>"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestUIResourceRegistry_UpdateApp_KeepsExistingFields(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, _, err := registry.CreateApp("my-app", "Original Name", "Original Desc", []byte("<html>v1</html>"), false)
+	require.NoError(t, err)
+
+	// Update with empty displayName and description -- should keep existing
+	info, err := registry.UpdateApp("my-app", "", "", []byte("<html>v2</html>"))
+	require.NoError(t, err)
+	assert.Equal(t, "Original Name", info.DisplayName)
+	assert.Equal(t, "Original Desc", info.Description)
+}
+
+func TestUIResourceRegistry_UpdateApp_RejectEmbedded(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	err := registry.Register(&UIResource{
+		URI:      "ui://loom/embedded",
+		Name:     "Embedded",
+		MIMEType: protocol.ResourceMIME,
+		HTML:     []byte("<html>embedded</html>"),
+		Dynamic:  false,
+	})
+	require.NoError(t, err)
+
+	_, err = registry.UpdateApp("embedded", "New", "Desc", []byte("<html>new</html>"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot update embedded app")
+}
+
+// --- DeleteApp Tests ---
+
+func TestUIResourceRegistry_DeleteApp(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	_, _, err := registry.CreateApp("my-app", "My App", "desc", []byte("<html>v1</html>"), false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, registry.Count())
+
+	err = registry.DeleteApp("my-app")
+	require.NoError(t, err)
+	assert.Equal(t, 0, registry.Count())
+}
+
+func TestUIResourceRegistry_DeleteApp_NotFound(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	err := registry.DeleteApp("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// --- Concurrent Upsert/Delete Tests ---
+
+func TestUIResourceRegistry_ConcurrentUpsertDelete(t *testing.T) {
+	registry := NewUIResourceRegistry()
+
+	var wg sync.WaitGroup
+	// Concurrent upserts
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res := &UIResource{
+				URI:      fmt.Sprintf("ui://loom/concurrent-%d", i),
+				Name:     fmt.Sprintf("App %d", i),
+				MIMEType: protocol.ResourceMIME,
+				HTML:     []byte("<html>test</html>"),
+				Dynamic:  true,
+			}
+			_, _ = registry.Upsert(res)
+		}(i)
+	}
+
+	// Concurrent deletes (some will fail with not found, that is expected)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = registry.Delete(fmt.Sprintf("ui://loom/concurrent-%d", i))
+		}(i)
+	}
+
+	// Concurrent reads
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = registry.List()
+			_ = registry.Count()
+			_, _ = registry.Get(fmt.Sprintf("ui://loom/concurrent-%d", i%20))
+		}(i)
+	}
+
+	wg.Wait()
+	// The race detector is the primary assertion here
 }
 
 func TestUIResourceRegistry_ConcurrentNewMethods(t *testing.T) {

@@ -119,6 +119,9 @@ type MultiAgentServer struct {
 
 	// UI App provider for ListUIApps/GetUIApp RPCs
 	appProvider AppProvider
+
+	// UI App compiler for CreateUIApp/UpdateUIApp RPCs
+	appCompiler AppCompiler
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -432,6 +435,21 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 	return nil, "", status.Errorf(codes.NotFound, "agent not found: %s (available: %v)", agentID, available)
 }
 
+// findAgentBySession iterates all agents to find which one owns the given session.
+// Returns the agent, its ID, and true if found. This is the same pattern used by
+// GetSession(), DeleteSession(), and GetConversationHistory().
+func (s *MultiAgentServer) findAgentBySession(sessionID string) (*agent.Agent, string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for agentID, ag := range s.agents {
+		if _, ok := ag.GetSession(sessionID); ok {
+			return ag, agentID, true
+		}
+	}
+	return nil, "", false
+}
+
 // AddAgent adds a new agent to the server at runtime
 func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
 	// Get agent's internal GUID - this is the stable identifier
@@ -606,10 +624,30 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
 
-	// Get agent
-	ag, agentID, err := s.getAgent(req.AgentId)
-	if err != nil {
-		return nil, err
+	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
+	// This fixes the bug where Weave(session_id=X) without agent_id falls through to the
+	// default agent instead of the agent that created/owns the session.
+	var ag *agent.Agent
+	var agentID string
+	var err error
+
+	if req.AgentId == "" && req.SessionId != "" {
+		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
+			ag, agentID = found, foundID
+			if s.logger != nil {
+				s.logger.Info("Weave: routed to agent by session ownership",
+					zap.String("session_id", req.SessionId),
+					zap.String("agent_id", agentID))
+			}
+		}
+	}
+
+	// Fall back to explicit agent_id or default agent
+	if ag == nil {
+		ag, agentID, err = s.getAgent(req.AgentId)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Get or create session
@@ -711,10 +749,27 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
 	}
 
-	// Get agent
-	ag, resolvedAgentID, err := s.getAgent(req.AgentId)
-	if err != nil {
-		return err
+	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
+	var ag *agent.Agent
+	var resolvedAgentID string
+	var err error
+
+	if req.AgentId == "" && req.SessionId != "" {
+		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
+			ag, resolvedAgentID = found, foundID
+			if s.logger != nil {
+				s.logger.Info("StreamWeave: routed to agent by session ownership",
+					zap.String("session_id", req.SessionId),
+					zap.String("agent_id", resolvedAgentID))
+			}
+		}
+	}
+
+	if ag == nil {
+		ag, resolvedAgentID, err = s.getAgent(req.AgentId)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Generate session ID if not provided

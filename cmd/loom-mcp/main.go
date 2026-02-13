@@ -103,6 +103,9 @@ func main() {
 		server.WithExtensions(protocol.ServerAppsExtension()),
 	)
 
+	// Wire MCP server to bridge so app mutations trigger resource list change notifications.
+	bridge.SetMCPServer(mcpServer)
+
 	// Create stdio transport (reads from stdin, writes to stdout)
 	stdioTransport := transport.NewStdioServerTransport(os.Stdin, os.Stdout)
 

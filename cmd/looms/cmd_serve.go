@@ -1150,6 +1150,10 @@ func runServe(cmd *cobra.Command, args []string) {
 							"group_by_query":                  true, // Presentation tool
 							"generate_visualization":          true, // Visualization tool
 							"generate_workflow_visualization": true, // Visualization tool
+							"create_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 						}
 						if skipTools[toolName] {
 							continue
@@ -1388,6 +1392,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	if uiRegistry.Count() > 0 {
 		loomService.SetAppProvider(uiRegistry)
 		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
+	// Wire up the UI app compiler for dynamic app creation (CreateUIApp/UpdateUIApp RPCs)
+	appCompiler, err := apps.NewCompiler()
+	if err != nil {
+		logger.Error("Failed to create UI app compiler", zap.Error(err))
+	} else {
+		loomService.SetAppCompiler(appCompiler)
+		logger.Info("UI app compiler ready for dynamic app creation")
 	}
 
 	// Initialize tri-modal communication system
@@ -1870,6 +1883,18 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	// Register UI app tools with all loaded agents (auto-registered like communication tools)
+	if appCompiler != nil && uiRegistry != nil {
+		logger.Info("Registering UI app tools with loaded agents...")
+		for agentID, ag := range agents {
+			uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
+			ag.RegisterTools(uiAppTools...)
+			logger.Info("  UI app tools registered",
+				zap.String("agent", agentID),
+				zap.Int("num_tools", len(uiAppTools)))
+		}
+	}
+
 	// Enable reflection if configured
 	if config.Server.EnableReflection {
 		reflection.Register(grpcServer)
@@ -2088,6 +2113,13 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 				newAgent.SetToolRegistryForDynamicDiscovery(toolRegistry, mcpMgrAdapter)
 				logger.Info("  Enabled dynamic tool registration")
+			}
+
+			// Register UI app tools for hot-reloaded agents
+			if appCompiler != nil && uiRegistry != nil {
+				uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
+				newAgent.RegisterTools(uiAppTools...)
+				logger.Info("  UI app tools registered", zap.Int("num_tools", len(uiAppTools)))
 			}
 
 			// Check if agent already exists in server (by GUID)
