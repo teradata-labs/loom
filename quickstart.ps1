@@ -371,7 +371,7 @@ observability:
   enabled: true
   mode: embedded
   storage_type: sqlite
-  sqlite_path: "$DataDir\observability.db"
+  sqlite_path: "$($DataDir -replace '\\', '/')/observability.db"
 
 # MCP servers (add your own)
 mcp:
