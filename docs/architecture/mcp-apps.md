@@ -219,7 +219,7 @@ The system exposes three parallel API surfaces, all backed by the same compiler 
 | `DeleteUIApp` | `DELETE /v1/apps/{name}` | Delete dynamic app |
 | `ListComponentTypes` | `GET /v1/apps/component-types` | Component catalog |
 
-### 2. MCP Bridge Tools (`pkg/mcp/server/bridge_handlers.go`)
+### 2. MCP Bridge Tools (`pkg/mcp/server/bridge_tools.go`, `pkg/mcp/server/bridge_handlers.go`)
 
 4 tools exposed via the MCP protocol (for Claude Code, Cursor, etc.):
 
