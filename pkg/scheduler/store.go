@@ -43,7 +43,7 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 
 	// Enable WAL mode via PRAGMA (not DSN param) for modernc.org/sqlite compatibility
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
