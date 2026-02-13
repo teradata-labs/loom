@@ -43,7 +43,7 @@ type MCPServer struct {
 	mu                 sync.RWMutex
 	clientInfo         *protocol.Implementation     // Stored after initialize
 	clientCapabilities *protocol.ClientCapabilities // Stored after initialize
-	notifyCh           chan []byte                   // Buffered channel for outgoing notifications
+	notifyCh           chan []byte                  // Buffered channel for outgoing notifications
 }
 
 // Option configures an MCPServer.

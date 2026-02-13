@@ -112,9 +112,24 @@ func (r *UIResourceRegistry) Upsert(res *UIResource) (created bool, err error) {
 	var notify func()
 
 	r.mu.Lock()
+	created, err = r.upsertLocked(res)
+	notify = r.onChange
+	r.mu.Unlock()
+
+	if err != nil {
+		return false, err
+	}
+	if notify != nil {
+		notify()
+	}
+	return created, nil
+}
+
+// upsertLocked inserts or replaces a dynamic resource in the map.
+// The caller MUST hold r.mu in write mode.
+func (r *UIResourceRegistry) upsertLocked(res *UIResource) (created bool, err error) {
 	existing, exists := r.resources[res.URI]
 	if exists && !existing.Dynamic {
-		r.mu.Unlock()
 		return false, fmt.Errorf("cannot overwrite embedded resource: %s", res.URI)
 	}
 
@@ -122,24 +137,15 @@ func (r *UIResourceRegistry) Upsert(res *UIResource) (created bool, err error) {
 	if !exists {
 		dynCount, dynBytes := r.dynamicStatsLocked()
 		if dynCount >= r.maxDynamic {
-			r.mu.Unlock()
 			return false, fmt.Errorf("dynamic app limit reached (%d)", r.maxDynamic)
 		}
 		if dynBytes+int64(len(res.HTML)) > r.maxTotalBytes {
-			r.mu.Unlock()
 			return false, fmt.Errorf("dynamic app total size limit reached (%d bytes)", r.maxTotalBytes)
 		}
 	}
 
 	r.resources[res.URI] = res
-	created = !exists
-	notify = r.onChange
-	r.mu.Unlock()
-
-	if notify != nil {
-		notify()
-	}
-	return created, nil
+	return !exists, nil
 }
 
 // Delete removes a dynamic UI resource by URI. Rejects deletion of embedded resources.
@@ -354,7 +360,7 @@ func (r *UIResourceRegistry) GetAppHTML(name string) ([]byte, *AppInfo, error) {
 }
 
 // CreateApp creates a dynamic app from compiled HTML. It builds the UIResource,
-// registers it via Upsert, and returns the app info. This implements the
+// checks existence atomically, and returns the app info. This implements the
 // AppProvider interface for the gRPC server.
 func (r *UIResourceRegistry) CreateApp(name, displayName, description string, html []byte, overwrite bool) (*AppInfo, bool, error) {
 	uri := "ui://loom/" + name
@@ -370,21 +376,28 @@ func (r *UIResourceRegistry) CreateApp(name, displayName, description string, ht
 		Dynamic: true,
 	}
 
-	// Check if exists and not overwrite
-	r.mu.RLock()
-	existing, exists := r.resources[uri]
-	r.mu.RUnlock()
+	var notify func()
 
+	// Single write lock: check-and-create atomically to prevent TOCTOU races.
+	r.mu.Lock()
+	existing, exists := r.resources[uri]
 	if exists && !overwrite {
+		r.mu.Unlock()
 		if existing.Dynamic {
 			return nil, false, fmt.Errorf("app already exists: %s (use overwrite=true to replace)", name)
 		}
 		return nil, false, fmt.Errorf("cannot overwrite embedded app: %s", name)
 	}
 
-	created, err := r.Upsert(res)
+	created, err := r.upsertLocked(res)
+	notify = r.onChange
+	r.mu.Unlock()
+
 	if err != nil {
 		return nil, false, err
+	}
+	if notify != nil {
+		notify()
 	}
 
 	info := &AppInfo{
@@ -404,14 +417,17 @@ func (r *UIResourceRegistry) CreateApp(name, displayName, description string, ht
 func (r *UIResourceRegistry) UpdateApp(name, displayName, description string, html []byte) (*AppInfo, error) {
 	uri := "ui://loom/" + name
 
-	r.mu.RLock()
-	existing, exists := r.resources[uri]
-	r.mu.RUnlock()
+	var notify func()
 
+	// Single write lock: check-and-update atomically to prevent TOCTOU races.
+	r.mu.Lock()
+	existing, exists := r.resources[uri]
 	if !exists {
+		r.mu.Unlock()
 		return nil, fmt.Errorf("app not found: %s", name)
 	}
 	if !existing.Dynamic {
+		r.mu.Unlock()
 		return nil, fmt.Errorf("cannot update embedded app: %s", name)
 	}
 
@@ -435,8 +451,15 @@ func (r *UIResourceRegistry) UpdateApp(name, displayName, description string, ht
 		Dynamic: true,
 	}
 
-	if _, err := r.Upsert(res); err != nil {
+	_, err := r.upsertLocked(res)
+	notify = r.onChange
+	r.mu.Unlock()
+
+	if err != nil {
 		return nil, err
+	}
+	if notify != nil {
+		notify()
 	}
 
 	return &AppInfo{

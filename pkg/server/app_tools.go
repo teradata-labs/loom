@@ -289,6 +289,17 @@ func (t *updateUIAppTool) Execute(ctx context.Context, params map[string]interfa
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
+	if !appNameRegex.MatchString(name) {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_PARAMS",
+				Message:    fmt.Sprintf("invalid app name %q: must match ^[a-z0-9][a-z0-9-]{0,62}$", name),
+				Suggestion: "Use lowercase letters, numbers, and hyphens (e.g. 'revenue-dashboard')",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
 
 	specMap, ok := params["spec"].(map[string]interface{})
 	if !ok || specMap == nil {
@@ -384,6 +395,17 @@ func (t *deleteUIAppTool) Execute(ctx context.Context, params map[string]interfa
 		return &shuttle.Result{
 			Success:         false,
 			Error:           &shuttle.Error{Code: "INVALID_PARAMS", Message: "name is required"},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	if !appNameRegex.MatchString(name) {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_PARAMS",
+				Message:    fmt.Sprintf("invalid app name %q: must match ^[a-z0-9][a-z0-9-]{0,62}$", name),
+				Suggestion: "Use lowercase letters, numbers, and hyphens (e.g. 'revenue-dashboard')",
+			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}

@@ -350,6 +350,22 @@ func TestUpdateUIAppTool_MissingName(t *testing.T) {
 	assert.Equal(t, "INVALID_PARAMS", result.Error.Code)
 }
 
+func TestUpdateUIAppTool_InvalidName(t *testing.T) {
+	tools := UIAppTools(&mockAppCompiler{}, &mockAppProvider{
+		infos: []apps.AppInfo{}, html: map[string][]byte{},
+	})
+
+	result, err := tools[2].Execute(context.Background(), map[string]interface{}{
+		"name": "INVALID_NAME!",
+		"spec": map[string]interface{}{"version": "1.0", "title": "Test"},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "INVALID_PARAMS", result.Error.Code)
+	assert.Contains(t, result.Error.Message, "invalid app name")
+}
+
 func TestUpdateUIAppTool_MissingSpec(t *testing.T) {
 	tools := UIAppTools(&mockAppCompiler{}, &mockAppProvider{
 		infos: []apps.AppInfo{}, html: map[string][]byte{},
@@ -439,6 +455,21 @@ func TestDeleteUIAppTool_MissingName(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Equal(t, "INVALID_PARAMS", result.Error.Code)
+}
+
+func TestDeleteUIAppTool_InvalidName(t *testing.T) {
+	tools := UIAppTools(&mockAppCompiler{}, &mockAppProvider{
+		infos: []apps.AppInfo{}, html: map[string][]byte{},
+	})
+
+	result, err := tools[3].Execute(context.Background(), map[string]interface{}{
+		"name": "Invalid Name!",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "INVALID_PARAMS", result.Error.Code)
+	assert.Contains(t, result.Error.Message, "invalid app name")
 }
 
 func TestDeleteUIAppTool_NotFound(t *testing.T) {

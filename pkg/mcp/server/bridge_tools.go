@@ -74,10 +74,10 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 		"loom_get_schedule_history":       b.handleGetScheduleHistory,
 
 		// UI Apps
-		"loom_create_app":             b.handleCreateUIApp,
-		"loom_update_app":             b.handleUpdateUIApp,
-		"loom_delete_app":             b.handleDeleteUIApp,
-		"loom_list_component_types":   b.handleListComponentTypes,
+		"loom_create_app":           b.handleCreateUIApp,
+		"loom_update_app":           b.handleUpdateUIApp,
+		"loom_delete_app":           b.handleDeleteUIApp,
+		"loom_list_component_types": b.handleListComponentTypes,
 
 		// Artifacts
 		"loom_list_artifacts":       b.handleListArtifacts,
