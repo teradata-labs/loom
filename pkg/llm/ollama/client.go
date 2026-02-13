@@ -45,8 +45,9 @@ type Client struct {
 	temperature        float64
 	toolMode           ToolMode
 	rateLimiter        *llm.RateLimiter
-	nativeToolsProbed  bool // true once we've probed the model
-	nativeToolsSupport bool // cached result from /api/show probe
+	nativeToolsProbed  bool              // true once we've probed the model
+	nativeToolsSupport bool              // cached result from /api/show probe
+	toolNameMap        map[string]string // sanitized name → original name
 }
 
 // fallbackToolSupportedModels is used when the /api/show probe fails (e.g. Ollama
@@ -273,6 +274,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Add tools if native support is available
 	if c.supportsNativeTools() && len(tools) > 0 {
+		c.toolNameMap = make(map[string]string)
 		req.Tools = c.convertTools(tools)
 	}
 
@@ -287,13 +289,19 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 }
 
 // convertTools converts shuttle.Tool to Ollama tool format.
+// Tool names are sanitized for provider compatibility.
 func (c *Client) convertTools(tools []shuttle.Tool) []ollamaTool {
 	ollamaTools := make([]ollamaTool, len(tools))
 	for i, tool := range tools {
+		originalName := tool.Name()
+		sanitizedName := llm.SanitizeToolName(originalName)
+		if c.toolNameMap != nil {
+			c.toolNameMap[sanitizedName] = originalName
+		}
 		ollamaTools[i] = ollamaTool{
 			Type: "function",
 			Function: ollamaFunction{
-				Name:        tool.Name(),
+				Name:        sanitizedName,
 				Description: tool.Description(),
 				Parameters:  tool.InputSchema(),
 			},
@@ -427,7 +435,7 @@ func (c *Client) convertResponse(resp *chatResponse) *llmtypes.LLMResponse {
 
 			toolCalls[i] = llmtypes.ToolCall{
 				ID:    tc.ID,
-				Name:  tc.Function.Name,
+				Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
 				Input: params,
 			}
 		}
@@ -473,6 +481,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Add tools if native support is available
 	if c.supportsNativeTools() && len(tools) > 0 {
+		c.toolNameMap = make(map[string]string)
 		req.Tools = c.convertTools(tools)
 	}
 
@@ -563,7 +572,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    tc.ID,
-					Name:  tc.Function.Name,
+					Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
 					Input: params,
 				})
 			}

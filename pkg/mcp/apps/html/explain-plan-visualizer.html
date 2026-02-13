@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loom EXPLAIN Plan Visualizer</title>
+<style>
+  :root {
+    --bg-primary: #1a1b26;
+    --bg-secondary: #24283b;
+    --bg-hover: #2f3349;
+    --text-primary: #c0caf5;
+    --text-secondary: #565f89;
+    --text-muted: #414868;
+    --accent: #7aa2f7;
+    --accent-dim: #3d59a1;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --error: #f7768e;
+    --border: #3b4261;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .header .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+  }
+
+  .plan-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+  }
+
+  .plan-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+    font-family: var(--font-mono);
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+
+  .stat-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    flex: 1;
+    min-width: 150px;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+  }
+
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.success { color: var(--success); }
+  .stat-value.warning { color: var(--warning); }
+  .stat-value.error { color: var(--error); }
+
+  .dag-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 24px;
+    overflow-x: auto;
+  }
+
+  .dag-container svg {
+    display: block;
+    margin: 0 auto;
+  }
+
+  .dag-node {
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+
+  .dag-node:hover .node-bg {
+    filter: brightness(1.2);
+  }
+
+  .dag-node.selected .node-bg {
+    stroke-width: 3;
+    stroke: var(--text-primary);
+  }
+
+  .detail-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    display: none;
+  }
+
+  .detail-panel.active {
+    display: block;
+  }
+
+  .detail-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .detail-step-badge {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+  }
+
+  .detail-operation {
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .detail-meta {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .detail-meta-item {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+
+  .detail-meta-item span {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .detail-text {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Loom EXPLAIN Plan Visualizer</h1>
+    <span class="badge">MCP App</span>
+  </div>
+
+  <div id="planTitle" class="plan-title"></div>
+  <div id="planSubtitle" class="plan-subtitle"></div>
+
+  <div id="stats" class="stats-row"></div>
+
+  <div class="dag-container">
+    <svg id="dagSvg"></svg>
+  </div>
+
+  <div id="detailPanel" class="detail-panel"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ---------- MCP Apps postMessage protocol ----------
+  var requestId = 0;
+  var pending = new Map();
+  var trustedOrigin = null;
+
+  function sendMCPRequest(method, params) {
+    return new Promise(function(resolve, reject) {
+      var id = ++requestId;
+      pending.set(id, { resolve: resolve, reject: reject });
+      var targetOrigin = trustedOrigin || '*';
+      window.parent.postMessage({
+        jsonrpc: '2.0',
+        id: id,
+        method: method,
+        params: params || {}
+      }, targetOrigin);
+
+      setTimeout(function() {
+        if (pending.has(id)) {
+          pending.delete(id);
+          reject(new Error('Request timed out: ' + method));
+        }
+      }, 30000);
+    });
+  }
+
+  window.addEventListener('message', function(event) {
+    if (trustedOrigin && event.origin !== trustedOrigin) return;
+
+    var data = event.data;
+    if (!data || typeof data !== 'object') return;
+
+    // Handle explain-data postMessage input
+    if (data.type === 'explain-data' && data.payload) {
+      renderPlan(data.payload);
+      return;
+    }
+
+    // JSON-RPC 2.0 responses
+    if (data.jsonrpc !== '2.0') return;
+
+    if (typeof data.id === 'number' && pending.has(data.id)) {
+      if (!trustedOrigin && event.origin) {
+        trustedOrigin = event.origin;
+      }
+      var handler = pending.get(data.id);
+      pending.delete(data.id);
+      if (data.error) {
+        handler.reject(new Error(data.error.message || 'Unknown error'));
+      } else {
+        handler.resolve(data.result);
+      }
+      return;
+    }
+
+    // Notifications
+    if (typeof data.method === 'string' && data.method.startsWith('ui/notifications/')) {
+      if (data.method === 'ui/notifications/host-context-changed') {
+        handleThemeChange(data.params);
+      }
+    }
+  });
+
+  function handleThemeChange(params) {
+    if (!params || !params.theme) return;
+    var root = document.documentElement;
+    if (params.theme === 'light') {
+      root.style.setProperty('--bg-primary', '#ffffff');
+      root.style.setProperty('--bg-secondary', '#f5f5f5');
+      root.style.setProperty('--bg-hover', '#eeeeee');
+      root.style.setProperty('--text-primary', '#1a1a2e');
+      root.style.setProperty('--text-secondary', '#6b7280');
+      root.style.setProperty('--text-muted', '#9ca3af');
+      root.style.setProperty('--border', '#e5e7eb');
+    }
+  }
+
+  async function initialize() {
+    try {
+      await sendMCPRequest('ui/initialize', {
+        appUri: 'ui://loom/explain-plan-visualizer',
+        capabilities: { resize: true }
+      });
+    } catch (e) {
+      console.warn('ui/initialize not supported:', e.message);
+    }
+    renderPlan(DEFAULT_DATA);
+  }
+
+  // ---------- Default EXPLAIN plan data ----------
+  var DEFAULT_DATA = {
+    title: "EXPLAIN Plan: Customer Order Analysis",
+    subtitle: "Source: DBC.QryLogExplainV | Query: SELECT c.customer_name, SUM(o.total_amount) ...",
+    steps: [
+      {
+        id: 1,
+        text: "First, we lock a distinct SALES.\"pseudo table\" for read on a RowHash to prevent global deadlock for SALES.orders.",
+        operation: "LOCK",
+        table: "SALES.orders",
+        confidence: "no confidence",
+        estimatedRows: 0,
+        estimatedCost: 0,
+        ampUsage: "single-AMP"
+      },
+      {
+        id: 2,
+        text: "Next, we lock a distinct SALES.\"pseudo table\" for read on a RowHash to prevent global deadlock for SALES.customers.",
+        operation: "LOCK",
+        table: "SALES.customers",
+        confidence: "no confidence",
+        estimatedRows: 0,
+        estimatedCost: 0,
+        ampUsage: "single-AMP"
+      },
+      {
+        id: 3,
+        text: "We do an all-AMPs RETRIEVE step from SALES.orders by way of an all-rows scan with a condition of (\"SALES.orders.order_date >= DATE '2024-01-01'\") into Spool 2 (all_amps), which is redistributed by the hash code of (SALES.orders.customer_id) to all AMPs. Then we do a SORT to order Spool 2 by row hash. The size of Spool 2 is estimated with high confidence to be 1,245,890 rows (87,212,300 bytes). The estimated time for this step is 2.45 seconds.",
+        operation: "RETRIEVE",
+        table: "SALES.orders",
+        confidence: "high",
+        estimatedRows: 1245890,
+        estimatedCost: 2.45,
+        ampUsage: "all-AMPs",
+        spoolId: 2,
+        condition: "order_date >= DATE '2024-01-01'"
+      },
+      {
+        id: 4,
+        text: "We do an all-AMPs JOIN step from SALES.customers by way of a RowHash match scan. SALES.customers is joined with Spool 2 (Last Use) by a RowHash match scan, which is joined on (\"SALES.customers.customer_id = customer_id\"). The result goes into Spool 3 (all_amps), which is built locally on the AMPs. The size of Spool 3 is estimated with high confidence to be 1,245,890 rows (124,589,000 bytes). The estimated time for this step is 1.82 seconds.",
+        operation: "JOIN",
+        table: "SALES.customers",
+        confidence: "high",
+        estimatedRows: 1245890,
+        estimatedCost: 1.82,
+        ampUsage: "all-AMPs",
+        spoolId: 3,
+        joinType: "RowHash match",
+        dependsOn: [3]
+      },
+      {
+        id: 5,
+        text: "We do an all-AMPs SUM step to aggregate from Spool 3 (Last Use) by way of an all-rows scan, grouping by field1 (SALES.customers.customer_name). Aggregate Intermediate Results are computed globally, then placed in Spool 4. The size of Spool 4 is estimated with medium confidence to be 45,230 rows (2,261,500 bytes). The estimated time for this step is 0.65 seconds.",
+        operation: "SUM",
+        table: null,
+        confidence: "medium",
+        estimatedRows: 45230,
+        estimatedCost: 0.65,
+        ampUsage: "all-AMPs",
+        spoolId: 4,
+        dependsOn: [4]
+      },
+      {
+        id: 6,
+        text: "We do an all-AMPs SORT step to order Spool 4 (Last Use) by the sort key in spool field1 (SALES.customers.customer_name ASC). The size is estimated with medium confidence to be 45,230 rows. The estimated time for this step is 0.32 seconds.",
+        operation: "SORT",
+        table: null,
+        confidence: "medium",
+        estimatedRows: 45230,
+        estimatedCost: 0.32,
+        ampUsage: "all-AMPs",
+        spoolId: 4,
+        dependsOn: [5]
+      },
+      {
+        id: 7,
+        text: "Finally, we send out an END TRANSACTION step to all AMPs involved in processing the request.",
+        operation: "END TRANSACTION",
+        table: null,
+        confidence: "no confidence",
+        estimatedRows: 0,
+        estimatedCost: 0,
+        ampUsage: "all-AMPs",
+        dependsOn: [6]
+      }
+    ]
+  };
+
+  // ---------- Rendering ----------
+
+  var selectedStepId = null;
+
+  function renderPlan(data) {
+    document.getElementById('planTitle').textContent = data.title || 'EXPLAIN Plan';
+    document.getElementById('planSubtitle').textContent = data.subtitle || '';
+
+    var steps = data.steps || [];
+    renderStats(steps);
+    renderDAG(steps);
+
+    // Clear detail panel
+    var panel = document.getElementById('detailPanel');
+    panel.className = 'detail-panel';
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
+    selectedStepId = null;
+  }
+
+  function renderStats(steps) {
+    var container = document.getElementById('stats');
+    while (container.firstChild) container.removeChild(container.firstChild);
+
+    var totalSteps = steps.length;
+    var totalCost = 0;
+    var maxConfidence = 'no confidence';
+    var hotspots = 0;
+    var confidenceRank = { 'no confidence': 0, 'low': 1, 'medium': 2, 'high': 3 };
+
+    for (var i = 0; i < steps.length; i++) {
+      var s = steps[i];
+      totalCost += (s.estimatedCost || 0);
+      var sConf = (s.confidence || 'no confidence').toLowerCase();
+      if ((confidenceRank[sConf] || 0) > (confidenceRank[maxConfidence] || 0)) {
+        maxConfidence = sConf;
+      }
+      if (s.ampUsage === 'all-AMPs' && (s.estimatedRows > 100000 || s.operation === 'RETRIEVE')) {
+        hotspots++;
+      }
+    }
+
+    // Total Steps
+    var card1 = createStatCard('Total Steps', String(totalSteps), 'accent');
+    container.appendChild(card1);
+
+    // Estimated Cost
+    var card2 = createStatCard('Est. Cost', totalCost.toFixed(2) + 's', 'warning');
+    container.appendChild(card2);
+
+    // Max Confidence
+    var confClass = maxConfidence === 'high' ? 'success' : (maxConfidence === 'medium' ? 'warning' : 'accent');
+    var card3 = createStatCard('Max Confidence', maxConfidence, confClass);
+    container.appendChild(card3);
+
+    // Hotspots
+    var hotClass = hotspots > 0 ? 'error' : 'success';
+    var card4 = createStatCard('Hotspots', String(hotspots), hotClass);
+    container.appendChild(card4);
+  }
+
+  function createStatCard(label, value, colorClass) {
+    var card = document.createElement('div');
+    card.className = 'stat-card';
+
+    var labelEl = document.createElement('div');
+    labelEl.className = 'stat-label';
+    labelEl.textContent = label;
+    card.appendChild(labelEl);
+
+    var valueEl = document.createElement('div');
+    valueEl.className = 'stat-value ' + (colorClass || '');
+    valueEl.textContent = value;
+    card.appendChild(valueEl);
+
+    return card;
+  }
+
+  // ---------- DAG SVG rendering ----------
+
+  var NODE_WIDTH = 240;
+  var NODE_HEIGHT = 80;
+  var H_GAP = 40;
+  var V_GAP = 60;
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function getNodeColor(step) {
+    // Red: high cost all-AMP full-table scans
+    if (step.ampUsage === 'all-AMPs' && step.operation === 'RETRIEVE' && step.estimatedRows > 100000) {
+      return { fill: '#2d1a1e', stroke: '#f7768e', text: '#f7768e' }; // error
+    }
+    // Yellow: medium cost operations
+    if (step.ampUsage === 'all-AMPs' && step.estimatedCost > 1.0) {
+      return { fill: '#2d2a1a', stroke: '#e0af68', text: '#e0af68' }; // warning
+    }
+    // Green: low cost / single-AMP
+    if (step.ampUsage === 'single-AMP' || step.estimatedCost === 0) {
+      return { fill: '#1a2d1e', stroke: '#9ece6a', text: '#9ece6a' }; // success
+    }
+    // Blue: informational / default
+    return { fill: '#1a2040', stroke: '#7aa2f7', text: '#7aa2f7' }; // accent
+  }
+
+  function renderDAG(steps) {
+    var svg = document.getElementById('dagSvg');
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    if (steps.length === 0) return;
+
+    // Build a map for quick lookup
+    var stepMap = {};
+    for (var i = 0; i < steps.length; i++) {
+      stepMap[steps[i].id] = steps[i];
+    }
+
+    // Assign each step to a row (layer). Steps with no dependsOn go to row 0;
+    // others go to max(parent row) + 1. Since the provided data is already
+    // topologically sorted we do a single forward pass.
+    var rowOf = {};
+    var rows = []; // rows[r] = [stepId, ...]
+    for (var i = 0; i < steps.length; i++) {
+      var st = steps[i];
+      var parentRow = -1;
+      if (st.dependsOn) {
+        for (var d = 0; d < st.dependsOn.length; d++) {
+          var pr = rowOf[st.dependsOn[d]];
+          if (pr !== undefined && pr > parentRow) parentRow = pr;
+        }
+      }
+      var myRow = parentRow + 1;
+      rowOf[st.id] = myRow;
+      if (!rows[myRow]) rows[myRow] = [];
+      rows[myRow].push(st.id);
+    }
+
+    // Compute positions: center each row horizontally
+    var maxCols = 0;
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r] && rows[r].length > maxCols) maxCols = rows[r].length;
+    }
+
+    var totalWidth = maxCols * (NODE_WIDTH + H_GAP) - H_GAP + 48;
+    if (totalWidth < NODE_WIDTH + 48) totalWidth = NODE_WIDTH + 48;
+    var totalHeight = rows.length * (NODE_HEIGHT + V_GAP) - V_GAP + 48;
+
+    svg.setAttribute('width', totalWidth);
+    svg.setAttribute('height', totalHeight);
+    svg.setAttribute('viewBox', '0 0 ' + totalWidth + ' ' + totalHeight);
+
+    // Arrowhead marker
+    var defs = document.createElementNS(SVG_NS, 'defs');
+    var marker = document.createElementNS(SVG_NS, 'marker');
+    marker.setAttribute('id', 'arrowhead');
+    marker.setAttribute('markerWidth', '10');
+    marker.setAttribute('markerHeight', '7');
+    marker.setAttribute('refX', '10');
+    marker.setAttribute('refY', '3.5');
+    marker.setAttribute('orient', 'auto');
+    var markerPath = document.createElementNS(SVG_NS, 'polygon');
+    markerPath.setAttribute('points', '0 0, 10 3.5, 0 7');
+    markerPath.setAttribute('fill', '#565f89');
+    marker.appendChild(markerPath);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    // Compute node positions
+    var posMap = {}; // stepId -> { x, y }
+    for (var r = 0; r < rows.length; r++) {
+      if (!rows[r]) continue;
+      var cols = rows[r].length;
+      var rowWidth = cols * (NODE_WIDTH + H_GAP) - H_GAP;
+      var startX = (totalWidth - rowWidth) / 2;
+      for (var c = 0; c < cols; c++) {
+        var sid = rows[r][c];
+        posMap[sid] = {
+          x: startX + c * (NODE_WIDTH + H_GAP),
+          y: 24 + r * (NODE_HEIGHT + V_GAP)
+        };
+      }
+    }
+
+    // Draw edges first (behind nodes)
+    var edgesGroup = document.createElementNS(SVG_NS, 'g');
+    for (var i = 0; i < steps.length; i++) {
+      var st = steps[i];
+      if (!st.dependsOn) continue;
+      for (var d = 0; d < st.dependsOn.length; d++) {
+        var fromId = st.dependsOn[d];
+        var toId = st.id;
+        if (!posMap[fromId] || !posMap[toId]) continue;
+
+        var fromPos = posMap[fromId];
+        var toPos = posMap[toId];
+
+        var x1 = fromPos.x + NODE_WIDTH / 2;
+        var y1 = fromPos.y + NODE_HEIGHT;
+        var x2 = toPos.x + NODE_WIDTH / 2;
+        var y2 = toPos.y;
+
+        // Curved path
+        var midY = (y1 + y2) / 2;
+        var pathD = 'M ' + x1 + ' ' + y1 +
+                    ' C ' + x1 + ' ' + midY + ', ' + x2 + ' ' + midY + ', ' + x2 + ' ' + y2;
+
+        var path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', pathD);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', '#565f89');
+        path.setAttribute('stroke-width', '2');
+        path.setAttribute('marker-end', 'url(#arrowhead)');
+        edgesGroup.appendChild(path);
+      }
+    }
+    svg.appendChild(edgesGroup);
+
+    // Draw nodes
+    var nodesGroup = document.createElementNS(SVG_NS, 'g');
+    for (var i = 0; i < steps.length; i++) {
+      var st = steps[i];
+      var pos = posMap[st.id];
+      if (!pos) continue;
+
+      var colors = getNodeColor(st);
+      var group = document.createElementNS(SVG_NS, 'g');
+      group.setAttribute('class', 'dag-node');
+      group.setAttribute('data-step-id', st.id);
+      group.setAttribute('transform', 'translate(' + pos.x + ',' + pos.y + ')');
+
+      // Background rect
+      var rect = document.createElementNS(SVG_NS, 'rect');
+      rect.setAttribute('class', 'node-bg');
+      rect.setAttribute('width', NODE_WIDTH);
+      rect.setAttribute('height', NODE_HEIGHT);
+      rect.setAttribute('rx', '8');
+      rect.setAttribute('ry', '8');
+      rect.setAttribute('fill', colors.fill);
+      rect.setAttribute('stroke', colors.stroke);
+      rect.setAttribute('stroke-width', '2');
+      group.appendChild(rect);
+
+      // Step number badge
+      var badge = document.createElementNS(SVG_NS, 'text');
+      badge.setAttribute('x', '12');
+      badge.setAttribute('y', '22');
+      badge.setAttribute('fill', colors.text);
+      badge.setAttribute('font-family', "'SF Mono', 'Fira Code', monospace");
+      badge.setAttribute('font-size', '11');
+      badge.setAttribute('font-weight', '700');
+      badge.textContent = 'Step ' + st.id;
+      group.appendChild(badge);
+
+      // Operation type
+      var opText = document.createElementNS(SVG_NS, 'text');
+      opText.setAttribute('x', '12');
+      opText.setAttribute('y', '42');
+      opText.setAttribute('fill', '#c0caf5');
+      opText.setAttribute('font-family', "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
+      opText.setAttribute('font-size', '13');
+      opText.setAttribute('font-weight', '600');
+      var opLabel = (st.ampUsage || '') + ' ' + (st.operation || '');
+      if (opLabel.length > 28) opLabel = opLabel.substring(0, 26) + '..';
+      opText.textContent = opLabel.trim();
+      group.appendChild(opText);
+
+      // Table name or rows/cost
+      var infoText = document.createElementNS(SVG_NS, 'text');
+      infoText.setAttribute('x', '12');
+      infoText.setAttribute('y', '60');
+      infoText.setAttribute('fill', '#565f89');
+      infoText.setAttribute('font-family', "'SF Mono', 'Fira Code', monospace");
+      infoText.setAttribute('font-size', '11');
+      var infoStr = '';
+      if (st.table) {
+        infoStr = st.table;
+      }
+      if (st.estimatedRows > 0) {
+        if (infoStr) infoStr += ' | ';
+        infoStr += st.estimatedRows.toLocaleString() + ' rows';
+      }
+      if (st.estimatedCost > 0) {
+        if (infoStr) infoStr += ' | ';
+        infoStr += st.estimatedCost + 's';
+      }
+      if (!infoStr) infoStr = st.confidence || '';
+      if (infoStr.length > 34) infoStr = infoStr.substring(0, 32) + '..';
+      infoText.textContent = infoStr;
+      group.appendChild(infoText);
+
+      // Confidence indicator dot
+      var confColor = '#414868';
+      var conf = (st.confidence || '').toLowerCase();
+      if (conf === 'high') confColor = '#9ece6a';
+      else if (conf === 'medium') confColor = '#e0af68';
+      else if (conf === 'low') confColor = '#f7768e';
+
+      var confDot = document.createElementNS(SVG_NS, 'circle');
+      confDot.setAttribute('cx', String(NODE_WIDTH - 16));
+      confDot.setAttribute('cy', '18');
+      confDot.setAttribute('r', '5');
+      confDot.setAttribute('fill', confColor);
+      group.appendChild(confDot);
+
+      // Click handler
+      (function(stepData) {
+        group.addEventListener('click', function() {
+          selectStep(stepData);
+        });
+      })(st);
+
+      nodesGroup.appendChild(group);
+    }
+    svg.appendChild(nodesGroup);
+  }
+
+  function selectStep(step) {
+    // Update selected class on SVG nodes
+    var allNodes = document.querySelectorAll('.dag-node');
+    for (var i = 0; i < allNodes.length; i++) {
+      allNodes[i].classList.remove('selected');
+      if (String(allNodes[i].getAttribute('data-step-id')) === String(step.id)) {
+        allNodes[i].classList.add('selected');
+      }
+    }
+
+    selectedStepId = step.id;
+    var panel = document.getElementById('detailPanel');
+    panel.className = 'detail-panel active';
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+    var colors = getNodeColor(step);
+
+    // Header
+    var headerEl = document.createElement('div');
+    headerEl.className = 'detail-header';
+
+    var badge = document.createElement('span');
+    badge.className = 'detail-step-badge';
+    badge.style.background = colors.fill;
+    badge.style.color = colors.text;
+    badge.style.border = '1px solid ' + colors.stroke;
+    badge.textContent = 'Step ' + step.id;
+    headerEl.appendChild(badge);
+
+    var opEl = document.createElement('span');
+    opEl.className = 'detail-operation';
+    opEl.textContent = (step.ampUsage || '') + ' ' + (step.operation || '');
+    headerEl.appendChild(opEl);
+
+    panel.appendChild(headerEl);
+
+    // Meta
+    var metaEl = document.createElement('div');
+    metaEl.className = 'detail-meta';
+
+    var metaItems = [];
+    if (step.table) metaItems.push(['Table', step.table]);
+    if (step.estimatedRows > 0) metaItems.push(['Rows', step.estimatedRows.toLocaleString()]);
+    if (step.estimatedCost > 0) metaItems.push(['Cost', step.estimatedCost + 's']);
+    metaItems.push(['Confidence', step.confidence || 'no confidence']);
+    if (step.spoolId) metaItems.push(['Spool', String(step.spoolId)]);
+    if (step.joinType) metaItems.push(['Join', step.joinType]);
+    if (step.condition) metaItems.push(['Condition', step.condition]);
+
+    for (var i = 0; i < metaItems.length; i++) {
+      var item = document.createElement('div');
+      item.className = 'detail-meta-item';
+      item.textContent = metaItems[i][0] + ': ';
+      var valSpan = document.createElement('span');
+      valSpan.textContent = metaItems[i][1];
+      item.appendChild(valSpan);
+      metaEl.appendChild(item);
+    }
+
+    panel.appendChild(metaEl);
+
+    // Full step text
+    var textEl = document.createElement('div');
+    textEl.className = 'detail-text';
+    textEl.textContent = step.text || '';
+    panel.appendChild(textEl);
+  }
+
+  // ---------- Start ----------
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initialize);
+  } else {
+    initialize();
+  }
+
+  // Notify host of size changes
+  function notifySize() {
+    try {
+      sendMCPRequest('ui/notifications/size-changed', {
+        width: document.body.scrollWidth,
+        height: document.body.scrollHeight
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(notifySize).observe(document.body);
+  }
+})();
+</script>
+</body>
+</html>

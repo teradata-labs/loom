@@ -598,10 +598,14 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Agents that need shell_execute must explicitly list it in config.Tools.Builtin
 
 	// Register MCP tools if configured
-	if config.Tools != nil && len(config.Tools.Mcp) > 0 && r.mcpMgr != nil {
+	hasMCP := config.Tools != nil && len(config.Tools.Mcp) > 0
+	if hasMCP && r.mcpMgr != nil {
 		if err := r.registerMCPTools(ctx, agent, config.Tools.Mcp); err != nil {
 			return nil, fmt.Errorf("failed to register MCP tools: %w", err)
 		}
+		r.logger.Debug("MCP tools registered for agent",
+			zap.String("agent", config.Name),
+			zap.Int("tool_count", len(agent.tools.ListTools())))
 	}
 
 	// Register builtin tools based on config (file_write, http_request, grpc_call, etc.)
@@ -693,7 +697,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		for _, toolName := range registeredTools {
 			// Skip MCP and custom tools (they're filtered by their own registration logic)
 			// Only filter builtin/framework tools
-			if !allowedTools[toolName] && !r.isMCPTool(toolName) && !r.isCustomTool(toolName, config) {
+			if !allowedTools[toolName] && !r.isMCPTool(toolName, config) && !r.isCustomTool(toolName, config) {
 				agent.UnregisterTool(toolName)
 				r.logger.Debug("Unregistered tool not in config.Tools.Builtin",
 					zap.String("tool", toolName),
@@ -706,12 +710,18 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 }
 
 // isMCPTool checks if a tool name belongs to an MCP tool.
-// MCP tools are prefixed with the server name.
-func (r *Registry) isMCPTool(toolName string) bool {
-	// MCP tools use format: "server_name.tool_name" or just match against known MCP servers
-	// For now, just check if it contains a period (simple heuristic)
-	// TODO: Improve this by checking against registered MCP tools
-	return false // Placeholder - MCP tools filtered via their own logic
+// MCP tools use format "serverName:toolName" (e.g., "vantage-mcp:teradata_execute_sql").
+func (r *Registry) isMCPTool(toolName string, config *loomv1.AgentConfig) bool {
+	if config.Tools == nil || len(config.Tools.Mcp) == 0 {
+		return false
+	}
+	for _, mcpConfig := range config.Tools.Mcp {
+		prefix := mcpConfig.Server + ":"
+		if strings.HasPrefix(toolName, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // isCustomTool checks if a tool name belongs to a custom tool defined in config.
@@ -1070,6 +1080,15 @@ func (r *Registry) StopAgent(ctx context.Context, nameOrID string) error {
 		zap.String("id", info.ID))
 
 	return nil
+}
+
+// RemoveAgentRuntime removes the in-memory agent instance from the registry
+// without deleting database records or config files. This is used during
+// agent reload to clear the "already running" check before recreating.
+func (r *Registry) RemoveAgentRuntime(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.agents, name)
 }
 
 // GetAgent returns a running agent instance by name or GUID

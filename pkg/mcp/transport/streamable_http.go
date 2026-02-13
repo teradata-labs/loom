@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -242,7 +243,7 @@ func (t *StreamableHTTPTransport) Close() error {
 
 	// Terminate session if enabled
 	if t.enableSessions && t.sessionMgr.HasSession() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5000)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = t.terminateSession(ctx) // Best effort
 	}

@@ -97,6 +97,19 @@ func NewLibrary(embeddedFS *embed.FS, patternsDir string) *Library {
 	}
 }
 
+// SetPatternsDir updates the filesystem patterns directory.
+// This is used by LoadPatterns RPC to dynamically set the patterns source.
+// When the directory changes, the pattern index is invalidated so the next
+// ListAll call re-indexes the new directory instead of returning stale results.
+func (lib *Library) SetPatternsDir(dir string) {
+	lib.mu.Lock()
+	defer lib.mu.Unlock()
+	if dir != lib.patternsDir {
+		lib.patternsDir = dir
+		lib.indexInitialized = false
+	}
+}
+
 // WithTracer sets the observability tracer for the library.
 func (lib *Library) WithTracer(tracer observability.Tracer) *Library {
 	lib.tracer = tracer
@@ -317,7 +330,12 @@ func (lib *Library) loadFromFilesystem(name string) (*Pattern, error) {
 	}
 
 	for _, path := range possiblePaths {
-		data, err := os.ReadFile(path)
+		cleanPath := filepath.Clean(path)
+		// Prevent directory traversal: resolved path must stay within patternsDir
+		if lib.patternsDir != "" && !strings.HasPrefix(cleanPath, filepath.Clean(lib.patternsDir)+string(filepath.Separator)) {
+			continue
+		}
+		data, err := os.ReadFile(cleanPath) // #nosec G304 -- path validated above
 		if err == nil {
 			relPath := path
 			if lib.patternsDir != "" && strings.HasPrefix(path, lib.patternsDir) {

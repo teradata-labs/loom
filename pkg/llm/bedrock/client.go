@@ -593,7 +593,7 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []map[str
 				content = append(content, map[string]interface{}{
 					"type":  "tool_use",
 					"id":    tc.ID,
-					"name":  sanitizeToolName(tc.Name),
+					"name":  llm.SanitizeToolName(tc.Name),
 					"input": input,
 				})
 			}
@@ -625,22 +625,6 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []map[str
 	return systemPrompt, apiMessages
 }
 
-// sanitizeToolName converts a tool name to Bedrock-compatible format.
-// Bedrock requires tool names to match ^[a-zA-Z0-9_-]{1,64}$
-// We replace colons with underscores to handle MCP tool names like "filesystem:read_file"
-func sanitizeToolName(name string) string {
-	// Replace colons with underscores
-	result := ""
-	for _, ch := range name {
-		if ch == ':' {
-			result += "_"
-		} else {
-			result += string(ch)
-		}
-	}
-	return result
-}
-
 // convertTools converts shuttle tools to Bedrock/Anthropic format.
 // Uses standard Anthropic Messages API format with sanitized tool names.
 func (c *Client) convertTools(tools []shuttle.Tool) []map[string]interface{} {
@@ -651,7 +635,7 @@ func (c *Client) convertTools(tools []shuttle.Tool) []map[string]interface{} {
 
 	for _, tool := range tools {
 		originalName := tool.Name()
-		sanitizedName := sanitizeToolName(originalName)
+		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
 		c.toolNameMap[sanitizedName] = originalName

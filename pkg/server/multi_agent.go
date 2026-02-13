@@ -95,6 +95,13 @@ type MultiAgentServer struct {
 	// Observability tracer for workflow and agent tracing
 	tracer observability.Tracer
 
+	// Local trace store for GetTrace RPC (the Tracer interface does not expose retrieval)
+	traceStoreLocal *traceStore
+
+	// Pending tool permission requests for HITL workflows (mirrors pendingQuestions pattern)
+	pendingPermissions   map[string]*pendingPermission
+	pendingPermissionsMu sync.RWMutex
+
 	// Workflow sub-agent tracking for event-driven message notifications
 	workflowSubAgents   map[string]*workflowSubAgentContext // "coordinatorSessionID:agentID" → context
 	workflowSubAgentsMu sync.RWMutex
@@ -106,6 +113,15 @@ type MultiAgentServer struct {
 	// LLM concurrency control to prevent rate limiting
 	llmSemaphore        chan struct{} // Semaphore to limit concurrent LLM calls
 	llmConcurrencyLimit int           // Max concurrent LLM calls (configurable)
+
+	// Agent lifecycle state tracking (created_at, status, config, etc.)
+	agentStates map[string]*agentState
+
+	// UI App provider for ListUIApps/GetUIApp RPCs
+	appProvider AppProvider
+
+	// UI App compiler for CreateUIApp/UpdateUIApp RPCs
+	appCompiler AppCompiler
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -195,6 +211,8 @@ func NewMultiAgentServer(agents map[string]*agent.Agent, store *agent.SessionSto
 		spawnedAgents:                     make(map[string]*spawnedAgentContext),     // Initialize spawned sub-agent tracking
 		llmConcurrencyLimit:               defaultLLMConcurrency,
 		llmSemaphore:                      make(chan struct{}, defaultLLMConcurrency),
+		agentStates:                       make(map[string]*agentState),
+		traceStoreLocal:                   newTraceStore(1 * time.Hour), // Eagerly initialize trace store for GetTrace RPC
 	}
 }
 
@@ -259,10 +277,17 @@ func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 
 // SetTracer injects an observability tracer for workflow and agent tracing.
 // This should be called after NewMultiAgentServer() to enable observability.
+// Also ensures traceStoreLocal is initialized so GetTrace RPC works.
 func (s *MultiAgentServer) SetTracer(tracer observability.Tracer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tracer = tracer
+	// Ensure trace store is initialized for GetTrace RPC support.
+	// NewMultiAgentServer already initializes it, but this is a safety net
+	// for servers constructed without the constructor (e.g., tests).
+	if s.traceStoreLocal == nil {
+		s.traceStoreLocal = newTraceStore(1 * time.Hour)
+	}
 }
 
 // ConfigureScheduler injects the workflow scheduler for cron-based execution.
@@ -305,13 +330,25 @@ func (s *MultiAgentServer) SharedMemoryStore() *storage.SharedMemoryStore {
 	return s.sharedMemory
 }
 
-// ConfigureTLS sets the TLS manager and server configuration for this server.
-// This should be called after NewMultiAgentServer() if TLS is enabled.
+// SetServerConfig sets the server configuration (network, metadata, etc.).
+// This should be called after NewMultiAgentServer() to populate GetServerConfig responses.
+func (s *MultiAgentServer) SetServerConfig(config *loomv1.ServerConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serverConfig = config
+}
+
+// ConfigureTLS sets the TLS manager and merges TLS config into the server configuration.
+// This should be called after SetServerConfig() if TLS is enabled.
 func (s *MultiAgentServer) ConfigureTLS(manager *tls.Manager, config *loomv1.ServerConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tlsManager = manager
-	s.serverConfig = config
+	if s.serverConfig != nil {
+		s.serverConfig.Tls = config.GetTls()
+	} else {
+		s.serverConfig = config
+	}
 }
 
 // SetClarificationConfig sets the clarification question timeout configuration.
@@ -396,6 +433,21 @@ func (s *MultiAgentServer) getAgent(agentID string) (*agent.Agent, string, error
 	s.mu.RUnlock()
 
 	return nil, "", status.Errorf(codes.NotFound, "agent not found: %s (available: %v)", agentID, available)
+}
+
+// findAgentBySession iterates all agents to find which one owns the given session.
+// Returns the agent, its ID, and true if found. This is the same pattern used by
+// GetSession(), DeleteSession(), and GetConversationHistory().
+func (s *MultiAgentServer) findAgentBySession(sessionID string) (*agent.Agent, string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for agentID, ag := range s.agents {
+		if _, ok := ag.GetSession(sessionID); ok {
+			return ag, agentID, true
+		}
+	}
+	return nil, "", false
 }
 
 // AddAgent adds a new agent to the server at runtime
@@ -572,10 +624,30 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
 
-	// Get agent
-	ag, agentID, err := s.getAgent(req.AgentId)
-	if err != nil {
-		return nil, err
+	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
+	// This fixes the bug where Weave(session_id=X) without agent_id falls through to the
+	// default agent instead of the agent that created/owns the session.
+	var ag *agent.Agent
+	var agentID string
+	var err error
+
+	if req.AgentId == "" && req.SessionId != "" {
+		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
+			ag, agentID = found, foundID
+			if s.logger != nil {
+				s.logger.Info("Weave: routed to agent by session ownership",
+					zap.String("session_id", req.SessionId),
+					zap.String("agent_id", agentID))
+			}
+		}
+	}
+
+	// Fall back to explicit agent_id or default agent
+	if ag == nil {
+		ag, agentID, err = s.getAgent(req.AgentId)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Get or create session
@@ -618,10 +690,38 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			zap.Error(err))
 	}
 
+	// Start a trace span for the Weave operation if tracer is configured
+	s.mu.RLock()
+	tracer := s.tracer
+	s.mu.RUnlock()
+
+	var span *observability.Span
+	if tracer != nil {
+		ctx, span = tracer.StartSpan(ctx, "server.Weave",
+			observability.WithAttribute(observability.AttrSessionID, sessionID),
+			observability.WithAttribute("agent.id", agentID),
+			observability.WithAttribute("query.length", len(req.Query)),
+		)
+	}
+
 	// Execute agent chat
 	resp, err := ag.Chat(ctx, sessionID, req.Query)
 	if err != nil {
+		if span != nil {
+			span.RecordError(err)
+			tracer.EndSpan(span)
+			s.RecordTraceSpan(span)
+		}
 		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
+	}
+
+	// End trace span and record it to the local store for GetTrace retrieval
+	if span != nil {
+		span.SetAttribute("response.length", len(resp.Content))
+		span.SetAttribute("usage.input_tokens", resp.Usage.InputTokens)
+		span.SetAttribute("usage.output_tokens", resp.Usage.OutputTokens)
+		tracer.EndSpan(span)
+		s.RecordTraceSpan(span)
 	}
 
 	// Convert response to proto format
@@ -644,27 +744,32 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 
 // StreamWeave streams agent execution progress.
 func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) error {
-	// Debug: log what agent ID we received
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] StreamWeave: received agentID='%s', sessionID='%s' in request\n", time.Now().Format("15:04:05"), req.AgentId, req.SessionId)
-		_ = f.Close()
-	}
-
 	// Validate query
 	if req.Query == "" {
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
 	}
 
-	// Get agent
-	ag, resolvedAgentID, err := s.getAgent(req.AgentId)
-	if err != nil {
-		return err
+	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
+	var ag *agent.Agent
+	var resolvedAgentID string
+	var err error
+
+	if req.AgentId == "" && req.SessionId != "" {
+		if found, foundID, ok := s.findAgentBySession(req.SessionId); ok {
+			ag, resolvedAgentID = found, foundID
+			if s.logger != nil {
+				s.logger.Info("StreamWeave: routed to agent by session ownership",
+					zap.String("session_id", req.SessionId),
+					zap.String("agent_id", resolvedAgentID))
+			}
+		}
 	}
 
-	// Debug: log which agent was resolved
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] StreamWeave: resolved to agentID='%s' (default='%s')\n", time.Now().Format("15:04:05"), resolvedAgentID, s.defaultAgentID)
-		_ = f.Close()
+	if ag == nil {
+		ag, resolvedAgentID, err = s.getAgent(req.AgentId)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Generate session ID if not provided
@@ -729,40 +834,9 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		}
 	}
 
-	// Debug: log agent execution details
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] StreamWeave: About to execute agent.ChatWithProgress with sessionID='%s'\n", time.Now().Format("15:04:05"), sessionID)
-		// Log agent details
-		if ag != nil {
-			fmt.Fprintf(f, "[%s] StreamWeave: Agent object pointer: %p\n", time.Now().Format("15:04:05"), ag)
-			// Try to get agent config
-			if config := ag.GetConfig(); config != nil {
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent name='%s', description='%s'\n", time.Now().Format("15:04:05"), config.Name, config.Description)
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent system_prompt length=%d chars\n", time.Now().Format("15:04:05"), len(config.SystemPrompt))
-				if len(config.SystemPrompt) > 0 {
-					preview := config.SystemPrompt
-					if len(preview) > 100 {
-						preview = preview[:100] + "..."
-					}
-					fmt.Fprintf(f, "[%s] StreamWeave: Agent system_prompt preview='%s'\n", time.Now().Format("15:04:05"), preview)
-				}
-			}
-		}
-		_ = f.Close()
-	}
-
 	// Execute agent with progress callback
 	go func() {
 		resp, err := ag.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
-		// Debug: log response
-		if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-			if resp != nil {
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent responded, response length=%d chars\n", time.Now().Format("15:04:05"), len(resp.Content))
-			} else {
-				fmt.Fprintf(f, "[%s] StreamWeave: Agent response was nil, error=%v\n", time.Now().Format("15:04:05"), err)
-			}
-			_ = f.Close()
-		}
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan)
 	}()
@@ -2085,7 +2159,7 @@ func (s *MultiAgentServer) CreatePattern(ctx context.Context, req *loomv1.Create
 
 	// Step 2: Atomic rename (replaces existing file if any)
 	if err := os.Rename(tempFile, patternFile); err != nil {
-		os.Remove(tempFile) // Clean up temp file
+		_ = os.Remove(tempFile) // Clean up temp file; best-effort
 		return &loomv1.CreatePatternResponse{
 			Success: false,
 			Error:   fmt.Sprintf("failed to rename temp file: %v", err),
@@ -2223,7 +2297,9 @@ func (s *MultiAgentServer) StopHotReload() error {
 	for agentID, hotReloader := range s.hotReloaders {
 		if err := hotReloader.Stop(); err != nil {
 			// Log error but continue stopping others
-			fmt.Printf("Error stopping hot-reloader for agent %s: %v\n", agentID, err)
+			s.logger.Error("failed to stop hot-reloader for agent",
+				zap.String("agent_id", agentID),
+				zap.Error(err))
 		}
 	}
 
@@ -2404,22 +2480,10 @@ func (s *MultiAgentServer) ListAvailableModels(ctx context.Context, req *loomv1.
 
 // CreateSession creates a new conversation session for an agent.
 func (s *MultiAgentServer) CreateSession(ctx context.Context, req *loomv1.CreateSessionRequest) (*loomv1.Session, error) {
-	// Debug: log what agent ID we received
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] CreateSession: received agentID='%s' in request\n", time.Now().Format("15:04:05"), req.AgentId)
-		_ = f.Close()
-	}
-
 	// Get agent (use agent_id if specified, otherwise default)
-	ag, resolvedAgentID, err := s.getAgent(req.AgentId)
+	ag, _, err := s.getAgent(req.AgentId)
 	if err != nil {
 		return nil, err
-	}
-
-	// Debug: log which agent was resolved
-	if f, err := os.OpenFile("/tmp/looms-server-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] CreateSession: resolved to agentID='%s' (default='%s')\n", time.Now().Format("15:04:05"), resolvedAgentID, s.defaultAgentID)
-		_ = f.Close()
 	}
 
 	sessionID := GenerateSessionID()
@@ -2494,7 +2558,9 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 	if s.sessionStore != nil {
 		if err := s.sessionStore.DeleteSession(ctx, req.SessionId); err != nil {
 			// Log but don't fail
-			fmt.Printf("Failed to delete session from store: %v\n", err)
+			s.logger.Warn("failed to delete session from persistent store",
+				zap.String("session_id", req.SessionId),
+				zap.Error(err))
 		}
 	}
 

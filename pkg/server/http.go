@@ -9,8 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -45,13 +48,21 @@ func DefaultCORSConfig() CORSConfig {
 	}
 }
 
+// AppHTMLProvider provides HTML content for UI apps.
+// Used by the HTTP server to serve apps in the browser.
+type AppHTMLProvider interface {
+	AppNames() []string
+	AppHTML(name string) ([]byte, error)
+}
+
 // HTTPServer wraps gRPC server with HTTP/REST+SSE endpoints
 type HTTPServer struct {
-	grpcServer *MultiAgentServer
-	httpServer *http.Server
-	logger     *zap.Logger
-	grpcAddr   string
-	corsConfig CORSConfig
+	grpcServer      *MultiAgentServer
+	httpServer      *http.Server
+	logger          *zap.Logger
+	grpcAddr        string
+	corsConfig      CORSConfig
+	appHTMLProvider AppHTMLProvider
 }
 
 // NewHTTPServer creates an HTTP server that proxies to gRPC
@@ -77,6 +88,12 @@ func NewHTTPServerWithCORS(grpcServer *MultiAgentServer, httpAddr, grpcAddr stri
 			IdleTimeout:  120 * time.Second,
 		},
 	}
+}
+
+// SetAppHTMLProvider sets the provider used to serve UI apps over HTTP.
+// Must be called before Start(); not safe for concurrent use.
+func (h *HTTPServer) SetAppHTMLProvider(p AppHTMLProvider) {
+	h.appHTMLProvider = p
 }
 
 // Start starts the HTTP server
@@ -109,6 +126,14 @@ func (h *HTTPServer) Start(ctx context.Context) error {
 
 	// SSE endpoint for streaming (custom handler)
 	rootMux.HandleFunc("/v1/weave:stream", h.handleStreamWeaveSSE)
+
+	// UI Apps browser endpoint
+	if h.appHTMLProvider != nil {
+		rootMux.HandleFunc("/apps/", h.handleApps)
+		rootMux.HandleFunc("/apps", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/apps/", http.StatusMovedPermanently)
+		})
+	}
 
 	// All other endpoints use grpc-gateway
 	rootMux.Handle("/", mux)
@@ -374,6 +399,86 @@ func (s *sseStreamWrapper) SendMsg(m interface{}) error {
 
 func (s *sseStreamWrapper) RecvMsg(m interface{}) error {
 	return fmt.Errorf("RecvMsg not implemented for SSE")
+}
+
+// handleApps dispatches to either the app index or individual app HTML.
+func (h *HTTPServer) handleApps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// "/apps/" -> index, "/apps/data-chart" -> individual app
+	name := strings.TrimPrefix(r.URL.Path, "/apps/")
+	if name == "" {
+		h.handleAppsIndex(w, r)
+		return
+	}
+
+	// Reject path traversal or invalid characters in app name.
+	if !isValidAppName(name) {
+		http.Error(w, "Invalid app name", http.StatusBadRequest)
+		return
+	}
+	h.handleAppHTML(w, r, name)
+}
+
+// isValidAppName returns true if the name contains only safe characters
+// (alphanumeric, hyphens, underscores). Rejects path traversal attempts.
+func isValidAppName(name string) bool {
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return len(name) > 0
+}
+
+// handleAppsIndex serves an HTML index page listing all available apps.
+func (h *HTTPServer) handleAppsIndex(w http.ResponseWriter, _ *http.Request) {
+	names := h.appHTMLProvider.AppNames()
+
+	// Build a simple HTML page with links
+	var sb strings.Builder
+	sb.WriteString(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">`)
+	sb.WriteString(`<title>Loom Apps</title>`)
+	sb.WriteString(`<style>body{font-family:system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px}`)
+	sb.WriteString(`a{display:block;padding:12px 16px;margin:8px 0;background:#f5f5f5;border-radius:8px;`)
+	sb.WriteString(`text-decoration:none;color:#333}a:hover{background:#e8e8e8}</style></head><body>`)
+	sb.WriteString(`<h1>Loom Apps</h1>`)
+	if len(names) == 0 {
+		sb.WriteString(`<p>No apps available.</p>`)
+	}
+	for _, name := range names {
+		sb.WriteString(fmt.Sprintf(`<a href="/apps/%s">%s</a>`, url.PathEscape(name), html.EscapeString(name)))
+	}
+	sb.WriteString(`</body></html>`)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(sb.String()))
+}
+
+// handleAppHTML serves the raw HTML for a specific app with security headers.
+func (h *HTTPServer) handleAppHTML(w http.ResponseWriter, _ *http.Request, name string) {
+	content, err := h.appHTMLProvider.AppHTML(name)
+	if err != nil {
+		http.Error(w, "App not found", http.StatusNotFound)
+		return
+	}
+
+	// Security headers
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "+
+			"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "+
+			"connect-src 'self'; frame-ancestors 'self'")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }
 
 // sendSSEError sends an error event via SSE

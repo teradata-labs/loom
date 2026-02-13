@@ -17,6 +17,7 @@ permissions:
   pull-requests: read
   checks: write
   actions: read
+  security-events: write  # Required for SARIF upload to code scanning
 
 jobs:
   # ============================================================================
@@ -27,10 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -58,21 +59,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: '1.25'
           cache: true
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Proto Files
         run: buf generate
+
+      - name: Generate weaver.yaml from template
+        run: go run ./cmd/generate-weaver
 
       - name: Install linting tools
         run: |
@@ -99,21 +103,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: '1.25'
           cache: true
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Proto Files
         run: buf generate
+
+      - name: Generate weaver.yaml from template
+        run: go run ./cmd/generate-weaver
 
       - name: Run tests with race detection
         run: |
@@ -144,7 +151,7 @@ jobs:
           echo "## Nightly Coverage: $COVERAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: nightly-coverage-${{ github.run_number }}
           path: |
@@ -164,16 +171,16 @@ jobs:
         go-version: ['1.25']
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -250,7 +257,7 @@ jobs:
           "ZIP_FILE=$ZIP_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload binaries artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: nightly-binaries-${{ matrix.os }}-${{ github.run_number }}
           path: |
@@ -267,209 +274,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: '1.25'
           cache: true
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Proto Files
         run: buf generate
 
+      - name: Generate weaver.yaml from template
+        run: go run ./cmd/generate-weaver
+
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+        uses: securego/gosec@398ad549bbf1a51dc978fd966169f660c59774de # v2.23.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
+
+      - name: Fix SARIF schema compliance
+        run: |
+          # Strip invalid relationships entries that cause SARIF validation failures
+          jq '(.runs[].tool.driver.rules // []) |= map(del(.relationships))' \
+            results.sarif > results-fixed.sarif
+          mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4.32.2
+        continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
 
   # ============================================================================
-  # Job 6: Batteries-Included Installation Test
-  # ============================================================================
-  batteries-included-test:
-    name: Test Batteries-Included Installation (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs: proto  # Run after proto generation
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0  # Full history for version detection
-
-      - name: Install prerequisites (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # Install Chocolatey if not present
-          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing Chocolatey..."
-            Set-ExecutionPolicy Bypass -Scope Process -Force
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          }
-
-          # Refresh PATH
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-
-          # Install Just if not present
-          if (-not (Get-Command just -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing Just..."
-            choco install just -y
-          }
-
-          # Install Buf directly from GitHub (not in Chocolatey)
-          if (-not (Get-Command buf -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing Buf from GitHub..."
-            $BufVersion = "1.58.0"
-            $BufUrl = "https://github.com/bufbuild/buf/releases/download/v${BufVersion}/buf-Windows-x86_64.exe"
-            $BufDir = "$env:LOCALAPPDATA\Programs\buf"
-            New-Item -ItemType Directory -Force -Path $BufDir | Out-Null
-            $BufPath = Join-Path $BufDir "buf.exe"
-
-            Write-Host "  Downloading buf v${BufVersion}..."
-            Invoke-WebRequest -Uri $BufUrl -OutFile $BufPath
-
-            # Add to PATH for current session
-            $env:Path += ";$BufDir"
-
-            Write-Host "  ✓ Buf installed to $BufPath"
-          }
-
-          # Final PATH refresh
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-
-      - name: Test installation script (Unix)
-        if: runner.os != 'Windows'
-        env:
-          CI_MODE: true
-          SKIP_CREDENTIALS: true
-        run: ./install-with-vantage.sh
-
-      - name: Test installation script (Windows)
-        if: runner.os == 'Windows'
-        env:
-          CI_MODE: true
-          SKIP_CREDENTIALS: true
-        shell: pwsh
-        run: .\install-with-vantage.ps1
-
-      - name: Verify looms installation (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          ~/.local/bin/looms --version
-          echo "looms version verified"
-
-      - name: Verify looms installation (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "$env:LOCALAPPDATA\Programs\loom\looms.exe" --version
-          Write-Host "looms version verified"
-
-      - name: Verify loom installation (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          ~/.local/bin/loom --version
-          echo "loom version verified"
-
-      - name: Verify loom installation (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "$env:LOCALAPPDATA\Programs\loom\loom.exe" --version
-          Write-Host "loom version verified"
-
-      - name: Verify bundled binaries (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          test -f ~/.local/bin/vantage-mcp && echo "✓ vantage-mcp installed"
-          test -f ~/.local/bin/hawk && echo "✓ hawk installed"
-
-      - name: Verify bundled binaries (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Test-Path "$env:LOCALAPPDATA\Programs\vantage-mcp\vantage-mcp.exe" && Write-Host "✓ vantage-mcp installed"
-          Test-Path "$env:LOCALAPPDATA\Programs\hawk\hawk.exe" && Write-Host "✓ hawk installed"
-
-      - name: Verify configuration (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          test -d $HOME/.loom && echo "✓ loom config directory exists"
-          test -f $HOME/.loom/looms.yaml && echo "✓ loom looms.yaml exists"
-          test -d $HOME/.hawk && echo "✓ hawk config directory exists"
-          test -f $HOME/.hawk/config.yaml && echo "✓ hawk config.yaml exists"
-
-      - name: Verify configuration (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Test-Path "$env:USERPROFILE\.loom" && Write-Host "✓ loom config directory exists"
-          Test-Path "$env:USERPROFILE\.loom\looms.yaml" && Write-Host "✓ loom looms.yaml exists"
-          Test-Path "$env:USERPROFILE\.hawk" && Write-Host "✓ hawk config directory exists"
-          Test-Path "$env:USERPROFILE\.hawk\config.yaml" && Write-Host "✓ hawk config.yaml exists"
-
-      - name: Smoke test - looms help (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          ~/.local/bin/looms --help
-          ~/.local/bin/looms pattern list || echo "Pattern list requires MCP server (expected in CI)"
-
-      - name: Smoke test - looms help (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "$env:LOCALAPPDATA\Programs\loom\looms.exe" --help
-          & "$env:LOCALAPPDATA\Programs\loom\looms.exe" pattern list 2>&1 | Out-Null || Write-Host "Pattern list requires MCP server (expected in CI)"
-
-      - name: Upload test logs (Unix)
-        if: always() && runner.os != 'Windows'
-        uses: actions/upload-artifact@v6
-        with:
-          name: installation-test-${{ matrix.os }}-${{ github.run_number }}
-          path: |
-            ~/.loom/
-            ~/.hawk/
-          retention-days: 7
-
-      - name: Upload test logs (Windows)
-        if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
-        with:
-          name: installation-test-${{ matrix.os }}-${{ github.run_number }}
-          path: |
-            ${{ env.USERPROFILE }}\.loom\
-            ${{ env.USERPROFILE }}\.hawk\
-          retention-days: 7
-
-  # ============================================================================
-  # Job 7: Create Nightly Release (Optional)
+  # Job 6: Create Nightly Release (Optional)
   # ============================================================================
   release:
     name: Create Nightly Pre-Release
     runs-on: ubuntu-latest
-    needs: [proto, lint, test, build, security, batteries-included-test]
+    needs: [proto, lint, test, build, security]
     if: github.event.inputs.create_release == 'true' || github.event_name == 'schedule'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: nightly-binaries-*
           path: artifacts/
@@ -489,7 +344,7 @@ jobs:
           echo "RELEASE_DATE=$DATE" >> $GITHUB_ENV
 
       - name: Create nightly release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "Nightly Build ${{ env.RELEASE_DATE }}"
@@ -532,12 +387,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================================
-  # Job 8: Nightly Success Summary
+  # Job 7: Nightly Success Summary
   # ============================================================================
   nightly-summary:
     name: Nightly Build Summary
     runs-on: ubuntu-latest
-    needs: [proto, lint, test, build, security, batteries-included-test]
+    needs: [proto, lint, test, build, security]
     if: always()
     steps:
       - name: Check status

@@ -1,653 +1,308 @@
 # Loom
 
-A Go framework for building autonomous LLM agent threads with **natural language agent creation**, pattern-guided learning, autonomous agent improvement, and multi-agent orchestration.
+An LLM agent framework for Go. Create agents from natural language, orchestrate them with workflow patterns, and improve them through pattern-guided learning.
 
+[![CI](https://github.com/teradata-labs/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/teradata-labs/loom/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/teradata-labs/loom.svg)](https://pkg.go.dev/github.com/teradata-labs/loom)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![CI](https://github.com/teradata-labs/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/teradata-labs/loom/actions/workflows/ci.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11888/badge)](https://www.bestpractices.dev/projects/11888)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/teradata-labs/loom)](https://github.com/teradata-labs/loom/blob/main/go.mod)
 [![Release](https://img.shields.io/github/v/release/teradata-labs/loom)](https://github.com/teradata-labs/loom/releases/latest)
-
----
 
 **Version**: v1.1.0
 
-> **Note**: Loom is in active development. Expect frequent updates, new features, and improvements. The API is stabilizing but may have minor changes as we refine the framework based on user feedback.
-
-**Quality Metrics** (verified 2026-01-08):
-- 2252+ test functions across 244 test files
-- 73 packages with test coverage
-- 0 race conditions (all tests run with `-race` detector)
-- Critical packages: patterns 81.7%, communication 77.9%, fabric 79.2%
+![Loom TUI](docs/images/tui-screenshot.png)
 
 ---
 
-## What is Loom?
-
-Loom lets you **create AI agent threads by describing what you need in plain English**. No coding required for basic use - just tell Loom what you want:
+## Quick Start
 
 ```bash
-# Option 1: Interactive TUI (Terminal UI) - Recommended
-loom
-# Opens interactive chat with Guide who helps you find the right agent
-# Or directly to a specific agent: loom --thread weaver
+# 1. Install
+git clone https://github.com/teradata-labs/loom && cd loom
+./quickstart.sh          # macOS/Linux (handles Go, Buf, patterns)
+# .\quickstart.ps1       # Windows (PowerShell)
 
-# Option 2: CLI (Command Line)
-loom chat --thread weaver "Analyze PostgreSQL slow queries and suggest indexes"
-# Sends a single message and gets a response
+# 2. Set your LLM provider
+export ANTHROPIC_API_KEY="your-key"    # or Bedrock, Ollama, OpenAI, etc.
 
-# The weaver:
-# 1. Analyzes your requirements
-# 2. Selects appropriate patterns and tools
-# 3. Generates complete YAML configuration
-# 4. Activates the agent thread
-# 5. TUI automatically switches to your new agent
+# 3. Start the server
+looms serve              # gRPC :60051, HTTP :5006
+
+# 4. Launch the TUI
+loom                     # Opens with Guide agent
+loom --thread weaver     # Or go straight to the Weaver
 ```
 
-Loom is also a complete Go framework for building agent threads programmatically, with pattern-guided learning, real-time streaming, and observability.
+The **Weaver** is a meta-agent that creates other agents from natural language:
 
-### Why Loom?
+```
+You: Create a Teradata query optimizer that analyzes EXPLAIN plans
+Weaver: Analyzing requirements... selecting patterns... activating agent.
+```
 
-| Feature | What It Does |
-|---------|--------------|
-| **Natural Language Creation** | Describe what you need to the weaver, get a working agent in ~30 seconds |
-| **Judge Evaluation System** | Multi-judge evaluation with 6 aggregation strategies and streaming support |
-| **Learning Agents** | Self-improving agents with [DSPy optimizer](https://dspy.ai/learn/optimization/optimizers/) & [textgradient](https://arxiv.org/abs/2406.07496) integration and intelligent pattern proposals |
-| **Multi-Agent Orchestration** | 6 workflow patterns for coordinating agent teams, automatically selected for you by the weaver |
-| **Pattern Library** | 90 reusable YAML patterns across 16 domains that are intelligently selected based on the user's intent and fed to the agent on every agent cycle |
-| **8 LLM Providers** | Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral, Gemini, HuggingFace |
-| **Multi-Modal** | Vision analysis (`analyze_image`) and document parsing (`parse_document`) (works in progress!) |
-
-Unlike prompt-engineering approaches, Loom uses **pattern-guided learning** where domain knowledge is encoded as reusable YAML patterns. This makes agent threads more reliable, testable, and maintainable. Users of loom can write their own patterns in plain english to make loom agents into specialized domain experts.
+**API endpoints** after `looms serve`:
+- **gRPC**: `localhost:60051` (75 RPCs)
+- **HTTP/REST**: `localhost:5006` (with SSE streaming)
+- **Swagger UI**: `localhost:5006/swagger-ui`
+- **MCP Apps**: `localhost:5006/apps/`
 
 ---
 
-## Getting Started
+## How It Works
 
-### Prerequisites
+Instead of prompt engineering, Loom uses **pattern-guided learning**. Domain knowledge is encoded as reusable YAML patterns that agents select and apply based on user intent:
 
-- Go 1.25+
-- One of: Anthropic API key, AWS Bedrock access, Ollama installed, OpenAI API key, etc.
-
-### Automated Installation (Recommended)
-
-**Fastest way to get started** - The automated installer handles everything:
-
-#### macOS / Linux
-
-```bash
-# Clone and run quickstart
-git clone https://github.com/teradata-labs/loom
-cd loom
-./quickstart.sh
+```
+User message → Pattern selection (from 95 patterns) → LLM call with context → Tool execution → Response
+     ↑                                                                                            |
+     └────────────────────── Learning feedback loop (optional) ───────────────────────────────────┘
 ```
 
-#### Windows
-
-```powershell
-# Clone and run quickstart (PowerShell)
-git clone https://github.com/teradata-labs/loom
-cd loom
-.\quickstart.ps1
-
-# If you get "Running scripts is disabled on this system":
-powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
-```
-
-The installer will:
-- ✓ Install prerequisites (Go, Just, Buf)
-- ✓ Build Loom binaries
-- ✓ Install patterns and documentation
-- ✓ Configure your LLM provider interactively
-- ✓ Set up web search API keys (optional)
-
-See [QUICKSTART.md](QUICKSTART.md) for detailed installation guide (macOS/Linux) or [docs/installation/WINDOWS.md](docs/installation/WINDOWS.md) for Windows.
-
-### Manual Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/teradata-labs/loom
-cd loom
-
-# Install binaries and patterns
-just install
-# This installs:
-#   - Binaries to ~/.local/bin/ (looms, loom)
-#   - Patterns to $LOOM_DATA_DIR/patterns/ (94 YAML patterns)
-#
-# Customize installation directories:
-#   export LOOM_BIN_DIR=/usr/local/bin  # Custom binary location
-#   export LOOM_DATA_DIR=/custom/loom   # Custom data directory
-#   just install
-
-# Or build only (for development)
-just build                # Minimal build (no optional dependencies)
-```
-
-**What gets installed:**
-- `looms` - Multi-agent server with weaver and pattern hot-reload
-- `loom` - TUI client for connecting to agents
-- `$LOOM_DATA_DIR/patterns/` - 90 reusable patterns across 16 domains (SQL, Teradata, Postgres, text, code, debugging, vision, REST API, document processing, etc.)
-
-**Alternative: Install from source**
-```bash
-# Install latest tagged release
-go install github.com/teradata-labs/loom/cmd/loom@latest
-go install github.com/teradata-labs/loom/cmd/looms@latest
-
-# Or install from specific version
-go install github.com/teradata-labs/loom/cmd/loom@v1.0.1
-go install github.com/teradata-labs/loom/cmd/looms@v1.0.1
-
-# Note: You'll need to manually install patterns for the weaver to work
-just install-patterns
-```
-
-### Windows Package Managers (Coming Soon- Under Review by scoop, winget, and chocolatey)
-
-Once published, Windows users will be able to install via package managers:
-
-```powershell
-# Scoop (developer-friendly)
-scoop install loom-server
-
-# winget (Microsoft official - Windows 10/11)
-winget install Teradata.Loom
-
-# Chocolatey (most popular)
-choco install loom
-```
-
-Package manifests are available in `packaging/windows/`. See [docs/installation/WINDOWS.md](docs/installation/WINDOWS.md) for manual installation.
-
-### macOS Package Manager (Coming Soon)
-
-```bash
-# Homebrew (once tap is published)
-brew tap teradata-labs/loom
-brew install loom loom-server
-
-# Or install directly from URL
-brew install https://raw.githubusercontent.com/teradata-labs/loom/main/packaging/macos/homebrew/loom-server.rb
-```
-
-**Current Status**: Formulas are ready in `packaging/macos/homebrew/`. Use automated installer or manual build for now.
-
-### Verifying Releases
-
-All Loom releases are cryptographically signed for security. Starting with v1.1.0, you can verify releases using GPG signatures and SLSA provenance.
-
-#### Verify GPG Signatures
-
-```bash
-# Import Loom release public key (one-time setup)
-curl -sL https://raw.githubusercontent.com/teradata-labs/loom/main/loom-release-key.asc | gpg --import
-
-# Verify release tag
-git verify-tag v1.1.0
-
-# Verify checksum signature
-gpg --verify loom-linux-amd64.tar.gz.sha256.asc
-
-# Verify checksum matches
-sha256sum -c loom-linux-amd64.tar.gz.sha256
-```
-
-#### Verify SLSA Provenance (Supply Chain Security)
-
-SLSA provenance provides cryptographic proof of how binaries were built, preventing supply chain attacks.
-
-```bash
-# Install GitHub CLI if needed
-# macOS: brew install gh
-# Windows: winget install GitHub.cli
-# Linux: See https://github.com/cli/cli#installation
-
-# Verify binary provenance
-gh attestation verify loom-linux-amd64.tar.gz --owner teradata-labs
-```
-
-This verifies that:
-- The binary was built by official GitHub Actions
-- From the official teradata-labs/loom repository
-- Using the exact commit and workflow shown in the release
-
-**Note**: GPG signing and SLSA attestations are available starting with v1.1.0.
-
-### Quick Start
-
-```bash
-# 1. Set your LLM provider credentials
-export ANTHROPIC_API_KEY="your-key"  # or configure Bedrock/Ollama/OpenAI
-
-# 2. Start the Loom server
-looms serve  # gRPC on :60051, HTTP/REST on :5006
-
-# 3. Access Swagger UI for API docs
-open http://localhost:5006/swagger-ui
-
-# 4. Use the TUI client (recommended)
-loom
-# Starts with Guide who helps you find agents
-# Or press ctrl+e to browse agents, ctrl+w for workflows
-
-# 5. Or directly to weaver to create agents
-loom --thread weaver
-# Then type: "Create a code review assistant that checks for security issues"
-# TUI will automatically switch to your new agent when ready
-
-# 6. Or connect directly to a specific agent
-loom --thread code-review-assistant
-```
-
-**API Access:**
-- **gRPC**: `localhost:60051` (native protocol)
-- **HTTP/REST**: `http://localhost:5006` (REST API + SSE streaming)
-- **Swagger UI**: `http://localhost:5006/swagger-ui` (interactive API docs)
-- **OpenAPI Spec**: `http://localhost:5006/openapi.json`
+Patterns are plain-English YAML files anyone can write. They turn generic LLMs into domain specialists for SQL optimization, data quality, Teradata analytics, code review, and more.
 
 ---
 
-## Core Components
+## Features
 
 ### Weaver (Meta-Agent)
 
-The weaver transforms natural language into fully-configured agents:
-
-```bash
-# Connect to the weaver agent
-loom --thread weaver
-
-# Then describe what you need:
-# "Analyze PostgreSQL performance and suggest optimizations"
-# "Create a workflow for monitoring API endpoints"
-# "Add error handling and retry logic to my existing agent"
-```
-
-The weaver:
+Describe what you need; the Weaver builds it:
 - Analyzes requirements to determine domain and capabilities
-- Selects optimal patterns from the library
-- Generates complete YAML configuration
-- Validates the configuration
-- Activates the agent thread
+- Selects patterns from the library (95 patterns across 16 domains)
+- Generates YAML configuration and activates the agent
+- Automatically selects workflow patterns for multi-agent tasks
 
-### Multi-Agent Orchestration
+### Multi-Agent Workflows
 
-6 workflow patterns for coordinating agent teams (defined in `proto/loom/v1/orchestration.proto`):
+9 orchestration patterns defined in proto:
 
-| Pattern | Description | Use Case |
-|---------|-------------|----------|
-| **Pipeline** | Sequential execution, output flows to next stage | ETL, multi-step analysis |
-| **Parallel** | Independent tasks execute concurrently | Batch processing |
-| **Fork-Join** | Parallel execution with merged results | Aggregation, consensus |
-| **Debate** | Agents argue different perspectives | Decision making, validation |
-| **Conditional** | Route based on agent decisions | Branching workflows |
-| **Swarm** | Dynamic agent collaboration | Complex problem solving |
-
-Additional collaboration patterns in `pkg/collaboration/`:
-- Teacher-Student
-- Pair Programming
+| Pattern | Use Case |
+|---------|----------|
+| **Pipeline** | Sequential stages (ETL, multi-step analysis) |
+| **Parallel** | Independent concurrent tasks |
+| **Fork-Join** | Parallel execution with merged results |
+| **Debate** | Multiple agents argue perspectives, reach consensus |
+| **Conditional** | Route based on agent decisions |
+| **Swarm** | Dynamic agent collaboration |
+| **Iterative** | Pipeline with autonomous restart on failure |
+| **Pair Programming** | Two agents collaborate on code |
+| **Teacher-Student** | One agent teaches/evaluates another |
 
 ### Judge Evaluation System
 
-Multi-judge evaluation with configurable aggregation strategies:
+Multi-judge evaluation with 6 aggregation strategies (weighted-average, all-must-pass, majority-pass, any-pass, min-score, max-score) and 3 execution modes (synchronous, asynchronous, hybrid). Includes DSPy integration for judge optimization.
 
-```bash
-# Evaluate agent output with multiple judges
-looms judge evaluate \
-  --agent=sql-agent \
-  --judges=quality-judge,safety-judge,cost-judge \
-  --prompt="Generate a query" \
-  --response="SELECT * FROM users" \
-  --aggregation=weighted-average
-
-# Streaming evaluation for long-running operations
-looms judge evaluate-stream \
-  --agent=sql-agent \
-  --judges=quality,safety,performance \
-  --prompt-file=input.txt \
-  --response-file=output.txt
-```
-
-**Aggregation Strategies** (6 available):
-- `weighted-average` - Weight judges by importance
-- `all-must-pass` - All judges must approve
-- `majority-pass` - Majority consensus required
-- `any-pass` - At least one judge approves
-- `min-score` / `max-score` - Take minimum/maximum score
-
-**Features**:
-- Real-time streaming progress updates
-- Configurable retry policies with circuit breakers
-- Hawk export for observability
-- Fail-fast mode for critical failures
-- DSPy integration for judge optimization
-- 89% test coverage (`pkg/evals/judges/`)
-
-**Judge Types**:
-- Quality judges (accuracy, completeness)
-- Safety judges (security, compliance)
-- Performance judges (efficiency, cost)
-- Custom judges (domain-specific criteria)
-
-See [Judge CLI Guide](docs/guides/judge_cli_guide.md) and [Multi-Judge Evaluation](docs/guides/multi-judge-evaluation.md).
+See [Judge CLI Guide](docs/guides/judge_cli_guide.md).
 
 ### Learning Agents
 
-Self-improving agents that propose pattern improvements based on experience:
+Self-improving agents that analyze successes/failures and propose pattern improvements. Three modes: observation, proposal, and auto-apply. Integrates with [DSPy](https://dspy.ai/) for prompt optimization.
 
-```bash
-# Connect to the weaver
-loom --thread weaver
-
-# Then request: "Create a learning SQL agent that improves query patterns"
-
-# The learning agent will:
-# 1. Execute tasks and collect feedback
-# 2. Analyze successful/failed attempts
-# 3. Propose pattern improvements
-# 4. Integrate with DSPy for optimization
-```
-
-**Learning Capabilities**:
-- Pattern proposal generation
-- Success/failure analysis
-- DSPy integration for prompt optimization
-- Iterative improvement loops
-- A/B testing of pattern variants
-
-**Learning Modes**:
-- `observation` - Collect data without changes
-- `proposal` - Generate improvement suggestions
-- `auto-apply` - Automatically apply validated improvements (library-only)
-
-**DSPy Integration**:
-- Teleprompter optimization (now aptly renamed optimizers by DSPy)
-- Signature compilation
-- Example-based learning
-- Metric-driven improvement
-
-See [Learning Agent Guide](docs/guides/learning-agent-guide.md) and [Judge-DSPy Integration](docs/guides/judge-dspy-integration.md).
+See [Learning Agent Guide](docs/guides/learning-agent-guide.md).
 
 ### Pattern Library
 
-90 reusable YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/` by default:
+95 YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/`:
 
-| Domain | Patterns | Examples |
-|--------|----------|----------|
-| `teradata/` | 34 | ML models, analytics, data quality, semantic mapping, performance, FastLoad |
-| `postgres/` | 12 | Query optimization, index analysis, vacuum recommendations |
-| `libraries/` | 11 | Pattern bundles for specific domains |
+| Domain | Count | Examples |
+|--------|-------|----------|
+| `teradata/` | 34 | ML models, analytics, data quality, performance, FastLoad |
+| `postgres/` | 12 | Query optimization, index analysis, vacuum tuning |
+| `libraries/` | 11 | Domain-specific pattern bundles |
 | `sql/` | 8 | Data validation, profiling, duplicate detection |
 | `fun/` | 5 | Entertainment patterns |
-| `prompt_engineering/` | 4 | Chain-of-thought, few-shot learning, structured output |
-| `documents/` | 4 | PDF extraction, Excel analysis, CSV import (legacy) |
-| `document/` | 2 | Multi-format parsing, document analysis |
-| `code/` | 2 | Test generation, documentation generation |
-| `vision/` | 2 | Chart interpretation, form extraction |
-| `text/` | 2 | Summarization, sentiment analysis |
-| `rest_api/` | 1 | Health checks, liveness/readiness probes |
-| `debugging/` | 1 | Root cause analysis |
-| `evaluation/` | 1 | Prompt evaluation |
-| `nasa/` | 1 | Space/astronomy patterns |
+| `prompt_engineering/` | 4 | Chain-of-thought, few-shot, structured output |
+| `documents/` | 4 | PDF extraction, Excel analysis, CSV import |
+| Others | 17 | Vision, code, text, debugging, REST API, NASA |
 
-**Pattern Discovery** - Patterns are searched in priority order:
-1. `$LOOM_DATA_DIR/patterns/` (installed patterns - checked first)
-2. `./patterns/` (development mode)
-3. Upward directory search (for test contexts)
+Write your own patterns in plain English YAML to make Loom agents into domain experts for your specific use cases.
 
-This allows patterns to work from any directory and survive binary updates.
+### MCP Integration
 
-### Communication System
+Connect any [MCP server](https://modelcontextprotocol.io/) without code:
 
-Tri-modal inter-agent communication:
+```bash
+looms config set mcp.servers.github.command /path/to/github-mcp
+looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
+# MCP servers auto-start with: looms serve
+```
 
-- **Message Queue**: Ordered message passing between agents
-- **Shared Memory**: Key-value store for shared state
-- **Broadcast Bus**: Pub/sub for event distribution
+**4 built-in MCP UI Apps** served at `/apps/` and as MCP resources (`ui://` scheme):
+
+| App | Description |
+|-----|-------------|
+| Conversation Viewer | Browse agent conversations, sessions, tool calls |
+| Data Chart | Interactive Chart.js visualizations for time-series data |
+| EXPLAIN Plan Visualizer | SVG DAG rendering of Teradata EXPLAIN plans with cost coloring |
+| Data Quality Dashboard | Completeness, uniqueness, distribution, and outlier analysis |
+
+**Dynamic App Creation**: Agents and MCP clients can create custom dashboards at runtime from a declarative JSON spec with 14 component types (stat cards, charts, tables, heatmaps, DAGs, etc.). Up to 100 dynamic apps, compiled to secure standalone HTML with the Tokyonight Dark theme. See [MCP Apps Guide](docs/guides/mcp-apps-guide.md).
 
 ### Built-in Tools
 
 | Tool | Description |
 |------|-------------|
-| `analyze_image` | Vision analysis for charts, screenshots, diagrams (work in progress!) |
-| `parse_document` | Extract data from PDF, Excel (.xlsx), CSV files (work in progress!) |
-| `send_message` / `receive_message` | Inter-agent messaging |
-| `shared_memory` | Read/write shared state for multi-agent systems |
+| `web_search` | Web search ([Tavily](https://www.tavily.com) or [Brave](https://brave.com/search/api/)) |
 | `file_read` / `file_write` | File system operations |
 | `http_client` / `grpc_client` | External service calls |
-| `record_progress` | Note taking/reminder tool for agents |
-| `web_search` | Web search integration (requires a [Tavily](https://www.tavily.com) or [Brave](https://brave.com/search/api/) API key. |
+| `send_message` / `receive_message` | Inter-agent messaging |
+| `shared_memory` | Key-value store for multi-agent shared state |
+| `workspace` | Session-scoped artifact management with FTS5 search |
+| `shell_execute` | Sandboxed command execution |
+| `analyze_image` | Vision analysis (work in progress) |
+| `parse_document` | PDF, Excel, CSV extraction (work in progress) |
 
 ### Artifact Management
 
-Session-aware file storage system for agents managing datasets, documents, and generated files:
+Session-scoped file storage with SQLite FTS5 full-text search, automatic metadata extraction, soft/hard delete with 30-day recovery, and archive support. See `loom artifacts --help`.
 
-**Features:**
-- **Session-based organization** - Artifacts automatically namespaced by session with CASCADE cleanup
-- **Full-text search** with SQLite FTS5 + BM25 ranking
-- **Workspace tool** - Unified interface for artifacts (indexed) and scratchpad (ephemeral notes)
-- **Automatic metadata extraction** - Content type, tags, checksums computed on upload
-- **Archive support** - ZIP, TAR, TAR.GZ stored as-is (no auto-extraction for security)
-- **Soft/hard delete** with 30-day recovery window
-- **Shell sandboxing** - Commands restricted to session directories
+### LLM Providers
 
-**Directory Structure:**
-```
-$LOOM_DATA_DIR/artifacts/
-├── sessions/<session-id>/
-│   ├── agent/          # Agent-generated artifacts (indexed)
-│   └── scratchpad/     # Ephemeral notes (not indexed)
-└── user/               # User-uploaded artifacts (no session)
-```
+8 providers, 18+ models with mid-session switching:
 
-**CLI Commands:**
-```bash
-# List artifacts with filtering
-loom artifacts list --source user --tags sql,report
-
-# Search with FTS5 full-text search
-loom artifacts search "sales report" --limit 50
-
-# Show detailed metadata
-loom artifacts show data.csv
-
-# Upload with purpose and tags
-loom artifacts upload ~/data.csv --purpose "Q4 sales" --tags excel,sales
-
-# Download artifact content
-loom artifacts download data.csv --output ~/backup.csv
-
-# Soft delete (30-day recovery)
-loom artifacts delete old-file.csv
-
-# Hard delete (permanent)
-loom artifacts delete old-file.csv --hard
-
-# Show storage statistics
-loom artifacts stats
-```
-
-**Agent Tools:**
-- `workspace` (write/read/list/search/delete) - Session-scoped file management
-- `shell_execute` - Session-aware with path restrictions
-
-**Note:** Artifacts are automatically cleaned up when sessions are deleted (CASCADE).
-
-### MCP Protocol
-
-No-code integration with any MCP server:
-
-```bash
-# Configure an MCP server
-looms config set mcp.servers.github.command /path/to/github-mcp
-looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
-
-# MCP servers auto-start with: looms serve
-```
-
-MCP coverage: 50-92% across modules (adapter 60%, manager 50%, protocol 92%).
+| Provider | Models |
+|----------|--------|
+| **Anthropic** | Claude Sonnet 4.5, Claude 3.5 Sonnet, Claude 3 Opus |
+| **AWS Bedrock** | Claude Sonnet 4.5, Claude Opus 4.5, Claude Haiku 4.5 |
+| **OpenAI** | GPT-4o, GPT-4 Turbo, GPT-4o Mini |
+| **Azure OpenAI** | GPT-4o |
+| **Google Gemini** | Gemini 2.0 Flash, Gemini 1.5 Pro |
+| **Mistral** | Mistral Large, Mistral Small |
+| **Ollama** | Llama 3.1, Llama 3.2, Qwen 2.5 (+ any local model) |
+| **HuggingFace** | Llama 3.1 70B (+ Inference API models) |
 
 ---
 
-## LLM Provider Support
+## TUI
 
-8 providers implemented (in `pkg/llm/`):
+The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracelet/bubbletea) with [Crush](https://github.com/charmbracelet/crush)-inspired aesthetics.
 
-| Provider | Status | Notes |
-|----------|--------|-------|
-| Anthropic | Tested | Claude 3+, vision support |
-| AWS Bedrock | Tested | Claude, Titan models |
-| Ollama | Tested | Local models |
-| OpenAI | Tested | GPT-4, GPT-4V vision |
-| Azure OpenAI | Implemented | Enterprise deployments |
-| Google Gemini | Implemented | Gemini Pro, vision support |
-| Mistral | Implemented | Mistral models |
-| HuggingFace | Implemented | HuggingFace Inference API |
+- **Guide agent** greets you and helps find the right agent for your task
+- **Sidebar** shows Weaver status, MCP servers, loaded patterns, model info
+- **Mid-session model switching** with cost transparency
+- **Multi-agent colors** (6 predefined + golden-ratio generation for 50+ agents)
+- **Streaming** with animated progress, tool execution states, cost tracking
 
----
-
-## TUI Features
-
-Loom includes a feature-rich terminal UI (`loom`) based on [charmbracelet](https://github.com/charmbracelet)'s excellent TUI framework, [bubbletea](https://github.com/charmbracelet/bubbletea) with [Crush](https://github.com/charmbracelet/crush)-inspired visual design and aesthetics:
-
-### Guide-Driven Discovery
-When you launch `loom`, you're greeted by the **Guide** - a built-in agent that helps you discover and select the right agent for your task:
-- **Natural language queries**: "I need help with SQL optimization" or "Show me data analysis agents"
-- **Agent recommendations**: Guide suggests suitable agents based on your needs
-- **Quick access**: `ctrl+e` for agent selection, `ctrl+w` for workflows
-
-### Visual Design
-- **Crush-style theming**: Orange/green color scheme with proper visual hierarchy
-- **Multi-agent support**: Unlimited agents with distinct colors (6 predefined + golden ratio color generation)
-- **Message separators**: Visual dividers between messages for clarity
-- **Responsive layout**: Adapts to terminal size with proper padding
-- **Simplified sidebar**: Focus on essentials (Weaver, MCP Servers, Patterns)
-
-### Keyboard Shortcuts
-- `ctrl+c` - Quit application
-- **`ctrl+e` - Open agent selection modal** (fuzzy search)
-- **`ctrl+w` - Open workflow selection modal**
-- `ctrl+p` or `ctrl+k` - Open command palette
-- `ctrl+o` or `ctrl+s` - Open sessions dialog
-- `ctrl+n` - New session
-- `ctrl+l` - Clear messages
-- `ctrl+u` / `ctrl+d` - Page up/down
-- `pgup` / `pgdn` - Scroll viewport
-
-### Model Switching
-Mid-session model switching without losing conversation context:
-- **17+ models available**: Claude Sonnet 4.5/3.5/Opus, GPT-5/4o, Llama 3.1/3.2, Gemini 2.0 Flash/1.5 Pro, Mistral Large/Small, Qwen 2.5
-- **Context preservation**: Full conversation history maintained when switching
-- **Provider diversity**: Anthropic, Bedrock, Ollama (free), OpenAI, Azure, Gemini, Mistral, HuggingFace
-- **Cost transparency**: Shows pricing per 1M tokens for each model
-
-### Multi-Agent Display
-When multiple agents are present in a conversation:
-- Each agent gets a distinct color (6 predefined colors, then generated)
-- Agent ID shown in message headers: `Agent[agent-1]`
-- Color consistency maintained throughout conversation
-- Supports 50+ agents with golden ratio-based color generation
-
-### Status Indicators
-- Streaming progress with animated indicators
-- Tool execution states (pending, success, error)
-- Cost tracking per message
-- Timestamps for all messages
+**Shortcuts**: `ctrl+e` agents | `ctrl+w` workflows | `ctrl+p` command palette | `ctrl+o` sessions | `ctrl+n` new session
 
 ---
 
 ## Architecture
 
 ```
-+------------------+     +------------------+     +------------------+
-|   Applications   |     |     looms CLI    |     |    loom TUI      |
-|  (your agents)   |     |   (server mgmt)  |     |    (client)      |
-+--------+---------+     +--------+---------+     +--------+---------+
-         |                        |                        |
-         v                        v                        v
-+------------------------------------------------------------------------+
-|                              Loom Framework                              |
-|  +---------------+  +---------------+  +---------------+  +-----------+ |
-|  | Agent Runtime |  | Orchestration |  | Pattern Lib   |  | Shuttle   | |
-|  | (pkg/agent)   |  | (6 patterns)  |  | (94 patterns) |  | (tools)   | |
-|  +---------------+  +---------------+  +---------------+  +-----------+ |
-+------------------------------------------------------------------------+
-         |                        |                        |
-         v                        v                        v
-+------------------+     +------------------+     +------------------+
-|     Promptio     |     |       Hawk       |     |   LLM Providers  |
-|  (prompt mgmt)   |     |  (observability) |     |  (8 providers)   |
-+------------------+     +------------------+     +------------------+
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│   loom (TUI)     │  │  looms (server)  │  │  loom-mcp        │
+│   Interactive     │  │  gRPC + HTTP     │  │  MCP bridge      │
+└────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
+         │                     │                      │
+         └─────────────────────┼──────────────────────┘
+                               v
+┌──────────────────────────────────────────────────────────────┐
+│                      Loom Framework                          │
+│  ┌─────────────┐ ┌──────────────┐ ┌────────────┐ ┌────────┐ │
+│  │ Agent       │ │ Orchestration│ │ Patterns   │ │ Shuttle│ │
+│  │ Runtime     │ │ (9 patterns) │ │ (95 YAML)  │ │ (tools)│ │
+│  └─────────────┘ └──────────────┘ └────────────┘ └────────┘ │
+│  ┌─────────────┐ ┌──────────────┐ ┌────────────┐ ┌────────┐ │
+│  │ Judges      │ │ Learning     │ │ MCP Apps   │ │ Comms  │ │
+│  │ (6 strats)  │ │ (DSPy)       │ │ (4 apps)   │ │ (3-way)│ │
+│  └─────────────┘ └──────────────┘ └────────────┘ └────────┘ │
+└──────────────────────────────────────────────────────────────┘
+         │                     │                      │
+         v                     v                      v
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│   Hawk           │  │  LLM Providers   │  │  SQLite/FTS5     │
+│   (observability)│  │  (8 providers)   │  │  (persistence)   │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-See [Architecture Guide](docs/architecture/) for detailed design.
+**Proto is law**: All APIs defined in `proto/loom/v1/` first. 75 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, and scheduling. HTTP/REST via gRPC-gateway.
+
+---
+
+## Installation
+
+### Quickstart (Recommended)
+
+```bash
+git clone https://github.com/teradata-labs/loom && cd loom
+./quickstart.sh     # macOS/Linux
+# .\quickstart.ps1  # Windows
+```
+
+Installs Go, Buf, builds binaries, installs 95 patterns, and configures your LLM provider interactively. See [QUICKSTART.md](QUICKSTART.md).
+
+### Manual
+
+```bash
+git clone https://github.com/teradata-labs/loom && cd loom
+just install        # Builds binaries to ~/.local/bin/, installs patterns
+```
+
+### From Source
+
+```bash
+go install github.com/teradata-labs/loom/cmd/loom@latest
+go install github.com/teradata-labs/loom/cmd/looms@latest
+just install-patterns   # Patterns required for Weaver
+```
+
+### Package Managers
+
+**macOS** (Homebrew) and **Windows** (Scoop, winget, Chocolatey) formulas are ready in `packaging/` but not yet published to registries. Use quickstart or manual install for now.
+
+### Release Verification
+
+Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installation/](docs/installation/) for verification steps.
 
 ---
 
 ## Documentation
 
-### Quick Links
-
-- [Getting Started Guide](docs/guides/quickstart.md)
-- [Architecture Overview](docs/architecture/)
-- [Features Guide](docs/guides/features.md)
-- [API Reference](https://pkg.go.dev/github.com/teradata-labs/loom)
-
-### Guides
-
-- [Backend Implementation](docs/reference/backend.md) - Implementing `ExecutionBackend`
-- [Pattern System](docs/reference/patterns.md) - Creating and using patterns
-- [HTTP Server & CORS](docs/reference/http-server.md) - REST API, Swagger UI, CORS configuration
-- [Observability Setup](docs/guides/integration/observability.md) - Hawk integration
-- [Prompt Management](docs/guides/integration/prompt-integration.md) - Promptio integration
-- [Streaming](docs/reference/streaming.md) - Real-time progress events
-- [Meta-Agent Usage](docs/guides/meta-agent-usage.md) - Advanced weaver usage
-
-### Examples
-
-- [Examples Overview](./examples/README.md) - YAML-based configuration examples
-- [Configuration Templates](./examples/reference/) - Agent, workflow, and pattern templates
-
----
-
-## Roadmap
-
-Upcoming improvements:
-- Additional pattern library content
-- Performance benchmarks and optimization
-- Extended documentation and tutorials
-- Community feedback incorporation
+| Topic | Link |
+|-------|------|
+| Getting Started | [QUICKSTART.md](QUICKSTART.md) |
+| Architecture | [docs/architecture/](docs/architecture/) |
+| Pattern System | [docs/reference/patterns.md](docs/reference/patterns.md) |
+| Backend Implementation | [docs/reference/backend.md](docs/reference/backend.md) |
+| HTTP Server & CORS | [docs/reference/http-server.md](docs/reference/http-server.md) |
+| Judge System | [docs/guides/judge_cli_guide.md](docs/guides/judge_cli_guide.md) |
+| Learning Agents | [docs/guides/learning-agent-guide.md](docs/guides/learning-agent-guide.md) |
+| Observability (Hawk) | [docs/guides/integration/observability.md](docs/guides/integration/observability.md) |
+| Streaming | [docs/reference/streaming.md](docs/reference/streaming.md) |
+| MCP Apps Guide | [docs/guides/mcp-apps-guide.md](docs/guides/mcp-apps-guide.md) |
+| MCP Apps Reference | [docs/reference/mcp-apps.md](docs/reference/mcp-apps.md) |
+| API Reference | [pkg.go.dev](https://pkg.go.dev/github.com/teradata-labs/loom) |
+| Examples | [examples/](examples/) |
 
 ---
 
 ## Contributing
 
-Contributions welcome! Please:
-
-1. Run `go test -race ./...` before submitting PRs
-2. Follow existing code patterns
+1. Run `go test -tags fts5 -race ./...` before submitting PRs
+2. Follow existing code patterns and proto-first design
 3. Add tests for new features
-4. Update documentation as needed
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for detailed guidelines.
+4. See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
 ## Support
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/teradata-labs/loom/issues)
-- **Security Issues or vulnerabilities**: Contact security@teradata.com.  Please do not post security issues or vulnerabilites in GitHub Issues.
-- **Documentation**: [Browse the docs](docs/)
+- **Issues**: [github.com/teradata-labs/loom/issues](https://github.com/teradata-labs/loom/issues)
+- **Security**: security@teradata.com (do not post security issues in GitHub Issues)
+
+---
+
+## Quality
+
+- 2,594 test functions across 286 test files
+- All tests run with `-race` detector; 0 race conditions
+- CI: proto lint, go vet, gofmt, race detection, fuzz tests, gosec, multi-platform build
 
 ---
 
 ## License
 
-Apache 2.0 - see [LICENSE](./LICENSE)
-
----
+Apache 2.0 - see [LICENSE](LICENSE)
 
 Built by Teradata Labs

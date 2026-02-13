@@ -284,6 +284,184 @@
         ]
       }
     },
+    "/v1/apps": {
+      "get": {
+        "summary": "ListUIApps lists all available UI apps.",
+        "operationId": "LoomService_ListUIApps",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListUIAppsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "post": {
+        "summary": "CreateUIApp creates a dynamic UI app from a declarative spec.",
+        "operationId": "LoomService_CreateUIApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateUIAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "CreateUIAppRequest creates a new dynamic MCP UI app from a declarative spec.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateUIAppRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/apps/component-types": {
+      "get": {
+        "summary": "ListComponentTypes returns the catalog of available component types\nfor building dynamic UI apps.",
+        "operationId": "LoomService_ListComponentTypes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListComponentTypesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/apps/{name}": {
+      "get": {
+        "summary": "GetUIApp retrieves a specific UI app by name, including its HTML content.",
+        "operationId": "LoomService_GetUIApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetUIAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "App short name (e.g., \"data-chart\")",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "delete": {
+        "summary": "DeleteUIApp deletes a dynamic UI app.",
+        "operationId": "LoomService_DeleteUIApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteUIAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "App name to delete",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "put": {
+        "summary": "UpdateUIApp updates an existing dynamic UI app's spec.",
+        "operationId": "LoomService_UpdateUIApp",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpdateUIAppResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "App name to update",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceUpdateUIAppBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/artifacts": {
       "get": {
         "summary": "ListArtifacts lists artifacts with optional filtering.",
@@ -3015,6 +3193,24 @@
       },
       "description": "UpdateScheduledWorkflowRequest updates an existing schedule."
     },
+    "LoomServiceUpdateUIAppBody": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "title": "New display name (empty = keep existing)"
+        },
+        "description": {
+          "type": "string",
+          "title": "New description (empty = keep existing)"
+        },
+        "spec": {
+          "$ref": "#/definitions/v1UIAppSpec",
+          "title": "New spec (required)"
+        }
+      },
+      "description": "UpdateUIAppRequest updates an existing dynamic app's spec."
+    },
     "PolicyOverrideOverrideType": {
       "type": "string",
       "enum": [
@@ -3033,6 +3229,14 @@
         }
       },
       "additionalProperties": {}
+    },
+    "protobufNullValue": {
+      "type": "string",
+      "enum": [
+        "NULL_VALUE"
+      ],
+      "default": "NULL_VALUE",
+      "description": "`NullValue` is a singleton enumeration to represent the null value for the\n`Value` type union.\n\nThe JSON representation for `NullValue` is JSON `null`.\n\n - NULL_VALUE: Null value."
     },
     "rpcStatus": {
       "type": "object",
@@ -3737,6 +3941,32 @@
       },
       "description": "ComponentHealth tracks individual component health."
     },
+    "v1ComponentType": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "title": "Component type name (e.g., \"stat-cards\")"
+        },
+        "description": {
+          "type": "string",
+          "title": "What this component renders"
+        },
+        "category": {
+          "type": "string",
+          "title": "Category: \"display\", \"layout\", \"complex\""
+        },
+        "propsSchema": {
+          "type": "object",
+          "title": "JSON Schema for props (as Struct for flexibility)"
+        },
+        "exampleJson": {
+          "type": "string",
+          "title": "Example JSON usage"
+        }
+      },
+      "description": "ComponentType describes a single component type in the catalog."
+    },
     "v1ConditionalPattern": {
       "type": "object",
       "properties": {
@@ -3890,6 +4120,51 @@
         }
       },
       "description": "CreateSessionRequest creates a session."
+    },
+    "v1CreateUIAppRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "URL-safe short name (e.g., \"revenue-analysis\")"
+        },
+        "displayName": {
+          "type": "string",
+          "title": "Human-readable display name"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description of what this app shows"
+        },
+        "spec": {
+          "$ref": "#/definitions/v1UIAppSpec",
+          "title": "Declarative app specification"
+        },
+        "overwrite": {
+          "type": "boolean",
+          "title": "Overwrite an existing dynamic app with the same name"
+        }
+      },
+      "description": "CreateUIAppRequest creates a new dynamic MCP UI app from a declarative spec."
+    },
+    "v1CreateUIAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/v1UIApp",
+          "title": "Created app metadata"
+        },
+        "content": {
+          "type": "string",
+          "format": "byte",
+          "title": "Compiled HTML content (avoids a second GetUIApp call)"
+        },
+        "overwritten": {
+          "type": "boolean",
+          "title": "Whether an existing app was overwritten"
+        }
+      },
+      "description": "CreateUIAppResponse returns the created app and its compiled HTML."
     },
     "v1CurriculumStep": {
       "type": "object",
@@ -4129,6 +4404,16 @@
         }
       },
       "description": "DeleteSharedMemoryResponse confirms the delete operation."
+    },
+    "v1DeleteUIAppResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean",
+          "title": "Whether the app was deleted"
+        }
+      },
+      "description": "DeleteUIAppResponse confirms deletion."
     },
     "v1EphemeralAgentPolicy": {
       "type": "object",
@@ -4412,6 +4697,21 @@
         }
       },
       "description": "GetSharedMemoryResponse returns the requested value."
+    },
+    "v1GetUIAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/v1UIApp",
+          "title": "App metadata"
+        },
+        "content": {
+          "type": "string",
+          "format": "byte",
+          "title": "HTML content (always populated)"
+        }
+      },
+      "description": "GetUIAppResponse returns the app metadata and HTML content."
     },
     "v1HITLRequestInfo": {
       "type": "object",
@@ -4713,6 +5013,20 @@
       },
       "description": "ListAvailableModelsResponse returns available models."
     },
+    "v1ListComponentTypesResponse": {
+      "type": "object",
+      "properties": {
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ComponentType"
+          },
+          "title": "Available component types"
+        }
+      },
+      "description": "ListComponentTypesResponse returns the full catalog of component types."
+    },
     "v1ListMCPServerToolsResponse": {
       "type": "object",
       "properties": {
@@ -4865,6 +5179,25 @@
         }
       },
       "description": "ListTopicsResponse returns all matching topics."
+    },
+    "v1ListUIAppsResponse": {
+      "type": "object",
+      "properties": {
+        "apps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1UIApp"
+          },
+          "title": "Available UI apps"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count"
+        }
+      },
+      "description": "ListUIAppsResponse returns the list of UI apps."
     },
     "v1ListWorkflowExecutionsResponse": {
       "type": "object",
@@ -7648,6 +7981,104 @@
       },
       "description": "Trace contains execution trace for observability."
     },
+    "v1UIApp": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "Short name identifier (e.g., \"data-chart\")"
+        },
+        "uri": {
+          "type": "string",
+          "title": "Full URI in ui:// scheme (e.g., \"ui://loom/data-chart\")"
+        },
+        "displayName": {
+          "type": "string",
+          "title": "Human-readable display name (e.g., \"Data Chart\")"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description of what this app does"
+        },
+        "mimeType": {
+          "type": "string",
+          "title": "MIME type (typically \"text/html\")"
+        },
+        "prefersBorder": {
+          "type": "boolean",
+          "title": "Whether the app prefers a bordered container"
+        },
+        "dynamic": {
+          "type": "boolean",
+          "title": "Whether the app was dynamically created by an agent (vs embedded)"
+        }
+      },
+      "description": "UIApp represents an interactive HTML application exposed by the MCP server."
+    },
+    "v1UIAppSpec": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "title": "Spec version (currently \"1.0\")"
+        },
+        "title": {
+          "type": "string",
+          "title": "Header title"
+        },
+        "description": {
+          "type": "string",
+          "title": "Subtitle / description shown below the title"
+        },
+        "layout": {
+          "type": "string",
+          "title": "Layout mode: \"stack\" (default), \"grid-2\", \"grid-3\""
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1UIComponent"
+          },
+          "title": "Component tree"
+        },
+        "dataType": {
+          "type": "string",
+          "title": "postMessage type for dynamic updates"
+        },
+        "badge": {
+          "type": "string",
+          "title": "Badge text (default: \"MCP App\")"
+        }
+      },
+      "description": "UIAppSpec is a declarative JSON-based specification for building interactive\nMCP UI apps. Agents generate specs; the server compiles them to HTML."
+    },
+    "v1UIComponent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "title": "Component type discriminator (e.g., \"stat-cards\", \"chart\", \"table\")"
+        },
+        "props": {
+          "type": "object",
+          "description": "Type-specific properties. Uses Struct for extensibility --\nadding a new component type requires only Go validation + JS renderer,\nnot proto changes."
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1UIComponent"
+          },
+          "title": "Nested components (used by layout components: section, tabs)"
+        },
+        "id": {
+          "type": "string",
+          "title": "Optional ID for data-binding targeting (postMessage updates)"
+        }
+      },
+      "description": "UIComponent is a single renderable element in the component tree.\nUses the type/props/children pattern (inspired by json-render)."
+    },
     "v1UnsubscribeRequest": {
       "type": "object",
       "properties": {
@@ -7676,6 +8107,21 @@
         }
       },
       "description": "UnsubscribeResponse confirms unsubscription."
+    },
+    "v1UpdateUIAppResponse": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/v1UIApp",
+          "title": "Updated app metadata"
+        },
+        "content": {
+          "type": "string",
+          "format": "byte",
+          "title": "Compiled HTML content"
+        }
+      },
+      "description": "UpdateUIAppResponse returns the updated app and its compiled HTML."
     },
     "v1UploadArtifactRequest": {
       "type": "object",

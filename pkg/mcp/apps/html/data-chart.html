@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loom Data Chart</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg-primary: #1a1b26;
+    --bg-secondary: #24283b;
+    --bg-hover: #2f3349;
+    --text-primary: #c0caf5;
+    --text-secondary: #565f89;
+    --accent: #7aa2f7;
+    --accent-dim: #3d59a1;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --error: #f7768e;
+    --border: #3b4261;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .header .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+  }
+
+  .chart-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+
+  .chart-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+  }
+
+  .chart-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    font-family: var(--font-mono);
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+
+  .stat-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    flex: 1;
+    min-width: 150px;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+  }
+
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.success { color: var(--success); }
+  .stat-value.warning { color: var(--warning); }
+
+  .data-source {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-top: 16px;
+  }
+
+  canvas {
+    max-height: 400px;
+  }
+
+  /* Data input area for dynamic data loading */
+  .data-input {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 24px;
+    display: none;
+  }
+
+  .data-input.active { display: block; }
+
+  .data-input textarea {
+    width: 100%;
+    min-height: 100px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    resize: vertical;
+  }
+
+  .data-input button {
+    margin-top: 8px;
+    padding: 6px 16px;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Loom Data Chart</h1>
+    <span class="badge">MCP App</span>
+  </div>
+
+  <div id="stats" class="stats-row"></div>
+
+  <div class="chart-container">
+    <div id="chartTitle" class="chart-title">Loading...</div>
+    <div id="chartSubtitle" class="chart-subtitle"></div>
+    <canvas id="mainChart"></canvas>
+  </div>
+
+  <div id="dataSource" class="data-source"></div>
+
+<script>
+// Default data: 3D Geospatial feature usage from acc_ted_con_vw.dbp_featusg_agg_dly
+// Queried via Loom teradata-explorer agent using vantage-mcp:teradata_execute_sql
+const DEFAULT_DATA = {
+  title: "3D Geospatial Feature Usage Over Time",
+  subtitle: "Source: acc_ted_con_vw.dbp_featusg_agg_dly | Agent: teradata-explorer | Tool: vantage-mcp:teradata_execute_sql",
+  labels: [
+    "2020-06","2020-07","2020-09","2020-10","2020-11","2020-12",
+    "2021-01","2021-02","2021-03","2021-04","2021-05",
+    "2022-03","2022-04","2022-05","2022-06","2022-07","2022-08","2022-09","2022-10","2022-12",
+    "2023-01","2023-02","2023-03","2023-04","2023-05","2023-06","2023-07","2023-08","2023-09","2023-10","2023-11","2023-12",
+    "2024-01","2024-02","2024-03","2024-04","2024-05","2024-06","2024-07","2024-08","2024-09","2024-10","2024-11","2024-12",
+    "2025-01","2025-02","2025-03","2025-04","2025-05","2025-06","2025-07","2025-08","2025-09","2025-10","2025-11","2025-12",
+    "2026-01","2026-02"
+  ],
+  values: [
+    906,2,592,1147,1110,851,
+    9213,1410,1054,1020,544,
+    74,1,1,1,5,2,2,10,6,
+    13,11,3,512,1275,4257,6656,6253,3598,2770,4362,5891,
+    5036,7276,3905,3893,45,1601,1409,1300,3063,3747,7657,3314,
+    2977,3349,3211,2630,315,249,227,2251,1711,828,10271,14685,
+    14225,4273
+  ],
+  source: "Teradata (tdprd.td.teradata.com) via Loom gRPC → StreamWeave → teradata-explorer → vantage-mcp:teradata_execute_sql"
+};
+
+function renderChart(data) {
+  // Update title
+  document.getElementById('chartTitle').textContent = data.title || 'Data Chart';
+  document.getElementById('chartSubtitle').textContent = data.subtitle || '';
+  document.getElementById('dataSource').textContent = data.source || '';
+
+  // Compute stats
+  const values = data.values;
+  const total = values.reduce((a, b) => a + b, 0);
+  const max = Math.max(...values);
+  const maxIdx = values.indexOf(max);
+  const recent = values.slice(-3).reduce((a, b) => a + b, 0);
+
+  const statsContainer = document.getElementById('stats');
+  // Clear existing stats content
+  statsContainer.innerHTML = '';
+
+  // Total Requests card
+  const totalCard = document.createElement('div');
+  totalCard.className = 'stat-card';
+  const totalLabel = document.createElement('div');
+  totalLabel.className = 'stat-label';
+  totalLabel.textContent = 'Total Requests';
+  const totalValue = document.createElement('div');
+  totalValue.className = 'stat-value accent';
+  totalValue.textContent = total.toLocaleString();
+  totalCard.appendChild(totalLabel);
+  totalCard.appendChild(totalValue);
+  statsContainer.appendChild(totalCard);
+
+  // Peak Month card
+  const peakCard = document.createElement('div');
+  peakCard.className = 'stat-card';
+  const peakLabel = document.createElement('div');
+  peakLabel.className = 'stat-label';
+  peakLabel.textContent = 'Peak Month';
+  const peakValue = document.createElement('div');
+  peakValue.className = 'stat-value warning';
+  peakValue.textContent = max.toLocaleString();
+  const peakMonthLabel = document.createElement('div');
+  peakMonthLabel.className = 'stat-label';
+  peakMonthLabel.style.marginTop = '4px';
+  peakMonthLabel.textContent = data.labels[maxIdx];
+  peakCard.appendChild(peakLabel);
+  peakCard.appendChild(peakValue);
+  peakCard.appendChild(peakMonthLabel);
+  statsContainer.appendChild(peakCard);
+
+  // Last 3 Months card
+  const recentCard = document.createElement('div');
+  recentCard.className = 'stat-card';
+  const recentLabel = document.createElement('div');
+  recentLabel.className = 'stat-label';
+  recentLabel.textContent = 'Last 3 Months';
+  const recentValue = document.createElement('div');
+  recentValue.className = 'stat-value success';
+  recentValue.textContent = recent.toLocaleString();
+  recentCard.appendChild(recentLabel);
+  recentCard.appendChild(recentValue);
+  statsContainer.appendChild(recentCard);
+
+  // Date Range card
+  const rangeCard = document.createElement('div');
+  rangeCard.className = 'stat-card';
+  const rangeLabel = document.createElement('div');
+  rangeLabel.className = 'stat-label';
+  rangeLabel.textContent = 'Date Range';
+  const rangeValue = document.createElement('div');
+  rangeValue.className = 'stat-value accent';
+  rangeValue.style.fontSize = '16px';
+  rangeValue.textContent = data.labels[0] + ' to ' + data.labels[data.labels.length - 1];
+  rangeCard.appendChild(rangeLabel);
+  rangeCard.appendChild(rangeValue);
+  statsContainer.appendChild(rangeCard);
+
+  // Create chart
+  const ctx = document.getElementById('mainChart').getContext('2d');
+
+  // Gradient fill
+  const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+  gradient.addColorStop(0, 'rgba(122, 162, 247, 0.4)');
+  gradient.addColorStop(1, 'rgba(122, 162, 247, 0.02)');
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.labels,
+      datasets: [{
+        label: 'Monthly Requests',
+        data: data.values,
+        borderColor: '#7aa2f7',
+        backgroundColor: gradient,
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3,
+        pointHoverRadius: 6,
+        pointBackgroundColor: '#7aa2f7',
+        pointBorderColor: '#1a1b26',
+        pointBorderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        intersect: false,
+        mode: 'index'
+      },
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          backgroundColor: '#24283b',
+          titleColor: '#c0caf5',
+          bodyColor: '#c0caf5',
+          borderColor: '#3b4261',
+          borderWidth: 1,
+          padding: 12,
+          titleFont: { family: "'SF Mono', monospace", size: 12 },
+          bodyFont: { family: "'SF Mono', monospace", size: 13 },
+          callbacks: {
+            label: function(context) {
+              return `${context.parsed.y.toLocaleString()} requests`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(59, 66, 97, 0.5)' },
+          ticks: {
+            color: '#565f89',
+            font: { family: "'SF Mono', monospace", size: 10 },
+            maxRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: 20
+          }
+        },
+        y: {
+          grid: { color: 'rgba(59, 66, 97, 0.5)' },
+          ticks: {
+            color: '#565f89',
+            font: { family: "'SF Mono', monospace", size: 11 },
+            callback: function(value) {
+              return value.toLocaleString();
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+// Listen for postMessage data from MCP client
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'chart-data') {
+    renderChart(event.data.payload);
+  }
+});
+
+// Render default data on load
+renderChart(DEFAULT_DATA);
+</script>
+</body>
+</html>

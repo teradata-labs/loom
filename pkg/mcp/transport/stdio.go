@@ -78,22 +78,22 @@ func NewStdioTransport(config StdioConfig) (*StdioTransport, error) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stdin.Close()
+		_ = stdin.Close()
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		stdin.Close()
-		stdout.Close()
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	// Start command
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
-		stderr.Close()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
 
@@ -234,7 +234,7 @@ func (s *StdioTransport) Close() error {
 	s.logger.Info("closing MCP server", zap.Int("pid", s.cmd.Process.Pid))
 
 	// Close stdin to signal server to shutdown
-	s.stdin.Close()
+	_ = s.stdin.Close()
 
 	// Wait for process to exit (with timeout)
 	done := make(chan error, 1)
@@ -259,8 +259,8 @@ func (s *StdioTransport) Close() error {
 		<-done
 	}
 
-	s.stdout.Close()
-	s.stderr.Close()
+	_ = s.stdout.Close()
+	_ = s.stderr.Close()
 
 	return nil
 }

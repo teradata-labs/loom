@@ -256,6 +256,94 @@ func TestMultiAgentServer_WeaveEmptyQuery(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
+func TestMultiAgentServer_WeaveRoutesToSessionOwnerAgent(t *testing.T) {
+	// Bug fix test: When Weave is called with session_id but no agent_id,
+	// it should route to the agent that owns the session, NOT the default agent.
+	backend1 := &mockBackend{}
+	backend2 := &mockBackend{}
+	llm := &mockLLMForMultiAgent{}
+
+	// agent1 is the default, agent2 is the non-default
+	agent1 := agent.NewAgent(backend1, llm, agent.WithConfig(&agent.Config{
+		Name: "default-agent",
+	}))
+	agent2 := agent.NewAgent(backend2, llm, agent.WithConfig(&agent.Config{
+		Name: "specialized-agent",
+	}))
+
+	agents := map[string]*agent.Agent{
+		"default-agent":     agent1,
+		"specialized-agent": agent2,
+	}
+
+	server := NewMultiAgentServer(agents, nil)
+	// Ensure agent1 is the default
+	server.defaultAgentID = agent1.GetID()
+
+	ctx := context.Background()
+
+	// First, create a session on agent2 by weaving with agent2's ID explicitly
+	req1 := &loomv1.WeaveRequest{
+		Query:   "Hello from specialized agent",
+		AgentId: agent2.GetID(),
+	}
+	resp1, err := server.Weave(ctx, req1)
+	require.NoError(t, err)
+	require.NotNil(t, resp1)
+	sessionID := resp1.SessionId
+	require.NotEmpty(t, sessionID)
+	assert.Equal(t, agent2.GetID(), resp1.AgentId, "first weave should use agent2")
+
+	// Now weave with ONLY session_id (no agent_id). This should route to agent2 (session owner),
+	// NOT the default agent (agent1).
+	req2 := &loomv1.WeaveRequest{
+		Query:     "Follow-up question",
+		SessionId: sessionID,
+		// AgentId intentionally empty
+	}
+	resp2, err := server.Weave(ctx, req2)
+	require.NoError(t, err)
+	require.NotNil(t, resp2)
+	assert.Equal(t, agent2.GetID(), resp2.AgentId,
+		"weave with session_id only must route to the session's owner agent, not the default")
+	assert.Equal(t, sessionID, resp2.SessionId)
+}
+
+func TestMultiAgentServer_FindAgentBySession(t *testing.T) {
+	backend1 := &mockBackend{}
+	backend2 := &mockBackend{}
+	llm := &mockLLMForMultiAgent{}
+
+	agent1 := agent.NewAgent(backend1, llm)
+	agent2 := agent.NewAgent(backend2, llm)
+
+	agents := map[string]*agent.Agent{
+		"agent1": agent1,
+		"agent2": agent2,
+	}
+
+	server := NewMultiAgentServer(agents, nil)
+	ctx := context.Background()
+
+	// Create a session on agent2
+	resp, err := server.Weave(ctx, &loomv1.WeaveRequest{
+		Query:   "test",
+		AgentId: agent2.GetID(),
+	})
+	require.NoError(t, err)
+	sessionID := resp.SessionId
+
+	// findAgentBySession should find agent2
+	found, foundID, ok := server.findAgentBySession(sessionID)
+	assert.True(t, ok, "should find the session's agent")
+	assert.Equal(t, agent2.GetID(), foundID)
+	assert.NotNil(t, found)
+
+	// Non-existent session should return false
+	_, _, ok = server.findAgentBySession("nonexistent-session")
+	assert.False(t, ok, "should not find agent for nonexistent session")
+}
+
 func TestMultiAgentServer_ConcurrentAccess(t *testing.T) {
 	backend := &mockBackend{}
 	llm := &mockLLMForMultiAgent{}

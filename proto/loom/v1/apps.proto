@@ -1,0 +1,207 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// UIApp represents an interactive HTML application exposed by the MCP server.
+message UIApp {
+  // Short name identifier (e.g., "data-chart")
+  string name = 1;
+
+  // Full URI in ui:// scheme (e.g., "ui://loom/data-chart")
+  string uri = 2;
+
+  // Human-readable display name (e.g., "Data Chart")
+  string display_name = 3;
+
+  // Description of what this app does
+  string description = 4;
+
+  // MIME type (typically "text/html")
+  string mime_type = 5;
+
+  // Whether the app prefers a bordered container
+  bool prefers_border = 6;
+
+  // Whether the app was dynamically created by an agent (vs embedded)
+  bool dynamic = 7;
+}
+
+// ListUIAppsRequest lists all available UI apps.
+message ListUIAppsRequest {}
+
+// ListUIAppsResponse returns the list of UI apps.
+message ListUIAppsResponse {
+  // Available UI apps
+  repeated UIApp apps = 1;
+
+  // Total count
+  int32 total_count = 2;
+}
+
+// GetUIAppRequest retrieves a specific UI app by name.
+message GetUIAppRequest {
+  // App short name (e.g., "data-chart")
+  string name = 1;
+}
+
+// GetUIAppResponse returns the app metadata and HTML content.
+message GetUIAppResponse {
+  // App metadata
+  UIApp app = 1;
+
+  // HTML content (always populated)
+  bytes content = 2;
+}
+
+// ============================================================================
+// Dynamic App Creation
+// ============================================================================
+
+// UIAppSpec is a declarative JSON-based specification for building interactive
+// MCP UI apps. Agents generate specs; the server compiles them to HTML.
+message UIAppSpec {
+  // Spec version (currently "1.0")
+  string version = 1;
+
+  // Header title
+  string title = 2;
+
+  // Subtitle / description shown below the title
+  string description = 3;
+
+  // Layout mode: "stack" (default), "grid-2", "grid-3"
+  string layout = 4;
+
+  // Component tree
+  repeated UIComponent components = 5;
+
+  // postMessage type for dynamic updates
+  string data_type = 6;
+
+  // Badge text (default: "MCP App")
+  string badge = 7;
+}
+
+// UIComponent is a single renderable element in the component tree.
+// Uses the type/props/children pattern (inspired by json-render).
+message UIComponent {
+  // Component type discriminator (e.g., "stat-cards", "chart", "table")
+  string type = 1;
+
+  // Type-specific properties. Uses Struct for extensibility --
+  // adding a new component type requires only Go validation + JS renderer,
+  // not proto changes.
+  google.protobuf.Struct props = 2;
+
+  // Nested components (used by layout components: section, tabs)
+  repeated UIComponent children = 3;
+
+  // Optional ID for data-binding targeting (postMessage updates)
+  string id = 4;
+}
+
+// CreateUIAppRequest creates a new dynamic MCP UI app from a declarative spec.
+message CreateUIAppRequest {
+  // URL-safe short name (e.g., "revenue-analysis")
+  string name = 1;
+
+  // Human-readable display name
+  string display_name = 2;
+
+  // Description of what this app shows
+  string description = 3;
+
+  // Declarative app specification
+  UIAppSpec spec = 4;
+
+  // Overwrite an existing dynamic app with the same name
+  bool overwrite = 5;
+}
+
+// CreateUIAppResponse returns the created app and its compiled HTML.
+message CreateUIAppResponse {
+  // Created app metadata
+  UIApp app = 1;
+
+  // Compiled HTML content (avoids a second GetUIApp call)
+  bytes content = 2;
+
+  // Whether an existing app was overwritten
+  bool overwritten = 3;
+}
+
+// UpdateUIAppRequest updates an existing dynamic app's spec.
+message UpdateUIAppRequest {
+  // App name to update
+  string name = 1;
+
+  // New display name (empty = keep existing)
+  string display_name = 2;
+
+  // New description (empty = keep existing)
+  string description = 3;
+
+  // New spec (required)
+  UIAppSpec spec = 4;
+}
+
+// UpdateUIAppResponse returns the updated app and its compiled HTML.
+message UpdateUIAppResponse {
+  // Updated app metadata
+  UIApp app = 1;
+
+  // Compiled HTML content
+  bytes content = 2;
+}
+
+// DeleteUIAppRequest deletes a dynamic app.
+message DeleteUIAppRequest {
+  // App name to delete
+  string name = 1;
+}
+
+// DeleteUIAppResponse confirms deletion.
+message DeleteUIAppResponse {
+  // Whether the app was deleted
+  bool deleted = 1;
+}
+
+// ============================================================================
+// Component Catalog (Discovery)
+// ============================================================================
+
+// ListComponentTypesRequest requests the catalog of available component types.
+message ListComponentTypesRequest {}
+
+// ComponentType describes a single component type in the catalog.
+message ComponentType {
+  // Component type name (e.g., "stat-cards")
+  string type = 1;
+
+  // What this component renders
+  string description = 2;
+
+  // Category: "display", "layout", "complex"
+  string category = 3;
+
+  // JSON Schema for props (as Struct for flexibility)
+  google.protobuf.Struct props_schema = 4;
+
+  // Example JSON usage
+  string example_json = 5;
+}
+
+// ListComponentTypesResponse returns the full catalog of component types.
+message ListComponentTypesResponse {
+  // Available component types
+  repeated ComponentType types = 1;
+}

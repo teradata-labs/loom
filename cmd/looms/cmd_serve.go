@@ -46,6 +46,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -932,9 +933,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// Create registry to load meta-agent generated configs
+	// MCPManager is required for agents that declare MCP tools in their config
+	var mcpMgrForRegistry *manager.Manager
+	if mcpManager != nil {
+		mcpMgrForRegistry = mcpManager.GetManager()
+	}
 	registry, err = agent.NewRegistry(agent.RegistryConfig{
 		ConfigDir:    configDir,
 		DBPath:       dbPath,
+		MCPManager:   mcpMgrForRegistry,
 		LLMProvider:  llmProvider,
 		Logger:       logger,
 		Tracer:       tracer,
@@ -1143,6 +1150,10 @@ func runServe(cmd *cobra.Command, args []string) {
 							"group_by_query":                  true, // Presentation tool
 							"generate_visualization":          true, // Visualization tool
 							"generate_workflow_visualization": true, // Visualization tool
+							"create_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 						}
 						if skipTools[toolName] {
 							continue
@@ -1371,6 +1382,25 @@ func runServe(cmd *cobra.Command, args []string) {
 	if tracer != nil {
 		loomService.SetTracer(tracer)
 		logger.Info("Observability tracer configured on server for workflow tracing")
+	}
+
+	// Register embedded MCP UI apps for gRPC access (ListUIApps/GetUIApp RPCs)
+	uiRegistry := apps.NewUIResourceRegistry()
+	if err := apps.RegisterEmbeddedApps(uiRegistry); err != nil {
+		logger.Error("Failed to register some embedded UI apps", zap.Error(err))
+	}
+	if uiRegistry.Count() > 0 {
+		loomService.SetAppProvider(uiRegistry)
+		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
+	// Wire up the UI app compiler for dynamic app creation (CreateUIApp/UpdateUIApp RPCs)
+	appCompiler, err := apps.NewCompiler()
+	if err != nil {
+		logger.Error("Failed to create UI app compiler", zap.Error(err))
+	} else {
+		loomService.SetAppCompiler(appCompiler)
+		logger.Info("UI app compiler ready for dynamic app creation")
 	}
 
 	// Initialize tri-modal communication system
@@ -1663,9 +1693,28 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Workflow scheduler initialization complete")
 
+	// Always set server config so GetServerConfig RPC returns network info.
+	// The TUI "Browse Apps" command uses Network.HttpAddress to build app URLs.
+	{
+		grpcAddr := fmt.Sprintf("%s:%d", config.Server.Host, config.Server.Port)
+		httpAddr := ""
+		httpEnabled := config.Server.HTTPPort > 0
+		if httpEnabled {
+			httpAddr = fmt.Sprintf("%s:%d", config.Server.Host, config.Server.HTTPPort)
+		}
+		loomService.SetServerConfig(&loomv1.ServerConfig{
+			Name: "looms",
+			Network: &loomv1.NetworkConfig{
+				GrpcAddress: grpcAddr,
+				HttpAddress: httpAddr,
+				HttpEnabled: httpEnabled,
+			},
+		})
+	}
+
 	// Configure TLS if enabled
 	if tlsManager != nil {
-		// Build ServerConfig proto message with TLS config
+		// Build TLS proto config
 		tlsProtoConfig := &loomv1.TLSConfig{
 			Enabled: true,
 			Mode:    config.Server.TLS.Mode,
@@ -1699,12 +1748,9 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		serverConfig := &loomv1.ServerConfig{
-			Name: "looms",
-			Tls:  tlsProtoConfig,
-		}
-
-		loomService.ConfigureTLS(tlsManager, serverConfig)
+		loomService.ConfigureTLS(tlsManager, &loomv1.ServerConfig{
+			Tls: tlsProtoConfig,
+		})
 	}
 
 	// Configure shared memory if enabled
@@ -1834,6 +1880,18 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Info("  Communication tools registered",
 				zap.String("agent", agentID),
 				zap.Int("num_tools", len(commTools)))
+		}
+	}
+
+	// Register UI app tools with all loaded agents (auto-registered like communication tools)
+	if appCompiler != nil && uiRegistry != nil {
+		logger.Info("Registering UI app tools with loaded agents...")
+		for agentID, ag := range agents {
+			uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
+			ag.RegisterTools(uiAppTools...)
+			logger.Info("  UI app tools registered",
+				zap.String("agent", agentID),
+				zap.Int("num_tools", len(uiAppTools)))
 		}
 	}
 
@@ -2057,6 +2115,13 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Info("  Enabled dynamic tool registration")
 			}
 
+			// Register UI app tools for hot-reloaded agents
+			if appCompiler != nil && uiRegistry != nil {
+				uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
+				newAgent.RegisterTools(uiAppTools...)
+				logger.Info("  UI app tools registered", zap.Int("num_tools", len(uiAppTools)))
+			}
+
 			// Check if agent already exists in server (by GUID)
 			existingAgents := loomService.GetAgentIDs()
 			agentExists := false
@@ -2161,6 +2226,13 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 
 		httpSrv = server.NewHTTPServerWithCORS(loomService, httpAddr, addr, logger, corsConfig)
+
+		// Wire UI apps to HTTP endpoint for browser access
+		if uiRegistry != nil && uiRegistry.Count() > 0 {
+			httpSrv.SetAppHTMLProvider(uiRegistry)
+			logger.Info("UI apps available via HTTP",
+				zap.String("url", fmt.Sprintf("http://%s/apps/", httpAddr)))
+		}
 
 		go func() {
 			logger.Info("Starting HTTP/SSE server", zap.String("address", httpAddr))

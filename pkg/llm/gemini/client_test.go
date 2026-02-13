@@ -451,7 +451,8 @@ func TestConvertTools(t *testing.T) {
 	}
 
 	tools := []shuttle.Tool{mockTool}
-	declarations := convertTools(tools)
+	nameMap := make(map[string]string)
+	declarations := convertTools(tools, nameMap)
 
 	require.Len(t, declarations, 1)
 	assert.Equal(t, "get_weather", declarations[0].Name)

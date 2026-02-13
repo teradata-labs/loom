@@ -62,6 +62,11 @@ type Client struct {
 
 	// Rate limiter
 	rateLimiter *llm.RateLimiter
+
+	// Tool name mapping: sanitized name → original name
+	// Azure OpenAI requires tool names to match ^[a-zA-Z0-9_.\-]+$
+	// MCP tools use colon namespacing (e.g., "vantage-mcp:execute_sql")
+	toolNameMap map[string]string
 }
 
 // Config holds configuration for the Azure OpenAI client.
@@ -172,8 +177,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Convert messages to OpenAI format (Azure uses same structure)
 	apiMessages := convertMessages(messages)
 
-	// Convert tools to OpenAI format (Azure uses same structure)
-	apiTools := convertTools(tools)
+	// Convert tools to OpenAI format with name sanitization
+	// Azure OpenAI requires names matching ^[a-zA-Z0-9_.\-]+$ (no colons)
+	c.toolNameMap = make(map[string]string)
+	apiTools := convertTools(tools, c.toolNameMap)
 
 	// Sanitize tool schemas to remove problematic fields
 	// Azure OpenAI is strict about: empty arrays, empty defaults, etc.
@@ -205,7 +212,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		return nil, fmt.Errorf("API call failed: %w", err)
 	}
 
-	// Convert response (same format as OpenAI)
+	// Convert response with tool name reverse mapping
 	return c.convertResponse(resp), nil
 }
 
@@ -327,7 +334,7 @@ func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.
 			}
 		}
 
-		// Extract tool calls
+		// Extract tool calls with reverse name mapping
 		for _, tc := range choice.Message.ToolCalls {
 			// Parse arguments JSON string back to map
 			var input map[string]interface{}
@@ -338,9 +345,12 @@ func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.
 				}
 			}
 
+			// Map sanitized name back to original name
+			toolName := llm.ReverseToolName(c.toolNameMap, tc.Function.Name)
+
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    tc.ID,
-				Name:  tc.Function.Name,
+				Name:  toolName,
 				Input: input,
 			})
 		}
@@ -511,7 +521,7 @@ func convertMessages(messages []llmtypes.Message) []openai.ChatMessage {
 						ID:   tc.ID,
 						Type: "function",
 						Function: openai.FunctionCall{
-							Name:      tc.Name,
+							Name:      llm.SanitizeToolName(tc.Name),
 							Arguments: string(argsJSON),
 						},
 					})
@@ -533,14 +543,22 @@ func convertMessages(messages []llmtypes.Message) []openai.ChatMessage {
 	return apiMessages
 }
 
-func convertTools(tools []shuttle.Tool) []openai.Tool {
+func convertTools(tools []shuttle.Tool, nameMap map[string]string) []openai.Tool {
 	var apiTools []openai.Tool
 
 	for _, tool := range tools {
+		originalName := tool.Name()
+		sanitizedName := llm.SanitizeToolName(originalName)
+
+		// Store mapping for reverse lookup in responses
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
+		}
+
 		apiTool := openai.Tool{
 			Type: "function",
 			Function: openai.FunctionDef{
-				Name:        tool.Name(),
+				Name:        sanitizedName,
 				Description: tool.Description(),
 			},
 		}
@@ -615,7 +633,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Build request (same as non-streaming)
 	apiMessages := convertMessages(messages)
-	apiTools := convertTools(tools)
+	c.toolNameMap = make(map[string]string)
+	apiTools := convertTools(tools, c.toolNameMap)
 
 	// Sanitize tool schemas (same as non-streaming)
 	apiTools = SanitizeToolSchemas(apiTools)
@@ -737,9 +756,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {
+						// Map sanitized name back to original
+						toolName := llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
 						toolCallMap[idx] = &llmtypes.ToolCall{
 							ID:    tcDelta.ID,
-							Name:  tcDelta.Function.Name,
+							Name:  toolName,
 							Input: make(map[string]interface{}),
 						}
 					}

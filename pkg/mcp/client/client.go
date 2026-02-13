@@ -36,6 +36,7 @@ type Client struct {
 
 	// State
 	initialized        bool
+	initializing       bool
 	protocolVersion    string
 	serverInfo         protocol.Implementation
 	serverCapabilities protocol.ServerCapabilities
@@ -130,7 +131,21 @@ func (c *Client) Initialize(ctx context.Context, clientInfo protocol.Implementat
 		c.mu.Unlock()
 		return fmt.Errorf("already initialized")
 	}
+	if c.initializing {
+		c.mu.Unlock()
+		return fmt.Errorf("initialization already in progress")
+	}
+	c.initializing = true
 	c.mu.Unlock()
+
+	// If initialization fails, clear the initializing flag so it can be retried
+	defer func() {
+		c.mu.Lock()
+		if !c.initialized {
+			c.initializing = false
+		}
+		c.mu.Unlock()
+	}()
 
 	// Build capabilities
 	caps := protocol.ClientCapabilities{}
@@ -441,7 +456,11 @@ func (c *Client) handleRequest(req *protocol.Request) {
 	}
 
 	// Send response
-	respJSON, _ := json.Marshal(resp)
+	respJSON, marshalErr := json.Marshal(resp)
+	if marshalErr != nil {
+		c.logger.Error("failed to marshal response", zap.String("method", req.Method), zap.Error(marshalErr))
+		return
+	}
 	if err := c.transport.Send(ctx, respJSON); err != nil {
 		c.logger.Error("failed to send response", zap.Error(err))
 	}
@@ -470,7 +489,11 @@ func (c *Client) handleSamplingRequest(ctx context.Context, req *protocol.Reques
 	}
 
 	// Create response
-	resultJSON, _ := json.Marshal(result)
+	resultJSON, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		c.logger.Error("failed to marshal sampling result", zap.Error(marshalErr))
+		return c.createErrorResponse(req.ID, protocol.InternalError, "failed to marshal sampling result", marshalErr), nil
+	}
 	return &protocol.Response{
 		JSONRPC: protocol.JSONRPCVersion,
 		ID:      req.ID,

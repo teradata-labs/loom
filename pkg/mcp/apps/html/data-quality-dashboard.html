@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loom Data Quality Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg-primary: #1a1b26;
+    --bg-secondary: #24283b;
+    --bg-hover: #2f3349;
+    --text-primary: #c0caf5;
+    --text-secondary: #565f89;
+    --text-muted: #414868;
+    --accent: #7aa2f7;
+    --accent-dim: #3d59a1;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --error: #f7768e;
+    --border: #3b4261;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 24px;
+    min-height: 100vh;
+    overflow-y: auto;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .header .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+  }
+
+  .chart-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 20px;
+    font-family: var(--font-mono);
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+
+  .stat-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    flex: 1;
+    min-width: 150px;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+  }
+
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.success { color: var(--success); }
+  .stat-value.warning { color: var(--warning); }
+  .stat-value.error { color: var(--error); }
+
+  .section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+
+  .section-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+  }
+
+  .section-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+
+  /* Table selector */
+  .table-selector {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+
+  .table-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .table-btn:hover { background: var(--bg-hover); }
+  .table-btn.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .table-btn-meta {
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
+  /* Completeness bars */
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  .bar-label {
+    width: 160px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+  }
+
+  .bar-track {
+    flex: 1;
+    height: 20px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+  }
+
+  .bar-pct {
+    width: 60px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* Heatmap */
+  .heatmap-container {
+    overflow-x: auto;
+  }
+
+  .heatmap-grid {
+    display: inline-grid;
+    gap: 2px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .heatmap-cell {
+    min-width: 80px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .heatmap-cell:hover { opacity: 0.8; }
+
+  .heatmap-header {
+    font-size: 10px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 80px;
+    height: 32px;
+    writing-mode: horizontal-tb;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .heatmap-row-label {
+    min-width: 100px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-primary);
+    padding-right: 8px;
+    justify-content: flex-end;
+  }
+
+  /* Value distribution mini chart */
+  .value-dist {
+    margin-bottom: 16px;
+  }
+
+  .value-dist-title {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+
+  .value-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 3px;
+  }
+
+  .value-bar-label {
+    width: 120px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+  }
+
+  .value-bar-track {
+    flex: 1;
+    height: 14px;
+    background: var(--bg-primary);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .value-bar-fill {
+    height: 100%;
+    background: var(--accent-dim);
+    border-radius: 3px;
+  }
+
+  .value-bar-count {
+    width: 80px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  /* Column detail panel */
+  .detail-panel {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+    display: none;
+  }
+
+  .detail-panel.active { display: block; }
+
+  .detail-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
+  }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .detail-item {
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    padding: 10px;
+  }
+
+  .detail-item-label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+
+  .detail-item-value {
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
+
+  /* Metric tabs */
+  .metric-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+
+  .metric-tab {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 4px 4px 0 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .metric-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .metric-tab.active { color: var(--accent); background: var(--accent-dim); }
+
+  .metric-content { display: none; }
+  .metric-content.active { display: block; }
+
+  .chart-canvas-wrap {
+    max-height: 300px;
+    position: relative;
+  }
+
+  canvas { max-height: 300px; }
+
+  .data-source {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-top: 16px;
+  }
+
+  .legend-row {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Loom Data Quality Dashboard</h1>
+    <span class="badge">MCP App</span>
+  </div>
+  <div id="subtitle" class="chart-subtitle"></div>
+  <div id="stats" class="stats-row"></div>
+  <div id="table-selector" class="table-selector"></div>
+
+  <div id="metrics-section" class="section" style="display:none">
+    <div class="section-title" id="metrics-title">Quality Metrics</div>
+    <div class="metric-tabs" id="metric-tabs"></div>
+    <div id="metric-panels"></div>
+    <div id="detail-panel" class="detail-panel"></div>
+  </div>
+
+  <div id="heatmap-section" class="section" style="display:none">
+    <div class="section-title">Missing Values Heatmap</div>
+    <div class="section-subtitle">Cell color indicates percentage of null values per column</div>
+    <div class="legend-row" id="heatmap-legend"></div>
+    <div class="heatmap-container" id="heatmap-container" style="margin-top:12px"></div>
+  </div>
+
+  <div id="dataSource" class="data-source"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ---- MCP postMessage protocol (TOFU) ----
+  var requestId = 0;
+  var pending = new Map();
+  var trustedOrigin = null;
+
+  function sendMCPRequest(method, params) {
+    return new Promise(function(resolve, reject) {
+      var id = ++requestId;
+      pending.set(id, { resolve: resolve, reject: reject });
+      var targetOrigin = trustedOrigin || '*';
+      window.parent.postMessage({
+        jsonrpc: '2.0', id: id, method: method, params: params || {}
+      }, targetOrigin);
+      setTimeout(function() {
+        if (pending.has(id)) { pending.delete(id); reject(new Error('Request timed out: ' + method)); }
+      }, 30000);
+    });
+  }
+
+  window.addEventListener('message', function(event) {
+    if (trustedOrigin && event.origin !== trustedOrigin) return;
+    var data = event.data;
+    if (!data || typeof data !== 'object') return;
+
+    // Handle dynamic quality data input
+    if (data.type === 'quality-data' && data.payload) {
+      renderDashboard(data.payload);
+      return;
+    }
+
+    if (data.jsonrpc !== '2.0') return;
+
+    if (typeof data.id === 'number' && pending.has(data.id)) {
+      if (!trustedOrigin && event.origin) trustedOrigin = event.origin;
+      var handler = pending.get(data.id);
+      pending.delete(data.id);
+      if (data.error) handler.reject(new Error(data.error.message || 'Unknown error'));
+      else handler.resolve(data.result);
+      return;
+    }
+    if (typeof data.method === 'string' && data.method.startsWith('ui/notifications/')) {
+      if (data.method === 'ui/notifications/host-context-changed') handleThemeChange(data.params);
+    }
+  });
+
+  function handleThemeChange(params) {
+    if (!params || !params.theme) return;
+    var root = document.documentElement;
+    if (params.theme === 'light') {
+      root.style.setProperty('--bg-primary', '#ffffff');
+      root.style.setProperty('--bg-secondary', '#f5f5f5');
+      root.style.setProperty('--bg-hover', '#eeeeee');
+      root.style.setProperty('--text-primary', '#1a1a2e');
+      root.style.setProperty('--text-secondary', '#6b7280');
+      root.style.setProperty('--text-muted', '#9ca3af');
+      root.style.setProperty('--border', '#e5e7eb');
+    }
+  }
+
+  // ---- Default data ----
+  var DEFAULT_DATA = {
+    title: "Data Quality: SALES Database",
+    subtitle: "Source: Teradata (tdprd.td.teradata.com) | Analyzed: 2026-02-12",
+    database: "SALES",
+    tables: [
+      {
+        name: "customers", rowCount: 2450000,
+        columns: [
+          { name: "customer_id", type: "INTEGER", nullCount: 0, distinctCount: 2450000, totalRows: 2450000, min: "1", max: "2450000", mean: "1225000", stdDev: "707107", topValues: [{"value": "various", "count": 1}] },
+          { name: "customer_name", type: "VARCHAR(200)", nullCount: 12, distinctCount: 2389000, totalRows: 2450000, topValues: [{"value": "John Smith", "count": 342}, {"value": "Maria Garcia", "count": 287}, {"value": "James Johnson", "count": 265}, {"value": "Robert Williams", "count": 248}, {"value": "Jennifer Brown", "count": 231}] },
+          { name: "email", type: "VARCHAR(255)", nullCount: 45230, distinctCount: 2404770, totalRows: 2450000, topValues: [{"value": "null", "count": 45230}, {"value": "j.smith@example.com", "count": 12}, {"value": "m.garcia@email.com", "count": 8}] },
+          { name: "phone", type: "VARCHAR(20)", nullCount: 312450, distinctCount: 2100000, totalRows: 2450000, topValues: [{"value": "null", "count": 312450}, {"value": "555-0100", "count": 23}, {"value": "555-0101", "count": 19}] },
+          { name: "created_date", type: "DATE", nullCount: 0, distinctCount: 3650, totalRows: 2450000, min: "2014-01-01", max: "2026-02-12" },
+          { name: "status", type: "CHAR(1)", nullCount: 0, distinctCount: 3, totalRows: 2450000, topValues: [{"value": "A", "count": 2100000}, {"value": "I", "count": 320000}, {"value": "S", "count": 30000}] },
+          { name: "region", type: "VARCHAR(50)", nullCount: 89000, distinctCount: 12, totalRows: 2450000, topValues: [{"value": "North America", "count": 890000}, {"value": "Europe", "count": 650000}, {"value": "Asia Pacific", "count": 520000}, {"value": "Latin America", "count": 210000}, {"value": "null", "count": 89000}] }
+        ]
+      },
+      {
+        name: "orders", rowCount: 18500000,
+        columns: [
+          { name: "order_id", type: "INTEGER", nullCount: 0, distinctCount: 18500000, totalRows: 18500000, min: "1", max: "18500000" },
+          { name: "customer_id", type: "INTEGER", nullCount: 0, distinctCount: 2100000, totalRows: 18500000, min: "1", max: "2450000" },
+          { name: "order_date", type: "DATE", nullCount: 0, distinctCount: 4380, totalRows: 18500000, min: "2014-01-01", max: "2026-02-12" },
+          { name: "total_amount", type: "DECIMAL(12,2)", nullCount: 1230, distinctCount: 8900000, totalRows: 18500000, min: "0.01", max: "99999.99", mean: "245.67", stdDev: "892.34" },
+          { name: "status", type: "VARCHAR(20)", nullCount: 0, distinctCount: 5, totalRows: 18500000, topValues: [{"value": "completed", "count": 15200000}, {"value": "pending", "count": 1800000}, {"value": "shipped", "count": 1200000}, {"value": "cancelled", "count": 250000}, {"value": "returned", "count": 50000}] },
+          { name: "shipping_address", type: "VARCHAR(500)", nullCount: 2340000, distinctCount: 14000000, totalRows: 18500000 },
+          { name: "discount_code", type: "VARCHAR(20)", nullCount: 15800000, distinctCount: 450, totalRows: 18500000, topValues: [{"value": "null", "count": 15800000}, {"value": "SAVE10", "count": 890000}, {"value": "WELCOME", "count": 650000}, {"value": "HOLIDAY25", "count": 420000}, {"value": "FLASH50", "count": 310000}] }
+        ]
+      },
+      {
+        name: "products", rowCount: 85000,
+        columns: [
+          { name: "product_id", type: "INTEGER", nullCount: 0, distinctCount: 85000, totalRows: 85000 },
+          { name: "product_name", type: "VARCHAR(300)", nullCount: 3, distinctCount: 84500, totalRows: 85000 },
+          { name: "category", type: "VARCHAR(100)", nullCount: 120, distinctCount: 45, totalRows: 85000, topValues: [{"value": "Electronics", "count": 18500}, {"value": "Clothing", "count": 15200}, {"value": "Home & Garden", "count": 12800}, {"value": "Books", "count": 9500}, {"value": "Sports", "count": 8200}] },
+          { name: "price", type: "DECIMAL(10,2)", nullCount: 45, distinctCount: 32000, totalRows: 85000, min: "0.99", max: "4999.99", mean: "89.45", stdDev: "234.12" },
+          { name: "weight_kg", type: "DECIMAL(8,3)", nullCount: 12400, distinctCount: 15000, totalRows: 85000, min: "0.01", max: "150.0", mean: "2.34", stdDev: "8.91" },
+          { name: "description", type: "CLOB", nullCount: 28000, distinctCount: 57000, totalRows: 85000 }
+        ]
+      }
+    ]
+  };
+
+  // ---- State ----
+  var currentData = null;
+  var selectedTableIdx = 0;
+  var chartInstances = [];
+
+  // ---- Helpers ----
+  function pct(part, whole) {
+    if (!whole) return 0;
+    return (part / whole) * 100;
+  }
+
+  function completeness(col) {
+    return pct(col.totalRows - col.nullCount, col.totalRows);
+  }
+
+  function uniqueness(col) {
+    return pct(col.distinctCount, col.totalRows);
+  }
+
+  function barColor(value, thresholds) {
+    if (value >= thresholds[0]) return 'var(--success)';
+    if (value >= thresholds[1]) return 'var(--warning)';
+    return 'var(--error)';
+  }
+
+  function heatColor(missingPct) {
+    if (missingPct === 0) return 'rgba(158, 206, 106, 0.25)';
+    if (missingPct <= 10) return 'rgba(224, 175, 104, 0.35)';
+    if (missingPct <= 30) return 'rgba(224, 175, 104, 0.7)';
+    return 'rgba(247, 118, 142, 0.8)';
+  }
+
+  function destroyCharts() {
+    chartInstances.forEach(function(c) { c.destroy(); });
+    chartInstances = [];
+  }
+
+  function el(tag, className, text) {
+    var e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // ---- Rendering ----
+  function renderDashboard(data) {
+    currentData = data;
+    selectedTableIdx = 0;
+    destroyCharts();
+
+    document.getElementById('subtitle').textContent = data.subtitle || '';
+    document.getElementById('dataSource').textContent =
+      (data.database ? 'Database: ' + data.database : '') +
+      (data.subtitle ? ' | ' + data.subtitle : '');
+
+    renderOverviewStats(data);
+    renderTableSelector(data);
+    renderTableMetrics(data, 0);
+    renderHeatmap(data);
+  }
+
+  function renderOverviewStats(data) {
+    var container = document.getElementById('stats');
+    container.textContent = '';
+
+    var totalCols = 0;
+    var totalIssues = 0;
+    var totalCompleteness = 0;
+    var colCount = 0;
+
+    data.tables.forEach(function(t) {
+      t.columns.forEach(function(c) {
+        totalCols++;
+        var comp = completeness(c);
+        totalCompleteness += comp;
+        colCount++;
+        if (comp < 95) totalIssues++;
+      });
+    });
+
+    var avgQuality = colCount > 0 ? totalCompleteness / colCount : 0;
+
+    // Quality score
+    var card1 = el('div', 'stat-card');
+    card1.appendChild(el('div', 'stat-label', 'Quality Score'));
+    var val1 = el('div', 'stat-value');
+    val1.className = 'stat-value ' + (avgQuality >= 90 ? 'success' : avgQuality >= 70 ? 'warning' : 'error');
+    val1.textContent = avgQuality.toFixed(1) + '%';
+    card1.appendChild(val1);
+    container.appendChild(card1);
+
+    // Tables analyzed
+    var card2 = el('div', 'stat-card');
+    card2.appendChild(el('div', 'stat-label', 'Tables Analyzed'));
+    var val2 = el('div', 'stat-value accent');
+    val2.textContent = data.tables.length.toLocaleString();
+    card2.appendChild(val2);
+    container.appendChild(card2);
+
+    // Total columns
+    var card3 = el('div', 'stat-card');
+    card3.appendChild(el('div', 'stat-label', 'Total Columns'));
+    var val3 = el('div', 'stat-value accent');
+    val3.textContent = totalCols.toLocaleString();
+    card3.appendChild(val3);
+    container.appendChild(card3);
+
+    // Columns with issues
+    var card4 = el('div', 'stat-card');
+    card4.appendChild(el('div', 'stat-label', 'Columns with Issues'));
+    var val4 = el('div', 'stat-value');
+    val4.className = 'stat-value ' + (totalIssues === 0 ? 'success' : totalIssues <= 3 ? 'warning' : 'error');
+    val4.textContent = totalIssues.toLocaleString();
+    card4.appendChild(val4);
+    container.appendChild(card4);
+  }
+
+  function renderTableSelector(data) {
+    var container = document.getElementById('table-selector');
+    container.textContent = '';
+
+    data.tables.forEach(function(table, idx) {
+      var btn = el('div', 'table-btn' + (idx === selectedTableIdx ? ' active' : ''));
+      var name = el('div', null, table.name);
+      name.style.fontWeight = '600';
+      btn.appendChild(name);
+      var meta = el('div', 'table-btn-meta', table.rowCount.toLocaleString() + ' rows / ' + table.columns.length + ' cols');
+      btn.appendChild(meta);
+      btn.addEventListener('click', function() {
+        selectedTableIdx = idx;
+        document.querySelectorAll('.table-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        renderTableMetrics(data, idx);
+      });
+      container.appendChild(btn);
+    });
+  }
+
+  function renderTableMetrics(data, tableIdx) {
+    destroyCharts();
+    var table = data.tables[tableIdx];
+    var section = document.getElementById('metrics-section');
+    section.style.display = 'block';
+    document.getElementById('metrics-title').textContent = 'Quality Metrics: ' + table.name;
+
+    // Build tabs
+    var tabs = document.getElementById('metric-tabs');
+    tabs.textContent = '';
+    var panels = document.getElementById('metric-panels');
+    panels.textContent = '';
+    var detail = document.getElementById('detail-panel');
+    detail.textContent = '';
+    detail.classList.remove('active');
+
+    var tabDefs = [
+      { id: 'completeness', label: 'Completeness' },
+      { id: 'uniqueness', label: 'Uniqueness' },
+      { id: 'distribution', label: 'Value Distribution' },
+      { id: 'outliers', label: 'Outlier Detection' }
+    ];
+
+    tabDefs.forEach(function(td, i) {
+      var tab = el('button', 'metric-tab' + (i === 0 ? ' active' : ''), td.label);
+      tab.dataset.tab = td.id;
+      tab.addEventListener('click', function() {
+        tabs.querySelectorAll('.metric-tab').forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        panels.querySelectorAll('.metric-content').forEach(function(p) { p.classList.remove('active'); });
+        document.getElementById('panel-' + td.id).classList.add('active');
+      });
+      tabs.appendChild(tab);
+
+      var panel = el('div', 'metric-content' + (i === 0 ? ' active' : ''));
+      panel.id = 'panel-' + td.id;
+      panels.appendChild(panel);
+    });
+
+    renderCompleteness(table, document.getElementById('panel-completeness'));
+    renderUniqueness(table, document.getElementById('panel-uniqueness'));
+    renderDistribution(table, document.getElementById('panel-distribution'));
+    renderOutliers(table, document.getElementById('panel-outliers'));
+  }
+
+  function makeBarRows(table, valueFn, thresholds, container) {
+    table.columns.forEach(function(col) {
+      var val = valueFn(col);
+      var row = el('div', 'bar-row');
+
+      var label = el('div', 'bar-label', col.name);
+      label.title = col.type;
+      label.style.cursor = 'pointer';
+      label.addEventListener('click', function() { showColumnDetail(col); });
+      row.appendChild(label);
+
+      var track = el('div', 'bar-track');
+      var fill = el('div', 'bar-fill');
+      fill.style.width = Math.min(val, 100) + '%';
+      fill.style.background = barColor(val, thresholds);
+      track.appendChild(fill);
+      track.style.cursor = 'pointer';
+      track.addEventListener('click', function() { showColumnDetail(col); });
+      row.appendChild(track);
+
+      var pctLabel = el('div', 'bar-pct');
+      pctLabel.style.color = barColor(val, thresholds);
+      pctLabel.textContent = val.toFixed(1) + '%';
+      row.appendChild(pctLabel);
+
+      container.appendChild(row);
+    });
+  }
+
+  function renderCompleteness(table, panel) {
+    panel.textContent = '';
+    var desc = el('div', 'section-subtitle', 'Percentage of non-null values per column (green >95%, yellow 80-95%, red <80%)');
+    panel.appendChild(desc);
+    makeBarRows(table, completeness, [95, 80], panel);
+  }
+
+  function renderUniqueness(table, panel) {
+    panel.textContent = '';
+    var desc = el('div', 'section-subtitle', 'Percentage of unique values per column (green >95%, yellow 80-95%, red <80%)');
+    panel.appendChild(desc);
+    makeBarRows(table, uniqueness, [95, 80], panel);
+  }
+
+  function renderDistribution(table, panel) {
+    panel.textContent = '';
+    var desc = el('div', 'section-subtitle', 'Top values by frequency for columns with categorical data');
+    panel.appendChild(desc);
+
+    var hasDist = false;
+    table.columns.forEach(function(col) {
+      if (!col.topValues || col.topValues.length === 0) return;
+      // Skip columns where topValues has only 1 "various" entry
+      if (col.topValues.length === 1 && col.topValues[0].value === 'various') return;
+      hasDist = true;
+
+      var wrap = el('div', 'value-dist');
+      var title = el('div', 'value-dist-title');
+      title.textContent = col.name;
+      title.style.cursor = 'pointer';
+      title.addEventListener('click', function() { showColumnDetail(col); });
+      wrap.appendChild(title);
+
+      var maxCount = 0;
+      col.topValues.forEach(function(tv) { if (tv.count > maxCount) maxCount = tv.count; });
+
+      col.topValues.slice(0, 5).forEach(function(tv) {
+        var row = el('div', 'value-bar-row');
+        row.appendChild(el('div', 'value-bar-label', tv.value));
+        var track = el('div', 'value-bar-track');
+        var fill = el('div', 'value-bar-fill');
+        fill.style.width = (maxCount > 0 ? (tv.count / maxCount) * 100 : 0) + '%';
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el('div', 'value-bar-count', tv.count.toLocaleString()));
+        wrap.appendChild(row);
+      });
+
+      // Render a small Chart.js horizontal bar chart
+      var canvasWrap = el('div', 'chart-canvas-wrap');
+      canvasWrap.style.maxHeight = '160px';
+      canvasWrap.style.marginTop = '8px';
+      var canvas = document.createElement('canvas');
+      canvas.style.maxHeight = '160px';
+      canvasWrap.appendChild(canvas);
+      wrap.appendChild(canvasWrap);
+
+      var labels = [];
+      var vals = [];
+      col.topValues.slice(0, 5).forEach(function(tv) {
+        labels.push(tv.value);
+        vals.push(tv.count);
+      });
+
+      var chart = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            data: vals,
+            backgroundColor: 'rgba(122, 162, 247, 0.6)',
+            borderColor: '#7aa2f7',
+            borderWidth: 1,
+            borderRadius: 3
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#24283b',
+              titleColor: '#c0caf5',
+              bodyColor: '#c0caf5',
+              borderColor: '#3b4261',
+              borderWidth: 1,
+              bodyFont: { family: "'SF Mono', monospace", size: 11 },
+              callbacks: {
+                label: function(ctx) { return ctx.parsed.x.toLocaleString() + ' rows'; }
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(59, 66, 97, 0.5)' },
+              ticks: { color: '#565f89', font: { family: "'SF Mono', monospace", size: 10 },
+                callback: function(v) { return v.toLocaleString(); } }
+            },
+            y: {
+              grid: { display: false },
+              ticks: { color: '#c0caf5', font: { family: "'SF Mono', monospace", size: 10 } }
+            }
+          }
+        }
+      });
+      chartInstances.push(chart);
+      panel.appendChild(wrap);
+    });
+
+    if (!hasDist) {
+      panel.appendChild(el('div', 'section-subtitle', 'No categorical value distribution data available for this table.'));
+    }
+  }
+
+  function renderOutliers(table, panel) {
+    panel.textContent = '';
+    var desc = el('div', 'section-subtitle', 'Columns with numeric data where values may exceed 3 standard deviations from the mean');
+    panel.appendChild(desc);
+
+    var hasOutliers = false;
+    table.columns.forEach(function(col) {
+      if (!col.mean || !col.stdDev) return;
+      var mean = parseFloat(col.mean);
+      var sd = parseFloat(col.stdDev);
+      var min = parseFloat(col.min);
+      var max = parseFloat(col.max);
+      var lower = mean - 3 * sd;
+      var upper = mean + 3 * sd;
+
+      // Check if min or max are beyond 3 sigma
+      var outlierFlags = [];
+      if (min < lower) outlierFlags.push('min (' + col.min + ') < 3\u03C3 lower bound (' + lower.toFixed(2) + ')');
+      if (max > upper) outlierFlags.push('max (' + col.max + ') > 3\u03C3 upper bound (' + upper.toFixed(2) + ')');
+
+      if (outlierFlags.length === 0) return;
+      hasOutliers = true;
+
+      var row = el('div', 'bar-row');
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'flex-start';
+      row.style.background = 'var(--bg-primary)';
+      row.style.padding = '10px 12px';
+      row.style.borderRadius = '6px';
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() { showColumnDetail(col); });
+
+      var header = el('div', null);
+      header.style.display = 'flex';
+      header.style.gap = '8px';
+      header.style.alignItems = 'center';
+      header.style.marginBottom = '4px';
+
+      var nameEl = el('span', null, col.name);
+      nameEl.style.fontFamily = 'var(--font-mono)';
+      nameEl.style.fontSize = '13px';
+      nameEl.style.fontWeight = '600';
+      nameEl.style.color = 'var(--error)';
+      header.appendChild(nameEl);
+
+      var typeEl = el('span', null, col.type);
+      typeEl.style.fontFamily = 'var(--font-mono)';
+      typeEl.style.fontSize = '11px';
+      typeEl.style.color = 'var(--text-muted)';
+      header.appendChild(typeEl);
+      row.appendChild(header);
+
+      outlierFlags.forEach(function(flag) {
+        var flagEl = el('div', null, flag);
+        flagEl.style.fontSize = '12px';
+        flagEl.style.color = 'var(--warning)';
+        flagEl.style.fontFamily = 'var(--font-mono)';
+        row.appendChild(flagEl);
+      });
+
+      var statsLine = el('div', null,
+        'mean=' + mean.toFixed(2) + '  stdDev=' + sd.toFixed(2) +
+        '  range=[' + col.min + ', ' + col.max + ']');
+      statsLine.style.fontSize = '11px';
+      statsLine.style.color = 'var(--text-secondary)';
+      statsLine.style.fontFamily = 'var(--font-mono)';
+      statsLine.style.marginTop = '4px';
+      row.appendChild(statsLine);
+
+      panel.appendChild(row);
+    });
+
+    if (!hasOutliers) {
+      panel.appendChild(el('div', 'section-subtitle', 'No outlier flags detected. All numeric columns have min/max within 3 standard deviations.'));
+    }
+  }
+
+  function renderHeatmap(data) {
+    var section = document.getElementById('heatmap-section');
+    section.style.display = 'block';
+    var container = document.getElementById('heatmap-container');
+    container.textContent = '';
+
+    // Build legend
+    var legend = document.getElementById('heatmap-legend');
+    legend.textContent = '';
+    var legendDefs = [
+      { color: 'rgba(158, 206, 106, 0.25)', label: '0% missing' },
+      { color: 'rgba(224, 175, 104, 0.35)', label: '1-10%' },
+      { color: 'rgba(224, 175, 104, 0.7)', label: '10-30%' },
+      { color: 'rgba(247, 118, 142, 0.8)', label: '30%+' }
+    ];
+    legendDefs.forEach(function(ld) {
+      var item = el('div', 'legend-item');
+      var swatch = el('div', 'legend-swatch');
+      swatch.style.background = ld.color;
+      item.appendChild(swatch);
+      item.appendChild(el('span', null, ld.label));
+      legend.appendChild(item);
+    });
+
+    // Collect all unique column names across tables
+    var allColNames = [];
+    var colNameSet = {};
+    data.tables.forEach(function(t) {
+      t.columns.forEach(function(c) {
+        if (!colNameSet[c.name]) {
+          colNameSet[c.name] = true;
+          allColNames.push(c.name);
+        }
+      });
+    });
+
+    // Grid: rows = tables + 1 header, cols = allColNames + 1 row-label
+    var grid = el('div', 'heatmap-grid');
+    var colCountPlusLabel = allColNames.length + 1;
+    grid.style.gridTemplateColumns = '100px repeat(' + allColNames.length + ', 80px)';
+
+    // Header row: empty corner + column names
+    grid.appendChild(el('div', 'heatmap-header', ''));
+    allColNames.forEach(function(cn) {
+      var hdr = el('div', 'heatmap-header', cn);
+      hdr.title = cn;
+      grid.appendChild(hdr);
+    });
+
+    // Data rows
+    data.tables.forEach(function(table) {
+      // Row label
+      grid.appendChild(el('div', 'heatmap-row-label', table.name));
+
+      // Build lookup for this table
+      var colMap = {};
+      table.columns.forEach(function(c) { colMap[c.name] = c; });
+
+      allColNames.forEach(function(cn) {
+        var cell = el('div', 'heatmap-cell');
+        var col = colMap[cn];
+        if (col) {
+          var missingPct = pct(col.nullCount, col.totalRows);
+          cell.style.background = heatColor(missingPct);
+          cell.textContent = missingPct < 0.05 ? '0%' : missingPct.toFixed(1) + '%';
+          cell.style.color = missingPct > 30 ? '#fff' : 'var(--text-primary)';
+          cell.style.fontSize = '10px';
+          cell.title = table.name + '.' + cn + ': ' + missingPct.toFixed(2) + '% null (' + col.nullCount.toLocaleString() + '/' + col.totalRows.toLocaleString() + ')';
+          cell.addEventListener('click', (function(c) { return function() { showColumnDetail(c); }; })(col));
+        } else {
+          cell.style.background = 'var(--bg-hover)';
+          cell.textContent = 'N/A';
+          cell.style.color = 'var(--text-muted)';
+          cell.style.fontSize = '10px';
+          cell.title = 'Column not present in ' + table.name;
+        }
+        grid.appendChild(cell);
+      });
+    });
+
+    container.appendChild(grid);
+  }
+
+  function showColumnDetail(col) {
+    var panel = document.getElementById('detail-panel');
+    panel.textContent = '';
+    panel.classList.add('active');
+
+    var title = el('div', 'detail-title', col.name + '  (' + col.type + ')');
+    panel.appendChild(title);
+
+    var grid = el('div', 'detail-grid');
+
+    var items = [
+      { label: 'Total Rows', value: col.totalRows.toLocaleString() },
+      { label: 'Null Count', value: col.nullCount.toLocaleString() },
+      { label: 'Null %', value: pct(col.nullCount, col.totalRows).toFixed(2) + '%' },
+      { label: 'Distinct Count', value: col.distinctCount.toLocaleString() },
+      { label: 'Distinct %', value: pct(col.distinctCount, col.totalRows).toFixed(2) + '%' }
+    ];
+
+    if (col.min !== undefined) items.push({ label: 'Min', value: col.min });
+    if (col.max !== undefined) items.push({ label: 'Max', value: col.max });
+    if (col.mean !== undefined) items.push({ label: 'Mean', value: col.mean });
+    if (col.stdDev !== undefined) items.push({ label: 'Std Deviation', value: col.stdDev });
+
+    items.forEach(function(item) {
+      var di = el('div', 'detail-item');
+      di.appendChild(el('div', 'detail-item-label', item.label));
+      di.appendChild(el('div', 'detail-item-value', item.value));
+      grid.appendChild(di);
+    });
+
+    panel.appendChild(grid);
+
+    // Top values
+    if (col.topValues && col.topValues.length > 0 &&
+        !(col.topValues.length === 1 && col.topValues[0].value === 'various')) {
+      var topTitle = el('div', 'section-subtitle', 'Most Common Values');
+      topTitle.style.marginTop = '8px';
+      topTitle.style.fontWeight = '600';
+      topTitle.style.color = 'var(--text-primary)';
+      panel.appendChild(topTitle);
+
+      var maxCount = 0;
+      col.topValues.forEach(function(tv) { if (tv.count > maxCount) maxCount = tv.count; });
+
+      col.topValues.slice(0, 5).forEach(function(tv) {
+        var row = el('div', 'value-bar-row');
+        row.appendChild(el('div', 'value-bar-label', tv.value));
+        var track = el('div', 'value-bar-track');
+        var fill = el('div', 'value-bar-fill');
+        fill.style.width = (maxCount > 0 ? (tv.count / maxCount) * 100 : 0) + '%';
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el('div', 'value-bar-count', tv.count.toLocaleString()));
+        panel.appendChild(row);
+      });
+    }
+
+    // Scroll detail into view
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // ---- Initialize ----
+  async function initialize() {
+    try {
+      await sendMCPRequest('ui/initialize', {
+        appUri: 'ui://loom/data-quality-dashboard',
+        capabilities: { resize: true }
+      });
+    } catch (e) {
+      console.warn('ui/initialize not supported:', e.message);
+    }
+    renderDashboard(DEFAULT_DATA);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initialize);
+  } else {
+    initialize();
+  }
+})();
+</script>
+</body>
+</html>

@@ -40,6 +40,7 @@ type SDKClient struct {
 	maxTokens   int64
 	temperature float64
 	rateLimiter *llm.RateLimiter
+	toolNameMap map[string]string // sanitized name → original name
 }
 
 // NewSDKClient creates a new Bedrock client using the Anthropic SDK.
@@ -187,6 +188,7 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 
 	// Add tools if provided
 	if len(tools) > 0 {
+		c.toolNameMap = make(map[string]string)
 		sdkTools := c.convertToolsToSDK(tools)
 		// Convert []ToolParam to []ToolUnionParam
 		toolUnions := make([]anthropic.ToolUnionParam, len(sdkTools))
@@ -293,7 +295,7 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) (string, [
 				} else {
 					input = map[string]interface{}{}
 				}
-				content = append(content, anthropic.NewToolUseBlock(tc.ID, input, tc.Name))
+				content = append(content, anthropic.NewToolUseBlock(tc.ID, input, llm.SanitizeToolName(tc.Name)))
 			}
 
 			if len(content) > 0 {
@@ -318,8 +320,14 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) []anthropic.ToolPara
 	var sdkTools []anthropic.ToolParam
 
 	for _, tool := range tools {
+		originalName := tool.Name()
+		sanitizedName := llm.SanitizeToolName(originalName)
+		if c.toolNameMap != nil {
+			c.toolNameMap[sanitizedName] = originalName
+		}
+
 		sdkTool := anthropic.ToolParam{
-			Name:        tool.Name(),
+			Name:        sanitizedName,
 			Description: anthropic.String(tool.Description()),
 		}
 
@@ -377,7 +385,7 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message) *llmtypes
 
 			toolCall := llmtypes.ToolCall{
 				ID:    block.ID,
-				Name:  block.Name,
+				Name:  llm.ReverseToolName(c.toolNameMap, block.Name),
 				Input: input,
 			}
 			llmResp.ToolCalls = append(llmResp.ToolCalls, toolCall)
@@ -440,6 +448,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Add tools if provided
 	if len(tools) > 0 {
+		c.toolNameMap = make(map[string]string)
 		sdkTools := c.convertToolsToSDK(tools)
 		toolUnions := make([]anthropic.ToolUnionParam, len(sdkTools))
 		for i := range sdkTools {
@@ -478,10 +487,10 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		case "content_block_start":
 			// Check if this is a tool use block
 			if event.ContentBlock.Type == "tool_use" {
-				// Start tracking a new tool call
+				// Start tracking a new tool call - reverse map sanitized name
 				toolCall := llmtypes.ToolCall{
 					ID:    event.ContentBlock.ID,
-					Name:  event.ContentBlock.Name,
+					Name:  llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
 					Input: make(map[string]interface{}), // Will be populated from deltas
 				}
 				toolCallIndex := len(toolCalls)

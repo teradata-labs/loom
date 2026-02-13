@@ -25,6 +25,7 @@ go.work
 .idea/
 .vscode/
 .claude/
+.mcp.json
 *.swp
 *.swo
 *~
@@ -72,9 +73,11 @@ website/resources/
 /looms
 /loom
 /loom-standalone
+/loom-mcp
 bin/loom
 bin/looms
 bin/loom-standalone
+bin/loom-mcp
 
 # Hawk binaries (batteries included distribution)
 

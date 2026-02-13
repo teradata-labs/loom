@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -41,6 +42,7 @@ import (
 	"github.com/teradata-labs/loom/internal/tui/components/core/status"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/agents"
+	appsDialog "github.com/teradata-labs/loom/internal/tui/components/dialogs/apps"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/commands"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/filepicker"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/permissions"
@@ -274,6 +276,65 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.status.ToggleFullHelp()
 		a.showingFullHelp = !a.showingFullHelp
 		return a, a.handleWindowResize(a.wWidth, a.wHeight)
+
+	// Browse Apps
+	case commands.OpenBrowseAppsMsg:
+		if a.app.Client() == nil {
+			return a, util.ReportInfo("Not connected to server")
+		}
+		return a, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Fetch apps via gRPC
+			apps, err := a.app.Client().ListUIApps(ctx)
+			if err != nil {
+				return util.InfoMsg{Msg: fmt.Sprintf("Failed to list apps: %v", err), Type: util.InfoTypeError}
+			}
+			if len(apps) == 0 {
+				return util.InfoMsg{Msg: "No UI apps available"}
+			}
+
+			// Get server config to determine HTTP URL
+			serverCfg, err := a.app.Client().GetServerConfig(ctx)
+			if err != nil {
+				return util.InfoMsg{Msg: fmt.Sprintf("Failed to get server config: %v", err), Type: util.InfoTypeError}
+			}
+
+			// Build HTTP base URL from server config
+			httpAddr := ""
+			if serverCfg.Network != nil {
+				httpAddr = serverCfg.Network.HttpAddress
+			}
+			if httpAddr == "" {
+				return util.InfoMsg{Msg: "HTTP server not configured"}
+			}
+
+			// Replace wildcard addresses with localhost
+			httpAddr = strings.Replace(httpAddr, "0.0.0.0", "localhost", 1)
+			httpAddr = strings.Replace(httpAddr, "[::]", "localhost", 1)
+			httpAddr = strings.Replace(httpAddr, "::", "localhost", 1)
+			baseURL := "http://" + httpAddr
+
+			// Convert proto apps to dialog items
+			var items []appsDialog.AppItem
+			for _, app := range apps {
+				items = append(items, appsDialog.AppItem{
+					Name:        app.Name,
+					DisplayName: app.DisplayName,
+					Description: app.Description,
+					URL:         baseURL + "/apps/" + url.PathEscape(app.Name),
+				})
+			}
+
+			return dialogs.OpenDialogMsg{
+				Model: appsDialog.NewAppsDialog(items),
+			}
+		}
+	case appsDialog.AppOpenedMsg:
+		return a, util.CmdHandler(util.InfoMsg{
+			Msg: fmt.Sprintf("Opened %s in browser", msg.Name),
+		})
 
 	// File Picker
 	case commands.OpenFilePickerMsg:

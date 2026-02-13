@@ -19,16 +19,18 @@ const ProtocolVersion = "2024-11-05"
 
 // InitializeParams contains parameters for the initialize request
 type InitializeParams struct {
-	ProtocolVersion string             `json:"protocolVersion"`
-	Capabilities    ClientCapabilities `json:"capabilities"`
-	ClientInfo      Implementation     `json:"clientInfo"`
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    ClientCapabilities     `json:"capabilities"`
+	ClientInfo      Implementation         `json:"clientInfo"`
+	Extensions      map[string]interface{} `json:"extensions,omitempty"`
 }
 
 // InitializeResult contains the server's response to initialize
 type InitializeResult struct {
-	ProtocolVersion string             `json:"protocolVersion"`
-	Capabilities    ServerCapabilities `json:"capabilities"`
-	ServerInfo      Implementation     `json:"serverInfo"`
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    ServerCapabilities     `json:"capabilities"`
+	ServerInfo      Implementation         `json:"serverInfo"`
+	Extensions      map[string]interface{} `json:"extensions,omitempty"`
 }
 
 // Implementation describes client or server implementation details
@@ -67,11 +69,22 @@ type PromptsCapability struct {
 
 type LoggingCapability struct{}
 
+// ToolAnnotations provides hints about tool behavior (MCP 2025-03-26)
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+}
+
 // Tool represents an MCP tool definition
 type Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"` // JSON Schema
+	InputSchema map[string]interface{} `json:"inputSchema"`           // JSON Schema
+	Annotations *ToolAnnotations       `json:"annotations,omitempty"` // MCP 2025-03-26
+	Meta        map[string]interface{} `json:"_meta,omitempty"`       // MCP Apps metadata
 }
 
 // ToolListResult is the response from tools/list
@@ -87,8 +100,9 @@ type CallToolParams struct {
 
 // CallToolResult is the response from tools/call
 type CallToolResult struct {
-	Content []Content `json:"content"`           // Array of content items
-	IsError bool      `json:"isError,omitempty"` // Deprecated, use proper errors
+	Content           []Content              `json:"content"`                     // Array of content items
+	IsError           bool                   `json:"isError,omitempty"`           // Deprecated, use proper errors
+	StructuredContent map[string]interface{} `json:"structuredContent,omitempty"` // Structured output (MCP 2025-03-26)
 }
 
 // Content represents different types of content (text, image, resource)
@@ -131,10 +145,11 @@ type ReadResourceResult struct {
 
 // ResourceContents contains resource data
 type ResourceContents struct {
-	URI      string `json:"uri"`
-	MimeType string `json:"mimeType,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Blob     string `json:"blob,omitempty"` // Base64
+	URI      string                 `json:"uri"`
+	MimeType string                 `json:"mimeType,omitempty"`
+	Text     string                 `json:"text,omitempty"`
+	Blob     string                 `json:"blob,omitempty"` // Base64
+	Meta     map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ResourceTemplate defines a dynamic resource URI template
