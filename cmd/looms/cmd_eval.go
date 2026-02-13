@@ -25,13 +25,13 @@ import (
 
 	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
-	_ "modernc.org/sqlite" // SQLite driver
 )
 
 var (
@@ -223,7 +223,7 @@ func runEval(cmd *cobra.Command, args []string) {
 	var patternTracker *learning.PatternEffectivenessTracker
 	if suite.Spec.MultiJudge != nil && judgeOrch != nil {
 		// Open database connection for pattern tracking
-		db, err := sql.Open("sqlite", evalStoreDB)
+		db, err := sql.Open("sqlite3", evalStoreDB)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Warning: Failed to open database for pattern tracking: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Judge metrics will not be recorded for learning loop\n")

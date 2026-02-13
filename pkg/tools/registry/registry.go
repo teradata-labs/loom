@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -67,7 +67,7 @@ func New(cfg Config) (*Registry, error) {
 	}
 
 	// Open SQLite database with FTS5 support
-	db, err := sql.Open("sqlite3", cfg.DBPath+"?_fts5=1")
+	db, err := sql.Open("sqlite3", cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
