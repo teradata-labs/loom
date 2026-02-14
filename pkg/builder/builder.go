@@ -202,7 +202,7 @@ func (b *AgentBuilder) WithMistralLLMCustomModel(apiKey, model string) *AgentBui
 func (b *AgentBuilder) WithGeminiLLM(apiKey string) *AgentBuilder {
 	b.llm = gemini.NewClient(gemini.Config{
 		APIKey: apiKey,
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3-flash-preview",
 	})
 	return b
 }

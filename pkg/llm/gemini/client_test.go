@@ -38,7 +38,7 @@ func TestNewClient(t *testing.T) {
 			config: Config{
 				APIKey: "test-key",
 			},
-			want: "gemini-2.5-flash",
+			want: "gemini-3-flash-preview",
 		},
 		{
 			name: "with custom model",
@@ -79,8 +79,9 @@ func TestClient_Model(t *testing.T) {
 		model string
 		want  string
 	}{
-		{"default model", "", "gemini-2.5-flash"},
+		{"default model", "", "gemini-3-flash-preview"},
 		{"gemini 3 pro", "gemini-3-pro-preview", "gemini-3-pro-preview"},
+		{"gemini 3 flash", "gemini-3-flash-preview", "gemini-3-flash-preview"},
 		{"gemini 2.5 pro", "gemini-2.5-pro", "gemini-2.5-pro"},
 		{"gemini 2.5 flash", "gemini-2.5-flash", "gemini-2.5-flash"},
 		{"gemini 2.5 flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite"},
@@ -103,7 +104,7 @@ func TestClient_Chat_Success(t *testing.T) {
 		// Verify Gemini endpoint is being used
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		assert.Contains(t, r.URL.Path, "gemini-2.5-flash")
+		assert.Contains(t, r.URL.Path, "gemini-3-flash-preview")
 		assert.Contains(t, r.URL.RawQuery, "key=test-key")
 
 		// Parse request body
@@ -142,7 +143,7 @@ func TestClient_Chat_Success(t *testing.T) {
 	// Create client with mock server
 	client := NewClient(Config{
 		APIKey: "test-key",
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3-flash-preview",
 	})
 
 	// Override endpoint for testing by modifying the httpClient's base URL
@@ -167,7 +168,8 @@ func TestClient_Chat_Success(t *testing.T) {
 	assert.Equal(t, "end_turn", resp.StopReason)
 	assert.Equal(t, 25, resp.Usage.InputTokens)
 	assert.Equal(t, 12, resp.Usage.OutputTokens)
-	assert.Greater(t, resp.Usage.CostUSD, 0.0)
+	// Default model (gemini-3-flash-preview) is free during preview, so cost is 0
+	assert.GreaterOrEqual(t, resp.Usage.CostUSD, 0.0)
 
 	// Verify Gemini provider metadata
 	assert.Equal(t, "gemini", resp.Metadata["provider"])
@@ -222,7 +224,7 @@ func TestClient_Chat_WithTools(t *testing.T) {
 	// Create client
 	client := NewClient(Config{
 		APIKey: "test-key",
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3-flash-preview",
 	})
 	client.httpClient.Transport = &mockTransport{
 		baseURL:  server.URL,
@@ -268,6 +270,14 @@ func TestClient_CalculateCost(t *testing.T) {
 		wantMax      float64
 	}{
 		{
+			name:         "gemini-3-flash-preview (free)",
+			model:        "gemini-3-flash-preview",
+			inputTokens:  1000,
+			outputTokens: 500,
+			wantMin:      0.0, // Free during preview
+			wantMax:      0.0,
+		},
+		{
 			name:         "gemini-2.5-flash",
 			model:        "gemini-2.5-flash",
 			inputTokens:  1000,
@@ -280,8 +290,8 @@ func TestClient_CalculateCost(t *testing.T) {
 			model:        "gemini-2.5-flash-lite",
 			inputTokens:  1000,
 			outputTokens: 500,
-			wantMin:      0.001540, // Same as Flash
-			wantMax:      0.001560,
+			wantMin:      0.000290, // (1000 * 0.10 + 500 * 0.40) / 1M
+			wantMax:      0.000310,
 		},
 		{
 			name:         "gemini-2.5-pro",
@@ -331,7 +341,7 @@ func TestClient_APIError(t *testing.T) {
 
 	client := NewClient(Config{
 		APIKey: "invalid-key",
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3-flash-preview",
 	})
 	client.httpClient.Transport = &mockTransport{
 		baseURL:  server.URL,
@@ -352,7 +362,7 @@ func TestClient_APIError(t *testing.T) {
 func TestClient_ModelVariants(t *testing.T) {
 	models := []string{
 		"gemini-3-pro-preview",
-		"gemini-3-pro",
+		"gemini-3-flash-preview",
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
 		"gemini-2.5-flash-lite",
@@ -368,7 +378,7 @@ func TestClient_ModelVariants(t *testing.T) {
 
 			// Verify cost calculation works for all models
 			cost := client.calculateCost(1000, 500)
-			assert.Greater(t, cost, 0.0, "Cost should be positive for model %s", model)
+			assert.GreaterOrEqual(t, cost, 0.0, "Cost should be non-negative for model %s", model)
 		})
 	}
 }
@@ -552,7 +562,7 @@ func TestThoughtSignature_EmptyWhenAbsent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{APIKey: "test-key", Model: "gemini-2.5-flash"})
+	client := NewClient(Config{APIKey: "test-key", Model: "gemini-3-flash-preview"})
 	client.httpClient.Transport = &mockTransport{
 		baseURL:  server.URL,
 		original: http.DefaultTransport,
@@ -732,7 +742,7 @@ func (t *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Replace the host with our test server, but keep the original path
 	req.URL.Scheme = "http"
 	req.URL.Host = t.baseURL[7:] // Remove "http://"
-	// Keep original path (contains model name like /v1beta/models/gemini-2.5-flash:generateContent)
+	// Keep original path (contains model name like /v1beta/models/gemini-3-flash-preview:generateContent)
 
 	if t.original != nil {
 		return t.original.RoundTrip(req)

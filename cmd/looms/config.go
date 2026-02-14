@@ -786,7 +786,7 @@ func setDefaults() {
 	viper.SetDefault("llm.azure_openai_endpoint", "")
 	viper.SetDefault("llm.azure_openai_deployment_id", "")
 	viper.SetDefault("llm.mistral_model", "mistral-large-latest")
-	viper.SetDefault("llm.gemini_model", "gemini-2.5-flash")
+	viper.SetDefault("llm.gemini_model", "gemini-3-flash-preview")
 	viper.SetDefault("llm.huggingface_model", "meta-llama/Meta-Llama-3.1-70B-Instruct")
 	viper.SetDefault("llm.temperature", 1.0)
 	viper.SetDefault("llm.max_tokens", 4096)
@@ -1257,7 +1257,7 @@ llm:
   # mistral_api_key: set via keyring (looms config set-key mistral_api_key)
 
   # Google Gemini configuration
-  gemini_model: gemini-2.5-flash
+  gemini_model: gemini-3-flash-preview
   # gemini_api_key: set via keyring (looms config set-key gemini_api_key)
 
   # HuggingFace configuration
