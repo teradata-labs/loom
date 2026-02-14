@@ -430,6 +430,219 @@ func TestConvertMessages(t *testing.T) {
 	}
 }
 
+func TestThoughtSignature_RoundTrip(t *testing.T) {
+	// Simulates the full round-trip:
+	// 1. Gemini returns a function call with a thoughtSignature at Part level
+	// 2. We parse it and store on ToolCall.ThoughtSignature
+	// 3. On next turn, we echo it back at the Part level in conversation history
+
+	const fakeSignature = "encrypted-opaque-thought-token-abc123"
+
+	// Step 1: Mock server returns function call with thoughtSignature
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := GenerateContentResponse{
+			Candidates: []Candidate{
+				{
+					Content: Content{
+						Role: "model",
+						Parts: []Part{
+							{
+								FunctionCall: &FunctionCall{
+									Name: "get_weather",
+									Args: map[string]any{"location": "Tokyo"},
+								},
+								ThoughtSignature: fakeSignature, // At Part level, NOT inside FunctionCall
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+			UsageMetadata: UsageMetadata{
+				PromptTokenCount:     10,
+				CandidatesTokenCount: 5,
+				TotalTokenCount:      15,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Model: "gemini-3-pro-preview"})
+	client.httpClient.Transport = &mockTransport{
+		baseURL:  server.URL,
+		original: http.DefaultTransport,
+	}
+
+	// Step 2: Parse response - ThoughtSignature should be captured on ToolCall
+	ctx := &mockContext{Context: context.Background()}
+	resp, err := client.Chat(ctx, []types.Message{
+		{Role: "user", Content: "What's the weather in Tokyo?"},
+	}, []shuttle.Tool{&mockShuttleTool{
+		name:        "get_weather",
+		description: "Get weather",
+		schema:      &shuttle.JSONSchema{Type: "object"},
+	}})
+	require.NoError(t, err)
+	require.Len(t, resp.ToolCalls, 1)
+	assert.Equal(t, fakeSignature, resp.ToolCalls[0].ThoughtSignature,
+		"ThoughtSignature must be captured from Part level in response")
+
+	// Step 3: Build conversation history with the tool call and its result,
+	// then verify the thought signature is echoed back at Part level
+	messages := []types.Message{
+		{Role: "user", Content: "What's the weather in Tokyo?"},
+		{
+			Role: "assistant",
+			ToolCalls: []types.ToolCall{
+				{
+					ID:               "get_weather",
+					Name:             "get_weather",
+					Input:            map[string]any{"location": "Tokyo"},
+					ThoughtSignature: fakeSignature, // Preserved from step 2
+				},
+			},
+		},
+		{
+			Role:      "tool",
+			Content:   "Sunny, 25°C",
+			ToolUseID: "get_weather",
+		},
+	}
+
+	contents := convertMessages(messages)
+	require.Len(t, contents, 3) // user, model (with function call), function (with result)
+
+	// Verify the model message has thoughtSignature at Part level
+	modelContent := contents[1]
+	assert.Equal(t, "model", modelContent.Role)
+	require.Len(t, modelContent.Parts, 1)
+	assert.NotNil(t, modelContent.Parts[0].FunctionCall, "Part should have FunctionCall")
+	assert.Equal(t, fakeSignature, modelContent.Parts[0].ThoughtSignature,
+		"ThoughtSignature must be echoed back at Part level, NOT inside FunctionCall")
+}
+
+func TestThoughtSignature_EmptyWhenAbsent(t *testing.T) {
+	// For non-Gemini-3 models or responses without thought signatures,
+	// ThoughtSignature should be empty and omitted from JSON
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := GenerateContentResponse{
+			Candidates: []Candidate{
+				{
+					Content: Content{
+						Role: "model",
+						Parts: []Part{
+							{
+								FunctionCall: &FunctionCall{
+									Name: "get_weather",
+									Args: map[string]any{"location": "Berlin"},
+								},
+								// No ThoughtSignature
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+			UsageMetadata: UsageMetadata{TotalTokenCount: 10},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Model: "gemini-2.5-flash"})
+	client.httpClient.Transport = &mockTransport{
+		baseURL:  server.URL,
+		original: http.DefaultTransport,
+	}
+
+	ctx := &mockContext{Context: context.Background()}
+	resp, err := client.Chat(ctx, []types.Message{
+		{Role: "user", Content: "Weather?"},
+	}, []shuttle.Tool{&mockShuttleTool{
+		name:        "get_weather",
+		description: "Get weather",
+		schema:      &shuttle.JSONSchema{Type: "object"},
+	}})
+	require.NoError(t, err)
+	require.Len(t, resp.ToolCalls, 1)
+	assert.Empty(t, resp.ToolCalls[0].ThoughtSignature,
+		"ThoughtSignature should be empty when not present in response")
+
+	// Verify it doesn't appear in the serialized JSON when empty
+	messages := []types.Message{
+		{Role: "assistant", ToolCalls: resp.ToolCalls},
+	}
+	contents := convertMessages(messages)
+	jsonBytes, err := json.Marshal(contents[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(jsonBytes), "thoughtSignature",
+		"thoughtSignature should be omitted from JSON when empty (omitempty)")
+}
+
+func TestThoughtSignature_ParallelFunctionCalls(t *testing.T) {
+	// Per Gemini docs: only the first function call gets a thought signature
+	// in parallel call scenarios
+	const firstSig = "sig-for-first-call"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := GenerateContentResponse{
+			Candidates: []Candidate{
+				{
+					Content: Content{
+						Role: "model",
+						Parts: []Part{
+							{
+								FunctionCall: &FunctionCall{
+									Name: "get_weather",
+									Args: map[string]any{"location": "Tokyo"},
+								},
+								ThoughtSignature: firstSig, // Only first gets signature
+							},
+							{
+								FunctionCall: &FunctionCall{
+									Name: "get_weather",
+									Args: map[string]any{"location": "London"},
+								},
+								// No signature on second parallel call
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+			UsageMetadata: UsageMetadata{TotalTokenCount: 20},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Model: "gemini-3-pro-preview"})
+	client.httpClient.Transport = &mockTransport{
+		baseURL:  server.URL,
+		original: http.DefaultTransport,
+	}
+
+	ctx := &mockContext{Context: context.Background()}
+	resp, err := client.Chat(ctx, []types.Message{
+		{Role: "user", Content: "Weather in Tokyo and London?"},
+	}, []shuttle.Tool{&mockShuttleTool{
+		name:        "get_weather",
+		description: "Get weather",
+		schema:      &shuttle.JSONSchema{Type: "object"},
+	}})
+	require.NoError(t, err)
+	require.Len(t, resp.ToolCalls, 2)
+
+	assert.Equal(t, firstSig, resp.ToolCalls[0].ThoughtSignature,
+		"First parallel call should have thought signature")
+	assert.Empty(t, resp.ToolCalls[1].ThoughtSignature,
+		"Second parallel call should not have thought signature")
+}
+
 func TestConvertTools(t *testing.T) {
 	mockTool := &mockShuttleTool{
 		name:        "get_weather",

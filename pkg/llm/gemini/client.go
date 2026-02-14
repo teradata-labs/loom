@@ -268,9 +268,10 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 				llmResp.StopReason = "tool_use"
 				reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 				llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
-					ID:    reversedName, // Gemini doesn't provide call IDs
-					Name:  reversedName,
-					Input: part.FunctionCall.Args,
+					ID:               reversedName, // Gemini doesn't provide call IDs
+					Name:             reversedName,
+					Input:            part.FunctionCall.Args,
+					ThoughtSignature: part.ThoughtSignature, // Preserve for round-trip
 				})
 			}
 		}
@@ -398,6 +399,7 @@ func convertMessages(messages []llmtypes.Message) []Content {
 						Name: llm.SanitizeToolName(tc.Name),
 						Args: tc.Input,
 					},
+					ThoughtSignature: tc.ThoughtSignature, // Echo back verbatim for Gemini 3+
 				})
 			}
 
@@ -616,10 +618,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 				// Extract tool calls
 				if part.FunctionCall != nil {
+					reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
-						ID:    part.FunctionCall.Name, // Gemini doesn't provide call IDs, use name
-						Name:  part.FunctionCall.Name,
-						Input: part.FunctionCall.Args,
+						ID:               reversedName,
+						Name:             reversedName,
+						Input:            part.FunctionCall.Args,
+						ThoughtSignature: part.ThoughtSignature, // Preserve for round-trip
 					})
 				}
 			}
