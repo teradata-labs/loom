@@ -381,7 +381,9 @@ func (c *Client) receiveLoop() {
 		data, err := c.transport.Receive(c.ctx)
 		if err != nil {
 			// Check for normal shutdown conditions
-			if c.ctx.Err() != nil || errors.Is(err, io.EOF) {
+			// "transport closed" is returned by StdioTransport when Close() is called
+			isTransportClosed := err.Error() == "transport closed"
+			if c.ctx.Err() != nil || errors.Is(err, io.EOF) || isTransportClosed {
 				// Context cancelled or connection closed - normal shutdown
 				c.logger.Debug("receiveLoop: normal shutdown", zap.Error(err))
 				return

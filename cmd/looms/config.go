@@ -827,8 +827,9 @@ func setDefaults() {
 	}
 
 	// Prompts defaults
-	// Use file-based registry as default
-	viper.SetDefault("prompts.source", "file")
+	// Prompts are optional - agents use hardcoded fallbacks if not configured
+	// Users must explicitly enable prompts in their config if desired
+	viper.SetDefault("prompts.source", "") // Empty = disabled, agents use fallbacks
 	viper.SetDefault("prompts.file_dir", "./prompts")
 	viper.SetDefault("prompts.cache_size", 1000)
 	viper.SetDefault("prompts.enable_reload", true)
