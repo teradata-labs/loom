@@ -1,0 +1,338 @@
+# === METADATA START ===
+name: structured_task_execution
+title: "Structured Task Execution Framework"
+description: |
+  Break down complex work into atomic, verifiable tasks with clear structure.
+  Provides format for task definition including files, actions, verification steps,
+  and completion criteria. Essential for systematic project execution, code generation,
+  and ensuring quality through structured planning.
+
+category: agent
+difficulty: intermediate
+backend_type: agent
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Breaking down complex features into tasks
+  - Planning implementation steps
+  - Creating verifiable work units
+  - Bug fix structuring
+  - Refactoring workflows
+  - Test implementation planning
+  - Feature development planning
+  - Code generation with verification
+  - Quality assurance workflows
+  - Multi-step task coordination
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: task_description
+    type: string
+    required: true
+    description: "High-level description of work to be done"
+    example: "Add user authentication to the API"
+
+  - name: task_type
+    type: enum[implementation, fix, refactor, test]
+    required: false
+    default: "implementation"
+    description: "Type of task being structured"
+    example: "implementation"
+
+  - name: context
+    type: string
+    required: false
+    description: "Additional context about the codebase or requirements"
+    example: "Using Express.js with TypeScript, JWT authentication required"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  implementation_task:
+    description: "Structure a new feature implementation"
+    content: |
+      Task: {{task_description}}
+
+      Name: [Brief, action-oriented title (verb + noun)]
+
+      Files:
+      - [List specific files to create/modify]
+      - [Be explicit with paths]
+
+      Action:
+      - [Precise implementation instructions]
+      - [Include specific libraries/approaches]
+      - [Note constraints and requirements]
+      - [Specify return formats/error handling]
+
+      Verification:
+      1. [Command to verify compilation/syntax]
+      2. [Command to run tests]
+      3. [Manual check or integration test]
+
+      Done Criteria:
+      - ✓ [Measurable completion criterion 1]
+      - ✓ [Measurable completion criterion 2]
+      - ✓ [Measurable completion criterion 3]
+      - ✓ All tests pass, no errors
+    required_parameters:
+      - task_description
+
+  fix_task:
+    description: "Structure a bug fix"
+    content: |
+      Task: {{task_description}}
+
+      Name: [Fix specific bug/issue]
+
+      Files:
+      - [Files to modify]
+
+      Action:
+      - [Reproduce the bug]
+      - [Identify root cause]
+      - [Implement fix]
+      - [Add test to prevent regression]
+
+      Verification:
+      1. [Bug no longer reproduces]
+      2. [Test added that would have caught bug]
+      3. [No regression in related features]
+
+      Done Criteria:
+      - ✓ Bug fixed and verified
+      - ✓ Regression test added
+      - ✓ No new issues introduced
+      - ✓ All tests pass
+    required_parameters:
+      - task_description
+
+  refactor_task:
+    description: "Structure a refactoring task"
+    content: |
+      Task: {{task_description}}
+
+      Name: [Refactor description]
+
+      Files:
+      - [Files to refactor]
+
+      Action:
+      - [What to restructure and why]
+      - [Target architecture/pattern]
+      - [Preserve existing behavior]
+
+      Verification:
+      1. [All existing tests still pass]
+      2. [Behavior unchanged]
+      3. [Code quality improved]
+
+      Done Criteria:
+      - ✓ Refactoring complete
+      - ✓ All tests pass
+      - ✓ No behavior changes
+      - ✓ Code is clearer/more maintainable
+    required_parameters:
+      - task_description
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Create Login Endpoint"
+    parameters:
+      task_description: "Create user authentication endpoint"
+      task_type: "implementation"
+      context: "Express.js with TypeScript, JWT authentication"
+    expected_result: |
+      Task: Create user authentication endpoint
+
+      Name: Create login endpoint
+
+      Files:
+      - src/api/auth/login.ts
+      - src/middleware/auth.ts
+      - tests/api/auth.test.ts
+
+      Action:
+      - Use Express router with TypeScript
+      - Implement POST /api/auth/login endpoint
+      - Accept {email, password} in request body
+      - Validate with Zod schema
+      - Use jose library for JWT generation (not jsonwebtoken - CommonJS issues)
+      - Hash password comparison with bcrypt
+      - Return httpOnly cookie with JWT on success
+      - Return 401 on invalid credentials
+      - Return 400 on validation errors
+
+      Verification:
+      1. Run: npm test -- auth.test.ts
+      2. Manual: curl -X POST localhost:3000/api/auth/login -H "Content-Type: application/json" -d '{"email":"test@example.com","password":"test123"}' -c cookies.txt
+      3. Check: Cookie file contains JWT token
+      4. Check: Server responds with 200 status
+
+      Done Criteria:
+      - ✓ Valid credentials return 200 + JWT cookie
+      - ✓ Invalid credentials return 401 + error message
+      - ✓ Missing fields return 400 + validation errors
+      - ✓ All tests pass (npm test)
+      - ✓ No TypeScript errors (npm run type-check)
+      - ✓ Code follows project style (npm run lint)
+
+  - name: "Fix Null Pointer Bug"
+    parameters:
+      task_description: "Fix null pointer error in user profile"
+      task_type: "fix"
+    expected_result: |
+      Task: Fix null pointer error in user profile
+
+      Name: Fix empty product name validation
+
+      Files:
+      - src/api/users/profile.ts
+      - tests/api/users.test.ts
+
+      Action:
+      - Add null check for user.address before accessing
+      - Return 404 if user not found
+      - Add test case for missing address
+
+      Verification:
+      1. npm test -- users.test.ts
+      2. Reproduce bug scenario (should no longer crash)
+      3. Check: Returns proper error instead of crash
+
+      Done Criteria:
+      - ✓ Null address handled gracefully
+      - ✓ No more crashes
+      - ✓ Test added for edge case
+      - ✓ All tests pass
+
+  - name: "Add Database Connection Pooling"
+    parameters:
+      task_description: "Configure PostgreSQL connection pool"
+      task_type: "implementation"
+    expected_result: |
+      Task: Add database connection pooling
+
+      Name: Configure PostgreSQL connection pool
+
+      Files:
+      - src/db/connection.ts
+      - src/config/database.ts
+
+      Action:
+      - Use pg library's Pool class
+      - Set max connections to 20
+      - Set idle timeout to 30 seconds
+      - Add connection error handling
+      - Export pool instance for queries
+
+      Verification:
+      1. npm test -- connection.test.ts
+      2. Check: Pool creates connections on demand
+      3. Check: Idle connections close after timeout
+      4. Check: Max connections limit enforced
+
+      Done Criteria:
+      - ✓ Pool instance exported from src/db/connection.ts
+      - ✓ Config loaded from environment variables
+      - ✓ Connection errors logged properly
+      - ✓ Tests verify pool behavior
+      - ✓ No connection leaks
+# === EXAMPLES END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Structured Task Execution Best Practices
+
+  ### 1. Task Size Guidelines
+
+  Keep tasks atomic (30-60 minutes of execution):
+  - 1-3 files modified
+  - 1-2 main actions
+  - 2-5 verification steps
+  - 3-5 done criteria
+
+  If larger, break into multiple tasks.
+
+  ### 2. Clear Action Instructions
+
+  **Good Actions** (Specific):
+  - "Use jose library for JWT (not jsonwebtoken - CommonJS issues)"
+  - "Add rate limiting (5 attempts per minute) using express-rate-limit"
+  - "Return JSON with {token, user} structure"
+
+  **Bad Actions** (Vague):
+  - "Make the login work better"
+  - "Fix authentication"
+  - "Add some validation"
+
+  ### 3. Measurable Done Criteria
+
+  **Good Criteria**:
+  - "Valid login returns JWT token in cookie"
+  - "Invalid credentials return 401 with error message"
+  - "All tests pass, no TypeScript errors"
+
+  **Bad Criteria**:
+  - "Login should be good enough"
+  - "Authentication works"
+  - "Code is done"
+
+  ### 4. Verification Commands
+
+  Always include:
+  - **Syntactic**: Compilation/type checking (npm run type-check, go build)
+  - **Unit**: Test execution (npm test, go test)
+  - **Integration**: Manual verification (curl commands, actual usage)
+
+  ### 5. Task Types
+
+  **Implementation**: New features
+  - Focus: What to build
+  - Verification: Feature works as specified
+
+  **Fix**: Bug corrections
+  - Focus: What's broken and how to fix
+  - Verification: Bug no longer reproduces
+
+  **Refactor**: Code improvements
+  - Focus: What to restructure and why
+  - Verification: Tests still pass, code clearer
+
+  **Test**: Test coverage
+  - Focus: What scenarios to cover
+  - Verification: Tests pass, coverage increases
+
+  ### 6. File Specification
+
+  **Good** (Explicit paths):
+  - src/api/auth/login.ts
+  - tests/api/auth.test.ts
+
+  **Bad** (Vague):
+  - "some auth files"
+  - "the main file"
+
+  ### 7. Anti-Patterns to Avoid
+
+  ❌ **Too Many Files**: Modifying 20+ files in one task
+  → Split into smaller tasks
+
+  ❌ **Missing Verification**: No verification step defined
+  → Add specific commands to verify completion
+
+  ❌ **Unmeasurable Criteria**: "Should work well"
+  → Use specific, testable criteria
+
+  ❌ **Vague Actions**: "Improve the code"
+  → Specify exact changes and approaches
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - verification_protocol
+  - test_generation
+  - root_cause_analysis
+  - structured_output

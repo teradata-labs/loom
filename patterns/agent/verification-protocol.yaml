@@ -1,0 +1,450 @@
+# === METADATA START ===
+name: verification_protocol
+title: "Three-Level Verification Protocol"
+description: |
+  Systematic verification framework for confirming task completion at three levels:
+  syntactic (compilation/parsing), unit (isolated functionality), and integration
+  (end-to-end behavior). Essential for quality assurance, preventing bugs in production,
+  and ensuring deliverables meet requirements before committing code.
+
+category: agent
+difficulty: intermediate
+backend_type: agent
+# === METADATA END ===
+
+# === USE_CASES START ===
+use_cases:
+  - Post-implementation quality checks
+  - Pre-commit verification
+  - Bug fix validation
+  - Feature completeness checking
+  - Refactoring safety verification
+  - Code generation validation
+  - API endpoint testing
+  - Database operation verification
+  - Integration testing
+  - Continuous quality assurance
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  - name: task_name
+    type: string
+    required: true
+    description: "Name of the task being verified"
+    example: "Add user registration endpoint"
+
+  - name: done_criteria
+    type: array[string]
+    required: true
+    description: "List of completion criteria to verify"
+    example: '["Valid registration works", "Duplicate email rejected", "All tests pass"]'
+
+  - name: verification_commands
+    type: object
+    required: false
+    description: "Commands to run for each verification level"
+    example: |
+      {
+        "syntactic": "npm run type-check",
+        "unit": "npm test -- register.test.ts",
+        "integration": "curl -X POST http://localhost:3000/api/auth/register"
+      }
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  full_verification:
+    description: "Run all three verification levels"
+    content: |
+      ## Verification Results for: {{task_name}}
+
+      ### Level 1: Syntactic Verification ✓/✗
+      Does it compile/parse correctly?
+
+      Run:
+      {{#if verification_commands.syntactic}}
+      - {{verification_commands.syntactic}}
+      {{else}}
+      - npm run type-check (or equivalent)
+      - npm run lint (or equivalent)
+      {{/if}}
+
+      Pass Criteria:
+      - [ ] No compilation errors
+      - [ ] No type errors
+      - [ ] Linter passes
+      - [ ] Formatter applied
+
+      ### Level 2: Unit Verification ✓/✗
+      Does it work in isolation?
+
+      Run:
+      {{#if verification_commands.unit}}
+      - {{verification_commands.unit}}
+      {{else}}
+      - Run relevant unit tests
+      {{/if}}
+
+      Pass Criteria:
+      - [ ] New tests added (if applicable)
+      - [ ] All tests pass
+      - [ ] No skipped tests
+      - [ ] Coverage maintained or improved
+
+      ### Level 3: Integration Verification ✓/✗
+      Does it work end-to-end?
+
+      Run:
+      {{#if verification_commands.integration}}
+      - {{verification_commands.integration}}
+      {{else}}
+      - Manual test or integration test
+      {{/if}}
+
+      Pass Criteria:
+      - [ ] Feature works as specified
+      - [ ] Edge cases handled
+      - [ ] Error cases return proper responses
+      - [ ] No console errors/warnings
+
+      ### Done Criteria Check ✓/✗
+      {{#each done_criteria}}
+      - [ ] {{this}}
+      {{/each}}
+
+      ### Commit Ready? ✓/✗
+      - All checks pass → Ready to commit
+      - Any check fails → Fix before committing
+    required_parameters:
+      - task_name
+      - done_criteria
+
+  quick_verification:
+    description: "Abbreviated verification for simple changes"
+    content: |
+      Quick Verification: {{task_name}}
+
+      Syntactic: [Run type-check/lint]
+      Unit Tests: [Run tests]
+      Manual Check: [Verify functionality]
+
+      Done Criteria:
+      {{#each done_criteria}}
+      - {{this}}
+      {{/each}}
+
+      Ready to commit: Yes/No
+    required_parameters:
+      - task_name
+      - done_criteria
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "User Registration Endpoint"
+    parameters:
+      task_name: "Add user registration endpoint"
+      done_criteria:
+        - "Valid registration works"
+        - "Duplicate email rejected"
+        - "Weak password rejected"
+        - "Missing fields rejected"
+        - "All tests pass"
+      verification_commands:
+        syntactic: "npm run type-check && npm run lint"
+        unit: "npm test -- register.test.ts"
+        integration: "curl -X POST http://localhost:3000/api/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"new@example.com\",\"password\":\"SecurePass123!\"}'"
+    expected_result: |
+      ## Verification Results for: Add user registration endpoint
+
+      ### Level 1: Syntactic Verification ✅
+      npm run type-check → 0 errors
+      npm run lint → 0 warnings
+
+      ### Level 2: Unit Verification ✅
+      npm test -- register.test.ts → 8/8 passing
+      - Valid registration works
+      - Duplicate email rejected
+      - Weak password rejected
+      - Missing fields rejected
+
+      ### Level 3: Integration Verification ✅
+      curl -X POST http://localhost:3000/api/auth/register \
+        -H "Content-Type: application/json" \
+        -d '{"email":"new@example.com","password":"SecurePass123!"}'
+
+      Result: 201 Created, user in database
+
+      ### Done Criteria Check ✅
+      - ✓ Valid registration works
+      - ✓ Duplicate email rejected
+      - ✓ Weak password rejected
+      - ✓ Missing fields rejected
+      - ✓ All tests pass
+
+      ### Commit Ready: ✅ Yes
+
+  - name: "Bug Fix Verification"
+    parameters:
+      task_name: "Fix product search returning deleted products"
+      done_criteria:
+        - "Bug fixed and verified"
+        - "Regression test added"
+        - "No new issues introduced"
+        - "All tests pass"
+    expected_result: |
+      ## Verification Results for: Fix product search returning deleted products
+
+      ### Level 1: Syntactic Verification ✅
+      No compilation errors
+
+      ### Level 2: Unit Verification ✅
+      npm test -- search.test.ts → 12/12 passing
+      - Added test: search excludes deleted products
+
+      ### Level 3: Integration Verification ✅
+      curl http://localhost:3000/api/products/search?q=widget
+      Result: Only active products returned
+
+      ### Regression Check ✅
+      - Search still works for active products
+      - Pagination still works
+      - Filters still work
+
+      ### Done Criteria Check ✅
+      - ✓ Bug fixed and verified
+      - ✓ Regression test added
+      - ✓ No new issues introduced
+      - ✓ All tests pass
+
+      ### Commit Ready: ✅ Yes
+
+  - name: "Database Migration Verification"
+    parameters:
+      task_name: "Add indexes for query performance"
+      done_criteria:
+        - "Indexes created successfully"
+        - "Query performance improved"
+        - "No schema errors"
+        - "Migration reversible"
+    expected_result: |
+      ## Verification Results for: Add indexes for query performance
+
+      ### Level 1: Syntactic Verification ✅
+      Migration SQL valid
+      No syntax errors
+
+      ### Level 2: Unit Verification ✅
+      Migration runs without errors
+      Rollback works correctly
+
+      ### Level 3: Integration Verification ✅
+      Query performance test:
+      - Before: 2000ms
+      - After: 150ms
+      - Improvement: 93%
+
+      ### Done Criteria Check ✅
+      - ✓ Indexes created successfully
+      - ✓ Query performance improved
+      - ✓ No schema errors
+      - ✓ Migration reversible
+
+      ### Commit Ready: ✅ Yes
+# === EXAMPLES END ===
+
+# === COMMON_VERIFICATION_COMMANDS START ===
+common_verification_commands: |
+  ## Web APIs
+
+  ```bash
+  # Test GET endpoint
+  curl http://localhost:3000/api/products
+
+  # Test POST endpoint
+  curl -X POST http://localhost:3000/api/products \
+    -H "Content-Type: application/json" \
+    -d '{"name":"Widget","price":9.99}'
+
+  # Test with authentication
+  curl http://localhost:3000/api/protected \
+    -H "Authorization: Bearer $TOKEN"
+
+  # Check response structure
+  curl http://localhost:3000/api/products | jq '.[0]'
+  ```
+
+  ## Databases
+
+  ```bash
+  # PostgreSQL
+  psql -d mydb -c "SELECT COUNT(*) FROM products"
+
+  # Check constraints work
+  psql -d mydb -c "INSERT INTO products (name, price) VALUES ('', -1)"
+  # Expected: Constraint violation error
+
+  # SQLite
+  sqlite3 mydb.db "SELECT * FROM products LIMIT 5"
+
+  # MySQL
+  mysql -u user -p mydb -e "SHOW TABLES"
+  ```
+
+  ## File Operations
+
+  ```bash
+  # Check file created
+  test -f path/to/file.txt && echo "File exists"
+
+  # Check file content
+  grep "expected text" path/to/file.txt
+
+  # Check permissions
+  ls -la path/to/file.sh | grep "rwxr-xr-x"
+
+  # Check file size
+  wc -l path/to/file.csv  # Line count
+  du -h path/to/file.json  # Size
+  ```
+
+  ## Process/Service Checks
+
+  ```bash
+  # Check service running
+  ps aux | grep myservice
+
+  # Check port listening
+  netstat -tulpn | grep :3000
+  lsof -i :3000
+
+  # Check logs
+  tail -n 50 /var/log/myapp.log
+
+  # Check health endpoint
+  curl http://localhost:3000/health
+  ```
+# === COMMON_VERIFICATION_COMMANDS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Verification Protocol Best Practices
+
+  ### 1. Always Verify - Never Assume
+
+  ❌ "The code looks right" - ALWAYS run verification
+  ✅ Run all three levels before marking complete
+
+  ### 2. Verification Order
+
+  Run levels in order (fail fast):
+  1. **Syntactic** first (fastest, catches obvious errors)
+  2. **Unit** second (isolated, deterministic)
+  3. **Integration** last (slowest, but most realistic)
+
+  Stop at first failure and fix before continuing.
+
+  ### 3. Automate Where Possible
+
+  **Good**:
+  ```bash
+  npm test && npm run lint && npm run integration-test
+  ```
+
+  **Bad**: Manual testing only with no automated checks
+
+  ### 4. Document Verification Steps
+
+  Include verification commands in task definition so they can be:
+  - Run by CI/CD
+  - Repeated by other developers
+  - Used for regression testing
+
+  ### 5. Edge Cases and Error Paths
+
+  Don't just test happy path:
+  - Null/empty inputs
+  - Invalid data
+  - Boundary conditions
+  - Error responses
+  - Timeout scenarios
+
+  ### 6. Regression Prevention
+
+  For bug fixes, always add test that would have caught the bug:
+  ```
+  Bug: Null pointer on missing user
+  Test: Add test case for missing user
+  Verify: Test fails on old code, passes on fixed code
+  ```
+
+  ### 7. Integration Testing Tips
+
+  **Web APIs**:
+  - Test all HTTP methods (GET, POST, PUT, DELETE)
+  - Verify status codes (200, 400, 401, 404, 500)
+  - Check response structure
+  - Test with authentication
+
+  **Databases**:
+  - Verify data written correctly
+  - Check constraints enforced
+  - Test rollback scenarios
+  - Verify query performance
+
+  **Files**:
+  - Check file created/modified
+  - Verify content correct
+  - Test permissions
+  - Check for data corruption
+
+  ### 8. Pre-Commit Checklist
+
+  Before git commit:
+  1. ✓ Syntactic verification passes
+  2. ✓ All tests pass (no skipped)
+  3. ✓ Integration testing complete
+  4. ✓ All done criteria met
+  5. ✓ Code reviewed (if applicable)
+  6. ✓ Documentation updated (if needed)
+
+  ### 9. Handling Failures
+
+  **If Syntactic Fails**:
+  - Fix compilation/lint errors immediately
+  - These block all other work
+
+  **If Unit Tests Fail**:
+  - Run failing test in isolation with --verbose
+  - Check git diff to see what changed
+  - Fix code or update test (never skip tests)
+
+  **If Integration Fails**:
+  - Check logs for errors
+  - Verify prerequisites (DB running, env vars set, etc.)
+  - Test each layer separately to isolate failure
+
+  ### 10. Verification Anti-Patterns
+
+  ❌ **Skipping Tests**: "I'll fix the tests later"
+  → Fix now or don't commit
+
+  ❌ **Manual-Only**: Only manual testing, no automation
+  → Add automated tests
+
+  ❌ **Happy Path Only**: Only testing success cases
+  → Test error cases and edge cases
+
+  ❌ **Verification in Production**: "Let's see if it works in prod"
+  → Verify in dev/staging first
+
+  ❌ **Ignoring Warnings**: "It's just a warning"
+  → Warnings become errors eventually
+# === BEST_PRACTICES END ===
+
+related_patterns:
+  - structured_task_execution
+  - test_generation
+  - root_cause_analysis
+  - debugging
