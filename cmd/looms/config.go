@@ -777,7 +777,7 @@ func setDefaults() {
 
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
-	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250514")
+	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
@@ -827,8 +827,9 @@ func setDefaults() {
 	}
 
 	// Prompts defaults
-	// Use file-based registry as default
-	viper.SetDefault("prompts.source", "file")
+	// Prompts are optional - agents use hardcoded fallbacks if not configured
+	// Users must explicitly enable prompts in their config if desired
+	viper.SetDefault("prompts.source", "") // Empty = disabled, agents use fallbacks
 	viper.SetDefault("prompts.file_dir", "./prompts")
 	viper.SetDefault("prompts.cache_size", 1000)
 	viper.SetDefault("prompts.enable_reload", true)

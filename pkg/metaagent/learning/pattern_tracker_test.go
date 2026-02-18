@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"

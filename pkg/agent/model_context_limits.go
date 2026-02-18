@@ -23,8 +23,11 @@ type ModelContextLimits struct {
 // Models are keyed by their base name (without version/variant suffixes).
 // If a model is not in this table, use the provider's default or auto-detect.
 var modelContextLimits = map[string]ModelContextLimits{
-	// Anthropic Claude models
-	"claude-sonnet-4":   {MaxContextTokens: 200000, ReservedOutputTokens: 20000}, // Claude Sonnet 4.5
+	// Anthropic Claude models (current)
+	"claude-opus-4":   {MaxContextTokens: 200000, ReservedOutputTokens: 128000}, // Claude Opus 4.6
+	"claude-sonnet-4": {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Sonnet 4.5
+	"claude-haiku-4":  {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Haiku 4.5
+	// Anthropic Claude models (legacy)
 	"claude-3-5-sonnet": {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-opus":     {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-sonnet":   {MaxContextTokens: 200000, ReservedOutputTokens: 20000},

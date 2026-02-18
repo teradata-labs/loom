@@ -38,7 +38,7 @@ func TestNewClient(t *testing.T) {
 		t.Errorf("Expected name 'anthropic', got %s", client.Name())
 	}
 
-	if client.Model() != "claude-3-5-sonnet-20241022" {
+	if client.Model() != "claude-sonnet-4-5-20250929" {
 		t.Errorf("Expected default model, got %s", client.Model())
 	}
 }
@@ -56,7 +56,7 @@ func TestClient_Chat_SimpleText(t *testing.T) {
 			ID:         "msg_123",
 			Type:       "message",
 			Role:       "assistant",
-			Model:      "claude-3-5-sonnet-20241022",
+			Model:      "claude-sonnet-4-5-20250929",
 			StopReason: "end_turn",
 			Content: []ContentBlock{
 				{Type: "text", Text: "Hello! How can I help you?"},
@@ -116,7 +116,7 @@ func TestClient_Chat_WithToolCalls(t *testing.T) {
 			ID:         "msg_123",
 			Type:       "message",
 			Role:       "assistant",
-			Model:      "claude-3-5-sonnet-20241022",
+			Model:      "claude-sonnet-4-5-20250929",
 			StopReason: "tool_use",
 			Content: []ContentBlock{
 				{Type: "text", Text: "I'll execute the tool for you."},
@@ -226,6 +226,80 @@ func TestClient_ConvertMessages(t *testing.T) {
 	}
 }
 
+func TestContentBlock_MarshalJSON_ToolUseAlwaysHasInput(t *testing.T) {
+	// Anthropic API requires tool_use blocks to always have "input" present.
+	// Even when the LLM returns a tool call with no arguments, the serialized
+	// JSON must include "input": {} — omitting it causes a 400 error.
+
+	tests := []struct {
+		name     string
+		block    ContentBlock
+		wantKey  string // key that must be present
+		wantType string // expected type of the key's value
+	}{
+		{
+			name:     "tool_use with nil input gets empty object",
+			block:    ContentBlock{Type: "tool_use", ID: "t1", Name: "my_tool", Input: nil},
+			wantKey:  "input",
+			wantType: "object",
+		},
+		{
+			name:     "tool_use with empty input gets empty object",
+			block:    ContentBlock{Type: "tool_use", ID: "t1", Name: "my_tool", Input: map[string]interface{}{}},
+			wantKey:  "input",
+			wantType: "object",
+		},
+		{
+			name:     "tool_use with populated input preserves it",
+			block:    ContentBlock{Type: "tool_use", ID: "t1", Name: "my_tool", Input: map[string]interface{}{"key": "val"}},
+			wantKey:  "input",
+			wantType: "object",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.block)
+			if err != nil {
+				t.Fatalf("MarshalJSON failed: %v", err)
+			}
+
+			var m map[string]interface{}
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatalf("Unmarshal failed: %v", err)
+			}
+
+			val, ok := m[tt.wantKey]
+			if !ok {
+				t.Fatalf("key %q missing from serialized JSON: %s", tt.wantKey, string(data))
+			}
+
+			// Verify it's an object (map)
+			if _, isMap := val.(map[string]interface{}); !isMap {
+				t.Errorf("expected %q to be an object, got %T: %s", tt.wantKey, val, string(data))
+			}
+		})
+	}
+
+	// Also verify that text blocks do NOT include "input"
+	t.Run("text block omits input", func(t *testing.T) {
+		block := ContentBlock{Type: "text", Text: "hello"}
+		data, err := json.Marshal(block)
+		if err != nil {
+			t.Fatalf("MarshalJSON failed: %v", err)
+		}
+
+		var m map[string]interface{}
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+
+		if _, ok := m["input"]; ok {
+			t.Errorf("text block should NOT have 'input' key: %s", string(data))
+		}
+	})
+}
+
 func TestClient_ConvertMessages_WithImages(t *testing.T) {
 	client := &Client{}
 
@@ -289,6 +363,118 @@ func TestClient_ConvertMessages_WithImages(t *testing.T) {
 		if apiMessages[0].Content[1].Source.MediaType != "image/png" {
 			t.Errorf("Expected media type 'image/png', got %s", apiMessages[0].Content[1].Source.MediaType)
 		}
+	}
+}
+
+func TestClient_ChatStream_ToolInputParsing(t *testing.T) {
+	// Simulate Anthropic SSE streaming with tool_use including input_json_delta events.
+	// This verifies that tool call inputs are properly accumulated and parsed.
+	ssePayload := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5-20250929","content":[],"stop_reason":null,"usage":{"input_tokens":50,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll write that file."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_abc","name":"workspace"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"action\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" \"write\", "}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"path\": \"/tmp/test.txt\", "}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"content\": \"hello world\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(ssePayload))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		APIKey:   "test-key",
+		Endpoint: server.URL,
+	})
+
+	var tokens []string
+	tokenCB := func(token string) {
+		tokens = append(tokens, token)
+	}
+
+	messages := []types.Message{
+		{Role: "user", Content: "Write a file"},
+	}
+
+	resp, err := client.ChatStream(context.Background(), messages, nil, tokenCB)
+	if err != nil {
+		t.Fatalf("ChatStream failed: %v", err)
+	}
+
+	// Verify text content was captured
+	if resp.Content != "I'll write that file." {
+		t.Errorf("Expected text content, got %q", resp.Content)
+	}
+
+	// Verify token callback was called
+	if len(tokens) == 0 {
+		t.Error("Expected token callback to be called")
+	}
+
+	// Verify tool call was captured with input
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("Expected 1 tool call, got %d", len(resp.ToolCalls))
+	}
+
+	tc := resp.ToolCalls[0]
+	if tc.ID != "toolu_abc" {
+		t.Errorf("Expected tool ID 'toolu_abc', got %q", tc.ID)
+	}
+	if tc.Name != "workspace" {
+		t.Errorf("Expected tool name 'workspace', got %q", tc.Name)
+	}
+
+	// Critical check: verify input was parsed from input_json_delta events
+	if tc.Input == nil {
+		t.Fatal("Tool call input is nil — input_json_delta events were not handled")
+	}
+	action, _ := tc.Input["action"].(string)
+	if action != "write" {
+		t.Errorf("Expected action 'write', got %q", action)
+	}
+	path, _ := tc.Input["path"].(string)
+	if path != "/tmp/test.txt" {
+		t.Errorf("Expected path '/tmp/test.txt', got %q", path)
+	}
+	content, _ := tc.Input["content"].(string)
+	if content != "hello world" {
+		t.Errorf("Expected content 'hello world', got %q", content)
+	}
+
+	// Verify stop reason
+	if resp.StopReason != "tool_use" {
+		t.Errorf("Expected stop_reason 'tool_use', got %q", resp.StopReason)
 	}
 }
 
