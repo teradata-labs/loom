@@ -304,18 +304,22 @@ jobs:
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
 
-      - name: Fix SARIF schema compliance
+      - name: Review security findings
         run: |
-          # Strip invalid relationships entries that cause SARIF validation failures
-          jq '(.runs[].tool.driver.rules // []) |= map(del(.relationships))' \
-            results.sarif > results-fixed.sarif
-          mv results-fixed.sarif results.sarif
+          echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results.sarif ]; then
+            FINDINGS=$(jq '[.runs[].results[]] | length' results.sarif)
+            echo "Found $FINDINGS gosec findings (see artifacts for details)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No SARIF output produced" >> $GITHUB_STEP_SUMMARY
+          fi
 
-      - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4.32.3
-        continue-on-error: true  # Don't fail the build if code scanning is not enabled
+      - name: Upload security report artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          sarif_file: results.sarif
+          name: nightly-security-report-${{ github.run_number }}
+          path: results.sarif
+          retention-days: 30
 
   # ============================================================================
   # Job 6: Create Nightly Release (Optional)
