@@ -481,7 +481,7 @@ Direct access to Google's latest Gemini models via Google AI Studio with native 
 ```yaml
 llm:
   provider: gemini
-  gemini_model: gemini-2.5-flash  # or gemini-3-pro-preview, gemini-2.5-pro
+  gemini_model: gemini-3-flash-preview  # or gemini-3-pro-preview, gemini-2.5-pro, gemini-2.5-flash
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -495,10 +495,11 @@ llm:
 **Available Models**:
 | Model | Context | Input Cost | Output Cost | Best For |
 |-------|---------|------------|-------------|----------|
-| `gemini-3-pro-preview` | 1M+ | $3/1M tokens | $15/1M tokens | Most intelligent |
-| `gemini-2.5-pro` | 1M+ | $1.875/1M tokens | $12.50/1M tokens | Complex reasoning |
-| `gemini-2.5-flash` | 1M+ | $0.30/1M tokens | $2.50/1M tokens | Speed (recommended) |
-| `gemini-2.5-flash-lite` | 1M+ | $0.30/1M tokens | $2.50/1M tokens | Fastest/cheapest |
+| `gemini-3-pro-preview` | 1M | $2-4/1M tokens | $12-18/1M tokens | Most intelligent |
+| `gemini-3-flash-preview` | 1M | Free (preview) | Free (preview) | Balanced (default) |
+| `gemini-2.5-pro` | 1M | $1.25-2.50/1M tokens | $10-15/1M tokens | Complex reasoning |
+| `gemini-2.5-flash` | 1M | $0.30/1M tokens | $2.50/1M tokens | Stable workhorse |
+| `gemini-2.5-flash-lite` | 1M | $0.10/1M tokens | $0.40/1M tokens | Fastest/cheapest |
 
 **Tool Calling**:
 - Native support via Gemini's function calling API
@@ -506,10 +507,10 @@ llm:
 - Automatic conversion from Loom tool format
 
 **When to Use**:
-- Very long context required (1M+ tokens)
+- Very long context required (1M tokens)
 - Google ecosystem integration
-- Cost-effective quality (2.5 Flash)
-- Free tier for development
+- Cost-effective quality (2.5 Flash or 3 Flash preview)
+- Free tier for development (Gemini 3 Flash preview)
 
 **Limitations**:
 - Different API format than OpenAI (not compatible)
@@ -711,7 +712,7 @@ mistral_model: mistral-large-latest
 
 **Gemini**:
 ```yaml
-gemini_model: gemini-2.5-flash
+gemini_model: gemini-3-flash-preview
 ```
 
 **HuggingFace**:

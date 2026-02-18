@@ -31,6 +31,11 @@ type ToolCall struct {
 
 	// Input contains the tool parameters as JSON
 	Input map[string]interface{}
+
+	// ThoughtSignature is an opaque token from the provider that must be
+	// echoed back verbatim in conversation history. Used by Gemini 3+ models
+	// to preserve reasoning context across multi-turn function calling.
+	ThoughtSignature string
 }
 
 // ContentBlock represents a piece of content in a multi-modal message.

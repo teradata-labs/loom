@@ -179,7 +179,7 @@ func getDefaultModelForProvider(cfg *Config) string {
 		if cfg.LLM.GeminiModel != "" {
 			return cfg.LLM.GeminiModel
 		}
-		return "gemini-2.0-flash-exp"
+		return "gemini-3-flash-preview"
 	case "huggingface":
 		if cfg.LLM.HuggingFaceModel != "" {
 			return cfg.LLM.HuggingFaceModel
