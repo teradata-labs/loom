@@ -187,6 +187,12 @@ jobs:
       - name: Generate Proto Files
         run: buf generate
 
+      - name: Generate weaver.yaml from template
+        run: go run ./cmd/generate-weaver
+
+      - name: Build all packages
+        run: go build -tags fts5 -v ./...
+
       - name: Build all binaries
         shell: bash
         run: |
