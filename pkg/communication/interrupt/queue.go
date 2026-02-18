@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4" // SQLite driver
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
