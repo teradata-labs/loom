@@ -23,9 +23,9 @@ import (
 	"go.uber.org/zap"
 
 	// SQL drivers
-	_ "github.com/go-sql-driver/mysql"      // mysql
-	_ "github.com/lib/pq"                   // postgres
-	_ "github.com/mutecomm/go-sqlcipher/v4" // sqlite3
+	_ "github.com/go-sql-driver/mysql"                      // mysql
+	_ "github.com/lib/pq"                                   // postgres
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // sqlite3
 )
 
 // LoadFromYAML loads a backend from a YAML configuration file

@@ -39,6 +39,9 @@ type Part struct {
 	InlineData       *InlineData       `json:"inlineData,omitempty"`
 	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
+	// ThoughtSignature is an opaque encrypted token returned by Gemini 3+ models.
+	// Must be echoed back verbatim in conversation history for function calling to work.
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 // InlineData represents inline data like images.

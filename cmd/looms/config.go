@@ -777,7 +777,7 @@ func setDefaults() {
 
 	// LLM defaults
 	viper.SetDefault("llm.provider", "anthropic")
-	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250514")
+	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
@@ -786,7 +786,7 @@ func setDefaults() {
 	viper.SetDefault("llm.azure_openai_endpoint", "")
 	viper.SetDefault("llm.azure_openai_deployment_id", "")
 	viper.SetDefault("llm.mistral_model", "mistral-large-latest")
-	viper.SetDefault("llm.gemini_model", "gemini-2.5-flash")
+	viper.SetDefault("llm.gemini_model", "gemini-3-flash-preview")
 	viper.SetDefault("llm.huggingface_model", "meta-llama/Meta-Llama-3.1-70B-Instruct")
 	viper.SetDefault("llm.temperature", 1.0)
 	viper.SetDefault("llm.max_tokens", 4096)
@@ -827,8 +827,9 @@ func setDefaults() {
 	}
 
 	// Prompts defaults
-	// Use file-based registry as default
-	viper.SetDefault("prompts.source", "file")
+	// Prompts are optional - agents use hardcoded fallbacks if not configured
+	// Users must explicitly enable prompts in their config if desired
+	viper.SetDefault("prompts.source", "") // Empty = disabled, agents use fallbacks
 	viper.SetDefault("prompts.file_dir", "./prompts")
 	viper.SetDefault("prompts.cache_size", 1000)
 	viper.SetDefault("prompts.enable_reload", true)
@@ -1257,7 +1258,7 @@ llm:
   # mistral_api_key: set via keyring (looms config set-key mistral_api_key)
 
   # Google Gemini configuration
-  gemini_model: gemini-2.5-flash
+  gemini_model: gemini-3-flash-preview
   # gemini_api_key: set via keyring (looms config set-key gemini_api_key)
 
   # HuggingFace configuration

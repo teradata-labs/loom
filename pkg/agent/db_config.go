@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"os"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4" // Auto-registers as "sqlite3"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 )
 
 // DBConfig holds database configuration including optional encryption.
@@ -63,6 +63,10 @@ func OpenDB(config DBConfig) (*sql.DB, error) {
 	}
 
 	// Set encryption key if encryption is enabled
+	if config.EncryptDatabase && !sqlitedriver.EncryptionSupported {
+		db.Close()
+		return nil, fmt.Errorf("database encryption requires CGO (SQLCipher); not available in this build")
+	}
 	if config.EncryptDatabase {
 		// Check for encryption key
 		key := config.EncryptionKey

@@ -17,7 +17,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 
 	// Import SQLite driver for tests
-	_ "github.com/mutecomm/go-sqlcipher/v4"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 )
 
 func TestNewBackend_File(t *testing.T) {

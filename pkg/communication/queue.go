@@ -23,7 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -132,7 +132,7 @@ func NewMessageQueue(dbPath string, tracer observability.Tracer, logger *zap.Log
 	if dbPath == ":memory:" {
 		// For in-memory databases with shared cache, use file URI format
 		// This allows multiple connections to share the same in-memory database
-		dbURL = "file::memory:?mode=memory&cache=shared&_busy_timeout=5000"
+		dbURL = "file::memory:?mode=memory&cache=shared"
 	}
 	db, err := sql.Open("sqlite3", dbURL)
 	if err != nil {

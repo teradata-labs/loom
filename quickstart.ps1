@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 <#
 .SYNOPSIS
@@ -128,13 +128,16 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 Write-Step "[3/8] Checking prerequisites (go, just, buf)..."
 Write-Host ""
 
-$NeedsInstall = $false
+# Check for winget (available on Windows 10 1809+ and Windows 11)
+$WingetAvailable = Get-Command winget -ErrorAction SilentlyContinue
+
+$MissingTools = @()
 
 # Check Go
 $GoInstalled = Get-Command go -ErrorAction SilentlyContinue
 if (-not $GoInstalled) {
     Write-Warning "Go not found"
-    $NeedsInstall = $true
+    $MissingTools += "go"
 } else {
     $GoVersion = & go version
     Write-Success "Go installed: $GoVersion"
@@ -144,7 +147,7 @@ if (-not $GoInstalled) {
 $JustInstalled = Get-Command just -ErrorAction SilentlyContinue
 if (-not $JustInstalled) {
     Write-Warning "Just not found"
-    $NeedsInstall = $true
+    $MissingTools += "just"
 } else {
     $JustVersion = & just --version
     Write-Success "Just installed: $JustVersion"
@@ -154,7 +157,7 @@ if (-not $JustInstalled) {
 $BufInstalled = Get-Command buf -ErrorAction SilentlyContinue
 if (-not $BufInstalled) {
     Write-Warning "Buf not found"
-    $NeedsInstall = $true
+    $MissingTools += "buf"
 } else {
     $BufVersion = & buf --version
     Write-Success "Buf installed: $BufVersion"
@@ -162,39 +165,140 @@ if (-not $BufInstalled) {
 
 Write-Host ""
 
-if ($NeedsInstall) {
-    Write-ColorOutput "╔════════════════════════════════════════════════════════════╗" "Yellow"
-    Write-ColorOutput "║  Missing Prerequisites - Manual Installation Required     ║" "Yellow"
-    Write-ColorOutput "╚════════════════════════════════════════════════════════════╝" "Yellow"
-    Write-Host ""
-
-    Write-Info "Please install the following prerequisites:"
-    Write-Host ""
-
-    if (-not $GoInstalled) {
-        Write-ColorOutput "1. Go (Golang):" "Yellow"
-        Write-Info "   Download: https://go.dev/dl/"
-        Write-Info "   Or with winget: winget install GoLang.Go"
+if ($MissingTools.Count -gt 0) {
+    if ($WingetAvailable) {
+        # Auto-install missing prerequisites via winget
+        Write-ColorOutput "╔════════════════════════════════════════════════════════════╗" "Blue"
+        Write-ColorOutput "║  Installing missing prerequisites via winget               ║" "Blue"
+        Write-ColorOutput "╚════════════════════════════════════════════════════════════╝" "Blue"
         Write-Host ""
-    }
 
-    if (-not $JustInstalled) {
-        Write-ColorOutput "2. Just (task runner):" "Yellow"
-        Write-Info "   Download: https://github.com/casey/just/releases"
-        Write-Info "   Or with cargo: cargo install just"
-        Write-Info "   Or with scoop: scoop install just"
+        $InstallFailed = $false
+
+        if ($MissingTools -contains "go") {
+            Write-Info "Installing Go..."
+            winget install Golang.Go --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to install Go via winget"
+                $InstallFailed = $true
+            } else {
+                Write-Success "Go installed"
+            }
+            Write-Host ""
+        }
+
+        if ($MissingTools -contains "just") {
+            Write-Info "Installing Just..."
+            winget install --id Casey.Just --exact --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to install Just via winget"
+                $InstallFailed = $true
+            } else {
+                Write-Success "Just installed"
+            }
+            Write-Host ""
+        }
+
+        if ($MissingTools -contains "buf") {
+            Write-Info "Installing Buf..."
+            winget install bufbuild.buf --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to install Buf via winget"
+                $InstallFailed = $true
+            } else {
+                Write-Success "Buf installed"
+            }
+            Write-Host ""
+        }
+
+        if ($InstallFailed) {
+            Write-Warning "Some installations failed. Check the errors above and install manually."
+            Write-Warning "After installing, run this script again."
+            exit 1
+        }
+
+        # Refresh PATH so newly installed tools are found in this session
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+
+        # Verify installations
+        Write-Info "Verifying installations..."
+        $VerifyFailed = $false
+
+        if ($MissingTools -contains "go") {
+            $GoCheck = Get-Command go -ErrorAction SilentlyContinue
+            if (-not $GoCheck) {
+                Write-Error "Go installed but not found in PATH"
+                $VerifyFailed = $true
+            } else {
+                Write-Success "Go verified: $(& go version)"
+            }
+        }
+
+        if ($MissingTools -contains "just") {
+            $JustCheck = Get-Command just -ErrorAction SilentlyContinue
+            if (-not $JustCheck) {
+                Write-Error "Just installed but not found in PATH"
+                $VerifyFailed = $true
+            } else {
+                Write-Success "Just verified: $(& just --version)"
+            }
+        }
+
+        if ($MissingTools -contains "buf") {
+            $BufCheck = Get-Command buf -ErrorAction SilentlyContinue
+            if (-not $BufCheck) {
+                Write-Error "Buf installed but not found in PATH"
+                $VerifyFailed = $true
+            } else {
+                Write-Success "Buf verified: $(& buf --version)"
+            }
+        }
+
+        if ($VerifyFailed) {
+            Write-Host ""
+            Write-Warning "Some tools were installed but not found in PATH."
+            Write-Warning "Please restart PowerShell and run this script again."
+            exit 1
+        }
+
         Write-Host ""
-    }
-
-    if (-not $BufInstalled) {
-        Write-ColorOutput "3. Buf (Protocol Buffers):" "Yellow"
-        Write-Info "   Download: https://buf.build/docs/installation"
-        Write-Info "   Or with winget: winget install bufbuild.buf"
+    } else {
+        # No winget - show manual install instructions
+        Write-ColorOutput "╔════════════════════════════════════════════════════════════╗" "Yellow"
+        Write-ColorOutput "║  Missing Prerequisites - Manual Installation Required     ║" "Yellow"
+        Write-ColorOutput "╚════════════════════════════════════════════════════════════╝" "Yellow"
         Write-Host ""
-    }
 
-    Write-Warning "After installing prerequisites, run this script again."
-    exit 1
+        Write-Warning "winget not found - cannot auto-install prerequisites."
+        Write-Info "Install winget (recommended): https://aka.ms/getwinget"
+        Write-Host ""
+        Write-Info "Or install the following manually:"
+        Write-Host ""
+
+        if ($MissingTools -contains "go") {
+            Write-ColorOutput "  Go (Golang):" "Yellow"
+            Write-Info "    winget install Golang.Go"
+            Write-Info "    Or download: https://go.dev/dl/"
+            Write-Host ""
+        }
+
+        if ($MissingTools -contains "just") {
+            Write-ColorOutput "  Just (task runner):" "Yellow"
+            Write-Info "    winget install --id Casey.Just --exact"
+            Write-Info "    Or download: https://github.com/casey/just/releases"
+            Write-Host ""
+        }
+
+        if ($MissingTools -contains "buf") {
+            Write-ColorOutput "  Buf (Protocol Buffers):" "Yellow"
+            Write-Info "    winget install bufbuild.buf"
+            Write-Info "    Or download: https://buf.build/docs/installation"
+            Write-Host ""
+        }
+
+        Write-Warning "After installing prerequisites, run this script again."
+        exit 1
+    }
 }
 
 # ========================================
@@ -371,7 +475,7 @@ observability:
   enabled: true
   mode: embedded
   storage_type: sqlite
-  sqlite_path: "$DataDir\observability.db"
+  sqlite_path: "$($DataDir -replace '\\', '/')/observability.db"
 
 # MCP servers (add your own)
 mcp:
