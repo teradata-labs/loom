@@ -78,7 +78,7 @@ type Config struct {
 	Profile         string // Optional: AWS profile name from ~/.aws/config
 
 	// Model Configuration
-	ModelID     string  // Default: anthropic.claude-3-5-sonnet-20241022-v2:0
+	ModelID     string  // Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 	MaxTokens   int     // Default: 4096
 	Temperature float64 // Default: 1.0
 

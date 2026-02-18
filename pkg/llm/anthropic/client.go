@@ -33,7 +33,7 @@ import (
 
 const (
 	// DefaultAnthropicModel is the default Claude model
-	DefaultAnthropicModel = "claude-3-5-sonnet-20241022"
+	DefaultAnthropicModel = "claude-sonnet-4-5-20250929"
 	// DefaultAnthropicEndpoint is the default Anthropic API endpoint
 	DefaultAnthropicEndpoint = "https://api.anthropic.com/v1/messages"
 	// DefaultMaxTokens is the default maximum tokens per request
@@ -65,7 +65,7 @@ type Client struct {
 // Config holds configuration for the Anthropic client.
 type Config struct {
 	APIKey            string
-	Model             string // Default: claude-3-5-sonnet-20241022
+	Model             string // Default: claude-sonnet-4-5-20250929
 	Endpoint          string // Default: https://api.anthropic.com/v1/messages
 	Timeout           time.Duration
 	MaxTokens         int     // Default: 4096
@@ -243,11 +243,15 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message
 
 			// Add tool calls if present (sanitize names for API compatibility)
 			for _, tc := range msg.ToolCalls {
+				input := tc.Input
+				if input == nil {
+					input = map[string]interface{}{} // Anthropic API requires non-null input for tool_use blocks
+				}
 				content = append(content, ContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
 					Name:  llm.SanitizeToolName(tc.Name),
-					Input: tc.Input,
+					Input: input,
 				})
 			}
 
@@ -467,6 +471,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var stopReason string
 	tokenCount := 0
 	var toolCalls []llmtypes.ToolCall
+	// Track tool input JSON as it streams in (indexed by content block index)
+	toolInputBuffers := make(map[int]*strings.Builder)
+	// Map content block index → toolCalls slice index for tool_use blocks
+	toolCallIndex := make(map[int]int)
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	for scanner.Scan() {
@@ -492,25 +500,55 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			// Handle different event types
 			switch event.Type {
 			case "content_block_delta":
-				if event.Delta != nil && event.Delta.Text != "" {
-					token := event.Delta.Text
-					contentBuffer.WriteString(token)
-					tokenCount++
+				if event.Delta == nil {
+					continue
+				}
+				switch event.Delta.Type {
+				case "text_delta":
+					if event.Delta.Text != "" {
+						token := event.Delta.Text
+						contentBuffer.WriteString(token)
+						tokenCount++
 
-					// Call token callback (non-blocking)
-					if tokenCallback != nil {
-						tokenCallback(token)
+						// Call token callback (non-blocking)
+						if tokenCallback != nil {
+							tokenCallback(token)
+						}
+					}
+				case "input_json_delta":
+					// Accumulate tool input JSON fragments
+					if buf, exists := toolInputBuffers[event.Index]; exists {
+						buf.WriteString(event.Delta.PartialJSON)
 					}
 				}
 
 			case "content_block_start":
-				// Start tracking a new tool call
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
+					// Start tracking a new tool call
+					idx := len(toolCalls)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
-						ID:   event.ContentBlock.ID,
-						Name: llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
+						ID:    event.ContentBlock.ID,
+						Name:  llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
+						Input: make(map[string]interface{}),
 					})
+					// Initialize buffer for this tool's input JSON
+					toolInputBuffers[event.Index] = &strings.Builder{}
+					toolCallIndex[event.Index] = idx
 				}
+
+			case "content_block_stop":
+				// Finalize tool input: parse accumulated JSON
+				if buf, exists := toolInputBuffers[event.Index]; exists && buf.Len() > 0 {
+					var input map[string]interface{}
+					if err := json.Unmarshal([]byte(buf.String()), &input); err == nil {
+						if idx, ok := toolCallIndex[event.Index]; ok && idx < len(toolCalls) {
+							toolCalls[idx].Input = input
+						}
+					}
+				}
+				// Clean up buffers for this block
+				delete(toolInputBuffers, event.Index)
+				delete(toolCallIndex, event.Index)
 
 			case "message_delta":
 				if event.Delta != nil && event.Delta.StopReason != "" {

@@ -193,8 +193,8 @@ func buildLLMConfigSchema() *shuttle.JSONSchema {
 			"provider": shuttle.NewStringSchema("LLM provider").
 				WithEnum("anthropic", "bedrock", "ollama").
 				WithDefault("anthropic"),
-			"model": shuttle.NewStringSchema("Model identifier (e.g., 'claude-3-5-sonnet-20241022-v2:0')").
-				WithDefault("claude-3-5-sonnet-20241022-v2:0"),
+			"model": shuttle.NewStringSchema("Model identifier (e.g., 'claude-sonnet-4-5-20250929')").
+				WithDefault("claude-sonnet-4-5-20250929"),
 			"temperature": shuttle.NewNumberSchema("Temperature (0.0-1.0) controls randomness").
 				WithDefault(0.7),
 			"max_tokens": shuttle.NewNumberSchema("Maximum tokens in response").
