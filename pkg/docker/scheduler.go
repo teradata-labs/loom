@@ -294,6 +294,7 @@ func NewLocalScheduler(ctx context.Context, config LocalSchedulerConfig) (*Local
 	// Verify Docker daemon is reachable
 	logger.Debug("pinging Docker daemon")
 	if _, err := dockerClient.Ping(ctx); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		dockerClient.Close()
 		logger.Error("failed to ping Docker daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to ping Docker daemon: %w", err)

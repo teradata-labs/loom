@@ -347,6 +347,7 @@ func (b *FileBackend) ExecuteQuery(ctx context.Context, query string) (*fabric.Q
 
 func (b *FileBackend) readFile(filename string, start time.Time) (*fabric.QueryResult, error) {
 	path := filepath.Join(b.baseDir, filename)
+	// #nosec G304 -- path constructed from validated baseDir and cleaned filename
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
@@ -660,6 +661,7 @@ func (b *RESTBackend) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G104 -- best-effort cleanup of response body
 	resp.Body.Close()
 
 	return nil

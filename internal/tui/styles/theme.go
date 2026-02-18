@@ -615,10 +615,10 @@ func Lighten(c color.Color, percent float64) color.Color {
 	r, g, b, a := c.RGBA()
 	factor := percent / 100.0
 	return color.RGBA{
-		R: uint8(min(255, float64(r>>8)+255*factor)),
-		G: uint8(min(255, float64(g>>8)+255*factor)),
-		B: uint8(min(255, float64(b>>8)+255*factor)),
-		A: uint8(a >> 8),
+		R: uint8(min(255, float64(r>>8)+255*factor)), // #nosec G115 -- color value bounded to 0-255
+		G: uint8(min(255, float64(g>>8)+255*factor)), // #nosec G115 -- color value bounded to 0-255
+		B: uint8(min(255, float64(b>>8)+255*factor)), // #nosec G115 -- color value bounded to 0-255
+		A: uint8(a >> 8),                             // #nosec G115 -- RGBA values are 16-bit, >> 8 gives 8-bit color
 	}
 }
 

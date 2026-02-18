@@ -820,9 +820,9 @@ func darkenColor(hexColor string, amount float64) string {
 		if err != nil {
 			return hexColor // Return original on parse error
 		}
-		r = uint8((rgb >> 8) & 0xF)
-		r = r*16 + r // Expand 4-bit to 8-bit
-		g = uint8((rgb >> 4) & 0xF)
+		r = uint8((rgb >> 8) & 0xF) // #nosec G115 -- color value masked to 4 bits
+		r = r*16 + r                // Expand 4-bit to 8-bit
+		g = uint8((rgb >> 4) & 0xF) // #nosec G115 -- color value masked to 4 bits
 		g = g*16 + g
 		b = uint8(rgb & 0xF)
 		b = b*16 + b
@@ -833,9 +833,9 @@ func darkenColor(hexColor string, amount float64) string {
 		if err != nil {
 			return hexColor // Return original on parse error
 		}
-		r = uint8((rgb >> 16) & 0xFF)
-		g = uint8((rgb >> 8) & 0xFF)
-		b = uint8(rgb & 0xFF)
+		r = uint8((rgb >> 16) & 0xFF) // #nosec G115 -- color value masked to 8 bits
+		g = uint8((rgb >> 8) & 0xFF)  // #nosec G115 -- color value masked to 8 bits
+		b = uint8(rgb & 0xFF)         // #nosec G115 -- color value masked to 8 bits
 	} else {
 		return hexColor // Invalid format, return original
 	}

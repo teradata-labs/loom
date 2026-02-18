@@ -199,6 +199,7 @@ func (d *DiskOverflowManager) cleanupExpired() {
 
 	for _, id := range toDelete {
 		meta := d.metadata[id]
+		// #nosec G104 -- best-effort cleanup of expired temp files
 		os.Remove(meta.FilePath) // Ignore errors
 		delete(d.metadata, id)
 		d.currentSize -= meta.Size

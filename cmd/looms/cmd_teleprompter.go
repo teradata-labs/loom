@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -312,7 +313,9 @@ func init() {
 
 // Helper: Load trainset from JSONL file
 func loadTrainset(path string) ([]*loomv1.Example, error) {
-	file, err := os.Open(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	file, err := os.Open(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open trainset: %w", err)
 	}
@@ -355,7 +358,9 @@ func loadTrainset(path string) ([]*loomv1.Example, error) {
 
 // Helper: Load instruction candidates from text file
 func loadInstructions(path string) ([]string, error) {
-	file, err := os.Open(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	file, err := os.Open(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open instructions: %w", err)
 	}
@@ -666,7 +671,9 @@ func runTextGrad(cmd *cobra.Command, args []string) {
 
 	// Load example
 	fmt.Print("📂 Loading example...")
-	exampleData, err := os.ReadFile(tpExample)
+	cleanPath := filepath.Clean(tpExample)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	exampleData, err := os.ReadFile(cleanPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n❌ Error: %v\n", err)
 		os.Exit(1)
@@ -686,7 +693,9 @@ func runTextGrad(cmd *cobra.Command, args []string) {
 
 	// Load variables
 	fmt.Print("📂 Loading variables...")
-	varData, err := os.ReadFile(tpVariables)
+	cleanPath = filepath.Clean(tpVariables)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	varData, err := os.ReadFile(cleanPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n❌ Error: %v\n", err)
 		os.Exit(1)

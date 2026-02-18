@@ -80,7 +80,9 @@ func (s *HashSelector) SelectVariant(ctx context.Context, key string, variants [
 
 	// Hash session ID + key for deterministic selection
 	h := fnv.New64a()
+	// #nosec G104 -- hash.Write never returns an error for fnv
 	h.Write([]byte(sessionID))
+	// #nosec G104 -- hash.Write never returns an error for fnv
 	h.Write([]byte(key))
 	hashValue := h.Sum64()
 

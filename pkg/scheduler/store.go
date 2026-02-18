@@ -54,6 +54,7 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 
 	// Initialize schema
 	if err := store.initSchema(ctx); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}

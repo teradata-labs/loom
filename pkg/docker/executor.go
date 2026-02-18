@@ -100,6 +100,7 @@ func NewDockerExecutor(ctx context.Context, config DockerExecutorConfig) (*Docke
 	// Verify Docker daemon is reachable
 	config.Logger.Debug("pinging Docker daemon")
 	if _, err := dockerClient.Ping(ctx); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		dockerClient.Close()
 		config.Logger.Error("failed to ping Docker daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to ping Docker daemon: %w", err)
@@ -126,6 +127,7 @@ func NewDockerExecutor(ctx context.Context, config DockerExecutorConfig) (*Docke
 			Logger: config.Logger,
 		})
 		if err != nil {
+			// #nosec G104 -- best-effort cleanup on initialization failure
 			dockerClient.Close()
 			config.Logger.Error("failed to create trace collector", zap.Error(err))
 			return nil, fmt.Errorf("failed to create trace collector: %w", err)
@@ -549,6 +551,7 @@ func (de *DockerExecutor) executeCommand(ctx context.Context, containerID string
 					de.logger.Warn("failed to flush filtering writer", zap.Error(err))
 				}
 			}
+			// #nosec G104 -- best-effort cleanup of pipe writer
 			stderrPipeWriter.Close()
 			// Wait for trace collection to complete and log errors
 			if err := <-traceDone; err != nil && err != io.EOF {

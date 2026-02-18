@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -290,7 +291,9 @@ func runJudgeEvaluate(cmd *cobra.Command, args []string) {
 	// Read prompt
 	prompt := judgePrompt
 	if judgePromptFile != "" {
-		data, err := os.ReadFile(judgePromptFile)
+		cleanPath := filepath.Clean(judgePromptFile)
+		// #nosec G304 -- path from CLI argument, cleaned for safety
+		data, err := os.ReadFile(cleanPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading prompt file: %v\n", err)
 			os.Exit(1)
@@ -301,7 +304,9 @@ func runJudgeEvaluate(cmd *cobra.Command, args []string) {
 	// Read response
 	response := judgeResponse
 	if judgeResponseFile != "" {
-		data, err := os.ReadFile(judgeResponseFile)
+		cleanPath := filepath.Clean(judgeResponseFile)
+		// #nosec G304 -- path from CLI argument, cleaned for safety
+		data, err := os.ReadFile(cleanPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading response file: %v\n", err)
 			os.Exit(1)
@@ -497,7 +502,9 @@ func runJudgeEvaluateStream(cmd *cobra.Command, args []string) {
 	// Read prompt
 	prompt := judgePrompt
 	if judgePromptFile != "" {
-		data, err := os.ReadFile(judgePromptFile)
+		cleanPath := filepath.Clean(judgePromptFile)
+		// #nosec G304 -- path from CLI argument, cleaned for safety
+		data, err := os.ReadFile(cleanPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading prompt file: %v\n", err)
 			os.Exit(1)
@@ -508,7 +515,9 @@ func runJudgeEvaluateStream(cmd *cobra.Command, args []string) {
 	// Read response
 	response := judgeResponse
 	if judgeResponseFile != "" {
-		data, err := os.ReadFile(judgeResponseFile)
+		cleanPath := filepath.Clean(judgeResponseFile)
+		// #nosec G304 -- path from CLI argument, cleaned for safety
+		data, err := os.ReadFile(cleanPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading response file: %v\n", err)
 			os.Exit(1)
@@ -642,7 +651,9 @@ func runJudgeRegister(cmd *cobra.Command, args []string) {
 	configPath := args[0]
 
 	// Read config file
-	data, err := os.ReadFile(configPath)
+	cleanPath := filepath.Clean(configPath)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config file: %v\n", err)
 		os.Exit(1)

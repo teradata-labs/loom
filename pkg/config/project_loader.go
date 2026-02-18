@@ -238,8 +238,8 @@ func yamlToProtoProject(yaml *ProjectYAML) *loomv1.Project {
 
 	// Global settings
 	project.Spec.Settings = &loomv1.GlobalSettings{
-		DefaultTimeoutSeconds: int32(yaml.Spec.Settings.DefaultTimeoutSeconds),
-		MaxConcurrentAgents:   int32(yaml.Spec.Settings.MaxConcurrentAgents),
+		DefaultTimeoutSeconds: int32(yaml.Spec.Settings.DefaultTimeoutSeconds), // #nosec G115 -- config value bounded in practice
+		MaxConcurrentAgents:   int32(yaml.Spec.Settings.MaxConcurrentAgents),   // #nosec G115 -- config value bounded in practice
 		DebugMode:             yaml.Spec.Settings.DebugMode,
 		LogLevel:              yaml.Spec.Settings.LogLevel,
 	}

@@ -397,7 +397,7 @@ Be specific, evidence-based, and consider alternative perspectives.`, contextPro
 
 	// Extract tool usage from response
 	toolsUsed := make([]string, 0)
-	toolCallCount := int32(0)
+	toolCallCount := int32(0)          // #nosec G115 -- literal constant
 	toolNames := make(map[string]bool) // deduplicate tool names
 	for _, toolExec := range resp.ToolExecutions {
 		toolNames[toolExec.ToolName] = true
@@ -812,8 +812,8 @@ func (d *DebateOrchestrator) calculateMetrics(result *loomv1.DebateResult) *loom
 	}
 
 	// Calculate interaction metrics
-	interactionCount := int32(0)
-	totalResponseLength := int32(0)
+	interactionCount := int32(0)    // #nosec G115 -- literal constant
+	totalResponseLength := int32(0) // #nosec G115 -- literal constant
 	for _, round := range result.Rounds {
 		interactionCount += int32(len(round.Positions))
 		for _, pos := range round.Positions {

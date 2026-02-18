@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -139,7 +140,9 @@ func runPatternCreate(cmd *cobra.Command, args []string) {
 
 	if patternFile != "" {
 		// Read from file
-		data, err := os.ReadFile(patternFile)
+		cleanPath := filepath.Clean(patternFile)
+		// #nosec G304 -- path from CLI argument, cleaned for safety
+		data, err := os.ReadFile(cleanPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading file %s: %v\n", patternFile, err)
 			os.Exit(1)

@@ -165,6 +165,7 @@ func (t *HTTPClientTool) Execute(ctx context.Context, params map[string]interfac
 	var jsonData interface{}
 	isJSON := false
 	if json.Valid(respBody) {
+		// #nosec G104 -- JSON unmarshal with fallback to raw response
 		json.Unmarshal(respBody, &jsonData)
 		isJSON = true
 	}

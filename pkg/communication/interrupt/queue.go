@@ -102,6 +102,7 @@ func NewPersistentQueue(ctx context.Context, dbPath string, router *Router) (*Pe
 
 	// Create schema
 	if _, err := db.ExecContext(ctx, schema); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
@@ -243,6 +244,7 @@ func (pq *PersistentQueue) processPendingInterrupts() error {
 		}
 		pending = append(pending, p)
 	}
+	// #nosec G104 -- rows.Close() is best-effort before processing
 	rows.Close() // Close rows before modifying table
 
 	// Now process each interrupt
@@ -505,6 +507,7 @@ func (pq *PersistentQueue) Close() error {
 	case <-done:
 		return pq.db.Close()
 	case <-time.After(30 * time.Second):
+		// #nosec G104 -- best-effort cleanup on timeout
 		pq.db.Close()
 		return fmt.Errorf("queue close timeout: retry loop did not finish within 30s")
 	}

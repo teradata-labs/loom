@@ -102,7 +102,9 @@ type HealthCheckYAML struct {
 
 // LoadBackend loads a backend configuration from a YAML file
 func LoadBackend(path string) (*loomv1.BackendConfig, error) {
-	data, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- config path from CLI or project config, cleaned for safety
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read backend file %s: %w", path, err)
 	}

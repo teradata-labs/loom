@@ -219,6 +219,7 @@ func (r *FileRegistry) Watch(ctx context.Context) (<-chan PromptUpdate, error) {
 
 	// Add root directory and all subdirectories
 	if err := r.watchDirectory(watcher, r.rootDir); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		watcher.Close()
 		return nil, err
 	}

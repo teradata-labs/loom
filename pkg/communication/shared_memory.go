@@ -649,6 +649,7 @@ func (s *SharedMemoryStore) Close() error {
 
 	// Close encoder/decoder
 	if s.encoder != nil {
+		// #nosec G104 -- best-effort cleanup during shutdown
 		s.encoder.Close()
 	}
 	if s.decoder != nil {
