@@ -82,7 +82,7 @@ func (b *AgentBuilder) WithAnthropicLLM(apiKey string) *AgentBuilder {
 func (b *AgentBuilder) WithBedrockLLM(region string) *AgentBuilder {
 	client, err := bedrock.NewClient(bedrock.Config{
 		Region:  region,
-		ModelID: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+		ModelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	})
 	if err != nil {
 		// Store error for Build() to return
@@ -202,7 +202,7 @@ func (b *AgentBuilder) WithMistralLLMCustomModel(apiKey, model string) *AgentBui
 func (b *AgentBuilder) WithGeminiLLM(apiKey string) *AgentBuilder {
 	b.llm = gemini.NewClient(gemini.Config{
 		APIKey: apiKey,
-		Model:  "gemini-2.5-flash",
+		Model:  "gemini-3-flash-preview",
 	})
 	return b
 }

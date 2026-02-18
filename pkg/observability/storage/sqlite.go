@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4" // SQLite driver with encryption support
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver (encryption when CGO available)
 )
 
 // SQLiteStorage provides persistent trace storage using SQLite.

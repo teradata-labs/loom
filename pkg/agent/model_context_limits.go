@@ -23,8 +23,11 @@ type ModelContextLimits struct {
 // Models are keyed by their base name (without version/variant suffixes).
 // If a model is not in this table, use the provider's default or auto-detect.
 var modelContextLimits = map[string]ModelContextLimits{
-	// Anthropic Claude models
-	"claude-sonnet-4":   {MaxContextTokens: 200000, ReservedOutputTokens: 20000}, // Claude Sonnet 4.5
+	// Anthropic Claude models (current)
+	"claude-opus-4":   {MaxContextTokens: 200000, ReservedOutputTokens: 128000}, // Claude Opus 4.6
+	"claude-sonnet-4": {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Sonnet 4.5
+	"claude-haiku-4":  {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Haiku 4.5
+	// Anthropic Claude models (legacy)
 	"claude-3-5-sonnet": {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-opus":     {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-sonnet":   {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
@@ -88,10 +91,12 @@ var modelContextLimits = map[string]ModelContextLimits{
 	"gpt-3.5-turbo":     {MaxContextTokens: 16385, ReservedOutputTokens: 1638},
 	"gpt-3.5-turbo-16k": {MaxContextTokens: 16385, ReservedOutputTokens: 1638},
 
-	// Google Gemini models (for reference)
-	"gemini-1.5-pro":   {MaxContextTokens: 1000000, ReservedOutputTokens: 100000}, // 1M context!
-	"gemini-1.5-flash": {MaxContextTokens: 1000000, ReservedOutputTokens: 100000},
-	"gemini-1.0-pro":   {MaxContextTokens: 32000, ReservedOutputTokens: 3200},
+	// Google Gemini models
+	"gemini-3-pro-preview":   {MaxContextTokens: 1048576, ReservedOutputTokens: 65536},
+	"gemini-3-flash-preview": {MaxContextTokens: 1048576, ReservedOutputTokens: 65536},
+	"gemini-2.5-pro":         {MaxContextTokens: 1048576, ReservedOutputTokens: 65536},
+	"gemini-2.5-flash":       {MaxContextTokens: 1048576, ReservedOutputTokens: 65536},
+	"gemini-2.5-flash-lite":  {MaxContextTokens: 1048576, ReservedOutputTokens: 65536},
 }
 
 // GetModelContextLimits returns the context limits for a given model name.
@@ -136,7 +141,7 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 	case "openai":
 		return ModelContextLimits{MaxContextTokens: 128000, ReservedOutputTokens: 12800}
 	case "gemini":
-		return ModelContextLimits{MaxContextTokens: 1000000, ReservedOutputTokens: 100000}
+		return ModelContextLimits{MaxContextTokens: 1048576, ReservedOutputTokens: 65536}
 	case "azureopenai":
 		return ModelContextLimits{MaxContextTokens: 128000, ReservedOutputTokens: 12800}
 	default:

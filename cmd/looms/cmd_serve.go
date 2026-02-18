@@ -25,11 +25,11 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/teradata-labs/loom/embedded"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -179,7 +179,7 @@ func getDefaultModelForProvider(cfg *Config) string {
 		if cfg.LLM.GeminiModel != "" {
 			return cfg.LLM.GeminiModel
 		}
-		return "gemini-2.0-flash-exp"
+		return "gemini-3-flash-preview"
 	case "huggingface":
 		if cfg.LLM.HuggingFaceModel != "" {
 			return cfg.LLM.HuggingFaceModel

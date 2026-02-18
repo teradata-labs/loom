@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 )
 
 // SQLiteStore implements ReferenceStore with SQLite persistence

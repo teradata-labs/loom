@@ -32,7 +32,7 @@ func TestNewClient_Defaults(t *testing.T) {
 	client, err := NewClient(Config{})
 	require.NoError(t, err)
 	assert.NotNil(t, client)
-	assert.Equal(t, "anthropic.claude-3-5-sonnet-20241022-v2:0", client.modelID)
+	assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.modelID)
 	assert.Equal(t, "us-east-1", client.region)
 	assert.Equal(t, 4096, client.maxTokens)
 	assert.Equal(t, 1.0, client.temperature)
@@ -40,10 +40,10 @@ func TestNewClient_Defaults(t *testing.T) {
 
 func TestClient_NameAndModel(t *testing.T) {
 	client := &Client{
-		modelID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	}
 	assert.Equal(t, "bedrock", client.Name())
-	assert.Equal(t, "anthropic.claude-3-5-sonnet-20241022-v2:0", client.Model())
+	assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.Model())
 }
 
 func TestClient_ConvertMessages(t *testing.T) {
@@ -284,7 +284,7 @@ func TestClient_ConvertSchemaProperties(t *testing.T) {
 
 func TestClient_ConvertResponse(t *testing.T) {
 	client := &Client{
-		modelID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	}
 
 	tests := []struct {
@@ -488,7 +488,7 @@ func TestBedrockResponse_Unmarshal(t *testing.T) {
 				"text": "Hello!"
 			}
 		],
-		"model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		"stop_reason": "end_turn",
 		"usage": {
 			"input_tokens": 10,
@@ -520,7 +520,7 @@ func TestNewClient_ExplicitCredentials(t *testing.T) {
 			AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 			SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 			SessionToken:    "session-token-example",
-			ModelID:         "anthropic.claude-3-5-sonnet-20241022-v2:0",
+			ModelID:         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		}
 
 		client, err := NewClient(cfg)
@@ -531,7 +531,7 @@ func TestNewClient_ExplicitCredentials(t *testing.T) {
 		} else {
 			assert.NotNil(t, client)
 			assert.Equal(t, "us-west-2", client.region)
-			assert.Equal(t, "anthropic.claude-3-5-sonnet-20241022-v2:0", client.modelID)
+			assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.modelID)
 		}
 	})
 
@@ -540,7 +540,7 @@ func TestNewClient_ExplicitCredentials(t *testing.T) {
 			Region:          "eu-west-1",
 			AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
 			SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-			ModelID:         "anthropic.claude-3-5-sonnet-20241022-v2:0",
+			ModelID:         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		}
 
 		client, err := NewClient(cfg)
@@ -558,7 +558,7 @@ func TestNewClient_ProfileAuth(t *testing.T) {
 	cfg := Config{
 		Region:  "us-east-1",
 		Profile: "development",
-		ModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		ModelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	}
 
 	client, err := NewClient(cfg)
@@ -575,7 +575,7 @@ func TestNewClient_DefaultCredentialsChain(t *testing.T) {
 	// Test default credentials chain (IAM role, env vars, default profile)
 	cfg := Config{
 		Region:  "ap-southeast-1",
-		ModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		ModelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	}
 
 	client, err := NewClient(cfg)
@@ -620,7 +620,7 @@ func TestNewClient_RegionalEndpoints(t *testing.T) {
 func TestNewClient_ModelVariations(t *testing.T) {
 	// Test different model IDs
 	models := []string{
-		"anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		"anthropic.claude-3-sonnet-20240229-v1:0",
 		"anthropic.claude-3-haiku-20240307-v1:0",
 	}
@@ -686,7 +686,7 @@ func TestClient_ImplementsLLMProviderInterface(t *testing.T) {
 	// Verify that Client implements both LLMProvider and StreamingLLMProvider interfaces
 	// Streaming now uses ConverseStream API (fixes InvokeModelWithResponseStream tool bugs)
 	client := &Client{
-		modelID:     "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		modelID:     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		region:      "us-east-1",
 		maxTokens:   4096,
 		temperature: 1.0,
