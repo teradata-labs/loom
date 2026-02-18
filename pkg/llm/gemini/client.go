@@ -52,12 +52,13 @@ type Config struct {
 	// Required: Gemini API key from https://makersuite.google.com/
 	APIKey string
 
-	// Model to use (default: "gemini-2.5-flash")
+	// Model to use (default: "gemini-3-flash-preview")
 	// Available models:
 	// - gemini-3-pro-preview: Most intelligent, $2-4/$12-18 per 1M tokens
+	// - gemini-3-flash-preview: Balanced speed/quality, free during preview
 	// - gemini-2.5-pro: Complex reasoning, $1.25-2.50/$10-15 per 1M tokens
-	// - gemini-2.5-flash: Best price/performance, $0.30/$2.50 per 1M tokens
-	// - gemini-2.5-flash-lite: Fastest/cheapest, similar to Flash pricing
+	// - gemini-2.5-flash: Stable workhorse, $0.30/$2.50 per 1M tokens
+	// - gemini-2.5-flash-lite: Fastest/cheapest, $0.10/$0.40 per 1M tokens
 	Model string
 
 	// Optional configuration
@@ -71,7 +72,7 @@ type Config struct {
 func NewClient(config Config) *Client {
 	// Set defaults
 	if config.Model == "" {
-		config.Model = "gemini-2.5-flash"
+		config.Model = "gemini-3-flash-preview"
 	}
 	if config.MaxTokens == 0 {
 		config.MaxTokens = 8192
@@ -268,9 +269,10 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 				llmResp.StopReason = "tool_use"
 				reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 				llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
-					ID:    reversedName, // Gemini doesn't provide call IDs
-					Name:  reversedName,
-					Input: part.FunctionCall.Args,
+					ID:               reversedName, // Gemini doesn't provide call IDs
+					Name:             reversedName,
+					Input:            part.FunctionCall.Args,
+					ThoughtSignature: part.ThoughtSignature, // Preserve for round-trip
 				})
 			}
 		}
@@ -280,23 +282,26 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 }
 
 // calculateCost estimates the cost in USD based on token usage.
-// Pricing as of 2025-01 (per million tokens):
+// Pricing as of 2026-02 (per million tokens, standard tier):
 //
 // Gemini 3 Pro Preview:
-// - Input: $2.00-$4.00 (varies by tier)
-// - Output: $12.00-$18.00
+// - Input: $2.00 (≤200k) / $4.00 (>200k)
+// - Output: $12.00 (≤200k) / $18.00 (>200k)
+//
+// Gemini 3 Flash Preview:
+// - Free during preview
 //
 // Gemini 2.5 Pro:
-// - Input: $1.25-$2.50
-// - Output: $10.00-$15.00
+// - Input: $1.25 (≤200k) / $2.50 (>200k)
+// - Output: $10.00 (≤200k) / $15.00 (>200k)
 //
 // Gemini 2.5 Flash:
 // - Input: $0.30
 // - Output: $2.50
 //
 // Gemini 2.5 Flash-Lite:
-// - Input: ~$0.30
-// - Output: ~$2.50
+// - Input: $0.10
+// - Output: $0.40
 //
 // Note: Prices may vary. Check https://ai.google.dev/pricing for current rates.
 func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
@@ -304,9 +309,14 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 
 	switch c.model {
 	case "gemini-3-pro-preview", "gemini-3-pro":
-		// Use mid-range pricing
+		// Use mid-range pricing (average of ≤200k and >200k tiers)
 		inputCostPerM = 3.00
 		outputCostPerM = 15.00
+
+	case "gemini-3-flash-preview", "gemini-3-flash":
+		// Free during preview
+		inputCostPerM = 0.0
+		outputCostPerM = 0.0
 
 	case "gemini-2.5-pro":
 		// Use mid-range pricing
@@ -318,11 +328,11 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 		outputCostPerM = 2.50
 
 	case "gemini-2.5-flash-lite":
-		inputCostPerM = 0.30
-		outputCostPerM = 2.50
+		inputCostPerM = 0.10
+		outputCostPerM = 0.40
 
 	default:
-		// Default to Flash pricing for unknown models
+		// Default to 2.5 Flash pricing for unknown models
 		inputCostPerM = 0.30
 		outputCostPerM = 2.50
 	}
@@ -398,6 +408,7 @@ func convertMessages(messages []llmtypes.Message) []Content {
 						Name: llm.SanitizeToolName(tc.Name),
 						Args: tc.Input,
 					},
+					ThoughtSignature: tc.ThoughtSignature, // Echo back verbatim for Gemini 3+
 				})
 			}
 
@@ -616,10 +627,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 				// Extract tool calls
 				if part.FunctionCall != nil {
+					reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
-						ID:    part.FunctionCall.Name, // Gemini doesn't provide call IDs, use name
-						Name:  part.FunctionCall.Name,
-						Input: part.FunctionCall.Args,
+						ID:               reversedName,
+						Name:             reversedName,
+						Input:            part.FunctionCall.Args,
+						ThoughtSignature: part.ThoughtSignature, // Preserve for round-trip
 					})
 				}
 			}

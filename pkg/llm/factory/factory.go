@@ -318,7 +318,7 @@ func (f *ProviderFactory) createGeminiProvider(model string) (interface{}, error
 		model = f.config.GeminiModel
 	}
 	if model == "" {
-		model = "gemini-2.0-flash-exp"
+		model = "gemini-3-flash-preview"
 	}
 
 	return gemini.NewClient(gemini.Config{

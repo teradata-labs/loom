@@ -84,10 +84,17 @@ func TestGetModelContextLimits(t *testing.T) {
 			shouldFind:       true,
 		},
 		{
-			name:             "Gemini 1.5 Pro (huge context)",
-			model:            "gemini-1.5-pro",
-			expectedMax:      1000000,
-			expectedReserved: 100000,
+			name:             "Gemini 3 Flash Preview",
+			model:            "gemini-3-flash-preview",
+			expectedMax:      1048576,
+			expectedReserved: 65536,
+			shouldFind:       true,
+		},
+		{
+			name:             "Gemini 2.5 Flash",
+			model:            "gemini-2.5-flash",
+			expectedMax:      1048576,
+			expectedReserved: 65536,
 			shouldFind:       true,
 		},
 		{
@@ -143,10 +150,10 @@ func TestGetProviderDefaultLimits(t *testing.T) {
 			expectedReserved: 12800,
 		},
 		{
-			name:             "Gemini (huge)",
+			name:             "Gemini",
 			provider:         "gemini",
-			expectedMax:      1000000,
-			expectedReserved: 100000,
+			expectedMax:      1048576,
+			expectedReserved: 65536,
 		},
 		{
 			name:             "Unknown provider (conservative fallback)",

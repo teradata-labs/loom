@@ -926,7 +926,7 @@ database:
 # prod.yaml
 llm:
   provider: anthropic
-  anthropic_model: claude-sonnet-4-5-20250514
+  anthropic_model: claude-sonnet-4-5-20250929
 observability:
   enabled: true
   provider: hawk
