@@ -15,6 +15,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -555,7 +556,7 @@ func (s *SwarmOrchestrator) calculateMetrics(result *loomv1.SwarmResult) *loomv1
 		PerspectiveDiversity: diversityScore,
 		AgreementLevel:       agreementLevel,
 		AvgResponseLength:    0, // Not applicable for voting
-		InteractionCount:     int32(len(result.Votes)),
+		InteractionCount:     types.SafeInt32(len(result.Votes)),
 		TimeToConsensusMs:    0, // Would need timing
 		ConfidenceVariance:   confidenceVariance,
 	}

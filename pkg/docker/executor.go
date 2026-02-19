@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -20,6 +21,18 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
+
+// safeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
+// This is a local copy to avoid import cycles with pkg/types.
+func safeInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(n) // #nosec G115 -- bounds checked above
+}
 
 const (
 	// BaggageKeyTenantID is the W3C baggage key for tenant identification.
@@ -243,7 +256,7 @@ func (de *DockerExecutor) Execute(ctx context.Context, req *loomv1.ExecuteReques
 
 	return &loomv1.ExecuteResponse{
 		ContainerId:      containerID,
-		ExitCode:         int32(exitCode),
+		ExitCode:         safeInt32(exitCode),
 		Stdout:           stdout,
 		Stderr:           stderr,
 		DurationMs:       duration.Milliseconds(),

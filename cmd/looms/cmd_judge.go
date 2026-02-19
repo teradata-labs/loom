@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -359,7 +360,7 @@ func runJudgeEvaluate(cmd *cobra.Command, args []string) {
 		Aggregation:    aggregation,
 		ExecutionMode:  loomv1.ExecutionMode_EXECUTION_MODE_SYNCHRONOUS,
 		ExportToHawk:   judgeExportHawk,
-		TimeoutSeconds: int32(judgeTimeout),
+		TimeoutSeconds: types.SafeInt32(judgeTimeout),
 		FailFast:       judgeFailFast,
 	}
 
@@ -570,7 +571,7 @@ func runJudgeEvaluateStream(cmd *cobra.Command, args []string) {
 		Aggregation:    aggregation,
 		ExecutionMode:  loomv1.ExecutionMode_EXECUTION_MODE_SYNCHRONOUS,
 		ExportToHawk:   judgeExportHawk,
-		TimeoutSeconds: int32(judgeTimeout),
+		TimeoutSeconds: types.SafeInt32(judgeTimeout),
 		FailFast:       judgeFailFast,
 	}
 
@@ -669,9 +670,9 @@ func runJudgeRegister(cmd *cobra.Command, args []string) {
 	// Phase 7: Add retry config from CLI flags if provided
 	if judgeRetryMaxAttempts > 0 {
 		config.RetryConfig = &loomv1.RetryConfig{
-			MaxAttempts:       int32(judgeRetryMaxAttempts),
-			InitialBackoffMs:  int32(judgeRetryInitialBackoffMs),
-			MaxBackoffMs:      int32(judgeRetryMaxBackoffMs),
+			MaxAttempts:       types.SafeInt32(judgeRetryMaxAttempts),
+			InitialBackoffMs:  types.SafeInt32(judgeRetryInitialBackoffMs),
+			MaxBackoffMs:      types.SafeInt32(judgeRetryMaxBackoffMs),
 			BackoffMultiplier: judgeRetryBackoffMultiplier,
 			RetryOnStatus:     []int32{429, 500, 502, 503}, // Standard transient errors
 		}
@@ -679,9 +680,9 @@ func runJudgeRegister(cmd *cobra.Command, args []string) {
 		// Add circuit breaker config if enabled
 		if judgeCircuitBreakerEnabled {
 			config.RetryConfig.CircuitBreaker = &loomv1.CircuitBreakerConfig{
-				FailureThreshold: int32(judgeCircuitBreakerFailureThreshold),
-				ResetTimeoutMs:   int32(judgeCircuitBreakerResetTimeoutMs),
-				SuccessThreshold: int32(judgeCircuitBreakerSuccessThreshold),
+				FailureThreshold: types.SafeInt32(judgeCircuitBreakerFailureThreshold),
+				ResetTimeoutMs:   types.SafeInt32(judgeCircuitBreakerResetTimeoutMs),
+				SuccessThreshold: types.SafeInt32(judgeCircuitBreakerSuccessThreshold),
 				Enabled:          true,
 			}
 		}
@@ -879,9 +880,9 @@ func runJudgeHistory(cmd *cobra.Command, args []string) {
 	fmt.Println(strings.Repeat("─", 80))
 
 	// Pagination hint
-	if resp.TotalCount > int32(len(resp.Evaluations)) {
-		remaining := resp.TotalCount - judgeOffset - int32(len(resp.Evaluations))
+	if resp.TotalCount > types.SafeInt32(len(resp.Evaluations)) {
+		remaining := resp.TotalCount - judgeOffset - types.SafeInt32(len(resp.Evaluations))
 		fmt.Printf("\n💡 %d more evaluations available. Use --offset=%d to see more.\n",
-			remaining, judgeOffset+int32(len(resp.Evaluations)))
+			remaining, judgeOffset+types.SafeInt32(len(resp.Evaluations)))
 	}
 }

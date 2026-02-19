@@ -289,7 +289,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Create command (we'll handle timeout manually for better control)
-	cmd := exec.Command(shellBinary, shellArgs...)
+	cmd := exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
 	cmd.Dir = cleanWorkingDir
 
 	// Set environment variables (merge with system env, filter sensitive ones)

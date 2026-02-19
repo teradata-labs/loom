@@ -359,7 +359,7 @@ func (r *FileRegistry) extractKeyFromPath(path string) string {
 //   - "system.concise.yaml" -> "concise" variant
 func (r *FileRegistry) loadFile(path string) (*filePrompt, string, error) {
 	// Read file
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, "", err
 	}

@@ -101,7 +101,7 @@ func (l *Loader) Load(toolName string) (*ToolMetadata, error) {
 		return nil, nil
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata file %s: %w", path, err)
 	}

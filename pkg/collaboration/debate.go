@@ -15,6 +15,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -815,9 +816,9 @@ func (d *DebateOrchestrator) calculateMetrics(result *loomv1.DebateResult) *loom
 	interactionCount := int32(0)    // #nosec G115 -- literal constant
 	totalResponseLength := int32(0) // #nosec G115 -- literal constant
 	for _, round := range result.Rounds {
-		interactionCount += int32(len(round.Positions))
+		interactionCount += types.SafeInt32(len(round.Positions))
 		for _, pos := range round.Positions {
-			totalResponseLength += int32(len(pos.Position))
+			totalResponseLength += types.SafeInt32(len(pos.Position))
 		}
 	}
 

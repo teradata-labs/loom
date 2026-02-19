@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -107,7 +108,7 @@ func (p *ManualProvider) Renew(ctx context.Context, force bool) error {
 
 // LoadCertificateFromFile loads a certificate from a PEM file.
 func LoadCertificateFromFile(path string) (*x509.Certificate, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read certificate file: %w", err)
 	}

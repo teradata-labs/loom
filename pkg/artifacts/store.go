@@ -908,7 +908,7 @@ func GenerateArtifactID() string {
 
 // ComputeChecksum calculates the SHA256 checksum of a file.
 func ComputeChecksum(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}

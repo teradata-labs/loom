@@ -23,6 +23,7 @@ import (
 
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // PersistentQueue provides guaranteed delivery for CRITICAL interrupts.
@@ -355,7 +356,7 @@ func (pq *PersistentQueue) calculateBackoff(retryCount int) time.Duration {
 	}
 
 	// Exponential backoff: baseInterval * 2^(retryCount-1)
-	multiplier := int64(1 << uint(retryCount-1)) // 2^(retryCount-1)
+	multiplier := int64(1 << types.SafeUint(retryCount-1)) // 2^(retryCount-1)
 	backoff := time.Duration(multiplier) * pq.retryInterval
 
 	// Cap at 30 seconds

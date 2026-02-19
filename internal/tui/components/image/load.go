@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -48,7 +49,7 @@ func loadURL(url string) tea.Cmd {
 		resp, err = http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 		r = resp.Body
 	} else {
-		r, err = os.Open(url)
+		r, err = os.Open(filepath.Clean(url))
 	}
 
 	if err != nil {
@@ -150,7 +151,7 @@ func svgToImage(width uint, height uint, r io.Reader) (string, error) {
 	// #nosec G104 -- best-effort cleanup after successful write
 	tmpPngFile.Close()
 
-	rPng, err := os.Open(tmpPngPath)
+	rPng, err := os.Open(filepath.Clean(tmpPngPath))
 	if err != nil {
 		return "", err
 	}

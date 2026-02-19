@@ -824,7 +824,7 @@ func darkenColor(hexColor string, amount float64) string {
 		r = r*16 + r                // Expand 4-bit to 8-bit
 		g = uint8((rgb >> 4) & 0xF) // #nosec G115 -- color value masked to 4 bits
 		g = g*16 + g
-		b = uint8(rgb & 0xF)
+		b = uint8(rgb & 0xF) // #nosec G115 -- color value masked to 4 bits
 		b = b*16 + b
 	} else if len(color) == 6 {
 		// Full form (#RRGGBB)

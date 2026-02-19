@@ -87,7 +87,7 @@ func (s *HashSelector) SelectVariant(ctx context.Context, key string, variants [
 	hashValue := h.Sum64()
 
 	// Map hash to variant index
-	idx := int(hashValue % uint64(len(variants)))
+	idx := int(hashValue % uint64(len(variants))) // #nosec G115 -- hash distribution bounded in practice
 	return variants[idx], nil
 }
 

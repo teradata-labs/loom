@@ -190,7 +190,7 @@ func (l *Loader) loadWorkflowFile(ctx context.Context, path string) error {
 
 // fileHash computes SHA256 hash of a file for change detection.
 func (l *Loader) fileHash(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return "", err
 	}

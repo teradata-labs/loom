@@ -413,13 +413,13 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 		}
 
 		// Prevent zip slip vulnerability
-		destPath := filepath.Join(destDir, f.Name)
+		destPath := filepath.Join(destDir, f.Name) // #nosec G305 -- validated by prefix check below
 		if !strings.HasPrefix(destPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
 			return nil, fmt.Errorf("illegal file path in archive: %s", f.Name)
 		}
 
 		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 
@@ -488,13 +488,13 @@ func extractTar(archivePath, destDir string) ([]string, error) {
 		}
 
 		// Prevent path traversal
-		destPath := filepath.Join(destDir, header.Name)
+		destPath := filepath.Join(destDir, header.Name) // #nosec G305 -- validated by prefix check below
 		if !strings.HasPrefix(destPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
 			return nil, fmt.Errorf("illegal file path in archive: %s", header.Name)
 		}
 
 		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 
@@ -559,13 +559,13 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 		}
 
 		// Prevent path traversal
-		destPath := filepath.Join(destDir, header.Name)
+		destPath := filepath.Join(destDir, header.Name) // #nosec G305 -- validated by prefix check below
 		if !strings.HasPrefix(destPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
 			return nil, fmt.Errorf("illegal file path in archive: %s", header.Name)
 		}
 
 		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 
@@ -618,7 +618,8 @@ func extractGzip(archivePath, destDir string) ([]string, error) {
 	}
 	defer outFile.Close()
 
-	if _, err := io.Copy(outFile, gzr); err != nil {
+	// #nosec G110 -- limit decompressed size to prevent decompression bombs
+	if _, err := io.CopyN(outFile, gzr, maxDecompressedSize); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("failed to extract gzip: %w", err)
 	}
 

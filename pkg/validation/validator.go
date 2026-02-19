@@ -24,7 +24,7 @@ func ValidateYAMLFile(filePath string) ValidationResult {
 	}
 
 	// Read file
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{

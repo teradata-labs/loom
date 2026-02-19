@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -366,7 +367,7 @@ func (cb *CircuitBreaker) calculateTimeoutLocked() time.Duration {
 	}
 
 	// Calculate exponential: baseDelay * 2^(consecutiveOpens-1)
-	delay := baseDelay * (1 << uint(cb.consecutiveOpens-1))
+	delay := baseDelay * (1 << types.SafeUint(cb.consecutiveOpens-1))
 
 	// Cap at 60 seconds
 	maxDelay := 60 * time.Second

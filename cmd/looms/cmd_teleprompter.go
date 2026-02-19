@@ -25,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
@@ -485,7 +486,7 @@ func runBootstrap(cmd *cobra.Command, args []string) {
 		AgentId:      tpAgent,
 		Teleprompter: loomv1.TeleprompterType_TELEPROMPTER_BOOTSTRAP_FEW_SHOT,
 		Config: &loomv1.TeleprompterConfig{
-			MaxBootstrappedDemos: int32(tpMaxDemos),
+			MaxBootstrappedDemos: types.SafeInt32(tpMaxDemos),
 			MinConfidence:        tpMinConfidence,
 		},
 		Trainset: trainset,
@@ -598,7 +599,7 @@ func runMIPRO(cmd *cobra.Command, args []string) {
 		AgentId:      tpAgent,
 		Teleprompter: loomv1.TeleprompterType_TELEPROMPTER_MIPRO,
 		Config: &loomv1.TeleprompterConfig{
-			MaxBootstrappedDemos: int32(tpMaxDemos),
+			MaxBootstrappedDemos: types.SafeInt32(tpMaxDemos),
 			MinConfidence:        tpMinConfidence,
 			Mipro: &loomv1.MIPROConfig{
 				InstructionCandidates:  instructions,
@@ -747,8 +748,8 @@ func runHistory(cmd *cobra.Command, args []string) {
 	// Build request
 	req := &loomv1.GetCompilationHistoryRequest{
 		AgentId: tpAgent,
-		Limit:   int32(tpLimit),
-		Offset:  int32(tpOffset),
+		Limit:   types.SafeInt32(tpLimit),
+		Offset:  types.SafeInt32(tpOffset),
 	}
 
 	// Print header
@@ -808,8 +809,8 @@ func runHistory(cmd *cobra.Command, args []string) {
 	fmt.Println(strings.Repeat("─", 80))
 
 	// Pagination hint
-	if resp.TotalCount > int32(len(resp.Compilations)) {
-		remaining := resp.TotalCount - int32(tpOffset) - int32(len(resp.Compilations))
+	if resp.TotalCount > types.SafeInt32(len(resp.Compilations)) {
+		remaining := resp.TotalCount - types.SafeInt32(tpOffset) - types.SafeInt32(len(resp.Compilations))
 		fmt.Printf("\n💡 %d more compilations available. Use --offset=%d to see more.\n",
 			remaining, tpOffset+len(resp.Compilations))
 	}
