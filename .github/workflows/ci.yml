@@ -360,7 +360,8 @@ jobs:
       - name: Fix SARIF schema compliance
         run: |
           # Strip invalid relationships entries that cause SARIF validation failures
-          jq '(.runs[].tool.driver.rules // []) |= map(del(.relationships))' \
+          # Handle zero-findings case where rules array may not exist
+          jq 'if .runs then .runs |= map(if .tool.driver.rules then .tool.driver.rules |= map(del(.relationships)) else . end) else . end' \
             results.sarif > results-fixed.sarif
           mv results-fixed.sarif results.sarif
 
