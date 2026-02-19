@@ -255,6 +255,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 		)
 	}
 
+	// #nosec G104 -- Flush to stdout, no error handling needed
 	w.Flush()
 	fmt.Printf("\nTotal: %d pending request(s)\n", len(requests))
 }

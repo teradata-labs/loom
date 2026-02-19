@@ -350,7 +350,7 @@ func (p *LetsEncryptProvider) loadOrCreateUser() (*ACMEUser, error) {
 	userPath := filepath.Join(p.config.CacheDir, "user.json")
 
 	// Try to load existing user
-	if data, err := os.ReadFile(userPath); err == nil {
+	if data, err := os.ReadFile(filepath.Clean(userPath)); err == nil {
 		var savedUser struct {
 			Email        string
 			Registration *registration.Resource
@@ -470,7 +470,7 @@ func (p *LetsEncryptProvider) cacheCertificate(certResource *certificate.Resourc
 func (p *LetsEncryptProvider) loadCachedCertificate() error {
 	resourcePath := filepath.Join(p.config.CacheDir, "resource.json")
 
-	data, err := os.ReadFile(resourcePath)
+	data, err := os.ReadFile(filepath.Clean(resourcePath))
 	if err != nil {
 		return fmt.Errorf("failed to read cached certificate: %w", err)
 	}

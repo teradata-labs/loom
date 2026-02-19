@@ -25,6 +25,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // Hawk span constants for bus operations
@@ -447,7 +448,7 @@ func (tb *TopicBroadcaster) stats() *loomv1.TopicStats {
 		TotalPublished:    tb.totalPublished.Load(),
 		TotalDelivered:    tb.totalDelivered.Load(),
 		TotalDropped:      tb.totalDropped.Load(),
-		ActiveSubscribers: int32(len(tb.subscribers)),
+		ActiveSubscribers: types.SafeInt32(len(tb.subscribers)),
 		CreatedAt:         tb.createdAt.UnixMilli(),
 		LastPublishAt:     lastPublish,
 	}

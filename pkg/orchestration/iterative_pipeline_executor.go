@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -449,7 +450,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 					TargetStageId: restartReq.TargetStageId,
 					Success:       false,
 					Error:         err.Error(),
-					Iteration:     int32(e.currentIteration),
+					Iteration:     types.SafeInt32(e.currentIteration),
 				})
 				// Continue with normal flow
 				stageIndex++
@@ -469,7 +470,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 							TargetStageId: restartReq.TargetStageId,
 							Success:       false,
 							Error:         err.Error(),
-							Iteration:     int32(e.currentIteration),
+							Iteration:     types.SafeInt32(e.currentIteration),
 						})
 						stageIndex++
 						continue
@@ -492,7 +493,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 					TargetStageId: restartReq.TargetStageId,
 					Success:       false,
 					Error:         err.Error(),
-					Iteration:     int32(e.currentIteration),
+					Iteration:     types.SafeInt32(e.currentIteration),
 				})
 				stageIndex++
 				continue
@@ -539,7 +540,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 			e.sendRestartResponse(restartReq.RequesterStageId, &loomv1.RestartResponse{
 				TargetStageId: restartReq.TargetStageId,
 				Success:       true,
-				Iteration:     int32(e.currentIteration),
+				Iteration:     types.SafeInt32(e.currentIteration),
 			})
 
 			// Continue from target stage

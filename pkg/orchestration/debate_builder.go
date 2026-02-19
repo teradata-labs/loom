@@ -11,6 +11,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // DebateBuilder provides a fluent API for building multi-agent debates.
@@ -47,7 +48,7 @@ func (b *DebateBuilder) WithAgentIDs(agentIDs ...string) *DebateBuilder {
 // WithRounds sets the number of debate rounds.
 // Default is 1 round. More rounds allow agents to refine arguments.
 func (b *DebateBuilder) WithRounds(rounds int) *DebateBuilder {
-	b.rounds = int32(rounds)
+	b.rounds = types.SafeInt32(rounds)
 	return b
 }
 

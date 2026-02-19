@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,18 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"gopkg.in/yaml.v3"
 )
+
+// safeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
+// This is a local copy to avoid import cycles with pkg/types.
+func safeInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(n) // #nosec G115 -- bounds checked above
+}
 
 // ProjectYAML represents the YAML structure for project configuration
 type ProjectYAML struct {
@@ -111,7 +124,7 @@ type GlobalSettingsYAML struct {
 
 // LoadProject loads a project configuration from a YAML file
 func LoadProject(path string) (*loomv1.Project, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read project file %s: %w", path, err)
 	}
@@ -184,7 +197,7 @@ func yamlToProtoProject(yaml *ProjectYAML) *loomv1.Project {
 		Provider:        yaml.Spec.Prompts.Provider,
 		Endpoint:        yaml.Spec.Prompts.Endpoint,
 		CacheEnabled:    yaml.Spec.Prompts.CacheEnabled,
-		CacheTtlSeconds: int32(yaml.Spec.Prompts.CacheTTLSeconds),
+		CacheTtlSeconds: safeInt32(yaml.Spec.Prompts.CacheTTLSeconds),
 	}
 
 	// MCP configuration
@@ -238,8 +251,8 @@ func yamlToProtoProject(yaml *ProjectYAML) *loomv1.Project {
 
 	// Global settings
 	project.Spec.Settings = &loomv1.GlobalSettings{
-		DefaultTimeoutSeconds: int32(yaml.Spec.Settings.DefaultTimeoutSeconds),
-		MaxConcurrentAgents:   int32(yaml.Spec.Settings.MaxConcurrentAgents),
+		DefaultTimeoutSeconds: safeInt32(yaml.Spec.Settings.DefaultTimeoutSeconds),
+		MaxConcurrentAgents:   safeInt32(yaml.Spec.Settings.MaxConcurrentAgents),
 		DebugMode:             yaml.Spec.Settings.DebugMode,
 		LogLevel:              yaml.Spec.Settings.LogLevel,
 	}
@@ -270,7 +283,7 @@ func convertMCPConfig(yaml *MCPServersConfigYAML) *loomv1.MCPServersConfig {
 			Transport:      server.Transport,
 			Command:        server.Command,
 			Args:           server.Args,
-			TimeoutSeconds: int32(server.TimeoutSeconds),
+			TimeoutSeconds: safeInt32(server.TimeoutSeconds),
 			Env:            server.Env,
 		}
 

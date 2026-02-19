@@ -8,9 +8,11 @@ package patterns
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -53,7 +55,7 @@ type PatternRuleYAML struct {
 
 // LoadPatternLibrary loads a pattern library configuration from a YAML file
 func LoadPatternLibrary(path string) (*loomv1.PatternLibrary, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read pattern library file %s: %w", path, err)
 	}
@@ -181,7 +183,7 @@ func yamlToProtoPatternLibrary(yaml *PatternLibraryYAML) *loomv1.PatternLibrary 
 			Name:              entry.Name,
 			Description:       entry.Description,
 			TriggerConditions: entry.TriggerConditions,
-			Priority:          int32(entry.Priority),
+			Priority:          types.SafeInt32(entry.Priority),
 			Tags:              entry.Tags,
 		}
 

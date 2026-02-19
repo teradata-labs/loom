@@ -83,13 +83,13 @@ func NewSQLResultStore(config *SQLResultStoreConfig) (*SQLResultStore, error) {
 
 	// Enable WAL mode for better concurrency (matches SessionStore/ErrorStore/ArtifactStore pattern)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	// Set busy timeout for lock contention
 	if _, err := db.Exec("PRAGMA busy_timeout = 10000"); err != nil {
-		db.Close()
+		db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 
@@ -100,7 +100,7 @@ func NewSQLResultStore(config *SQLResultStoreConfig) (*SQLResultStore, error) {
 
 	// Initialize metadata table
 	if err := store.initMetadataTable(); err != nil {
-		db.Close()
+		db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to initialize metadata table: %w", err)
 	}
 
@@ -234,7 +234,8 @@ func (s *SQLResultStore) Store(id string, data interface{}) (*loomv1.DataReferen
 			placeholders[i] = "?"
 		}
 
-		insertSQL := fmt.Sprintf("INSERT INTO %s VALUES (%s)", tableName, strings.Join(placeholders, ", "))
+		safeTable := sanitizeIdentifier(tableName)
+		insertSQL := fmt.Sprintf("INSERT INTO %s VALUES (%s)", safeTable, strings.Join(placeholders, ", ")) // #nosec G201 -- tableName sanitized
 		stmt, err := s.db.Prepare(insertSQL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to prepare insert: %w", err)

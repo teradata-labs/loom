@@ -12,6 +12,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -30,7 +31,7 @@ func NewMetricsCalculator(suite *loomv1.EvalSuite) *MetricsCalculator {
 // Calculate calculates all metrics for eval results
 func (m *MetricsCalculator) Calculate(results []*loomv1.TestCaseResult) *loomv1.EvalMetrics {
 	metrics := &loomv1.EvalMetrics{
-		TotalTests:     int32(len(results)),
+		TotalTests:     types.SafeInt32(len(results)),
 		PassedTests:    0,
 		FailedTests:    0,
 		Accuracy:       0,
@@ -51,7 +52,7 @@ func (m *MetricsCalculator) Calculate(results []*loomv1.TestCaseResult) *loomv1.
 		// Accumulate cost and latency
 		metrics.TotalCostUsd += result.CostUsd
 		metrics.TotalLatencyMs += result.LatencyMs
-		metrics.TotalToolCalls += int32(len(result.ToolsUsed))
+		metrics.TotalToolCalls += types.SafeInt32(len(result.ToolsUsed))
 	}
 
 	// Calculate accuracy

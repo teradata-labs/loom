@@ -591,9 +591,9 @@ func ParseHex(hex string) color.Color {
 func Alpha(c color.Color, alpha uint8) color.Color {
 	r, g, b, _ := c.RGBA()
 	return color.RGBA{
-		R: uint8(r >> 8),
-		G: uint8(g >> 8),
-		B: uint8(b >> 8),
+		R: uint8(r >> 8), // #nosec G115 -- RGBA color values are bounded to 0-255
+		G: uint8(g >> 8), // #nosec G115 -- RGBA color values are bounded to 0-255
+		B: uint8(b >> 8), // #nosec G115 -- RGBA color values are bounded to 0-255
 		A: alpha,
 	}
 }
@@ -606,7 +606,7 @@ func Darken(c color.Color, percent float64) color.Color {
 		R: uint8(float64(r>>8) * factor),
 		G: uint8(float64(g>>8) * factor),
 		B: uint8(float64(b>>8) * factor),
-		A: uint8(a >> 8),
+		A: uint8(a >> 8), // #nosec G115 -- RGBA color values are bounded to 0-255
 	}
 }
 
@@ -615,10 +615,10 @@ func Lighten(c color.Color, percent float64) color.Color {
 	r, g, b, a := c.RGBA()
 	factor := percent / 100.0
 	return color.RGBA{
-		R: uint8(min(255, float64(r>>8)+255*factor)),
-		G: uint8(min(255, float64(g>>8)+255*factor)),
-		B: uint8(min(255, float64(b>>8)+255*factor)),
-		A: uint8(a >> 8),
+		R: uint8(min(255, float64(r>>8)+255*factor)), // #nosec G115 -- color value bounded to 0-255
+		G: uint8(min(255, float64(g>>8)+255*factor)), // #nosec G115 -- color value bounded to 0-255
+		B: uint8(min(255, float64(b>>8)+255*factor)), // #nosec G115 -- color value bounded to 0-255
+		A: uint8(a >> 8),                             // #nosec G115 -- RGBA values are 16-bit, >> 8 gives 8-bit color
 	}
 }
 

@@ -155,7 +155,7 @@ func (s *MultiAgentServer) UploadArtifact(ctx context.Context, req *loomv1.Uploa
 	}
 
 	// Write file
-	if err := os.WriteFile(filePath, req.Content, 0640); err != nil {
+	if err := os.WriteFile(filePath, req.Content, 0600); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to write file: %v", err)
 	}
 
@@ -164,6 +164,7 @@ func (s *MultiAgentServer) UploadArtifact(ctx context.Context, req *loomv1.Uploa
 	result, err := analyzer.Analyze(filePath)
 	if err != nil {
 		// Cleanup file on error
+		// #nosec G104 -- best-effort cleanup on error path
 		os.Remove(filePath)
 		return nil, status.Errorf(codes.Internal, "failed to analyze file: %v", err)
 	}
@@ -316,6 +317,7 @@ func (s *MultiAgentServer) UploadArtifact(ctx context.Context, req *loomv1.Uploa
 	// Index in database
 	if err := s.artifactStore.Index(ctx, artifact); err != nil {
 		// Cleanup file on error
+		// #nosec G104 -- best-effort cleanup on error path
 		os.Remove(filePath)
 		return nil, status.Errorf(codes.Internal, "failed to index artifact: %v", err)
 	}
@@ -457,11 +459,11 @@ func (s *MultiAgentServer) GetArtifactStats(ctx context.Context, req *loomv1.Get
 	}
 
 	return &loomv1.GetArtifactStatsResponse{
-		TotalFiles:     int32(stats.TotalFiles),
+		TotalFiles:     types.SafeInt32(stats.TotalFiles),
 		TotalSizeBytes: stats.TotalSizeBytes,
-		UserFiles:      int32(stats.UserFiles),
-		GeneratedFiles: int32(stats.GeneratedFiles),
-		DeletedFiles:   int32(stats.DeletedFiles),
+		UserFiles:      types.SafeInt32(stats.UserFiles),
+		GeneratedFiles: types.SafeInt32(stats.GeneratedFiles),
+		DeletedFiles:   types.SafeInt32(stats.DeletedFiles),
 	}, nil
 }
 
@@ -479,7 +481,7 @@ func artifactToProto(art *artifacts.Artifact) *loomv1.Artifact {
 		Checksum:      art.Checksum,
 		CreatedAt:     art.CreatedAt.Unix(),
 		UpdatedAt:     art.UpdatedAt.Unix(),
-		AccessCount:   int32(art.AccessCount),
+		AccessCount:   types.SafeInt32(art.AccessCount),
 		Tags:          art.Tags,
 		Metadata:      art.Metadata,
 	}

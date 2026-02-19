@@ -57,6 +57,7 @@ func NewSQLiteStore(dbPath string, gcInterval time.Duration) (*SQLiteStore, erro
 
 	// Enable WAL mode for better concurrency
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
@@ -70,6 +71,7 @@ func NewSQLiteStore(dbPath string, gcInterval time.Duration) (*SQLiteStore, erro
 
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}

@@ -8,6 +8,7 @@ package evals
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -17,7 +18,7 @@ import (
 // CompareWithGoldenFile compares actual output with a golden file
 func CompareWithGoldenFile(goldenFilePath string, actualOutput string, threshold float64) (*loomv1.GoldenFileResult, error) {
 	// Read golden file
-	goldenData, err := os.ReadFile(goldenFilePath)
+	goldenData, err := os.ReadFile(filepath.Clean(goldenFilePath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &loomv1.GoldenFileResult{

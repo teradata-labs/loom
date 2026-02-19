@@ -29,6 +29,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // Hawk span constants for shared memory operations
@@ -510,7 +511,7 @@ func (s *SharedMemoryStore) List(ctx context.Context, req *loomv1.ListSharedMemo
 
 	return &loomv1.ListSharedMemoryKeysResponse{
 		Keys:       keys,
-		TotalCount: int32(len(keys)),
+		TotalCount: types.SafeInt32(len(keys)),
 	}, nil
 }
 
@@ -622,7 +623,7 @@ func (s *SharedMemoryStore) GetStats(ctx context.Context, namespace loomv1.Share
 		ReadCount:     nsStats.readCount.Load(),
 		WriteCount:    nsStats.writeCount.Load(),
 		ConflictCount: nsStats.conflictCount.Load(),
-		WatcherCount:  int32(len(watchers)),
+		WatcherCount:  types.SafeInt32(len(watchers)),
 		LastAccessAt:  lastAccess,
 	}, nil
 }
@@ -649,6 +650,7 @@ func (s *SharedMemoryStore) Close() error {
 
 	// Close encoder/decoder
 	if s.encoder != nil {
+		// #nosec G104 -- best-effort cleanup during shutdown
 		s.encoder.Close()
 	}
 	if s.decoder != nil {

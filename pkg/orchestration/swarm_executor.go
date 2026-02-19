@@ -467,7 +467,7 @@ func (e *SwarmExecutor) aggregateVotes(ctx context.Context, votes []*loomv1.Swar
 			decision = judgeDecision
 			// Recalculate threshold for judge's decision
 			if count, ok := voteDistribution[decision]; ok {
-				thresholdMet = count > (int32(len(votes)) / 2)
+				thresholdMet = count > (types.SafeInt32(len(votes)) / 2)
 			}
 		}
 	}
@@ -487,7 +487,7 @@ func (e *SwarmExecutor) aggregateVotes(ctx context.Context, votes []*loomv1.Swar
 
 // applyVotingStrategy determines the winning choice based on the configured strategy.
 func (e *SwarmExecutor) applyVotingStrategy(votes []*loomv1.SwarmVote, distribution map[string]int32) (string, bool) {
-	totalVotes := int32(len(votes))
+	totalVotes := types.SafeInt32(len(votes))
 
 	// Find the choice with most votes
 	var winningChoice string
@@ -673,6 +673,6 @@ func (e *SwarmExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.Wor
 		TotalCostUsd:  totalCostUsd,
 		TotalTokens:   totalTokens,
 		AgentCostsUsd: make(map[string]float64), // Could populate if needed
-		LlmCalls:      int32(len(results)),
+		LlmCalls:      types.SafeInt32(len(results)),
 	}
 }

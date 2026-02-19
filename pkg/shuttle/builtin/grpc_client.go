@@ -253,6 +253,7 @@ func (t *GRPCClientTool) Execute(ctx context.Context, params map[string]interfac
 	}
 
 	var respData interface{}
+	// #nosec G104 -- JSON unmarshal with fallback to raw response
 	json.Unmarshal(jsonBytes, &respData)
 
 	return &shuttle.Result{
@@ -309,6 +310,7 @@ func (t *GRPCClientTool) getConnection(address string, params map[string]interfa
 // Close closes all connections (call on shutdown).
 func (t *GRPCClientTool) Close() {
 	for _, conn := range t.connections {
+		// #nosec G104 -- best-effort cleanup of gRPC connections
 		conn.Close()
 	}
 	t.connections = make(map[string]*grpc.ClientConn)

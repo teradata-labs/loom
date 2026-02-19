@@ -8,8 +8,10 @@ package orchestration
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -100,7 +102,7 @@ func readWorkflowFile(path string) ([]byte, error) {
 	}
 
 	// Read file content
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		if os.IsPermission(err) {
 			return nil, fmt.Errorf("%w: %s", ErrInvalidPermissions, path)
@@ -223,11 +225,11 @@ func convertDebatePattern(spec map[string]interface{}) (*loomv1.WorkflowPattern,
 	if roundsRaw, ok := spec["rounds"]; ok {
 		switch v := roundsRaw.(type) {
 		case int:
-			rounds = int32(v)
+			rounds = types.SafeInt32(v)
 		case int32:
 			rounds = v
 		case int64:
-			rounds = int32(v)
+			rounds = types.SafeInt32FromInt64(v)
 		}
 	}
 
@@ -285,11 +287,11 @@ func convertForkJoinPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 	if timeoutRaw, ok := spec["timeout_seconds"]; ok {
 		switch v := timeoutRaw.(type) {
 		case int:
-			timeoutSeconds = int32(v)
+			timeoutSeconds = types.SafeInt32(v)
 		case int32:
 			timeoutSeconds = v
 		case int64:
-			timeoutSeconds = int32(v)
+			timeoutSeconds = types.SafeInt32FromInt64(v)
 		}
 	}
 
@@ -415,11 +417,11 @@ func convertParallelPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 	if timeoutRaw, ok := spec["timeout_seconds"]; ok {
 		switch v := timeoutRaw.(type) {
 		case int:
-			timeoutSeconds = int32(v)
+			timeoutSeconds = types.SafeInt32(v)
 		case int32:
 			timeoutSeconds = v
 		case int64:
-			timeoutSeconds = int32(v)
+			timeoutSeconds = types.SafeInt32FromInt64(v)
 		}
 	}
 
@@ -523,11 +525,11 @@ func convertIterativePattern(spec map[string]interface{}) (*loomv1.WorkflowPatte
 	if maxIter, ok := spec["max_iterations"]; ok {
 		switch v := maxIter.(type) {
 		case int:
-			maxIterations = int32(v)
+			maxIterations = types.SafeInt32(v)
 		case int32:
 			maxIterations = v
 		case int64:
-			maxIterations = int32(v)
+			maxIterations = types.SafeInt32FromInt64(v)
 		default:
 			// If not a valid integer type, this is an error (e.g., string)
 			return nil, fmt.Errorf("%w: max_iterations must be an integer, got %T", ErrInvalidWorkflow, v)
@@ -559,11 +561,11 @@ func convertIterativePattern(spec map[string]interface{}) (*loomv1.WorkflowPatte
 		if cooldown, ok := policyRaw["cooldown_seconds"]; ok {
 			switch v := cooldown.(type) {
 			case int:
-				restartPolicy.CooldownSeconds = int32(v)
+				restartPolicy.CooldownSeconds = types.SafeInt32(v)
 			case int32:
 				restartPolicy.CooldownSeconds = v
 			case int64:
-				restartPolicy.CooldownSeconds = int32(v)
+				restartPolicy.CooldownSeconds = types.SafeInt32FromInt64(v)
 			}
 		}
 
@@ -581,7 +583,7 @@ func convertIterativePattern(spec map[string]interface{}) (*loomv1.WorkflowPatte
 
 		// Extract max_validation_retries (optional, default: 2)
 		if maxRetries, ok := policyRaw["max_validation_retries"].(int); ok {
-			restartPolicy.MaxValidationRetries = int32(maxRetries)
+			restartPolicy.MaxValidationRetries = types.SafeInt32(maxRetries)
 		}
 	}
 

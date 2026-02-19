@@ -341,12 +341,15 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 func exportConfigToEnv(cfg *Config) {
 	// Export web search API keys if configured
 	if cfg.Tools.WebSearch.BraveAPIKey != "" {
+		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		os.Setenv("BRAVE_API_KEY", cfg.Tools.WebSearch.BraveAPIKey)
 	}
 	if cfg.Tools.WebSearch.TavilyAPIKey != "" {
+		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		os.Setenv("TAVILY_API_KEY", cfg.Tools.WebSearch.TavilyAPIKey)
 	}
 	if cfg.Tools.WebSearch.SerpAPIKey != "" {
+		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
 	}
 }
@@ -2572,6 +2575,7 @@ func copyDir(src, dst string) error {
 // copyFile copies a single file from src to dst.
 func copyFile(src, dst string) error {
 	// Read source file
+	// #nosec G304 -- internal path construction from hardcoded pattern directories
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("failed to read source file: %w", err)

@@ -430,3 +430,40 @@ func SafeInt32(n int) int32 {
 	}
 	return int32(n)
 }
+
+// SafeInt32FromInt64 converts an int64 to int32, capping at MaxInt32/MinInt32 to prevent overflow.
+// This prevents gosec G115 integer overflow warnings.
+func SafeInt32FromInt64(n int64) int32 {
+	const maxInt32 = 2147483647  // math.MaxInt32
+	const minInt32 = -2147483648 // math.MinInt32
+	if n > maxInt32 {
+		return maxInt32
+	}
+	if n < minInt32 {
+		return minInt32
+	}
+	return int32(n)
+}
+
+// SafeInt32FromFloat64 converts a float64 to int32, capping at MaxInt32/MinInt32 to prevent overflow.
+// This prevents gosec G115 integer overflow warnings.
+func SafeInt32FromFloat64(f float64) int32 {
+	const maxInt32 = 2147483647  // math.MaxInt32
+	const minInt32 = -2147483648 // math.MinInt32
+	if f > maxInt32 {
+		return maxInt32
+	}
+	if f < minInt32 {
+		return minInt32
+	}
+	return int32(f)
+}
+
+// SafeUint converts an int to uint, returning 0 for negative values.
+// This prevents gosec G115 integer overflow warnings.
+func SafeUint(n int) uint {
+	if n < 0 {
+		return 0
+	}
+	return uint(n)
+}

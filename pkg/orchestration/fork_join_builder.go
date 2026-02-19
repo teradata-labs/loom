@@ -11,6 +11,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // ForkJoinBuilder provides a fluent API for building fork-join patterns.
@@ -46,7 +47,7 @@ func (b *ForkJoinBuilder) WithAgentIDs(agentIDs ...string) *ForkJoinBuilder {
 // WithTimeout sets the maximum execution time in seconds.
 // If agents don't complete within this time, the execution will be cancelled.
 func (b *ForkJoinBuilder) WithTimeout(seconds int) *ForkJoinBuilder {
-	b.timeoutSecs = int32(seconds)
+	b.timeoutSecs = types.SafeInt32(seconds)
 	return b
 }
 

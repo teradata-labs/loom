@@ -11,6 +11,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // ParallelBuilder provides a fluent API for building parallel patterns.
@@ -80,7 +81,7 @@ func (b *ParallelBuilder) WithMergeStrategy(strategy loomv1.MergeStrategy) *Para
 // WithTimeout sets the maximum execution time in seconds.
 // If tasks don't complete within this time, the execution will be cancelled.
 func (b *ParallelBuilder) WithTimeout(seconds int) *ParallelBuilder {
-	b.timeoutSecs = int32(seconds)
+	b.timeoutSecs = types.SafeInt32(seconds)
 	return b
 }
 

@@ -161,7 +161,9 @@ func runValidateDir(cmd *cobra.Command, args []string) {
 // validateSingleFile validates a single file by detecting its type
 func validateSingleFile(path string) error {
 	// Read file to detect kind
-	data, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}

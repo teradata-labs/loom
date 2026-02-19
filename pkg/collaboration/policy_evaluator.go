@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -211,7 +212,7 @@ func FromSwarmResult(result *loomv1.SwarmResult) *EvaluationContext {
 	}
 	ctx.TieDetected = maxCount > 1
 	ctx.WinningVoteCount = &maxVotes
-	totalVotes := int32(len(result.Votes))
+	totalVotes := types.SafeInt32(len(result.Votes))
 	ctx.TotalVotes = &totalVotes
 
 	return ctx

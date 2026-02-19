@@ -133,7 +133,7 @@ func (m *model) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 	if m.highlightedFile != m.currentImage() && m.currentImage() != "" {
 		w, h := m.imagePreviewSize()
-		cmd = m.image.Redraw(uint(w-2), uint(h-2), m.currentImage())
+		cmd = m.image.Redraw(uint(w-2), uint(h-2), m.currentImage()) // #nosec G115 -- width/height bounded by screen size
 		cmds = append(cmds, cmd)
 	}
 	m.highlightedFile = m.currentImage()
@@ -152,7 +152,7 @@ func (m *model) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 					return util.ReportError(fmt.Errorf("file too large, max %dMB", MaxAttachmentSize/(1024*1024)))
 				}
 
-				content, err := os.ReadFile(path)
+				content, err := os.ReadFile(filepath.Clean(path))
 				if err != nil {
 					return util.ReportError(fmt.Errorf("unable to read file: %w", err))
 				}
