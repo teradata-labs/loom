@@ -304,6 +304,20 @@ jobs:
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
 
+      - name: Fix SARIF schema compliance
+        run: |
+          # Strip invalid relationships entries that cause SARIF validation failures
+          # Handle zero-findings case where rules array may not exist
+          jq 'if .runs then .runs |= map(if .tool.driver.rules then .tool.driver.rules |= map(del(.relationships)) else . end) else . end' \
+            results.sarif > results-fixed.sarif
+          mv results-fixed.sarif results.sarif
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4.32.3
+        continue-on-error: true  # Don't fail the build if code scanning is not enabled
+        with:
+          sarif_file: results.sarif
+
       - name: Review security findings
         run: |
           echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
