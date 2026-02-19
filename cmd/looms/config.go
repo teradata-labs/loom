@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v3"
@@ -46,8 +47,11 @@ type Config struct {
 	// LLM provider configuration
 	LLM LLMConfig `mapstructure:"llm"`
 
-	// Database configuration
+	// Database configuration (legacy - use Storage instead)
 	Database DatabaseConfig `mapstructure:"database"`
+
+	// Storage backend configuration (takes precedence over Database)
+	Storage StorageBackendConfig `mapstructure:"storage"`
 
 	// Shared memory configuration
 	SharedMemory SharedMemoryConfig `mapstructure:"shared_memory"`
@@ -276,9 +280,109 @@ type LLMConfig struct {
 }
 
 // DatabaseConfig holds database configuration.
+// Deprecated: Use StorageBackendConfig instead. This is kept for backward compatibility.
+// If storage: section is present in config, it takes precedence over database: section.
 type DatabaseConfig struct {
 	Path   string `mapstructure:"path"`
-	Driver string `mapstructure:"driver"` // sqlite, postgres (future)
+	Driver string `mapstructure:"driver"` // sqlite, postgres
+}
+
+// StorageBackendConfig holds the storage backend configuration.
+// Maps to the proto StorageConfig message. One storage backend per server.
+type StorageBackendConfig struct {
+	// Backend type: "sqlite" (default) or "postgres"
+	Backend string `mapstructure:"backend"`
+
+	// SQLite-specific configuration
+	SQLite SQLiteConfig `mapstructure:"sqlite"`
+
+	// PostgreSQL-specific configuration
+	Postgres PostgresConfig `mapstructure:"postgres"`
+
+	// Migration configuration
+	Migration MigrationStorageConfig `mapstructure:"migration"`
+
+	// Soft delete configuration
+	SoftDelete SoftDeleteStorageConfig `mapstructure:"soft_delete"`
+}
+
+// SQLiteConfig holds SQLite storage configuration.
+type SQLiteConfig struct {
+	// Path to the SQLite database file (default: $LOOM_DATA_DIR/loom.db)
+	Path string `mapstructure:"path"`
+
+	// Enable SQLCipher encryption (default: false)
+	Encrypt bool `mapstructure:"encrypt"`
+
+	// Encryption key (or use LOOM_DB_KEY env var)
+	EncryptionKey string `mapstructure:"encryption_key"`
+
+	// Enable WAL mode for better concurrency (default: true)
+	WALMode bool `mapstructure:"wal_mode"`
+}
+
+// PostgresConfig holds PostgreSQL storage configuration.
+type PostgresConfig struct {
+	// Connection parameters (used if DSN is empty)
+	Host     string `mapstructure:"host"`
+	Port     int32  `mapstructure:"port"`
+	Database string `mapstructure:"database"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+
+	// Full DSN connection string (takes precedence over individual fields)
+	DSN string `mapstructure:"dsn"`
+
+	// Connection pool configuration
+	Pool PostgresPoolConfig `mapstructure:"pool"`
+
+	// SSL mode: "disable", "require", "verify-ca", "verify-full" (default: "require")
+	SSLMode string `mapstructure:"ssl_mode"`
+
+	// Row-level security user ID for tenant isolation (optional)
+	RLSUserID string `mapstructure:"rls_user_id"`
+
+	// PostgreSQL schema to use (default: "public")
+	Schema string `mapstructure:"schema"`
+}
+
+// PostgresPoolConfig holds PostgreSQL connection pool configuration.
+type PostgresPoolConfig struct {
+	// Maximum number of connections in the pool (default: 25)
+	MaxConnections int32 `mapstructure:"max_connections"`
+
+	// Minimum number of idle connections (default: 5)
+	MinConnections int32 `mapstructure:"min_connections"`
+
+	// Maximum time a connection can be idle before being closed (seconds, default: 300)
+	MaxIdleTimeSeconds int32 `mapstructure:"max_idle_time_seconds"`
+
+	// Maximum lifetime of a connection (seconds, default: 3600)
+	MaxLifetimeSeconds int32 `mapstructure:"max_lifetime_seconds"`
+
+	// Health check interval (seconds, default: 30)
+	HealthCheckIntervalSeconds int32 `mapstructure:"health_check_interval_seconds"`
+}
+
+// MigrationStorageConfig holds migration behavior configuration.
+type MigrationStorageConfig struct {
+	// Automatically run migrations on startup (default: true)
+	AutoMigrate bool `mapstructure:"auto_migrate"`
+
+	// Target migration version (0 = latest)
+	TargetVersion int32 `mapstructure:"target_version"`
+}
+
+// SoftDeleteStorageConfig holds soft-delete behavior configuration.
+type SoftDeleteStorageConfig struct {
+	// Enable soft delete (default: false for SQLite, true for PostgreSQL)
+	Enabled bool `mapstructure:"enabled"`
+
+	// Grace period before permanent deletion (seconds, default: 2592000 = 30 days)
+	GracePeriodSeconds int32 `mapstructure:"grace_period_seconds"`
+
+	// Interval for cleanup of expired soft-deleted records (seconds, default: 86400 = 1 day)
+	CleanupIntervalSeconds int32 `mapstructure:"cleanup_interval_seconds"`
 }
 
 // CommunicationConfig holds tiered communication configuration for inter-agent messaging.
@@ -792,10 +896,26 @@ func setDefaults() {
 	viper.SetDefault("llm.max_tokens", 4096)
 	viper.SetDefault("llm.timeout_seconds", 60)
 
-	// Database defaults (use loom data directory)
+	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
 	viper.SetDefault("database.path", defaultDBPath)
 	viper.SetDefault("database.driver", "sqlite")
+
+	// Storage backend defaults
+	viper.SetDefault("storage.backend", "sqlite")
+	viper.SetDefault("storage.sqlite.path", defaultDBPath)
+	viper.SetDefault("storage.sqlite.wal_mode", true)
+	viper.SetDefault("storage.postgres.port", 5432)
+	viper.SetDefault("storage.postgres.ssl_mode", "require")
+	viper.SetDefault("storage.postgres.schema", "public")
+	viper.SetDefault("storage.postgres.pool.max_connections", 25)
+	viper.SetDefault("storage.postgres.pool.min_connections", 5)
+	viper.SetDefault("storage.postgres.pool.max_idle_time_seconds", 300)
+	viper.SetDefault("storage.postgres.pool.max_lifetime_seconds", 3600)
+	viper.SetDefault("storage.postgres.pool.health_check_interval_seconds", 30)
+	viper.SetDefault("storage.migration.auto_migrate", true)
+	viper.SetDefault("storage.soft_delete.grace_period_seconds", 2592000)  // 30 days
+	viper.SetDefault("storage.soft_delete.cleanup_interval_seconds", 86400) // 1 day
 
 	// Communication defaults (SQLite-backed, auto-promote enabled)
 	viper.SetDefault("communication.store.backend", "sqlite")
@@ -997,13 +1117,21 @@ func GetSecretMappings() []SecretMapping {
 				return checkMCPEnvSecret(c, "GITHUB_TOKEN")
 			},
 		},
-		// MCP-specific secrets (PostgreSQL)
+		// PostgreSQL password (for storage backend and MCP)
 		{
 			KeyringKey: "postgres_password",
 			Setter: func(c *Config, val string) {
+				// Set on storage config if using postgres backend
+				if c.Storage.Backend == "postgres" && c.Storage.Postgres.Password == "" {
+					c.Storage.Postgres.Password = val
+				}
+				// Also inject into MCP servers
 				injectMCPEnvSecret(c, "POSTGRES_PASSWORD", val)
 			},
 			IsSet: func(c *Config) bool {
+				if c.Storage.Backend == "postgres" && c.Storage.Postgres.Password != "" {
+					return true
+				}
 				return checkMCPEnvSecret(c, "POSTGRES_PASSWORD")
 			},
 		},
@@ -1175,9 +1303,23 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, or huggingface)", c.LLM.Provider)
 	}
 
-	// Validate database config
-	if c.Database.Path == "" {
-		return fmt.Errorf("database.path is required")
+	// Validate storage config
+	switch c.Storage.Backend {
+	case "sqlite", "":
+		// SQLite: path is required (will be set from defaults or database.path)
+		if c.resolveStoragePath() == "" {
+			return fmt.Errorf("storage.sqlite.path or database.path is required")
+		}
+	case "postgres":
+		pg := c.Storage.Postgres
+		if pg.DSN == "" && pg.Host == "" {
+			return fmt.Errorf("postgres backend requires dsn or host (set storage.postgres.dsn or storage.postgres.host)")
+		}
+		if pg.DSN == "" && pg.Database == "" {
+			return fmt.Errorf("postgres backend requires database name (set storage.postgres.database)")
+		}
+	default:
+		return fmt.Errorf("unsupported storage backend: %s (must be sqlite or postgres)", c.Storage.Backend)
 	}
 
 	// Validate observability config
@@ -1211,6 +1353,73 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// resolveStoragePath returns the SQLite database path, considering backward compatibility.
+// Priority: storage.sqlite.path > database.path > default.
+func (c *Config) resolveStoragePath() string {
+	if c.Storage.SQLite.Path != "" {
+		return c.Storage.SQLite.Path
+	}
+	if c.Database.Path != "" {
+		return c.Database.Path
+	}
+	return ""
+}
+
+// BuildProtoStorageConfig converts the YAML config into a proto StorageConfig.
+// This handles backward compatibility: if the storage: section is not configured
+// but database: section is present, it constructs a SQLite config from legacy fields.
+func (c *Config) BuildProtoStorageConfig() *loomv1.StorageConfig {
+	switch c.Storage.Backend {
+	case "postgres":
+		pg := c.Storage.Postgres
+		return &loomv1.StorageConfig{
+			Backend: loomv1.StorageBackendType_STORAGE_BACKEND_TYPE_POSTGRES,
+			Postgres: &loomv1.PostgresStorageConfig{
+				Host:     pg.Host,
+				Port:     pg.Port,
+				Database: pg.Database,
+				User:     pg.User,
+				Password: pg.Password,
+				Dsn:      pg.DSN,
+				SslMode:  pg.SSLMode,
+				RlsUserId: pg.RLSUserID,
+				Schema:   pg.Schema,
+				Pool: &loomv1.PostgresPoolConfig{
+					MaxConnections:             pg.Pool.MaxConnections,
+					MinConnections:             pg.Pool.MinConnections,
+					MaxIdleTimeSeconds:         pg.Pool.MaxIdleTimeSeconds,
+					MaxLifetimeSeconds:         pg.Pool.MaxLifetimeSeconds,
+					HealthCheckIntervalSeconds: pg.Pool.HealthCheckIntervalSeconds,
+				},
+			},
+			Migration: &loomv1.MigrationConfig{
+				AutoMigrate:   c.Storage.Migration.AutoMigrate,
+				TargetVersion: c.Storage.Migration.TargetVersion,
+			},
+			SoftDelete: &loomv1.SoftDeleteConfig{
+				Enabled:                c.Storage.SoftDelete.Enabled,
+				GracePeriodSeconds:     c.Storage.SoftDelete.GracePeriodSeconds,
+				CleanupIntervalSeconds: c.Storage.SoftDelete.CleanupIntervalSeconds,
+			},
+		}
+
+	default: // sqlite or empty
+		return &loomv1.StorageConfig{
+			Backend: loomv1.StorageBackendType_STORAGE_BACKEND_TYPE_SQLITE,
+			Sqlite: &loomv1.SQLiteStorageConfig{
+				Path:          c.resolveStoragePath(),
+				Encrypt:       c.Storage.SQLite.Encrypt,
+				EncryptionKey: c.Storage.SQLite.EncryptionKey,
+				WalMode:       c.Storage.SQLite.WALMode,
+			},
+			Migration: &loomv1.MigrationConfig{
+				AutoMigrate:   c.Storage.Migration.AutoMigrate,
+				TargetVersion: c.Storage.Migration.TargetVersion,
+			},
+		}
+	}
 }
 
 // GenerateExampleConfig generates an example configuration file.

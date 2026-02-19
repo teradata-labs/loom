@@ -43,13 +43,13 @@ type Server struct {
 	loomv1.UnimplementedLoomServiceServer
 
 	agent         *agent.Agent
-	sessionStore  *agent.SessionStore
+	sessionStore  agent.SessionStorage
 	factory       *factory.ProviderFactory
 	modelRegistry *factory.ModelRegistry
 }
 
 // NewServer creates a new LoomService server.
-func NewServer(ag *agent.Agent, store *agent.SessionStore) *Server {
+func NewServer(ag *agent.Agent, store agent.SessionStorage) *Server {
 	return &Server{
 		agent:         ag,
 		sessionStore:  store,

@@ -158,11 +158,11 @@ var _ shuttle.Tool = (*GetErrorDetailsTool)(nil)
 // preventing context blowout from accidentally loading 50MB results.
 type GetToolResultTool struct {
 	memoryStore *storage.SharedMemoryStore
-	sqlStore    *storage.SQLResultStore
+	sqlStore    storage.ResultStore
 }
 
 // NewGetToolResultTool creates a new GetToolResultTool.
-func NewGetToolResultTool(memoryStore *storage.SharedMemoryStore, sqlStore *storage.SQLResultStore) *GetToolResultTool {
+func NewGetToolResultTool(memoryStore *storage.SharedMemoryStore, sqlStore storage.ResultStore) *GetToolResultTool {
 	return &GetToolResultTool{
 		memoryStore: memoryStore,
 		sqlStore:    sqlStore,
@@ -424,12 +424,12 @@ var _ shuttle.Tool = (*GetToolResultTool)(nil)
 // For JSON arrays: Use offset/limit for pagination (SQL support coming in Phase 4.5)
 // For CSV data: SQL queries coming in Phase 4.5
 type QueryToolResultTool struct {
-	sqlStore    *storage.SQLResultStore
+	sqlStore    storage.ResultStore
 	memoryStore *storage.SharedMemoryStore
 }
 
 // NewQueryToolResultTool creates a new QueryToolResultTool.
-func NewQueryToolResultTool(sqlStore *storage.SQLResultStore, memoryStore *storage.SharedMemoryStore) *QueryToolResultTool {
+func NewQueryToolResultTool(sqlStore storage.ResultStore, memoryStore *storage.SharedMemoryStore) *QueryToolResultTool {
 	return &QueryToolResultTool{
 		sqlStore:    sqlStore,
 		memoryStore: memoryStore,

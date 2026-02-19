@@ -29,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -44,7 +45,7 @@ type MultiAgentServer struct {
 	loomv1.UnimplementedLoomServiceServer
 
 	agents       map[string]*agent.Agent
-	sessionStore *agent.SessionStore
+	sessionStore agent.SessionStorage
 	mu           sync.RWMutex
 
 	defaultAgentID     string                           // Agent to use when no agent_id specified
@@ -122,6 +123,10 @@ type MultiAgentServer struct {
 
 	// UI App compiler for CreateUIApp/UpdateUIApp RPCs
 	appCompiler AppCompiler
+
+	// Storage backend for health checks and migration RPCs
+	storageBackend     backend.StorageBackend
+	storageBackendType loomv1.StorageBackendType
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -161,7 +166,7 @@ type spawnedAgentContext struct {
 }
 
 // NewMultiAgentServer creates a new multi-agent LoomService server.
-func NewMultiAgentServer(agents map[string]*agent.Agent, store *agent.SessionStore) *MultiAgentServer {
+func NewMultiAgentServer(agents map[string]*agent.Agent, store agent.SessionStorage) *MultiAgentServer {
 	// Transform agent map to use GUID keys for consistency with AddAgent/UpdateAgent
 	guidAgents := make(map[string]*agent.Agent, len(agents))
 	var defaultID string

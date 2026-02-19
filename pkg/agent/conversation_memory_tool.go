@@ -421,7 +421,7 @@ func (t *ConversationMemoryTool) searchAgentSessions(ctx context.Context, query 
 	}
 
 	// Use FTS5 search with agent scope (BM25 ranking)
-	messages, err := sessionStore.SearchFTS5ByAgent(ctx, agentID, query, limit)
+	messages, err := sessionStore.SearchMessagesByAgent(ctx, agentID, query, limit)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -451,7 +451,7 @@ func (t *ConversationMemoryTool) searchAllSessions(ctx context.Context, query st
 
 	// Use FTS5 search across all sessions
 	// Pass empty sessionID to search all
-	messages, err := sessionStore.SearchFTS5(ctx, "", query, limit)
+	messages, err := sessionStore.SearchMessages(ctx, "", query, limit)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -566,5 +566,5 @@ func (t *ConversationMemoryTool) executeClear(ctx context.Context, input map[str
 }
 
 // Note: Agent-scoped and all-scoped searches now use FTS5 with BM25 ranking
-// via SessionStore.SearchFTS5ByAgent() and SessionStore.SearchFTS5()
+// via SessionStore.SearchMessagesByAgent() and SessionStore.SearchMessages()
 // No need for manual keyword filtering.

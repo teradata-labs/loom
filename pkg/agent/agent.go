@@ -2367,7 +2367,7 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 
 // SetSQLResultStore configures SQL result store for this agent.
 // This enables queryable storage for large SQL results, preventing context blowout.
-func (a *Agent) SetSQLResultStore(sqlStore *storage.SQLResultStore) {
+func (a *Agent) SetSQLResultStore(sqlStore storage.ResultStore) {
 	// Store reference for later use
 	a.sqlResultStore = sqlStore
 

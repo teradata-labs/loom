@@ -42,11 +42,11 @@ func (f MemoryObserverFunc) OnMessageAdded(agentID string, sessionID string, msg
 }
 
 // Memory manages conversation sessions and history.
-// Supports optional persistent storage via SessionStore.
+// Supports optional persistent storage via SessionStorage interface.
 type Memory struct {
 	mu                   sync.RWMutex
 	sessions             map[string]*Session
-	store                *SessionStore              // Optional persistent storage
+	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
 	tracer               observability.Tracer       // Optional tracer for observability
@@ -71,7 +71,7 @@ func NewMemory() *Memory {
 }
 
 // NewMemoryWithStore creates a memory manager with persistent storage.
-func NewMemoryWithStore(store *SessionStore) *Memory {
+func NewMemoryWithStore(store SessionStorage) *Memory {
 	return &Memory{
 		sessions:  make(map[string]*Session),
 		store:     store,
@@ -423,9 +423,9 @@ func (m *Memory) SetTracer(tracer observability.Tracer) {
 	}
 }
 
-// GetStore returns the SessionStore if persistence is enabled, nil otherwise.
+// GetStore returns the SessionStorage if persistence is enabled, nil otherwise.
 // Used for registering cleanup hooks and accessing persistence layer.
-func (m *Memory) GetStore() *SessionStore {
+func (m *Memory) GetStore() SessionStorage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.store

@@ -1318,17 +1318,18 @@ func (s *SessionStore) backfillFTS5(ctx context.Context) error {
 	return nil
 }
 
-// SearchFTS5 searches message content using FTS5 full-text search with BM25 ranking.
-// Returns messages sorted by relevance (highest BM25 score first).
+// SearchMessages searches message content using full-text search with BM25 ranking.
+// For SQLite, this uses FTS5. For PostgreSQL, this uses tsvector/tsquery.
+// Returns messages sorted by relevance (highest score first).
 //
 // Parameters:
-//   - sessionID: Filter results to specific session
-//   - query: Natural language search query (FTS5 MATCH syntax)
+//   - sessionID: Filter results to specific session (empty = all sessions)
+//   - query: Natural language search query
 //   - limit: Maximum number of results to return
 //
-// Returns messages ordered by BM25 relevance score.
-func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, limit int) ([]Message, error) {
-	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_fts5")
+// Returns messages ordered by relevance score.
+func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query string, limit int) ([]Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_messages")
 	defer s.tracer.EndSpan(span)
 
 	span.SetAttribute("session_id", sessionID)
@@ -1448,10 +1449,12 @@ func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, 
 //
 // This allows finding documents that contain ANY of the search terms,
 // which is more suitable for semantic search than requiring ALL terms.
-// SearchFTS5ByAgent searches messages across all sessions for a given agent using FTS5.
-// Uses BM25 ranking to return most relevant results first.
-func (s *SessionStore) SearchFTS5ByAgent(ctx context.Context, agentID, query string, limit int) ([]Message, error) {
-	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_fts5_by_agent")
+
+// SearchMessagesByAgent searches messages across all sessions for a given agent using full-text search.
+// For SQLite, this uses FTS5. For PostgreSQL, this uses tsvector/tsquery.
+// Uses BM25/rank scoring to return most relevant results first.
+func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query string, limit int) ([]Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_messages_by_agent")
 	defer s.tracer.EndSpan(span)
 
 	span.SetAttribute("agent_id", agentID)

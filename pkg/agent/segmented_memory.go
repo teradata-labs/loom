@@ -84,7 +84,7 @@ type SegmentedMemory struct {
 	l2Summary string // Compressed summary of older conversation
 
 	// Swap Layer (cold - database-backed long-term storage)
-	sessionStore       *SessionStore // Database for persistent storage (optional)
+	sessionStore       SessionStorage // Database for persistent storage (optional)
 	sessionID          string        // Session identifier for swap operations
 	swapEnabled        bool          // Whether swap layer is configured
 	maxL2Tokens        int           // Maximum tokens in L2 before eviction to swap (default: 5000)
@@ -253,7 +253,7 @@ func (sm *SegmentedMemory) SetLLMProvider(llm LLMProvider) {
 // SetSessionStore enables the swap layer with database-backed long-term storage.
 // When set, L2 summaries will be automatically evicted to swap when exceeding maxL2Tokens.
 // This enables "forever conversations" by preventing unbounded L2 growth.
-func (sm *SegmentedMemory) SetSessionStore(store *SessionStore, sessionID string) {
+func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.sessionStore = store
@@ -1350,7 +1350,7 @@ func (sm *SegmentedMemory) SearchMessages(
 
 	// Phase 1: BM25 retrieval (top-50 for reranking)
 	candidateLimit := 50
-	candidates, err := sm.sessionStore.SearchFTS5(ctx, sm.sessionID, query, candidateLimit)
+	candidates, err := sm.sessionStore.SearchMessages(ctx, sm.sessionID, query, candidateLimit)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("BM25 search failed: %w", err)

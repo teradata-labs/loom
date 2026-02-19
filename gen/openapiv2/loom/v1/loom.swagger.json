@@ -1615,6 +1615,63 @@
         ]
       }
     },
+    "/v1/server/storage": {
+      "get": {
+        "summary": "GetStorageStatus retrieves the current storage backend health and statistics.",
+        "operationId": "LoomService_GetStorageStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetStorageStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/server/storage:migrate": {
+      "post": {
+        "summary": "RunMigration runs database migrations on the storage backend.",
+        "operationId": "LoomService_RunMigration",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RunMigrationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "RunMigrationRequest runs database migrations.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1RunMigrationRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/server/tls": {
       "get": {
         "summary": "GetTLSStatus retrieves the current TLS/certificate status.",
@@ -4698,6 +4755,15 @@
       },
       "description": "GetSharedMemoryResponse returns the requested value."
     },
+    "v1GetStorageStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/v1StorageHealthStatus"
+        }
+      },
+      "description": "GetStorageStatusResponse returns storage backend health."
+    },
     "v1GetUIAppResponse": {
       "type": "object",
       "properties": {
@@ -5543,6 +5609,44 @@
       },
       "description": "MessagePayload contains either direct value or reference to data."
     },
+    "v1MigrationConfig": {
+      "type": "object",
+      "properties": {
+        "autoMigrate": {
+          "type": "boolean",
+          "title": "Automatically run migrations on startup (default: true)"
+        },
+        "migrationDir": {
+          "type": "string",
+          "title": "Directory containing migration files (default: embedded migrations)"
+        },
+        "targetVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Target migration version (0 = latest)"
+        }
+      },
+      "description": "MigrationConfig controls database migration behavior."
+    },
+    "v1MigrationStep": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Migration version number"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description of the migration"
+        },
+        "sql": {
+          "type": "string",
+          "title": "SQL to be executed (only populated in dry_run mode)"
+        }
+      },
+      "description": "MigrationStep describes a single migration step."
+    },
     "v1ModelInfo": {
       "type": "object",
       "properties": {
@@ -5985,6 +6089,116 @@
       },
       "description": "PolicyOverride forces specific behavior for a message type."
     },
+    "v1PoolStats": {
+      "type": "object",
+      "properties": {
+        "totalConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total connections in the pool"
+        },
+        "idleConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Idle connections"
+        },
+        "activeConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Active connections in use"
+        },
+        "maxConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum connections configured"
+        },
+        "waitCount": {
+          "type": "string",
+          "format": "int64",
+          "title": "Number of times a connection was waited for"
+        },
+        "waitDurationMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total time spent waiting for a connection (milliseconds)"
+        }
+      },
+      "description": "PoolStats reports connection pool statistics (PostgreSQL only)."
+    },
+    "v1PostgresPoolConfig": {
+      "type": "object",
+      "properties": {
+        "maxConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum number of connections in the pool (default: 25)"
+        },
+        "minConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Minimum number of idle connections (default: 5)"
+        },
+        "maxIdleTimeSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum time a connection can be idle before being closed (seconds, default: 300)"
+        },
+        "maxLifetimeSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum lifetime of a connection (seconds, default: 3600)"
+        },
+        "healthCheckIntervalSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Health check interval (seconds, default: 30)"
+        }
+      },
+      "description": "PostgresPoolConfig configures the pgx connection pool."
+    },
+    "v1PostgresStorageConfig": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "title": "Connection parameters (used if dsn is empty)"
+        },
+        "port": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "dsn": {
+          "type": "string",
+          "title": "Full DSN connection string (takes precedence over individual fields)\nExample: \"postgres://user:pass@host:5432/dbname?sslmode=require\""
+        },
+        "pool": {
+          "$ref": "#/definitions/v1PostgresPoolConfig",
+          "title": "Connection pool configuration"
+        },
+        "sslMode": {
+          "type": "string",
+          "title": "SSL mode: \"disable\", \"require\", \"verify-ca\", \"verify-full\" (default: \"require\")"
+        },
+        "rlsUserId": {
+          "type": "string",
+          "title": "Row-level security user ID for tenant isolation (optional)"
+        },
+        "schema": {
+          "type": "string",
+          "title": "PostgreSQL schema to use (default: \"public\")"
+        }
+      },
+      "description": "PostgresStorageConfig configures the PostgreSQL storage backend."
+    },
     "v1PublishRequest": {
       "type": "object",
       "properties": {
@@ -6292,6 +6506,70 @@
         }
       },
       "description": "ReviewCycle represents one iteration of driver/navigator collaboration."
+    },
+    "v1RunMigrationRequest": {
+      "type": "object",
+      "properties": {
+        "targetVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Target version (0 = latest)"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "title": "If true, only report what would be done without applying changes"
+        }
+      },
+      "description": "RunMigrationRequest runs database migrations."
+    },
+    "v1RunMigrationResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "title": "Whether the migration was successful"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1MigrationStep"
+          },
+          "title": "Steps that were (or would be) applied"
+        },
+        "currentVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Current version after migration"
+        },
+        "error": {
+          "type": "string",
+          "title": "Error message if migration failed"
+        }
+      },
+      "description": "RunMigrationResponse reports migration results."
+    },
+    "v1SQLiteStorageConfig": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "Path to the SQLite database file (default: $LOOM_DATA_DIR/loom.db)"
+        },
+        "encrypt": {
+          "type": "boolean",
+          "title": "Enable SQLCipher encryption (default: false)"
+        },
+        "encryptionKey": {
+          "type": "string",
+          "title": "Encryption key (or use LOOM_DB_KEY env var)"
+        },
+        "walMode": {
+          "type": "boolean",
+          "title": "Enable WAL mode for better concurrency (default: true)"
+        }
+      },
+      "description": "SQLiteStorageConfig configures the SQLite storage backend."
     },
     "v1ScheduleConfig": {
       "type": "object",
@@ -6742,6 +7020,10 @@
             "type": "string"
           },
           "title": "Metadata"
+        },
+        "storage": {
+          "$ref": "#/definitions/v1StorageConfig",
+          "title": "Storage backend configuration (default: SQLite)"
         }
       },
       "description": "ServerConfig defines the configuration for the looms multi-agent server."
@@ -6952,6 +7234,26 @@
       },
       "description": "SharedMemoryValue represents a versioned value in shared memory.\nSupports optimistic concurrency control via version field."
     },
+    "v1SoftDeleteConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable soft delete (default: false for SQLite, true for PostgreSQL)"
+        },
+        "gracePeriodSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Grace period before permanent deletion (seconds, default: 2592000 = 30 days)"
+        },
+        "cleanupIntervalSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Interval for cleanup of expired soft-deleted records (seconds, default: 86400 = 1 day)"
+        }
+      },
+      "description": "SoftDeleteConfig controls soft-delete behavior for PostgreSQL."
+    },
     "v1Span": {
       "type": "object",
       "properties": {
@@ -7097,6 +7399,74 @@
         }
       },
       "description": "StepResult represents learning progress for one curriculum step."
+    },
+    "v1StorageBackendType": {
+      "type": "string",
+      "enum": [
+        "STORAGE_BACKEND_TYPE_UNSPECIFIED",
+        "STORAGE_BACKEND_TYPE_SQLITE",
+        "STORAGE_BACKEND_TYPE_POSTGRES"
+      ],
+      "default": "STORAGE_BACKEND_TYPE_UNSPECIFIED",
+      "description": "StorageBackendType identifies the storage backend in use."
+    },
+    "v1StorageConfig": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/v1StorageBackendType",
+          "title": "Which backend to use (default: SQLITE)"
+        },
+        "sqlite": {
+          "$ref": "#/definitions/v1SQLiteStorageConfig",
+          "title": "SQLite-specific configuration (used when backend == SQLITE)"
+        },
+        "postgres": {
+          "$ref": "#/definitions/v1PostgresStorageConfig",
+          "title": "PostgreSQL-specific configuration (used when backend == POSTGRES)"
+        },
+        "migration": {
+          "$ref": "#/definitions/v1MigrationConfig",
+          "title": "Migration configuration"
+        },
+        "softDelete": {
+          "$ref": "#/definitions/v1SoftDeleteConfig",
+          "title": "Soft delete configuration"
+        }
+      },
+      "description": "StorageConfig is the top-level storage configuration for the server.\nOne storage backend per server; all agents share the same backend."
+    },
+    "v1StorageHealthStatus": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/v1StorageBackendType",
+          "title": "Which backend is active"
+        },
+        "healthy": {
+          "type": "boolean",
+          "title": "Whether the backend is reachable"
+        },
+        "latencyMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Latency of the last health check (milliseconds)"
+        },
+        "migrationVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Current migration version"
+        },
+        "error": {
+          "type": "string",
+          "title": "Error message if unhealthy"
+        },
+        "poolStats": {
+          "$ref": "#/definitions/v1PoolStats",
+          "title": "Pool statistics (PostgreSQL only)"
+        }
+      },
+      "description": "StorageHealthStatus reports the health of the storage backend."
     },
     "v1StorageLocation": {
       "type": "string",

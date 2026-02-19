@@ -55,6 +55,8 @@ const (
 	LoomService_GetServerConfig_FullMethodName             = "/loom.v1.LoomService/GetServerConfig"
 	LoomService_GetTLSStatus_FullMethodName                = "/loom.v1.LoomService/GetTLSStatus"
 	LoomService_RenewCertificate_FullMethodName            = "/loom.v1.LoomService/RenewCertificate"
+	LoomService_GetStorageStatus_FullMethodName            = "/loom.v1.LoomService/GetStorageStatus"
+	LoomService_RunMigration_FullMethodName                = "/loom.v1.LoomService/RunMigration"
 	LoomService_CreateAgentFromConfig_FullMethodName       = "/loom.v1.LoomService/CreateAgentFromConfig"
 	LoomService_ListAgents_FullMethodName                  = "/loom.v1.LoomService/ListAgents"
 	LoomService_GetAgent_FullMethodName                    = "/loom.v1.LoomService/GetAgent"
@@ -170,6 +172,10 @@ type LoomServiceClient interface {
 	GetTLSStatus(ctx context.Context, in *GetTLSStatusRequest, opts ...grpc.CallOption) (*TLSStatus, error)
 	// RenewCertificate manually triggers certificate renewal (for Let's Encrypt).
 	RenewCertificate(ctx context.Context, in *RenewCertificateRequest, opts ...grpc.CallOption) (*RenewCertificateResponse, error)
+	// GetStorageStatus retrieves the current storage backend health and statistics.
+	GetStorageStatus(ctx context.Context, in *GetStorageStatusRequest, opts ...grpc.CallOption) (*GetStorageStatusResponse, error)
+	// RunMigration runs database migrations on the storage backend.
+	RunMigration(ctx context.Context, in *RunMigrationRequest, opts ...grpc.CallOption) (*RunMigrationResponse, error)
 	// CreateAgentFromConfig creates an agent from configuration.
 	CreateAgentFromConfig(ctx context.Context, in *CreateAgentRequest, opts ...grpc.CallOption) (*AgentInfo, error)
 	// ListAgents lists all registered agents.
@@ -530,6 +536,26 @@ func (c *loomServiceClient) RenewCertificate(ctx context.Context, in *RenewCerti
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RenewCertificateResponse)
 	err := c.cc.Invoke(ctx, LoomService_RenewCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) GetStorageStatus(ctx context.Context, in *GetStorageStatusRequest, opts ...grpc.CallOption) (*GetStorageStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetStorageStatusResponse)
+	err := c.cc.Invoke(ctx, LoomService_GetStorageStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) RunMigration(ctx context.Context, in *RunMigrationRequest, opts ...grpc.CallOption) (*RunMigrationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RunMigrationResponse)
+	err := c.cc.Invoke(ctx, LoomService_RunMigration_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1198,6 +1224,10 @@ type LoomServiceServer interface {
 	GetTLSStatus(context.Context, *GetTLSStatusRequest) (*TLSStatus, error)
 	// RenewCertificate manually triggers certificate renewal (for Let's Encrypt).
 	RenewCertificate(context.Context, *RenewCertificateRequest) (*RenewCertificateResponse, error)
+	// GetStorageStatus retrieves the current storage backend health and statistics.
+	GetStorageStatus(context.Context, *GetStorageStatusRequest) (*GetStorageStatusResponse, error)
+	// RunMigration runs database migrations on the storage backend.
+	RunMigration(context.Context, *RunMigrationRequest) (*RunMigrationResponse, error)
 	// CreateAgentFromConfig creates an agent from configuration.
 	CreateAgentFromConfig(context.Context, *CreateAgentRequest) (*AgentInfo, error)
 	// ListAgents lists all registered agents.
@@ -1389,6 +1419,12 @@ func (UnimplementedLoomServiceServer) GetTLSStatus(context.Context, *GetTLSStatu
 }
 func (UnimplementedLoomServiceServer) RenewCertificate(context.Context, *RenewCertificateRequest) (*RenewCertificateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RenewCertificate not implemented")
+}
+func (UnimplementedLoomServiceServer) GetStorageStatus(context.Context, *GetStorageStatusRequest) (*GetStorageStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetStorageStatus not implemented")
+}
+func (UnimplementedLoomServiceServer) RunMigration(context.Context, *RunMigrationRequest) (*RunMigrationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RunMigration not implemented")
 }
 func (UnimplementedLoomServiceServer) CreateAgentFromConfig(context.Context, *CreateAgentRequest) (*AgentInfo, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateAgentFromConfig not implemented")
@@ -1938,6 +1974,42 @@ func _LoomService_RenewCertificate_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomServiceServer).RenewCertificate(ctx, req.(*RenewCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_GetStorageStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetStorageStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).GetStorageStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_GetStorageStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).GetStorageStatus(ctx, req.(*GetStorageStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_RunMigration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RunMigrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).RunMigration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_RunMigration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).RunMigration(ctx, req.(*RunMigrationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3043,6 +3115,14 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RenewCertificate",
 			Handler:    _LoomService_RenewCertificate_Handler,
+		},
+		{
+			MethodName: "GetStorageStatus",
+			Handler:    _LoomService_GetStorageStatus_Handler,
+		},
+		{
+			MethodName: "RunMigration",
+			Handler:    _LoomService_RunMigration_Handler,
 		},
 		{
 			MethodName: "CreateAgentFromConfig",

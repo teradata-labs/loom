@@ -304,3 +304,185 @@ func newTestViper(t *testing.T, key string, existingValue interface{}) *viper.Vi
 
 	return v
 }
+
+func TestBuildProtoStorageConfig_DefaultSQLite(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageBackendConfig{
+			Backend: "sqlite",
+			SQLite: SQLiteConfig{
+				Path: "/tmp/test.db",
+			},
+			Migration: MigrationStorageConfig{
+				AutoMigrate: true,
+			},
+		},
+	}
+
+	proto := cfg.BuildProtoStorageConfig()
+	require.NotNil(t, proto)
+	assert.Equal(t, int32(1), int32(proto.Backend)) // SQLITE = 1
+	require.NotNil(t, proto.Sqlite)
+	assert.Equal(t, "/tmp/test.db", proto.Sqlite.Path)
+	assert.True(t, proto.Migration.AutoMigrate)
+}
+
+func TestBuildProtoStorageConfig_Postgres(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageBackendConfig{
+			Backend: "postgres",
+			Postgres: PostgresConfig{
+				Host:     "db.example.com",
+				Port:     5433,
+				Database: "loomdb",
+				User:     "loom",
+				Password: "secret",
+				SSLMode:  "verify-full",
+				Schema:   "myschema",
+				Pool: PostgresPoolConfig{
+					MaxConnections: 50,
+					MinConnections: 10,
+				},
+			},
+		},
+	}
+
+	proto := cfg.BuildProtoStorageConfig()
+	require.NotNil(t, proto)
+	assert.Equal(t, int32(2), int32(proto.Backend)) // POSTGRES = 2
+	require.NotNil(t, proto.Postgres)
+	assert.Equal(t, "db.example.com", proto.Postgres.Host)
+	assert.Equal(t, int32(5433), proto.Postgres.Port)
+	assert.Equal(t, "loomdb", proto.Postgres.Database)
+	assert.Equal(t, "loom", proto.Postgres.User)
+	assert.Equal(t, "secret", proto.Postgres.Password)
+	assert.Equal(t, "verify-full", proto.Postgres.SslMode)
+	assert.Equal(t, "myschema", proto.Postgres.Schema)
+	require.NotNil(t, proto.Postgres.Pool)
+	assert.Equal(t, int32(50), proto.Postgres.Pool.MaxConnections)
+	assert.Equal(t, int32(10), proto.Postgres.Pool.MinConnections)
+}
+
+func TestBuildProtoStorageConfig_PostgresDSN(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageBackendConfig{
+			Backend: "postgres",
+			Postgres: PostgresConfig{
+				DSN: "postgres://user:pass@host:5432/db?sslmode=disable",
+			},
+		},
+	}
+
+	proto := cfg.BuildProtoStorageConfig()
+	require.NotNil(t, proto)
+	require.NotNil(t, proto.Postgres)
+	assert.Equal(t, "postgres://user:pass@host:5432/db?sslmode=disable", proto.Postgres.Dsn)
+}
+
+func TestBuildProtoStorageConfig_BackwardCompat(t *testing.T) {
+	// When storage.backend is empty but database.path is set, should use database.path
+	cfg := &Config{
+		Database: DatabaseConfig{
+			Path:   "/old/path/loom.db",
+			Driver: "sqlite",
+		},
+		Storage: StorageBackendConfig{
+			Backend: "", // empty = default to sqlite
+		},
+	}
+
+	proto := cfg.BuildProtoStorageConfig()
+	require.NotNil(t, proto)
+	require.NotNil(t, proto.Sqlite)
+	assert.Equal(t, "/old/path/loom.db", proto.Sqlite.Path)
+}
+
+func TestResolveStoragePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   Config
+		expected string
+	}{
+		{
+			name: "storage.sqlite.path takes priority",
+			config: Config{
+				Storage:  StorageBackendConfig{SQLite: SQLiteConfig{Path: "/new/path.db"}},
+				Database: DatabaseConfig{Path: "/old/path.db"},
+			},
+			expected: "/new/path.db",
+		},
+		{
+			name: "falls back to database.path",
+			config: Config{
+				Database: DatabaseConfig{Path: "/old/path.db"},
+			},
+			expected: "/old/path.db",
+		},
+		{
+			name:     "empty when nothing set",
+			config:   Config{},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.config.resolveStoragePath())
+		})
+	}
+}
+
+func TestValidate_StorageBackend(t *testing.T) {
+	// Helper to create a config with valid LLM settings
+	validBase := func() *Config {
+		return &Config{
+			Server:  ServerConfig{Port: 60051},
+			LLM:     LLMConfig{Provider: "ollama", OllamaEndpoint: "http://localhost:11434", OllamaModel: "test"},
+			Storage: StorageBackendConfig{Backend: "sqlite", SQLite: SQLiteConfig{Path: "/tmp/test.db"}},
+		}
+	}
+
+	t.Run("sqlite valid", func(t *testing.T) {
+		cfg := validBase()
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("postgres missing host and dsn", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "dsn or host")
+	})
+
+	t.Run("postgres missing database", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{Host: "localhost"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "database name")
+	})
+
+	t.Run("postgres valid with host+database", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{Host: "localhost", Database: "testdb"}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("postgres valid with DSN", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{DSN: "postgres://user:pass@localhost/db"}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("unsupported backend", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "mysql"
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported storage backend")
+	})
+}

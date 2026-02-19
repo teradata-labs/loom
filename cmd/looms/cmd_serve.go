@@ -57,6 +57,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/tui/components"
@@ -471,22 +472,30 @@ func runServe(cmd *cobra.Command, args []string) {
 		tracer = observability.NewNoOpTracer()
 	}
 
-	// Create session store
-	logger.Info("Database configuration",
-		zap.String("path", config.Database.Path),
-		zap.String("driver", config.Database.Driver))
-	store, err := agent.NewSessionStore(config.Database.Path, tracer)
+	// Create storage backend (unified store factory)
+	storageCfg := config.BuildProtoStorageConfig()
+	logger.Info("Storage backend configuration",
+		zap.String("backend", config.Storage.Backend),
+		zap.String("sqlite_path", config.resolveStoragePath()))
+	storageBackend, err := backend.NewStorageBackend(storageCfg, tracer)
 	if err != nil {
-		logger.Fatal("Failed to create session store", zap.Error(err))
+		logger.Fatal("Failed to create storage backend", zap.Error(err))
 	}
-	defer store.Close()
+	defer storageBackend.Close()
 
-	// Create error store (uses same database for error submission channel)
-	errorStore, err := agent.NewSQLiteErrorStore(config.Database.Path, tracer)
-	if err != nil {
-		logger.Fatal("Failed to create error store", zap.Error(err))
+	// Run auto-migrations if configured
+	if config.Storage.Migration.AutoMigrate {
+		if err := storageBackend.Migrate(context.Background()); err != nil {
+			logger.Fatal("Failed to run storage migrations", zap.Error(err))
+		}
+		logger.Info("Storage migrations completed")
 	}
-	logger.Info("Error store initialized (error submission channel enabled)")
+
+	// Extract individual stores from backend
+	store := storageBackend.SessionStorage()
+	errorStore := storageBackend.ErrorStore()
+	logger.Info("Storage backend initialized",
+		zap.String("backend", config.Storage.Backend))
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -622,12 +631,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Create artifact store
-	artifactStore, err := artifacts.NewSQLiteStore(config.Database.Path, tracer)
-	if err != nil {
-		logger.Fatal("Failed to create artifact store", zap.Error(err))
-	}
-	defer artifactStore.Close()
+	// Get artifact store from storage backend
+	artifactStore := storageBackend.ArtifactStore()
 	logger.Info("Artifact store initialized")
 
 	// Start artifact watcher for hot-reload
@@ -1357,6 +1362,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
+	// Set storage backend for health checks and migration RPCs
+	loomService.SetStorageBackend(storageBackend)
+	loomService.SetStorageBackendType(storageCfg.Backend)
+	logger.Info("Storage backend configured on server for health checks and migration RPCs")
+
 	// Set logger for server operations
 	loomService.SetLogger(logger)
 
@@ -1444,14 +1454,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("SharedMemoryStore injected into agent", zap.String("agent", name))
 	}
 
-	// 3.5. SQL Result Store for queryable large SQL results
-	sqlResultStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
-		DBPath:     storage.GetDefaultLoomDBPath(),
-		TTLSeconds: 3600, // 1 hour TTL
-	})
-	if err != nil {
-		logger.Warn("Failed to initialize SQL result store, SQL results will fall back to shared memory", zap.Error(err))
-	} else {
+	// 3.5. SQL Result Store for queryable large SQL results (from storage backend)
+	sqlResultStore := storageBackend.ResultStore()
+	if sqlResultStore != nil {
 		// Inject SQL result store into all agents
 		for name, ag := range agents {
 			ag.SetSQLResultStore(sqlResultStore)

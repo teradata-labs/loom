@@ -57,7 +57,7 @@ type Registry struct {
 	mcpMgr       *manager.Manager
 	llmProvider  LLMProvider
 	tracer       observability.Tracer
-	sessionStore *SessionStore          // For persistent agent session traces
+	sessionStore SessionStorage          // For persistent agent session traces
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 	sharedMemory interface{}            // SharedMemoryStore for large tool result storage
 	onReload     ReloadCallback         // Callback when config changes
@@ -88,7 +88,7 @@ type RegistryConfig struct {
 	LLMProvider  LLMProvider
 	Logger       *zap.Logger
 	Tracer       observability.Tracer
-	SessionStore *SessionStore          // For persistent agent session traces
+	SessionStore SessionStorage          // For persistent agent session traces
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
 	// Agent dependencies (injected by server)
@@ -500,7 +500,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 
 	// Create memory with session storage for trace persistence
 	var memory *Memory
-	var sessionStore *SessionStore
+	var sessionStore SessionStorage
 
 	// Check if per-agent memory configuration is provided
 	if config.Memory != nil && config.Memory.Type != "" {
@@ -932,7 +932,7 @@ func (r *Registry) registerMCPTools(ctx context.Context, agent *Agent, mcpConfig
 
 // createSessionStore creates a session store based on memory configuration.
 // Supports per-agent memory isolation with different storage backends.
-func (r *Registry) createSessionStore(memConfig *loomv1.MemoryConfig) (*SessionStore, error) {
+func (r *Registry) createSessionStore(memConfig *loomv1.MemoryConfig) (SessionStorage, error) {
 	switch memConfig.Type {
 	case "memory", "":
 		// In-memory storage - return nil to use in-memory sessions

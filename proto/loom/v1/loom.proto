@@ -24,6 +24,7 @@ import "loom/v1/communication.proto";
 import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
+import "loom/v1/storage.proto";
 import "loom/v1/tools.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
@@ -166,6 +167,21 @@ service LoomService {
   rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse) {
     option (google.api.http) = {
       post: "/v1/server/tls:renew"
+      body: "*"
+    };
+  }
+
+  // Storage Management RPCs
+
+  // GetStorageStatus retrieves the current storage backend health and statistics.
+  rpc GetStorageStatus(GetStorageStatusRequest) returns (GetStorageStatusResponse) {
+    option (google.api.http) = {get: "/v1/server/storage"};
+  }
+
+  // RunMigration runs database migrations on the storage backend.
+  rpc RunMigration(RunMigrationRequest) returns (RunMigrationResponse) {
+    option (google.api.http) = {
+      post: "/v1/server/storage:migrate"
       body: "*"
     };
   }

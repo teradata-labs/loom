@@ -48,7 +48,7 @@ type BuiltinToolProvider interface {
 type Executor struct {
 	registry            *Registry
 	sharedMemory        *storage.SharedMemoryStore
-	sqlResultStore      *storage.SQLResultStore // SQL result store for queryable large results
+	sqlResultStore      storage.ResultStore     // SQL result store for queryable large results
 	threshold           int64                   // Threshold for using shared memory (bytes)
 	permissionChecker   *PermissionChecker
 	toolRegistry        ToolRegistry        // Tool registry for dynamic tool discovery
@@ -79,7 +79,7 @@ func (e *Executor) SetSharedMemory(sharedMemory *storage.SharedMemoryStore, thre
 }
 
 // SetSQLResultStore configures SQL result store for queryable large SQL results.
-func (e *Executor) SetSQLResultStore(sqlStore *storage.SQLResultStore) {
+func (e *Executor) SetSQLResultStore(sqlStore storage.ResultStore) {
 	e.sqlResultStore = sqlStore
 }
 
