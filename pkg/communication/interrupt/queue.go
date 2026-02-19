@@ -23,6 +23,7 @@ import (
 
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // SQLite driver
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // PersistentQueue provides guaranteed delivery for CRITICAL interrupts.
@@ -102,6 +103,7 @@ func NewPersistentQueue(ctx context.Context, dbPath string, router *Router) (*Pe
 
 	// Create schema
 	if _, err := db.ExecContext(ctx, schema); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
@@ -243,6 +245,7 @@ func (pq *PersistentQueue) processPendingInterrupts() error {
 		}
 		pending = append(pending, p)
 	}
+	// #nosec G104 -- rows.Close() is best-effort before processing
 	rows.Close() // Close rows before modifying table
 
 	// Now process each interrupt
@@ -353,7 +356,7 @@ func (pq *PersistentQueue) calculateBackoff(retryCount int) time.Duration {
 	}
 
 	// Exponential backoff: baseInterval * 2^(retryCount-1)
-	multiplier := int64(1 << uint(retryCount-1)) // 2^(retryCount-1)
+	multiplier := int64(1 << types.SafeUint(retryCount-1)) // 2^(retryCount-1)
 	backoff := time.Duration(multiplier) * pq.retryInterval
 
 	// Cap at 30 seconds
@@ -505,6 +508,7 @@ func (pq *PersistentQueue) Close() error {
 	case <-done:
 		return pq.db.Close()
 	case <-time.After(30 * time.Second):
+		// #nosec G104 -- best-effort cleanup on timeout
 		pq.db.Close()
 		return fmt.Errorf("queue close timeout: retry loop did not finish within 30s")
 	}

@@ -183,6 +183,7 @@ func NewBackend(ctx context.Context, cfg Config) (*Backend, error) {
 		},
 	})
 	if err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		mcpClient.Close()
 		return nil, fmt.Errorf("failed to create MCP backend: %w", err)
 	}

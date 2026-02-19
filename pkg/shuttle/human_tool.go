@@ -291,7 +291,7 @@ func (t *ContactHumanTool) Execute(ctx context.Context, params map[string]interf
 	if timedOut {
 		span.SetAttribute("hitl.status", "timeout")
 		span.SetAttribute("success", false)
-		span.SetAttribute("wait_time_ms", int32(executionTime))
+		span.SetAttribute("wait_time_ms", executionTime)
 		span.AddEvent("human_timeout", nil)
 
 		// Record timeout metric
@@ -319,7 +319,7 @@ func (t *ContactHumanTool) Execute(ctx context.Context, params map[string]interf
 	// Success path
 	span.SetAttribute("hitl.status", response.Status)
 	span.SetAttribute("success", true)
-	span.SetAttribute("wait_time_ms", int32(executionTime))
+	span.SetAttribute("wait_time_ms", executionTime)
 	if response.RespondedBy != "" {
 		span.SetAttribute("hitl.responded_by", response.RespondedBy)
 	}

@@ -80,12 +80,14 @@ func (s *HashSelector) SelectVariant(ctx context.Context, key string, variants [
 
 	// Hash session ID + key for deterministic selection
 	h := fnv.New64a()
+	// #nosec G104 -- hash.Write never returns an error for fnv
 	h.Write([]byte(sessionID))
+	// #nosec G104 -- hash.Write never returns an error for fnv
 	h.Write([]byte(key))
 	hashValue := h.Sum64()
 
 	// Map hash to variant index
-	idx := int(hashValue % uint64(len(variants)))
+	idx := int(hashValue % uint64(len(variants))) // #nosec G115 -- hash distribution bounded in practice
 	return variants[idx], nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,7 +103,9 @@ type HealthCheckYAML struct {
 
 // LoadBackend loads a backend configuration from a YAML file
 func LoadBackend(path string) (*loomv1.BackendConfig, error) {
-	data, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- config path from CLI or project config, cleaned for safety
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read backend file %s: %w", path, err)
 	}
@@ -278,9 +281,9 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 		backend.Connection = &loomv1.BackendConfig_Database{
 			Database: &loomv1.DatabaseConnection{
 				Dsn:                      yaml.Database.DSN,
-				MaxConnections:           int32(yaml.Database.MaxConnections),
-				MaxIdleConnections:       int32(yaml.Database.MaxIdleConnections),
-				ConnectionTimeoutSeconds: int32(yaml.Database.ConnectionTimeoutSeconds),
+				MaxConnections:           types.SafeInt32(yaml.Database.MaxConnections),
+				MaxIdleConnections:       types.SafeInt32(yaml.Database.MaxIdleConnections),
+				ConnectionTimeoutSeconds: types.SafeInt32(yaml.Database.ConnectionTimeoutSeconds),
 				EnableSsl:                yaml.Database.EnableSSL,
 				SslCertPath:              yaml.Database.SSLCertPath,
 			},
@@ -293,8 +296,8 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 				BaseUrl:        yaml.Rest.BaseURL,
 				Auth:           convertAuthConfig(yaml.Rest.Auth),
 				Headers:        yaml.Rest.Headers,
-				TimeoutSeconds: int32(yaml.Rest.TimeoutSeconds),
-				MaxRetries:     int32(yaml.Rest.MaxRetries),
+				TimeoutSeconds: types.SafeInt32(yaml.Rest.TimeoutSeconds),
+				MaxRetries:     types.SafeInt32(yaml.Rest.MaxRetries),
 			},
 		}
 	}
@@ -305,7 +308,7 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 				Endpoint:       yaml.GraphQL.Endpoint,
 				Auth:           convertAuthConfig(yaml.GraphQL.Auth),
 				Headers:        yaml.GraphQL.Headers,
-				TimeoutSeconds: int32(yaml.GraphQL.TimeoutSeconds),
+				TimeoutSeconds: types.SafeInt32(yaml.GraphQL.TimeoutSeconds),
 			},
 		}
 	}
@@ -317,7 +320,7 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 				UseTls:         yaml.GRPC.UseTLS,
 				CertPath:       yaml.GRPC.CertPath,
 				Metadata:       yaml.GRPC.Metadata,
-				TimeoutSeconds: int32(yaml.GRPC.TimeoutSeconds),
+				TimeoutSeconds: types.SafeInt32(yaml.GRPC.TimeoutSeconds),
 			},
 		}
 	}
@@ -339,7 +342,7 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 	if yaml.SchemaDiscovery != nil {
 		backend.SchemaDiscovery = &loomv1.SchemaDiscoveryConfig{
 			Enabled:         yaml.SchemaDiscovery.Enabled,
-			CacheTtlSeconds: int32(yaml.SchemaDiscovery.CacheTTLSeconds),
+			CacheTtlSeconds: types.SafeInt32(yaml.SchemaDiscovery.CacheTTLSeconds),
 			IncludeTables:   yaml.SchemaDiscovery.IncludeTables,
 			ExcludeTables:   yaml.SchemaDiscovery.ExcludeTables,
 		}
@@ -357,8 +360,8 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 	if yaml.HealthCheck != nil {
 		backend.HealthCheck = &loomv1.HealthCheckConfig{
 			Enabled:         yaml.HealthCheck.Enabled,
-			IntervalSeconds: int32(yaml.HealthCheck.IntervalSeconds),
-			TimeoutSeconds:  int32(yaml.HealthCheck.TimeoutSeconds),
+			IntervalSeconds: types.SafeInt32(yaml.HealthCheck.IntervalSeconds),
+			TimeoutSeconds:  types.SafeInt32(yaml.HealthCheck.TimeoutSeconds),
 			Query:           yaml.HealthCheck.Query,
 		}
 	}

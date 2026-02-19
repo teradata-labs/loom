@@ -184,6 +184,7 @@ func NewMessageQueue(dbPath string, tracer observability.Tracer, logger *zap.Log
 	`
 
 	if _, err := db.Exec(schema); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}

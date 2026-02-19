@@ -16,6 +16,7 @@ package workflowviz
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -61,7 +62,7 @@ type Workflow struct {
 
 // ParseWorkflow reads and parses a workflow YAML file
 func ParseWorkflow(path string) (*Workflow, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading workflow file: %w", err)
 	}

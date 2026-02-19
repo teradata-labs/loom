@@ -294,6 +294,7 @@ func NewLocalScheduler(ctx context.Context, config LocalSchedulerConfig) (*Local
 	// Verify Docker daemon is reachable
 	logger.Debug("pinging Docker daemon")
 	if _, err := dockerClient.Ping(ctx); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		dockerClient.Close()
 		logger.Error("failed to ping Docker daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to ping Docker daemon: %w", err)
@@ -558,7 +559,7 @@ func (ls *LocalScheduler) getNodeInfoLocked() *loomv1.NodeInfo {
 			MemoryMb:  ls.capacity.MemoryMb - usedMemory,
 			StorageGb: ls.capacity.StorageGb, // Storage not tracked yet
 		},
-		ContainerCount: int32(len(ls.containerPool)),
+		ContainerCount: safeInt32(len(ls.containerPool)),
 		Status:         loomv1.NodeStatus_NODE_STATUS_HEALTHY,
 	}
 }

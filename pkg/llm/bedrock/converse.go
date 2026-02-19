@@ -25,6 +25,7 @@ import (
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // ChatConverse implements non-streaming using AWS Bedrock Converse API.
@@ -46,7 +47,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 		ModelId:  aws.String(c.modelID),
 		Messages: converseMessages,
 		InferenceConfig: &bedrocktypes.InferenceConfiguration{
-			MaxTokens:   aws.Int32(int32(c.maxTokens)),
+			MaxTokens:   aws.Int32(types.SafeInt32(c.maxTokens)),
 			Temperature: aws.Float32(float32(c.temperature)),
 		},
 	}

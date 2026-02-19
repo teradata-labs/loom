@@ -868,7 +868,9 @@ func extractMetadata(path string) *struct {
 	Name        string
 	Description string
 } {
-	data, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil
 	}

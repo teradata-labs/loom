@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -285,7 +286,9 @@ func GenerateHTML(data *VisualizationData, outputPath string) error {
 		return fmt.Errorf("parsing template: %w", err)
 	}
 
-	outFile, err := os.Create(outputPath)
+	cleanPath := filepath.Clean(outputPath)
+	// #nosec G304 -- output path from CLI argument, cleaned for safety
+	outFile, err := os.Create(cleanPath)
 	if err != nil {
 		return fmt.Errorf("creating output file: %w", err)
 	}

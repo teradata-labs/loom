@@ -148,7 +148,7 @@ func (m *MIPRO) Compile(
 		bestCandidate.DevsetScore,
 		int32(len(req.Trainset)),
 		bestCandidate.SuccessfulTraces,
-		1,   // optimization rounds (MIPRO is single-pass)
+		1,   // #nosec G115 optimization rounds (MIPRO is single-pass)
 		0.0, // improvement delta (no baseline comparison)
 		compilationTimeMs,
 	)

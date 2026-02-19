@@ -8,6 +8,7 @@ package orchestration
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -116,7 +117,9 @@ func NewTemplateRegistry() *TemplateRegistry {
 
 // LoadTemplate loads a template from a YAML file
 func (r *TemplateRegistry) LoadTemplate(path string) error {
-	data, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- template path from config or CLI, cleaned for safety
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return fmt.Errorf("failed to read template file: %w", err)
 	}
@@ -605,7 +608,9 @@ func LoadAgentFromTemplate(templatePath string, vars map[string]string) (*loomv1
 	}
 
 	// Extract template name from file
-	data, _ := os.ReadFile(templatePath)
+	cleanPath := filepath.Clean(templatePath)
+	// #nosec G304 -- template path already validated by LoadTemplate
+	data, _ := os.ReadFile(cleanPath)
 	var temp AgentTemplateConfig
 	if err := yaml.Unmarshal(data, &temp); err != nil {
 		return nil, fmt.Errorf("failed to parse template: %w", err)

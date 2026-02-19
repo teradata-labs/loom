@@ -219,6 +219,7 @@ func (r *FileRegistry) Watch(ctx context.Context) (<-chan PromptUpdate, error) {
 
 	// Add root directory and all subdirectories
 	if err := r.watchDirectory(watcher, r.rootDir); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		watcher.Close()
 		return nil, err
 	}
@@ -358,7 +359,7 @@ func (r *FileRegistry) extractKeyFromPath(path string) string {
 //   - "system.concise.yaml" -> "concise" variant
 func (r *FileRegistry) loadFile(path string) (*filePrompt, string, error) {
 	// Read file
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, "", err
 	}

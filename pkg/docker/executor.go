@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -20,6 +21,18 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
+
+// safeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
+// This is a local copy to avoid import cycles with pkg/types.
+func safeInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(n) // #nosec G115 -- bounds checked above
+}
 
 const (
 	// BaggageKeyTenantID is the W3C baggage key for tenant identification.
@@ -100,6 +113,7 @@ func NewDockerExecutor(ctx context.Context, config DockerExecutorConfig) (*Docke
 	// Verify Docker daemon is reachable
 	config.Logger.Debug("pinging Docker daemon")
 	if _, err := dockerClient.Ping(ctx); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		dockerClient.Close()
 		config.Logger.Error("failed to ping Docker daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to ping Docker daemon: %w", err)
@@ -126,6 +140,7 @@ func NewDockerExecutor(ctx context.Context, config DockerExecutorConfig) (*Docke
 			Logger: config.Logger,
 		})
 		if err != nil {
+			// #nosec G104 -- best-effort cleanup on initialization failure
 			dockerClient.Close()
 			config.Logger.Error("failed to create trace collector", zap.Error(err))
 			return nil, fmt.Errorf("failed to create trace collector: %w", err)
@@ -241,7 +256,7 @@ func (de *DockerExecutor) Execute(ctx context.Context, req *loomv1.ExecuteReques
 
 	return &loomv1.ExecuteResponse{
 		ContainerId:      containerID,
-		ExitCode:         int32(exitCode),
+		ExitCode:         safeInt32(exitCode),
 		Stdout:           stdout,
 		Stderr:           stderr,
 		DurationMs:       duration.Milliseconds(),
@@ -549,6 +564,7 @@ func (de *DockerExecutor) executeCommand(ctx context.Context, containerID string
 					de.logger.Warn("failed to flush filtering writer", zap.Error(err))
 				}
 			}
+			// #nosec G104 -- best-effort cleanup of pipe writer
 			stderrPipeWriter.Close()
 			// Wait for trace collection to complete and log errors
 			if err := <-traceDone; err != nil && err != io.EOF {

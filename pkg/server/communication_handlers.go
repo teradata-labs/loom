@@ -11,6 +11,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -131,7 +132,7 @@ func (s *MultiAgentServer) Publish(ctx context.Context, req *loomv1.PublishReque
 
 	return &loomv1.PublishResponse{
 		MessageId:       req.Message.Id,
-		SubscriberCount: int32(delivered),
+		SubscriberCount: types.SafeInt32(delivered),
 	}, nil
 }
 

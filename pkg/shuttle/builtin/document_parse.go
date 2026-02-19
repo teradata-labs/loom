@@ -336,7 +336,9 @@ func (t *DocumentParseTool) detectFormat(path string) string {
 // parseCSV parses a CSV file and returns structured data.
 func (t *DocumentParseTool) parseCSV(filePath string, options map[string]interface{}) (map[string]interface{}, error) {
 	// Open file
-	file, err := os.Open(filePath)
+	cleanPath := filepath.Clean(filePath)
+	// #nosec G304 -- file path from tool input, cleaned for safety
+	file, err := os.Open(cleanPath)
 	if err != nil {
 		return nil, err
 	}

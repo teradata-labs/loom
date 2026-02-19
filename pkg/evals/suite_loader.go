@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -86,7 +87,7 @@ type JudgeConfigYAML struct {
 
 // LoadEvalSuite loads an eval suite from a YAML file
 func LoadEvalSuite(path string) (*loomv1.EvalSuite, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read eval suite file %s: %w", path, err)
 	}
@@ -174,7 +175,7 @@ func yamlToProtoEvalSuite(yaml *EvalSuiteYAML) *loomv1.EvalSuite {
 			AgentId:        yaml.Spec.AgentID,
 			Metrics:        yaml.Spec.Metrics,
 			HawkExport:     yaml.Spec.HawkExport,
-			TimeoutSeconds: int32(yaml.Spec.TimeoutSeconds),
+			TimeoutSeconds: types.SafeInt32(yaml.Spec.TimeoutSeconds),
 		},
 	}
 
@@ -188,7 +189,7 @@ func yamlToProtoEvalSuite(yaml *EvalSuiteYAML) *loomv1.EvalSuite {
 			ExpectedOutputRegex:       tc.ExpectedOutputRegex,
 			ExpectedTools:             tc.ExpectedTools,
 			MaxCostUsd:                tc.MaxCostUSD,
-			MaxLatencyMs:              int32(tc.MaxLatencyMS),
+			MaxLatencyMs:              types.SafeInt32(tc.MaxLatencyMS),
 			Context:                   tc.Context,
 			GoldenFile:                tc.GoldenFile,
 		})
@@ -218,7 +219,7 @@ func yamlToProtoEvalSuite(yaml *EvalSuiteYAML) *loomv1.EvalSuite {
 	if len(yaml.Spec.MultiJudge.Judges) > 0 {
 		suite.Spec.MultiJudge = &loomv1.MultiJudgeConfig{
 			Parallel:       yaml.Spec.MultiJudge.Parallel,
-			TimeoutSeconds: int32(yaml.Spec.MultiJudge.TimeoutSeconds),
+			TimeoutSeconds: types.SafeInt32(yaml.Spec.MultiJudge.TimeoutSeconds),
 			FailFast:       yaml.Spec.MultiJudge.FailFast,
 			Aggregation:    parseAggregationStrategy(yaml.Spec.MultiJudge.Aggregation),
 			ExecutionMode:  parseExecutionMode(yaml.Spec.MultiJudge.ExecutionMode),
@@ -232,7 +233,7 @@ func yamlToProtoEvalSuite(yaml *EvalSuiteYAML) *loomv1.EvalSuite {
 				Name:            judgeYAML.Name,
 				Criteria:        judgeYAML.Criteria,
 				Weight:          judgeYAML.Weight,
-				MinPassingScore: int32(judgeYAML.MinPassingScore),
+				MinPassingScore: types.SafeInt32FromFloat64(judgeYAML.MinPassingScore),
 				Criticality:     parseJudgeCriticality(judgeYAML.Criticality),
 			}
 

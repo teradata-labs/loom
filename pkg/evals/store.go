@@ -34,6 +34,7 @@ func NewStore(dbPath string) (*Store, error) {
 
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
+		// #nosec G104 -- best-effort cleanup on initialization failure
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
