@@ -15,6 +15,7 @@ package backend
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -76,6 +77,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	artifactStore, err := artifacts.NewSQLiteStore(dbPath, tracer)
 	if err != nil {
 		sessionStore.Close()
+		errorStore.Close()
 		return nil, fmt.Errorf("failed to create artifact store: %w", err)
 	}
 
@@ -85,6 +87,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	})
 	if err != nil {
 		sessionStore.Close()
+		errorStore.Close()
 		artifactStore.Close()
 		return nil, fmt.Errorf("failed to create result store: %w", err)
 	}
@@ -96,6 +99,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	})
 	if err != nil {
 		sessionStore.Close()
+		errorStore.Close()
 		artifactStore.Close()
 		resultStore.Close()
 		return nil, fmt.Errorf("failed to create human request store: %w", err)
@@ -137,19 +141,25 @@ func (b *SQLiteBackend) HumanRequestStore() shuttle.HumanRequestStore {
 	return b.humanRequestStore
 }
 
-// Migrate runs SQLite schema migrations.
-// For SQLite, schema is created inline by each store's initSchema() method,
-// so this is a no-op. Future versions may use versioned migrations.
+// Migrate is a no-op for SQLite.
+//
+// Unlike the PostgreSQL backend, which runs versioned SQL migration scripts
+// (see internal/pgxdriver), SQLite stores create and manage their schemas
+// implicitly via each store's initSchema() method during construction
+// (using go-sqlite3's CREATE TABLE IF NOT EXISTS pattern). Therefore no
+// explicit migration step is required at runtime.
 func (b *SQLiteBackend) Migrate(_ context.Context) error {
-	// SQLite stores handle schema creation internally via initSchema()
 	return nil
 }
 
 // Ping verifies the SQLite database is accessible.
 func (b *SQLiteBackend) Ping(ctx context.Context) error {
-	// Use GetStats as a simple health check - it queries the sessions table
-	_, err := b.sessionStore.GetStats(ctx)
+	db, err := sql.Open("sqlite3", b.dbPath)
 	if err != nil {
+		return fmt.Errorf("SQLite ping failed: %w", err)
+	}
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("SQLite ping failed: %w", err)
 	}
 	return nil
@@ -162,11 +172,8 @@ func (b *SQLiteBackend) Close() error {
 	if err := b.sessionStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("session store close: %w", err)
 	}
-	// ErrorStore uses a separate DB connection
-	if closer, ok := b.errorStore.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("error store close: %w", err)
-		}
+	if err := b.errorStore.Close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("error store close: %w", err)
 	}
 	if err := b.artifactStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("artifact store close: %w", err)
@@ -174,10 +181,8 @@ func (b *SQLiteBackend) Close() error {
 	if err := b.resultStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("result store close: %w", err)
 	}
-	if closer, ok := b.humanRequestStore.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("human request store close: %w", err)
-		}
+	if err := b.humanRequestStore.Close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("human request store close: %w", err)
 	}
 
 	return firstErr

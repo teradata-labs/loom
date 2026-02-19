@@ -20,6 +20,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"go.uber.org/zap"
 )
 
 // SystemPromptFunc is a function that returns the system prompt for a new session.
@@ -50,6 +51,7 @@ type Memory struct {
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
 	tracer               observability.Tracer       // Optional tracer for observability
+	logger               *zap.Logger                // Structured logger for storage errors
 	llmProvider          LLMProvider                // Optional LLM provider for semantic search reranking
 	maxContextTokens     int                        // Context window size for new sessions (0 = use defaults)
 	reservedOutputTokens int                        // Reserved tokens for output (0 = use defaults)
@@ -66,6 +68,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		sessions:  make(map[string]*Session),
 		store:     nil,
+		logger:    zap.NewNop(),
 		observers: make(map[string][]MemoryObserver),
 	}
 }
@@ -75,8 +78,16 @@ func NewMemoryWithStore(store SessionStorage) *Memory {
 	return &Memory{
 		sessions:  make(map[string]*Session),
 		store:     store,
+		logger:    zap.NewNop(),
 		observers: make(map[string][]MemoryObserver),
 	}
+}
+
+// SetLogger sets the structured logger for storage error reporting.
+func (m *Memory) SetLogger(logger *zap.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = logger
 }
 
 // SetSystemPromptFunc sets a function to generate system prompts for new sessions.
@@ -138,9 +149,9 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 		// Persist updated metadata to store
 		if updated && m.store != nil {
 			if err := m.store.SaveSession(context.Background(), session); err != nil {
-				// Log error but don't fail (session is updated in memory)
-				// TODO: Consider adding error callback
-				_ = err
+				m.logger.Warn("Failed to persist session to storage",
+					zap.String("session_id", session.ID),
+					zap.Error(err))
 			}
 		}
 
@@ -199,8 +210,9 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 			// Persist updated metadata
 			if updated {
 				if err := m.store.SaveSession(context.Background(), session); err != nil {
-					// Log error but don't fail
-					_ = err
+					m.logger.Warn("Failed to persist updated session to storage",
+						zap.String("session_id", sessionID),
+						zap.Error(err))
 				}
 			}
 
@@ -469,9 +481,10 @@ func (m *Memory) AddMessage(sessionID string, msg Message) {
 	if m.store != nil {
 		ctx := context.Background()
 		if err := m.store.SaveMessage(ctx, sessionID, msg); err != nil {
-			// Log error but don't fail (message is in session memory)
-			// TODO: Consider adding error callback
-			_ = err
+			m.logger.Warn("Failed to persist message to storage",
+				zap.String("session_id", sessionID),
+				zap.String("role", msg.Role),
+				zap.Error(err))
 		}
 	}
 

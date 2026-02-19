@@ -6174,11 +6174,12 @@
           "type": "string"
         },
         "password": {
-          "type": "string"
+          "type": "string",
+          "description": "Database password. Prefer LOOM_PG_PASSWORD env var over config file for security."
         },
         "dsn": {
           "type": "string",
-          "title": "Full DSN connection string (takes precedence over individual fields)\nExample: \"postgres://user:pass@host:5432/dbname?sslmode=require\""
+          "title": "Full DSN connection string (takes precedence over individual fields).\nPrefer LOOM_PG_DSN env var over config file for security.\nExample: \"postgres://user:pass@host:5432/dbname?sslmode=require\""
         },
         "pool": {
           "$ref": "#/definitions/v1PostgresPoolConfig",
@@ -6188,13 +6189,25 @@
           "type": "string",
           "title": "SSL mode: \"disable\", \"require\", \"verify-ca\", \"verify-full\" (default: \"require\")"
         },
-        "rlsUserId": {
+        "defaultUserId": {
           "type": "string",
-          "title": "Row-level security user ID for tenant isolation (optional)"
+          "description": "Default user ID for single-tenant mode (optional).\nWhen set, requests without X-User-ID header use this value instead of rejecting."
         },
         "schema": {
           "type": "string",
           "title": "PostgreSQL schema to use (default: \"public\")"
+        },
+        "supabase": {
+          "$ref": "#/definitions/v1SupabaseConfig",
+          "title": "Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL)"
+        },
+        "softDelete": {
+          "$ref": "#/definitions/v1SoftDeleteConfig",
+          "title": "Soft delete configuration (PostgreSQL-specific)"
+        },
+        "requireUserId": {
+          "type": "boolean",
+          "description": "Require X-User-ID header on all requests (default: true).\nWhen false, requests without X-User-ID use default_user_id or \"default-user\"."
         }
       },
       "description": "PostgresStorageConfig configures the PostgreSQL storage backend."
@@ -6525,10 +6538,6 @@
     "v1RunMigrationResponse": {
       "type": "object",
       "properties": {
-        "success": {
-          "type": "boolean",
-          "title": "Whether the migration was successful"
-        },
         "steps": {
           "type": "array",
           "items": {
@@ -6541,13 +6550,9 @@
           "type": "integer",
           "format": "int32",
           "title": "Current version after migration"
-        },
-        "error": {
-          "type": "string",
-          "title": "Error message if migration failed"
         }
       },
-      "description": "RunMigrationResponse reports migration results."
+      "description": "RunMigrationResponse reports migration results.\nMigration failures are reported via gRPC status errors, not in-band fields."
     },
     "v1SQLiteStorageConfig": {
       "type": "object",
@@ -7428,10 +7433,6 @@
         "migration": {
           "$ref": "#/definitions/v1MigrationConfig",
           "title": "Migration configuration"
-        },
-        "softDelete": {
-          "$ref": "#/definitions/v1SoftDeleteConfig",
-          "title": "Soft delete configuration"
         }
       },
       "description": "StorageConfig is the top-level storage configuration for the server.\nOne storage backend per server; all agents share the same backend."
@@ -7531,6 +7532,28 @@
         }
       },
       "description": "SubscriptionFilter filters messages at subscriber level.\nAll filter conditions are AND-ed together (all must match for delivery)."
+    },
+    "v1SupabaseConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Whether to enable Supabase integration"
+        },
+        "projectUrl": {
+          "type": "string",
+          "title": "Supabase project URL"
+        },
+        "anonKey": {
+          "type": "string",
+          "title": "Supabase anonymous key (for client-side access)"
+        },
+        "serviceRoleKey": {
+          "type": "string",
+          "title": "Supabase service role key (for server-side access)"
+        }
+      },
+      "description": "SupabaseConfig configures Supabase-specific features (deferred to follow-up PR)."
     },
     "v1SwarmPattern": {
       "type": "object",

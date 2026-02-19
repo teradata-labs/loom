@@ -17,6 +17,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,8 +48,9 @@ func NewResultStore(pool *pgxpool.Pool, tracer observability.Tracer) *ResultStor
 }
 
 // Store persists a result set in a dynamic table and records metadata.
-func (s *ResultStore) Store(id string, data interface{}) (*loomv1.DataReference, error) {
-	ctx := context.Background()
+// All database operations (create table, insert rows, store metadata) execute
+// within a single transaction with RLS tenant isolation via execInTx.
+func (s *ResultStore) Store(ctx context.Context, id string, data interface{}) (*loomv1.DataReference, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_result_store.store")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("result_id", id)
@@ -60,154 +63,201 @@ func (s *ResultStore) Store(id string, data interface{}) (*loomv1.DataReference,
 	}
 
 	tableName := sanitizeTableName("tool_result_" + id)
-
-	// Create the result table
-	createSQL := buildCreateTableSQL(tableName, columns)
-	if _, err := s.pool.Exec(ctx, createSQL); err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to create result table: %w", err)
-	}
-
-	// Insert rows
-	if len(rows) > 0 {
-		if err := s.insertRows(ctx, tableName, columns, rows); err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("failed to insert rows: %w", err)
-		}
-	}
-
-	// Store metadata
 	columnsJSON, _ := json.Marshal(columns)
 	sizeBytes := estimateSize(rows, columns)
 
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO sql_result_metadata (id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (id) DO UPDATE SET
-			table_name = EXCLUDED.table_name,
-			row_count = EXCLUDED.row_count,
-			column_count = EXCLUDED.column_count,
-			columns_json = EXCLUDED.columns_json,
-			stored_at = EXCLUDED.stored_at,
-			accessed_at = EXCLUDED.accessed_at,
-			size_bytes = EXCLUDED.size_bytes`,
-		id, tableName, len(rows), len(columns), columnsJSON,
-		time.Now().UTC(), time.Now().UTC(), sizeBytes,
-	)
-	if err != nil {
+	var ref *loomv1.DataReference
+
+	if err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		// Create the result table
+		createSQL := buildCreateTableSQL(tableName, columns)
+		if _, err := tx.Exec(ctx, createSQL); err != nil {
+			return fmt.Errorf("failed to create result table: %w", err)
+		}
+
+		// Insert rows
+		if len(rows) > 0 {
+			if err := s.insertRows(ctx, tx, tableName, columns, rows); err != nil {
+				return fmt.Errorf("failed to insert rows: %w", err)
+			}
+		}
+
+		// Store metadata
+		userID := UserIDFromContext(ctx)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO sql_result_metadata (id, user_id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (id) DO UPDATE SET
+				table_name = EXCLUDED.table_name,
+				row_count = EXCLUDED.row_count,
+				column_count = EXCLUDED.column_count,
+				columns_json = EXCLUDED.columns_json,
+				stored_at = EXCLUDED.stored_at,
+				accessed_at = EXCLUDED.accessed_at,
+				size_bytes = EXCLUDED.size_bytes`,
+			id, userID, tableName, len(rows), len(columns), columnsJSON,
+			time.Now().UTC(), time.Now().UTC(), sizeBytes,
+		); err != nil {
+			return fmt.Errorf("failed to store metadata: %w", err)
+		}
+
+		ref = &loomv1.DataReference{
+			Id:        id,
+			SizeBytes: sizeBytes,
+		}
+		return nil
+	}); err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("failed to store metadata: %w", err)
+		return nil, err
 	}
 
-	return &loomv1.DataReference{
-		Id:        id,
-		SizeBytes: sizeBytes,
-	}, nil
+	return ref, nil
 }
 
+// validTableNameRe matches safe table names: alphanumeric characters and underscores only.
+var validTableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 // Query executes a query against a stored result table.
-func (s *ResultStore) Query(id, query string) (interface{}, error) {
-	ctx := context.Background()
+// If query is empty, returns all rows from the result table.
+// Caller-supplied SQL is NOT allowed; only an empty query string is accepted.
+// This prevents SQL injection. The operation runs in a transaction for RLS
+// tenant isolation.
+func (s *ResultStore) Query(ctx context.Context, id, query string) (interface{}, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_result_store.query")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("result_id", id)
 
-	tableName := sanitizeTableName("tool_result_" + id)
-
-	// Update access time
-	s.pool.Exec(ctx, "UPDATE sql_result_metadata SET accessed_at = $1 WHERE id = $2", time.Now().UTC(), id) //nolint:errcheck
-
-	// Build query - if empty, select all
-	var sqlQuery string
-	if query == "" {
-		sqlQuery = fmt.Sprintf("SELECT * FROM %s", tableName)
-	} else {
-		sqlQuery = fmt.Sprintf("SELECT * FROM %s WHERE %s", tableName, query)
+	// Only allow empty query (SELECT * from the result table).
+	// Caller-supplied SQL is rejected to prevent SQL injection.
+	if strings.TrimSpace(query) != "" {
+		return nil, fmt.Errorf("custom SQL queries are not supported; use an empty query to retrieve all rows")
 	}
 
-	rows, err := s.pool.Query(ctx, sqlQuery)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to query result: %w", err)
+	// Validate the table name component derived from id to prevent injection
+	// through crafted IDs. The raw name (before pgx quoting) must be safe.
+	rawTableName := "tool_result_" + id
+	if !validTableNameRe.MatchString(rawTableName) {
+		return nil, fmt.Errorf("invalid result ID: contains disallowed characters")
 	}
-	defer rows.Close()
+	tableName := sanitizeTableName(rawTableName)
 
-	// Read results into generic structure
-	fieldDescs := rows.FieldDescriptions()
+	sqlQuery := fmt.Sprintf("SELECT * FROM %s", tableName)
+
 	var results []map[string]interface{}
 
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("failed to read row values: %w", err)
+	if err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		// Update access time (scoped to user via user_id)
+		userID := UserIDFromContext(ctx)
+		if _, err := tx.Exec(ctx,
+			"UPDATE sql_result_metadata SET accessed_at = $1 WHERE id = $2 AND user_id = $3",
+			time.Now().UTC(), id, userID,
+		); err != nil {
+			return fmt.Errorf("failed to update access time: %w", err)
 		}
 
-		row := make(map[string]interface{})
-		for i, fd := range fieldDescs {
-			if i < len(values) {
-				row[string(fd.Name)] = values[i]
-			}
+		rows, err := tx.Query(ctx, sqlQuery)
+		if err != nil {
+			return fmt.Errorf("failed to query result: %w", err)
 		}
-		results = append(results, row)
+		defer rows.Close()
+
+		// Read results into generic structure
+		fieldDescs := rows.FieldDescriptions()
+
+		for rows.Next() {
+			values, err := rows.Values()
+			if err != nil {
+				return fmt.Errorf("failed to read row values: %w", err)
+			}
+
+			row := make(map[string]interface{})
+			for i, fd := range fieldDescs {
+				if i < len(values) {
+					row[string(fd.Name)] = values[i]
+				}
+			}
+			results = append(results, row)
+		}
+
+		return rows.Err()
+	}); err != nil {
+		span.RecordError(err)
+		return nil, err
 	}
 
-	return results, rows.Err()
+	return results, nil
 }
 
 // GetMetadata retrieves metadata about a stored result.
-func (s *ResultStore) GetMetadata(id string) (*storage.SQLResultMetadata, error) {
-	ctx := context.Background()
+// The query runs in a transaction for RLS tenant isolation.
+func (s *ResultStore) GetMetadata(ctx context.Context, id string) (*storage.SQLResultMetadata, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_result_store.get_metadata")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("result_id", id)
 
-	var (
-		meta        storage.SQLResultMetadata
-		columnsJSON []byte
-	)
+	var meta *storage.SQLResultMetadata
 
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes
-		FROM sql_result_metadata WHERE id = $1`,
-		id,
-	).Scan(&meta.ID, &meta.TableName, &meta.RowCount, &meta.ColumnCount, &columnsJSON, &meta.StoredAt, &meta.AccessedAt, &meta.SizeBytes)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
+	if err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var (
+			m           storage.SQLResultMetadata
+			columnsJSON []byte
+		)
+
+		userID := UserIDFromContext(ctx)
+		err := tx.QueryRow(ctx, `
+			SELECT id, table_name, row_count, column_count, columns_json, stored_at, accessed_at, size_bytes
+			FROM sql_result_metadata WHERE id = $1 AND user_id = $2`,
+			id, userID,
+		).Scan(&m.ID, &m.TableName, &m.RowCount, &m.ColumnCount, &columnsJSON, &m.StoredAt, &m.AccessedAt, &m.SizeBytes)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil
+			}
+			return fmt.Errorf("failed to get metadata: %w", err)
 		}
+
+		if len(columnsJSON) > 0 {
+			if err := json.Unmarshal(columnsJSON, &m.Columns); err != nil {
+				return fmt.Errorf("failed to unmarshal columns: %w", err)
+			}
+		}
+
+		meta = &m
+		return nil
+	}); err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("failed to get metadata: %w", err)
+		return nil, err
 	}
 
-	if len(columnsJSON) > 0 {
-		json.Unmarshal(columnsJSON, &meta.Columns) //nolint:errcheck
-	}
-
-	return &meta, nil
+	return meta, nil
 }
 
 // Delete removes a stored result and its table.
-func (s *ResultStore) Delete(id string) error {
-	ctx := context.Background()
+// Both the table drop and metadata delete execute within a single transaction
+// with RLS tenant isolation via execInTx.
+func (s *ResultStore) Delete(ctx context.Context, id string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_result_store.delete")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("result_id", id)
 
 	tableName := sanitizeTableName("tool_result_" + id)
 
-	// Drop the result table
-	_, err := s.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to drop result table: %w", err)
-	}
+	if err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		// Drop the result table
+		if _, err := tx.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)); err != nil {
+			return fmt.Errorf("failed to drop result table: %w", err)
+		}
 
-	// Delete metadata
-	_, err = s.pool.Exec(ctx, "DELETE FROM sql_result_metadata WHERE id = $1", id)
-	if err != nil {
+		// Delete metadata (scoped to user via user_id)
+		userID := UserIDFromContext(ctx)
+		if _, err := tx.Exec(ctx, "DELETE FROM sql_result_metadata WHERE id = $1 AND user_id = $2", id, userID); err != nil {
+			return fmt.Errorf("failed to delete metadata: %w", err)
+		}
+
+		return nil
+	}); err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to delete metadata: %w", err)
+		return err
 	}
 
 	return nil
@@ -218,8 +268,8 @@ func (s *ResultStore) Close() error {
 	return nil
 }
 
-// insertRows uses batch insert for efficiency.
-func (s *ResultStore) insertRows(ctx context.Context, tableName string, columns []string, rows [][]interface{}) error {
+// insertRows uses batch insert for efficiency within the given transaction.
+func (s *ResultStore) insertRows(ctx context.Context, tx pgx.Tx, tableName string, columns []string, rows [][]interface{}) error {
 	placeholders := make([]string, len(columns))
 	for i := range columns {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
@@ -236,7 +286,11 @@ func (s *ResultStore) insertRows(ctx context.Context, tableName string, columns 
 		paddedRow := make([]interface{}, len(columns))
 		for i := range paddedRow {
 			if i < len(row) {
-				paddedRow[i] = fmt.Sprintf("%v", row[i])
+				if row[i] == nil {
+					paddedRow[i] = nil // preserve SQL NULL
+				} else {
+					paddedRow[i] = fmt.Sprintf("%v", row[i])
+				}
 			} else {
 				paddedRow[i] = nil
 			}
@@ -244,7 +298,7 @@ func (s *ResultStore) insertRows(ctx context.Context, tableName string, columns 
 		batch.Queue(insertSQL, paddedRow...)
 	}
 
-	br := s.pool.SendBatch(ctx, batch)
+	br := tx.SendBatch(ctx, batch)
 	defer br.Close()
 
 	for range rows {
@@ -256,15 +310,11 @@ func (s *ResultStore) insertRows(ctx context.Context, tableName string, columns 
 	return nil
 }
 
-// sanitizeTableName ensures a table name is safe for SQL.
+// sanitizeTableName ensures a table name is safe for SQL using pgx's
+// identifier quoting, which properly handles special characters and
+// prevents SQL injection.
 func sanitizeTableName(name string) string {
-	var safe strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			safe.WriteRune(r)
-		}
-	}
-	return safe.String()
+	return pgx.Identifier{name}.Sanitize()
 }
 
 // buildCreateTableSQL generates a CREATE TABLE statement with TEXT columns.
@@ -296,6 +346,7 @@ func extractRowsAndColumns(data interface{}) ([][]interface{}, []string, error) 
 		for k := range v[0] {
 			columns = append(columns, k)
 		}
+		sort.Strings(columns) // deterministic column ordering
 		rows := make([][]interface{}, len(v))
 		for i, row := range v {
 			vals := make([]interface{}, len(columns))

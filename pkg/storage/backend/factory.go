@@ -24,7 +24,9 @@ import (
 
 // NewStorageBackend creates a StorageBackend from proto configuration.
 // If cfg is nil or backend is unspecified, defaults to SQLite with default paths.
-func NewStorageBackend(cfg *loomv1.StorageConfig, tracer observability.Tracer) (StorageBackend, error) {
+// The ctx parameter is used for PostgreSQL connection initialization; it is
+// ignored for SQLite backends.
+func NewStorageBackend(ctx context.Context, cfg *loomv1.StorageConfig, tracer observability.Tracer) (StorageBackend, error) {
 	if cfg == nil {
 		cfg = &loomv1.StorageConfig{
 			Backend: loomv1.StorageBackendType_STORAGE_BACKEND_TYPE_SQLITE,
@@ -41,12 +43,41 @@ func NewStorageBackend(cfg *loomv1.StorageConfig, tracer observability.Tracer) (
 		if pgCfg == nil {
 			return nil, fmt.Errorf("postgres backend requires postgres configuration")
 		}
-		return postgres.NewBackend(context.Background(), pgCfg, tracer)
+		pgBackend, err := postgres.NewBackend(ctx, pgCfg, tracer)
+		if err != nil {
+			return nil, err
+		}
+		// Wrap to satisfy MigrationInspector without import cycle
+		return &postgresBackendWrapper{Backend: pgBackend}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported storage backend: %v", cfg.Backend)
 	}
 }
 
-// Compile-time check: postgres.Backend implements StorageBackend.
-var _ StorageBackend = (*postgres.Backend)(nil)
+// postgresBackendWrapper wraps postgres.Backend to add MigrationInspector
+// without creating an import cycle (postgres -> backend -> postgres).
+type postgresBackendWrapper struct {
+	*postgres.Backend
+}
+
+// PendingMigrations implements MigrationInspector by adapting postgres.Backend.RawPendingMigrations.
+func (w *postgresBackendWrapper) PendingMigrations(ctx context.Context) ([]*PendingMigration, error) {
+	raw, err := w.Backend.RawPendingMigrations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*PendingMigration, len(raw))
+	for i, m := range raw {
+		result[i] = &PendingMigration{
+			Version:     int32(m.Version),
+			Description: m.Description,
+			SQL:         m.UpSQL,
+		}
+	}
+	return result, nil
+}
+
+// Compile-time checks
+var _ StorageBackend = (*postgresBackendWrapper)(nil)
+var _ MigrationInspector = (*postgresBackendWrapper)(nil)

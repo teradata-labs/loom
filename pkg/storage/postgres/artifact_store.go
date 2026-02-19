@@ -61,48 +61,56 @@ func (s *ArtifactStore) Index(ctx context.Context, artifact *artifacts.Artifact)
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO artifacts (id, name, path, source, source_agent_id, purpose, content_type,
-			size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
-			tags, metadata_json, deleted_at, session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		ON CONFLICT (id) DO UPDATE SET
-			name = EXCLUDED.name,
-			path = EXCLUDED.path,
-			source = EXCLUDED.source,
-			source_agent_id = EXCLUDED.source_agent_id,
-			purpose = EXCLUDED.purpose,
-			content_type = EXCLUDED.content_type,
-			size_bytes = EXCLUDED.size_bytes,
-			checksum = EXCLUDED.checksum,
-			updated_at = EXCLUDED.updated_at,
-			last_accessed_at = EXCLUDED.last_accessed_at,
-			access_count = EXCLUDED.access_count,
-			tags = EXCLUDED.tags,
-			metadata_json = EXCLUDED.metadata_json,
-			deleted_at = EXCLUDED.deleted_at,
-			session_id = EXCLUDED.session_id`,
-		artifact.ID,
-		artifact.Name,
-		artifact.Path,
-		string(artifact.Source),
-		nullableString(artifact.SourceAgentID),
-		nullableString(artifact.Purpose),
-		artifact.ContentType,
-		artifact.SizeBytes,
-		artifact.Checksum,
-		artifact.CreatedAt,
-		artifact.UpdatedAt,
-		artifact.LastAccessedAt, // *time.Time, nil-safe
-		artifact.AccessCount,
-		tagsJSON,
-		metadataJSON,
-		artifact.DeletedAt, // *time.Time, nil-safe
-		nullableString(artifact.SessionID),
-	)
+	err = execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		_, err := tx.Exec(ctx, `
+			INSERT INTO artifacts (id, user_id, name, path, source, source_agent_id, purpose, content_type,
+				size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
+				tags, metadata_json, deleted_at, session_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				path = EXCLUDED.path,
+				source = EXCLUDED.source,
+				source_agent_id = EXCLUDED.source_agent_id,
+				purpose = EXCLUDED.purpose,
+				content_type = EXCLUDED.content_type,
+				size_bytes = EXCLUDED.size_bytes,
+				checksum = EXCLUDED.checksum,
+				updated_at = EXCLUDED.updated_at,
+				last_accessed_at = EXCLUDED.last_accessed_at,
+				access_count = EXCLUDED.access_count,
+				tags = EXCLUDED.tags,
+				metadata_json = EXCLUDED.metadata_json,
+				deleted_at = EXCLUDED.deleted_at,
+				session_id = EXCLUDED.session_id`,
+			artifact.ID,
+			userID,
+			artifact.Name,
+			artifact.Path,
+			string(artifact.Source),
+			nullableString(artifact.SourceAgentID),
+			nullableString(artifact.Purpose),
+			artifact.ContentType,
+			artifact.SizeBytes,
+			artifact.Checksum,
+			artifact.CreatedAt,
+			artifact.UpdatedAt,
+			artifact.LastAccessedAt, // *time.Time, nil-safe
+			artifact.AccessCount,
+			tagsJSON,
+			metadataJSON,
+			artifact.DeletedAt, // *time.Time, nil-safe
+			nullableString(artifact.SessionID),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to index artifact: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to index artifact: %w", err)
+		return err
 	}
 	return nil
 }
@@ -113,16 +121,26 @@ func (s *ArtifactStore) Get(ctx context.Context, id string) (*artifacts.Artifact
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("artifact_id", id)
 
-	row := s.pool.QueryRow(ctx, `
-		SELECT id, name, path, source, source_agent_id, purpose, content_type,
-			size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
-			tags, metadata_json, deleted_at, session_id
-		FROM artifacts
-		WHERE id = $1 AND deleted_at IS NULL`,
-		id,
-	)
-
-	return scanArtifact(row)
+	var result *artifacts.Artifact
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		row := tx.QueryRow(ctx, `
+			SELECT id, name, path, source, source_agent_id, purpose, content_type,
+				size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
+				tags, metadata_json, deleted_at, session_id
+			FROM artifacts
+			WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			id, userID,
+		)
+		var err error
+		result, err = scanArtifact(row)
+		return err
+	})
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	return result, nil
 }
 
 // GetByName retrieves an artifact by name, optionally scoped to a session.
@@ -131,30 +149,40 @@ func (s *ArtifactStore) GetByName(ctx context.Context, name string, sessionID st
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("name", name)
 
-	var row pgx.Row
-	if sessionID != "" {
-		row = s.pool.QueryRow(ctx, `
-			SELECT id, name, path, source, source_agent_id, purpose, content_type,
-				size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
-				tags, metadata_json, deleted_at, session_id
-			FROM artifacts
-			WHERE name = $1 AND deleted_at IS NULL AND (session_id = $2 OR session_id IS NULL)
-			ORDER BY created_at DESC LIMIT 1`,
-			name, sessionID,
-		)
-	} else {
-		row = s.pool.QueryRow(ctx, `
-			SELECT id, name, path, source, source_agent_id, purpose, content_type,
-				size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
-				tags, metadata_json, deleted_at, session_id
-			FROM artifacts
-			WHERE name = $1 AND deleted_at IS NULL
-			ORDER BY created_at DESC LIMIT 1`,
-			name,
-		)
+	var result *artifacts.Artifact
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		var row pgx.Row
+		if sessionID != "" {
+			row = tx.QueryRow(ctx, `
+				SELECT id, name, path, source, source_agent_id, purpose, content_type,
+					size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
+					tags, metadata_json, deleted_at, session_id
+				FROM artifacts
+				WHERE name = $1 AND user_id = $2 AND deleted_at IS NULL AND (session_id = $3 OR session_id IS NULL)
+				ORDER BY created_at DESC LIMIT 1`,
+				name, userID, sessionID,
+			)
+		} else {
+			row = tx.QueryRow(ctx, `
+				SELECT id, name, path, source, source_agent_id, purpose, content_type,
+					size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
+					tags, metadata_json, deleted_at, session_id
+				FROM artifacts
+				WHERE name = $1 AND user_id = $2 AND deleted_at IS NULL
+				ORDER BY created_at DESC LIMIT 1`,
+				name, userID,
+			)
+		}
+		var err error
+		result, err = scanArtifact(row)
+		return err
+	})
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
 	}
-
-	return scanArtifact(row)
+	return result, nil
 }
 
 // List retrieves artifacts matching the given filters.
@@ -165,10 +193,11 @@ func (s *ArtifactStore) List(ctx context.Context, filter *artifacts.Filter) ([]*
 	query := `SELECT id, name, path, source, source_agent_id, purpose, content_type,
 		size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
 		tags, metadata_json, deleted_at, session_id
-		FROM artifacts WHERE 1=1`
+		FROM artifacts WHERE user_id = $1`
 
-	args := []interface{}{}
-	argIdx := 1
+	// user_id is extracted inside execInTx callback; pre-allocate slot here
+	args := []interface{}{nil} // placeholder; replaced inside execInTx
+	argIdx := 2
 
 	if filter != nil {
 		if !filter.IncludeDeleted {
@@ -231,23 +260,29 @@ func (s *ArtifactStore) List(ctx context.Context, filter *artifacts.Filter) ([]*
 		args = append(args, filter.Offset)
 	}
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	var result []*artifacts.Artifact
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		args[0] = UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list artifacts: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			a, err := scanArtifactFromRows(rows)
+			if err != nil {
+				return err
+			}
+			result = append(result, a)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("failed to list artifacts: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var result []*artifacts.Artifact
-	for rows.Next() {
-		a, err := scanArtifactFromRows(rows)
-		if err != nil {
-			span.RecordError(err)
-			return nil, err
-		}
-		result = append(result, a)
-	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // Search performs full-text search on artifacts using tsvector.
@@ -265,10 +300,11 @@ func (s *ArtifactStore) Search(ctx context.Context, query string, sessionID stri
 			size_bytes, checksum, created_at, updated_at, last_accessed_at, access_count,
 			tags, metadata_json, deleted_at, session_id
 		FROM artifacts
-		WHERE deleted_at IS NULL AND artifact_search @@ websearch_to_tsquery('english', $1)`
+		WHERE user_id = $1 AND deleted_at IS NULL AND artifact_search @@ websearch_to_tsquery('english', $2)`
 
-	args := []interface{}{query}
-	argIdx := 2
+	// user_id placeholder filled inside execInTx; query text is $2
+	args := []interface{}{nil, query}
+	argIdx := 3
 
 	if sessionID != "" {
 		sqlQuery += fmt.Sprintf(" AND session_id = $%d", argIdx)
@@ -276,26 +312,32 @@ func (s *ArtifactStore) Search(ctx context.Context, query string, sessionID stri
 		argIdx++
 	}
 
-	sqlQuery += fmt.Sprintf(" ORDER BY ts_rank_cd(artifact_search, websearch_to_tsquery('english', $1)) DESC LIMIT $%d", argIdx)
+	sqlQuery += fmt.Sprintf(" ORDER BY ts_rank_cd(artifact_search, websearch_to_tsquery('english', $2)) DESC LIMIT $%d", argIdx)
 	args = append(args, limit)
 
-	rows, err := s.pool.Query(ctx, sqlQuery, args...)
+	var result []*artifacts.Artifact
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		args[0] = UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, sqlQuery, args...)
+		if err != nil {
+			return fmt.Errorf("failed to search artifacts: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			a, err := scanArtifactFromRows(rows)
+			if err != nil {
+				return err
+			}
+			result = append(result, a)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("failed to search artifacts: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var result []*artifacts.Artifact
-	for rows.Next() {
-		a, err := scanArtifactFromRows(rows)
-		if err != nil {
-			span.RecordError(err)
-			return nil, err
-		}
-		result = append(result, a)
-	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // Update updates an existing artifact's metadata.
@@ -315,18 +357,24 @@ func (s *ArtifactStore) Delete(ctx context.Context, id string, hard bool) error 
 	span.SetAttribute("artifact_id", id)
 	span.SetAttribute("hard", hard)
 
-	if hard {
-		_, err := s.pool.Exec(ctx, "DELETE FROM artifacts WHERE id = $1", id)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to hard delete artifact: %w", err)
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		if hard {
+			_, err := tx.Exec(ctx, "DELETE FROM artifacts WHERE id = $1 AND user_id = $2", id, userID)
+			if err != nil {
+				return fmt.Errorf("failed to hard delete artifact: %w", err)
+			}
+		} else {
+			_, err := tx.Exec(ctx, "UPDATE artifacts SET deleted_at = $1 WHERE id = $2 AND user_id = $3", time.Now().UTC(), id, userID)
+			if err != nil {
+				return fmt.Errorf("failed to soft delete artifact: %w", err)
+			}
 		}
-	} else {
-		_, err := s.pool.Exec(ctx, "UPDATE artifacts SET deleted_at = $1 WHERE id = $2", time.Now().UTC(), id)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to soft delete artifact: %w", err)
-		}
+		return nil
+	})
+	if err != nil {
+		span.RecordError(err)
+		return err
 	}
 	return nil
 }
@@ -337,43 +385,49 @@ func (s *ArtifactStore) RecordAccess(ctx context.Context, id string) error {
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("artifact_id", id)
 
-	_, err := s.pool.Exec(ctx,
-		"UPDATE artifacts SET last_accessed_at = $1, access_count = access_count + 1 WHERE id = $2",
-		time.Now().UTC(), id,
-	)
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		_, err := tx.Exec(ctx,
+			"UPDATE artifacts SET last_accessed_at = $1, access_count = access_count + 1 WHERE id = $2 AND user_id = $3",
+			time.Now().UTC(), id, userID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to record access: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to record access: %w", err)
+		return err
 	}
 	return nil
 }
 
-// GetStats returns aggregate statistics about stored artifacts.
+// GetStats returns aggregate statistics about stored artifacts using a single query.
 func (s *ArtifactStore) GetStats(ctx context.Context) (*artifacts.Stats, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_artifact_store.get_stats")
 	defer s.tracer.EndSpan(span)
 
-	stats := &artifacts.Stats{}
-
-	err := s.pool.QueryRow(ctx,
-		"SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM artifacts WHERE deleted_at IS NULL",
-	).Scan(&stats.TotalFiles, &stats.TotalSizeBytes)
+	var stats *artifacts.Stats
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		stats = &artifacts.Stats{}
+		return tx.QueryRow(ctx, `
+			SELECT
+				COUNT(*) FILTER (WHERE deleted_at IS NULL),
+				COALESCE(SUM(size_bytes) FILTER (WHERE deleted_at IS NULL), 0),
+				COUNT(*) FILTER (WHERE source = 'user' AND deleted_at IS NULL),
+				COUNT(*) FILTER (WHERE source = 'generated' AND deleted_at IS NULL),
+				COUNT(*) FILTER (WHERE deleted_at IS NOT NULL)
+			FROM artifacts
+			WHERE user_id = $1`,
+			userID,
+		).Scan(&stats.TotalFiles, &stats.TotalSizeBytes, &stats.UserFiles, &stats.GeneratedFiles, &stats.DeletedFiles)
+	})
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to get artifact stats: %w", err)
 	}
-
-	s.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM artifacts WHERE source = 'user' AND deleted_at IS NULL",
-	).Scan(&stats.UserFiles) //nolint:errcheck
-
-	s.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM artifacts WHERE source = 'generated' AND deleted_at IS NULL",
-	).Scan(&stats.GeneratedFiles) //nolint:errcheck
-
-	s.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM artifacts WHERE deleted_at IS NOT NULL",
-	).Scan(&stats.DeletedFiles) //nolint:errcheck
 
 	return stats, nil
 }
@@ -423,10 +477,14 @@ func scanArtifact(row pgx.Row) (*artifacts.Artifact, error) {
 	}
 
 	if len(tagsJSON) > 0 {
-		json.Unmarshal(tagsJSON, &a.Tags) //nolint:errcheck
+		if err := json.Unmarshal(tagsJSON, &a.Tags); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal artifact tags: %w", err)
+		}
 	}
 	if len(metadataJSON) > 0 {
-		json.Unmarshal(metadataJSON, &a.Metadata) //nolint:errcheck
+		if err := json.Unmarshal(metadataJSON, &a.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal artifact metadata: %w", err)
+		}
 	}
 
 	return &a, nil
@@ -469,21 +527,17 @@ func scanArtifactFromRows(rows pgx.Rows) (*artifacts.Artifact, error) {
 	}
 
 	if len(tagsJSON) > 0 {
-		json.Unmarshal(tagsJSON, &a.Tags) //nolint:errcheck
+		if err := json.Unmarshal(tagsJSON, &a.Tags); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal artifact tags: %w", err)
+		}
 	}
 	if len(metadataJSON) > 0 {
-		json.Unmarshal(metadataJSON, &a.Metadata) //nolint:errcheck
+		if err := json.Unmarshal(metadataJSON, &a.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal artifact metadata: %w", err)
+		}
 	}
 
 	return &a, nil
-}
-
-// nullableTime returns nil for zero time values.
-func nullableTime(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	return &t
 }
 
 // Compile-time check: ArtifactStore implements artifacts.ArtifactStore.

@@ -76,6 +76,9 @@ type HumanRequestStore interface {
 
 	// ListBySession returns all requests for a session
 	ListBySession(ctx context.Context, sessionID string) ([]*HumanRequest, error)
+
+	// Close releases any resources held by the store.
+	Close() error
 }
 
 // Notifier sends notifications to humans when their input is requested.
@@ -558,6 +561,11 @@ func (s *InMemoryHumanRequestStore) RespondToRequest(ctx context.Context, reques
 	req.RespondedAt = &now
 	req.RespondedBy = respondedBy
 
+	return nil
+}
+
+// Close is a no-op; in-memory store has no resources to release.
+func (s *InMemoryHumanRequestStore) Close() error {
 	return nil
 }
 

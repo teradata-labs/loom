@@ -18,9 +18,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 func TestNewSQLiteBackend_Default(t *testing.T) {
@@ -127,7 +127,7 @@ func TestNewStorageBackend_SQLite(t *testing.T) {
 		},
 	}
 
-	backend, err := NewStorageBackend(cfg, nil)
+	backend, err := NewStorageBackend(context.Background(), cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
 	defer backend.Close()
@@ -137,7 +137,7 @@ func TestNewStorageBackend_SQLite(t *testing.T) {
 }
 
 func TestNewStorageBackend_NilConfig(t *testing.T) {
-	backend, err := NewStorageBackend(nil, nil)
+	backend, err := NewStorageBackend(context.Background(), nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
 	defer backend.Close()
@@ -157,7 +157,7 @@ func TestNewStorageBackend_UnspecifiedType(t *testing.T) {
 		},
 	}
 
-	backend, err := NewStorageBackend(cfg, nil)
+	backend, err := NewStorageBackend(context.Background(), cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
 	defer backend.Close()
@@ -171,7 +171,7 @@ func TestNewStorageBackend_PostgresRequiresConfig(t *testing.T) {
 		Backend: loomv1.StorageBackendType_STORAGE_BACKEND_TYPE_POSTGRES,
 	}
 
-	backend, err := NewStorageBackend(cfg, nil)
+	backend, err := NewStorageBackend(context.Background(), cfg, nil)
 	assert.Error(t, err, "Postgres without config should return error")
 	assert.Nil(t, backend)
 	assert.Contains(t, err.Error(), "requires postgres configuration")

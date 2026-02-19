@@ -31,8 +31,9 @@ message StorageConfig {
   // Migration configuration
   MigrationConfig migration = 4;
 
-  // Soft delete configuration
-  SoftDeleteConfig soft_delete = 5;
+  // Reserved: soft_delete moved to PostgresStorageConfig
+  reserved 5;
+  reserved "soft_delete";
 }
 
 // SQLiteStorageConfig configures the SQLite storage backend.
@@ -57,9 +58,12 @@ message PostgresStorageConfig {
   int32 port = 2;
   string database = 3;
   string user = 4;
+
+  // Database password. Prefer LOOM_PG_PASSWORD env var over config file for security.
   string password = 5;
 
-  // Full DSN connection string (takes precedence over individual fields)
+  // Full DSN connection string (takes precedence over individual fields).
+  // Prefer LOOM_PG_DSN env var over config file for security.
   // Example: "postgres://user:pass@host:5432/dbname?sslmode=require"
   string dsn = 6;
 
@@ -69,11 +73,22 @@ message PostgresStorageConfig {
   // SSL mode: "disable", "require", "verify-ca", "verify-full" (default: "require")
   string ssl_mode = 8;
 
-  // Row-level security user ID for tenant isolation (optional)
-  string rls_user_id = 9;
+  // Default user ID for single-tenant mode (optional).
+  // When set, requests without X-User-ID header use this value instead of rejecting.
+  string default_user_id = 9;
 
   // PostgreSQL schema to use (default: "public")
   string schema = 10;
+
+  // Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL)
+  SupabaseConfig supabase = 11;
+
+  // Soft delete configuration (PostgreSQL-specific)
+  SoftDeleteConfig soft_delete = 12;
+
+  // Require X-User-ID header on all requests (default: true).
+  // When false, requests without X-User-ID use default_user_id or "default-user".
+  bool require_user_id = 13;
 }
 
 // PostgresPoolConfig configures the pgx connection pool.
@@ -205,9 +220,11 @@ message MigrationStep {
 }
 
 // RunMigrationResponse reports migration results.
+// Migration failures are reported via gRPC status errors, not in-band fields.
 message RunMigrationResponse {
-  // Whether the migration was successful
-  bool success = 1;
+  // Reserved: success removed — use gRPC status codes instead
+  reserved 1;
+  reserved "success";
 
   // Steps that were (or would be) applied
   repeated MigrationStep steps = 2;
@@ -215,6 +232,7 @@ message RunMigrationResponse {
   // Current version after migration
   int32 current_version = 3;
 
-  // Error message if migration failed
-  string error = 4;
+  // Reserved: error removed — use gRPC status errors instead
+  reserved 4;
+  reserved "error";
 }

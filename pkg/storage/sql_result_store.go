@@ -14,6 +14,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -164,7 +165,7 @@ func IsSQLResult(data interface{}) bool {
 }
 
 // Store stores SQL result data in a queryable table.
-func (s *SQLResultStore) Store(id string, data interface{}) (*loomv1.DataReference, error) {
+func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (*loomv1.DataReference, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -284,7 +285,7 @@ func (s *SQLResultStore) Store(id string, data interface{}) (*loomv1.DataReferen
 }
 
 // Query executes a SQL query against a stored result.
-func (s *SQLResultStore) Query(id, query string) (interface{}, error) {
+func (s *SQLResultStore) Query(_ context.Context, id, query string) (interface{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -366,7 +367,7 @@ func (s *SQLResultStore) Query(id, query string) (interface{}, error) {
 }
 
 // GetMetadata returns metadata about a stored result.
-func (s *SQLResultStore) GetMetadata(id string) (*SQLResultMetadata, error) {
+func (s *SQLResultStore) GetMetadata(_ context.Context, id string) (*SQLResultMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -465,7 +466,7 @@ func (s *SQLResultStore) rowsToArray(rows *sql.Rows, columns []string) []any {
 }
 
 // Delete removes a stored result.
-func (s *SQLResultStore) Delete(id string) error {
+func (s *SQLResultStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

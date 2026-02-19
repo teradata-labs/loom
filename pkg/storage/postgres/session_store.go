@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,7 @@ import (
 type SessionStore struct {
 	pool         *pgxpool.Pool
 	tracer       observability.Tracer
+	mu           sync.RWMutex
 	cleanupHooks []agent.SessionCleanupHook
 }
 
@@ -52,15 +54,18 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", session.ID)
 
-	contextJSON, err := json.Marshal(session.Context)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to marshal session context: %w", err)
-	}
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
 
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO sessions (id, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		contextJSON, err := json.Marshal(session.Context)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to marshal session context: %w", err)
+		}
+
+		_, err = tx.Exec(ctx, `
+		INSERT INTO sessions (id, agent_id, user_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
 			agent_id = EXCLUDED.agent_id,
 			parent_session_id = EXCLUDED.parent_session_id,
@@ -68,79 +73,105 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 			updated_at = EXCLUDED.updated_at,
 			total_cost_usd = EXCLUDED.total_cost_usd,
 			total_tokens = EXCLUDED.total_tokens`,
-		session.ID,
-		nullableString(session.AgentID),
-		nullableString(session.ParentSessionID),
-		contextJSON,
-		session.CreatedAt,
-		session.UpdatedAt,
-		session.TotalCostUSD,
-		session.TotalTokens,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to save session: %w", err)
-	}
-	return nil
+			session.ID,
+			nullableString(session.AgentID),
+			userID,
+			nullableString(session.ParentSessionID),
+			contextJSON,
+			session.CreatedAt,
+			session.UpdatedAt,
+			session.TotalCostUSD,
+			session.TotalTokens,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to save session: %w", err)
+		}
+		return nil
+	})
 }
 
 // LoadSession retrieves a session and its messages from PostgreSQL.
+// Returns (nil, nil) if the session does not exist or has been soft-deleted.
 func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agent.Session, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.load_session")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 
-	var (
-		agentID         *string
-		parentSessionID *string
-		contextJSON     []byte
-		createdAt       time.Time
-		updatedAt       time.Time
-		totalCost       float64
-		totalTokens     int
-	)
+	var session *agent.Session
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
 
-	err := s.pool.QueryRow(ctx, `
+		var (
+			agentID         *string
+			parentSessionID *string
+			contextJSON     []byte
+			createdAt       time.Time
+			updatedAt       time.Time
+			totalCost       float64
+			totalTokens     int
+		)
+
+		scanErr := tx.QueryRow(ctx, `
 		SELECT agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
-		FROM sessions WHERE id = $1`,
-		sessionID,
-	).Scan(&agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("session not found: %s", sessionID)
+		FROM sessions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			sessionID, userID,
+		).Scan(&agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
+		if scanErr != nil {
+			if scanErr == pgx.ErrNoRows {
+				return nil // session stays nil, commit is fine
+			}
+			span.RecordError(scanErr)
+			return fmt.Errorf("failed to load session: %w", scanErr)
 		}
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to load session: %w", err)
-	}
 
-	session := &agent.Session{
-		ID:           sessionID,
-		CreatedAt:    createdAt,
-		UpdatedAt:    updatedAt,
-		TotalCostUSD: totalCost,
-		TotalTokens:  totalTokens,
-	}
-	if agentID != nil {
-		session.AgentID = *agentID
-	}
-	if parentSessionID != nil {
-		session.ParentSessionID = *parentSessionID
-	}
-	if len(contextJSON) > 0 {
-		var contextMap map[string]interface{}
-		if err := json.Unmarshal(contextJSON, &contextMap); err == nil {
-			session.Context = contextMap
+		sess := &agent.Session{
+			ID:           sessionID,
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+			TotalCostUSD: totalCost,
+			TotalTokens:  totalTokens,
 		}
-	}
+		if agentID != nil {
+			sess.AgentID = *agentID
+		}
+		if parentSessionID != nil {
+			sess.ParentSessionID = *parentSessionID
+		}
+		if len(contextJSON) > 0 {
+			var contextMap map[string]interface{}
+			if err := json.Unmarshal(contextJSON, &contextMap); err == nil {
+				sess.Context = contextMap
+			}
+		}
 
-	// Load messages
-	messages, err := s.LoadMessages(ctx, sessionID)
+		// Load messages within the same transaction
+		rows, err := tx.Query(ctx, `
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		FROM messages
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
+		ORDER BY timestamp ASC`,
+			sessionID, userID,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to load messages: %w", err)
+		}
+		defer rows.Close()
+
+		messages, err := scanMessages(rows)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to load messages: %w", err)
+		}
+		sess.Messages = messages
+
+		session = sess
+		return nil
+	})
 	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to load messages: %w", err)
+		return nil, err
 	}
-	session.Messages = messages
-
 	return session, nil
 }
 
@@ -149,41 +180,63 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.list_sessions")
 	defer s.tracer.EndSpan(span)
 
-	rows, err := s.pool.Query(ctx, "SELECT id FROM sessions ORDER BY updated_at DESC")
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to list sessions: %w", err)
-	}
-	defer rows.Close()
-
 	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, "SELECT id FROM sessions WHERE user_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC", userID)
+		if err != nil {
 			span.RecordError(err)
-			return nil, fmt.Errorf("failed to scan session ID: %w", err)
+			return fmt.Errorf("failed to list sessions: %w", err)
 		}
-		ids = append(ids, id)
+		defer rows.Close()
+
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to scan session ID: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
-// DeleteSession removes a session and cascades to related records.
+// DeleteSession soft-deletes a session by setting deleted_at.
+// Hard deletion happens via the purge_soft_deleted function after the grace period.
+// Cleanup hooks run after the transaction commits successfully.
 func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.delete_session")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 
-	// Run cleanup hooks before deletion
-	for _, hook := range s.cleanupHooks {
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		_, err := tx.Exec(ctx, "UPDATE sessions SET deleted_at = NOW() WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL", sessionID, userID)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to soft-delete session: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Run cleanup hooks after successful commit
+	s.mu.RLock()
+	hooks := make([]agent.SessionCleanupHook, len(s.cleanupHooks))
+	copy(hooks, s.cleanupHooks)
+	s.mu.RUnlock()
+
+	for _, hook := range hooks {
 		hook(ctx, sessionID)
 	}
 
-	_, err := s.pool.Exec(ctx, "DELETE FROM sessions WHERE id = $1", sessionID)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to delete session: %w", err)
-	}
 	return nil
 }
 
@@ -193,81 +246,97 @@ func (s *SessionStore) LoadAgentSessions(ctx context.Context, agentID string) ([
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("agent_id", agentID)
 
-	rows, err := s.pool.Query(ctx,
-		"SELECT id FROM sessions WHERE agent_id = $1 ORDER BY updated_at DESC",
-		agentID,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to load agent sessions: %w", err)
-	}
-	defer rows.Close()
-
 	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx,
+			"SELECT id FROM sessions WHERE agent_id = $1 AND user_id = $2 AND deleted_at IS NULL ORDER BY updated_at DESC",
+			agentID, userID,
+		)
+		if err != nil {
 			span.RecordError(err)
-			return nil, fmt.Errorf("failed to scan session ID: %w", err)
+			return fmt.Errorf("failed to load agent sessions: %w", err)
 		}
-		ids = append(ids, id)
+		defer rows.Close()
+
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to scan session ID: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
-// SaveMessage persists a message to the messages table.
+// SaveMessage persists a message to the messages table and updates the session timestamp atomically.
 func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg agent.Message) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.save_message")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("role", msg.Role)
 
-	// Serialize tool calls
-	var toolCallsJSON []byte
-	if len(msg.ToolCalls) > 0 {
-		var err error
-		toolCallsJSON, err = json.Marshal(msg.ToolCalls)
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+
+		// Serialize tool calls
+		var toolCallsJSON []byte
+		if len(msg.ToolCalls) > 0 {
+			var err error
+			toolCallsJSON, err = json.Marshal(msg.ToolCalls)
+			if err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to marshal tool calls: %w", err)
+			}
+		}
+
+		// Serialize tool result
+		var toolResultJSON []byte
+		if msg.ToolResult != nil {
+			var err error
+			toolResultJSON, err = json.Marshal(msg.ToolResult)
+			if err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to marshal tool result: %w", err)
+			}
+		}
+
+		_, err := tx.Exec(ctx, `
+		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			sessionID,
+			userID,
+			msg.Role,
+			msg.Content,
+			nullableBytes(toolCallsJSON),
+			nullableString(msg.ToolUseID),
+			nullableBytes(toolResultJSON),
+			string(msg.SessionContext),
+			nullableString(msg.AgentID),
+			msg.Timestamp,
+			msg.TokenCount,
+			msg.CostUSD,
+		)
 		if err != nil {
 			span.RecordError(err)
-			return fmt.Errorf("failed to marshal tool calls: %w", err)
+			return fmt.Errorf("failed to save message: %w", err)
 		}
-	}
 
-	// Serialize tool result
-	var toolResultJSON []byte
-	if msg.ToolResult != nil {
-		var err error
-		toolResultJSON, err = json.Marshal(msg.ToolResult)
+		// Update session's updated_at timestamp atomically within the same transaction
+		_, err = tx.Exec(ctx, "UPDATE sessions SET updated_at = $1 WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL", time.Now().UTC(), sessionID, userID)
 		if err != nil {
 			span.RecordError(err)
-			return fmt.Errorf("failed to marshal tool result: %w", err)
+			return fmt.Errorf("failed to update session timestamp: %w", err)
 		}
-	}
 
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		sessionID,
-		msg.Role,
-		msg.Content,
-		nullableBytes(toolCallsJSON),
-		nullableString(msg.ToolUseID),
-		nullableBytes(toolResultJSON),
-		string(msg.SessionContext),
-		nullableString(msg.AgentID),
-		msg.Timestamp,
-		msg.TokenCount,
-		msg.CostUSD,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to save message: %w", err)
-	}
-
-	// Update session's updated_at timestamp
-	_, _ = s.pool.Exec(ctx, "UPDATE sessions SET updated_at = $1 WHERE id = $2", time.Now().UTC(), sessionID)
-
-	return nil
+		return nil
+	})
 }
 
 // LoadMessages retrieves all messages for a session ordered by timestamp.
@@ -276,20 +345,29 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 
-	rows, err := s.pool.Query(ctx, `
+	var messages []agent.Message
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
 		FROM messages
-		WHERE session_id = $1
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
 		ORDER BY timestamp ASC`,
-		sessionID,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to load messages: %w", err)
-	}
-	defer rows.Close()
+			sessionID, userID,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to load messages: %w", err)
+		}
+		defer rows.Close()
 
-	return scanMessages(rows)
+		messages, err = scanMessages(rows)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // LoadMessagesForAgent retrieves all messages created by a specific agent.
@@ -298,21 +376,30 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("agent_id", agentID)
 
-	rows, err := s.pool.Query(ctx, `
+	var messages []agent.Message
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, `
 		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
-		WHERE s.agent_id = $1
+		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
 		ORDER BY m.timestamp ASC`,
-		agentID,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to load messages for agent: %w", err)
-	}
-	defer rows.Close()
+			agentID, userID,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to load messages for agent: %w", err)
+		}
+		defer rows.Close()
 
-	return scanMessages(rows)
+		messages, err = scanMessages(rows)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // LoadMessagesFromParentSession loads messages from the parent session of the given session.
@@ -321,24 +408,49 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
 
-	// First find the parent session
-	var parentID *string
-	err := s.pool.QueryRow(ctx,
-		"SELECT parent_session_id FROM sessions WHERE id = $1",
-		sessionID,
-	).Scan(&parentID)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to find parent session: %w", err)
-	}
-	if parentID == nil || *parentID == "" {
-		return nil, nil
-	}
+	var messages []agent.Message
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
 
-	return s.LoadMessages(ctx, *parentID)
+		// First find the parent session (must be non-deleted and owned by the same user)
+		var parentID *string
+		scanErr := tx.QueryRow(ctx,
+			"SELECT parent_session_id FROM sessions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+			sessionID, userID,
+		).Scan(&parentID)
+		if scanErr != nil {
+			if scanErr == pgx.ErrNoRows {
+				return nil // messages stays nil
+			}
+			span.RecordError(scanErr)
+			return fmt.Errorf("failed to find parent session: %w", scanErr)
+		}
+		if parentID == nil || *parentID == "" {
+			return nil // messages stays nil
+		}
+
+		// Load messages from parent session within the same transaction
+		rows, err := tx.Query(ctx, `
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+		FROM messages
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
+		ORDER BY timestamp ASC`,
+			*parentID, userID,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to load messages: %w", err)
+		}
+		defer rows.Close()
+
+		var scanMsgErr error
+		messages, scanMsgErr = scanMessages(rows)
+		return scanMsgErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // SearchMessages performs full-text search on messages within a session using tsvector.
@@ -352,21 +464,47 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		limit = 20
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
-		FROM messages
-		WHERE session_id = $1 AND content_search @@ websearch_to_tsquery('english', $2)
-		ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $2)) DESC
-		LIMIT $3`,
-		sessionID, query, limit,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to search messages: %w", err)
-	}
-	defer rows.Close()
+	var messages []agent.Message
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
 
-	return scanMessages(rows)
+		var (
+			rows pgx.Rows
+			err  error
+		)
+		if sessionID == "" {
+			// Search across all sessions for this user
+			rows, err = tx.Query(ctx, `
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+			FROM messages
+			WHERE user_id = $1 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $2)
+			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $2)) DESC
+			LIMIT $3`,
+				userID, query, limit,
+			)
+		} else {
+			rows, err = tx.Query(ctx, `
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
+			FROM messages
+			WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $3)
+			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $3)) DESC
+			LIMIT $4`,
+				sessionID, userID, query, limit,
+			)
+		}
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to search messages: %w", err)
+		}
+		defer rows.Close()
+
+		messages, err = scanMessages(rows)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // SearchMessagesByAgent performs full-text search on messages for an agent.
@@ -380,22 +518,31 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 		limit = 20
 	}
 
-	rows, err := s.pool.Query(ctx, `
+	var messages []agent.Message
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		rows, err := tx.Query(ctx, `
 		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
-		WHERE s.agent_id = $1 AND m.content_search @@ websearch_to_tsquery('english', $2)
-		ORDER BY ts_rank_cd(m.content_search, websearch_to_tsquery('english', $2)) DESC
-		LIMIT $3`,
-		agentID, query, limit,
-	)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to search messages by agent: %w", err)
-	}
-	defer rows.Close()
+		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL AND m.content_search @@ websearch_to_tsquery('english', $3)
+		ORDER BY ts_rank_cd(m.content_search, websearch_to_tsquery('english', $3)) DESC
+		LIMIT $4`,
+			agentID, userID, query, limit,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to search messages by agent: %w", err)
+		}
+		defer rows.Close()
 
-	return scanMessages(rows)
+		messages, err = scanMessages(rows)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // SaveToolExecution persists a tool execution record.
@@ -405,45 +552,50 @@ func (s *SessionStore) SaveToolExecution(ctx context.Context, sessionID string, 
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("tool_name", exec.ToolName)
 
-	inputJSON, err := json.Marshal(exec.Input)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to marshal tool input: %w", err)
-	}
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
 
-	var resultJSON []byte
-	if exec.Result != nil {
-		resultJSON, err = json.Marshal(exec.Result)
+		inputJSON, err := json.Marshal(exec.Input)
 		if err != nil {
 			span.RecordError(err)
-			return fmt.Errorf("failed to marshal tool result: %w", err)
+			return fmt.Errorf("failed to marshal tool input: %w", err)
 		}
-	}
 
-	var errMsg *string
-	if exec.Error != nil {
-		msg := exec.Error.Error()
-		errMsg = &msg
-	} else if exec.Result != nil && exec.Result.Error != nil {
-		errMsg = &exec.Result.Error.Message
-	}
+		var resultJSON []byte
+		if exec.Result != nil {
+			resultJSON, err = json.Marshal(exec.Result)
+			if err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to marshal tool result: %w", err)
+			}
+		}
 
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO tool_executions (session_id, tool_name, input_json, result_json, error, execution_time_ms, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		sessionID,
-		exec.ToolName,
-		inputJSON,
-		nullableBytes(resultJSON),
-		errMsg,
-		0, // execution_time_ms not tracked in ToolExecution struct
-		time.Now().UTC(),
-	)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to save tool execution: %w", err)
-	}
-	return nil
+		var errMsg *string
+		if exec.Error != nil {
+			msg := exec.Error.Error()
+			errMsg = &msg
+		} else if exec.Result != nil && exec.Result.Error != nil {
+			errMsg = &exec.Result.Error.Message
+		}
+
+		_, err = tx.Exec(ctx, `
+		INSERT INTO tool_executions (session_id, user_id, tool_name, input_json, result_json, error, execution_time_ms, timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			sessionID,
+			userID,
+			exec.ToolName,
+			inputJSON,
+			nullableBytes(resultJSON),
+			errMsg,
+			0, // execution_time_ms not tracked in ToolExecution struct
+			time.Now().UTC(),
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to save tool execution: %w", err)
+		}
+		return nil
+	})
 }
 
 // SaveMemorySnapshot persists a memory snapshot.
@@ -453,16 +605,19 @@ func (s *SessionStore) SaveMemorySnapshot(ctx context.Context, sessionID, snapsh
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("snapshot_type", snapshotType)
 
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO memory_snapshots (session_id, snapshot_type, content, token_count, created_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		sessionID, snapshotType, content, tokenCount, time.Now().UTC(),
-	)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to save memory snapshot: %w", err)
-	}
-	return nil
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		_, err := tx.Exec(ctx, `
+		INSERT INTO memory_snapshots (session_id, user_id, snapshot_type, content, token_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+			sessionID, userID, snapshotType, content, tokenCount, time.Now().UTC(),
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to save memory snapshot: %w", err)
+		}
+		return nil
+	})
 }
 
 // LoadMemorySnapshots retrieves memory snapshots for a session.
@@ -472,39 +627,48 @@ func (s *SessionStore) LoadMemorySnapshots(ctx context.Context, sessionID string
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("snapshot_type", snapshotType)
 
-	query := `
+	var snapshots []agent.MemorySnapshot
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		query := `
 		SELECT id, session_id, snapshot_type, content, token_count, created_at
 		FROM memory_snapshots
-		WHERE session_id = $1 AND snapshot_type = $2
+		WHERE session_id = $1 AND user_id = $2 AND snapshot_type = $3
 		ORDER BY created_at ASC`
 
-	args := []interface{}{sessionID, snapshotType}
-	if limit > 0 {
-		query += " LIMIT $3"
-		args = append(args, limit)
-	}
-
-	rows, err := s.pool.Query(ctx, query, args...)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to load memory snapshots: %w", err)
-	}
-	defer rows.Close()
-
-	var snapshots []agent.MemorySnapshot
-	for rows.Next() {
-		var snap agent.MemorySnapshot
-		if err := rows.Scan(&snap.ID, &snap.SessionID, &snap.SnapshotType, &snap.Content, &snap.TokenCount, &snap.CreatedAt); err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("failed to scan memory snapshot: %w", err)
+		args := []interface{}{sessionID, userID, snapshotType}
+		if limit > 0 {
+			query += " LIMIT $4"
+			args = append(args, limit)
 		}
-		snapshots = append(snapshots, snap)
+
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to load memory snapshots: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var snap agent.MemorySnapshot
+			if err := rows.Scan(&snap.ID, &snap.SessionID, &snap.SnapshotType, &snap.Content, &snap.TokenCount, &snap.CreatedAt); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to scan memory snapshot: %w", err)
+			}
+			snapshots = append(snapshots, snap)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return snapshots, rows.Err()
+	return snapshots, nil
 }
 
-// RegisterCleanupHook adds a function to be called before session deletion.
+// RegisterCleanupHook adds a function to be called after successful session deletion.
 func (s *SessionStore) RegisterCleanupHook(hook agent.SessionCleanupHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cleanupHooks = append(s.cleanupHooks, hook)
 }
 
@@ -513,34 +677,37 @@ func (s *SessionStore) GetStats(ctx context.Context) (*agent.Stats, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.get_stats")
 	defer s.tracer.EndSpan(span)
 
-	stats := &agent.Stats{}
+	var stats agent.Stats
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
 
-	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM sessions").Scan(&stats.SessionCount)
+		if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND deleted_at IS NULL", userID).Scan(&stats.SessionCount); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to count sessions: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM messages WHERE user_id = $1 AND deleted_at IS NULL", userID).Scan(&stats.MessageCount); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to count messages: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM tool_executions WHERE user_id = $1", userID).Scan(&stats.ToolExecutionCount); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to count tool executions: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, "SELECT COALESCE(SUM(total_cost_usd), 0), COALESCE(SUM(total_tokens), 0) FROM sessions WHERE user_id = $1 AND deleted_at IS NULL", userID).
+			Scan(&stats.TotalCostUSD, &stats.TotalTokens); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to sum costs/tokens: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to count sessions: %w", err)
+		return nil, err
 	}
-
-	err = s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM messages").Scan(&stats.MessageCount)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to count messages: %w", err)
-	}
-
-	err = s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM tool_executions").Scan(&stats.ToolExecutionCount)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to count tool executions: %w", err)
-	}
-
-	err = s.pool.QueryRow(ctx, "SELECT COALESCE(SUM(total_cost_usd), 0), COALESCE(SUM(total_tokens), 0) FROM sessions").
-		Scan(&stats.TotalCostUSD, &stats.TotalTokens)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to sum costs/tokens: %w", err)
-	}
-
-	return stats, nil
+	return &stats, nil
 }
 
 // Close is a no-op for the session store; the pool is managed by the backend.

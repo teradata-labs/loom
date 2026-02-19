@@ -464,10 +464,10 @@ func TestValidate_StorageBackend(t *testing.T) {
 		assert.Contains(t, err.Error(), "database name")
 	})
 
-	t.Run("postgres valid with host+database", func(t *testing.T) {
+	t.Run("postgres valid with host+database+user", func(t *testing.T) {
 		cfg := validBase()
 		cfg.Storage.Backend = "postgres"
-		cfg.Storage.Postgres = PostgresConfig{Host: "localhost", Database: "testdb"}
+		cfg.Storage.Postgres = PostgresConfig{Host: "localhost", Database: "testdb", User: "testuser"}
 		assert.NoError(t, cfg.Validate())
 	})
 
@@ -484,5 +484,40 @@ func TestValidate_StorageBackend(t *testing.T) {
 		err := cfg.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported storage backend")
+	})
+
+	t.Run("postgres requires user", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{Host: "localhost", Database: "testdb"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires user")
+	})
+
+	t.Run("postgres ssl_mode valid", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{
+			Host:     "localhost",
+			Database: "testdb",
+			User:     "loom",
+			SSLMode:  "require",
+		}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("postgres ssl_mode invalid", func(t *testing.T) {
+		cfg := validBase()
+		cfg.Storage.Backend = "postgres"
+		cfg.Storage.Postgres = PostgresConfig{
+			Host:     "localhost",
+			Database: "testdb",
+			User:     "loom",
+			SSLMode:  "invalid",
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid ssl_mode")
 	})
 }

@@ -62,10 +62,25 @@ func NewMigrator(pool *pgxpool.Pool, tracer observability.Tracer) (*Migrator, er
 	}, nil
 }
 
+// migrationAdvisoryLockID is a fixed advisory lock ID used to prevent
+// concurrent migration execution across multiple server instances.
+const migrationAdvisoryLockID = 839021573 // arbitrary constant
+
 // MigrateUp applies all pending migrations up to the latest version.
+// Uses a PostgreSQL advisory lock to prevent concurrent migration execution.
 func (m *Migrator) MigrateUp(ctx context.Context) error {
 	ctx, span := m.tracer.StartSpan(ctx, "migrator.migrate_up")
 	defer m.tracer.EndSpan(span)
+
+	// Acquire advisory lock to prevent concurrent migrations
+	if _, err := m.pool.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockID); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to acquire migration lock: %w", err)
+	}
+	defer func() {
+		// Release advisory lock (best-effort, released on disconnect anyway)
+		_, _ = m.pool.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrationAdvisoryLockID)
+	}()
 
 	// Ensure schema_migrations table exists
 	if err := m.ensureMigrationsTable(ctx); err != nil {
@@ -156,6 +171,7 @@ func (m *Migrator) ensureMigrationsTable(ctx context.Context) error {
 }
 
 // applyMigration runs a single up migration within a transaction.
+// It executes the migration SQL and records the version in schema_migrations.
 func (m *Migrator) applyMigration(ctx context.Context, migration Migration) error {
 	tx, err := m.pool.Begin(ctx)
 	if err != nil {
@@ -167,6 +183,14 @@ func (m *Migrator) applyMigration(ctx context.Context, migration Migration) erro
 		return fmt.Errorf("failed to execute migration SQL: %w", err)
 	}
 
+	// Record the migration version (idempotent via ON CONFLICT)
+	if _, err := tx.Exec(ctx,
+		"INSERT INTO schema_migrations (version, description) VALUES ($1, $2) ON CONFLICT (version) DO NOTHING",
+		migration.Version, migration.Description,
+	); err != nil {
+		return fmt.Errorf("failed to record migration version: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit migration: %w", err)
 	}
@@ -175,6 +199,7 @@ func (m *Migrator) applyMigration(ctx context.Context, migration Migration) erro
 }
 
 // rollbackMigration runs a single down migration within a transaction.
+// It executes the rollback SQL and removes the version from schema_migrations.
 func (m *Migrator) rollbackMigration(ctx context.Context, migration Migration) error {
 	if migration.DownSQL == "" {
 		return fmt.Errorf("no down migration for version %d", migration.Version)
@@ -190,11 +215,35 @@ func (m *Migrator) rollbackMigration(ctx context.Context, migration Migration) e
 		return fmt.Errorf("failed to execute rollback SQL: %w", err)
 	}
 
+	// Remove the migration version record
+	if _, err := tx.Exec(ctx,
+		"DELETE FROM schema_migrations WHERE version = $1",
+		migration.Version,
+	); err != nil {
+		return fmt.Errorf("failed to remove migration version: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit rollback: %w", err)
 	}
 
 	return nil
+}
+
+// PendingMigrations returns the list of migrations that have not yet been applied.
+func (m *Migrator) PendingMigrations(ctx context.Context) ([]Migration, error) {
+	currentVersion, err := m.CurrentVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var pending []Migration
+	for _, migration := range m.migrations {
+		if migration.Version > currentVersion {
+			pending = append(pending, migration)
+		}
+	}
+	return pending, nil
 }
 
 // loadMigrations reads all embedded SQL migration files and pairs up/down files.

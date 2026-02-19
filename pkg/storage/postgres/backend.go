@@ -29,6 +29,9 @@ import (
 )
 
 // Backend implements backend.StorageBackend using PostgreSQL with pgx.
+// NOTE: The proto-defined PostgresStorageConfig includes a SupabaseConfig field
+// (loomv1.SupabaseConfig) for future Supabase-hosted PostgreSQL integration.
+// This is available via cfg.GetSupabase() but is not yet consumed by the backend.
 type Backend struct {
 	pool              *pgxpool.Pool
 	sessionStore      *SessionStore
@@ -120,6 +123,13 @@ func (b *Backend) Close() error {
 // Pool returns the underlying pgxpool.Pool for advanced operations.
 func (b *Backend) Pool() *pgxpool.Pool {
 	return b.pool
+}
+
+// RawPendingMigrations returns the list of migrations that have not yet been applied.
+// Returns the postgres-internal Migration type. The backend package wraps this
+// to satisfy the MigrationInspector interface without introducing an import cycle.
+func (b *Backend) RawPendingMigrations(ctx context.Context) ([]Migration, error) {
+	return b.migrator.PendingMigrations(ctx)
 }
 
 // Migrator returns the migration manager for manual migration operations.

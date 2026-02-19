@@ -13,23 +13,27 @@
 // limitations under the License.
 package storage
 
-import loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+import (
+	"context"
+
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+)
 
 // ResultStore defines the backend-agnostic interface for SQL result storage.
 // Implementations include SQLite (SQLResultStore) and PostgreSQL (postgres.ResultStore).
 // All operations must be safe for concurrent use.
 type ResultStore interface {
 	// Store saves SQL result data and returns a DataReference.
-	Store(id string, data interface{}) (*loomv1.DataReference, error)
+	Store(ctx context.Context, id string, data interface{}) (*loomv1.DataReference, error)
 
 	// Query executes a SQL query against a stored result.
-	Query(id, query string) (interface{}, error)
+	Query(ctx context.Context, id, query string) (interface{}, error)
 
 	// GetMetadata returns metadata about a stored result.
-	GetMetadata(id string) (*SQLResultMetadata, error)
+	GetMetadata(ctx context.Context, id string) (*SQLResultMetadata, error)
 
 	// Delete removes a stored result.
-	Delete(id string) error
+	Delete(ctx context.Context, id string) error
 
 	// Close closes the store.
 	Close() error

@@ -25,8 +25,8 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 4 migrations
-	assert.Len(t, migrations, 4, "should have 4 migration versions")
+	// Verify we have all 7 migrations
+	assert.Len(t, migrations, 7, "should have 7 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -61,6 +61,9 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{2, "fts_indexes", "content_search tsvector"},
 		{3, "rls_policies", "ENABLE ROW LEVEL SECURITY"},
 		{4, "soft_delete", "purge_soft_deleted"},
+		{5, "rls_with_check", "WITH CHECK"},
+		{6, "user_id_and_fixes", "ADD COLUMN IF NOT EXISTS user_id"},
+		{7, "user_rls_policies", "user_id = current_setting"},
 	}
 
 	for _, tt := range tests {

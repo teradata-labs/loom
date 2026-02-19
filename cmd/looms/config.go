@@ -301,9 +301,6 @@ type StorageBackendConfig struct {
 
 	// Migration configuration
 	Migration MigrationStorageConfig `mapstructure:"migration"`
-
-	// Soft delete configuration
-	SoftDelete SoftDeleteStorageConfig `mapstructure:"soft_delete"`
 }
 
 // SQLiteConfig holds SQLite storage configuration.
@@ -339,11 +336,19 @@ type PostgresConfig struct {
 	// SSL mode: "disable", "require", "verify-ca", "verify-full" (default: "require")
 	SSLMode string `mapstructure:"ssl_mode"`
 
-	// Row-level security user ID for tenant isolation (optional)
-	RLSUserID string `mapstructure:"rls_user_id"`
+	// Default user ID for single-tenant mode (optional).
+	// When set, requests without X-User-ID header use this value instead of rejecting.
+	DefaultUserID string `mapstructure:"default_user_id"`
 
 	// PostgreSQL schema to use (default: "public")
 	Schema string `mapstructure:"schema"`
+
+	// Soft delete configuration (PostgreSQL-specific)
+	SoftDelete SoftDeleteStorageConfig `mapstructure:"soft_delete"`
+
+	// Require X-User-ID header on all requests (default: true).
+	// When false, requests without X-User-ID use default_user_id or "default-user".
+	RequireUserID bool `mapstructure:"require_user_id"`
 }
 
 // PostgresPoolConfig holds PostgreSQL connection pool configuration.
@@ -914,7 +919,7 @@ func setDefaults() {
 	viper.SetDefault("storage.postgres.pool.max_lifetime_seconds", 3600)
 	viper.SetDefault("storage.postgres.pool.health_check_interval_seconds", 30)
 	viper.SetDefault("storage.migration.auto_migrate", true)
-	viper.SetDefault("storage.soft_delete.grace_period_seconds", 2592000)  // 30 days
+	viper.SetDefault("storage.soft_delete.grace_period_seconds", 2592000)   // 30 days
 	viper.SetDefault("storage.soft_delete.cleanup_interval_seconds", 86400) // 1 day
 
 	// Communication defaults (SQLite-backed, auto-promote enabled)
@@ -1318,6 +1323,17 @@ func (c *Config) Validate() error {
 		if pg.DSN == "" && pg.Database == "" {
 			return fmt.Errorf("postgres backend requires database name (set storage.postgres.database)")
 		}
+		if pg.DSN == "" && pg.User == "" {
+			return fmt.Errorf("postgres backend requires user (set storage.postgres.user)")
+		}
+		if pg.SSLMode != "" {
+			validSSLModes := map[string]bool{
+				"disable": true, "require": true, "verify-ca": true, "verify-full": true,
+			}
+			if !validSSLModes[pg.SSLMode] {
+				return fmt.Errorf("invalid ssl_mode %q (must be disable, require, verify-ca, or verify-full)", pg.SSLMode)
+			}
+		}
 	default:
 		return fmt.Errorf("unsupported storage backend: %s (must be sqlite or postgres)", c.Storage.Backend)
 	}
@@ -1377,15 +1393,15 @@ func (c *Config) BuildProtoStorageConfig() *loomv1.StorageConfig {
 		return &loomv1.StorageConfig{
 			Backend: loomv1.StorageBackendType_STORAGE_BACKEND_TYPE_POSTGRES,
 			Postgres: &loomv1.PostgresStorageConfig{
-				Host:     pg.Host,
-				Port:     pg.Port,
-				Database: pg.Database,
-				User:     pg.User,
-				Password: pg.Password,
-				Dsn:      pg.DSN,
-				SslMode:  pg.SSLMode,
-				RlsUserId: pg.RLSUserID,
-				Schema:   pg.Schema,
+				Host:          pg.Host,
+				Port:          pg.Port,
+				Database:      pg.Database,
+				User:          pg.User,
+				Password:      pg.Password,
+				Dsn:           pg.DSN,
+				SslMode:       pg.SSLMode,
+				DefaultUserId: pg.DefaultUserID,
+				Schema:        pg.Schema,
 				Pool: &loomv1.PostgresPoolConfig{
 					MaxConnections:             pg.Pool.MaxConnections,
 					MinConnections:             pg.Pool.MinConnections,
@@ -1393,15 +1409,16 @@ func (c *Config) BuildProtoStorageConfig() *loomv1.StorageConfig {
 					MaxLifetimeSeconds:         pg.Pool.MaxLifetimeSeconds,
 					HealthCheckIntervalSeconds: pg.Pool.HealthCheckIntervalSeconds,
 				},
+				SoftDelete: &loomv1.SoftDeleteConfig{
+					Enabled:                pg.SoftDelete.Enabled,
+					GracePeriodSeconds:     pg.SoftDelete.GracePeriodSeconds,
+					CleanupIntervalSeconds: pg.SoftDelete.CleanupIntervalSeconds,
+				},
+				RequireUserId: pg.RequireUserID,
 			},
 			Migration: &loomv1.MigrationConfig{
 				AutoMigrate:   c.Storage.Migration.AutoMigrate,
 				TargetVersion: c.Storage.Migration.TargetVersion,
-			},
-			SoftDelete: &loomv1.SoftDeleteConfig{
-				Enabled:                c.Storage.SoftDelete.Enabled,
-				GracePeriodSeconds:     c.Storage.SoftDelete.GracePeriodSeconds,
-				CleanupIntervalSeconds: c.Storage.SoftDelete.CleanupIntervalSeconds,
 			},
 		}
 
@@ -1482,6 +1499,35 @@ llm:
 database:
   path: ./loom.db
   driver: sqlite
+
+# Storage backend configuration (takes precedence over database: section above)
+# Uncomment and configure to use a specific storage backend.
+storage:
+  backend: sqlite  # sqlite (default) or postgres
+  sqlite:
+    path: ./loom.db
+    wal_mode: true
+  # postgres:
+  #   host: localhost
+  #   port: 5432
+  #   database: loom
+  #   user: loom
+  #   # password: set via keyring (looms config set-key postgres_password)
+  #   ssl_mode: require
+  #   schema: public
+  #   # dsn: "postgres://loom:password@localhost:5432/loom?sslmode=require"  # Alternative: full DSN
+  #   pool:
+  #     max_connections: 25
+  #     min_connections: 5
+  #     max_idle_time_seconds: 300
+  #     max_lifetime_seconds: 3600
+  #     health_check_interval_seconds: 30
+  #   soft_delete:
+  #     enabled: true
+  #     grace_period_seconds: 2592000   # 30 days
+  #     cleanup_interval_seconds: 86400 # 1 day
+  migration:
+    auto_migrate: true
 
 observability:
   enabled: false

@@ -80,13 +80,31 @@ func (s *MultiAgentServer) RunMigration(ctx context.Context, req *loomv1.RunMigr
 
 	if req.GetDryRun() {
 		// Dry-run mode: report what would happen without applying changes.
-		// For now, just report that migration would run.
+		// If the backend implements MigrationInspector, query the actual
+		// pending migrations. Otherwise, return a descriptive fallback.
+		if inspector, ok := sb.(backend.MigrationInspector); ok {
+			pending, err := inspector.PendingMigrations(ctx)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to inspect pending migrations: %v", err)
+			}
+			steps := make([]*loomv1.MigrationStep, 0, len(pending))
+			for _, m := range pending {
+				steps = append(steps, &loomv1.MigrationStep{
+					Version:     m.Version,
+					Description: m.Description,
+					Sql:         m.SQL,
+				})
+			}
+			return &loomv1.RunMigrationResponse{
+				Steps: steps,
+			}, nil
+		}
+		// Backend does not support migration introspection.
 		return &loomv1.RunMigrationResponse{
-			Success: true,
 			Steps: []*loomv1.MigrationStep{
 				{
 					Version:     0,
-					Description: "dry-run: would run all pending migrations to latest",
+					Description: "dry-run: backend does not support migration introspection; would run all pending migrations to latest",
 				},
 			},
 		}, nil
@@ -94,13 +112,8 @@ func (s *MultiAgentServer) RunMigration(ctx context.Context, req *loomv1.RunMigr
 
 	// Run migrations
 	if err := sb.Migrate(ctx); err != nil {
-		return &loomv1.RunMigrationResponse{
-			Success: false,
-			Error:   err.Error(),
-		}, nil
+		return nil, status.Errorf(codes.Internal, "migration failed: %v", err)
 	}
 
-	return &loomv1.RunMigrationResponse{
-		Success: true,
-	}, nil
+	return &loomv1.RunMigrationResponse{}, nil
 }

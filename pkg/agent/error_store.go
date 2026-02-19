@@ -39,6 +39,9 @@ type ErrorStore interface {
 
 	// List returns errors matching filters (for analytics/debugging)
 	List(ctx context.Context, filters ErrorFilters) ([]*StoredError, error)
+
+	// Close releases any resources held by the error store.
+	Close() error
 }
 
 // StoredError represents a tool execution error in storage.
@@ -364,6 +367,11 @@ func extractFirstLine(s string, maxLen int) string {
 	}
 
 	return s[:maxLen] + "..."
+}
+
+// Close closes the underlying database connection.
+func (s *SQLiteErrorStore) Close() error {
+	return s.db.Close()
 }
 
 // Ensure SQLiteErrorStore implements ErrorStore interface.

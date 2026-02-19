@@ -477,7 +477,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("Storage backend configuration",
 		zap.String("backend", config.Storage.Backend),
 		zap.String("sqlite_path", config.resolveStoragePath()))
-	storageBackend, err := backend.NewStorageBackend(storageCfg, tracer)
+	storageBackend, err := backend.NewStorageBackend(context.Background(), storageCfg, tracer)
 	if err != nil {
 		logger.Fatal("Failed to create storage backend", zap.Error(err))
 	}
@@ -954,6 +954,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		Logger:       logger,
 		Tracer:       tracer,
 		ToolRegistry: toolRegistry,
+		SessionStore: store,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -1350,14 +1351,33 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("TLS disabled")
 	}
 
-	// Create gRPC server with optional TLS
+	// Configure user ID interceptor for multi-tenancy
+	userIDCfg := server.UserIDConfig{
+		RequireUserID: true, // default: strict mode
+		DefaultUserID: "",
+	}
+	if storageCfg.GetPostgres() != nil {
+		pgCfg := storageCfg.GetPostgres()
+		userIDCfg.RequireUserID = pgCfg.GetRequireUserId()
+		userIDCfg.DefaultUserID = pgCfg.GetDefaultUserId()
+	} else {
+		// SQLite mode: don't require user ID, use default
+		userIDCfg.RequireUserID = false
+	}
+
+	// Create gRPC server with optional TLS and user ID interceptors
 	var grpcServer *grpc.Server
+	serverOpts := []grpc.ServerOption{
+		grpc.UnaryInterceptor(server.UserIDUnaryInterceptor(userIDCfg)),
+		grpc.StreamInterceptor(server.UserIDStreamInterceptor(userIDCfg)),
+	}
 	if tlsManager != nil {
 		creds := credentials.NewTLS(tlsManager.TLSConfig())
-		grpcServer = grpc.NewServer(grpc.Creds(creds))
+		serverOpts = append(serverOpts, grpc.Creds(creds))
+		grpcServer = grpc.NewServer(serverOpts...)
 		logger.Info("gRPC server TLS credentials applied")
 	} else {
-		grpcServer = grpc.NewServer()
+		grpcServer = grpc.NewServer(serverOpts...)
 	}
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
@@ -1416,22 +1436,85 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("UI app compiler ready for dynamic app creation")
 	}
 
-	// Initialize tri-modal communication system
+	// Configure tri-modal communication (inter-agent messaging)
 	logger.Info("Initializing tri-modal communication system")
+	var (
+		messageBus   *communication.MessageBus
+		messageQueue *communication.MessageQueue
+		sharedMemory *communication.SharedMemoryStore
+	)
+	{
+		commConfig := communication.FactoryConfig{
+			Store: communication.StoreConfig{
+				Backend: config.Communication.Store.Backend,
+				Path:    config.Communication.Store.Path,
+			},
+			GC: communication.GCConfig{
+				Enabled:  config.Communication.GC.Enabled,
+				Strategy: config.Communication.GC.Strategy,
+				Interval: config.Communication.GC.Interval,
+			},
+			AutoPromote: communication.AutoPromoteConfigParams{
+				Enabled:   config.Communication.AutoPromote.Enabled,
+				Threshold: config.Communication.AutoPromote.Threshold,
+			},
+			Policies: communication.PoliciesConfig{
+				AlwaysReference: config.Communication.Policies.AlwaysReference,
+				AlwaysValue:     config.Communication.Policies.AlwaysValue,
+			},
+		}
 
-	// 1. MessageBus for broadcast/pub-sub
-	messageBus := communication.NewMessageBus(nil, nil, nil, logger)
+		// Create reference store
+		refStore, err := communication.NewReferenceStoreFromConfig(commConfig)
+		if err != nil {
+			logger.Fatal("Failed to create reference store", zap.Error(err))
+		}
 
-	// 2. MessageQueue for point-to-point with SQLite persistence
-	messageQueue, err := communication.NewMessageQueue(":memory:", nil, logger)
-	if err != nil {
-		logger.Fatal("Failed to create message queue", zap.Error(err))
-	}
+		// Create policy manager
+		policyManager := communication.NewPolicyManagerFromConfig(commConfig)
 
-	// 3. SharedMemoryStore for zero-copy data sharing
-	sharedMemory, err := communication.NewSharedMemoryStore(nil, logger)
-	if err != nil {
-		logger.Fatal("Failed to create shared memory store", zap.Error(err))
+		// Create tri-modal communication components
+		// 1. Broadcast Bus for pub/sub
+		messageBus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
+		logger.Info("Broadcast bus initialized")
+
+		// 2. Message Queue for point-to-point async messaging
+		queuePath := config.Communication.Store.Path
+		if queuePath == "" {
+			queuePath = config.Database.Path // Fallback to main database
+		}
+		messageQueue, err = communication.NewMessageQueue(queuePath, tracer, logger)
+		if err != nil {
+			logger.Fatal("Failed to create message queue", zap.Error(err))
+		}
+		logger.Info("Message queue initialized", zap.String("path", queuePath))
+
+		// Set agent validator to prevent messages being sent to non-existent agents
+		if registry != nil {
+			messageQueue.SetAgentValidator(func(agentID string) bool {
+				return registry.GetConfig(agentID) != nil
+			})
+			logger.Info("Agent validator enabled for message queue")
+		}
+
+		// 3. Shared Memory for namespace-isolated data sharing
+		sharedMemory, err = communication.NewSharedMemoryStore(tracer, logger)
+		if err != nil {
+			logger.Fatal("Failed to create shared memory communication", zap.Error(err))
+		}
+		logger.Info("Shared memory communication initialized")
+
+		// Configure server with tri-modal system
+		if err := loomService.ConfigureCommunication(messageBus, messageQueue, sharedMemory, refStore, policyManager, logger); err != nil {
+			logger.Fatal("Failed to configure tri-modal communication", zap.Error(err))
+		}
+
+		logger.Info("Tri-modal communication system enabled",
+			zap.String("backend", config.Communication.Store.Backend),
+			zap.String("store_path", config.Communication.Store.Path),
+			zap.Bool("auto_promote", config.Communication.AutoPromote.Enabled),
+			zap.Int64("threshold_kb", config.Communication.AutoPromote.Threshold/1024),
+			zap.Int("gc_interval_sec", config.Communication.GC.Interval))
 	}
 
 	// Get global SharedMemoryStore for tool results (different from communication SharedMemoryStore)
@@ -1454,7 +1537,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("SharedMemoryStore injected into agent", zap.String("agent", name))
 	}
 
-	// 3.5. SQL Result Store for queryable large SQL results (from storage backend)
+	// SQL Result Store for queryable large SQL results (from storage backend)
 	sqlResultStore := storageBackend.ResultStore()
 	if sqlResultStore != nil {
 		// Inject SQL result store into all agents
@@ -1463,26 +1546,6 @@ func runServe(cmd *cobra.Command, args []string) {
 			logger.Info("SQLResultStore injected into agent", zap.String("agent", name))
 		}
 	}
-
-	// 4. ReferenceStore for large payload handling
-	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{
-		Store: communication.StoreConfig{Backend: "memory"},
-		GC:    communication.GCConfig{Enabled: false},
-	})
-	if err != nil {
-		logger.Fatal("Failed to create reference store", zap.Error(err))
-	}
-
-	// 5. PolicyManager for communication policies
-	policyManager := communication.NewPolicyManager()
-
-	// Configure the server with communication components
-	err = loomService.ConfigureCommunication(messageBus, messageQueue, sharedMemory, refStore, policyManager, logger)
-	if err != nil {
-		logger.Fatal("Failed to configure communication system", zap.Error(err))
-	}
-
-	logger.Info("Tri-modal communication system initialized successfully")
 
 	// Inject MCP manager into multi-agent server if available
 	if mcpManager != nil {
@@ -1507,7 +1570,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	var learningService *server.LearningService
 	{
 		// 1. Open database connection for learning agent
-		learningDB, err := sql.Open("sqlite3", config.Database.Path)
+		learningDBPath := config.Database.Path
+		if learningDBPath == "" {
+			learningDBPath = filepath.Join(loomconfig.GetLoomDataDir(), "learning.db")
+		}
+		learningDB, err := sql.Open("sqlite3", learningDBPath)
 		if err != nil {
 			logger.Fatal("Failed to open database for learning agent", zap.Error(err))
 		}
@@ -1521,7 +1588,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("  Self-improvement schema initialized")
 
 		// 3. Create metrics collector
-		collector, err := learning.NewMetricsCollector(config.Database.Path, tracer)
+		collector, err := learning.NewMetricsCollector(learningDBPath, tracer)
 		if err != nil {
 			logger.Fatal("Failed to create metrics collector", zap.Error(err))
 		}
@@ -1800,95 +1867,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		_ = stats // For future metrics logging
 	}
 
-	// Configure tri-modal communication (inter-agent messaging)
-	var (
-		bus           *communication.MessageBus
-		queue         *communication.MessageQueue
-		sharedMemComm *communication.SharedMemoryStore
-	)
-	{
-		commConfig := communication.FactoryConfig{
-			Store: communication.StoreConfig{
-				Backend: config.Communication.Store.Backend,
-				Path:    config.Communication.Store.Path,
-			},
-			GC: communication.GCConfig{
-				Enabled:  config.Communication.GC.Enabled,
-				Strategy: config.Communication.GC.Strategy,
-				Interval: config.Communication.GC.Interval,
-			},
-			AutoPromote: communication.AutoPromoteConfigParams{
-				Enabled:   config.Communication.AutoPromote.Enabled,
-				Threshold: config.Communication.AutoPromote.Threshold,
-			},
-			Policies: communication.PoliciesConfig{
-				AlwaysReference: config.Communication.Policies.AlwaysReference,
-				AlwaysValue:     config.Communication.Policies.AlwaysValue,
-			},
-		}
-
-		// Create reference store
-		refStore, err := communication.NewReferenceStoreFromConfig(commConfig)
-		if err != nil {
-			logger.Fatal("Failed to create reference store", zap.Error(err))
-		}
-
-		// Create policy manager
-		policyManager := communication.NewPolicyManagerFromConfig(commConfig)
-
-		// Create tri-modal communication components
-		// 1. Broadcast Bus for pub/sub
-		bus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
-		logger.Info("Broadcast bus initialized")
-
-		// 2. Message Queue for point-to-point async messaging
-		queuePath := config.Communication.Store.Path
-		if queuePath == "" {
-			queuePath = config.Database.Path // Fallback to main database
-		}
-		queue, err = communication.NewMessageQueue(queuePath, tracer, logger)
-		if err != nil {
-			logger.Fatal("Failed to create message queue", zap.Error(err))
-		}
-		logger.Info("Message queue initialized", zap.String("path", queuePath))
-
-		// Set agent validator to prevent messages being sent to non-existent agents
-		if registry != nil {
-			queue.SetAgentValidator(func(agentID string) bool {
-				return registry.GetConfig(agentID) != nil
-			})
-			logger.Info("Agent validator enabled for message queue")
-		}
-
-		// 3. Shared Memory for namespace-isolated data sharing
-		sharedMemComm, err = communication.NewSharedMemoryStore(tracer, logger)
-		if err != nil {
-			logger.Fatal("Failed to create shared memory communication", zap.Error(err))
-		}
-		logger.Info("Shared memory communication initialized")
-
-		// Configure server with tri-modal system
-		if err := loomService.ConfigureCommunication(bus, queue, sharedMemComm, refStore, policyManager, logger); err != nil {
-			logger.Fatal("Failed to configure tri-modal communication", zap.Error(err))
-		}
-
-		logger.Info("Tri-modal communication system enabled",
-			zap.String("backend", config.Communication.Store.Backend),
-			zap.String("store_path", config.Communication.Store.Path),
-			zap.Bool("auto_promote", config.Communication.AutoPromote.Enabled),
-			zap.Int64("threshold_kb", config.Communication.AutoPromote.Threshold/1024),
-			zap.Int("gc_interval_sec", config.Communication.GC.Interval))
-
-		// Register communication tools with all loaded agents
-		// This ensures agents loaded from YAML configs get pub/sub tools
-		logger.Info("Registering communication tools with loaded agents...")
-		for agentID, ag := range agents {
-			commTools := builtin.CommunicationTools(queue, bus, sharedMemComm, agentID)
-			ag.RegisterTools(commTools...)
-			logger.Info("  Communication tools registered",
-				zap.String("agent", agentID),
-				zap.Int("num_tools", len(commTools)))
-		}
+	// Register communication tools with all loaded agents
+	// This ensures agents loaded from YAML configs get pub/sub tools
+	logger.Info("Registering communication tools with loaded agents...")
+	for agentID, ag := range agents {
+		commTools := builtin.CommunicationTools(messageQueue, messageBus, sharedMemory, agentID)
+		ag.RegisterTools(commTools...)
+		logger.Info("  Communication tools registered",
+			zap.String("agent", agentID),
+			zap.Int("num_tools", len(commTools)))
 	}
 
 	// Register UI app tools with all loaded agents (auto-registered like communication tools)
@@ -2333,22 +2320,22 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 
 		// Stop tri-modal communication system
-		if bus != nil {
-			if err := bus.Close(); err != nil {
+		if messageBus != nil {
+			if err := messageBus.Close(); err != nil {
 				logger.Warn("Error closing message bus", zap.Error(err))
 			} else {
 				logger.Info("Message bus closed")
 			}
 		}
-		if queue != nil {
-			if err := queue.Close(); err != nil {
+		if messageQueue != nil {
+			if err := messageQueue.Close(); err != nil {
 				logger.Warn("Error closing message queue", zap.Error(err))
 			} else {
 				logger.Info("Message queue closed")
 			}
 		}
-		if sharedMemComm != nil {
-			if err := sharedMemComm.Close(); err != nil {
+		if sharedMemory != nil {
+			if err := sharedMemory.Close(); err != nil {
 				logger.Warn("Error closing shared memory communication", zap.Error(err))
 			} else {
 				logger.Info("Shared memory communication closed")

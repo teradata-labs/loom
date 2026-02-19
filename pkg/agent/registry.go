@@ -57,7 +57,7 @@ type Registry struct {
 	mcpMgr       *manager.Manager
 	llmProvider  LLMProvider
 	tracer       observability.Tracer
-	sessionStore SessionStorage          // For persistent agent session traces
+	sessionStore SessionStorage         // For persistent agent session traces
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 	sharedMemory interface{}            // SharedMemoryStore for large tool result storage
 	onReload     ReloadCallback         // Callback when config changes
@@ -88,7 +88,7 @@ type RegistryConfig struct {
 	LLMProvider  LLMProvider
 	Logger       *zap.Logger
 	Tracer       observability.Tracer
-	SessionStore SessionStorage          // For persistent agent session traces
+	SessionStore SessionStorage         // For persistent agent session traces
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
 	// Agent dependencies (injected by server)
@@ -979,12 +979,12 @@ func (r *Registry) createSessionStore(memConfig *loomv1.MemoryConfig) (SessionSt
 		return store, nil
 
 	case "postgres":
-		// PostgreSQL storage
-		if memConfig.Dsn == "" {
-			return nil, fmt.Errorf("memory.dsn required for postgres storage")
+		// PostgreSQL storage: use the shared session store from the storage backend
+		if r.sessionStore != nil {
+			r.logger.Info("Using shared PostgreSQL session store for agent")
+			return r.sessionStore, nil
 		}
-		// Note: PostgreSQL session store not yet implemented
-		return nil, fmt.Errorf("postgres session store not yet implemented - use sqlite or memory")
+		return nil, fmt.Errorf("postgres session store requires SessionStore in RegistryConfig")
 
 	default:
 		return nil, fmt.Errorf("unsupported memory type: %s (use 'memory', 'sqlite', or 'postgres')", memConfig.Type)

@@ -87,9 +87,7 @@ type StorageConfig struct {
 	// PostgreSQL-specific configuration (used when backend == POSTGRES)
 	Postgres *PostgresStorageConfig `protobuf:"bytes,3,opt,name=postgres,proto3" json:"postgres,omitempty"`
 	// Migration configuration
-	Migration *MigrationConfig `protobuf:"bytes,4,opt,name=migration,proto3" json:"migration,omitempty"`
-	// Soft delete configuration
-	SoftDelete    *SoftDeleteConfig `protobuf:"bytes,5,opt,name=soft_delete,json=softDelete,proto3" json:"soft_delete,omitempty"`
+	Migration     *MigrationConfig `protobuf:"bytes,4,opt,name=migration,proto3" json:"migration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -148,13 +146,6 @@ func (x *StorageConfig) GetPostgres() *PostgresStorageConfig {
 func (x *StorageConfig) GetMigration() *MigrationConfig {
 	if x != nil {
 		return x.Migration
-	}
-	return nil
-}
-
-func (x *StorageConfig) GetSoftDelete() *SoftDeleteConfig {
-	if x != nil {
-		return x.SoftDelete
 	}
 	return nil
 }
@@ -240,18 +231,28 @@ type PostgresStorageConfig struct {
 	Port     int32  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
 	Database string `protobuf:"bytes,3,opt,name=database,proto3" json:"database,omitempty"`
 	User     string `protobuf:"bytes,4,opt,name=user,proto3" json:"user,omitempty"`
+	// Database password. Prefer LOOM_PG_PASSWORD env var over config file for security.
 	Password string `protobuf:"bytes,5,opt,name=password,proto3" json:"password,omitempty"`
-	// Full DSN connection string (takes precedence over individual fields)
+	// Full DSN connection string (takes precedence over individual fields).
+	// Prefer LOOM_PG_DSN env var over config file for security.
 	// Example: "postgres://user:pass@host:5432/dbname?sslmode=require"
 	Dsn string `protobuf:"bytes,6,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	// Connection pool configuration
 	Pool *PostgresPoolConfig `protobuf:"bytes,7,opt,name=pool,proto3" json:"pool,omitempty"`
 	// SSL mode: "disable", "require", "verify-ca", "verify-full" (default: "require")
 	SslMode string `protobuf:"bytes,8,opt,name=ssl_mode,json=sslMode,proto3" json:"ssl_mode,omitempty"`
-	// Row-level security user ID for tenant isolation (optional)
-	RlsUserId string `protobuf:"bytes,9,opt,name=rls_user_id,json=rlsUserId,proto3" json:"rls_user_id,omitempty"`
+	// Default user ID for single-tenant mode (optional).
+	// When set, requests without X-User-ID header use this value instead of rejecting.
+	DefaultUserId string `protobuf:"bytes,9,opt,name=default_user_id,json=defaultUserId,proto3" json:"default_user_id,omitempty"`
 	// PostgreSQL schema to use (default: "public")
-	Schema        string `protobuf:"bytes,10,opt,name=schema,proto3" json:"schema,omitempty"`
+	Schema string `protobuf:"bytes,10,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL)
+	Supabase *SupabaseConfig `protobuf:"bytes,11,opt,name=supabase,proto3" json:"supabase,omitempty"`
+	// Soft delete configuration (PostgreSQL-specific)
+	SoftDelete *SoftDeleteConfig `protobuf:"bytes,12,opt,name=soft_delete,json=softDelete,proto3" json:"soft_delete,omitempty"`
+	// Require X-User-ID header on all requests (default: true).
+	// When false, requests without X-User-ID use default_user_id or "default-user".
+	RequireUserId bool `protobuf:"varint,13,opt,name=require_user_id,json=requireUserId,proto3" json:"require_user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -342,9 +343,9 @@ func (x *PostgresStorageConfig) GetSslMode() string {
 	return ""
 }
 
-func (x *PostgresStorageConfig) GetRlsUserId() string {
+func (x *PostgresStorageConfig) GetDefaultUserId() string {
 	if x != nil {
-		return x.RlsUserId
+		return x.DefaultUserId
 	}
 	return ""
 }
@@ -354,6 +355,27 @@ func (x *PostgresStorageConfig) GetSchema() string {
 		return x.Schema
 	}
 	return ""
+}
+
+func (x *PostgresStorageConfig) GetSupabase() *SupabaseConfig {
+	if x != nil {
+		return x.Supabase
+	}
+	return nil
+}
+
+func (x *PostgresStorageConfig) GetSoftDelete() *SoftDeleteConfig {
+	if x != nil {
+		return x.SoftDelete
+	}
+	return nil
+}
+
+func (x *PostgresStorageConfig) GetRequireUserId() bool {
+	if x != nil {
+		return x.RequireUserId
+	}
+	return false
 }
 
 // PostgresPoolConfig configures the pgx connection pool.
@@ -1023,18 +1045,15 @@ func (x *MigrationStep) GetSql() string {
 }
 
 // RunMigrationResponse reports migration results.
+// Migration failures are reported via gRPC status errors, not in-band fields.
 type RunMigrationResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Whether the migration was successful
-	Success bool `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	// Steps that were (or would be) applied
 	Steps []*MigrationStep `protobuf:"bytes,2,rep,name=steps,proto3" json:"steps,omitempty"`
 	// Current version after migration
 	CurrentVersion int32 `protobuf:"varint,3,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
-	// Error message if migration failed
-	Error         string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RunMigrationResponse) Reset() {
@@ -1067,13 +1086,6 @@ func (*RunMigrationResponse) Descriptor() ([]byte, []int) {
 	return file_loom_v1_storage_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *RunMigrationResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
 func (x *RunMigrationResponse) GetSteps() []*MigrationStep {
 	if x != nil {
 		return x.Steps
@@ -1088,30 +1100,21 @@ func (x *RunMigrationResponse) GetCurrentVersion() int32 {
 	return 0
 }
 
-func (x *RunMigrationResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
 var File_loom_v1_storage_proto protoreflect.FileDescriptor
 
 const file_loom_v1_storage_proto_rawDesc = "" +
 	"\n" +
-	"\x15loom/v1/storage.proto\x12\aloom.v1\"\xac\x02\n" +
+	"\x15loom/v1/storage.proto\x12\aloom.v1\"\x83\x02\n" +
 	"\rStorageConfig\x125\n" +
 	"\abackend\x18\x01 \x01(\x0e2\x1b.loom.v1.StorageBackendTypeR\abackend\x124\n" +
 	"\x06sqlite\x18\x02 \x01(\v2\x1c.loom.v1.SQLiteStorageConfigR\x06sqlite\x12:\n" +
 	"\bpostgres\x18\x03 \x01(\v2\x1e.loom.v1.PostgresStorageConfigR\bpostgres\x126\n" +
-	"\tmigration\x18\x04 \x01(\v2\x18.loom.v1.MigrationConfigR\tmigration\x12:\n" +
-	"\vsoft_delete\x18\x05 \x01(\v2\x19.loom.v1.SoftDeleteConfigR\n" +
-	"softDelete\"\x85\x01\n" +
+	"\tmigration\x18\x04 \x01(\v2\x18.loom.v1.MigrationConfigR\tmigrationJ\x04\b\x05\x10\x06R\vsoft_delete\"\x85\x01\n" +
 	"\x13SQLiteStorageConfig\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
 	"\aencrypt\x18\x02 \x01(\bR\aencrypt\x12%\n" +
 	"\x0eencryption_key\x18\x03 \x01(\tR\rencryptionKey\x12\x19\n" +
-	"\bwal_mode\x18\x04 \x01(\bR\awalMode\"\xa1\x02\n" +
+	"\bwal_mode\x18\x04 \x01(\bR\awalMode\"\xc2\x03\n" +
 	"\x15PostgresStorageConfig\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
@@ -1120,10 +1123,14 @@ const file_loom_v1_storage_proto_rawDesc = "" +
 	"\bpassword\x18\x05 \x01(\tR\bpassword\x12\x10\n" +
 	"\x03dsn\x18\x06 \x01(\tR\x03dsn\x12/\n" +
 	"\x04pool\x18\a \x01(\v2\x1b.loom.v1.PostgresPoolConfigR\x04pool\x12\x19\n" +
-	"\bssl_mode\x18\b \x01(\tR\asslMode\x12\x1e\n" +
-	"\vrls_user_id\x18\t \x01(\tR\trlsUserId\x12\x16\n" +
+	"\bssl_mode\x18\b \x01(\tR\asslMode\x12&\n" +
+	"\x0fdefault_user_id\x18\t \x01(\tR\rdefaultUserId\x12\x16\n" +
 	"\x06schema\x18\n" +
-	" \x01(\tR\x06schema\"\x8e\x02\n" +
+	" \x01(\tR\x06schema\x123\n" +
+	"\bsupabase\x18\v \x01(\v2\x17.loom.v1.SupabaseConfigR\bsupabase\x12:\n" +
+	"\vsoft_delete\x18\f \x01(\v2\x19.loom.v1.SoftDeleteConfigR\n" +
+	"softDelete\x12&\n" +
+	"\x0frequire_user_id\x18\r \x01(\bR\rrequireUserId\"\x8e\x02\n" +
 	"\x12PostgresPoolConfig\x12'\n" +
 	"\x0fmax_connections\x18\x01 \x01(\x05R\x0emaxConnections\x12'\n" +
 	"\x0fmin_connections\x18\x02 \x01(\x05R\x0eminConnections\x121\n" +
@@ -1170,12 +1177,10 @@ const file_loom_v1_storage_proto_rawDesc = "" +
 	"\rMigrationStep\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x05R\aversion\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x10\n" +
-	"\x03sql\x18\x03 \x01(\tR\x03sql\"\x9d\x01\n" +
-	"\x14RunMigrationResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\x12,\n" +
+	"\x03sql\x18\x03 \x01(\tR\x03sql\"\x89\x01\n" +
+	"\x14RunMigrationResponse\x12,\n" +
 	"\x05steps\x18\x02 \x03(\v2\x16.loom.v1.MigrationStepR\x05steps\x12'\n" +
-	"\x0fcurrent_version\x18\x03 \x01(\x05R\x0ecurrentVersion\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error*~\n" +
+	"\x0fcurrent_version\x18\x03 \x01(\x05R\x0ecurrentVersionJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05R\asuccessR\x05error*~\n" +
 	"\x12StorageBackendType\x12$\n" +
 	" STORAGE_BACKEND_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bSTORAGE_BACKEND_TYPE_SQLITE\x10\x01\x12!\n" +
@@ -1217,17 +1222,18 @@ var file_loom_v1_storage_proto_depIdxs = []int32{
 	2,  // 1: loom.v1.StorageConfig.sqlite:type_name -> loom.v1.SQLiteStorageConfig
 	3,  // 2: loom.v1.StorageConfig.postgres:type_name -> loom.v1.PostgresStorageConfig
 	6,  // 3: loom.v1.StorageConfig.migration:type_name -> loom.v1.MigrationConfig
-	7,  // 4: loom.v1.StorageConfig.soft_delete:type_name -> loom.v1.SoftDeleteConfig
-	4,  // 5: loom.v1.PostgresStorageConfig.pool:type_name -> loom.v1.PostgresPoolConfig
-	0,  // 6: loom.v1.StorageHealthStatus.backend:type_name -> loom.v1.StorageBackendType
-	9,  // 7: loom.v1.StorageHealthStatus.pool_stats:type_name -> loom.v1.PoolStats
-	8,  // 8: loom.v1.GetStorageStatusResponse.status:type_name -> loom.v1.StorageHealthStatus
-	13, // 9: loom.v1.RunMigrationResponse.steps:type_name -> loom.v1.MigrationStep
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	4,  // 4: loom.v1.PostgresStorageConfig.pool:type_name -> loom.v1.PostgresPoolConfig
+	5,  // 5: loom.v1.PostgresStorageConfig.supabase:type_name -> loom.v1.SupabaseConfig
+	7,  // 6: loom.v1.PostgresStorageConfig.soft_delete:type_name -> loom.v1.SoftDeleteConfig
+	0,  // 7: loom.v1.StorageHealthStatus.backend:type_name -> loom.v1.StorageBackendType
+	9,  // 8: loom.v1.StorageHealthStatus.pool_stats:type_name -> loom.v1.PoolStats
+	8,  // 9: loom.v1.GetStorageStatusResponse.status:type_name -> loom.v1.StorageHealthStatus
+	13, // 10: loom.v1.RunMigrationResponse.steps:type_name -> loom.v1.MigrationStep
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_storage_proto_init() }

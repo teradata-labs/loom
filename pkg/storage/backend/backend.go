@@ -26,6 +26,27 @@ import (
 	"github.com/teradata-labs/loom/pkg/storage"
 )
 
+// MigrationInspector is an optional interface that StorageBackend implementations
+// may satisfy to provide introspection into pending database migrations.
+// This is used by the RunMigration RPC in dry-run mode to report which
+// migrations would be applied without actually running them.
+type MigrationInspector interface {
+	// PendingMigrations returns the list of migrations that have not yet been
+	// applied to the database. Each entry contains the version, description,
+	// and SQL that would be executed.
+	PendingMigrations(ctx context.Context) ([]*PendingMigration, error)
+}
+
+// PendingMigration describes a single migration that has not yet been applied.
+type PendingMigration struct {
+	// Version is the migration version number.
+	Version int32
+	// Description is a human-readable summary of the migration.
+	Description string
+	// SQL is the SQL that would be executed (may be empty for non-SQL migrations).
+	SQL string
+}
+
 // StorageBackend is the top-level composed interface for all storage operations.
 // One StorageBackend per server; all agents share the same backend.
 // Implementations include SQLiteBackend and PostgresBackend.
