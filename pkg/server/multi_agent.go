@@ -16,6 +16,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -2640,11 +2641,72 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check.
+// GetHealth performs a health check by pinging each configured LLM provider across all agents.
+// Returns per-component status in the components map with keys like "agent-id.llm.role".
+// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
+	components := make(map[string]*loomv1.ComponentHealth)
+	overallHealthy := true
+
+	s.mu.RLock()
+	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
+	for id, ag := range s.agents {
+		agentsCopy[id] = ag
+	}
+	s.mu.RUnlock()
+
+	for agentID, ag := range agentsCopy {
+		roleLLMs := ag.GetAllRoleLLMs()
+		for role, llmProvider := range roleLLMs {
+			componentName := agentID + ".llm." + llmRoleToString(role)
+			start := time.Now()
+
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := llmProvider.Chat(checkCtx, []types.Message{
+				{Role: "user", Content: "ping"},
+			}, nil)
+			cancel()
+
+			latency := time.Since(start).Milliseconds()
+
+			if err != nil {
+				components[componentName] = &loomv1.ComponentHealth{
+					Status:    "unhealthy",
+					LastCheck: time.Now().Unix(),
+					Error:     err.Error(),
+					LatencyMs: latency,
+				}
+				overallHealthy = false
+			} else {
+				components[componentName] = &loomv1.ComponentHealth{
+					Status:    "healthy",
+					LastCheck: time.Now().Unix(),
+					LatencyMs: latency,
+				}
+			}
+		}
+	}
+
+	healthStatus := "healthy"
+	if !overallHealthy {
+		anyHealthy := false
+		for _, c := range components {
+			if c.Status == "healthy" {
+				anyHealthy = true
+				break
+			}
+		}
+		if anyHealthy {
+			healthStatus = "degraded"
+		} else {
+			healthStatus = "unhealthy"
+		}
+	}
+
 	return &loomv1.HealthStatus{
-		Status:  "healthy",
-		Version: "0.1.0",
+		Status:     healthStatus,
+		Version:    version.Get(),
+		Components: components,
 	}, nil
 }
 
@@ -2667,11 +2729,12 @@ func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchMo
 		return nil, err
 	}
 
-	// Get previous model info
+	// Get previous model info using role-aware methods.
+	// When req.Role is LLM_ROLE_UNSPECIFIED (0), these fall through to the main agent LLM.
 	previousModel := &loomv1.ModelInfo{
-		Id:       ag.GetLLMModel(),
-		Name:     ag.GetLLMModel(),
-		Provider: ag.GetLLMProviderName(),
+		Id:       ag.GetLLMModelForRole(req.Role),
+		Name:     ag.GetLLMModelForRole(req.Role),
+		Provider: ag.GetLLMProviderNameForRole(req.Role),
 	}
 
 	// Check if factory is configured
@@ -2698,12 +2761,13 @@ func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchMo
 		return nil, status.Error(codes.Internal, "failed to cast provider to LLMProvider interface")
 	}
 
-	// Switch the agent's LLM provider
-	ag.SetLLMProvider(newProvider)
+	// Switch the agent's LLM provider for the specified role.
+	// When req.Role is LLM_ROLE_UNSPECIFIED, SetLLMProviderForRole delegates to the main agent LLM.
+	ag.SetLLMProviderForRole(req.Role, newProvider)
 
-	// Verify the switch by checking the agent's current model
-	actualModel := ag.GetLLMModel()
-	actualProvider := ag.GetLLMProviderName()
+	// Verify the switch by checking the agent's current model for this role
+	actualModel := ag.GetLLMModelForRole(req.Role)
+	actualProvider := ag.GetLLMProviderNameForRole(req.Role)
 
 	// Get new model info (use actual values from agent to verify)
 	newModel := &loomv1.ModelInfo{

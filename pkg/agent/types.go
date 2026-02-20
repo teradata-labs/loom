@@ -68,6 +68,12 @@ type Agent struct {
 	// LLM provider for generating responses
 	llm LLMProvider
 
+	// Role-specific LLM providers (nil = fallback to main llm)
+	judgeLLM        LLMProvider // For evaluation operations
+	orchestratorLLM LLMProvider // For merge/synthesis in fork-join orchestration
+	classifierLLM   LLMProvider // For intent classification / pattern selection
+	compressorLLM   LLMProvider // For memory compression / semantic search reranking
+
 	// Tracer for observability
 	tracer observability.Tracer
 

@@ -471,6 +471,68 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		WithName(config.Name),
 	}
 
+	// Create role-specific LLM providers (graceful degradation: warn on error, fallback to main LLM)
+	if config.JudgeLlm != nil && config.JudgeLlm.Provider != "" {
+		judgeLLM, err := r.createLLMProvider(config.JudgeLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create judge LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.JudgeLlm.Provider),
+				zap.String("model", config.JudgeLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				judgeLLM = llm.NewInstrumentedProvider(judgeLLM, r.tracer)
+			}
+			opts = append(opts, WithJudgeLLM(judgeLLM))
+		}
+	}
+	if config.OrchestratorLlm != nil && config.OrchestratorLlm.Provider != "" {
+		orchLLM, err := r.createLLMProvider(config.OrchestratorLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create orchestrator LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.OrchestratorLlm.Provider),
+				zap.String("model", config.OrchestratorLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				orchLLM = llm.NewInstrumentedProvider(orchLLM, r.tracer)
+			}
+			opts = append(opts, WithOrchestratorLLM(orchLLM))
+		}
+	}
+	if config.ClassifierLlm != nil && config.ClassifierLlm.Provider != "" {
+		classLLM, err := r.createLLMProvider(config.ClassifierLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create classifier LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.ClassifierLlm.Provider),
+				zap.String("model", config.ClassifierLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				classLLM = llm.NewInstrumentedProvider(classLLM, r.tracer)
+			}
+			opts = append(opts, WithClassifierLLM(classLLM))
+		}
+	}
+	if config.CompressorLlm != nil && config.CompressorLlm.Provider != "" {
+		compLLM, err := r.createLLMProvider(config.CompressorLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create compressor LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.CompressorLlm.Provider),
+				zap.String("model", config.CompressorLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				compLLM = llm.NewInstrumentedProvider(compLLM, r.tracer)
+			}
+			opts = append(opts, WithCompressorLLM(compLLM))
+		}
+	}
+
 	// Set system prompt if provided
 	if config.SystemPrompt != "" {
 		opts = append(opts, WithSystemPrompt(config.SystemPrompt))

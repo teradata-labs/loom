@@ -353,11 +353,27 @@ func (c *CoordinatorAdapter) ListAgents(ctx context.Context) ([]agent.AgentInfo,
 
 	result := make([]agent.AgentInfo, len(agentInfos))
 	for i, info := range agentInfos {
-		result[i] = agent.AgentInfo{
+		ai := agent.AgentInfo{
 			ID:     info.Id,
 			Name:   info.Name,
 			Status: info.Status,
 		}
+		// Extract model info from agent config if available
+		if cfg := info.GetConfig(); cfg != nil {
+			if llm := cfg.GetLlm(); llm != nil && llm.GetProvider() != "" {
+				ai.ModelInfo = llm.GetProvider() + "/" + llm.GetModel()
+			}
+			// Count role-specific LLM overrides
+			for _, roleLLM := range []*loomv1.LLMConfig{
+				cfg.GetJudgeLlm(), cfg.GetOrchestratorLlm(),
+				cfg.GetClassifierLlm(), cfg.GetCompressorLlm(),
+			} {
+				if roleLLM != nil && roleLLM.GetProvider() != "" {
+					ai.RoleLLMCount++
+				}
+			}
+		}
+		result[i] = ai
 	}
 
 	return result, nil

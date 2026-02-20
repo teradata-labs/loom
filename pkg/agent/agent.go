@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -109,8 +110,13 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.orchestrator = patterns.NewOrchestrator(patternLibrary)
 
 	// Initialize LLM classifier if configured
+	// Use classifier role LLM if available, otherwise fall back to main LLM
 	if a.config.PatternConfig.UseLLMClassifier && llmProvider != nil {
-		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmProvider)
+		classifierProvider := llmProvider
+		if a.classifierLLM != nil {
+			classifierProvider = a.classifierLLM
+		}
+		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(classifierProvider)
 		llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 		a.orchestrator.SetIntentClassifier(llmClassifier)
 	}
@@ -154,7 +160,12 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		// Pass tracer to memory for error logging in swap operations
 		a.memory.SetTracer(a.tracer)
 		// Pass LLM provider to memory for semantic search reranking
-		a.memory.SetLLMProvider(a.llm)
+		// Use dedicated compressor LLM if available, otherwise main LLM
+		if a.compressorLLM != nil {
+			a.memory.SetLLMProvider(a.compressorLLM)
+		} else {
+			a.memory.SetLLMProvider(a.llm)
+		}
 	}
 
 	// Set shared memory on executor so large tool results are stored in the same store
@@ -348,6 +359,34 @@ func WithErrorStore(store ErrorStore) Option {
 func WithMessageQueue(queue *communication.MessageQueue) Option {
 	return func(a *Agent) {
 		a.messageQueue = queue
+	}
+}
+
+// WithJudgeLLM sets the LLM provider for evaluation operations.
+func WithJudgeLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.judgeLLM = llm
+	}
+}
+
+// WithOrchestratorLLM sets the LLM provider for fork-join merge/synthesis.
+func WithOrchestratorLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.orchestratorLLM = llm
+	}
+}
+
+// WithClassifierLLM sets the LLM provider for intent classification.
+func WithClassifierLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.classifierLLM = llm
+	}
+}
+
+// WithCompressorLLM sets the LLM provider for memory compression.
+func WithCompressorLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.compressorLLM = llm
 	}
 }
 
@@ -2320,15 +2359,116 @@ func (a *Agent) GetLLMModel() string {
 	return a.llm.Model()
 }
 
-// SetLLMProvider switches the LLM provider for this agent.
+// SetLLMProvider switches the main LLM provider for this agent.
 // This allows mid-session model switching while preserving conversation context.
 // The new provider will be used for all future LLM calls in all sessions.
+// Only updates memory's LLM provider if no dedicated compressor LLM is set.
 func (a *Agent) SetLLMProvider(llm LLMProvider) {
 	a.llm = llm
-	// Also update memory's LLM provider for compression operations
-	if a.memory != nil {
+	// Only update memory's LLM provider if no dedicated compressor exists
+	if a.memory != nil && a.compressorLLM == nil {
 		a.memory.SetLLMProvider(llm)
 	}
+}
+
+// GetLLMForRole returns the LLM provider for a specific role.
+// Fallback chain: role-specific LLM -> main agent LLM.
+func (a *Agent) GetLLMForRole(role loomv1.LLMRole) LLMProvider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		if a.judgeLLM != nil {
+			return a.judgeLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		if a.orchestratorLLM != nil {
+			return a.orchestratorLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		if a.classifierLLM != nil {
+			return a.classifierLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		if a.compressorLLM != nil {
+			return a.compressorLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_AGENT, loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
+		// Fall through to return main LLM
+	}
+	return a.llm
+}
+
+// SetLLMProviderForRole sets the LLM provider for a specific role.
+// For COMPRESSOR role, also updates memory's LLM provider.
+// For AGENT/UNSPECIFIED role, delegates to SetLLMProvider.
+func (a *Agent) SetLLMProviderForRole(role loomv1.LLMRole, llm LLMProvider) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		a.judgeLLM = llm
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		a.orchestratorLLM = llm
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		a.classifierLLM = llm
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		a.compressorLLM = llm
+		if a.memory != nil {
+			a.memory.SetLLMProvider(llm)
+		}
+	case loomv1.LLMRole_LLM_ROLE_AGENT, loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
+		a.llm = llm
+		// Only update memory if no dedicated compressor
+		if a.memory != nil && a.compressorLLM == nil {
+			a.memory.SetLLMProvider(llm)
+		}
+	}
+}
+
+// GetLLMModelForRole returns the model identifier for a specific role's LLM.
+func (a *Agent) GetLLMModelForRole(role loomv1.LLMRole) string {
+	llm := a.GetLLMForRole(role)
+	if llm == nil {
+		return ""
+	}
+	return llm.Model()
+}
+
+// GetLLMProviderNameForRole returns the provider name for a specific role's LLM.
+func (a *Agent) GetLLMProviderNameForRole(role loomv1.LLMRole) string {
+	llm := a.GetLLMForRole(role)
+	if llm == nil {
+		return ""
+	}
+	return llm.Name()
+}
+
+// GetAllRoleLLMs returns all configured role-specific LLM providers (non-nil only).
+// Always includes the main agent LLM. Used for health checks and diagnostics.
+func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	result := make(map[loomv1.LLMRole]LLMProvider)
+	if a.llm != nil {
+		result[loomv1.LLMRole_LLM_ROLE_AGENT] = a.llm
+	}
+	if a.judgeLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_JUDGE] = a.judgeLLM
+	}
+	if a.orchestratorLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR] = a.orchestratorLLM
+	}
+	if a.classifierLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_CLASSIFIER] = a.classifierLLM
+	}
+	if a.compressorLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_COMPRESSOR] = a.compressorLLM
+	}
+	return result
 }
 
 // SetSharedMemory configures shared memory for this agent.

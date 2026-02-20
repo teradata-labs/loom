@@ -452,12 +452,14 @@ func (c *Client) ListAvailableModels(ctx context.Context) ([]*loomv1.ModelInfo, 
 }
 
 // SwitchModel switches the LLM model/provider for a session.
-func (c *Client) SwitchModel(ctx context.Context, sessionID, provider, model string) (*loomv1.SwitchModelResponse, error) {
+// role specifies which LLM role to switch (0/unspecified = main agent LLM for backward compatibility).
+func (c *Client) SwitchModel(ctx context.Context, sessionID, provider, model string, role loomv1.LLMRole) (*loomv1.SwitchModelResponse, error) {
 	req := &loomv1.SwitchModelRequest{
 		SessionId:       sessionID,
 		Provider:        provider,
 		Model:           model,
 		PreserveContext: true,
+		Role:            role,
 	}
 	resp, err := c.client.SwitchModel(ctx, req)
 	if err != nil {

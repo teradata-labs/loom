@@ -21,9 +21,11 @@ const AgentToolName = "agent"
 
 // AgentInfo represents information about an available agent
 type AgentInfo struct {
-	ID     string
-	Name   string
-	Status string
+	ID           string
+	Name         string
+	Status       string
+	ModelInfo    string // Primary model display string (e.g., "anthropic/claude-sonnet-4")
+	RoleLLMCount int    // Number of role-specific LLM overrides configured (0-4)
 }
 
 // Coordinator defines the agent coordinator interface.

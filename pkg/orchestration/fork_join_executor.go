@@ -317,9 +317,12 @@ func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, 
 }
 
 // llmMerge uses LLM to merge results (consensus, voting, summary, best).
+// Uses the orchestrator's merge LLM (GetMergeLLM) which resolves through the
+// fallback chain: explicit LLM -> orchestrator role LLM from agents -> error.
 func (e *ForkJoinExecutor) llmMerge(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, error) {
-	if e.orchestrator.llmProvider == nil {
-		return "", fmt.Errorf("LLM provider required for %s merge strategy", e.pattern.MergeStrategy)
+	mergeLLM := e.orchestrator.GetMergeLLM()
+	if mergeLLM == nil {
+		return "", fmt.Errorf("LLM provider required for %s merge strategy (configure orchestrator LLM or agent orchestrator role LLM)", e.pattern.MergeStrategy)
 	}
 
 	// Build merge prompt based on strategy
@@ -361,8 +364,8 @@ func (e *ForkJoinExecutor) llmMerge(ctx context.Context, workflowID string, resu
 		},
 	}
 
-	// Call LLM for merge
-	response, err := e.orchestrator.llmProvider.Chat(agentCtx, messages, nil)
+	// Call LLM for merge using resolved orchestrator LLM
+	response, err := mergeLLM.Chat(agentCtx, messages, nil)
 	if err != nil {
 		return "", fmt.Errorf("LLM merge failed: %w", err)
 	}

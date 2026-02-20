@@ -1778,9 +1778,11 @@ func (p *chatPage) fetchAgentsList() tea.Cmd {
 		agents := make([]sidebar.AgentInfo, len(agentInfos))
 		for i, info := range agentInfos {
 			agents[i] = sidebar.AgentInfo{
-				ID:     info.ID,
-				Name:   info.Name,
-				Status: info.Status,
+				ID:           info.ID,
+				Name:         info.Name,
+				Status:       info.Status,
+				ModelInfo:    info.ModelInfo,
+				RoleLLMCount: info.RoleLLMCount,
 			}
 		}
 

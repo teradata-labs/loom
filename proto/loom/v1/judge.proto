@@ -8,6 +8,7 @@ syntax = "proto3";
 package loom.v1;
 
 import "google/protobuf/timestamp.proto";
+import "loom/v1/agent_config.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
@@ -289,6 +290,11 @@ message JudgeConfig {
 
   // Retry configuration (Phase 7)
   RetryConfig retry_config = 30;
+
+  // Full LLM configuration for this judge (overrides string model field 8)
+  // Allows specifying provider, temperature, max_tokens etc. for judge evaluation.
+  // When set, this takes precedence over the simple `model` string field.
+  loom.v1.LLMConfig llm_config = 31;
 }
 
 // AggregationStrategy defines how to combine multi-judge results

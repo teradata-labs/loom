@@ -497,6 +497,10 @@
         "retryConfig": {
           "$ref": "#/definitions/v1RetryConfig",
           "title": "Retry configuration (Phase 7)"
+        },
+        "llmConfig": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "description": "Full LLM configuration for this judge (overrides string model field 8)\nAllows specifying provider, temperature, max_tokens etc. for judge evaluation.\nWhen set, this takes precedence over the simple `model` string field."
         }
       },
       "title": "JudgeConfig defines a single judge"
@@ -658,6 +662,57 @@
       "default": "JUDGE_TYPE_UNSPECIFIED",
       "description": "- JUDGE_TYPE_HAWK: Uses Hawk's embedded judge library\n - JUDGE_TYPE_AGENT: Uses Loom agent as judge\n - JUDGE_TYPE_CUSTOM: Custom judge implementation",
       "title": "JudgeType defines the implementation type"
+    },
+    "v1LLMConfig": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "title": "Provider name: \"anthropic\", \"bedrock\", \"ollama\""
+        },
+        "model": {
+          "type": "string",
+          "title": "Model identifier (e.g., \"claude-3-5-sonnet-20241022-v2:0\")"
+        },
+        "temperature": {
+          "type": "number",
+          "format": "float",
+          "title": "Temperature (0.0-1.0) controls randomness"
+        },
+        "maxTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum tokens in response"
+        },
+        "stopSequences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Stop sequences to end generation"
+        },
+        "topP": {
+          "type": "number",
+          "format": "float",
+          "title": "Top-p sampling parameter (0.0-1.0)"
+        },
+        "topK": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Top-k sampling parameter"
+        },
+        "maxContextTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum context window tokens supported by the model\nIf not set, will be auto-detected from model name or use provider default\nExamples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000"
+        },
+        "reservedOutputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Tokens reserved for model output (typically 10% of max_context_tokens)\nIf not set, will be calculated as max_context_tokens * 0.1\nExamples: Claude (200K) = 20000, Llama (128K) = 12800, Mistral (32K) = 3200"
+        }
+      },
+      "title": "LLMConfig configures the language model provider and parameters"
     },
     "v1RegisterJudgeResponse": {
       "type": "object",

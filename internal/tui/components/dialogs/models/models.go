@@ -89,20 +89,33 @@ func (m *Model) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 func (m *Model) View() string {
 	t := styles.CurrentTheme()
 
-	title := t.S().Base.Bold(true).Foreground(t.Primary).Render("Model Selection")
+	title := t.S().Base.Bold(true).Foreground(t.Primary).Render("Model Configuration")
 	body := t.S().Base.Foreground(t.FgBase).Render(
 		"Model configuration is managed server-side.\n\n" +
 			"Edit your looms.yaml to change models:\n" +
-			"  llm:\n" +
+			"  llm:                        # Agent (primary reasoning)\n" +
 			"    provider: anthropic\n" +
-			"    model: claude-sonnet-4-20250514\n\n" +
+			"    model: claude-sonnet-4-20250514\n" +
+			"  judge_llm:                  # Evaluation operations\n" +
+			"    provider: gemini\n" +
+			"    model: gemini-2.0-flash\n" +
+			"  orchestrator_llm:           # Fork-join merge/synthesis\n" +
+			"    provider: anthropic\n" +
+			"    model: claude-haiku-3-5-20241022\n" +
+			"  classifier_llm:             # Intent classification\n" +
+			"    provider: ollama\n" +
+			"    model: llama3.2\n" +
+			"  compressor_llm:             # Memory compression\n" +
+			"    provider: anthropic\n" +
+			"    model: claude-haiku-3-5-20241022\n\n" +
+			"Each role falls back to the main llm if not set.\n\n" +
 			"Press ESC to close",
 	)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, title, "", body)
 
 	return t.S().Base.
-		Width(50).
+		Width(58).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.BorderFocus).
@@ -118,7 +131,7 @@ func (m *Model) ID() dialogs.DialogID {
 func (m *Model) Position() (int, int) {
 	row := m.height/4 - 2 // just a bit above the center
 	col := m.width / 2
-	col -= 25 // half of dialog width
+	col -= 29 // half of dialog width
 	// Ensure non-negative positions
 	if row < 0 {
 		row = 0

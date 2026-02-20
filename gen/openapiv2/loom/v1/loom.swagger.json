@@ -3244,6 +3244,10 @@
         "preserveContext": {
           "type": "boolean",
           "title": "Preserve conversation context (default: true)"
+        },
+        "role": {
+          "$ref": "#/definitions/v1LLMRole",
+          "description": "Target LLM role to switch (default: unspecified = main agent LLM)\nAllows switching role-specific LLMs (judge, orchestrator, classifier, compressor)\nwithout affecting other roles."
         }
       },
       "description": "SwitchModelRequest switches the LLM model for a session."
@@ -3545,6 +3549,22 @@
           "type": "integer",
           "format": "int32",
           "title": "Maximum number of findings to keep in cache (default: 50)\nOldest findings are evicted using LRU when limit is reached\nLower values save tokens, higher values preserve more context"
+        },
+        "judgeLlm": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "title": "Judge/evaluation override (e.g., Gemini for unbiased evaluation)"
+        },
+        "orchestratorLlm": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "title": "Merge/synthesis override for fork-join orchestration (e.g., fast model for combining results)"
+        },
+        "classifierLlm": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "title": "Intent classification override (e.g., small/fast model like Ollama for pattern selection)"
+        },
+        "compressorLlm": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "title": "Memory compression/semantic search reranking override (e.g., Haiku for cost-effective compression)"
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -5114,6 +5134,19 @@
         }
       },
       "description": "LLMCost tracks token usage and costs."
+    },
+    "v1LLMRole": {
+      "type": "string",
+      "enum": [
+        "LLM_ROLE_UNSPECIFIED",
+        "LLM_ROLE_AGENT",
+        "LLM_ROLE_JUDGE",
+        "LLM_ROLE_ORCHESTRATOR",
+        "LLM_ROLE_CLASSIFIER",
+        "LLM_ROLE_COMPRESSOR"
+      ],
+      "default": "LLM_ROLE_UNSPECIFIED",
+      "description": "LLMRole identifies the purpose/role of an LLM provider within an agent.\nEach role can be backed by a different provider/model optimized for its task.\nFallback chain: Role-specific LLM -\u003e Agent default LLM -\u003e Server default LLM.\n\n - LLM_ROLE_UNSPECIFIED: Default: main agent LLM\n - LLM_ROLE_AGENT: Primary reasoning LLM\n - LLM_ROLE_JUDGE: Evaluation operations\n - LLM_ROLE_ORCHESTRATOR: Fork-join merge/synthesis\n - LLM_ROLE_CLASSIFIER: Intent classification for pattern selection\n - LLM_ROLE_COMPRESSOR: Memory compression/semantic search reranking"
     },
     "v1LetsEncryptConfig": {
       "type": "object",
