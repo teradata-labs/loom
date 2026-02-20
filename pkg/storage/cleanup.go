@@ -57,7 +57,15 @@ func StartSoftDeleteCleanup(
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
+	const defaultCleanupInterval = 24 * time.Hour
 	interval := time.Duration(cleanupIntervalSeconds) * time.Second
+	if interval <= 0 {
+		logger.Warn("soft-delete cleanup interval is non-positive; using default",
+			zap.Int32("configured_seconds", cleanupIntervalSeconds),
+			zap.Duration("default", defaultCleanupInterval),
+		)
+		interval = defaultCleanupInterval
+	}
 	graceInterval := fmt.Sprintf("%d seconds", gracePeriodSeconds)
 
 	logger.Info("Starting soft-delete cleanup goroutine",

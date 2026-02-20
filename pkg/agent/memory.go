@@ -207,7 +207,10 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// Try loading from persistent store
 	if m.store != nil {
 		session, err := m.store.LoadSession(ctx, sessionID)
-		if err == nil {
+		// session may be nil with nil err when the backend uses (nil, nil) to
+		// indicate "not found" (e.g. PostgreSQL soft-delete convention). Treat
+		// that the same as SQLite's "not found" error: fall through to create.
+		if err == nil && session != nil {
 			// Update agent metadata if provided
 			updated := false
 			if agentID != "" && session.AgentID == "" {

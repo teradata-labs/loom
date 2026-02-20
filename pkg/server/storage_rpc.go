@@ -48,10 +48,14 @@ func (s *MultiAgentServer) GetStorageStatus(ctx context.Context, _ *loomv1.GetSt
 		return nil, status.Error(codes.FailedPrecondition, "storage backend not configured")
 	}
 
-	// Measure ping latency
+	// Measure ping latency. Sub-millisecond pings report as 1ms to satisfy
+	// callers that expect a positive latency for a successful round-trip.
 	start := time.Now()
 	pingErr := sb.Ping(ctx)
 	latencyMs := time.Since(start).Milliseconds()
+	if latencyMs == 0 && pingErr == nil {
+		latencyMs = 1
+	}
 
 	healthStatus := &loomv1.StorageHealthStatus{
 		Backend:   backendType,
@@ -61,6 +65,14 @@ func (s *MultiAgentServer) GetStorageStatus(ctx context.Context, _ *loomv1.GetSt
 
 	if pingErr != nil {
 		healthStatus.Error = pingErr.Error()
+	}
+
+	// Populate migration version and pool stats for backends that support it.
+	if provider, ok := sb.(backend.StorageDetailProvider); ok {
+		if migVer, poolStats, err := provider.StorageDetails(ctx); err == nil {
+			healthStatus.MigrationVersion = migVer
+			healthStatus.PoolStats = poolStats
+		}
 	}
 
 	return &loomv1.GetStorageStatusResponse{
@@ -115,5 +127,12 @@ func (s *MultiAgentServer) RunMigration(ctx context.Context, req *loomv1.RunMigr
 		return nil, status.Errorf(codes.Internal, "migration failed: %v", err)
 	}
 
-	return &loomv1.RunMigrationResponse{}, nil
+	resp := &loomv1.RunMigrationResponse{}
+	// Populate current_version so callers can verify the applied migration level.
+	if provider, ok := sb.(backend.StorageDetailProvider); ok {
+		if migVer, _, err := provider.StorageDetails(ctx); err == nil {
+			resp.CurrentVersion = migVer
+		}
+	}
+	return resp, nil
 }

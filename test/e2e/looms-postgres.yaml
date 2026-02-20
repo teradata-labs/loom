@@ -1,0 +1,39 @@
+# Loom Server Configuration for PostgreSQL E2E Tests
+# Use with: looms serve --config test/e2e/looms-postgres.yaml
+
+server:
+  port: 60051
+  host: 0.0.0.0
+  enable_reflection: true
+  insecure_admin: true  # allow admin endpoints without LOOM_ADMIN_TOKEN in e2e tests
+
+llm:
+  provider: bedrock
+  bedrock_model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  bedrock_region: us-east-1
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+storage:
+  backend: postgres
+  postgres:
+    dsn: "postgres://loom_test:loom_test_pass@localhost:5433/loom_test?sslmode=disable"
+    require_user_id: false
+    default_user_id: e2e-test-user
+    ssl_mode: disable
+    pool:
+      max_connections: 10
+      min_connections: 2
+    soft_delete:
+      enabled: true
+      grace_period_seconds: 86400
+  migration:
+    auto_migrate: true
+
+observability:
+  enabled: false
+
+logging:
+  level: info
+  format: text

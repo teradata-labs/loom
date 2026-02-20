@@ -20,6 +20,7 @@ package backend
 import (
 	"context"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -59,6 +60,15 @@ type AdminStorageProvider interface {
 	// the admin role lacks expected privileges but does not fail -- the admin
 	// connection may still work if RLS policies allow the role.
 	ValidateAdminPermissions(ctx context.Context) error
+}
+
+// StorageDetailProvider is an optional interface that StorageBackend implementations
+// may satisfy to provide detailed health information (migration version, pool stats)
+// for the GetStorageStatus RPC. Backends that don't implement this return zeros/nil.
+type StorageDetailProvider interface {
+	// StorageDetails returns the current migration version and connection pool
+	// statistics. poolStats may be nil for non-pooled backends (e.g., SQLite).
+	StorageDetails(ctx context.Context) (migrationVersion int32, poolStats *loomv1.PoolStats, err error)
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.

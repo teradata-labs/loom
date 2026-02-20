@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/storage/postgres"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -2491,6 +2492,12 @@ func (s *MultiAgentServer) CreateSession(ctx context.Context, req *loomv1.Create
 	// Create session without sending a message to the LLM
 	session := ag.CreateSession(ctx, sessionID, req.GetName())
 
+	// Propagate user ID into the in-memory session so that GetSession and
+	// ListSessions can enforce per-user isolation without a store round-trip.
+	if userID := postgres.UserIDFromContext(ctx); userID != "" {
+		session.UserID = userID
+	}
+
 	return ConvertSession(session), nil
 }
 
@@ -2500,6 +2507,9 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
+	// Extract user ID for multi-tenant isolation (empty for single-tenant SQLite).
+	callerUserID := postgres.UserIDFromContext(ctx)
+
 	// Try to find the session in any agent
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2507,6 +2517,12 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 	for _, ag := range s.agents {
 		session, ok := ag.GetSession(req.SessionId)
 		if ok {
+			// Enforce per-user isolation: if both the caller and the session have a
+			// non-empty user ID that differ, treat as not found to prevent cross-tenant
+			// access via the in-memory cache.
+			if callerUserID != "" && session.UserID != "" && session.UserID != callerUserID {
+				continue
+			}
 			return ConvertSession(session), nil
 		}
 	}
@@ -2516,6 +2532,9 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 
 // ListSessions lists all sessions across all agents.
 func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSessionsRequest) (*loomv1.ListSessionsResponse, error) {
+	// Extract user ID for multi-tenant isolation (empty for single-tenant SQLite).
+	callerUserID := postgres.UserIDFromContext(ctx)
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -2523,6 +2542,11 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 	for _, ag := range s.agents {
 		sessions := ag.ListSessions()
 		for _, sess := range sessions {
+			// Enforce per-user isolation: skip sessions owned by a different user
+			// when both caller and session have a non-empty user ID.
+			if callerUserID != "" && sess.UserID != "" && sess.UserID != callerUserID {
+				continue
+			}
 			allSessions = append(allSessions, ConvertSession(sess))
 		}
 	}

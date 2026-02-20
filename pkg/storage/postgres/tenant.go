@@ -62,8 +62,10 @@ func execInTx(ctx context.Context, pool *pgxpool.Pool, fn func(ctx context.Conte
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// SET LOCAL is scoped to this transaction only and cannot leak to other connections
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_user_id = $1", userID); err != nil {
+	// Use set_config() instead of SET LOCAL because the SET command does not
+	// support bind parameters ($1). set_config(name, value, is_local=true) is
+	// equivalent to SET LOCAL and scopes the value to this transaction only.
+	if _, err := tx.Exec(ctx, "SELECT pg_catalog.set_config('app.current_user_id', $1, true)", userID); err != nil {
 		return fmt.Errorf("failed to set user ID: %w", err)
 	}
 

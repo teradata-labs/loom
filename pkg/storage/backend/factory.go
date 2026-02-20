@@ -90,7 +90,29 @@ func (w *postgresBackendWrapper) ValidateAdminPermissions(ctx context.Context) e
 	return w.Backend.AdminStore().ValidatePermissions(ctx)
 }
 
+// StorageDetails implements StorageDetailProvider by querying the migrator for
+// the current schema version and the pgxpool for connection pool statistics.
+func (w *postgresBackendWrapper) StorageDetails(ctx context.Context) (int32, *loomv1.PoolStats, error) {
+	version, err := w.Migrator().CurrentVersion(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to get migration version: %w", err)
+	}
+
+	stat := w.Pool().Stat()
+	poolStats := &loomv1.PoolStats{
+		TotalConnections:  stat.TotalConns(),
+		IdleConnections:   stat.IdleConns(),
+		ActiveConnections: stat.AcquiredConns(),
+		MaxConnections:    w.Pool().Config().MaxConns,
+		WaitCount:         stat.EmptyAcquireCount(),
+		WaitDurationMs:    stat.AcquireDuration().Milliseconds(),
+	}
+
+	return safeInt32(version), poolStats, nil
+}
+
 // Compile-time checks
 var _ StorageBackend = (*postgresBackendWrapper)(nil)
 var _ MigrationInspector = (*postgresBackendWrapper)(nil)
 var _ AdminStorageProvider = (*postgresBackendWrapper)(nil)
+var _ StorageDetailProvider = (*postgresBackendWrapper)(nil)

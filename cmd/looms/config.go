@@ -921,8 +921,8 @@ func setDefaults() {
 	viper.SetDefault("storage.postgres.pool.max_lifetime_seconds", 3600)
 	viper.SetDefault("storage.postgres.pool.health_check_interval_seconds", 30)
 	viper.SetDefault("storage.migration.auto_migrate", true)
-	viper.SetDefault("storage.soft_delete.grace_period_seconds", 2592000)   // 30 days
-	viper.SetDefault("storage.soft_delete.cleanup_interval_seconds", 86400) // 1 day
+	viper.SetDefault("storage.postgres.soft_delete.grace_period_seconds", 2592000)   // 30 days
+	viper.SetDefault("storage.postgres.soft_delete.cleanup_interval_seconds", 86400) // 1 day
 
 	// Communication defaults (SQLite-backed, auto-promote enabled)
 	viper.SetDefault("communication.store.backend", "sqlite")
