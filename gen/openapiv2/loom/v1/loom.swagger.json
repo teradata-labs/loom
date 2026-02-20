@@ -6358,7 +6358,7 @@
         },
         "supabase": {
           "$ref": "#/definitions/v1SupabaseConfig",
-          "title": "Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL)"
+          "description": "Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL).\nNOT YET IMPLEMENTED: Proto scaffold only. No backend code consumes this field."
         },
         "softDelete": {
           "$ref": "#/definitions/v1SoftDeleteConfig",
@@ -7712,7 +7712,7 @@
           "title": "Supabase service role key (for server-side access)"
         }
       },
-      "description": "SupabaseConfig configures Supabase-specific features (deferred to follow-up PR)."
+      "description": "SupabaseConfig configures Supabase-specific features.\nSTATUS: Planned. Proto scaffold only — no implementation exists yet.\nThis message is reserved for a future PR that adds Supabase-hosted PostgreSQL support."
     },
     "v1SwarmPattern": {
       "type": "object",

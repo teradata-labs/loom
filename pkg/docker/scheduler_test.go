@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -17,7 +18,33 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// skipUnlessDockerDaemon skips the test if no Docker-compatible daemon
+// (Docker Desktop, OrbStack, or standard dockerd) is reachable.
+func skipUnlessDockerDaemon(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Docker test in short mode")
+	}
+
+	host := detectDockerHost()
+	cli, err := client.NewClientWithOpts(
+		client.WithHost(host),
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		t.Skipf("skipping: cannot create Docker client: %v", err)
+	}
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := cli.Ping(ctx); err != nil {
+		t.Skipf("skipping: no Docker daemon reachable at %s (Docker Desktop or OrbStack required): %v", host, err)
+	}
+}
+
 func TestLocalScheduler_Schedule(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -44,6 +71,7 @@ func TestLocalScheduler_Schedule(t *testing.T) {
 }
 
 func TestLocalScheduler_GetOrCreateContainer(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -81,6 +109,7 @@ func TestLocalScheduler_GetOrCreateContainer(t *testing.T) {
 }
 
 func TestLocalScheduler_ListContainers(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -126,6 +155,7 @@ func TestLocalScheduler_ListContainers(t *testing.T) {
 }
 
 func TestLocalScheduler_RemoveContainer(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -159,6 +189,7 @@ func TestLocalScheduler_RemoveContainer(t *testing.T) {
 }
 
 func TestLocalScheduler_runCleanup_StuckCreating(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -192,6 +223,7 @@ func TestLocalScheduler_runCleanup_StuckCreating(t *testing.T) {
 }
 
 func TestLocalScheduler_runCleanup_FailedContainerRemoval(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -225,6 +257,7 @@ func TestLocalScheduler_runCleanup_FailedContainerRemoval(t *testing.T) {
 }
 
 func TestLocalScheduler_runCleanup_TimeBasedRotation(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 
@@ -258,6 +291,7 @@ func TestLocalScheduler_runCleanup_TimeBasedRotation(t *testing.T) {
 }
 
 func TestLocalScheduler_GetNodeInfo(t *testing.T) {
+	skipUnlessDockerDaemon(t)
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
 

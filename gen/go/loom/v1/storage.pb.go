@@ -246,7 +246,8 @@ type PostgresStorageConfig struct {
 	DefaultUserId string `protobuf:"bytes,9,opt,name=default_user_id,json=defaultUserId,proto3" json:"default_user_id,omitempty"`
 	// PostgreSQL schema to use (default: "public")
 	Schema string `protobuf:"bytes,10,opt,name=schema,proto3" json:"schema,omitempty"`
-	// Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL)
+	// Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL).
+	// NOT YET IMPLEMENTED: Proto scaffold only. No backend code consumes this field.
 	Supabase *SupabaseConfig `protobuf:"bytes,11,opt,name=supabase,proto3" json:"supabase,omitempty"`
 	// Soft delete configuration (PostgreSQL-specific)
 	SoftDelete *SoftDeleteConfig `protobuf:"bytes,12,opt,name=soft_delete,json=softDelete,proto3" json:"soft_delete,omitempty"`
@@ -460,7 +461,9 @@ func (x *PostgresPoolConfig) GetHealthCheckIntervalSeconds() int32 {
 	return 0
 }
 
-// SupabaseConfig configures Supabase-specific features (deferred to follow-up PR).
+// SupabaseConfig configures Supabase-specific features.
+// STATUS: Planned. Proto scaffold only — no implementation exists yet.
+// This message is reserved for a future PR that adds Supabase-hosted PostgreSQL support.
 type SupabaseConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Whether to enable Supabase integration

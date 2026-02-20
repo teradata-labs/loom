@@ -80,7 +80,8 @@ message PostgresStorageConfig {
   // PostgreSQL schema to use (default: "public")
   string schema = 10;
 
-  // Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL)
+  // Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL).
+  // NOT YET IMPLEMENTED: Proto scaffold only. No backend code consumes this field.
   SupabaseConfig supabase = 11;
 
   // Soft delete configuration (PostgreSQL-specific)
@@ -109,7 +110,9 @@ message PostgresPoolConfig {
   int32 health_check_interval_seconds = 5;
 }
 
-// SupabaseConfig configures Supabase-specific features (deferred to follow-up PR).
+// SupabaseConfig configures Supabase-specific features.
+// STATUS: Planned. Proto scaffold only — no implementation exists yet.
+// This message is reserved for a future PR that adds Supabase-hosted PostgreSQL support.
 message SupabaseConfig {
   // Whether to enable Supabase integration
   bool enabled = 1;
