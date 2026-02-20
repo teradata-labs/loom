@@ -1,0 +1,13 @@
+version: "2"
+
+run:
+  build-tags:
+    - fts5
+  timeout: 5m
+
+issues:
+  exclude-dirs:
+    - gen
+    - vendor
+  max-issues-per-linter: 0
+  max-same-issues: 0
