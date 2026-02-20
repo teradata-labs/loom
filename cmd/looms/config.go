@@ -162,6 +162,7 @@ type ServerConfig struct {
 	Host             string              `mapstructure:"host"`
 	HTTPPort         int                 `mapstructure:"http_port"` // HTTP/REST+SSE port (default: 5006, 0=disabled)
 	EnableReflection bool                `mapstructure:"enable_reflection"`
+	InsecureAdmin    bool                `mapstructure:"insecure_admin"` // Allow admin endpoints without LOOM_ADMIN_TOKEN (default: false)
 	TLS              TLSConfig           `mapstructure:"tls"`
 	Clarification    ClarificationConfig `mapstructure:"clarification"` // Clarification question timeouts
 	CORS             CORSServerConfig    `mapstructure:"cors"`          // CORS configuration for HTTP endpoints
@@ -868,6 +869,7 @@ func setDefaults() {
 	viper.SetDefault("server.port", 60051)
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.enable_reflection", true)
+	viper.SetDefault("server.insecure_admin", false)
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
@@ -1448,6 +1450,7 @@ server:
   port: 60051
   host: 0.0.0.0
   enable_reflection: true
+  # insecure_admin: false  # Set to true to allow admin endpoints without LOOM_ADMIN_TOKEN (NOT recommended for production)
 
 llm:
   # Provider options: anthropic, bedrock, ollama, openai, azure-openai, mistral

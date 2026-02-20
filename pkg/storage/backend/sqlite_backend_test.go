@@ -34,7 +34,7 @@ func TestNewSQLiteBackend_Default(t *testing.T) {
 	backend, err := NewSQLiteBackend(cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	// Verify all stores are non-nil
 	assert.NotNil(t, backend.SessionStorage(), "SessionStorage should not be nil")
@@ -49,7 +49,7 @@ func TestNewSQLiteBackend_NilConfig(t *testing.T) {
 	backend, err := NewSQLiteBackend(nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 }
 
 func TestSQLiteBackend_Ping(t *testing.T) {
@@ -62,7 +62,7 @@ func TestSQLiteBackend_Ping(t *testing.T) {
 
 	backend, err := NewSQLiteBackend(cfg, nil)
 	require.NoError(t, err)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	ctx := context.Background()
 	err = backend.Ping(ctx)
@@ -79,7 +79,7 @@ func TestSQLiteBackend_Migrate(t *testing.T) {
 
 	backend, err := NewSQLiteBackend(cfg, nil)
 	require.NoError(t, err)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	ctx := context.Background()
 	err = backend.Migrate(ctx)
@@ -111,7 +111,7 @@ func TestSQLiteBackend_InterfaceCompliance(t *testing.T) {
 
 	backend, err := NewSQLiteBackend(cfg, nil)
 	require.NoError(t, err)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	var _ StorageBackend = backend
 }
@@ -130,7 +130,7 @@ func TestNewStorageBackend_SQLite(t *testing.T) {
 	backend, err := NewStorageBackend(context.Background(), cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	_, ok := backend.(*SQLiteBackend)
 	assert.True(t, ok, "Should return *SQLiteBackend for SQLite config")
@@ -140,7 +140,7 @@ func TestNewStorageBackend_NilConfig(t *testing.T) {
 	backend, err := NewStorageBackend(context.Background(), nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	_, ok := backend.(*SQLiteBackend)
 	assert.True(t, ok, "nil config should default to SQLiteBackend")
@@ -160,7 +160,7 @@ func TestNewStorageBackend_UnspecifiedType(t *testing.T) {
 	backend, err := NewStorageBackend(context.Background(), cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	_, ok := backend.(*SQLiteBackend)
 	assert.True(t, ok, "UNSPECIFIED should default to SQLiteBackend")
@@ -187,7 +187,7 @@ func TestSQLiteBackend_SessionStorageOperations(t *testing.T) {
 
 	backend, err := NewSQLiteBackend(cfg, nil)
 	require.NoError(t, err)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	ctx := context.Background()
 

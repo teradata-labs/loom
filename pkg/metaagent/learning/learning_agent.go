@@ -534,7 +534,7 @@ func (la *LearningAgent) AnalyzePatternEffectiveness(
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query pattern effectiveness: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var patterns []*loomv1.PatternMetric
 	totalUsages := int32(0)
@@ -641,9 +641,10 @@ func (la *LearningAgent) AnalyzePatternEffectiveness(
 	patternsToPromote := 0
 	patternsToDeprecate := 0
 	for _, p := range patterns {
-		if p.Recommendation == loomv1.PatternRecommendation_PATTERN_PROMOTE {
+		switch p.Recommendation {
+		case loomv1.PatternRecommendation_PATTERN_PROMOTE:
 			patternsToPromote++
-		} else if p.Recommendation == loomv1.PatternRecommendation_PATTERN_REMOVE {
+		case loomv1.PatternRecommendation_PATTERN_REMOVE:
 			patternsToDeprecate++
 		}
 	}
@@ -918,7 +919,7 @@ func (la *LearningAgent) GetImprovementHistory(
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query improvement history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var improvements []*loomv1.Improvement
 	for rows.Next() {
@@ -2278,7 +2279,7 @@ func (la *LearningAgent) handleABTestInterrupt(ctx context.Context, payload []by
 			span.RecordError(err)
 			return fmt.Errorf("failed to query variants: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		for rows.Next() {
 			var variant string
@@ -2660,7 +2661,7 @@ func (la *LearningAgent) handleSyncInterrupt(ctx context.Context, payload []byte
 			span.RecordError(err)
 			return fmt.Errorf("failed to query pattern effectiveness for push: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		for rows.Next() {
 			var (

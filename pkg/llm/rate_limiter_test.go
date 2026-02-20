@@ -34,7 +34,7 @@ func TestNewRateLimiter(t *testing.T) {
 
 	rl := NewRateLimiter(config)
 	require.NotNil(t, rl)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	assert.Equal(t, config.RequestsPerSecond, rl.refillRate)
 	assert.Equal(t, float64(config.BurstCapacity), rl.maxTokens)
@@ -47,7 +47,7 @@ func TestRateLimiter_Do_Success(t *testing.T) {
 	config.RequestsPerSecond = 10 // Fast for testing
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	callCount := 0
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
@@ -72,7 +72,7 @@ func TestRateLimiter_Do_ThrottlingRetry(t *testing.T) {
 	config.RetryBackoff = 10 * time.Millisecond // Fast for testing
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	callCount := 0
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
@@ -100,7 +100,7 @@ func TestRateLimiter_Do_ThrottlingExhausted(t *testing.T) {
 	config.RetryBackoff = 10 * time.Millisecond
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	callCount := 0
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
@@ -124,7 +124,7 @@ func TestRateLimiter_Do_Disabled(t *testing.T) {
 	config.Logger = zaptest.NewLogger(t)
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	callCount := 0
 	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
@@ -147,7 +147,7 @@ func TestRateLimiter_Do_ContextCancellation(t *testing.T) {
 	config.RequestsPerSecond = 1 // Slow to test cancellation
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
@@ -168,7 +168,7 @@ func TestRateLimiter_ConcurrentRequests(t *testing.T) {
 	config.BurstCapacity = 20
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	const numRequests = 50
 	var successCount int64
@@ -205,7 +205,7 @@ func TestRateLimiter_TokenBucketRefill(t *testing.T) {
 	config.BurstCapacity = 2
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	// Consume burst capacity (2 tokens)
 	for i := 0; i < 2; i++ {
@@ -274,7 +274,7 @@ func TestRateLimiter_QueueTimeout(t *testing.T) {
 	assert.Greater(t, metrics.DroppedRequests, int64(0))
 
 	// Clean up
-	rl.Close()
+	_ = rl.Close()
 	wg.Wait()
 }
 
@@ -283,7 +283,7 @@ func TestRateLimiter_RecordTokenUsage(t *testing.T) {
 	config.Logger = zaptest.NewLogger(t)
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	// Record token usage
 	rl.RecordTokenUsage(1000)
@@ -304,7 +304,7 @@ func TestRateLimiter_TokenUsageWindow(t *testing.T) {
 	config.Logger = zaptest.NewLogger(t)
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	// Record token usage with old timestamp (simulate old entry)
 	rl.tokenWindowMu.Lock()
@@ -380,7 +380,7 @@ func TestRateLimiter_MinDelay(t *testing.T) {
 	config.MinDelay = 100 * time.Millisecond // Enforce minimum delay
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	start := time.Now()
 
@@ -405,7 +405,7 @@ func TestRateLimiter_Metrics(t *testing.T) {
 	config.RequestsPerSecond = 50 // Fast for testing
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	// Execute successful request
 	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
@@ -440,7 +440,7 @@ func TestRateLimiter_ConcurrentThrottling(t *testing.T) {
 	config.RetryBackoff = 10 * time.Millisecond
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	const numRequests = 20
 	var successCount int64
@@ -503,7 +503,7 @@ func TestRateLimiter_TokenWindowPruning(t *testing.T) {
 	config.Logger = zaptest.NewLogger(t)
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	// Add old entries
 	rl.tokenWindowMu.Lock()
@@ -529,7 +529,7 @@ func TestRateLimiter_ExponentialBackoff(t *testing.T) {
 	config.RetryBackoff = 50 * time.Millisecond
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	callTimes := make([]time.Time, 0)
 	_, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
@@ -561,7 +561,7 @@ func TestRateLimiter_RaceConditions(t *testing.T) {
 	config.RequestsPerSecond = 50
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	var wg sync.WaitGroup
 	const numGoroutines = 20
@@ -622,7 +622,7 @@ func BenchmarkRateLimiter_Do(b *testing.B) {
 	config.RequestsPerSecond = 1000 // Very fast for benchmarking
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	ctx := context.Background()
 
@@ -641,7 +641,7 @@ func BenchmarkRateLimiter_Concurrent(b *testing.B) {
 	config.BurstCapacity = 100
 
 	rl := NewRateLimiter(config)
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 
 	ctx := context.Background()
 

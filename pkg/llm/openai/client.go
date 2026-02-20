@@ -522,7 +522,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
@@ -721,7 +721,7 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Read response
 	respBody, err := io.ReadAll(httpResp.Body)

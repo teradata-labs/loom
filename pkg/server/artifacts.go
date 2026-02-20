@@ -165,7 +165,7 @@ func (s *MultiAgentServer) UploadArtifact(ctx context.Context, req *loomv1.Uploa
 	if err != nil {
 		// Cleanup file on error
 		// #nosec G104 -- best-effort cleanup on error path
-		os.Remove(filePath)
+		_ = os.Remove(filePath)
 		return nil, status.Errorf(codes.Internal, "failed to analyze file: %v", err)
 	}
 
@@ -318,7 +318,7 @@ func (s *MultiAgentServer) UploadArtifact(ctx context.Context, req *loomv1.Uploa
 	if err := s.artifactStore.Index(ctx, artifact); err != nil {
 		// Cleanup file on error
 		// #nosec G104 -- best-effort cleanup on error path
-		os.Remove(filePath)
+		_ = os.Remove(filePath)
 		return nil, status.Errorf(codes.Internal, "failed to index artifact: %v", err)
 	}
 

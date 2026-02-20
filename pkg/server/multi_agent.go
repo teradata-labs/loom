@@ -850,12 +850,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	var finalResult *agentResult
 	agentDone := false
 
-	for {
-		// If agent is done and progress channel is closed, process result
-		if agentDone && progressChan == nil {
-			break
-		}
-
+	for !agentDone || progressChan != nil {
 		select {
 		case event, ok := <-progressChan:
 			// Receive progress event from agent

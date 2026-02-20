@@ -58,7 +58,7 @@ func TestNewMemoryStorage(t *testing.T) {
 			if storage.maxTraces != tt.wantMax {
 				t.Errorf("maxTraces = %d, want %d", storage.maxTraces, tt.wantMax)
 			}
-			storage.Close()
+			_ = storage.Close()
 		})
 	}
 }
@@ -98,7 +98,7 @@ func TestMemoryStorage_CreateEval(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			storage := NewMemoryStorage(100)
-			defer storage.Close()
+			defer func() { _ = storage.Close() }()
 
 			err := storage.CreateEval(context.Background(), tt.eval)
 			if (err != nil) != tt.wantErr {
@@ -127,7 +127,7 @@ func TestMemoryStorage_CreateEval(t *testing.T) {
 
 func TestMemoryStorage_UpdateEvalStatus(t *testing.T) {
 	storage := NewMemoryStorage(100)
-	defer storage.Close()
+	defer func() { _ = storage.Close() }()
 
 	ctx := context.Background()
 
@@ -190,7 +190,7 @@ func TestMemoryStorage_UpdateEvalStatus(t *testing.T) {
 
 func TestMemoryStorage_CreateEvalRun(t *testing.T) {
 	storage := NewMemoryStorage(100)
-	defer storage.Close()
+	defer func() { _ = storage.Close() }()
 
 	ctx := context.Background()
 
@@ -261,7 +261,7 @@ func TestMemoryStorage_CreateEvalRun(t *testing.T) {
 func TestMemoryStorage_Eviction(t *testing.T) {
 	// Create small storage to test eviction
 	storage := NewMemoryStorage(10)
-	defer storage.Close()
+	defer func() { _ = storage.Close() }()
 
 	ctx := context.Background()
 
@@ -299,7 +299,7 @@ func TestMemoryStorage_Eviction(t *testing.T) {
 
 func TestMemoryStorage_CalculateEvalMetrics(t *testing.T) {
 	storage := NewMemoryStorage(100)
-	defer storage.Close()
+	defer func() { _ = storage.Close() }()
 
 	ctx := context.Background()
 	evalID := "eval-1"
@@ -396,7 +396,7 @@ func TestMemoryStorage_CalculateEvalMetrics(t *testing.T) {
 
 func TestMemoryStorage_UpsertEvalMetrics(t *testing.T) {
 	storage := NewMemoryStorage(100)
-	defer storage.Close()
+	defer func() { _ = storage.Close() }()
 
 	ctx := context.Background()
 
@@ -439,7 +439,7 @@ func TestMemoryStorage_UpsertEvalMetrics(t *testing.T) {
 
 func TestMemoryStorage_Concurrent(t *testing.T) {
 	storage := NewMemoryStorage(1000)
-	defer storage.Close()
+	defer func() { _ = storage.Close() }()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup

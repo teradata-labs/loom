@@ -75,12 +75,12 @@ func TestSemanticSearch_RealLLMConversation(t *testing.T) {
 
 	// Setup database
 	tmpDB := t.TempDir() + "/real_conversation.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()

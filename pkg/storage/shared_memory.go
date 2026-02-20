@@ -404,7 +404,7 @@ func (s *SharedMemoryStore) decompress(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	return io.ReadAll(gz)
 }

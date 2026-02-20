@@ -328,7 +328,7 @@ func (t *PatternEffectivenessTracker) flush(ctx context.Context) error {
 		span.RecordError(err)
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	// Insert all buffered stats
 	recordsWritten := 0

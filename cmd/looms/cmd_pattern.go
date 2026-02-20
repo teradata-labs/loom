@@ -180,7 +180,7 @@ func runPatternCreate(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server %s: %v\n", patternServer, err)
 		os.Exit(1)
 	}
-	defer loomClient.Close()
+	defer func() { _ = loomClient.Close() }()
 
 	// Create pattern via RPC
 	fmt.Printf("Creating pattern '%s' for agent '%s'...\n", patternName, patternAgentID)
@@ -218,7 +218,7 @@ func runPatternWatch(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server %s: %v\n", patternServer, err)
 		os.Exit(1)
 	}
-	defer loomClient.Close()
+	defer func() { _ = loomClient.Close() }()
 
 	// Print header
 	fmt.Printf("🔍 Watching for pattern updates on %s\n", patternServer)

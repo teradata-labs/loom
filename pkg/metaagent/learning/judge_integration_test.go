@@ -433,11 +433,12 @@ func TestLearningAgent_WithJudgeFeedback(t *testing.T) {
 			if imp.TargetPattern != "problematic-pattern" {
 				continue
 			}
-			if imp.Impact == loomv1.ImpactLevel_IMPACT_CRITICAL {
+			switch imp.Impact {
+			case loomv1.ImpactLevel_IMPACT_CRITICAL:
 				safetyImp = imp
-			} else if imp.Impact == loomv1.ImpactLevel_IMPACT_HIGH {
+			case loomv1.ImpactLevel_IMPACT_HIGH:
 				qualityImp = imp
-			} else if imp.Impact == loomv1.ImpactLevel_IMPACT_MEDIUM {
+			case loomv1.ImpactLevel_IMPACT_MEDIUM:
 				costImp = imp
 			}
 		}
@@ -468,8 +469,8 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	require.NoError(t, InitSelfImprovementSchema(ctx, db, tracer))
 
 	cleanup := func() {
-		db.Close()
-		os.Remove(dbFile)
+		_ = db.Close()
+		_ = os.Remove(dbFile)
 	}
 
 	return db, cleanup

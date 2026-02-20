@@ -26,14 +26,14 @@ import (
 
 func TestNewSessionStore(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if store == nil {
 		t.Fatal("Expected non-nil store")
@@ -46,14 +46,14 @@ func TestNewSessionStore(t *testing.T) {
 
 func TestSessionStore_SaveAndLoad(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -98,14 +98,14 @@ func TestSessionStore_SaveAndLoad(t *testing.T) {
 
 func TestSessionStore_SaveMessage(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -154,14 +154,14 @@ func TestSessionStore_SaveMessage(t *testing.T) {
 
 func TestSessionStore_SaveToolExecution(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -190,14 +190,14 @@ func TestSessionStore_SaveToolExecution(t *testing.T) {
 
 func TestSessionStore_SaveToolExecution_MCPFailures(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -318,14 +318,14 @@ func findSubstring(s, substr string) bool {
 
 func TestSessionStore_DeleteSession(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -359,14 +359,14 @@ func TestSessionStore_DeleteSession(t *testing.T) {
 
 func TestSessionStore_ListSessions(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -393,14 +393,14 @@ func TestSessionStore_ListSessions(t *testing.T) {
 
 func TestSessionStore_GetStats(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -457,14 +457,14 @@ func TestSessionStore_GetStats(t *testing.T) {
 
 func TestSessionStore_ConcurrentWrites(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -507,14 +507,14 @@ func TestSessionStore_ConcurrentWrites(t *testing.T) {
 
 func TestMemory_WithStore_Integration(t *testing.T) {
 	tmpfile := t.TempDir() + "/test.db"
-	defer os.Remove(tmpfile)
+	defer func() { _ = os.Remove(tmpfile) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile, tracer)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	mem := NewMemoryWithStore(store)
 

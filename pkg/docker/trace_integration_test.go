@@ -49,7 +49,7 @@ func TestTraceCollector_PythonIntegration(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -58,7 +58,7 @@ func TestTraceCollector_PythonIntegration(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that creates child spans
 	pythonScript := `
@@ -169,7 +169,7 @@ func TestTraceCollector_NodeIntegration(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -178,7 +178,7 @@ func TestTraceCollector_NodeIntegration(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Node.js script that creates child spans
 	nodeScript := `
@@ -265,7 +265,7 @@ func TestTraceCollector_MultipleSpans(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -274,7 +274,7 @@ func TestTraceCollector_MultipleSpans(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that creates multiple spans
 	pythonScript := `
@@ -353,7 +353,7 @@ func TestTraceCollector_ErrorHandling(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -362,7 +362,7 @@ func TestTraceCollector_ErrorHandling(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script with error span
 	pythonScript := `
@@ -437,7 +437,7 @@ func TestTraceCollector_BaggagePropagation(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -446,7 +446,7 @@ func TestTraceCollector_BaggagePropagation(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Start span with tenant context
 	ctx, parentSpan := tracer.StartSpan(ctx, "test_baggage",
@@ -506,7 +506,7 @@ func TestTraceCollector_NoTracer(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor WITHOUT tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -515,7 +515,7 @@ func TestTraceCollector_NoTracer(t *testing.T) {
 		Tracer:    nil, // No tracer!
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that tries to use tracing
 	pythonScript := `
@@ -587,7 +587,7 @@ func TestTraceCollector_Stats(t *testing.T) {
 	}
 
 	// Close writer to signal EOF
-	writer.Close()
+	_ = writer.Close()
 
 	// Wait for collection to complete
 	<-done
@@ -639,7 +639,7 @@ func TestTraceCollector_ContextCancellation(t *testing.T) {
 	cancel()
 
 	// Close writer
-	writer.Close()
+	_ = writer.Close()
 
 	// Wait for collection to complete
 	err = <-done
@@ -675,7 +675,7 @@ func TestTraceCollector_PipeWriteFailure(t *testing.T) {
 	}()
 
 	// Close writer immediately to cause write failure
-	writer.Close()
+	_ = writer.Close()
 
 	// Wait for collection to complete
 	collectionErr := <-done
@@ -750,7 +750,7 @@ func TestTraceCollector_MalformedJSON(t *testing.T) {
 			require.NoError(t, writeErr)
 
 			// Close writer
-			writer.Close()
+			_ = writer.Close()
 
 			// Wait for collection to complete
 			<-done

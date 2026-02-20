@@ -287,7 +287,7 @@ func runJudgeEvaluate(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Read prompt
 	prompt := judgePrompt
@@ -405,9 +405,10 @@ func displayEvaluationResults(resp *loomv1.EvaluateResponse) {
 	for i, verdict := range resp.Verdicts {
 		// Judge header
 		icon := "✅"
-		if verdict.Verdict == "FAIL" {
+		switch verdict.Verdict {
+		case "FAIL":
 			icon = "❌"
-		} else if verdict.Verdict == "PARTIAL" {
+		case "PARTIAL":
 			icon = "⚠️"
 		}
 
@@ -498,7 +499,7 @@ func runJudgeEvaluateStream(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Read prompt
 	prompt := judgePrompt
@@ -694,7 +695,7 @@ func runJudgeRegister(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(judgeTimeout)*time.Second)
@@ -757,7 +758,7 @@ func runJudgeHistory(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(judgeTimeout)*time.Second)

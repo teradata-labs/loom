@@ -55,7 +55,7 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 	// Initialize schema
 	if err := store.initSchema(ctx); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -364,7 +364,7 @@ func (s *Store) List(ctx context.Context) ([]*loomv1.ScheduledWorkflow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query schedules: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var schedules []*loomv1.ScheduledWorkflow
 
@@ -593,7 +593,7 @@ func (s *Store) GetExecutionHistory(ctx context.Context, scheduleID string, limi
 	if err != nil {
 		return nil, fmt.Errorf("failed to query execution history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Initialize as empty slice (not nil) for JSON serialization
 	executions := make([]*loomv1.ScheduleExecution, 0)
@@ -663,7 +663,7 @@ func (s *Store) GetDueSchedules(ctx context.Context, currentTime int64) ([]*loom
 	if err != nil {
 		return nil, fmt.Errorf("failed to query due schedules: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var schedules []*loomv1.ScheduledWorkflow
 

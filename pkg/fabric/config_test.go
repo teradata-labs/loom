@@ -122,8 +122,8 @@ health_check:
 `
 
 	// Set env var for test
-	os.Setenv("GITHUB_TOKEN", "ghp_test123")
-	defer os.Unsetenv("GITHUB_TOKEN")
+	_ = os.Setenv("GITHUB_TOKEN", "ghp_test123")
+	defer func() { _ = os.Unsetenv("GITHUB_TOKEN") }()
 
 	backendPath := filepath.Join(tmpDir, "github.yaml")
 	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
@@ -174,8 +174,8 @@ graphql:
   timeout_seconds: 60
 `
 
-	os.Setenv("SHOPIFY_API_KEY", "shpat_test456")
-	defer os.Unsetenv("SHOPIFY_API_KEY")
+	_ = os.Setenv("SHOPIFY_API_KEY", "shpat_test456")
+	defer func() { _ = os.Unsetenv("SHOPIFY_API_KEY") }()
 
 	backendPath := filepath.Join(tmpDir, "shopify.yaml")
 	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
@@ -415,15 +415,15 @@ database:
 `
 
 	// Set env vars
-	os.Setenv("DB_NAME", "test-db")
-	os.Setenv("DB_DESC", "Test database")
-	os.Setenv("DATABASE_URL", "postgres://localhost/testdb")
-	os.Setenv("MAX_CONN", "25")
+	_ = os.Setenv("DB_NAME", "test-db")
+	_ = os.Setenv("DB_DESC", "Test database")
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/testdb")
+	_ = os.Setenv("MAX_CONN", "25")
 	defer func() {
-		os.Unsetenv("DB_NAME")
-		os.Unsetenv("DB_DESC")
-		os.Unsetenv("DATABASE_URL")
-		os.Unsetenv("MAX_CONN")
+		_ = os.Unsetenv("DB_NAME")
+		_ = os.Unsetenv("DB_DESC")
+		_ = os.Unsetenv("DATABASE_URL")
+		_ = os.Unsetenv("MAX_CONN")
 	}()
 
 	backendPath := filepath.Join(tmpDir, "backend.yaml")

@@ -200,7 +200,7 @@ func (c *Client) callAPI(ctx context.Context, req *GenerateContentRequest) (*Gen
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Read response
 	respBody, err := io.ReadAll(httpResp.Body)
@@ -221,7 +221,7 @@ func (c *Client) callAPI(ctx context.Context, req *GenerateContentRequest) (*Gen
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, fmt.Errorf("Gemini API error: %s (code: %d)", resp.Error.Message, resp.Error.Code)
+		return nil, fmt.Errorf("gemini API error: %s (code: %d)", resp.Error.Message, resp.Error.Code)
 	}
 
 	return &resp, nil
@@ -570,7 +570,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
@@ -606,7 +606,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 		// Check for API errors
 		if chunk.Error != nil {
-			return nil, fmt.Errorf("Gemini API error: %s (code: %d)", chunk.Error.Message, chunk.Error.Code)
+			return nil, fmt.Errorf("gemini API error: %s (code: %d)", chunk.Error.Message, chunk.Error.Code)
 		}
 
 		if len(chunk.Candidates) > 0 {

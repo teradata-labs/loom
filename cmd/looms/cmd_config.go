@@ -676,9 +676,10 @@ func inferType(key, value string, v *viper.Viper) interface{} {
 	}
 
 	if contains(key, "enabled") || contains(key, "enable_") {
-		if value == "true" {
+		switch value {
+		case "true":
 			return true
-		} else if value == "false" {
+		case "false":
 			return false
 		}
 	}
@@ -688,9 +689,10 @@ func inferType(key, value string, v *viper.Viper) interface{} {
 		existingValue := v.Get(key)
 		switch existingValue.(type) {
 		case bool:
-			if value == "true" {
+			switch value {
+			case "true":
 				return true
-			} else if value == "false" {
+			case "false":
 				return false
 			}
 		case int, int64:

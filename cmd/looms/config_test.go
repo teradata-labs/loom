@@ -521,3 +521,49 @@ func TestValidate_StorageBackend(t *testing.T) {
 		assert.Contains(t, err.Error(), "invalid ssl_mode")
 	})
 }
+
+func TestInsecureAdmin_DefaultFalse(t *testing.T) {
+	// Reset viper to avoid contamination from other tests
+	viper.Reset()
+	setDefaults()
+
+	// Verify the default is false
+	assert.False(t, viper.GetBool("server.insecure_admin"),
+		"server.insecure_admin should default to false for secure-by-default behavior")
+}
+
+func TestInsecureAdmin_ConfigField(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   ServerConfig
+		expected bool
+	}{
+		{
+			name:     "default is false (secure by default)",
+			config:   ServerConfig{},
+			expected: false,
+		},
+		{
+			name:     "explicitly set to true allows insecure admin",
+			config:   ServerConfig{InsecureAdmin: true},
+			expected: true,
+		},
+		{
+			name:     "explicitly set to false keeps secure default",
+			config:   ServerConfig{InsecureAdmin: false},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.config.InsecureAdmin)
+		})
+	}
+}
+
+func TestGenerateExampleConfig_ContainsInsecureAdmin(t *testing.T) {
+	exampleConfig := GenerateExampleConfig()
+	assert.Contains(t, exampleConfig, "insecure_admin",
+		"example config should document the insecure_admin option")
+}

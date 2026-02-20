@@ -32,7 +32,7 @@ func TestNewEmbeddedTracer_Memory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create embedded tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	if tracer.storage == nil {
 		t.Fatal("Expected storage to be initialized")
@@ -47,7 +47,7 @@ func TestEmbeddedTracer_StartEndSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 	_, span := tracer.StartSpan(ctx, "test.operation",
@@ -82,7 +82,7 @@ func TestEmbeddedTracer_SpanHierarchy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 
@@ -113,7 +113,7 @@ func TestEmbeddedTracer_ErrorRecording(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 	_, span := tracer.StartSpan(ctx, "test.operation")
@@ -136,7 +136,7 @@ func TestEmbeddedTracer_MetricsCalculation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 
@@ -194,7 +194,7 @@ func TestEmbeddedTracer_ConcurrentSpans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	const numSpans = 10
 
@@ -226,7 +226,7 @@ func TestEmbeddedTracer_SetEvalID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	// Set custom eval ID
 	customEvalID := "custom-eval-123"
@@ -257,7 +257,7 @@ func TestEmbeddedTracer_RecordMetric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	// RecordMetric should not panic (logged only)
 	tracer.RecordMetric("test.metric", 42.0, map[string]string{
@@ -275,7 +275,7 @@ func TestEmbeddedTracer_RecordEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	// RecordEvent should not panic (logged only)
 	tracer.RecordEvent(context.Background(), "test.event", map[string]interface{}{
@@ -309,7 +309,7 @@ func TestNewEmbeddedHawkTracer_BackwardCompat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create embedded tracer with old name: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	if tracer.storage == nil {
 		t.Fatal("Expected storage to be initialized")
@@ -325,7 +325,7 @@ func BenchmarkEmbeddedTracer_StartEndSpan(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 
@@ -345,7 +345,7 @@ func BenchmarkEmbeddedTracer_WithAttributes(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 

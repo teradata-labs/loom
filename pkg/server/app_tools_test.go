@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
-	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // ============================================================================
@@ -41,8 +40,6 @@ func TestUIAppTools_ImplementsShuttleTool(t *testing.T) {
 
 	expectedNames := []string{"create_ui_app", "list_component_types", "update_ui_app", "delete_ui_app"}
 	for i, tool := range tools {
-		// Verify each implements shuttle.Tool
-		var _ shuttle.Tool = tool
 		assert.Equal(t, expectedNames[i], tool.Name())
 		assert.NotEmpty(t, tool.Description())
 		assert.NotNil(t, tool.InputSchema())

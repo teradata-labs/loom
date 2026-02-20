@@ -11,14 +11,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/dynamic"
+	"github.com/jhump/protoreflect/desc"         //nolint:staticcheck // v1 API still required by grpcdynamic
+	"github.com/jhump/protoreflect/dynamic"      //nolint:staticcheck // v1 API still required by grpcdynamic
 	"github.com/jhump/protoreflect/dynamic/grpcdynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	reflectpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 )
 
 // GRPCClientTool provides gRPC client capabilities for calling other gRPC services.
@@ -139,8 +138,8 @@ func (t *GRPCClientTool) Execute(ctx context.Context, params map[string]interfac
 		}, nil
 	}
 
-	// Create reflection client
-	refClient := grpcreflect.NewClient(ctx, reflectpb.NewServerReflectionClient(conn))
+	// Create reflection client using v1alpha reflection (auto-negotiates v1 if available)
+	refClient := grpcreflect.NewClientAuto(ctx, conn)
 	defer refClient.Reset()
 
 	// Resolve service
@@ -254,7 +253,7 @@ func (t *GRPCClientTool) Execute(ctx context.Context, params map[string]interfac
 
 	var respData interface{}
 	// #nosec G104 -- JSON unmarshal with fallback to raw response
-	json.Unmarshal(jsonBytes, &respData)
+	_ = json.Unmarshal(jsonBytes, &respData)
 
 	return &shuttle.Result{
 		Success: true,
@@ -298,7 +297,7 @@ func (t *GRPCClientTool) getConnection(address string, params map[string]interfa
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	conn, err := grpc.Dial(address, opts...)
+	conn, err := grpc.NewClient(address, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +310,7 @@ func (t *GRPCClientTool) getConnection(address string, params map[string]interfa
 func (t *GRPCClientTool) Close() {
 	for _, conn := range t.connections {
 		// #nosec G104 -- best-effort cleanup of gRPC connections
-		conn.Close()
+		_ = conn.Close()
 	}
 	t.connections = make(map[string]*grpc.ClientConn)
 }

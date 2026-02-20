@@ -499,7 +499,7 @@ func TestShellExecuteTool_RelativeWorkingDir(t *testing.T) {
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "shell-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create subdirectory
 	subDir := filepath.Join(tmpDir, "subdir")

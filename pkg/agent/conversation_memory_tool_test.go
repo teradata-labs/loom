@@ -119,13 +119,13 @@ func TestConversationMemoryTool_InvalidAction(t *testing.T) {
 func TestConversationMemoryTool_RecallAction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -200,12 +200,12 @@ func TestConversationMemoryTool_RecallAction(t *testing.T) {
 func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemory()
 	memory.store = store
@@ -277,13 +277,13 @@ func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -339,13 +339,13 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 func TestConversationMemoryTool_SearchAction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -474,13 +474,13 @@ func TestConversationMemoryTool_SearchErrors(t *testing.T) {
 func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -541,13 +541,13 @@ func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -602,13 +602,13 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 func TestConversationMemoryTool_ClearAction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -774,13 +774,13 @@ func TestConversationMemoryTool_SessionNotFound(t *testing.T) {
 func TestConversationMemoryTool_Integration(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -865,12 +865,12 @@ func TestConversationMemoryTool_AsShuttleTool(t *testing.T) {
 func TestConversationMemoryTool_SearchLimitEnforcement(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemory()
 	memory.store = store

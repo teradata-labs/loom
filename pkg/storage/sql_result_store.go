@@ -84,13 +84,13 @@ func NewSQLResultStore(config *SQLResultStoreConfig) (*SQLResultStore, error) {
 
 	// Enable WAL mode for better concurrency (matches SessionStore/ErrorStore/ArtifactStore pattern)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close() // #nosec G104 -- best-effort cleanup on error path
+		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	// Set busy timeout for lock contention
 	if _, err := db.Exec("PRAGMA busy_timeout = 10000"); err != nil {
-		db.Close() // #nosec G104 -- best-effort cleanup on error path
+		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 
@@ -101,7 +101,7 @@ func NewSQLResultStore(config *SQLResultStoreConfig) (*SQLResultStore, error) {
 
 	// Initialize metadata table
 	if err := store.initMetadataTable(); err != nil {
-		db.Close() // #nosec G104 -- best-effort cleanup on error path
+		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to initialize metadata table: %w", err)
 	}
 
@@ -241,7 +241,7 @@ func (s *SQLResultStore) Store(_ context.Context, id string, data interface{}) (
 		if err != nil {
 			return nil, fmt.Errorf("failed to prepare insert: %w", err)
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for _, row := range rows {
 			if _, err := stmt.Exec(row...); err != nil {
@@ -317,7 +317,7 @@ func (s *SQLResultStore) Query(_ context.Context, id, query string) (interface{}
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Get column names
 	columns, err := rows.Columns()
@@ -521,7 +521,7 @@ func (s *SQLResultStore) cleanupExpired() {
 	if err != nil {
 		return // Ignore errors during cleanup
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Collect IDs and table names to delete
 	type expiredResult struct {

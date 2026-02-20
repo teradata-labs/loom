@@ -631,7 +631,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -732,7 +732,7 @@ func (s *SessionStore) LoadAgentSessions(ctx context.Context, agentID string) ([
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query agent sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessionIDs []string
 	for rows.Next() {
@@ -793,7 +793,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query agent messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -918,7 +918,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query parent messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -1124,7 +1124,7 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessionIDs []string
 	for rows.Next() {
@@ -1218,7 +1218,7 @@ func (s *SessionStore) LoadMemorySnapshots(ctx context.Context, sessionID string
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query memory snapshots: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var snapshots []MemorySnapshot
 	for rows.Next() {
@@ -1427,7 +1427,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		span.RecordError(err)
 		return nil, fmt.Errorf("FTS5 search failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -1532,7 +1532,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 		span.RecordError(err)
 		return nil, fmt.Errorf("agent-scoped FTS5 search failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {

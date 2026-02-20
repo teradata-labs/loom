@@ -342,7 +342,7 @@ func (t *DocumentParseTool) parseCSV(filePath string, options map[string]interfa
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Extract options
 	delimiter := ','
@@ -543,7 +543,7 @@ func (t *DocumentParseTool) parsePDF(filePath string, options map[string]interfa
 	if err != nil {
 		return nil, fmt.Errorf("error opening PDF: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	totalPages := reader.NumPage()
 
@@ -687,7 +687,7 @@ func (t *DocumentParseTool) parseExcel(filePath string, options map[string]inter
 	if err != nil {
 		return nil, fmt.Errorf("error opening Excel file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Extract options
 	maxRows := MaxExcelRows

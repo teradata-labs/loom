@@ -780,20 +780,21 @@ func (sm *SegmentedMemory) summarizeMessages(messages []Message) string {
 
 	for _, msg := range messages {
 		// Extract key information
-		if msg.Role == "user" {
+		switch msg.Role {
+		case "user":
 			// User queries
 			parts = append(parts, fmt.Sprintf("User asked about: %s", sm.extractKeywords(msg.Content)))
-		} else if msg.Role == "assistant" {
+		case "assistant":
 			// Assistant actions
 			if sm.containsToolCall(msg) {
 				parts = append(parts, "Agent executed tools and provided results")
 			} else {
 				parts = append(parts, "Agent provided analysis")
 			}
-		} else if msg.Role == "tool" {
+		case "tool":
 			// Tool results - include summary to preserve tool execution context
 			parts = append(parts, "Tool result received")
-		} else if msg.Role == "system" {
+		case "system":
 			// System messages (rare in L1, typically in ROM, but handle defensively)
 			parts = append(parts, "System instruction provided")
 		}

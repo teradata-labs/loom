@@ -64,7 +64,7 @@ type postgresBackendWrapper struct {
 
 // PendingMigrations implements MigrationInspector by adapting postgres.Backend.RawPendingMigrations.
 func (w *postgresBackendWrapper) PendingMigrations(ctx context.Context) ([]*PendingMigration, error) {
-	raw, err := w.Backend.RawPendingMigrations(ctx)
+	raw, err := w.RawPendingMigrations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func (w *postgresBackendWrapper) PendingMigrations(ctx context.Context) ([]*Pend
 
 // AdminStorage implements AdminStorageProvider by delegating to postgres.Backend.AdminStore.
 func (w *postgresBackendWrapper) AdminStorage() agent.AdminStorage {
-	return w.Backend.AdminStore()
+	return w.AdminStore()
 }
 
 // ValidateAdminPermissions implements AdminStorageProvider by delegating to the

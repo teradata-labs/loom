@@ -167,7 +167,7 @@ func (b *SQLiteBackend) Ping(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("SQLite ping failed: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("SQLite ping failed: %w", err)
 	}

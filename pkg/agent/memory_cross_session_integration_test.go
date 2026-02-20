@@ -38,12 +38,12 @@ func TestCrossSessionMemory_CoordinatorToSubAgent_Integration(t *testing.T) {
 	// Create temporary database
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemoryWithStore(store)
 	ctx := context.Background()
@@ -139,12 +139,12 @@ func TestCrossSessionMemory_CoordinatorToSubAgent_Integration(t *testing.T) {
 func TestCrossSessionMemory_MultipleSubAgents_Integration(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemoryWithStore(store)
 	ctx := context.Background()
@@ -213,12 +213,12 @@ func TestCrossSessionMemory_MultipleSubAgents_Integration(t *testing.T) {
 func TestCrossSessionMemory_RealtimeObservers_Integration(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemoryWithStore(store)
 	ctx := context.Background()
@@ -294,12 +294,12 @@ func TestCrossSessionMemory_RealtimeObservers_Integration(t *testing.T) {
 func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemoryWithStore(store)
 	ctx := context.Background()
@@ -367,12 +367,12 @@ func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 func TestCrossSessionMemory_SessionContextFiltering_Integration(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemoryWithStore(store)
 	ctx := context.Background()

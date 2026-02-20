@@ -88,7 +88,7 @@ func TestVisualizationTool_Execute(t *testing.T) {
 	}
 
 	// Cleanup
-	os.Remove("/tmp/loom-test-report.html")
+	_ = os.Remove("/tmp/loom-test-report.html")
 }
 
 // TestVisualizationTool_InvalidParams tests parameter validation

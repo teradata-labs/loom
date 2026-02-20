@@ -121,7 +121,7 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *StreamableHTTPServer) handlePost(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// Validate content type (accept "application/json" with optional params like charset)
 	ct := r.Header.Get("Content-Type")

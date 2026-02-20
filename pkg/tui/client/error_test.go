@@ -89,7 +89,7 @@ func TestWeaveError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	resp, err := client.Weave(ctx, "test query", "sess_123", "test-agent")
@@ -121,7 +121,7 @@ func TestStreamWeaveError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	err := client.StreamWeave(ctx, "test query", "sess_123", "test-agent", func(progress *loomv1.WeaveProgress) {
@@ -147,7 +147,7 @@ func TestCreateSessionError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	session, err := client.CreateSession(ctx, "test", "")
@@ -175,7 +175,7 @@ func TestGetSessionError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	_, err := client.GetSession(ctx, "sess_456")
@@ -199,7 +199,7 @@ func TestDeleteSessionError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	err := client.DeleteSession(ctx, "sess_789")
@@ -223,7 +223,7 @@ func TestGetConversationHistoryError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	messages, err := client.GetConversationHistory(ctx, "sess_123")
@@ -251,7 +251,7 @@ func TestListSessionsError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	sessions, err := client.ListSessions(ctx, 10, 0)
@@ -279,7 +279,7 @@ func TestListToolsError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx)
@@ -307,7 +307,7 @@ func TestGetHealthError(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	health, err := client.GetHealth(ctx)
@@ -336,7 +336,7 @@ func TestWeaveWithTimeout(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Create context with very short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
@@ -369,7 +369,7 @@ func TestStreamWeaveWithCancellation(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -394,7 +394,7 @@ func TestListSessionsWithPagination(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 
@@ -440,7 +440,7 @@ func TestNewClientConnectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient should not fail immediately with lazy connections: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Try to make an RPC call - this should fail
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -467,7 +467,7 @@ func TestNewClientWithDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient should not fail immediately with lazy connections: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Verify default address is used
 	if client.ServerAddr() != "localhost:9090" {
@@ -495,7 +495,7 @@ func TestWeaveWithNilProgress(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 
@@ -512,7 +512,7 @@ func TestStreamWeaveEOF(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	receivedProgress := false
@@ -536,7 +536,7 @@ func TestConcurrentErrorHandling(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	const numRequests = 50
@@ -598,7 +598,7 @@ func TestWeaveWithSlowServer(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Should succeed with adequate timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -630,7 +630,7 @@ func TestWeaveWithSlowServerTimeout(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Short timeout (50ms) - should fail
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -675,7 +675,7 @@ func TestWeaveWithMalformedResponse(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	resp, err := client.Weave(ctx, "test", "sess_123", "test-agent")
@@ -734,7 +734,7 @@ func TestStreamWeaveMultipleProgress(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	progressCount := 0
@@ -793,7 +793,7 @@ func TestServerAddrPersistence(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	addr1 := client.ServerAddr()
 	addr2 := client.ServerAddr()

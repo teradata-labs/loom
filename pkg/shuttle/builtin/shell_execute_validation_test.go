@@ -20,65 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestExtractFilePaths(t *testing.T) {
-	tests := []struct {
-		name      string
-		command   string
-		stdout    string
-		workDir   string
-		wantPaths []string
-	}{
-		{
-			name:      "redirect operator",
-			command:   "cat > ~/.loom/agents/test.yaml",
-			stdout:    "",
-			workDir:   "/tmp",
-			wantPaths: []string{"/tmp/.loom/agents/test.yaml"}, // Will be resolved
-		},
-		{
-			name:      "tee command",
-			command:   "echo 'test' | tee ~/.loom/workflows/workflow.yaml",
-			stdout:    "",
-			workDir:   "/tmp",
-			wantPaths: []string{"/tmp/.loom/workflows/workflow.yaml"},
-		},
-		{
-			name:      "output mention",
-			command:   "some_command",
-			stdout:    "Created: ~/.loom/agents/new_agent.yaml",
-			workDir:   "/tmp",
-			wantPaths: []string{"/tmp/.loom/agents/new_agent.yaml"},
-		},
-		{
-			name:      "direct .loom path",
-			command:   "touch /home/user/.loom/agents/direct.yaml",
-			stdout:    "",
-			workDir:   "/tmp",
-			wantPaths: []string{"/home/user/.loom/agents/direct.yaml"},
-		},
-		{
-			name:      "non-loom file",
-			command:   "cat > /tmp/test.yaml",
-			stdout:    "",
-			workDir:   "/tmp",
-			wantPaths: []string{"/tmp/test.yaml"}, // extractFilePaths finds all yaml, filtering happens in autoValidateConfigFiles
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			paths := extractFilePaths(tt.command, tt.stdout, tt.workDir)
-
-			if len(tt.wantPaths) == 0 {
-				assert.Empty(t, paths, "Expected no paths to be extracted")
-			} else {
-				assert.NotEmpty(t, paths, "Expected at least one path to be extracted")
-				// Verify path count matches
-				assert.Len(t, paths, len(tt.wantPaths), "Expected exactly %d path(s)", len(tt.wantPaths))
-			}
-		})
-	}
-}
 
 func TestShouldValidate(t *testing.T) {
 	tests := []struct {
@@ -178,8 +119,7 @@ func TestCommandTokenSizeCheck(t *testing.T) {
 			err := checkCommandTokenSize(tt.command)
 			if tt.shouldError {
 				assert.Error(t, err, "Expected error for large command")
-				assert.Contains(t, err.Error(), "Command is too large")
-				assert.Contains(t, err.Error(), "Breaking large file writes")
+				assert.Contains(t, err.Error(), "command is too large")
 			} else {
 				assert.NoError(t, err, "Expected no error for normal-sized command")
 			}

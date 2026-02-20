@@ -139,7 +139,7 @@ func TestWeave(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	resp, err := client.Weave(ctx, "test query", "sess_123", "test-agent")
@@ -165,7 +165,7 @@ func TestStreamWeave(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	progressCount := 0
@@ -190,7 +190,7 @@ func TestCreateSession(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	session, err := client.CreateSession(ctx, "test-session", "")
@@ -212,7 +212,7 @@ func TestGetSession(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	session, err := client.GetSession(ctx, "sess_456")
@@ -230,7 +230,7 @@ func TestListSessions(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	sessions, err := client.ListSessions(ctx, 10, 0)
@@ -252,7 +252,7 @@ func TestGetHealth(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	status, err := client.GetHealth(ctx)
@@ -274,7 +274,7 @@ func TestServerAddr(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if client.ServerAddr() != "passthrough:///bufnet" {
 		t.Errorf("Expected passthrough:///bufnet, got: %s", client.ServerAddr())
@@ -286,7 +286,7 @@ func TestListAgents(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	agents, err := client.ListAgents(ctx)
@@ -337,7 +337,7 @@ func TestRaceConditions(t *testing.T) {
 	defer server.Stop()
 
 	client := createTestClient(t, lis)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 

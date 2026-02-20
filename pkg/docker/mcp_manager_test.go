@@ -50,7 +50,7 @@ func TestMCPServerManager_StartStop(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -65,7 +65,7 @@ func TestMCPServerManager_StartStop(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Test: Start echo MCP server (simple Python server that echoes input)
 	mcpConfig := &loomv1.MCPServerConfig{
@@ -138,7 +138,7 @@ func TestMCPServerManager_HealthCheck(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -153,7 +153,7 @@ func TestMCPServerManager_HealthCheck(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Start echo MCP server
 	mcpConfig := &loomv1.MCPServerConfig{
@@ -216,7 +216,7 @@ func TestMCPServerManager_MultipleServers(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -231,7 +231,7 @@ func TestMCPServerManager_MultipleServers(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Simple echo server script (reusable)
 	echoScript := `
@@ -333,7 +333,7 @@ func TestMCPServerManager_InvalidTransport(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -348,7 +348,7 @@ func TestMCPServerManager_InvalidTransport(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Try to start server with HTTP transport (not supported for Docker)
 	mcpConfig := &loomv1.MCPServerConfig{
@@ -383,7 +383,7 @@ func TestMCPServerManager_DuplicateServer(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -398,7 +398,7 @@ func TestMCPServerManager_DuplicateServer(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Start server
 	mcpConfig := &loomv1.MCPServerConfig{

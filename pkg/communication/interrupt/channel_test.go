@@ -28,11 +28,11 @@ func TestInterruptChannel_RegisterHandler(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Test successful registration
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
@@ -58,11 +58,11 @@ func TestInterruptChannel_UnregisterHandler(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil
@@ -90,11 +90,11 @@ func TestInterruptChannel_Send_Success(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Track handler invocations
 	var invoked bool
@@ -135,11 +135,11 @@ func TestInterruptChannel_Send_NoHandler(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Send to non-existent handler
 	err = ic.Send(ctx, SignalEmergencyStop, "agent1", []byte("test"))
@@ -157,11 +157,11 @@ func TestInterruptChannel_Broadcast(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Track handler invocations
 	var agent1Invoked, agent2Invoked bool
@@ -205,11 +205,11 @@ func TestInterruptChannel_Broadcast_NoHandlers(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Broadcast with no registered handlers
 	err = ic.Broadcast(ctx, SignalSystemShutdown, []byte("test"))
@@ -222,11 +222,11 @@ func TestInterruptChannel_ListAgents(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil
@@ -258,11 +258,11 @@ func TestInterruptChannel_Hooks(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Track hook invocations
 	var sendCalled, deliveredCalled bool
@@ -308,11 +308,11 @@ func TestInterruptChannel_CriticalFallbackToQueue(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Register handler with very small buffer (will fill quickly)
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
@@ -351,11 +351,11 @@ func TestInterruptChannel_Race(t *testing.T) {
 	router := NewRouter(ctx)
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
-	defer router.Close()
+	defer func() { _ = queue.Close() }()
+	defer func() { _ = router.Close() }()
 
 	ic := NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil

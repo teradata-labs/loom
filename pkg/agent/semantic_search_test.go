@@ -30,12 +30,12 @@ import (
 // TestSearchMessages_BasicQuery tests that full-text search returns relevant results.
 func TestSearchMessages_BasicQuery(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "basic-query-session"
@@ -83,12 +83,12 @@ func TestSearchMessages_BasicQuery(t *testing.T) {
 // TestSearchMessages_SessionFiltering tests that only messages from the session are returned.
 func TestSearchMessages_SessionFiltering(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -133,12 +133,12 @@ func TestSearchMessages_SessionFiltering(t *testing.T) {
 // TestSearchMessages_BM25Ranking tests that results are ordered by relevance.
 func TestSearchMessages_BM25Ranking(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "ranking-session"
@@ -180,12 +180,12 @@ func TestSearchMessages_BM25Ranking(t *testing.T) {
 // TestSearchMessages_EmptyQuery tests handling of empty queries.
 func TestSearchMessages_EmptyQuery(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "empty-query-session"
@@ -204,12 +204,12 @@ func TestSearchMessages_EmptyQuery(t *testing.T) {
 // TestSearchMessages_NoResults tests behavior when no matches are found.
 func TestSearchMessages_NoResults(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "no-results-session"
@@ -364,12 +364,12 @@ func TestRerankByRelevance_MalformedJSON(t *testing.T) {
 // TestSearchMessages_Integration tests full pipeline (BM25 + rerank).
 func TestSearchMessages_Integration(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -414,12 +414,12 @@ func TestSearchMessages_Integration(t *testing.T) {
 // TestSearchMessages_TokenBudget tests that promotion respects token budget.
 func TestSearchMessages_TokenBudget(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with small token budget
 	memory := NewMemory()

@@ -281,7 +281,7 @@ func TestPatternNamingConvention(t *testing.T) {
 
 			// Check no spaces or special chars (except underscore)
 			for _, char := range pattern.Name {
-				if !((char >= 'a' && char <= 'z') || char == '_' || (char >= '0' && char <= '9')) {
+				if (char < 'a' || char > 'z') && char != '_' && (char < '0' || char > '9') {
 					t.Errorf("Pattern name '%s' contains invalid character '%c' (use snake_case)", pattern.Name, char)
 					break
 				}

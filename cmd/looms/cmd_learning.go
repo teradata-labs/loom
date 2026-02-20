@@ -323,7 +323,7 @@ func runLearningAnalyze(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(learningTimeout)*time.Second)
@@ -414,7 +414,7 @@ func runLearningProposals(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(learningTimeout)*time.Second)
@@ -524,7 +524,7 @@ func runLearningApply(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(learningTimeout)*time.Second)
@@ -566,7 +566,7 @@ func runLearningRollback(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(learningTimeout)*time.Second)
@@ -609,7 +609,7 @@ func runLearningHistory(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(learningTimeout)*time.Second)
@@ -711,7 +711,7 @@ func runLearningStream(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Build request
 	req := &loomv1.StreamPatternMetricsRequest{
@@ -793,7 +793,7 @@ func runLearningTune(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(learningTimeout)*time.Second)

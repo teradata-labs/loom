@@ -1750,7 +1750,7 @@ func (r *Registry) loadAgentsFromDB() error {
 	if err != nil {
 		return fmt.Errorf("failed to query agents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var info AgentInstanceInfo

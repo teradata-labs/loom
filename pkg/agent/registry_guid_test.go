@@ -180,7 +180,7 @@ func TestRegistry_GUID_Persistence(t *testing.T) {
 		DBPath:    dbPath,
 	})
 	require.NoError(t, err)
-	defer registry2.Close()
+	defer func() { _ = registry2.Close() }()
 
 	// Load agent from database
 	err = registry2.LoadAgents(ctx)
@@ -373,7 +373,7 @@ func TestRegistry_AgentIDPersistence(t *testing.T) {
 		LLMProvider: &mockLLMProvider{}, // Add LLM provider for agent creation
 	})
 	require.NoError(t, err)
-	defer registry2.Close()
+	defer func() { _ = registry2.Close() }()
 
 	// Load agent from database
 	err = registry2.LoadAgents(ctx)

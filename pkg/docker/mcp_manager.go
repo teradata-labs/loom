@@ -195,7 +195,7 @@ func (msm *MCPServerManager) StartMCPServer(
 
 	if err := mcpClient.Initialize(initCtx, clientInfo); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		trans.Close()
+		_ = trans.Close()
 		return fmt.Errorf("failed to initialize MCP server: %w", err)
 	}
 

@@ -343,15 +343,15 @@ func exportConfigToEnv(cfg *Config) {
 	// Export web search API keys if configured
 	if cfg.Tools.WebSearch.BraveAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		os.Setenv("BRAVE_API_KEY", cfg.Tools.WebSearch.BraveAPIKey)
+		_ = os.Setenv("BRAVE_API_KEY", cfg.Tools.WebSearch.BraveAPIKey)
 	}
 	if cfg.Tools.WebSearch.TavilyAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		os.Setenv("TAVILY_API_KEY", cfg.Tools.WebSearch.TavilyAPIKey)
+		_ = os.Setenv("TAVILY_API_KEY", cfg.Tools.WebSearch.TavilyAPIKey)
 	}
 	if cfg.Tools.WebSearch.SerpAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
+		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
 	}
 }
 
@@ -481,7 +481,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logger.Fatal("Failed to create storage backend", zap.Error(err))
 	}
-	defer storageBackend.Close()
+	defer func() { _ = storageBackend.Close() }()
 
 	// Run auto-migrations if configured
 	if config.Storage.Migration.AutoMigrate {
@@ -1409,12 +1409,23 @@ func runServe(cmd *cobra.Command, args []string) {
 
 		adminToken := os.Getenv("LOOM_ADMIN_TOKEN")
 		if adminToken == "" {
-			logger.Warn("LOOM_ADMIN_TOKEN not set; admin endpoints are unprotected")
-		}
-		adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
-		if adminServer != nil {
-			loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
-			logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled)")
+			if !config.Server.InsecureAdmin {
+				logger.Error("LOOM_ADMIN_TOKEN not set and server.insecure_admin is not enabled; skipping admin service registration. " +
+					"Set LOOM_ADMIN_TOKEN or set server.insecure_admin=true in config to run admin endpoints without authentication")
+			} else {
+				logger.Warn("LOOM_ADMIN_TOKEN not set and insecure_admin is enabled; admin endpoints are unprotected")
+				adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+				if adminServer != nil {
+					loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+					logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled, WARNING: no authentication)")
+				}
+			}
+		} else {
+			adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+			if adminServer != nil {
+				loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+				logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled)")
+			}
 		}
 	} else {
 		logger.Info("Admin service not registered (only available with PostgreSQL backend)")
@@ -1616,7 +1627,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		if err != nil {
 			logger.Fatal("Failed to open database for learning agent", zap.Error(err))
 		}
-		defer learningDB.Close()
+		defer func() { _ = learningDB.Close() }()
 
 		// 2. Initialize self-improvement schema
 		ctx := context.Background()
@@ -1630,7 +1641,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		if err != nil {
 			logger.Fatal("Failed to create metrics collector", zap.Error(err))
 		}
-		defer collector.Close()
+		defer func() { _ = collector.Close() }()
 		logger.Info("  Metrics collector created")
 
 		// 4. Create learning engine
@@ -2281,6 +2292,20 @@ func runServe(cmd *cobra.Command, args []string) {
 			zap.String("health_endpoint", fmt.Sprintf("http://%s/health", httpAddr)))
 	}
 
+	// Start soft-delete cleanup goroutine if storage supports it (PostgreSQL)
+	var softDeleteCleaner *storage.SoftDeleteCleaner
+	if sds, ok := store.(storage.Purger); ok {
+		softDeleteCfg := config.Storage.Postgres.SoftDelete
+		if softDeleteCfg.Enabled {
+			softDeleteCleaner = storage.StartSoftDeleteCleanup(
+				sds,
+				softDeleteCfg.GracePeriodSeconds,
+				softDeleteCfg.CleanupIntervalSeconds,
+				logger,
+			)
+		}
+	}
+
 	logger.Info("Ready to weave!")
 
 	// Start message queue monitor for event-driven workflow agent notifications
@@ -2327,6 +2352,12 @@ func runServe(cmd *cobra.Command, args []string) {
 			if err := registry.Close(); err != nil {
 				logger.Warn("Error closing registry", zap.Error(err))
 			}
+		}
+
+		// Stop soft-delete cleanup goroutine
+		if softDeleteCleaner != nil {
+			softDeleteCleaner.Stop()
+			logger.Info("Soft-delete cleanup stopped")
 		}
 
 		// Stop artifact watcher

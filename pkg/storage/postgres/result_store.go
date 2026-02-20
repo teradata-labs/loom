@@ -303,7 +303,7 @@ func (s *ResultStore) insertRows(ctx context.Context, tx pgx.Tx, tableName strin
 	}
 
 	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	for range rows {
 		if _, err := br.Exec(); err != nil {

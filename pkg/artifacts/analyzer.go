@@ -97,7 +97,7 @@ func (a *Analyzer) detectContentType(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Read first 512 bytes for content detection
 	buffer := make([]byte, 512)
@@ -257,7 +257,7 @@ func (a *Analyzer) extractCSVMetadata(path string, metadata map[string]string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	reader := csv.NewReader(f)
 
@@ -296,7 +296,7 @@ func (a *Analyzer) extractJSONMetadata(path string, metadata map[string]string) 
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Read and parse JSON
 	var data interface{}
@@ -404,7 +404,7 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open zip: %w", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	for _, f := range r.File {
 		// Skip directories
@@ -433,7 +433,7 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 		outFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
 			// #nosec G104 -- best-effort cleanup on error path
-			rc.Close()
+			_ = rc.Close()
 			return nil, fmt.Errorf("failed to create output file: %w", err)
 		}
 
@@ -441,9 +441,9 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 		// #nosec G110
 		_, err = io.CopyN(outFile, rc, maxDecompressedSize)
 		// #nosec G104 -- best-effort cleanup after extraction
-		rc.Close()
+		_ = rc.Close()
 		// #nosec G104 -- best-effort cleanup after extraction
-		outFile.Close()
+		_ = outFile.Close()
 
 		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to extract file: %w", err)
@@ -464,7 +464,7 @@ func extractTar(archivePath, destDir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tar: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	tr := tar.NewReader(f)
 
@@ -509,7 +509,7 @@ func extractTar(archivePath, destDir string) ([]string, error) {
 		// #nosec G110
 		_, err = io.CopyN(outFile, tr, maxDecompressedSize)
 		// #nosec G104 -- best-effort cleanup after extraction
-		outFile.Close()
+		_ = outFile.Close()
 
 		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to extract file: %w", err)
@@ -528,13 +528,13 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tar.gz: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gzr, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	var extractedFiles []string
 	tr := tar.NewReader(gzr)
@@ -579,7 +579,7 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 		// #nosec G110
 		_, err = io.CopyN(outFile, tr, maxDecompressedSize)
 		// #nosec G104 -- best-effort cleanup after extraction
-		outFile.Close()
+		_ = outFile.Close()
 
 		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to extract file: %w", err)
@@ -598,13 +598,13 @@ func extractGzip(archivePath, destDir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open gzip: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gzr, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	// Output filename is the archive name without .gz extension
 	baseName := filepath.Base(archivePath)
@@ -616,7 +616,7 @@ func extractGzip(archivePath, destDir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer outFile.Close()
+	defer func() { _ = outFile.Close() }()
 
 	// #nosec G110 -- limit decompressed size to prevent decompression bombs
 	if _, err := io.CopyN(outFile, gzr, maxDecompressedSize); err != nil && err != io.EOF {

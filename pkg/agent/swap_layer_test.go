@@ -28,13 +28,13 @@ import (
 func TestSwapLayerEviction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create session
 	sessionID := "test-session-eviction"
@@ -100,13 +100,13 @@ func TestSwapLayerEviction(t *testing.T) {
 func TestSwapLayerRetrieval(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessionID := "test-session-retrieval"
 
@@ -160,13 +160,13 @@ func TestSwapLayerRetrieval(t *testing.T) {
 func TestSwapLayerPromotion(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessionID := "test-session-promotion"
 
@@ -228,13 +228,13 @@ func TestSwapLayerPromotion(t *testing.T) {
 func TestSwapLayerTokenBudget(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessionID := "test-session-budget"
 
@@ -318,13 +318,13 @@ func TestSwapLayerDisabled(t *testing.T) {
 func TestSwapLayerConcurrency(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessionID := "test-session-concurrent"
 
@@ -376,13 +376,13 @@ func TestSwapLayerConcurrency(t *testing.T) {
 func TestSwapLayerL2Snapshots(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessionID := "test-session-snapshots"
 
@@ -438,13 +438,13 @@ func TestSwapLayerL2Snapshots(t *testing.T) {
 func TestSwapLayerMemoryStats(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessionID := "test-session-stats"
 

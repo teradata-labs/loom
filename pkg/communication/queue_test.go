@@ -33,7 +33,7 @@ func TestQueueEnqueueDequeue(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -76,7 +76,7 @@ func TestQueuePriority(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -113,7 +113,7 @@ func TestQueueRequeue(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -155,7 +155,7 @@ func TestQueueMaxRetries(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -205,7 +205,7 @@ func TestQueueExpiration(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -241,12 +241,12 @@ func TestQueueConcurrentEnqueue(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "queue-concurrent-test-*.db")
 	require.NoError(t, err)
 	dbPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(dbPath)
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(dbPath) }()
 
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -298,12 +298,12 @@ func TestQueueConcurrentDequeue(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "queue-concurrent-dequeue-*.db")
 	require.NoError(t, err)
 	dbPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(dbPath)
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(dbPath) }()
 
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -363,8 +363,8 @@ func TestQueuePersistence(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "queue-test-*.db")
 	require.NoError(t, err)
 	dbPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(dbPath)
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(dbPath) }()
 
 	ctx := context.Background()
 
@@ -387,12 +387,12 @@ func TestQueuePersistence(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	queue1.Close()
+	_ = queue1.Close()
 
 	// Reopen queue and verify messages are recovered
 	queue2, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue2.Close()
+	defer func() { _ = queue2.Close() }()
 
 	depth := queue2.GetQueueDepth("agent1")
 	assert.Equal(t, 5, depth)
@@ -413,7 +413,7 @@ func TestQueueMultipleAgents(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 
@@ -497,7 +497,7 @@ func TestQueueValidation(t *testing.T) {
 	dbPath := ":memory:"
 	queue, err := NewMessageQueue(dbPath, nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ctx := context.Background()
 

@@ -279,7 +279,7 @@ func (s *SQLiteErrorStore) List(ctx context.Context, filters ErrorFilters) ([]*S
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query errors: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var errors []*StoredError
 	for rows.Next() {

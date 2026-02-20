@@ -93,7 +93,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("failed to connect to looms", zap.Error(err))
 	}
-	defer bridge.Close()
+	defer func() { _ = bridge.Close() }()
 	logger.Info("connected to looms", zap.String("addr", *grpcAddr))
 
 	// Create MCP server with bridge as provider
