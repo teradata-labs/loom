@@ -3379,3 +3379,195 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 	},
 	Metadata: "loom/v1/loom.proto",
 }
+
+const (
+	AdminService_ListAllSessions_FullMethodName     = "/loom.v1.AdminService/ListAllSessions"
+	AdminService_CountSessionsByUser_FullMethodName = "/loom.v1.AdminService/CountSessionsByUser"
+	AdminService_GetSystemStats_FullMethodName      = "/loom.v1.AdminService/GetSystemStats"
+)
+
+// AdminServiceClient is the client API for AdminService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// AdminService provides administrative operations that bypass RLS.
+// Used by platform operators for cross-tenant visibility and system management.
+// All RPCs require admin-level authentication.
+type AdminServiceClient interface {
+	// ListAllSessions lists sessions across all users (bypasses RLS).
+	ListAllSessions(ctx context.Context, in *ListAllSessionsRequest, opts ...grpc.CallOption) (*ListAllSessionsResponse, error)
+	// CountSessionsByUser returns session counts grouped by user.
+	CountSessionsByUser(ctx context.Context, in *CountSessionsByUserRequest, opts ...grpc.CallOption) (*CountSessionsByUserResponse, error)
+	// GetSystemStats returns aggregate system statistics across all users.
+	GetSystemStats(ctx context.Context, in *GetSystemStatsRequest, opts ...grpc.CallOption) (*GetSystemStatsResponse, error)
+}
+
+type adminServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewAdminServiceClient(cc grpc.ClientConnInterface) AdminServiceClient {
+	return &adminServiceClient{cc}
+}
+
+func (c *adminServiceClient) ListAllSessions(ctx context.Context, in *ListAllSessionsRequest, opts ...grpc.CallOption) (*ListAllSessionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAllSessionsResponse)
+	err := c.cc.Invoke(ctx, AdminService_ListAllSessions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) CountSessionsByUser(ctx context.Context, in *CountSessionsByUserRequest, opts ...grpc.CallOption) (*CountSessionsByUserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CountSessionsByUserResponse)
+	err := c.cc.Invoke(ctx, AdminService_CountSessionsByUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) GetSystemStats(ctx context.Context, in *GetSystemStatsRequest, opts ...grpc.CallOption) (*GetSystemStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSystemStatsResponse)
+	err := c.cc.Invoke(ctx, AdminService_GetSystemStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AdminServiceServer is the server API for AdminService service.
+// All implementations must embed UnimplementedAdminServiceServer
+// for forward compatibility.
+//
+// AdminService provides administrative operations that bypass RLS.
+// Used by platform operators for cross-tenant visibility and system management.
+// All RPCs require admin-level authentication.
+type AdminServiceServer interface {
+	// ListAllSessions lists sessions across all users (bypasses RLS).
+	ListAllSessions(context.Context, *ListAllSessionsRequest) (*ListAllSessionsResponse, error)
+	// CountSessionsByUser returns session counts grouped by user.
+	CountSessionsByUser(context.Context, *CountSessionsByUserRequest) (*CountSessionsByUserResponse, error)
+	// GetSystemStats returns aggregate system statistics across all users.
+	GetSystemStats(context.Context, *GetSystemStatsRequest) (*GetSystemStatsResponse, error)
+	mustEmbedUnimplementedAdminServiceServer()
+}
+
+// UnimplementedAdminServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedAdminServiceServer struct{}
+
+func (UnimplementedAdminServiceServer) ListAllSessions(context.Context, *ListAllSessionsRequest) (*ListAllSessionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAllSessions not implemented")
+}
+func (UnimplementedAdminServiceServer) CountSessionsByUser(context.Context, *CountSessionsByUserRequest) (*CountSessionsByUserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CountSessionsByUser not implemented")
+}
+func (UnimplementedAdminServiceServer) GetSystemStats(context.Context, *GetSystemStatsRequest) (*GetSystemStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSystemStats not implemented")
+}
+func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
+func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
+
+// UnsafeAdminServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AdminServiceServer will
+// result in compilation errors.
+type UnsafeAdminServiceServer interface {
+	mustEmbedUnimplementedAdminServiceServer()
+}
+
+func RegisterAdminServiceServer(s grpc.ServiceRegistrar, srv AdminServiceServer) {
+	// If the following call panics, it indicates UnimplementedAdminServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&AdminService_ServiceDesc, srv)
+}
+
+func _AdminService_ListAllSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAllSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ListAllSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ListAllSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ListAllSessions(ctx, req.(*ListAllSessionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_CountSessionsByUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CountSessionsByUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).CountSessionsByUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_CountSessionsByUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).CountSessionsByUser(ctx, req.(*CountSessionsByUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_GetSystemStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSystemStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).GetSystemStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_GetSystemStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).GetSystemStats(ctx, req.(*GetSystemStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var AdminService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "loom.v1.AdminService",
+	HandlerType: (*AdminServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ListAllSessions",
+			Handler:    _AdminService_ListAllSessions_Handler,
+		},
+		{
+			MethodName: "CountSessionsByUser",
+			Handler:    _AdminService_CountSessionsByUser_Handler,
+		},
+		{
+			MethodName: "GetSystemStats",
+			Handler:    _AdminService_GetSystemStats_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "loom/v1/loom.proto",
+}

@@ -16,6 +16,7 @@ package pgxdriver
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -81,6 +82,9 @@ func NewPool(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer obse
 }
 
 // buildDSN constructs a PostgreSQL connection string from proto config.
+// Values are single-quoted per libpq keyword/value format to handle special
+// characters (spaces, @, =, etc.) safely. See:
+// https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
 func buildDSN(cfg *loomv1.PostgresStorageConfig) string {
 	if cfg.GetDsn() != "" {
 		return cfg.GetDsn()
@@ -107,16 +111,27 @@ func buildDSN(cfg *loomv1.PostgresStorageConfig) string {
 	}
 
 	dsn := fmt.Sprintf("host=%s port=%d dbname=%s sslmode=%s",
-		host, port, database, sslMode)
+		dsnQuoteValue(host), port, dsnQuoteValue(database), dsnQuoteValue(sslMode))
 
 	if user := cfg.GetUser(); user != "" {
-		dsn += fmt.Sprintf(" user=%s", user)
+		dsn += fmt.Sprintf(" user=%s", dsnQuoteValue(user))
 	}
 	if password := cfg.GetPassword(); password != "" {
-		dsn += fmt.Sprintf(" password=%s", password)
+		dsn += fmt.Sprintf(" password=%s", dsnQuoteValue(password))
 	}
 
 	return dsn
+}
+
+// dsnQuoteValue quotes a value for use in a libpq keyword/value connection string.
+// Per the PostgreSQL documentation, values containing spaces, special characters,
+// or that are empty must be enclosed in single quotes. Within quoted values,
+// single quotes and backslashes must be escaped with a backslash.
+// For simplicity and safety, we always quote all values.
+func dsnQuoteValue(val string) string {
+	// Escape backslashes and single quotes within the value.
+	escaped := strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(val)
+	return "'" + escaped + "'"
 }
 
 // applyPoolConfig maps proto pool settings to pgxpool.Config.

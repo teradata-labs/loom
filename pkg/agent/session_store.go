@@ -78,6 +78,9 @@ func NewSessionStoreWithConfig(config DBConfig, tracer observability.Tracer) (*S
 
 // initSchema creates the database schema if it doesn't exist.
 func (s *SessionStore) initSchema() error {
+	// context.Background() is intentional here: schema initialization runs at startup
+	// before any user context exists. This is a bootstrap operation that creates/migrates
+	// database tables and is not subject to RLS policies.
 	ctx := context.Background()
 	var span *observability.Span
 	if s.tracer != nil {
@@ -458,6 +461,8 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	if parentSessionID.Valid {
 		session.ParentSessionID = parentSessionID.String
 	}
+	// SQLite backend is single-tenant; set default UserID
+	session.UserID = "default-user"
 
 	if err == sql.ErrNoRows {
 		span.SetAttribute("found", "false")
@@ -627,7 +632,8 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		if agentID.Valid {
 			msg.AgentID = agentID.String
 		}
-		// If agentID is NULL, msg.AgentID stays empty string (default zero value)
+		// SQLite backend is single-tenant; set default UserID
+		msg.UserID = "default-user"
 		if err != nil {
 			span.RecordError(err)
 			return nil, fmt.Errorf("failed to scan message: %w", err)

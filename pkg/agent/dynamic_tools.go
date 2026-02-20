@@ -49,7 +49,7 @@ type DynamicToolDiscovery struct {
 	logger       *zap.Logger
 	cache        map[string]shuttle.Tool // Intent → Tool cache
 	mu           sync.RWMutex
-	sqlStore     storage.ResultStore         // For storing large SQL results
+	sqlStore     storage.ResultStore        // For storing large SQL results
 	sharedMemory *storage.SharedMemoryStore // For storing other large data
 }
 

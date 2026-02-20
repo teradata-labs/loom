@@ -135,15 +135,15 @@ func TestSessionMemoryTool_List(t *testing.T) {
 
 	// Create test sessions
 	agentID := "test-agent"
-	session1 := memory.GetOrCreateSession("session-1")
+	ctx := context.Background()
+	session1 := memory.GetOrCreateSession(ctx, "session-1")
 	session1.AgentID = agentID
-	session2 := memory.GetOrCreateSession("session-2")
+	session2 := memory.GetOrCreateSession(ctx, "session-2")
 	session2.AgentID = agentID
-	session3 := memory.GetOrCreateSession("session-3")
+	session3 := memory.GetOrCreateSession(ctx, "session-3")
 	session3.AgentID = "other-agent"
 
 	// Save sessions
-	ctx := context.Background()
 	require.NoError(t, store.SaveSession(ctx, session1))
 	require.NoError(t, store.SaveSession(ctx, session2))
 	require.NoError(t, store.SaveSession(ctx, session3))
@@ -208,7 +208,7 @@ func TestSessionMemoryTool_List_WithLimit(t *testing.T) {
 	// Create 5 sessions
 	for i := 0; i < 5; i++ {
 		sessionID := fmt.Sprintf("session-%d", i)
-		session := memory.GetOrCreateSession(sessionID)
+		session := memory.GetOrCreateSession(ctx, sessionID)
 		session.AgentID = agentID
 		require.NoError(t, store.SaveSession(ctx, session))
 	}
@@ -247,7 +247,7 @@ func TestSessionMemoryTool_Summary(t *testing.T) {
 	ctx := context.Background()
 
 	// Create session first (required for FOREIGN KEY constraint)
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 	session.AgentID = "test-agent"
 	require.NoError(t, store.SaveSession(ctx, session))
 
@@ -327,13 +327,13 @@ func TestSessionMemoryTool_Compact(t *testing.T) {
 
 	// Create session with segmented memory
 	profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 	segMem := NewSegmentedMemoryWithCompression("Test ROM", 20000, 2000, profile)
 	session.SegmentedMem = segMem
 
 	// Add messages to L1
 	for i := 0; i < 10; i++ {
-		segMem.AddMessage(Message{
+		segMem.AddMessage(context.Background(), Message{
 			Role:      "user",
 			Content:   fmt.Sprintf("Test message %d with enough content to make it substantial", i),
 			Timestamp: time.Now(),
@@ -380,17 +380,17 @@ func TestSessionMemoryTool_Compact_NotNeeded(t *testing.T) {
 
 	// Create session with minimal messages
 	profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 	segMem := NewSegmentedMemoryWithCompression("Test ROM", 20000, 2000, profile)
 	session.SegmentedMem = segMem
 
 	// Add only 2 messages (below minL1Messages=4)
-	segMem.AddMessage(Message{
+	segMem.AddMessage(context.Background(), Message{
 		Role:      "user",
 		Content:   "Message 1",
 		Timestamp: time.Now(),
 	})
-	segMem.AddMessage(Message{
+	segMem.AddMessage(context.Background(), Message{
 		Role:      "assistant",
 		Content:   "Response 1",
 		Timestamp: time.Now(),
@@ -422,17 +422,17 @@ func TestSessionMemoryTool_Compact_Force(t *testing.T) {
 
 	// Create session with minimal messages
 	profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 	segMem := NewSegmentedMemoryWithCompression("Test ROM", 20000, 2000, profile)
 	session.SegmentedMem = segMem
 
 	// Add only 2 messages
-	segMem.AddMessage(Message{
+	segMem.AddMessage(context.Background(), Message{
 		Role:      "user",
 		Content:   "Message 1",
 		Timestamp: time.Now(),
 	})
-	segMem.AddMessage(Message{
+	segMem.AddMessage(context.Background(), Message{
 		Role:      "assistant",
 		Content:   "Response 1",
 		Timestamp: time.Now(),

@@ -41,12 +41,57 @@ func TestBuildDSN_WithIndividualFields(t *testing.T) {
 		SslMode:  "verify-full",
 	}
 	dsn := buildDSN(cfg)
-	assert.Contains(t, dsn, "host=db.example.com")
+	assert.Contains(t, dsn, "host='db.example.com'")
 	assert.Contains(t, dsn, "port=5433")
-	assert.Contains(t, dsn, "dbname=loomdb")
-	assert.Contains(t, dsn, "user=loom")
-	assert.Contains(t, dsn, "password=secret")
-	assert.Contains(t, dsn, "sslmode=verify-full")
+	assert.Contains(t, dsn, "dbname='loomdb'")
+	assert.Contains(t, dsn, "user='loom'")
+	assert.Contains(t, dsn, "password='secret'")
+	assert.Contains(t, dsn, "sslmode='verify-full'")
+}
+
+func TestBuildDSN_SpecialCharactersInPassword(t *testing.T) {
+	cfg := &loomv1.PostgresStorageConfig{
+		Host:     "localhost",
+		Database: "testdb",
+		User:     "admin",
+		Password: "my pass@word",
+	}
+	dsn := buildDSN(cfg)
+	assert.Contains(t, dsn, "password='my pass@word'")
+}
+
+func TestBuildDSN_SingleQuoteAndBackslashInPassword(t *testing.T) {
+	cfg := &loomv1.PostgresStorageConfig{
+		Host:     "localhost",
+		Database: "testdb",
+		User:     "admin",
+		Password: `it's a p\ss`,
+	}
+	dsn := buildDSN(cfg)
+	assert.Contains(t, dsn, `password='it\'s a p\\ss'`)
+}
+
+func TestDsnQuoteValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "simple", input: "localhost", expected: "'localhost'"},
+		{name: "spaces", input: "my host", expected: "'my host'"},
+		{name: "at sign", input: "user@host", expected: "'user@host'"},
+		{name: "single quote", input: "it's", expected: `'it\'s'`},
+		{name: "backslash", input: `a\b`, expected: `'a\\b'`},
+		{name: "empty", input: "", expected: "''"},
+		{name: "equals sign", input: "a=b", expected: "'a=b'"},
+		{name: "combined special", input: `p@ss'w\rd`, expected: `'p@ss\'w\\rd'`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dsnQuoteValue(tc.input)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
 }
 
 func TestBuildDSN_DefaultPort(t *testing.T) {
@@ -64,7 +109,7 @@ func TestBuildDSN_DefaultSSLMode(t *testing.T) {
 		Database: "testdb",
 	}
 	dsn := buildDSN(cfg)
-	assert.Contains(t, dsn, "sslmode=require")
+	assert.Contains(t, dsn, "sslmode='require'")
 }
 
 func TestBuildDSN_EmptyConfig(t *testing.T) {

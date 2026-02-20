@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
 )
@@ -78,6 +79,12 @@ func (w *postgresBackendWrapper) PendingMigrations(ctx context.Context) ([]*Pend
 	return result, nil
 }
 
+// AdminStorage implements AdminStorageProvider by delegating to postgres.Backend.AdminStore.
+func (w *postgresBackendWrapper) AdminStorage() agent.AdminStorage {
+	return w.Backend.AdminStore()
+}
+
 // Compile-time checks
 var _ StorageBackend = (*postgresBackendWrapper)(nil)
 var _ MigrationInspector = (*postgresBackendWrapper)(nil)
+var _ AdminStorageProvider = (*postgresBackendWrapper)(nil)

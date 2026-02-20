@@ -2494,7 +2494,7 @@ func (s *MultiAgentServer) CreateSession(ctx context.Context, req *loomv1.Create
 	sessionID := GenerateSessionID()
 
 	// Create session without sending a message to the LLM
-	session := ag.CreateSession(sessionID)
+	session := ag.CreateSession(ctx, sessionID)
 
 	return ConvertSession(session), nil
 }

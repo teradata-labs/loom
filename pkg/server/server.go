@@ -273,7 +273,7 @@ func (s *Server) CreateSession(ctx context.Context, req *loomv1.CreateSessionReq
 	sessionID := GenerateSessionID()
 
 	// Create session without sending a message to the LLM
-	session := s.agent.CreateSession(sessionID)
+	session := s.agent.CreateSession(ctx, sessionID)
 
 	return ConvertSession(session), nil
 }

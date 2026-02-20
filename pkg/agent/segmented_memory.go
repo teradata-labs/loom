@@ -85,12 +85,12 @@ type SegmentedMemory struct {
 
 	// Swap Layer (cold - database-backed long-term storage)
 	sessionStore       SessionStorage // Database for persistent storage (optional)
-	sessionID          string        // Session identifier for swap operations
-	swapEnabled        bool          // Whether swap layer is configured
-	maxL2Tokens        int           // Maximum tokens in L2 before eviction to swap (default: 5000)
-	swapEvictionCount  int           // Number of L2 evictions to swap (statistics)
-	swapRetrievalCount int           // Number of retrievals from swap (statistics)
-	promotedContext    []Message     // Messages retrieved from swap and promoted to context
+	sessionID          string         // Session identifier for swap operations
+	swapEnabled        bool           // Whether swap layer is configured
+	maxL2Tokens        int            // Maximum tokens in L2 before eviction to swap (default: 5000)
+	swapEvictionCount  int            // Number of L2 evictions to swap (statistics)
+	swapRetrievalCount int            // Number of retrievals from swap (statistics)
+	promotedContext    []Message      // Messages retrieved from swap and promoted to context
 
 	// Token management
 	tokenCounter    *TokenCounter // Accurate token counting
@@ -226,7 +226,9 @@ func (sm *SegmentedMemory) SetTracer(tracer observability.Tracer) {
 	if tracer != nil {
 		sm.tracer = tracer
 
-		// Log compression profile configuration for observability
+		// Log compression profile configuration for observability.
+		// context.Background() is intentional here: SetTracer is a configuration setter called
+		// during agent initialization, before any user request context exists.
 		sm.tracer.RecordEvent(context.Background(), "memory.profile_configured", map[string]interface{}{
 			"profile":                    sm.compressionProfile.Name,
 			"max_l1_tokens":              sm.compressionProfile.MaxL1Tokens,
@@ -295,7 +297,9 @@ func (sm *SegmentedMemory) GetSwapStats() (evictions, retrievals int) {
 // - data_intensive: warning=50%, critical=70%, batches=2/4/6
 // - balanced: warning=60%, critical=75%, batches=3/5/7
 // - conversational: warning=70%, critical=85%, batches=4/6/8
-func (sm *SegmentedMemory) AddMessage(msg Message) {
+//
+// ctx is threaded through to enable RLS-aware storage operations during L2 compression and swap eviction.
+func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -341,7 +345,7 @@ func (sm *SegmentedMemory) AddMessage(msg Message) {
 			toCompress := sm.l1Messages[:toCompressCount]
 			sm.l1Messages = sm.l1Messages[toCompressCount:]
 
-			sm.compressToL2(toCompress)
+			sm.compressToL2(ctx, toCompress)
 			sm.updateTokenCount()
 			sm.tokenCountDirty = false
 
@@ -718,18 +722,19 @@ func (sm *SegmentedMemory) HasL2Content() bool {
 // compressToL2 summarizes old messages into L2 cache (must hold lock).
 // Uses LLM-powered compression if available, falls back to simple extraction.
 // If L2 exceeds maxL2Tokens and swap is enabled, evicts L2 to swap storage.
-func (sm *SegmentedMemory) compressToL2(messages []Message) {
+// ctx carries caller context (including RLS user_id) for storage operations.
+func (sm *SegmentedMemory) compressToL2(ctx context.Context, messages []Message) {
 	if len(messages) == 0 {
 		return
 	}
 
-	// Try LLM-powered compression if available (with timeout)
+	// Try LLM-powered compression if available (with timeout derived from caller ctx)
 	var summary string
 	if sm.compressor != nil && sm.compressor.IsEnabled() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		compressCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
-		compressed, err := sm.compressor.CompressMessages(ctx, messages)
+		compressed, err := sm.compressor.CompressMessages(compressCtx, messages)
 		if err == nil && compressed != "" {
 			summary = compressed
 		} else {
@@ -753,11 +758,10 @@ func (sm *SegmentedMemory) compressToL2(messages []Message) {
 		l2Tokens := sm.tokenCounter.CountTokens(sm.l2Summary)
 		if l2Tokens > sm.maxL2Tokens {
 			// Evict L2 to swap storage
-			if err := sm.evictL2ToSwap(); err != nil {
+			if err := sm.evictL2ToSwap(ctx); err != nil {
 				// Log error but don't crash - continue in degraded mode
 				// Use tracer to record error for observability
 				if sm.tracer != nil {
-					ctx := context.Background()
 					_, span := sm.tracer.StartSpan(ctx, "memory.swap_eviction_failed")
 					span.RecordError(err)
 					span.SetAttribute("l2_tokens", fmt.Sprintf("%d", l2Tokens))
@@ -1022,7 +1026,8 @@ func (sm *SegmentedMemory) ClearL2() {
 
 // CompactMemory forces compression of all L1 to L2.
 // Returns number of messages compressed and tokens saved.
-func (sm *SegmentedMemory) CompactMemory() (int, int) {
+// ctx carries caller context (including RLS user_id) for storage operations.
+func (sm *SegmentedMemory) CompactMemory(ctx context.Context) (int, int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1031,7 +1036,7 @@ func (sm *SegmentedMemory) CompactMemory() (int, int) {
 		messageCount := len(sm.l1Messages)
 		tokensBefore := sm.tokenCount
 
-		sm.compressToL2(sm.l1Messages)
+		sm.compressToL2(ctx, sm.l1Messages)
 		sm.l1Messages = sm.l1Messages[:0] // Clear L1
 		sm.updateTokenCount()
 		sm.tokenCountDirty = false
@@ -1169,7 +1174,8 @@ func (sm *SegmentedMemory) getBudgetWarning() string {
 // evictL2ToSwap moves the entire L2 summary to swap storage (must hold lock).
 // Called automatically when L2 exceeds maxL2Tokens.
 // The L2 summary is saved as a snapshot in the database, then L2 is cleared.
-func (sm *SegmentedMemory) evictL2ToSwap() error {
+// ctx carries caller context (including RLS user_id) for storage operations.
+func (sm *SegmentedMemory) evictL2ToSwap(ctx context.Context) error {
 	if !sm.swapEnabled || sm.l2Summary == "" {
 		return nil
 	}
@@ -1177,8 +1183,8 @@ func (sm *SegmentedMemory) evictL2ToSwap() error {
 	// Calculate token count
 	tokenCount := sm.tokenCounter.CountTokens(sm.l2Summary)
 
-	// Save L2 snapshot to database with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Save L2 snapshot to database with timeout derived from caller ctx
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	err := sm.sessionStore.SaveMemorySnapshot(ctx, sm.sessionID, "l2_summary", sm.l2Summary, tokenCount)

@@ -377,7 +377,7 @@ func TestSearchMessages_Integration(t *testing.T) {
 	memory.SetTracer(tracer)
 
 	sessionID := "integration-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Get segmented memory
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
@@ -428,7 +428,7 @@ func TestSearchMessages_TokenBudget(t *testing.T) {
 	memory.reservedOutputTokens = 100
 
 	sessionID := "budget-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	require.True(t, ok)
@@ -442,7 +442,7 @@ func TestSearchMessages_TokenBudget(t *testing.T) {
 			Content:   "This is a message to fill up the token budget with some content.",
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 	}
 
 	// Save large messages to database

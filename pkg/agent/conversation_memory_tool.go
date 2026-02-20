@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -127,8 +128,8 @@ func (t *ConversationMemoryTool) Execute(ctx context.Context, input map[string]i
 // executeRecall retrieves messages from swap storage by offset/limit.
 func (t *ConversationMemoryTool) executeRecall(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
 	// Extract session ID from context
-	sessionID, ok := ctx.Value("session_id").(string)
-	if !ok || sessionID == "" {
+	sessionID := session.SessionIDFromContext(ctx)
+	if sessionID == "" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
@@ -319,8 +320,8 @@ func (t *ConversationMemoryTool) executeSearch(ctx context.Context, input map[st
 // searchCurrentSession searches only the current session using BM25 + LLM reranking.
 func (t *ConversationMemoryTool) searchCurrentSession(ctx context.Context, query string, limit int) (*shuttle.Result, error) {
 	// Extract session ID
-	sessionID, ok := ctx.Value("session_id").(string)
-	if !ok || sessionID == "" {
+	sessionID := session.SessionIDFromContext(ctx)
+	if sessionID == "" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
@@ -396,9 +397,9 @@ func (t *ConversationMemoryTool) searchCurrentSession(ctx context.Context, query
 
 // searchAgentSessions searches all sessions belonging to the current agent.
 func (t *ConversationMemoryTool) searchAgentSessions(ctx context.Context, query string, limit int) (*shuttle.Result, error) {
-	// Extract agent ID from context
-	agentID, ok := ctx.Value("agent_id").(string)
-	if !ok || agentID == "" {
+	// Extract agent ID from context (typed key)
+	agentID := session.AgentIDFromContext(ctx)
+	if agentID == "" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
@@ -509,8 +510,8 @@ func (t *ConversationMemoryTool) formatSearchResults(messages []Message, query s
 // executeClear removes promoted messages from context.
 func (t *ConversationMemoryTool) executeClear(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
 	// Extract session ID
-	sessionID, ok := ctx.Value("session_id").(string)
-	if !ok || sessionID == "" {
+	sessionID := session.SessionIDFromContext(ctx)
+	if sessionID == "" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{

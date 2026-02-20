@@ -220,7 +220,11 @@ func (s *ArtifactStore) List(ctx context.Context, filter *artifacts.Filter) ([]*
 		}
 		for _, tag := range filter.Tags {
 			query += fmt.Sprintf(" AND tags @> $%d::jsonb", argIdx)
-			tagJSON, _ := json.Marshal([]string{tag})
+			tagJSON, err := json.Marshal([]string{tag})
+			if err != nil {
+				span.RecordError(err)
+				return nil, fmt.Errorf("failed to marshal tag filter: %w", err)
+			}
 			args = append(args, string(tagJSON))
 			argIdx++
 		}

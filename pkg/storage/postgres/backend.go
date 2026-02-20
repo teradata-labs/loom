@@ -125,6 +125,12 @@ func (b *Backend) Pool() *pgxpool.Pool {
 	return b.pool
 }
 
+// AdminStore creates a new AdminStore using the backend's pool and tracer.
+// This provides cross-tenant administrative queries that bypass RLS.
+func (b *Backend) AdminStore() *AdminStore {
+	return NewAdminStore(b.pool, b.tracer)
+}
+
 // RawPendingMigrations returns the list of migrations that have not yet been applied.
 // Returns the postgres-internal Migration type. The backend package wraps this
 // to satisfy the MigrationInspector interface without introducing an import cycle.

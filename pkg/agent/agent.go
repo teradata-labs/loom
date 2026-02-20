@@ -126,8 +126,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 
 	// Set up system prompt function for memory
 	// This allows dynamic prompt loading from PromptRegistry
-	a.memory.SetSystemPromptFunc(func() string {
-		return a.getSystemPrompt()
+	// Context is threaded through for proper RLS user_id propagation in PostgreSQL.
+	a.memory.SetSystemPromptFunc(func(ctx context.Context) string {
+		return a.getSystemPrompt(ctx)
 	})
 
 	// Set context limits for memory (if configured)
@@ -481,7 +482,7 @@ func formatSystemPromptWithDatetime(prompt string, workflowCtx *WorkflowCommunic
 	return header + workflowInstructions + prompt
 }
 
-func (a *Agent) getSystemPrompt() string {
+func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Load ROM content first (if configured)
 	var romContent string
 	if a.config != nil {
@@ -527,7 +528,7 @@ func (a *Agent) getSystemPrompt() string {
 
 		// Try streaming-specific prompt if supported
 		if streamingSupported {
-			prompt, err := a.prompts.Get(context.Background(), "agent.system_with_streaming", vars)
+			prompt, err := a.prompts.Get(ctx, "agent.system_with_streaming", vars)
 			if err == nil && prompt != "" {
 				return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
 			}
@@ -535,13 +536,13 @@ func (a *Agent) getSystemPrompt() string {
 		}
 
 		// Try loading system prompt with patterns if pattern library is available
-		prompt, err := a.prompts.Get(context.Background(), "agent.system", vars)
+		prompt, err := a.prompts.Get(ctx, "agent.system", vars)
 		if err == nil && prompt != "" {
 			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
 		}
 
 		// Fall back to basic system prompt
-		prompt, err = a.prompts.Get(context.Background(), "agent.system_basic", vars)
+		prompt, err = a.prompts.Get(ctx, "agent.system_basic", vars)
 		if err == nil && prompt != "" {
 			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
 		}
@@ -608,11 +609,11 @@ func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) 
 
 // getGuidanceMessage loads a guidance message from PromptRegistry or returns default.
 // Used for user-facing messages like error recovery, max turns, etc.
-func (a *Agent) getGuidanceMessage(key string, vars map[string]interface{}) string {
+func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[string]interface{}) string {
 	// Try loading from PromptRegistry
 	if a.prompts != nil {
 		fullKey := "guidance." + key
-		msg, err := a.prompts.Get(context.Background(), fullKey, vars)
+		msg, err := a.prompts.Get(ctx, fullKey, vars)
 		if err == nil && msg != "" {
 			return msg
 		}
@@ -641,11 +642,11 @@ func (a *Agent) getGuidanceMessage(key string, vars map[string]interface{}) stri
 // Format: errors.{category}.{type} (e.g., "errors.llm.timeout", "errors.tool_execution.invalid_input")
 //
 //nolint:unused // Infrastructure for future error message integration
-func (a *Agent) getErrorMessage(category string, errorType string, vars map[string]interface{}) string {
+func (a *Agent) getErrorMessage(ctx context.Context, category string, errorType string, vars map[string]interface{}) string {
 	// Try loading from PromptRegistry
 	if a.prompts != nil {
 		fullKey := fmt.Sprintf("errors.%s.%s", category, errorType)
-		msg, err := a.prompts.Get(context.Background(), fullKey, vars)
+		msg, err := a.prompts.Get(ctx, fullKey, vars)
 		if err == nil && msg != "" {
 			return msg
 		}
@@ -695,7 +696,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	}
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
-	session := a.memory.GetOrCreateSessionWithAgent(sessionID, a.config.Name, "")
+	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	// Add user message to history
 	userMsg := Message{
@@ -704,7 +705,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		AgentID:   a.id, // Track which agent received this message
 		Timestamp: time.Now(),
 	}
-	session.AddMessage(userMsg)
+	session.AddMessage(ctx, userMsg)
 
 	// Persist message if storage configured
 	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
@@ -728,7 +729,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Progressive disclosure: Check if conversation_memory tool should be registered
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
-	a.checkAndRegisterSessionMemoryTool()
+	a.checkAndRegisterSessionMemoryTool(ctx)
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -765,7 +766,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}
-	session.AddMessage(assistantMsg)
+	session.AddMessage(ctx, assistantMsg)
 
 	// Persist final message and session
 	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
@@ -869,7 +870,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	}
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
-	session := a.memory.GetOrCreateSessionWithAgent(sessionID, a.config.Name, "")
+	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	// Add user message to history
 	userMsg := Message{
@@ -878,7 +879,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 		AgentID:   a.id, // Track which agent received this message
 		Timestamp: time.Now(),
 	}
-	session.AddMessage(userMsg)
+	session.AddMessage(ctx, userMsg)
 
 	// Persist message if storage configured
 	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
@@ -908,7 +909,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// Progressive disclosure: Check if conversation_memory tool should be registered
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
-	a.checkAndRegisterSessionMemoryTool()
+	a.checkAndRegisterSessionMemoryTool(ctx)
 
 	if err != nil {
 		// Emit failure event
@@ -932,7 +933,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}
-	session.AddMessage(assistantMsg)
+	session.AddMessage(ctx, assistantMsg)
 
 	// Persist final message and session
 	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
@@ -1128,8 +1129,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
 			}
 
-			// Step 2: Recommend pattern (if intent confidence sufficient)
-			if intent != patterns.IntentUnknown && intentConf > 0.3 {
+			// Step 2: Recommend pattern based on keyword matching and intent
+			// Always attempt pattern recommendation regardless of intent classification.
+			// RecommendPattern uses its own keyword-based search which can find relevant
+			// patterns even when the intent classifier returns IntentUnknown (e.g., for
+			// meta-agent workflows or domain-specific queries not covered by the default
+			// intent classifier).
+			{
 				patternName, patternConf := a.orchestrator.RecommendPattern(lastUserMessage, intent)
 				patternConfidence = patternConf
 
@@ -1334,7 +1340,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			CostUSD:    llmResp.Usage.CostUSD,
 			Timestamp:  time.Now(),
 		}
-		session.AddMessage(assistantMsg)
+		session.AddMessage(ctx, assistantMsg)
 
 		// Persist assistant message with tool calls (critical for observability)
 		if err := a.memory.PersistMessage(ctx, session.ID, assistantMsg); err != nil {
@@ -1497,7 +1503,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				AgentID:    a.id, // Track which agent executed this tool
 				Timestamp:  time.Now(),
 			}
-			session.AddMessage(toolMsg)
+			session.AddMessage(ctx, toolMsg)
 
 			// Persist message
 			if persistErr := a.memory.PersistMessage(ctx, session.ID, toolMsg); persistErr != nil {
@@ -1583,7 +1589,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		AgentID:   a.id, // Track which agent created this synthesis request
 		Timestamp: time.Now(),
 	}
-	session.AddMessage(synthesisMsg)
+	session.AddMessage(ctx, synthesisMsg)
 
 	// Persist synthesis message for observability
 	if err := a.memory.PersistMessage(ctx, session.ID, synthesisMsg); err != nil {
@@ -1597,7 +1603,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
 	if err != nil {
 		// Only fall back to guidance message if synthesis fails
-		maxTurnsMessage := a.getGuidanceMessage("max_turns_reached", nil)
+		maxTurnsMessage := a.getGuidanceMessage(ctx, "max_turns_reached", nil)
 		return &Response{
 			Content:        maxTurnsMessage,
 			Usage:          Usage{},
@@ -1786,7 +1792,7 @@ func (a *Agent) checkAndRegisterConversationMemoryTool(sessionID string) {
 
 // checkAndRegisterSessionMemoryTool implements progressive disclosure for session_memory tool.
 // Registers the tool after 3+ sessions accumulate, when session management becomes relevant.
-func (a *Agent) checkAndRegisterSessionMemoryTool() {
+func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
 	// Skip if tool already registered
 	if a.tools.IsRegistered("session_memory") {
 		return
@@ -1800,8 +1806,8 @@ func (a *Agent) checkAndRegisterSessionMemoryTool() {
 	// Get agent ID from current agent
 	agentID := a.config.Name // Use agent name as ID
 
-	// Count sessions for this agent
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Count sessions for this agent using caller's context for proper RLS propagation
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	sessionIDs, err := a.memory.store.LoadAgentSessions(ctx, agentID)
@@ -2256,10 +2262,11 @@ func (a *Agent) cleanupSessionReferences(ctx context.Context, sessionID string) 
 
 // CreateSession creates a new session without sending a message to the LLM.
 // Use this for session initialization; use Chat() for actual conversations.
-func (a *Agent) CreateSession(sessionID string) *Session {
+// ctx carries user identity for RLS-scoped storage access.
+func (a *Agent) CreateSession(ctx context.Context, sessionID string) *Session {
 	// Use GetOrCreateSessionWithAgent to properly set agent_id in session metadata
 	// This is critical for ReferenceStore namespacing and workflow sub-agent communication
-	return a.memory.GetOrCreateSessionWithAgent(sessionID, a.config.Name, "")
+	return a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 }
 
 // RegisteredTools returns all registered tools.

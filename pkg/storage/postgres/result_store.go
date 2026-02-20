@@ -63,7 +63,11 @@ func (s *ResultStore) Store(ctx context.Context, id string, data interface{}) (*
 	}
 
 	tableName := sanitizeTableName("tool_result_" + id)
-	columnsJSON, _ := json.Marshal(columns)
+	columnsJSON, err := json.Marshal(columns)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to marshal columns: %w", err)
+	}
 	sizeBytes := estimateSize(rows, columns)
 
 	var ref *loomv1.DataReference

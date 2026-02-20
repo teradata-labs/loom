@@ -49,5 +49,24 @@ type SessionStorage interface {
 	Close() error
 }
 
+// SoftDeleteStorage defines optional soft-delete operations.
+// Not all backends support soft-delete (SQLite does hard delete).
+// Use type assertion to check if a SessionStorage supports soft-delete:
+//
+//	if sds, ok := store.(SoftDeleteStorage); ok {
+//	    sds.RestoreSession(ctx, sessionID)
+//	}
+type SoftDeleteStorage interface {
+	// SoftDeleteSession marks a session as deleted without removing data.
+	// The session can be restored with RestoreSession.
+	SoftDeleteSession(ctx context.Context, sessionID string) error
+
+	// RestoreSession restores a soft-deleted session.
+	RestoreSession(ctx context.Context, sessionID string) error
+
+	// PurgeDeleted permanently removes all soft-deleted data older than the grace period.
+	PurgeDeleted(ctx context.Context, graceInterval string) error
+}
+
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)

@@ -127,6 +127,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 
 		sess := &agent.Session{
 			ID:           sessionID,
+			UserID:       userID,
 			CreatedAt:    createdAt,
 			UpdatedAt:    updatedAt,
 			TotalCostUSD: totalCost,
@@ -163,6 +164,10 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		if err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to load messages: %w", err)
+		}
+		// Set UserID on each message from the known user context
+		for i := range messages {
+			messages[i].UserID = userID
 		}
 		sess.Messages = messages
 
@@ -714,6 +719,66 @@ func (s *SessionStore) GetStats(ctx context.Context) (*agent.Stats, error) {
 func (s *SessionStore) Close() error {
 	return nil
 }
+
+// SoftDeleteSession marks a session as deleted without removing data.
+// This is the same as DeleteSession for PostgreSQL (already uses soft-delete).
+func (s *SessionStore) SoftDeleteSession(ctx context.Context, sessionID string) error {
+	return s.DeleteSession(ctx, sessionID)
+}
+
+// RestoreSession restores a soft-deleted session by clearing deleted_at.
+func (s *SessionStore) RestoreSession(ctx context.Context, sessionID string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.restore_session")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		tag, err := tx.Exec(ctx,
+			"UPDATE sessions SET deleted_at = NULL WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL",
+			sessionID, userID,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to restore session: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("session %s not found or not deleted", sessionID)
+		}
+		return nil
+	})
+}
+
+// PurgeDeleted permanently removes all soft-deleted data older than the grace interval.
+// graceInterval should be a PostgreSQL interval string like '30 days', '7 days', etc.
+func (s *SessionStore) PurgeDeleted(ctx context.Context, graceInterval string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.purge_deleted")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("grace_interval", graceInterval)
+
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, "SELECT * FROM purge_soft_deleted($1::interval)", graceInterval)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to purge soft-deleted data: %w", err)
+		}
+		defer rows.Close()
+
+		// Consume rows to complete the function call
+		for rows.Next() {
+			var tableName string
+			var deletedCount int64
+			if scanErr := rows.Scan(&tableName, &deletedCount); scanErr != nil {
+				continue
+			}
+			span.SetAttribute("purged_"+tableName, fmt.Sprintf("%d", deletedCount))
+		}
+		return rows.Err()
+	})
+}
+
+// Compile-time check: SessionStore implements SoftDeleteStorage.
+var _ agent.SoftDeleteStorage = (*SessionStore)(nil)
 
 // scanMessages extracts Message objects from pgx rows.
 func scanMessages(rows pgx.Rows) ([]agent.Message, error) {

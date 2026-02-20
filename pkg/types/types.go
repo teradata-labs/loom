@@ -124,6 +124,11 @@ type Message struct {
 	// Optional - may be empty for messages created before this field was added
 	AgentID string
 
+	// UserID identifies which user owns this message (for RLS multi-tenancy).
+	// Set from context via interceptor for PostgreSQL backends.
+	// Defaults to "default-user" for SQLite backends.
+	UserID string
+
 	// Timestamp when the message was created
 	Timestamp time.Time
 
@@ -229,6 +234,11 @@ type Session struct {
 	// Set for sub-agent sessions created by workflow coordinators
 	ParentSessionID string
 
+	// UserID identifies which user owns this session (for RLS multi-tenancy).
+	// Set from context via interceptor for PostgreSQL backends.
+	// Defaults to "default-user" for SQLite backends.
+	UserID string
+
 	// Messages is the conversation history (flat, for backward compatibility)
 	Messages []Message
 
@@ -260,14 +270,15 @@ type Session struct {
 // SegmentedMemoryInterface defines the interface for segmented memory.
 // This allows Session to work with segmented memory without importing pkg/agent.
 type SegmentedMemoryInterface interface {
-	AddMessage(msg Message)
+	AddMessage(ctx context.Context, msg Message)
 	GetMessagesForLLM() []Message
 }
 
 // AddMessage adds a message to the session history.
 // If SegmentedMem is configured, uses tiered memory management.
 // Otherwise falls back to flat message list.
-func (s *Session) AddMessage(msg Message) {
+// ctx is threaded through to enable RLS-aware storage operations during compression.
+func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -277,7 +288,7 @@ func (s *Session) AddMessage(msg Message) {
 	// Add to segmented memory if configured
 	if s.SegmentedMem != nil {
 		if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
-			segMem.AddMessage(msg)
+			segMem.AddMessage(ctx, msg)
 		}
 	}
 

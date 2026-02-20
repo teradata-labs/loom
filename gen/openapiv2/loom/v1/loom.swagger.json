@@ -7,6 +7,9 @@
   "tags": [
     {
       "name": "LoomService"
+    },
+    {
+      "name": "AdminService"
     }
   ],
   "consumes": [
@@ -16,6 +19,93 @@
     "application/json"
   ],
   "paths": {
+    "/v1/admin/sessions": {
+      "get": {
+        "summary": "ListAllSessions lists sessions across all users (bypasses RLS).",
+        "operationId": "AdminService_ListAllSessions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListAllSessionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "description": "Maximum number of sessions to return",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "offset",
+            "description": "Offset for pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "AdminService"
+        ]
+      }
+    },
+    "/v1/admin/sessions:count-by-user": {
+      "get": {
+        "summary": "CountSessionsByUser returns session counts grouped by user.",
+        "operationId": "AdminService_CountSessionsByUser",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CountSessionsByUserResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "AdminService"
+        ]
+      }
+    },
+    "/v1/admin/stats": {
+      "get": {
+        "summary": "GetSystemStats returns aggregate system statistics across all users.",
+        "operationId": "AdminService_GetSystemStats",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetSystemStatsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "AdminService"
+        ]
+      }
+    },
     "/v1/agents": {
       "get": {
         "summary": "ListAgents lists all registered agents.",
@@ -4092,6 +4182,20 @@
       },
       "description": "CostInfo tracks LLM and execution costs."
     },
+    "v1CountSessionsByUserResponse": {
+      "type": "object",
+      "properties": {
+        "userCounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": "Map of user_id to session count"
+        }
+      },
+      "description": "CountSessionsByUserResponse returns session counts per user."
+    },
     "v1CreateAgentRequest": {
       "type": "object",
       "properties": {
@@ -4764,6 +4868,42 @@
       },
       "description": "GetStorageStatusResponse returns storage backend health."
     },
+    "v1GetSystemStatsResponse": {
+      "type": "object",
+      "properties": {
+        "totalSessions": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total sessions across all users"
+        },
+        "totalMessages": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total messages across all users"
+        },
+        "totalToolExecutions": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total tool executions across all users"
+        },
+        "totalUsers": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total distinct users"
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "format": "double",
+          "title": "Total cost in USD across all users"
+        },
+        "totalTokens": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total tokens consumed across all users"
+        }
+      },
+      "description": "GetSystemStatsResponse returns aggregate system statistics."
+    },
     "v1GetUIAppResponse": {
       "type": "object",
       "properties": {
@@ -5040,6 +5180,25 @@
         }
       },
       "description": "ListAgentsResponse returns list of agents."
+    },
+    "v1ListAllSessionsResponse": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Session"
+          },
+          "title": "Sessions from all users"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count of sessions across all users"
+        }
+      },
+      "description": "ListAllSessionsResponse returns sessions across all users."
     },
     "v1ListArtifactsResponse": {
       "type": "object",

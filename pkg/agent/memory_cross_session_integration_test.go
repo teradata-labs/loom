@@ -49,7 +49,7 @@ func TestCrossSessionMemory_CoordinatorToSubAgent_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Step 1: Coordinator creates its session
-	coordSession := memory.GetOrCreateSessionWithAgent("coord-session-1", "coordinator", "")
+	coordSession := memory.GetOrCreateSessionWithAgent(ctx, "coord-session-1", "coordinator", "")
 	assert.Equal(t, "coordinator", coordSession.AgentID)
 	assert.Equal(t, "", coordSession.ParentSessionID)
 
@@ -73,12 +73,12 @@ func TestCrossSessionMemory_CoordinatorToSubAgent_Integration(t *testing.T) {
 		Timestamp:      time.Now().Add(-3 * time.Second),
 	}
 
-	memory.AddMessage("coord-session-1", coordMsg1)
-	memory.AddMessage("coord-session-1", coordMsg2)
-	memory.AddMessage("coord-session-1", coordMsg3)
+	memory.AddMessage(ctx, "coord-session-1", coordMsg1)
+	memory.AddMessage(ctx, "coord-session-1", coordMsg2)
+	memory.AddMessage(ctx, "coord-session-1", coordMsg3)
 
 	// Step 3: Sub-agent is created with link to coordinator session
-	subAgentSession := memory.GetOrCreateSessionWithAgent("sub-agent-session-1", "analyzer", "coord-session-1")
+	subAgentSession := memory.GetOrCreateSessionWithAgent(ctx, "sub-agent-session-1", "analyzer", "coord-session-1")
 	assert.Equal(t, "analyzer", subAgentSession.AgentID)
 	assert.Equal(t, "coord-session-1", subAgentSession.ParentSessionID)
 
@@ -103,8 +103,8 @@ func TestCrossSessionMemory_CoordinatorToSubAgent_Integration(t *testing.T) {
 		Timestamp:      time.Now().Add(-1 * time.Second),
 	}
 
-	memory.AddMessage("sub-agent-session-1", subMsg1)
-	memory.AddMessage("sub-agent-session-1", subMsg2)
+	memory.AddMessage(ctx, "sub-agent-session-1", subMsg1)
+	memory.AddMessage(ctx, "sub-agent-session-1", subMsg2)
 
 	// Step 6: Load all messages for analyzer agent (should include parent + own)
 	allAnalyzerMessages, err := store.LoadMessagesForAgent(ctx, "analyzer")
@@ -150,7 +150,7 @@ func TestCrossSessionMemory_MultipleSubAgents_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Create coordinator session
-	memory.GetOrCreateSessionWithAgent("coord-session-1", "coordinator", "")
+	memory.GetOrCreateSessionWithAgent(ctx, "coord-session-1", "coordinator", "")
 
 	// Coordinator adds shared message
 	coordMsg := Message{
@@ -159,11 +159,11 @@ func TestCrossSessionMemory_MultipleSubAgents_Integration(t *testing.T) {
 		SessionContext: types.SessionContextShared,
 		Timestamp:      time.Now().Add(-10 * time.Second),
 	}
-	memory.AddMessage("coord-session-1", coordMsg)
+	memory.AddMessage(ctx, "coord-session-1", coordMsg)
 
 	// Create two sub-agents
-	memory.GetOrCreateSessionWithAgent("analyzer-session", "analyzer", "coord-session-1")
-	memory.GetOrCreateSessionWithAgent("validator-session", "validator", "coord-session-1")
+	memory.GetOrCreateSessionWithAgent(ctx, "analyzer-session", "analyzer", "coord-session-1")
+	memory.GetOrCreateSessionWithAgent(ctx, "validator-session", "validator", "coord-session-1")
 
 	// Analyzer adds its messages
 	analyzerMsg := Message{
@@ -172,7 +172,7 @@ func TestCrossSessionMemory_MultipleSubAgents_Integration(t *testing.T) {
 		SessionContext: types.SessionContextDirect,
 		Timestamp:      time.Now().Add(-8 * time.Second),
 	}
-	memory.AddMessage("analyzer-session", analyzerMsg)
+	memory.AddMessage(ctx, "analyzer-session", analyzerMsg)
 
 	// Validator adds its messages
 	validatorMsg := Message{
@@ -181,7 +181,7 @@ func TestCrossSessionMemory_MultipleSubAgents_Integration(t *testing.T) {
 		SessionContext: types.SessionContextDirect,
 		Timestamp:      time.Now().Add(-6 * time.Second),
 	}
-	memory.AddMessage("validator-session", validatorMsg)
+	memory.AddMessage(ctx, "validator-session", validatorMsg)
 
 	// Verify each sub-agent sees parent message but NOT other sub-agent's direct messages
 	analyzerParentMsgs, err := store.LoadMessagesFromParentSession(ctx, "analyzer-session")
@@ -221,10 +221,11 @@ func TestCrossSessionMemory_RealtimeObservers_Integration(t *testing.T) {
 	defer store.Close()
 
 	memory := NewMemoryWithStore(store)
+	ctx := context.Background()
 
 	// Create coordinator and sub-agent sessions
-	memory.GetOrCreateSessionWithAgent("coord-session-1", "coordinator", "")
-	memory.GetOrCreateSessionWithAgent("sub-agent-session-1", "analyzer", "coord-session-1")
+	memory.GetOrCreateSessionWithAgent(ctx, "coord-session-1", "coordinator", "")
+	memory.GetOrCreateSessionWithAgent(ctx, "sub-agent-session-1", "analyzer", "coord-session-1")
 
 	// Set up observers for both agents
 	var coordMessages []Message
@@ -252,7 +253,7 @@ func TestCrossSessionMemory_RealtimeObservers_Integration(t *testing.T) {
 		SessionContext: types.SessionContextCoordinator,
 		Timestamp:      time.Now(),
 	}
-	memory.AddMessage("coord-session-1", coordMsg)
+	memory.AddMessage(ctx, "coord-session-1", coordMsg)
 
 	// Sub-agent adds message
 	subMsg := Message{
@@ -261,7 +262,7 @@ func TestCrossSessionMemory_RealtimeObservers_Integration(t *testing.T) {
 		SessionContext: types.SessionContextShared,
 		Timestamp:      time.Now(),
 	}
-	memory.AddMessage("sub-agent-session-1", subMsg)
+	memory.AddMessage(ctx, "sub-agent-session-1", subMsg)
 
 	// Wait for async notifications
 	time.Sleep(100 * time.Millisecond)
@@ -301,9 +302,10 @@ func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 	defer store.Close()
 
 	memory := NewMemoryWithStore(store)
+	ctx := context.Background()
 
 	// Create coordinator
-	memory.GetOrCreateSessionWithAgent("coord-session-1", "coordinator", "")
+	memory.GetOrCreateSessionWithAgent(ctx, "coord-session-1", "coordinator", "")
 
 	// Create multiple sub-agents concurrently
 	numSubAgents := 5
@@ -316,7 +318,7 @@ func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 			defer wg.Done()
 			sessionID := "sub-agent-session-" + string(rune('A'+idx))
 			agentID := "analyzer-" + string(rune('A'+idx))
-			memory.GetOrCreateSessionWithAgent(sessionID, agentID, "coord-session-1")
+			memory.GetOrCreateSessionWithAgent(ctx, sessionID, agentID, "coord-session-1")
 		}(i)
 	}
 	wg.Wait()
@@ -334,7 +336,7 @@ func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 				SessionContext: types.SessionContextDirect,
 				Timestamp:      time.Now(),
 			}
-			memory.AddMessage(sessionID, msg)
+			memory.AddMessage(ctx, sessionID, msg)
 			messageCount.Add(1)
 		}(i)
 	}
@@ -346,7 +348,7 @@ func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 	// Verify all sessions were persisted
 	for i := 0; i < numSubAgents; i++ {
 		sessionID := "sub-agent-session-" + string(rune('A'+i))
-		session, err := store.LoadSession(context.Background(), sessionID)
+		session, err := store.LoadSession(ctx, sessionID)
 		require.NoError(t, err)
 		assert.Equal(t, "coord-session-1", session.ParentSessionID)
 	}
@@ -354,7 +356,7 @@ func TestCrossSessionMemory_ConcurrentMultiAgent_Integration(t *testing.T) {
 	// Verify LoadAgentSessions works for each sub-agent
 	for i := 0; i < numSubAgents; i++ {
 		agentID := "analyzer-" + string(rune('A'+i))
-		sessions, err := store.LoadAgentSessions(context.Background(), agentID)
+		sessions, err := store.LoadAgentSessions(ctx, agentID)
 		require.NoError(t, err)
 		assert.Len(t, sessions, 1, "Each sub-agent should have exactly 1 session")
 	}
@@ -376,8 +378,8 @@ func TestCrossSessionMemory_SessionContextFiltering_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Create coordinator and sub-agent
-	memory.GetOrCreateSessionWithAgent("coord-session-1", "coordinator", "")
-	memory.GetOrCreateSessionWithAgent("sub-agent-session-1", "analyzer", "coord-session-1")
+	memory.GetOrCreateSessionWithAgent(ctx, "coord-session-1", "coordinator", "")
+	memory.GetOrCreateSessionWithAgent(ctx, "sub-agent-session-1", "analyzer", "coord-session-1")
 
 	// Coordinator adds messages with ALL three contexts
 	msg1 := Message{
@@ -399,9 +401,9 @@ func TestCrossSessionMemory_SessionContextFiltering_Integration(t *testing.T) {
 		Timestamp:      time.Now().Add(-3 * time.Second),
 	}
 
-	memory.AddMessage("coord-session-1", msg1)
-	memory.AddMessage("coord-session-1", msg2)
-	memory.AddMessage("coord-session-1", msg3)
+	memory.AddMessage(ctx, "coord-session-1", msg1)
+	memory.AddMessage(ctx, "coord-session-1", msg2)
+	memory.AddMessage(ctx, "coord-session-1", msg3)
 
 	// Sub-agent should only see coordinator + shared (NOT direct)
 	parentMessages, err := store.LoadMessagesFromParentSession(ctx, "sub-agent-session-1")

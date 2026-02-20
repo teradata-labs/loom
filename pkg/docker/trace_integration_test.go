@@ -36,9 +36,7 @@ import (
 //  4. Verify container spans collected and forwarded to tracer
 //  5. Verify parent-child span relationships
 func TestTraceCollector_PythonIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -158,9 +156,7 @@ print(f"__LOOM_TRACE__:{json.dumps(child_span)}", file=sys.stderr, flush=True)
 
 // TestTraceCollector_NodeIntegration tests end-to-end Node.js trace propagation.
 func TestTraceCollector_NodeIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -256,9 +252,7 @@ process.stderr.write('__LOOM_TRACE__:' + JSON.stringify(childSpan) + '\n');
 
 // TestTraceCollector_MultipleSpans tests collecting multiple spans from single execution.
 func TestTraceCollector_MultipleSpans(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -346,9 +340,7 @@ print("Created 3 spans")
 
 // TestTraceCollector_ErrorHandling tests trace collection with span errors.
 func TestTraceCollector_ErrorHandling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -432,9 +424,7 @@ print(f"__LOOM_TRACE__:{json.dumps(span)}", file=sys.stderr, flush=True)
 
 // TestTraceCollector_BaggagePropagation tests W3C baggage propagation.
 func TestTraceCollector_BaggagePropagation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -506,9 +496,7 @@ for part in parts:
 
 // TestTraceCollector_NoTracer tests graceful behavior when tracing disabled.
 func TestTraceCollector_NoTracer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)

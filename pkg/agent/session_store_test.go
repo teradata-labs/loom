@@ -519,11 +519,11 @@ func TestMemory_WithStore_Integration(t *testing.T) {
 	mem := NewMemoryWithStore(store)
 
 	// Create session
-	session := mem.GetOrCreateSession("persistent-session")
-	session.AddMessage(Message{Role: "user", Content: "test"})
+	ctx := context.Background()
+	session := mem.GetOrCreateSession(ctx, "persistent-session")
+	session.AddMessage(ctx, Message{Role: "user", Content: "test"})
 
 	// Persist message
-	ctx := context.Background()
 	err = mem.PersistMessage(ctx, "persistent-session", session.Messages[0])
 	if err != nil {
 		t.Fatalf("Expected no error persisting message, got %v", err)
@@ -533,7 +533,7 @@ func TestMemory_WithStore_Integration(t *testing.T) {
 	mem.ClearAll()
 
 	// Session should be reloaded from store
-	reloaded := mem.GetOrCreateSession("persistent-session")
+	reloaded := mem.GetOrCreateSession(ctx, "persistent-session")
 	if len(reloaded.Messages) != 1 {
 		t.Errorf("Expected 1 message to be reloaded, got %d", len(reloaded.Messages))
 	}

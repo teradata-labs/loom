@@ -31,31 +31,33 @@ import (
 func TestMemory_GetOrCreateSessionWithAgent(t *testing.T) {
 	memory := NewMemory()
 
+	ctx := context.Background()
+
 	// Test: Create new session with agent metadata
-	session := memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "parent-session")
+	session := memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "parent-session")
 	assert.NotNil(t, session)
 	assert.Equal(t, "session-1", session.ID)
 	assert.Equal(t, "agent-1", session.AgentID)
 	assert.Equal(t, "parent-session", session.ParentSessionID)
 
 	// Test: Retrieve same session (should return existing)
-	session2 := memory.GetOrCreateSessionWithAgent("session-1", "", "")
+	session2 := memory.GetOrCreateSessionWithAgent(ctx, "session-1", "", "")
 	assert.Equal(t, session, session2, "Should return same session instance")
 	assert.Equal(t, "agent-1", session2.AgentID, "Should preserve existing agent ID")
 	assert.Equal(t, "parent-session", session2.ParentSessionID, "Should preserve existing parent")
 
 	// Test: Update agent metadata on existing session
-	session3 := memory.GetOrCreateSessionWithAgent("session-2", "", "")
+	session3 := memory.GetOrCreateSessionWithAgent(ctx, "session-2", "", "")
 	assert.Equal(t, "", session3.AgentID)
 	assert.Equal(t, "", session3.ParentSessionID)
 
-	session4 := memory.GetOrCreateSessionWithAgent("session-2", "agent-2", "parent-2")
+	session4 := memory.GetOrCreateSessionWithAgent(ctx, "session-2", "agent-2", "parent-2")
 	assert.Equal(t, session3, session4, "Should return same session instance")
 	assert.Equal(t, "agent-2", session4.AgentID, "Should update agent ID")
 	assert.Equal(t, "parent-2", session4.ParentSessionID, "Should update parent")
 
 	// Test: Don't overwrite existing metadata
-	session5 := memory.GetOrCreateSessionWithAgent("session-2", "agent-3", "parent-3")
+	session5 := memory.GetOrCreateSessionWithAgent(ctx, "session-2", "agent-3", "parent-3")
 	assert.Equal(t, "agent-2", session5.AgentID, "Should NOT overwrite existing agent ID")
 	assert.Equal(t, "parent-2", session5.ParentSessionID, "Should NOT overwrite existing parent")
 }
@@ -73,12 +75,13 @@ func TestMemory_GetOrCreateSessionWithAgent_WithStore(t *testing.T) {
 	defer store.Close()
 
 	memory := NewMemoryWithStore(store)
+	ctx := context.Background()
 
 	// Create parent session first (required for foreign key constraint)
-	parentSession := memory.GetOrCreateSessionWithAgent("parent-1", "", "")
+	parentSession := memory.GetOrCreateSessionWithAgent(ctx, "parent-1", "", "")
 
 	// Test: Create new session and verify it's persisted
-	session1 := memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "parent-1")
+	session1 := memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "parent-1")
 	assert.Equal(t, "agent-1", session1.AgentID)
 	assert.Equal(t, "parent-1", session1.ParentSessionID)
 
@@ -86,23 +89,23 @@ func TestMemory_GetOrCreateSessionWithAgent_WithStore(t *testing.T) {
 	assert.NotNil(t, parentSession)
 
 	// Verify persisted to database
-	loadedSession, err := store.LoadSession(context.Background(), "session-1")
+	loadedSession, err := store.LoadSession(ctx, "session-1")
 	require.NoError(t, err)
 	assert.Equal(t, "agent-1", loadedSession.AgentID)
 	assert.Equal(t, "parent-1", loadedSession.ParentSessionID)
 
 	// Test: Update metadata on existing session and verify persistence
-	session2 := memory.GetOrCreateSessionWithAgent("session-2", "", "")
+	session2 := memory.GetOrCreateSessionWithAgent(ctx, "session-2", "", "")
 	assert.Equal(t, "", session2.AgentID)
 
 	// Create parent-2 session first (required for foreign key constraint)
-	_ = memory.GetOrCreateSessionWithAgent("parent-2", "", "")
+	_ = memory.GetOrCreateSessionWithAgent(ctx, "parent-2", "", "")
 
-	session3 := memory.GetOrCreateSessionWithAgent("session-2", "agent-2", "parent-2")
+	session3 := memory.GetOrCreateSessionWithAgent(ctx, "session-2", "agent-2", "parent-2")
 	assert.Equal(t, "agent-2", session3.AgentID)
 
 	// Verify updated metadata is persisted
-	loadedSession2, err := store.LoadSession(context.Background(), "session-2")
+	loadedSession2, err := store.LoadSession(ctx, "session-2")
 	require.NoError(t, err)
 	assert.Equal(t, "agent-2", loadedSession2.AgentID)
 	assert.Equal(t, "parent-2", loadedSession2.ParentSessionID)
@@ -111,9 +114,10 @@ func TestMemory_GetOrCreateSessionWithAgent_WithStore(t *testing.T) {
 // TestMemory_Observers tests the observer pattern for real-time updates.
 func TestMemory_Observers(t *testing.T) {
 	memory := NewMemory()
+	ctx := context.Background()
 
 	// Create a session with agent ID
-	_ = memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "")
+	_ = memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "")
 
 	// Create an observer to track notifications
 	var receivedAgentIDs []string
@@ -138,7 +142,7 @@ func TestMemory_Observers(t *testing.T) {
 		Content:   "Test message",
 		Timestamp: time.Now(),
 	}
-	memory.AddMessage("session-1", testMsg)
+	memory.AddMessage(ctx, "session-1", testMsg)
 
 	// Give async notification time to complete
 	time.Sleep(50 * time.Millisecond)
@@ -155,7 +159,8 @@ func TestMemory_Observers(t *testing.T) {
 // TestMemory_Observers_MultipleObservers tests multiple observers for same agent.
 func TestMemory_Observers_MultipleObservers(t *testing.T) {
 	memory := NewMemory()
-	memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "")
+	ctx := context.Background()
+	memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "")
 
 	// Create multiple observers
 	var count1, count2 atomic.Int32
@@ -173,7 +178,7 @@ func TestMemory_Observers_MultipleObservers(t *testing.T) {
 	memory.RegisterObserver("agent-1", observer2)
 
 	// Add message
-	memory.AddMessage("session-1", Message{Role: "user", Content: "test", Timestamp: time.Now()})
+	memory.AddMessage(ctx, "session-1", Message{Role: "user", Content: "test", Timestamp: time.Now()})
 
 	// Give async notifications time to complete
 	time.Sleep(50 * time.Millisecond)
@@ -186,9 +191,10 @@ func TestMemory_Observers_MultipleObservers(t *testing.T) {
 // TestMemory_Observers_NoAgentID tests that messages without agent ID don't trigger observers.
 func TestMemory_Observers_NoAgentID(t *testing.T) {
 	memory := NewMemory()
+	ctx := context.Background()
 
 	// Create session WITHOUT agent ID
-	memory.GetOrCreateSession("session-1")
+	memory.GetOrCreateSession(ctx, "session-1")
 
 	var count atomic.Int32
 	observer := MemoryObserverFunc(func(agentID, sessionID string, msg Message) {
@@ -199,7 +205,7 @@ func TestMemory_Observers_NoAgentID(t *testing.T) {
 	memory.RegisterObserver("some-agent", observer)
 
 	// Add message to session without agent ID
-	memory.AddMessage("session-1", Message{Role: "user", Content: "test", Timestamp: time.Now()})
+	memory.AddMessage(ctx, "session-1", Message{Role: "user", Content: "test", Timestamp: time.Now()})
 	time.Sleep(50 * time.Millisecond)
 
 	// Should NOT notify (no agent ID on session)
@@ -209,8 +215,9 @@ func TestMemory_Observers_NoAgentID(t *testing.T) {
 // TestMemory_Observers_DifferentAgents tests agent isolation.
 func TestMemory_Observers_DifferentAgents(t *testing.T) {
 	memory := NewMemory()
-	memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "")
-	memory.GetOrCreateSessionWithAgent("session-2", "agent-2", "")
+	ctx := context.Background()
+	memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "")
+	memory.GetOrCreateSessionWithAgent(ctx, "session-2", "agent-2", "")
 
 	var agent1Count, agent2Count atomic.Int32
 
@@ -227,8 +234,8 @@ func TestMemory_Observers_DifferentAgents(t *testing.T) {
 	memory.RegisterObserver("agent-2", observer2)
 
 	// Add messages to both sessions
-	memory.AddMessage("session-1", Message{Role: "user", Content: "test1", Timestamp: time.Now()})
-	memory.AddMessage("session-2", Message{Role: "user", Content: "test2", Timestamp: time.Now()})
+	memory.AddMessage(ctx, "session-1", Message{Role: "user", Content: "test1", Timestamp: time.Now()})
+	memory.AddMessage(ctx, "session-2", Message{Role: "user", Content: "test2", Timestamp: time.Now()})
 	time.Sleep(50 * time.Millisecond)
 
 	// Each observer should only receive messages for their agent
@@ -248,7 +255,8 @@ func TestMemory_AddMessage_SessionContextPersistence(t *testing.T) {
 	defer store.Close()
 
 	memory := NewMemoryWithStore(store)
-	memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "")
+	ctx := context.Background()
+	memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "")
 
 	// Add message with coordinator context
 	msg := Message{
@@ -257,10 +265,10 @@ func TestMemory_AddMessage_SessionContextPersistence(t *testing.T) {
 		SessionContext: types.SessionContextCoordinator,
 		Timestamp:      time.Now(),
 	}
-	memory.AddMessage("session-1", msg)
+	memory.AddMessage(ctx, "session-1", msg)
 
 	// Load messages from store and verify context is preserved
-	messages, err := store.LoadMessages(context.Background(), "session-1")
+	messages, err := store.LoadMessages(ctx, "session-1")
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
 	assert.Equal(t, types.SessionContextCoordinator, messages[0].SessionContext)
@@ -269,7 +277,8 @@ func TestMemory_AddMessage_SessionContextPersistence(t *testing.T) {
 // TestMemory_Observers_ConcurrentAccess tests race conditions.
 func TestMemory_Observers_ConcurrentAccess(t *testing.T) {
 	memory := NewMemory()
-	memory.GetOrCreateSessionWithAgent("session-1", "agent-1", "")
+	ctx := context.Background()
+	memory.GetOrCreateSessionWithAgent(ctx, "session-1", "agent-1", "")
 
 	var count atomic.Int32
 	observer := MemoryObserverFunc(func(agentID, sessionID string, msg Message) {
@@ -287,7 +296,7 @@ func TestMemory_Observers_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(i int) {
 			defer wg.Done()
-			memory.AddMessage("session-1", Message{
+			memory.AddMessage(ctx, "session-1", Message{
 				Role:      "user",
 				Content:   "test",
 				Timestamp: time.Now(),
@@ -340,17 +349,19 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 
 	memory := NewMemoryWithStore(store)
 	memory.SetCompressionProfile(&conversationalProfile)
-	memory.SetSystemPromptFunc(func() string {
+	memory.SetSystemPromptFunc(func(ctx context.Context) string {
 		return "Test system prompt"
 	})
 
+	ctx := context.Background()
+
 	// Create a new session and verify SegmentedMemory exists
-	session1 := memory.GetOrCreateSessionWithAgent("test-session-1", "test-agent-1", "")
+	session1 := memory.GetOrCreateSessionWithAgent(ctx, "test-session-1", "test-agent-1", "")
 	require.NotNil(t, session1)
 	require.NotNil(t, session1.SegmentedMem, "New session should have SegmentedMemory")
 
 	// Add a message to verify it works
-	session1.AddMessage(Message{
+	session1.AddMessage(ctx, Message{
 		Role:      "user",
 		Content:   "Test message 1",
 		Timestamp: time.Now(),
@@ -368,7 +379,7 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	memory.mu.Unlock()
 
 	// Load session from DB (this is where the bug was - SegmentedMem would be nil)
-	session2 := memory.GetOrCreateSessionWithAgent("test-session-1", "", "")
+	session2 := memory.GetOrCreateSessionWithAgent(ctx, "test-session-1", "", "")
 	require.NotNil(t, session2)
 
 	// CRITICAL: Verify SegmentedMemory was reattached
@@ -383,7 +394,7 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	assert.Equal(t, "conversational", segMem2.compressionProfile.Name, "Should have conversational profile")
 
 	// Add another message and verify it goes to SegmentedMemory
-	session2.AddMessage(Message{
+	session2.AddMessage(ctx, Message{
 		Role:      "assistant",
 		Content:   "Test message 2 after reload",
 		Timestamp: time.Now(),

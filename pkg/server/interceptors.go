@@ -15,8 +15,10 @@ package server
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -36,6 +38,10 @@ type UserIDConfig struct {
 	// DefaultUserID is used when RequireUserID is false and no header is present.
 	// Falls back to "default-user" if empty.
 	DefaultUserID string
+
+	// Logger is used for audit logging of user ID extraction. If nil, a no-op
+	// logger is used.
+	Logger *zap.Logger
 }
 
 // UserIDUnaryInterceptor extracts X-User-ID from gRPC metadata and injects
@@ -65,11 +71,23 @@ func UserIDStreamInterceptor(cfg UserIDConfig) grpc.StreamServerInterceptor {
 
 // extractUserID extracts user ID from gRPC metadata or applies defaults.
 func extractUserID(ctx context.Context, cfg UserIDConfig) (context.Context, error) {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		vals := md.Get(UserIDHeader)
 		if len(vals) > 0 && vals[0] != "" {
-			return postgres.ContextWithUserID(ctx, vals[0]), nil
+			userID := vals[0]
+			if err := validateUserID(userID); err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid user ID: %v", err)
+			}
+			logger.Debug("user ID extracted from metadata",
+				zap.String("user_id", userID),
+				zap.String("method", "grpc"))
+			return postgres.ContextWithUserID(ctx, userID), nil
 		}
 	}
 
@@ -83,7 +101,30 @@ func extractUserID(ctx context.Context, cfg UserIDConfig) (context.Context, erro
 	if defaultID == "" {
 		defaultID = "default-user"
 	}
+	logger.Warn("using default user ID, no x-user-id header provided",
+		zap.String("default_user_id", defaultID))
 	return postgres.ContextWithUserID(ctx, defaultID), nil
+}
+
+// maxUserIDLength is the maximum allowed length of a user ID.
+const maxUserIDLength = 256
+
+// validateUserID checks that a user-provided ID meets length and character
+// requirements. It rejects empty strings, strings longer than 256 characters,
+// and strings containing control characters (bytes < 0x20).
+func validateUserID(id string) error {
+	if id == "" {
+		return fmt.Errorf("user ID must not be empty")
+	}
+	if len(id) > maxUserIDLength {
+		return fmt.Errorf("user ID exceeds maximum length of %d characters (got %d)", maxUserIDLength, len(id))
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < 0x20 {
+			return fmt.Errorf("user ID contains control character at position %d (byte 0x%02x)", i, id[i])
+		}
+	}
+	return nil
 }
 
 // wrappedServerStream wraps a grpc.ServerStream with a custom context.

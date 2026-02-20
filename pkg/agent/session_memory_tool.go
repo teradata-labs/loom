@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -135,9 +136,9 @@ func (t *SessionMemoryTool) executeList(ctx context.Context, input map[string]in
 	// Get agent ID from input or context
 	agentID, ok := input["agent_id"].(string)
 	if !ok || agentID == "" {
-		// Try to get from context
-		agentID, ok = ctx.Value("agent_id").(string)
-		if !ok || agentID == "" {
+		// Try to get from context (typed key)
+		agentID = session.AgentIDFromContext(ctx)
+		if agentID == "" {
 			return &shuttle.Result{
 				Success: false,
 				Error: &shuttle.Error{
@@ -378,7 +379,7 @@ func (t *SessionMemoryTool) executeCompact(ctx context.Context, input map[string
 	}
 
 	// Trigger compaction
-	messagesCompressed, tokensSaved := segMem.CompactMemory()
+	messagesCompressed, tokensSaved := segMem.CompactMemory(ctx)
 
 	// Format response
 	responseData := map[string]interface{}{

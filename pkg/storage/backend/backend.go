@@ -47,6 +47,14 @@ type PendingMigration struct {
 	SQL string
 }
 
+// AdminStorageProvider is an optional interface that StorageBackend implementations
+// may satisfy to expose cross-tenant administrative queries.
+// Only PostgreSQL backends implement this; SQLite backends do not need multi-tenant admin.
+type AdminStorageProvider interface {
+	// AdminStorage returns the admin storage implementation, or nil if unavailable.
+	AdminStorage() agent.AdminStorage
+}
+
 // StorageBackend is the top-level composed interface for all storage operations.
 // One StorageBackend per server; all agents share the same backend.
 // Implementations include SQLiteBackend and PostgresBackend.

@@ -1355,14 +1355,28 @@ func runServe(cmd *cobra.Command, args []string) {
 	userIDCfg := server.UserIDConfig{
 		RequireUserID: true, // default: strict mode
 		DefaultUserID: "",
+		Logger:        logger,
 	}
 	if storageCfg.GetPostgres() != nil {
 		pgCfg := storageCfg.GetPostgres()
 		userIDCfg.RequireUserID = pgCfg.GetRequireUserId()
 		userIDCfg.DefaultUserID = pgCfg.GetDefaultUserId()
 	} else {
-		// SQLite mode: don't require user ID, use default
+		// SQLite mode: single-tenant only.
+		//
+		// SQLite does not support Row Level Security (RLS), so multi-tenant
+		// user isolation is not available. All sessions share a single
+		// "default-user" identity. This means:
+		//   - RequireUserID is forced to false (user ID headers are ignored)
+		//   - All data is accessible to all callers
+		//   - There is no per-user data isolation
+		//
+		// For multi-tenant deployments with per-user data isolation,
+		// use the PostgreSQL storage backend which supports RLS.
+		// See: docs/reference/sqlite-guidance.md (Multi-Tenancy Limitations)
 		userIDCfg.RequireUserID = false
+		userIDCfg.DefaultUserID = "default-user"
+		logger.Warn("SQLite backend does not support user ID requirement; require_user_id ignored")
 	}
 
 	// Create gRPC server with optional TLS and user ID interceptors
@@ -1381,6 +1395,22 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
+
+	// Register AdminService if the storage backend supports admin operations (PostgreSQL only).
+	// SQLite backends do not provide multi-tenant admin and are silently skipped.
+	if adminProvider, ok := storageBackend.(backend.AdminStorageProvider); ok {
+		adminToken := os.Getenv("LOOM_ADMIN_TOKEN")
+		if adminToken == "" {
+			logger.Warn("LOOM_ADMIN_TOKEN not set; admin endpoints are unprotected")
+		}
+		adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+		if adminServer != nil {
+			loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+			logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled)")
+		}
+	} else {
+		logger.Info("Admin service not registered (only available with PostgreSQL backend)")
+	}
 
 	// Set storage backend for health checks and migration RPCs
 	loomService.SetStorageBackend(storageBackend)

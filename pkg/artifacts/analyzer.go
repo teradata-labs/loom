@@ -445,7 +445,7 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 		// #nosec G104 -- best-effort cleanup after extraction
 		outFile.Close()
 
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to extract file: %w", err)
 		}
 
@@ -511,7 +511,7 @@ func extractTar(archivePath, destDir string) ([]string, error) {
 		// #nosec G104 -- best-effort cleanup after extraction
 		outFile.Close()
 
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to extract file: %w", err)
 		}
 
@@ -581,7 +581,7 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 		// #nosec G104 -- best-effort cleanup after extraction
 		outFile.Close()
 
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to extract file: %w", err)
 		}
 

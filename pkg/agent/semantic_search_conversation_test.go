@@ -56,6 +56,9 @@ import (
 // 4. Test semantic search can find relevant messages for each topic
 // 5. Measure search accuracy, latency, and topic separation
 func TestSemanticSearch_RealLLMConversation(t *testing.T) {
+	if os.Getenv("LOOM_TEST_LLM") == "" {
+		t.Skip("Skipping real LLM test: set LOOM_TEST_LLM=1 to run")
+	}
 	if testing.Short() {
 		t.Skip("Skipping long-running real LLM conversation test")
 	}
@@ -85,7 +88,7 @@ func TestSemanticSearch_RealLLMConversation(t *testing.T) {
 	memory.SetTracer(tracer)
 
 	sessionID := "real-llm-conversation"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Set LLM provider for semantic search reranking
 	memory.SetLLMProvider(llmProvider)

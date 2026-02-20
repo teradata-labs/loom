@@ -329,7 +329,7 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 			resultID := fmt.Sprintf("mcp_%s_%d", a.serverName, time.Now().UnixNano())
 
 			// Store SQL result directly to database
-			ref, err := a.sqlStore.Store(resultID, sqlData)
+			ref, err := a.sqlStore.Store(ctx, resultID, sqlData)
 			if err == nil {
 				// Success - return DataRef instead of full data
 				return &shuttle.Result{

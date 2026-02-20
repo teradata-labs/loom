@@ -99,6 +99,9 @@ func NewSQLiteErrorStore(dbPath string, tracer observability.Tracer) (*SQLiteErr
 
 // initSchema creates the agent_errors table if it doesn't exist.
 func (s *SQLiteErrorStore) initSchema() error {
+	// context.Background() is intentional here: schema initialization runs at startup
+	// before any user context exists. This is a bootstrap operation that creates/migrates
+	// database tables and is not subject to RLS policies.
 	ctx := context.Background()
 	ctx, span := s.tracer.StartSpan(ctx, "error_store.init_schema")
 	defer s.tracer.EndSpan(span)

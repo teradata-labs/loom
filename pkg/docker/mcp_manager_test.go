@@ -15,6 +15,7 @@ package docker
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,13 +24,23 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
+// skipUnlessDockerIntegration skips the test unless LOOM_TEST_DOCKER=1 is set.
+// These tests require a Docker daemon with the ability to pull and run containers.
+func skipUnlessDockerIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	if os.Getenv("LOOM_TEST_DOCKER") == "" {
+		t.Skip("Skipping Docker integration test: set LOOM_TEST_DOCKER=1 to run")
+	}
+}
+
 // TestMCPServerManager_StartStop tests basic MCP server lifecycle.
 //
 // This test requires a Docker daemon running.
 func TestMCPServerManager_StartStop(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -92,11 +103,11 @@ while True:
 
 	// Start MCP server
 	err = manager.StartMCPServer(ctx, "echo", mcpConfig, loomv1.RuntimeType_RUNTIME_TYPE_PYTHON, dockerConfig)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify server is listed
 	servers := manager.ListMCPServers()
-	assert.Len(t, servers, 1)
+	require.Len(t, servers, 1)
 	assert.Equal(t, "echo", servers[0].Name)
 	assert.True(t, servers[0].Healthy)
 
@@ -117,9 +128,7 @@ while True:
 
 // TestMCPServerManager_HealthCheck tests MCP server health checking.
 func TestMCPServerManager_HealthCheck(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -197,9 +206,7 @@ while True:
 
 // TestMCPServerManager_MultipleServers tests managing multiple MCP servers.
 func TestMCPServerManager_MultipleServers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -316,9 +323,7 @@ while True:
 
 // TestMCPServerManager_InvalidTransport tests error handling for unsupported transports.
 func TestMCPServerManager_InvalidTransport(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -368,9 +373,7 @@ func TestMCPServerManager_InvalidTransport(t *testing.T) {
 
 // TestMCPServerManager_DuplicateServer tests error handling when starting duplicate servers.
 func TestMCPServerManager_DuplicateServer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)

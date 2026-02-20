@@ -49,19 +49,34 @@ func TestSwapLayerEviction(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create segmented memory with small L2 limit
-	sm := NewSegmentedMemory("System prompt", 200000, 20000)
+	// Create segmented memory with a compression profile that triggers compression quickly.
+	// Use a small maxContextTokens (500) and small reservedOutputTokens (100) so that
+	// adding just a few messages causes the budget usage to exceed the warning threshold,
+	// which triggers compression of L1 to L2. Also use a small maxL2Tokens (100)
+	// so L2 quickly exceeds its limit and gets evicted to swap.
+	smallProfile := CompressionProfile{
+		Name:                     "test_eviction",
+		MaxL1Tokens:              100, // Very small L1 to trigger compression quickly
+		MinL1Messages:            2,   // Keep at least 2 messages in L1
+		WarningThresholdPercent:  30,  // Low warning threshold
+		CriticalThresholdPercent: 50,  // Low critical threshold
+		NormalBatchSize:          3,
+		WarningBatchSize:         5,
+		CriticalBatchSize:        7,
+	}
+	sm := NewSegmentedMemoryWithCompression("System prompt", 500, 100, smallProfile)
 	sm.SetSessionStore(store, sessionID)
 	sm.SetMaxL2Tokens(100) // Very small limit to trigger eviction
 
 	// Verify swap is enabled
 	assert.True(t, sm.IsSwapEnabled())
 
-	// Add messages to fill L1
+	// Add messages to fill L1 and trigger compression, which fills L2,
+	// which then triggers eviction to swap
 	for i := 0; i < 15; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:      "user",
-			Content:   "This is a test message that will eventually be compressed to L2.",
+			Content:   "This is a test message that will eventually be compressed to L2 and then evicted to swap storage.",
 			Timestamp: time.Now(),
 		})
 	}
@@ -227,9 +242,11 @@ func TestSwapLayerTokenBudget(t *testing.T) {
 	sm := NewSegmentedMemory("System prompt", 1000, 200) // Only 800 tokens available
 	sm.SetSessionStore(store, sessionID)
 
+	ctx := context.Background()
+
 	// Fill context to near capacity
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:      "user",
 			Content:   "This is a relatively long message to consume token budget.",
 			Timestamp: time.Now(),
@@ -253,8 +270,19 @@ func TestSwapLayerTokenBudget(t *testing.T) {
 
 // TestSwapLayerDisabled tests behavior when swap is not enabled.
 func TestSwapLayerDisabled(t *testing.T) {
-	// Create segmented memory WITHOUT setting session store
-	sm := NewSegmentedMemory("System prompt", 200000, 20000)
+	// Create segmented memory WITHOUT setting session store, using a small compression
+	// profile so that compression triggers and L2 actually gets content.
+	smallProfile := CompressionProfile{
+		Name:                     "test_disabled",
+		MaxL1Tokens:              100, // Very small L1 to trigger compression quickly
+		MinL1Messages:            2,   // Keep at least 2 messages in L1
+		WarningThresholdPercent:  30,  // Low warning threshold
+		CriticalThresholdPercent: 50,  // Low critical threshold
+		NormalBatchSize:          3,
+		WarningBatchSize:         5,
+		CriticalBatchSize:        7,
+	}
+	sm := NewSegmentedMemoryWithCompression("System prompt", 500, 100, smallProfile)
 
 	// Verify swap is disabled
 	assert.False(t, sm.IsSwapEnabled())
@@ -270,12 +298,12 @@ func TestSwapLayerDisabled(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not enabled")
 
-	// L2 should grow unbounded (existing behavior)
+	// L2 should grow unbounded (existing behavior) since swap is not configured
 	sm.SetMaxL2Tokens(100)
 	for i := 0; i < 50; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:      "user",
-			Content:   "Message to fill L2",
+			Content:   "Message to fill L2 and trigger compression without swap layer enabled for storage.",
 			Timestamp: time.Now(),
 		})
 	}
@@ -312,7 +340,7 @@ func TestSwapLayerConcurrency(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		go func(id int) {
 			for j := 0; j < 10; j++ {
-				sm.AddMessage(Message{
+				sm.AddMessage(ctx, Message{
 					Role:      "user",
 					Content:   "Concurrent message",
 					Timestamp: time.Now(),
@@ -368,16 +396,27 @@ func TestSwapLayerL2Snapshots(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create segmented memory with small L2 limit to trigger multiple evictions
-	sm := NewSegmentedMemory("System prompt", 200000, 20000)
+	// Create segmented memory with a small compression profile to trigger compression
+	// quickly, and a small L2 limit to trigger multiple evictions to swap.
+	smallProfile := CompressionProfile{
+		Name:                     "test_snapshots",
+		MaxL1Tokens:              100, // Very small L1 to trigger compression quickly
+		MinL1Messages:            2,   // Keep at least 2 messages in L1
+		WarningThresholdPercent:  30,  // Low warning threshold
+		CriticalThresholdPercent: 50,  // Low critical threshold
+		NormalBatchSize:          3,
+		WarningBatchSize:         5,
+		CriticalBatchSize:        7,
+	}
+	sm := NewSegmentedMemoryWithCompression("System prompt", 500, 100, smallProfile)
 	sm.SetSessionStore(store, sessionID)
 	sm.SetMaxL2Tokens(50) // Very small to force multiple evictions
 
 	// Add many messages to trigger multiple L2 evictions
 	for i := 0; i < 30; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:      "user",
-			Content:   "This message will eventually be compressed and evicted to create L2 snapshots.",
+			Content:   "This message will eventually be compressed and evicted to create L2 snapshots in swap storage.",
 			Timestamp: time.Now(),
 		})
 	}
@@ -414,9 +453,11 @@ func TestSwapLayerMemoryStats(t *testing.T) {
 	sm.SetSessionStore(store, sessionID)
 	sm.SetMaxL2Tokens(100)
 
+	ctx := context.Background()
+
 	// Add messages to trigger eviction
 	for i := 0; i < 20; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:      "user",
 			Content:   "Message for statistics test",
 			Timestamp: time.Now(),
