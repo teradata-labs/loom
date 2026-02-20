@@ -14,6 +14,8 @@
 package agents
 
 import (
+	"fmt"
+
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -37,9 +39,11 @@ type listModel = list.FilterableList[list.CompletionItem[AgentInfo]]
 
 // AgentInfo represents an agent in the dialog.
 type AgentInfo struct {
-	ID     string
-	Name   string
-	Status string
+	ID           string
+	Name         string
+	Status       string
+	ModelInfo    string // Primary model (e.g., "anthropic/claude-sonnet-4")
+	RoleLLMCount int    // Number of role-specific LLM overrides (0-4)
 }
 
 // AgentsDialog represents the agent selection dialog.
@@ -90,11 +94,19 @@ func NewAgentsDialog(agents []AgentInfo) AgentsDialog {
 
 func (d *agentsDialogCmp) Init() tea.Cmd {
 	agentItems := []list.CompletionItem[AgentInfo]{}
-	for _, agent := range d.agents {
+	for _, ag := range d.agents {
+		// Build display label with model info
+		label := ag.Name
+		if ag.ModelInfo != "" {
+			label += "  " + ag.ModelInfo
+			if ag.RoleLLMCount > 0 {
+				label += fmt.Sprintf(" (+%d roles)", ag.RoleLLMCount)
+			}
+		}
 		agentItems = append(agentItems, list.NewCompletionItem(
-			agent.Name,
-			agent,
-			list.WithCompletionID(agent.ID),
+			label,
+			ag,
+			list.WithCompletionID(ag.ID),
 		))
 	}
 	return d.agentList.SetItems(agentItems)

@@ -59,9 +59,11 @@ const (
 
 // AgentInfo represents an agent in the multi-agent system
 type AgentInfo struct {
-	ID     string
-	Name   string
-	Status string
+	ID           string
+	Name         string
+	Status       string
+	ModelInfo    string // Primary model (e.g., "anthropic/claude-sonnet-4")
+	RoleLLMCount int    // Number of role-specific LLM overrides (0-4)
 }
 
 // AgentsListMsg contains the list of available agents

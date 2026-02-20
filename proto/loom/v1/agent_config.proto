@@ -62,6 +62,21 @@ message AgentConfig {
   // Oldest findings are evicted using LRU when limit is reached
   // Lower values save tokens, higher values preserve more context
   int32 max_findings = 13;
+
+  // Role-specific LLM overrides (fallback: main llm field above)
+  // Each role can use a different provider/model optimized for its task
+
+  // Judge/evaluation override (e.g., Gemini for unbiased evaluation)
+  LLMConfig judge_llm = 14;
+
+  // Merge/synthesis override for fork-join orchestration (e.g., fast model for combining results)
+  LLMConfig orchestrator_llm = 15;
+
+  // Intent classification override (e.g., small/fast model like Ollama for pattern selection)
+  LLMConfig classifier_llm = 16;
+
+  // Memory compression/semantic search reranking override (e.g., Haiku for cost-effective compression)
+  LLMConfig compressor_llm = 17;
 }
 
 // LLMConfig configures the language model provider and parameters
@@ -96,6 +111,18 @@ message LLMConfig {
   // If not set, will be calculated as max_context_tokens * 0.1
   // Examples: Claude (200K) = 20000, Llama (128K) = 12800, Mistral (32K) = 3200
   int32 reserved_output_tokens = 9;
+}
+
+// LLMRole identifies the purpose/role of an LLM provider within an agent.
+// Each role can be backed by a different provider/model optimized for its task.
+// Fallback chain: Role-specific LLM -> Agent default LLM -> Server default LLM.
+enum LLMRole {
+  LLM_ROLE_UNSPECIFIED = 0; // Default: main agent LLM
+  LLM_ROLE_AGENT = 1; // Primary reasoning LLM
+  LLM_ROLE_JUDGE = 2; // Evaluation operations
+  LLM_ROLE_ORCHESTRATOR = 3; // Fork-join merge/synthesis
+  LLM_ROLE_CLASSIFIER = 4; // Intent classification for pattern selection
+  LLM_ROLE_COMPRESSOR = 5; // Memory compression/semantic search reranking
 }
 
 // ToolsConfig defines tools available to the agent

@@ -145,6 +145,24 @@ func initializeAgentsMap() map[string]*agent.Agent {
 	return make(map[string]*agent.Agent)
 }
 
+// llmRoleDisplayName returns a short, human-readable name for an LLM role enum.
+func llmRoleDisplayName(role loomv1.LLMRole) string {
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_AGENT:
+		return "agent"
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		return "judge"
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		return "orchestrator"
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		return "classifier"
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		return "compressor"
+	default:
+		return "unknown"
+	}
+}
+
 // getDefaultModelForProvider returns the default model ID for the configured provider.
 func getDefaultModelForProvider(cfg *Config) string {
 	switch cfg.LLM.Provider {
@@ -2211,6 +2229,43 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}()
 		logger.Info("Agent config hot-reload enabled (watching $LOOM_DATA_DIR/agents/ and $LOOM_DATA_DIR/workflows/)")
+	}
+
+	// --- Preflight health check: validate all LLM providers before accepting connections ---
+	logger.Info("Running LLM provider preflight health check...")
+	{
+		preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer preflightCancel()
+
+		for agentID, ag := range agents {
+			agentName := ag.GetName()
+			if agentName == "" {
+				agentName = agentID
+			}
+
+			// Log each configured role LLM provider for this agent
+			roleLLMs := ag.GetAllRoleLLMs()
+			for role, llmProv := range roleLLMs {
+				roleName := llmRoleDisplayName(role)
+				logger.Info("LLM provider configured",
+					zap.String("agent", agentName),
+					zap.String("role", roleName),
+					zap.String("provider", llmProv.Name()),
+					zap.String("model", llmProv.Model()))
+			}
+
+			// Validate providers (sends ping to each)
+			if err := server.ValidateProviders(preflightCtx, ag); err != nil {
+				logger.Fatal("LLM provider preflight check failed",
+					zap.String("agent", agentName),
+					zap.Error(err))
+			}
+			logger.Info("LLM provider preflight check passed",
+				zap.String("agent", agentName),
+				zap.Int("providers_checked", len(roleLLMs)))
+		}
+		logger.Info("All LLM provider preflight checks passed",
+			zap.Int("agents_checked", len(agents)))
 	}
 
 	// Start server

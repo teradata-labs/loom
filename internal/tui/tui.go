@@ -788,9 +788,11 @@ func (a *appModel) filterRegularAgents(agentsList []agent.AgentInfo) []agents.Ag
 
 		if !isWeaver && !isGuide && !isSubAgent && !isCoordinator && !hasWorkflowInName && !isUsedInWorkflow {
 			regularAgents = append(regularAgents, agents.AgentInfo{
-				ID:     ag.ID,
-				Name:   ag.Name,
-				Status: ag.Status,
+				ID:           ag.ID,
+				Name:         ag.Name,
+				Status:       ag.Status,
+				ModelInfo:    ag.ModelInfo,
+				RoleLLMCount: ag.RoleLLMCount,
 			})
 		}
 	}

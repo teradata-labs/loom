@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -393,12 +394,85 @@ func (s *Server) GetTrace(ctx context.Context, req *loomv1.GetTraceRequest) (*lo
 	return nil, status.Error(codes.Unimplemented, "trace retrieval not yet implemented")
 }
 
-// GetHealth performs a health check.
+// GetHealth performs a health check by pinging each configured LLM provider.
+// Returns per-component status in the components map with keys like "llm.agent", "llm.judge", etc.
+// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
 func (s *Server) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
+	components := make(map[string]*loomv1.ComponentHealth)
+	overallHealthy := true
+
+	// Check each configured LLM provider
+	roleLLMs := s.agent.GetAllRoleLLMs()
+	for role, llmProvider := range roleLLMs {
+		componentName := "llm." + llmRoleToString(role)
+		start := time.Now()
+
+		// Send minimal health check with short timeout
+		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := llmProvider.Chat(checkCtx, []types.Message{
+			{Role: "user", Content: "ping"},
+		}, nil)
+		cancel()
+
+		latency := time.Since(start).Milliseconds()
+
+		if err != nil {
+			components[componentName] = &loomv1.ComponentHealth{
+				Status:    "unhealthy",
+				LastCheck: time.Now().Unix(),
+				Error:     err.Error(),
+				LatencyMs: latency,
+			}
+			overallHealthy = false
+		} else {
+			components[componentName] = &loomv1.ComponentHealth{
+				Status:    "healthy",
+				LastCheck: time.Now().Unix(),
+				LatencyMs: latency,
+			}
+		}
+	}
+
+	healthStatus := "healthy"
+	if !overallHealthy {
+		// Check if ANY are healthy for "degraded" vs "unhealthy"
+		anyHealthy := false
+		for _, c := range components {
+			if c.Status == "healthy" {
+				anyHealthy = true
+				break
+			}
+		}
+		if anyHealthy {
+			healthStatus = "degraded"
+		} else {
+			healthStatus = "unhealthy"
+		}
+	}
+
 	return &loomv1.HealthStatus{
-		Status:  "healthy",
-		Version: "0.1.0",
+		Status:     healthStatus,
+		Version:    version.Get(),
+		Components: components,
 	}, nil
+}
+
+// llmRoleToString converts an LLMRole enum to a human-readable string for component naming.
+func llmRoleToString(role loomv1.LLMRole) string {
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_AGENT:
+		return "agent"
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		return "judge"
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		return "orchestrator"
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		return "classifier"
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		return "compressor"
+	default:
+		return "unknown"
+	}
 }
 
 // SwitchModel switches the LLM model/provider for a session.
@@ -413,11 +487,13 @@ func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest
 		return nil, status.Error(codes.InvalidArgument, "model is required")
 	}
 
-	// Get previous model info
+	// Get previous model info using role-aware methods.
+	// When req.Role is LLM_ROLE_UNSPECIFIED (0), GetLLMModelForRole/GetLLMProviderNameForRole
+	// fall through to the main agent LLM, preserving backward compatibility.
 	previousModel := &loomv1.ModelInfo{
-		Id:       s.agent.GetLLMModel(),
-		Name:     s.agent.GetLLMModel(),
-		Provider: s.agent.GetLLMProviderName(),
+		Id:       s.agent.GetLLMModelForRole(req.Role),
+		Name:     s.agent.GetLLMModelForRole(req.Role),
+		Provider: s.agent.GetLLMProviderNameForRole(req.Role),
 	}
 
 	// Check if factory is configured
@@ -437,8 +513,9 @@ func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest
 		return nil, status.Error(codes.Internal, "failed to cast provider to LLMProvider interface")
 	}
 
-	// Switch the agent's LLM provider
-	s.agent.SetLLMProvider(newProvider)
+	// Switch the agent's LLM provider for the specified role.
+	// When req.Role is LLM_ROLE_UNSPECIFIED, SetLLMProviderForRole delegates to the main agent LLM.
+	s.agent.SetLLMProviderForRole(req.Role, newProvider)
 
 	// Get new model info
 	newModel := &loomv1.ModelInfo{

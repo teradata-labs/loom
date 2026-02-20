@@ -1998,6 +1998,11 @@ message SwitchModelRequest {
 
   // Preserve conversation context (default: true)
   bool preserve_context = 5;
+
+  // Target LLM role to switch (default: unspecified = main agent LLM)
+  // Allows switching role-specific LLMs (judge, orchestrator, classifier, compressor)
+  // without affecting other roles.
+  LLMRole role = 6;
 }
 
 // SwitchModelResponse confirms model switch.

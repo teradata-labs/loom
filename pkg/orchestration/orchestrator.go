@@ -372,6 +372,34 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 	return result, nil
 }
 
+// GetMergeLLM returns the LLM provider to use for merge/synthesis operations.
+// Resolution order:
+//  1. The orchestrator's explicitly configured llmProvider (Config.LLMProvider)
+//  2. The orchestrator role LLM from the first registered agent that has one
+//     (agent.GetLLMForRole(LLM_ROLE_ORCHESTRATOR) which falls back to the agent's main LLM)
+//  3. nil (caller must handle this, typically by returning an error)
+func (o *Orchestrator) GetMergeLLM() agent.LLMProvider {
+	// 1. Use explicitly configured LLM provider
+	if o.llmProvider != nil {
+		return o.llmProvider
+	}
+
+	// 2. Try to get an orchestrator role LLM from a registered agent
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	for _, ag := range o.agents {
+		llm := ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR)
+		if llm != nil {
+			o.logger.Debug("Using orchestrator role LLM from registered agent",
+				zap.String("agent", ag.GetName()))
+			return llm
+		}
+	}
+
+	return nil
+}
+
 // GetPatternType returns a string representation of the pattern type.
 // This is used for logging, progress messages, and workflow execution tracking.
 func GetPatternType(pattern *loomv1.WorkflowPattern) string {

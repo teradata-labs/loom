@@ -26,6 +26,67 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// LLMRole identifies the purpose/role of an LLM provider within an agent.
+// Each role can be backed by a different provider/model optimized for its task.
+// Fallback chain: Role-specific LLM -> Agent default LLM -> Server default LLM.
+type LLMRole int32
+
+const (
+	LLMRole_LLM_ROLE_UNSPECIFIED  LLMRole = 0 // Default: main agent LLM
+	LLMRole_LLM_ROLE_AGENT        LLMRole = 1 // Primary reasoning LLM
+	LLMRole_LLM_ROLE_JUDGE        LLMRole = 2 // Evaluation operations
+	LLMRole_LLM_ROLE_ORCHESTRATOR LLMRole = 3 // Fork-join merge/synthesis
+	LLMRole_LLM_ROLE_CLASSIFIER   LLMRole = 4 // Intent classification for pattern selection
+	LLMRole_LLM_ROLE_COMPRESSOR   LLMRole = 5 // Memory compression/semantic search reranking
+)
+
+// Enum value maps for LLMRole.
+var (
+	LLMRole_name = map[int32]string{
+		0: "LLM_ROLE_UNSPECIFIED",
+		1: "LLM_ROLE_AGENT",
+		2: "LLM_ROLE_JUDGE",
+		3: "LLM_ROLE_ORCHESTRATOR",
+		4: "LLM_ROLE_CLASSIFIER",
+		5: "LLM_ROLE_COMPRESSOR",
+	}
+	LLMRole_value = map[string]int32{
+		"LLM_ROLE_UNSPECIFIED":  0,
+		"LLM_ROLE_AGENT":        1,
+		"LLM_ROLE_JUDGE":        2,
+		"LLM_ROLE_ORCHESTRATOR": 3,
+		"LLM_ROLE_CLASSIFIER":   4,
+		"LLM_ROLE_COMPRESSOR":   5,
+	}
+)
+
+func (x LLMRole) Enum() *LLMRole {
+	p := new(LLMRole)
+	*p = x
+	return p
+}
+
+func (x LLMRole) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LLMRole) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_agent_config_proto_enumTypes[0].Descriptor()
+}
+
+func (LLMRole) Type() protoreflect.EnumType {
+	return &file_loom_v1_agent_config_proto_enumTypes[0]
+}
+
+func (x LLMRole) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LLMRole.Descriptor instead.
+func (LLMRole) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{0}
+}
+
 // WorkloadProfile defines memory compression behavior profiles for different use cases
 type WorkloadProfile int32
 
@@ -69,11 +130,11 @@ func (x WorkloadProfile) String() string {
 }
 
 func (WorkloadProfile) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[0].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[1].Descriptor()
 }
 
 func (WorkloadProfile) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[0]
+	return &file_loom_v1_agent_config_proto_enumTypes[1]
 }
 
 func (x WorkloadProfile) Number() protoreflect.EnumNumber {
@@ -82,7 +143,7 @@ func (x WorkloadProfile) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WorkloadProfile.Descriptor instead.
 func (WorkloadProfile) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{0}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
 }
 
 // SpawnTriggerType enumerates trigger conditions
@@ -137,11 +198,11 @@ func (x SpawnTriggerType) String() string {
 }
 
 func (SpawnTriggerType) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[1].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[2].Descriptor()
 }
 
 func (SpawnTriggerType) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[1]
+	return &file_loom_v1_agent_config_proto_enumTypes[2]
 }
 
 func (x SpawnTriggerType) Number() protoreflect.EnumNumber {
@@ -150,7 +211,7 @@ func (x SpawnTriggerType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SpawnTriggerType.Descriptor instead.
 func (SpawnTriggerType) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
 }
 
 // AgentConfig defines a complete agent configuration.
@@ -195,7 +256,15 @@ type AgentConfig struct {
 	// Maximum number of findings to keep in cache (default: 50)
 	// Oldest findings are evicted using LRU when limit is reached
 	// Lower values save tokens, higher values preserve more context
-	MaxFindings   int32 `protobuf:"varint,13,opt,name=max_findings,json=maxFindings,proto3" json:"max_findings,omitempty"`
+	MaxFindings int32 `protobuf:"varint,13,opt,name=max_findings,json=maxFindings,proto3" json:"max_findings,omitempty"`
+	// Judge/evaluation override (e.g., Gemini for unbiased evaluation)
+	JudgeLlm *LLMConfig `protobuf:"bytes,14,opt,name=judge_llm,json=judgeLlm,proto3" json:"judge_llm,omitempty"`
+	// Merge/synthesis override for fork-join orchestration (e.g., fast model for combining results)
+	OrchestratorLlm *LLMConfig `protobuf:"bytes,15,opt,name=orchestrator_llm,json=orchestratorLlm,proto3" json:"orchestrator_llm,omitempty"`
+	// Intent classification override (e.g., small/fast model like Ollama for pattern selection)
+	ClassifierLlm *LLMConfig `protobuf:"bytes,16,opt,name=classifier_llm,json=classifierLlm,proto3" json:"classifier_llm,omitempty"`
+	// Memory compression/semantic search reranking override (e.g., Haiku for cost-effective compression)
+	CompressorLlm *LLMConfig `protobuf:"bytes,17,opt,name=compressor_llm,json=compressorLlm,proto3" json:"compressor_llm,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -319,6 +388,34 @@ func (x *AgentConfig) GetMaxFindings() int32 {
 		return x.MaxFindings
 	}
 	return 0
+}
+
+func (x *AgentConfig) GetJudgeLlm() *LLMConfig {
+	if x != nil {
+		return x.JudgeLlm
+	}
+	return nil
+}
+
+func (x *AgentConfig) GetOrchestratorLlm() *LLMConfig {
+	if x != nil {
+		return x.OrchestratorLlm
+	}
+	return nil
+}
+
+func (x *AgentConfig) GetClassifierLlm() *LLMConfig {
+	if x != nil {
+		return x.ClassifierLlm
+	}
+	return nil
+}
+
+func (x *AgentConfig) GetCompressorLlm() *LLMConfig {
+	if x != nil {
+		return x.CompressorLlm
+	}
+	return nil
 }
 
 // LLMConfig configures the language model provider and parameters
@@ -1426,7 +1523,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\x85\x05\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\xeb\x06\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1441,7 +1538,11 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	" \x01(\tR\x03rom\x12:\n" +
 	"\x19enable_finding_extraction\x18\v \x01(\bR\x17enableFindingExtraction\x12-\n" +
 	"\x12extraction_cadence\x18\f \x01(\x05R\x11extractionCadence\x12!\n" +
-	"\fmax_findings\x18\r \x01(\x05R\vmaxFindings\x1a;\n" +
+	"\fmax_findings\x18\r \x01(\x05R\vmaxFindings\x12/\n" +
+	"\tjudge_llm\x18\x0e \x01(\v2\x12.loom.v1.LLMConfigR\bjudgeLlm\x12=\n" +
+	"\x10orchestrator_llm\x18\x0f \x01(\v2\x12.loom.v1.LLMConfigR\x0forchestratorLlm\x129\n" +
+	"\x0eclassifier_llm\x18\x10 \x01(\v2\x12.loom.v1.LLMConfigR\rclassifierLlm\x129\n" +
+	"\x0ecompressor_llm\x18\x11 \x01(\v2\x12.loom.v1.LLMConfigR\rcompressorLlm\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb3\x02\n" +
@@ -1529,7 +1630,14 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\fSpawnTrigger\x12-\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x19.loom.v1.SpawnTriggerTypeR\x04type\x12\x1c\n" +
 	"\tthreshold\x18\x02 \x01(\x02R\tthreshold\x12\x1c\n" +
-	"\tcondition\x18\x03 \x01(\tR\tcondition*\x9c\x01\n" +
+	"\tcondition\x18\x03 \x01(\tR\tcondition*\x98\x01\n" +
+	"\aLLMRole\x12\x18\n" +
+	"\x14LLM_ROLE_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eLLM_ROLE_AGENT\x10\x01\x12\x12\n" +
+	"\x0eLLM_ROLE_JUDGE\x10\x02\x12\x19\n" +
+	"\x15LLM_ROLE_ORCHESTRATOR\x10\x03\x12\x17\n" +
+	"\x13LLM_ROLE_CLASSIFIER\x10\x04\x12\x17\n" +
+	"\x13LLM_ROLE_COMPRESSOR\x10\x05*\x9c\x01\n" +
 	"\x0fWorkloadProfile\x12 \n" +
 	"\x1cWORKLOAD_PROFILE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WORKLOAD_PROFILE_BALANCED\x10\x01\x12#\n" +
@@ -1558,55 +1666,60 @@ func file_loom_v1_agent_config_proto_rawDescGZIP() []byte {
 	return file_loom_v1_agent_config_proto_rawDescData
 }
 
-var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_loom_v1_agent_config_proto_goTypes = []any{
-	(WorkloadProfile)(0),                // 0: loom.v1.WorkloadProfile
-	(SpawnTriggerType)(0),               // 1: loom.v1.SpawnTriggerType
-	(*AgentConfig)(nil),                 // 2: loom.v1.AgentConfig
-	(*LLMConfig)(nil),                   // 3: loom.v1.LLMConfig
-	(*ToolsConfig)(nil),                 // 4: loom.v1.ToolsConfig
-	(*MCPToolConfig)(nil),               // 5: loom.v1.MCPToolConfig
-	(*CustomToolConfig)(nil),            // 6: loom.v1.CustomToolConfig
-	(*MemoryConfig)(nil),                // 7: loom.v1.MemoryConfig
-	(*MemoryCompressionBatchSizes)(nil), // 8: loom.v1.MemoryCompressionBatchSizes
-	(*MemoryCompressionConfig)(nil),     // 9: loom.v1.MemoryCompressionConfig
-	(*BehaviorConfig)(nil),              // 10: loom.v1.BehaviorConfig
-	(*PatternConfig)(nil),               // 11: loom.v1.PatternConfig
-	(*AgentTemplate)(nil),               // 12: loom.v1.AgentTemplate
-	(*TemplateParameter)(nil),           // 13: loom.v1.TemplateParameter
-	(*AgentProfile)(nil),                // 14: loom.v1.AgentProfile
-	(*EphemeralAgentPolicy)(nil),        // 15: loom.v1.EphemeralAgentPolicy
-	(*SpawnTrigger)(nil),                // 16: loom.v1.SpawnTrigger
-	nil,                                 // 17: loom.v1.AgentConfig.MetadataEntry
-	nil,                                 // 18: loom.v1.AgentProfile.OverridesEntry
+	(LLMRole)(0),                        // 0: loom.v1.LLMRole
+	(WorkloadProfile)(0),                // 1: loom.v1.WorkloadProfile
+	(SpawnTriggerType)(0),               // 2: loom.v1.SpawnTriggerType
+	(*AgentConfig)(nil),                 // 3: loom.v1.AgentConfig
+	(*LLMConfig)(nil),                   // 4: loom.v1.LLMConfig
+	(*ToolsConfig)(nil),                 // 5: loom.v1.ToolsConfig
+	(*MCPToolConfig)(nil),               // 6: loom.v1.MCPToolConfig
+	(*CustomToolConfig)(nil),            // 7: loom.v1.CustomToolConfig
+	(*MemoryConfig)(nil),                // 8: loom.v1.MemoryConfig
+	(*MemoryCompressionBatchSizes)(nil), // 9: loom.v1.MemoryCompressionBatchSizes
+	(*MemoryCompressionConfig)(nil),     // 10: loom.v1.MemoryCompressionConfig
+	(*BehaviorConfig)(nil),              // 11: loom.v1.BehaviorConfig
+	(*PatternConfig)(nil),               // 12: loom.v1.PatternConfig
+	(*AgentTemplate)(nil),               // 13: loom.v1.AgentTemplate
+	(*TemplateParameter)(nil),           // 14: loom.v1.TemplateParameter
+	(*AgentProfile)(nil),                // 15: loom.v1.AgentProfile
+	(*EphemeralAgentPolicy)(nil),        // 16: loom.v1.EphemeralAgentPolicy
+	(*SpawnTrigger)(nil),                // 17: loom.v1.SpawnTrigger
+	nil,                                 // 18: loom.v1.AgentConfig.MetadataEntry
+	nil,                                 // 19: loom.v1.AgentProfile.OverridesEntry
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
-	3,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
-	4,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
-	7,  // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
-	10, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
-	17, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
-	15, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
-	5,  // 6: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
-	6,  // 7: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	9,  // 8: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
-	0,  // 9: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	8,  // 10: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	11, // 11: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	13, // 12: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	2,  // 13: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	2,  // 14: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	18, // 15: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	16, // 16: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	2,  // 17: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	1,  // 18: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	2,  // 19: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	4,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
+	5,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
+	8,  // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
+	11, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
+	18, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
+	16, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
+	4,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
+	4,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
+	4,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
+	4,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
+	6,  // 10: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
+	7,  // 11: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
+	10, // 12: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	1,  // 13: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	9,  // 14: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	12, // 15: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	14, // 16: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	3,  // 17: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	3,  // 18: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	19, // 19: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	17, // 20: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	3,  // 21: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	2,  // 22: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	3,  // 23: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -1619,7 +1732,7 @@ func file_loom_v1_agent_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_agent_config_proto_rawDesc), len(file_loom_v1_agent_config_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
