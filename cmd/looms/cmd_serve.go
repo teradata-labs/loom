@@ -1399,6 +1399,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Register AdminService if the storage backend supports admin operations (PostgreSQL only).
 	// SQLite backends do not provide multi-tenant admin and are silently skipped.
 	if adminProvider, ok := storageBackend.(backend.AdminStorageProvider); ok {
+		// Validate that the admin connection has appropriate privileges (e.g., BYPASSRLS).
+		// This is a best-effort check; failures are logged but do not block startup.
+		if err := adminProvider.ValidateAdminPermissions(context.Background()); err != nil {
+			logger.Warn("Admin permission validation failed (admin may still work if RLS policies allow)",
+				zap.Error(err),
+			)
+		}
+
 		adminToken := os.Getenv("LOOM_ADMIN_TOKEN")
 		if adminToken == "" {
 			logger.Warn("LOOM_ADMIN_TOKEN not set; admin endpoints are unprotected")

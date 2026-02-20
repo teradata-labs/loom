@@ -16,12 +16,15 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -33,18 +36,24 @@ import (
 type SessionStore struct {
 	pool         *pgxpool.Pool
 	tracer       observability.Tracer
+	logger       *zap.Logger
 	mu           sync.RWMutex
 	cleanupHooks []agent.SessionCleanupHook
 }
 
 // NewSessionStore creates a new PostgreSQL-backed session store.
-func NewSessionStore(pool *pgxpool.Pool, tracer observability.Tracer) *SessionStore {
+// The logger parameter is optional; if nil, zap.NewNop() is used as a fallback.
+func NewSessionStore(pool *pgxpool.Pool, tracer observability.Tracer, logger *zap.Logger) *SessionStore {
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
+	}
+	if logger == nil {
+		logger = zap.NewNop()
 	}
 	return &SessionStore{
 		pool:   pool,
 		tracer: tracer,
+		logger: logger,
 	}
 }
 
@@ -119,6 +128,10 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		).Scan(&agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
 		if scanErr != nil {
 			if scanErr == pgx.ErrNoRows {
+				s.logger.Warn("session not found (possible RLS denial)",
+					zap.String("session_id", sessionID),
+					zap.String("operation", "LoadSession"),
+				)
 				return nil // session stays nil, commit is fine
 			}
 			span.RecordError(scanErr)
@@ -221,10 +234,16 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
-		_, err := tx.Exec(ctx, "UPDATE sessions SET deleted_at = NOW() WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL", sessionID, userID)
+		tag, err := tx.Exec(ctx, "UPDATE sessions SET deleted_at = NOW() WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL", sessionID, userID)
 		if err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to soft-delete session: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			s.logger.Warn("delete affected 0 rows (possible RLS denial or already deleted)",
+				zap.String("session_id", sessionID),
+				zap.String("operation", "DeleteSession"),
+			)
 		}
 		return nil
 	})
@@ -329,6 +348,14 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg ag
 			msg.CostUSD,
 		)
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				s.logger.Warn("message insert FK violation (session not found for user, possible RLS denial)",
+					zap.String("session_id", sessionID),
+					zap.String("operation", "SaveMessage"),
+					zap.String("pg_constraint", pgErr.ConstraintName),
+				)
+			}
 			span.RecordError(err)
 			return fmt.Errorf("failed to save message: %w", err)
 		}

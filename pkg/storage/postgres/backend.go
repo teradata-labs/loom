@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/pgxdriver"
@@ -41,6 +42,7 @@ type Backend struct {
 	humanRequestStore *HumanRequestStore
 	migrator          *Migrator
 	tracer            observability.Tracer
+	logger            *zap.Logger
 }
 
 // NewBackend creates a new PostgreSQL storage backend from proto configuration.
@@ -51,6 +53,10 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 
 	ctx, span := tracer.StartSpan(ctx, "postgres_backend.new")
 	defer tracer.EndSpan(span)
+
+	// Use the global zap logger; callers who need a custom logger should
+	// configure zap.ReplaceGlobals before creating the backend.
+	logger := zap.L().Named("postgres")
 
 	// Create connection pool
 	pool, err := pgxdriver.NewPool(ctx, cfg, tracer)
@@ -69,13 +75,14 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 
 	return &Backend{
 		pool:              pool,
-		sessionStore:      NewSessionStore(pool, tracer),
+		sessionStore:      NewSessionStore(pool, tracer, logger.Named("session")),
 		errorStore:        NewErrorStore(pool, tracer),
 		artifactStore:     NewArtifactStore(pool, tracer),
 		resultStore:       NewResultStore(pool, tracer),
 		humanRequestStore: NewHumanRequestStore(pool, tracer),
 		migrator:          migrator,
 		tracer:            tracer,
+		logger:            logger,
 	}, nil
 }
 
@@ -128,7 +135,7 @@ func (b *Backend) Pool() *pgxpool.Pool {
 // AdminStore creates a new AdminStore using the backend's pool and tracer.
 // This provides cross-tenant administrative queries that bypass RLS.
 func (b *Backend) AdminStore() *AdminStore {
-	return NewAdminStore(b.pool, b.tracer)
+	return NewAdminStore(b.pool, b.tracer, b.logger.Named("admin"))
 }
 
 // RawPendingMigrations returns the list of migrations that have not yet been applied.

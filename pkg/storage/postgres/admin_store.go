@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -31,17 +32,55 @@ import (
 type AdminStore struct {
 	pool   *pgxpool.Pool
 	tracer observability.Tracer
+	logger *zap.Logger
 }
 
 // NewAdminStore creates a new admin store with the given connection pool.
-func NewAdminStore(pool *pgxpool.Pool, tracer observability.Tracer) *AdminStore {
+// The logger parameter is optional; if nil, zap.NewNop() is used as a fallback.
+func NewAdminStore(pool *pgxpool.Pool, tracer observability.Tracer, logger *zap.Logger) *AdminStore {
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
+	}
+	if logger == nil {
+		logger = zap.NewNop()
 	}
 	return &AdminStore{
 		pool:   pool,
 		tracer: tracer,
+		logger: logger,
 	}
+}
+
+// ValidatePermissions checks whether the admin connection has BYPASSRLS privilege.
+// If the admin role does not have BYPASSRLS, a warning is logged. This is not
+// necessarily fatal because RLS policies may be configured to allow the admin role,
+// but operators should be aware of the misconfiguration.
+func (s *AdminStore) ValidatePermissions(ctx context.Context) error {
+	ctx, span := s.tracer.StartSpan(ctx, "admin_store.validate_permissions")
+	defer s.tracer.EndSpan(span)
+
+	var rolBypassRLS bool
+	err := execInTxNoRLS(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user",
+		).Scan(&rolBypassRLS)
+	})
+	if err != nil {
+		s.logger.Warn("failed to check admin BYPASSRLS privilege",
+			zap.Error(err),
+		)
+		span.RecordError(err)
+		return fmt.Errorf("failed to validate admin permissions: %w", err)
+	}
+
+	if !rolBypassRLS {
+		s.logger.Warn("admin connection role does not have BYPASSRLS privilege; admin queries may be filtered by RLS policies")
+	} else {
+		s.logger.Info("admin connection role has BYPASSRLS privilege")
+	}
+
+	span.SetAttribute("bypassrls", fmt.Sprintf("%t", rolBypassRLS))
+	return nil
 }
 
 // ListAllSessions returns sessions across all users (bypasses RLS).

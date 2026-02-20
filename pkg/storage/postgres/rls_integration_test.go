@@ -61,13 +61,13 @@ func testPool(t *testing.T) *pgxpool.Pool {
 // testSessionStore creates a SessionStore with a no-op tracer for integration tests.
 func testSessionStore(t *testing.T, pool *pgxpool.Pool) *SessionStore {
 	t.Helper()
-	return NewSessionStore(pool, observability.NewNoOpTracer())
+	return NewSessionStore(pool, observability.NewNoOpTracer(), nil)
 }
 
 // testAdminStore creates an AdminStore with a no-op tracer for integration tests.
 func testAdminStore(t *testing.T, pool *pgxpool.Pool) *AdminStore {
 	t.Helper()
-	return NewAdminStore(pool, observability.NewNoOpTracer())
+	return NewAdminStore(pool, observability.NewNoOpTracer(), nil)
 }
 
 // uniqueID returns a test-unique identifier to avoid cross-test interference.

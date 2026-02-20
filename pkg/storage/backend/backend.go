@@ -53,6 +53,12 @@ type PendingMigration struct {
 type AdminStorageProvider interface {
 	// AdminStorage returns the admin storage implementation, or nil if unavailable.
 	AdminStorage() agent.AdminStorage
+
+	// ValidateAdminPermissions checks that the admin connection has appropriate
+	// database privileges (e.g., BYPASSRLS for PostgreSQL). Logs a warning if
+	// the admin role lacks expected privileges but does not fail -- the admin
+	// connection may still work if RLS policies allow the role.
+	ValidateAdminPermissions(ctx context.Context) error
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.

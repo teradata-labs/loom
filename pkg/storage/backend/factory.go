@@ -84,6 +84,12 @@ func (w *postgresBackendWrapper) AdminStorage() agent.AdminStorage {
 	return w.Backend.AdminStore()
 }
 
+// ValidateAdminPermissions implements AdminStorageProvider by delegating to the
+// AdminStore's ValidatePermissions method.
+func (w *postgresBackendWrapper) ValidateAdminPermissions(ctx context.Context) error {
+	return w.Backend.AdminStore().ValidatePermissions(ctx)
+}
+
 // Compile-time checks
 var _ StorageBackend = (*postgresBackendWrapper)(nil)
 var _ MigrationInspector = (*postgresBackendWrapper)(nil)
