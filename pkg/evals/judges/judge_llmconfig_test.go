@@ -39,7 +39,7 @@ func (p *llmConfigTestProvider) Chat(_ context.Context, _ []types.Message, _ []s
 func (p *llmConfigTestProvider) Name() string  { return p.name }
 func (p *llmConfigTestProvider) Model() string { return p.model }
 
-func TestNewLLMJudge_WithProviderFactory_UsesLlmConfig(t *testing.T) {
+func TestLLMConfig_WithProviderFactory_UsesLlmConfig(t *testing.T) {
 	// Arrange: fallback provider and a factory that returns a different provider
 	fallbackProvider := &llmConfigTestProvider{name: "fallback", model: "fallback-model"}
 	configProvider := &llmConfigTestProvider{name: "config-provider", model: "config-model"}
@@ -71,7 +71,7 @@ func TestNewLLMJudge_WithProviderFactory_UsesLlmConfig(t *testing.T) {
 	assert.Equal(t, "config-model", judge.llmProvider.Model())
 }
 
-func TestNewLLMJudge_WithoutProviderFactory_UsesLlmConfigIgnored(t *testing.T) {
+func TestLLMConfig_WithoutProviderFactory_FallsBackToDefault(t *testing.T) {
 	// When no factory is provided, LlmConfig is ignored and fallback is used
 	fallbackProvider := &llmConfigTestProvider{name: "fallback", model: "fallback-model"}
 
@@ -92,7 +92,7 @@ func TestNewLLMJudge_WithoutProviderFactory_UsesLlmConfigIgnored(t *testing.T) {
 	assert.Equal(t, "fallback", judge.llmProvider.Name())
 }
 
-func TestNewLLMJudge_NoLlmConfig_UsesFallback(t *testing.T) {
+func TestLLMConfig_NoLlmConfig_UsesFallback(t *testing.T) {
 	// When LlmConfig is nil, fallback provider is used regardless of factory
 	fallbackProvider := &llmConfigTestProvider{name: "fallback", model: "fallback-model"}
 
@@ -117,7 +117,7 @@ func TestNewLLMJudge_NoLlmConfig_UsesFallback(t *testing.T) {
 	assert.Equal(t, "fallback", judge.llmProvider.Name())
 }
 
-func TestNewLLMJudge_LlmConfigEmptyProvider_UsesFallback(t *testing.T) {
+func TestLLMConfig_EmptyProvider_UsesFallback(t *testing.T) {
 	// When LlmConfig has empty provider, fallback is used
 	fallbackProvider := &llmConfigTestProvider{name: "fallback", model: "fallback-model"}
 
@@ -145,7 +145,7 @@ func TestNewLLMJudge_LlmConfigEmptyProvider_UsesFallback(t *testing.T) {
 	assert.Equal(t, "fallback", judge.llmProvider.Name())
 }
 
-func TestNewLLMJudge_FactoryError_ReturnsError(t *testing.T) {
+func TestLLMConfig_FactoryError_ReturnsError(t *testing.T) {
 	// When factory returns an error, NewLLMJudge should propagate it
 	fallbackProvider := &llmConfigTestProvider{name: "fallback", model: "fallback-model"}
 
@@ -171,7 +171,7 @@ func TestNewLLMJudge_FactoryError_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "API key not configured")
 }
 
-func TestNewLLMJudge_NilFallbackWithLlmConfig_Succeeds(t *testing.T) {
+func TestLLMConfig_NilFallbackWithConfig_Succeeds(t *testing.T) {
 	// When fallback is nil but LlmConfig provides a valid provider, it should succeed
 	configProvider := &llmConfigTestProvider{name: "config-provider", model: "config-model"}
 
@@ -196,7 +196,7 @@ func TestNewLLMJudge_NilFallbackWithLlmConfig_Succeeds(t *testing.T) {
 	assert.Equal(t, "config-provider", judge.llmProvider.Name())
 }
 
-func TestNewLLMJudge_NilFallbackNoLlmConfig_ReturnsError(t *testing.T) {
+func TestLLMConfig_NilFallbackNoConfig_ReturnsError(t *testing.T) {
 	// When both fallback and LlmConfig are nil/empty, it should error
 	config := &loomv1.JudgeConfig{
 		Name: "test-judge",
@@ -211,7 +211,7 @@ func TestNewLLMJudge_NilFallbackNoLlmConfig_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "LLM provider required")
 }
 
-func TestNewLLMJudge_ResolutionPriority(t *testing.T) {
+func TestLLMConfig_ResolutionPriority(t *testing.T) {
 	// Table-driven test for the full resolution priority chain
 	tests := []struct {
 		name             string

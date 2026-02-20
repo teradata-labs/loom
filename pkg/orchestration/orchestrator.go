@@ -378,6 +378,10 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 //  2. The orchestrator role LLM from the first registered agent that has one
 //     (agent.GetLLMForRole(LLM_ROLE_ORCHESTRATOR) which falls back to the agent's main LLM)
 //  3. nil (caller must handle this, typically by returning an error)
+//
+// Note: When falling back to agent LLMs (step 2), the selection is non-deterministic
+// if multiple agents have orchestrator LLMs, because agents are stored in a map.
+// A warning is logged in this case. Set Config.LLMProvider for deterministic behavior.
 func (o *Orchestrator) GetMergeLLM() agent.LLMProvider {
 	// 1. Use explicitly configured LLM provider
 	if o.llmProvider != nil {
@@ -388,16 +392,38 @@ func (o *Orchestrator) GetMergeLLM() agent.LLMProvider {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	for _, ag := range o.agents {
+	// Collect all agents that have a usable orchestrator LLM so we can warn
+	// when the fallback selection is non-deterministic (map iteration order).
+	var candidates []string
+	var firstLLM agent.LLMProvider
+	var firstName string
+	for name, ag := range o.agents {
 		llm := ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR)
 		if llm != nil {
-			o.logger.Debug("Using orchestrator role LLM from registered agent",
-				zap.String("agent", ag.GetName()))
-			return llm
+			candidates = append(candidates, name)
+			if firstLLM == nil {
+				firstLLM = llm
+				firstName = name
+			}
 		}
 	}
 
-	return nil
+	if firstLLM == nil {
+		return nil
+	}
+
+	if len(candidates) > 1 {
+		o.logger.Warn("Multiple agents have orchestrator LLMs; selection is non-deterministic. "+
+			"Set orchestrator-level LLMProvider in Config for deterministic behavior",
+			zap.String("selected_agent", firstName),
+			zap.Strings("candidate_agents", candidates),
+		)
+	} else {
+		o.logger.Debug("Using orchestrator role LLM from registered agent",
+			zap.String("agent", firstName))
+	}
+
+	return firstLLM
 }
 
 // GetPatternType returns a string representation of the pattern type.

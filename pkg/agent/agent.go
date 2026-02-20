@@ -2449,6 +2449,12 @@ func (a *Agent) SetLLMProviderForRole(role loomv1.LLMRole, llm LLMProvider) {
 		a.orchestratorLLM = llm
 	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
 		a.classifierLLM = llm
+		// Update the orchestrator's intent classifier if pattern classification is enabled
+		if a.orchestrator != nil && a.config.PatternConfig.UseLLMClassifier && llm != nil {
+			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llm)
+			llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
+			a.orchestrator.SetIntentClassifier(llmClassifier)
+		}
 	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
 		a.compressorLLM = llm
 		if a.memory != nil {
