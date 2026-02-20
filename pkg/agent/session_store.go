@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
+
+// validSQLIdentifier matches only safe SQL identifiers (alphanumeric and underscores).
+var validSQLIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // SessionCleanupHook is called when a session is deleted.
 // Used for cleanup tasks like releasing shared memory references.
@@ -91,6 +95,7 @@ func (s *SessionStore) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
 		id TEXT PRIMARY KEY,
+		name TEXT,
 		agent_id TEXT,
 		parent_session_id TEXT,
 		context_json TEXT,
@@ -274,7 +279,12 @@ func (s *SessionStore) initSchema() error {
 			table = "sessions"
 		}
 
-		checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s'", table, columnName)
+		// Validate table and column names are safe SQL identifiers to prevent injection.
+		// Parameterized queries cannot be used for SQLite pragma_table_info() arguments.
+		if !validSQLIdentifier.MatchString(table) || !validSQLIdentifier.MatchString(columnName) {
+			return fmt.Errorf("invalid SQL identifier: table=%q column=%q", table, columnName)
+		}
+		checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s'", table, columnName) // #nosec G201 -- table and columnName validated above
 		var count int
 		if err := s.db.QueryRowContext(ctx, checkQuery).Scan(&count); err == nil && count == 0 {
 			if _, err := s.db.ExecContext(ctx, migration); err != nil {
@@ -305,6 +315,21 @@ func (s *SessionStore) initSchema() error {
 				if span != nil {
 					span.SetAttribute(fmt.Sprintf("migration_applied_%s", columnName), "true")
 				}
+			}
+		}
+	}
+
+	// Migration: Add name column to sessions table
+	checkQuery = `SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='name'`
+	if err := s.db.QueryRowContext(ctx, checkQuery).Scan(&columnCount); err == nil && columnCount == 0 {
+		migration := `ALTER TABLE sessions ADD COLUMN name TEXT`
+		if _, err := s.db.ExecContext(ctx, migration); err != nil {
+			if span != nil {
+				span.RecordError(fmt.Errorf("migration warning (non-fatal) for name: %w", err))
+			}
+		} else {
+			if span != nil {
+				span.SetAttribute("migration_applied_session_name", "true")
 			}
 		}
 	}
@@ -380,9 +405,10 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	}
 
 	query := `
-		INSERT INTO sessions (id, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
 			agent_id = excluded.agent_id,
 			parent_session_id = excluded.parent_session_id,
 			context_json = excluded.context_json,
@@ -391,8 +417,11 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 			total_tokens = excluded.total_tokens
 	`
 
-	// Handle NULL for empty agent fields (SQLite compatibility)
-	var agentID, parentSessionID interface{}
+	// Handle NULL for empty optional fields (SQLite compatibility)
+	var sessionName, agentID, parentSessionID interface{}
+	if session.Name != "" {
+		sessionName = session.Name
+	}
 	if session.AgentID != "" {
 		agentID = session.AgentID
 	}
@@ -402,6 +431,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 
 	_, err = s.db.ExecContext(ctx, query,
 		session.ID,
+		sessionName,
 		agentID,
 		parentSessionID,
 		string(contextJSON),
@@ -431,7 +461,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
 		FROM sessions
 		WHERE id = ?
 	`
@@ -441,10 +471,11 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	var session Session
 	var contextJSON string
 	var createdAt, updatedAt int64
-	var agentID, parentSessionID sql.NullString
+	var sessionName, agentID, parentSessionID sql.NullString
 
 	err := row.Scan(
 		&session.ID,
+		&sessionName,
 		&agentID,
 		&parentSessionID,
 		&contextJSON,
@@ -454,7 +485,10 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 		&session.TotalTokens,
 	)
 
-	// Populate agent fields from nullable database values
+	// Populate optional fields from nullable database values
+	if sessionName.Valid {
+		session.Name = sessionName.String
+	}
 	if agentID.Valid {
 		session.AgentID = agentID.String
 	}

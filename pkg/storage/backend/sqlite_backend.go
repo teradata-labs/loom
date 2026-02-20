@@ -16,6 +16,7 @@ package backend
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -69,16 +70,20 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	// Create error store (reuses same DB path with separate connection)
 	errorStore, err := agent.NewSQLiteErrorStore(dbPath, tracer)
 	if err != nil {
-		sessionStore.Close()
-		return nil, fmt.Errorf("failed to create error store: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to create error store: %w", err),
+			sessionStore.Close(),
+		)
 	}
 
 	// Create artifact store (reuses same DB path)
 	artifactStore, err := artifacts.NewSQLiteStore(dbPath, tracer)
 	if err != nil {
-		sessionStore.Close()
-		errorStore.Close()
-		return nil, fmt.Errorf("failed to create artifact store: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to create artifact store: %w", err),
+			sessionStore.Close(),
+			errorStore.Close(),
+		)
 	}
 
 	// Create result store
@@ -86,10 +91,12 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		DBPath: dbPath,
 	})
 	if err != nil {
-		sessionStore.Close()
-		errorStore.Close()
-		artifactStore.Close()
-		return nil, fmt.Errorf("failed to create result store: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to create result store: %w", err),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+		)
 	}
 
 	// Create human request store
@@ -98,11 +105,13 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		Tracer: tracer,
 	})
 	if err != nil {
-		sessionStore.Close()
-		errorStore.Close()
-		artifactStore.Close()
-		resultStore.Close()
-		return nil, fmt.Errorf("failed to create human request store: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to create human request store: %w", err),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+			resultStore.Close(),
+		)
 	}
 
 	return &SQLiteBackend{

@@ -173,8 +173,8 @@ func (bf *BootstrapFewShot) Compile(
 		demonstrations,
 		trainsetScore,
 		devsetScore,
-		int32(len(req.Trainset)),
-		int32(len(traces)),
+		safeInt32(len(req.Trainset)),
+		safeInt32(len(traces)),
 		1, // Single round
 		improvementDelta,
 		compilationTime,

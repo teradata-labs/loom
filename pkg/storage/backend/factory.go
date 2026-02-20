@@ -71,7 +71,7 @@ func (w *postgresBackendWrapper) PendingMigrations(ctx context.Context) ([]*Pend
 	result := make([]*PendingMigration, len(raw))
 	for i, m := range raw {
 		result[i] = &PendingMigration{
-			Version:     int32(m.Version),
+			Version:     safeInt32(m.Version),
 			Description: m.Description,
 			SQL:         m.UpSQL,
 		}

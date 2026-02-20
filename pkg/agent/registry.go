@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,15 +128,19 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 
 	// Initialize database schema
 	if err := initRegistryDB(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to initialize registry database: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to initialize registry database: %w", err),
+			db.Close(),
+		)
 	}
 
 	// Create file watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create file watcher: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to create file watcher: %w", err),
+			db.Close(),
+		)
 	}
 
 	r := &Registry{
@@ -1794,8 +1799,7 @@ func (r *Registry) loadAgentsFromDB() error {
 
 // Close closes the registry and cleans up resources
 func (r *Registry) Close() error {
-	r.watcher.Close()
-	return r.db.Close()
+	return errors.Join(r.watcher.Close(), r.db.Close())
 }
 
 // initRegistryDB initializes the SQLite registry database schema

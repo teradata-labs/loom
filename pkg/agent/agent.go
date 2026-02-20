@@ -1263,7 +1263,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// Emit LLM generation progress
-		emitProgress(ctx, StageLLMGeneration, 20+int32(turnCount*10), fmt.Sprintf("Generating response (turn %d)", turnCount), "")
+		emitProgress(ctx, StageLLMGeneration, 20+clampInt32(turnCount*10), fmt.Sprintf("Generating response (turn %d)", turnCount), "")
 
 		// Call LLM
 		llmResp, err := a.chatWithRetry(ctx, messages, tools)
@@ -1380,7 +1380,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
 			} else {
 				// Emit standard tool execution progress
-				emitProgress(ctx, StageToolExecution, 50+int32(toolExecutionCount*5), fmt.Sprintf("Executing tool: %s", toolCall.Name), toolCall.Name)
+				emitProgress(ctx, StageToolExecution, 50+clampInt32(toolExecutionCount*5), fmt.Sprintf("Executing tool: %s", toolCall.Name), toolCall.Name)
 			}
 
 			// Execute tool with tracing
@@ -2263,10 +2263,19 @@ func (a *Agent) cleanupSessionReferences(ctx context.Context, sessionID string) 
 // CreateSession creates a new session without sending a message to the LLM.
 // Use this for session initialization; use Chat() for actual conversations.
 // ctx carries user identity for RLS-scoped storage access.
-func (a *Agent) CreateSession(ctx context.Context, sessionID string) *Session {
+// name is an optional human-readable session name.
+func (a *Agent) CreateSession(ctx context.Context, sessionID, name string) *Session {
 	// Use GetOrCreateSessionWithAgent to properly set agent_id in session metadata
 	// This is critical for ReferenceStore namespacing and workflow sub-agent communication
-	return a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	if name != "" && session.Name == "" {
+		session.Name = name
+		// Persist updated name to store
+		if a.memory.store != nil {
+			_ = a.memory.store.SaveSession(ctx, session)
+		}
+	}
+	return session
 }
 
 // RegisteredTools returns all registered tools.

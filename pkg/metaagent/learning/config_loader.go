@@ -71,6 +71,7 @@ type NotificationConfigYAML struct {
 
 // LoadLearningAgentConfig loads a learning agent configuration from a YAML file
 func LoadLearningAgentConfig(path string) (*loomv1.LearningAgentConfig, []string, error) {
+	path = filepath.Clean(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read learning agent config file %s: %w", path, err)

@@ -649,11 +649,11 @@ func (la *LearningAgent) AnalyzePatternEffectiveness(
 	}
 
 	summary := &loomv1.PatternAnalysisSummary{
-		TotalPatternsAnalyzed: int32(len(patterns)),
+		TotalPatternsAnalyzed: safeInt32(len(patterns)),
 		OverallSuccessRate:    overallSuccessRate,
 		TotalCostUsd:          totalCost,
-		PatternsToPromote:     int32(patternsToPromote),
-		PatternsToDeprecate:   int32(patternsToDeprecate),
+		PatternsToPromote:     safeInt32(patternsToPromote),
+		PatternsToDeprecate:   safeInt32(patternsToDeprecate),
 		AnalysisWindowHours:   windowHours,
 	}
 
@@ -725,7 +725,7 @@ func (la *LearningAgent) GenerateImprovements(
 
 	return &loomv1.ImprovementsResponse{
 		Improvements:  improvements,
-		TotalProposed: int32(len(improvements)),
+		TotalProposed: safeInt32(len(improvements)),
 	}, nil
 }
 
@@ -2003,8 +2003,8 @@ func (la *LearningAgent) applyPatternTunings(
 // calculateTuningSummary computes aggregate tuning statistics
 func (la *LearningAgent) calculateTuningSummary(tunings []*loomv1.PatternTuning) *loomv1.TuningSummary {
 	summary := &loomv1.TuningSummary{
-		PatternsAnalyzed:  int32(len(tunings)),
-		PatternsTuned:     int32(len(tunings)),
+		PatternsAnalyzed:  safeInt32(len(tunings)),
+		PatternsTuned:     safeInt32(len(tunings)),
 		PatternsPromoted:  0,
 		PatternsDemoted:   0,
 		PatternsUnchanged: 0,
