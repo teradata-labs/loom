@@ -101,7 +101,7 @@ func (s *AdminStore) ListAllSessions(ctx context.Context, limit, offset int) ([]
 
 		// Query sessions with user_id
 		rows, err := tx.Query(ctx, `
-			SELECT id, user_id, agent_id, parent_session_id, created_at, updated_at,
+			SELECT id, name, user_id, agent_id, parent_session_id, created_at, updated_at,
 			       total_cost_usd, total_tokens
 			FROM sessions
 			WHERE deleted_at IS NULL
@@ -117,6 +117,7 @@ func (s *AdminStore) ListAllSessions(ctx context.Context, limit, offset int) ([]
 		for rows.Next() {
 			var (
 				id              string
+				sessionName     *string
 				userID          string
 				agentID         *string
 				parentSessionID *string
@@ -126,7 +127,7 @@ func (s *AdminStore) ListAllSessions(ctx context.Context, limit, offset int) ([]
 				totalTokens     int64
 			)
 
-			if err := rows.Scan(&id, &userID, &agentID, &parentSessionID,
+			if err := rows.Scan(&id, &sessionName, &userID, &agentID, &parentSessionID,
 				&createdAt, &updatedAt, &totalCost, &totalTokens); err != nil {
 				return fmt.Errorf("failed to scan session: %w", err)
 			}
@@ -137,6 +138,9 @@ func (s *AdminStore) ListAllSessions(ctx context.Context, limit, offset int) ([]
 				UpdatedAt:    updatedAt,
 				TotalCostUSD: totalCost,
 				TotalTokens:  int(totalTokens),
+			}
+			if sessionName != nil {
+				sess.Name = *sessionName
 			}
 			if agentID != nil {
 				sess.AgentID = *agentID

@@ -73,9 +73,10 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 		}
 
 		_, err = tx.Exec(ctx, `
-		INSERT INTO sessions (id, agent_id, user_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO sessions (id, name, agent_id, user_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name,
 			agent_id = EXCLUDED.agent_id,
 			parent_session_id = EXCLUDED.parent_session_id,
 			context_json = EXCLUDED.context_json,
@@ -83,6 +84,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 			total_cost_usd = EXCLUDED.total_cost_usd,
 			total_tokens = EXCLUDED.total_tokens`,
 			session.ID,
+			nullableString(session.Name),
 			nullableString(session.AgentID),
 			userID,
 			nullableString(session.ParentSessionID),
@@ -112,6 +114,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		userID := UserIDFromContext(ctx)
 
 		var (
+			sessionName     *string
 			agentID         *string
 			parentSessionID *string
 			contextJSON     []byte
@@ -122,10 +125,10 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		)
 
 		scanErr := tx.QueryRow(ctx, `
-		SELECT agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
 		FROM sessions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
 			sessionID, userID,
-		).Scan(&agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
+		).Scan(&sessionName, &agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
 		if scanErr != nil {
 			if scanErr == pgx.ErrNoRows {
 				s.logger.Warn("session not found (possible RLS denial)",
@@ -145,6 +148,9 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 			UpdatedAt:    updatedAt,
 			TotalCostUSD: totalCost,
 			TotalTokens:  totalTokens,
+		}
+		if sessionName != nil {
+			sess.Name = *sessionName
 		}
 		if agentID != nil {
 			sess.AgentID = *agentID

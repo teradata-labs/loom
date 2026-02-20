@@ -223,6 +223,9 @@ type Session struct {
 	// ID is the unique session identifier
 	ID string
 
+	// Name is a human-readable session name (optional, set via CreateSession RPC)
+	Name string
+
 	// AgentID identifies which agent owns this session (for cross-session memory)
 	// Example: "coordinator-agent", "analyzer-sub-agent"
 	// This enables agent-scoped memory where a sub-agent can access messages

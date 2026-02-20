@@ -25,8 +25,8 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 8 migrations
-	assert.Len(t, migrations, 8, "should have 8 migration versions")
+	// Verify we have all 9 migrations
+	assert.Len(t, migrations, 9, "should have 9 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -65,6 +65,7 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{6, "user_id_and_fixes", "ADD COLUMN IF NOT EXISTS user_id"},
 		{7, "user_rls_policies", "user_id = current_setting"},
 		{8, "tool_exec_snapshot_user_id", "ALTER TABLE tool_executions ADD COLUMN"},
+		{9, "session_name", "ADD COLUMN IF NOT EXISTS name"},
 	}
 
 	for _, tt := range tests {

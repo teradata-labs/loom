@@ -26,10 +26,10 @@ import (
 
 func TestNewSessionStore_LoggerInitialization(t *testing.T) {
 	tests := []struct {
-		name           string
-		logger         *zap.Logger
-		expectNonNil   bool
-		description    string
+		name         string
+		logger       *zap.Logger
+		expectNonNil bool
+		description  string
 	}{
 		{
 			name:         "nil logger defaults to nop",
@@ -62,10 +62,10 @@ func TestNewSessionStore_TracerInitialization(t *testing.T) {
 
 func TestNewAdminStore_LoggerInitialization(t *testing.T) {
 	tests := []struct {
-		name           string
-		logger         *zap.Logger
-		expectNonNil   bool
-		description    string
+		name         string
+		logger       *zap.Logger
+		expectNonNil bool
+		description  string
 	}{
 		{
 			name:         "nil logger defaults to nop",

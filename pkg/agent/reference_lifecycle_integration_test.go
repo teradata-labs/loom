@@ -70,7 +70,7 @@ func TestReferenceLifecycle_Integration(t *testing.T) {
 
 	// Create a test session
 	sessionID := "test_session_ref_lifecycle"
-	session := agent.CreateSession(context.Background(), sessionID)
+	session := agent.CreateSession(context.Background(), sessionID, "")
 	require.NotNil(t, session)
 
 	// Manually create and store a reference (simulating what formatToolResult does)
@@ -143,7 +143,7 @@ func TestReferenceLifecycle_MultipleReferences(t *testing.T) {
 
 	// Create session
 	sessionID := "test_session_multi_refs"
-	agent.CreateSession(context.Background(), sessionID)
+	agent.CreateSession(context.Background(), sessionID, "")
 
 	// Create and pin multiple references
 	ctx := context.Background()
@@ -195,7 +195,7 @@ func TestReferenceLifecycle_NoStore(t *testing.T) {
 
 	// Create a session and verify basic functionality
 	sessionID := "test_session_no_store"
-	session := agent.CreateSession(context.Background(), sessionID)
+	session := agent.CreateSession(context.Background(), sessionID, "")
 	require.NotNil(t, session)
 
 	// Pin a reference manually

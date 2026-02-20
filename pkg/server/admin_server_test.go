@@ -17,10 +17,10 @@ import (
 	"context"
 	"testing"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -61,12 +61,12 @@ func TestNewAdminServer_ValidStore(t *testing.T) {
 
 func TestCheckAdminAuth(t *testing.T) {
 	tests := []struct {
-		name       string
-		token      string
-		md         metadata.MD
-		noMD       bool
-		wantCode   codes.Code
-		wantErr    bool
+		name     string
+		token    string
+		md       metadata.MD
+		noMD     bool
+		wantCode codes.Code
+		wantErr  bool
 	}{
 		{
 			name:    "empty token skips auth",
@@ -75,10 +75,10 @@ func TestCheckAdminAuth(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:     "valid token passes",
-			token:    "secret-123",
-			md:       metadata.Pairs("x-admin-token", "secret-123"),
-			wantErr:  false,
+			name:    "valid token passes",
+			token:   "secret-123",
+			md:      metadata.Pairs("x-admin-token", "secret-123"),
+			wantErr: false,
 		},
 		{
 			name:     "wrong token rejected",

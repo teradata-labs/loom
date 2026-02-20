@@ -273,7 +273,7 @@ func (s *Server) CreateSession(ctx context.Context, req *loomv1.CreateSessionReq
 	sessionID := GenerateSessionID()
 
 	// Create session without sending a message to the LLM
-	session := s.agent.CreateSession(ctx, sessionID)
+	session := s.agent.CreateSession(ctx, sessionID, req.GetName())
 
 	return ConvertSession(session), nil
 }
@@ -734,6 +734,7 @@ func (s *Server) RequestToolPermission(ctx context.Context, req *loomv1.ToolPerm
 func ConvertSession(s *agent.Session) *loomv1.Session {
 	return &loomv1.Session{
 		Id:                s.ID,
+		Name:              s.Name,
 		CreatedAt:         s.CreatedAt.Unix(),
 		UpdatedAt:         s.UpdatedAt.Unix(),
 		State:             "active",
