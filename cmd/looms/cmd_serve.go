@@ -1427,12 +1427,23 @@ func runServe(cmd *cobra.Command, args []string) {
 
 		adminToken := os.Getenv("LOOM_ADMIN_TOKEN")
 		if adminToken == "" {
-			logger.Warn("LOOM_ADMIN_TOKEN not set; admin endpoints are unprotected")
-		}
-		adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
-		if adminServer != nil {
-			loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
-			logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled)")
+			if !config.Server.InsecureAdmin {
+				logger.Error("LOOM_ADMIN_TOKEN not set and server.insecure_admin is not enabled; skipping admin service registration. " +
+					"Set LOOM_ADMIN_TOKEN or set server.insecure_admin=true in config to run admin endpoints without authentication")
+			} else {
+				logger.Warn("LOOM_ADMIN_TOKEN not set and insecure_admin is enabled; admin endpoints are unprotected")
+				adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+				if adminServer != nil {
+					loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+					logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled, WARNING: no authentication)")
+				}
+			}
+		} else {
+			adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+			if adminServer != nil {
+				loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+				logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled)")
+			}
 		}
 	} else {
 		logger.Info("Admin service not registered (only available with PostgreSQL backend)")
@@ -2336,6 +2347,20 @@ func runServe(cmd *cobra.Command, args []string) {
 			zap.String("health_endpoint", fmt.Sprintf("http://%s/health", httpAddr)))
 	}
 
+	// Start soft-delete cleanup goroutine if storage supports it (PostgreSQL)
+	var softDeleteCleaner *storage.SoftDeleteCleaner
+	if sds, ok := store.(storage.Purger); ok {
+		softDeleteCfg := config.Storage.Postgres.SoftDelete
+		if softDeleteCfg.Enabled {
+			softDeleteCleaner = storage.StartSoftDeleteCleanup(
+				sds,
+				softDeleteCfg.GracePeriodSeconds,
+				softDeleteCfg.CleanupIntervalSeconds,
+				logger,
+			)
+		}
+	}
+
 	logger.Info("Ready to weave!")
 
 	// Start message queue monitor for event-driven workflow agent notifications
@@ -2382,6 +2407,12 @@ func runServe(cmd *cobra.Command, args []string) {
 			if err := registry.Close(); err != nil {
 				logger.Warn("Error closing registry", zap.Error(err))
 			}
+		}
+
+		// Stop soft-delete cleanup goroutine
+		if softDeleteCleaner != nil {
+			softDeleteCleaner.Stop()
+			logger.Info("Soft-delete cleanup stopped")
 		}
 
 		// Stop artifact watcher

@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -956,4 +957,110 @@ func TestRoleLLM_FullLifecycle(t *testing.T) {
 	assert.Len(t, allLLMs, 4, "Step 4: Should have 4 role LLMs (orchestrator cleared)")
 	_, hasOrch := allLLMs[loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR]
 	assert.False(t, hasOrch, "Orchestrator should not be in map after clearing")
+}
+
+// ---------------------------------------------------------------------------
+// trackingMockLLM: a mock LLM that tracks Chat invocations
+// ---------------------------------------------------------------------------
+
+// trackingMockLLM is a mock LLM that counts how many times Chat was called.
+// Used to verify that the orchestrator's LLM classifier is rebuilt with the
+// new provider after SetLLMProviderForRole(CLASSIFIER, ...).
+type trackingMockLLM struct {
+	providerName string
+	modelName    string
+	chatCalls    atomic.Int64
+}
+
+func (m *trackingMockLLM) Chat(_ context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	m.chatCalls.Add(1)
+	// Return a valid JSON classification response so the LLM classifier parses it
+	return &llmtypes.LLMResponse{
+		Content:    `{"intent": "query", "confidence": 0.85}`,
+		StopReason: "end_turn",
+	}, nil
+}
+
+func (m *trackingMockLLM) Name() string  { return m.providerName }
+func (m *trackingMockLLM) Model() string { return m.modelName }
+
+// ---------------------------------------------------------------------------
+// TestSetLLMProviderForRole_ClassifierPropagatesOrchestrator
+// ---------------------------------------------------------------------------
+
+// TestSetLLMProviderForRole_ClassifierPropagatesOrchestrator verifies that
+// switching the CLASSIFIER role LLM at runtime also rebuilds and sets the
+// intent classifier on the orchestrator, so ClassifyIntent uses the new LLM.
+func TestSetLLMProviderForRole_ClassifierPropagatesOrchestrator(t *testing.T) {
+	mainLLM := newRoleMockLLM("main", "main-model")
+
+	t.Run("UseLLMClassifier=true: switching classifier rebuilds orchestrator intent classifier", func(t *testing.T) {
+		ag := createRoleTestAgent(mainLLM, WithPatternConfig(&PatternConfig{
+			Enabled:          true,
+			UseLLMClassifier: true,
+		}))
+
+		require.NotNil(t, ag.orchestrator, "Agent should have an orchestrator")
+
+		// Create a tracking mock so we can verify the orchestrator calls it
+		newClassifier := &trackingMockLLM{
+			providerName: "new-classifier-provider",
+			modelName:    "new-classifier-model",
+		}
+
+		// Switch the classifier role -- this should rebuild the orchestrator's intent classifier
+		ag.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_CLASSIFIER, newClassifier)
+
+		// Verify the classifierLLM field was set
+		assert.Equal(t, "new-classifier-provider", ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_CLASSIFIER).Name())
+
+		// Call ClassifyIntent on the orchestrator -- this should invoke the new LLM's Chat
+		_, _ = ag.orchestrator.ClassifyIntent("show me the data", nil)
+
+		assert.Greater(t, newClassifier.chatCalls.Load(), int64(0),
+			"After switching CLASSIFIER role, the orchestrator should use the new LLM for intent classification")
+	})
+
+	t.Run("UseLLMClassifier=false: switching classifier does NOT update orchestrator", func(t *testing.T) {
+		ag := createRoleTestAgent(mainLLM, WithPatternConfig(&PatternConfig{
+			Enabled:          true,
+			UseLLMClassifier: false,
+		}))
+
+		require.NotNil(t, ag.orchestrator, "Agent should have an orchestrator")
+
+		newClassifier := &trackingMockLLM{
+			providerName: "should-not-be-used",
+			modelName:    "should-not-be-used-model",
+		}
+
+		// Switch the classifier role -- orchestrator should NOT be updated
+		ag.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_CLASSIFIER, newClassifier)
+
+		// Verify the field was set (even though orchestrator was not updated)
+		assert.Equal(t, "should-not-be-used", ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_CLASSIFIER).Name())
+
+		// Call ClassifyIntent -- it should use the keyword-based default, not the LLM
+		_, _ = ag.orchestrator.ClassifyIntent("show me the data", nil)
+
+		assert.Equal(t, int64(0), newClassifier.chatCalls.Load(),
+			"When UseLLMClassifier=false, orchestrator should NOT call the new classifier LLM")
+	})
+
+	t.Run("nil classifier does NOT update orchestrator even with UseLLMClassifier=true", func(t *testing.T) {
+		ag := createRoleTestAgent(mainLLM, WithPatternConfig(&PatternConfig{
+			Enabled:          true,
+			UseLLMClassifier: true,
+		}))
+
+		require.NotNil(t, ag.orchestrator, "Agent should have an orchestrator")
+
+		// Setting classifier to nil should NOT attempt to rebuild
+		// (the code checks llm != nil before rebuilding)
+		ag.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_CLASSIFIER, nil)
+
+		// classifierLLM should be nil, fallback to main
+		assert.Equal(t, "main", ag.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_CLASSIFIER).Name(),
+			"Nil classifier should fall back to main LLM")
+	})
 }

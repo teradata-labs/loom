@@ -522,11 +522,14 @@ func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest
 	// When req.Role is LLM_ROLE_UNSPECIFIED, SetLLMProviderForRole delegates to the main agent LLM.
 	s.agent.SetLLMProviderForRole(req.Role, newProvider)
 
-	// Get new model info
+	// Verify the switch by reading back actual values from the agent
+	actualModel := s.agent.GetLLMModelForRole(req.Role)
+	actualProvider := s.agent.GetLLMProviderNameForRole(req.Role)
+
 	newModel := &loomv1.ModelInfo{
-		Id:       req.Model,
-		Name:     req.Model,
-		Provider: req.Provider,
+		Id:       actualModel,
+		Name:     actualModel,
+		Provider: actualProvider,
 	}
 
 	return &loomv1.SwitchModelResponse{

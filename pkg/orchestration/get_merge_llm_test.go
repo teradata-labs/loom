@@ -22,7 +22,10 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestGetMergeLLM_ExplicitProviderTakesPriority(t *testing.T) {
@@ -158,7 +161,7 @@ func TestGetMergeLLM_MultipleAgents(t *testing.T) {
 	require.NotNil(t, result)
 }
 
-// TestGetMergeLLM_PrefersDedicatedOrchestratorRole ensures that when one agent has
+// TestGetMergeLLM_AgentWithOrchestratorRole ensures that when one agent has
 // a dedicated orchestrator LLM and another doesn't, the dedicated one is preferred
 // when it happens to be found first (map iteration order is non-deterministic in Go,
 // so this test verifies it works in the agent-with-dedicated-llm-only case).
@@ -187,4 +190,110 @@ func TestGetMergeLLM_AgentWithOrchestratorRole(t *testing.T) {
 	// Assert: should return the orchestrator LLM, not the main agent LLM
 	require.NotNil(t, result)
 	assert.Equal(t, orchLLM, result)
+}
+
+// TestGetMergeLLM_MultipleAgents_WarnsNonDeterministic verifies that when multiple
+// agents have orchestrator LLMs and no explicit Config.LLMProvider is set, a warning
+// is logged indicating the selection is non-deterministic.
+func TestGetMergeLLM_MultipleAgents_WarnsNonDeterministic(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	o := NewOrchestrator(Config{
+		LLMProvider: nil,
+		Logger:      logger,
+		Tracer:      observability.NewNoOpTracer(),
+	})
+
+	// Register multiple agents, each with an orchestrator LLM
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		llm := newMockLLMProvider(name + " response")
+		ag := createMockAgent(t, name, llm)
+		o.RegisterAgent(name, ag)
+	}
+
+	// Act
+	result := o.GetMergeLLM()
+
+	// Assert: an LLM was returned
+	require.NotNil(t, result)
+
+	// Assert: a warn-level log was emitted about non-deterministic selection
+	warnEntries := logs.FilterMessage("Multiple agents have orchestrator LLMs; selection is non-deterministic. " +
+		"Set orchestrator-level LLMProvider in Config for deterministic behavior")
+	require.Equal(t, 1, warnEntries.Len(), "expected exactly one warning about non-deterministic selection")
+
+	entry := warnEntries.All()[0]
+	assert.Equal(t, zapcore.WarnLevel, entry.Level)
+
+	// Verify the structured fields contain the expected keys
+	fieldMap := make(map[string]interface{})
+	for _, f := range entry.Context {
+		switch f.Type {
+		case zapcore.StringType:
+			fieldMap[f.Key] = f.String
+		case zapcore.ArrayMarshalerType:
+			fieldMap[f.Key] = f.Interface
+		}
+	}
+	assert.Contains(t, fieldMap, "selected_agent", "log should include selected_agent field")
+	assert.Contains(t, fieldMap, "candidate_agents", "log should include candidate_agents field")
+}
+
+// TestGetMergeLLM_SingleAgent_NoWarning verifies that a single agent fallback
+// produces a debug log (not a warning).
+func TestGetMergeLLM_SingleAgent_NoWarning(t *testing.T) {
+	// Use WarnLevel observer -- debug messages will NOT be captured,
+	// so if only debug is emitted, warn count stays at 0.
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	o := NewOrchestrator(Config{
+		LLMProvider: nil,
+		Logger:      logger,
+		Tracer:      observability.NewNoOpTracer(),
+	})
+
+	llm := newMockLLMProvider("only agent response")
+	ag := createMockAgent(t, "solo-agent", llm)
+	o.RegisterAgent("solo-agent", ag)
+
+	// Act
+	result := o.GetMergeLLM()
+
+	// Assert: LLM returned
+	require.NotNil(t, result)
+
+	// Assert: no warnings were logged (single agent = deterministic, so only debug)
+	assert.Equal(t, 0, logs.Len(), "no warnings should be logged when only one agent has an orchestrator LLM")
+}
+
+// TestGetMergeLLM_ExplicitProvider_NoWarning verifies that when an explicit
+// LLMProvider is set, no warning is logged even if multiple agents have orchestrator LLMs.
+func TestGetMergeLLM_ExplicitProvider_NoWarning(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	explicitLLM := newMockLLMProvider("explicit")
+
+	o := NewOrchestrator(Config{
+		LLMProvider: explicitLLM,
+		Logger:      logger,
+		Tracer:      observability.NewNoOpTracer(),
+	})
+
+	// Register multiple agents
+	for _, name := range []string{"alpha", "beta"} {
+		llm := newMockLLMProvider(name + " response")
+		ag := createMockAgent(t, name, llm)
+		o.RegisterAgent(name, ag)
+	}
+
+	// Act
+	result := o.GetMergeLLM()
+
+	// Assert: explicit provider returned, no warnings
+	require.NotNil(t, result)
+	assert.Equal(t, explicitLLM, result)
+	assert.Equal(t, 0, logs.Len(), "no warnings should be logged when explicit LLMProvider is set")
 }
