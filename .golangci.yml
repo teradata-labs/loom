@@ -5,9 +5,12 @@ run:
     - fts5
   timeout: 5m
 
+linters:
+  exclusions:
+    paths:
+      - gen
+      - vendor
+
 issues:
-  exclude-dirs:
-    - gen
-    - vendor
   max-issues-per-linter: 0
   max-same-issues: 0
