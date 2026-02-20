@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-
 func TestShouldValidate(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jhump/protoreflect/desc"         //nolint:staticcheck // v1 API still required by grpcdynamic
-	"github.com/jhump/protoreflect/dynamic"      //nolint:staticcheck // v1 API still required by grpcdynamic
+	"github.com/jhump/protoreflect/desc"    //nolint:staticcheck // v1 API still required by grpcdynamic
+	"github.com/jhump/protoreflect/dynamic" //nolint:staticcheck // v1 API still required by grpcdynamic
 	"github.com/jhump/protoreflect/dynamic/grpcdynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/teradata-labs/loom/pkg/shuttle"
