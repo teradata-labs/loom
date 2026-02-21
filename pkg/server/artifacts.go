@@ -94,6 +94,9 @@ func (s *MultiAgentServer) GetArtifact(ctx context.Context, req *loomv1.GetArtif
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "artifact not found: %v", err)
 	}
+	if art == nil {
+		return nil, status.Error(codes.NotFound, "artifact not found")
+	}
 
 	return &loomv1.GetArtifactResponse{
 		Artifact: artifactToProto(art),
