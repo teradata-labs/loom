@@ -27,15 +27,16 @@ func TestBootstrapFewShot_WithMultiJudgeMetric(t *testing.T) {
 				example := req.Context.Prompt
 
 				var qualityScore, safetyScore, costScore float64
-				if example == "good-example" {
+				switch example {
+				case "good-example":
 					qualityScore = 95.0
 					safetyScore = 90.0
 					costScore = 85.0
-				} else if example == "ok-example" {
+				case "ok-example":
 					qualityScore = 75.0
 					safetyScore = 80.0
 					costScore = 90.0
-				} else {
+				default:
 					qualityScore = 60.0
 					safetyScore = 55.0
 					costScore = 70.0
@@ -220,13 +221,14 @@ func TestBootstrapFewShot_WithMultiJudgeMetric(t *testing.T) {
 				var qualityScore, costScore float64
 				// "high-quality" example: great quality, expensive
 				// "low-cost" example: ok quality, cheap
-				if query == "high-quality" {
+				switch query {
+				case "high-quality":
 					qualityScore = 95.0
 					costScore = 60.0 // Expensive (low cost score)
-				} else if query == "low-cost" {
+				case "low-cost":
 					qualityScore = 75.0
 					costScore = 95.0 // Cheap (high cost score)
-				} else {
+				default:
 					qualityScore = 80.0
 					costScore = 80.0
 				}

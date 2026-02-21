@@ -27,7 +27,7 @@ import (
 func TestRouter_RegisterHandler(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil
@@ -54,7 +54,7 @@ func TestRouter_RegisterHandler(t *testing.T) {
 func TestRouter_UnregisterHandler(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil
@@ -82,7 +82,7 @@ func TestRouter_UnregisterHandler(t *testing.T) {
 func TestRouter_Send_Success(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	// Track handler invocations
 	var invoked bool
@@ -118,7 +118,7 @@ func TestRouter_Send_Success(t *testing.T) {
 func TestRouter_Send_NoHandler(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	// Send to non-existent handler
 	delivered, err := router.Send(ctx, SignalEmergencyStop, "agent1", []byte("test"))
@@ -130,7 +130,7 @@ func TestRouter_Send_NoHandler(t *testing.T) {
 func TestRouter_Send_BufferFull(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	// Handler that blocks
 	var handlerStarted atomic.Bool
@@ -166,7 +166,7 @@ func TestRouter_Send_BufferFull(t *testing.T) {
 func TestRouter_Send_CriticalPriorityBuffer(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil
@@ -227,7 +227,7 @@ func TestRouter_Close_Graceful(t *testing.T) {
 func TestRouter_GetStats(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		return nil
@@ -252,7 +252,7 @@ func TestRouter_GetStats(t *testing.T) {
 func TestRouter_Race(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
 		// Simulate work
@@ -315,7 +315,7 @@ func TestRouter_Race(t *testing.T) {
 func TestRouter_HandlerPanic(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	// Handler that panics
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {

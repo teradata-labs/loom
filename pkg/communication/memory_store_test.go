@@ -25,7 +25,7 @@ import (
 
 func TestMemoryStore_StoreAndResolve(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("test data")
@@ -51,7 +51,7 @@ func TestMemoryStore_StoreAndResolve(t *testing.T) {
 
 func TestMemoryStore_StoreEmptyData(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -67,7 +67,7 @@ func TestMemoryStore_StoreEmptyData(t *testing.T) {
 
 func TestMemoryStore_ResolveNonExistent(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	ref := &loomv1.Reference{
@@ -84,7 +84,7 @@ func TestMemoryStore_ResolveNonExistent(t *testing.T) {
 
 func TestMemoryStore_RefCounting(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("reference counted data")
@@ -132,7 +132,7 @@ func TestMemoryStore_RefCounting(t *testing.T) {
 
 func TestMemoryStore_TTLExpiration(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("expiring data")
@@ -162,7 +162,7 @@ func TestMemoryStore_TTLExpiration(t *testing.T) {
 
 func TestMemoryStore_Deduplication(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("duplicate data")
@@ -190,7 +190,7 @@ func TestMemoryStore_Deduplication(t *testing.T) {
 
 func TestMemoryStore_List(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -228,7 +228,7 @@ func TestMemoryStore_List(t *testing.T) {
 
 func TestMemoryStore_Stats(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -269,7 +269,7 @@ func TestMemoryStore_Stats(t *testing.T) {
 func TestMemoryStore_GarbageCollection(t *testing.T) {
 	// Use short GC interval for testing
 	store := NewMemoryStore(500 * time.Millisecond)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("gc test data")
@@ -299,7 +299,7 @@ func TestMemoryStore_GarbageCollection(t *testing.T) {
 
 func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 	store := NewMemoryStore(1 * time.Minute)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{

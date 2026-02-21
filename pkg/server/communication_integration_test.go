@@ -42,21 +42,21 @@ func TestBusPublishSubscribe_Integration(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 	sessionStore, err := agent.NewSessionStore(":memory:", tracer)
 	require.NoError(t, err)
-	defer sessionStore.Close()
+	defer func() { _ = sessionStore.Close() }()
 
 	srv := NewMultiAgentServer(agents, sessionStore)
 
 	// Configure communication
 	bus := communication.NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	queue, err := communication.NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := communication.NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	// Create in-memory reference store using factory
 	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{
@@ -147,21 +147,21 @@ func TestSharedMemoryPutGet_Integration(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 	sessionStore, err := agent.NewSessionStore(":memory:", tracer)
 	require.NoError(t, err)
-	defer sessionStore.Close()
+	defer func() { _ = sessionStore.Close() }()
 
 	srv := NewMultiAgentServer(agents, sessionStore)
 
 	// Configure communication
 	bus := communication.NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	queue, err := communication.NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := communication.NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	// Create in-memory reference store using factory
 	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{
@@ -210,21 +210,21 @@ func TestSharedMemoryList_Integration(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 	sessionStore, err := agent.NewSessionStore(":memory:", tracer)
 	require.NoError(t, err)
-	defer sessionStore.Close()
+	defer func() { _ = sessionStore.Close() }()
 
 	srv := NewMultiAgentServer(agents, sessionStore)
 
 	// Configure communication
 	bus := communication.NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	queue, err := communication.NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := communication.NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	// Create in-memory reference store using factory
 	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{
@@ -271,21 +271,21 @@ func TestSharedMemoryStats_Integration(t *testing.T) {
 	tracer := observability.NewNoOpTracer()
 	sessionStore, err := agent.NewSessionStore(":memory:", tracer)
 	require.NoError(t, err)
-	defer sessionStore.Close()
+	defer func() { _ = sessionStore.Close() }()
 
 	srv := NewMultiAgentServer(agents, sessionStore)
 
 	// Configure communication
 	bus := communication.NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	queue, err := communication.NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := communication.NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	// Create in-memory reference store using factory
 	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{

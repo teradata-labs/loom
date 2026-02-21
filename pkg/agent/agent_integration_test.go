@@ -1269,7 +1269,7 @@ func TestAgent_ToolCallMessagePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create session store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create mock LLM that makes tool calls
 	mockLLM := &mockToolCallingLLM{

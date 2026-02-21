@@ -43,13 +43,13 @@ type Server struct {
 	loomv1.UnimplementedLoomServiceServer
 
 	agent         *agent.Agent
-	sessionStore  *agent.SessionStore
+	sessionStore  agent.SessionStorage
 	factory       *factory.ProviderFactory
 	modelRegistry *factory.ModelRegistry
 }
 
 // NewServer creates a new LoomService server.
-func NewServer(ag *agent.Agent, store *agent.SessionStore) *Server {
+func NewServer(ag *agent.Agent, store agent.SessionStorage) *Server {
 	return &Server{
 		agent:         ag,
 		sessionStore:  store,
@@ -141,12 +141,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	var finalResult *agentResult
 	agentDone := false
 
-	for {
-		// If agent is done and progress channel is closed, process result
-		if agentDone && progressChan == nil {
-			break
-		}
-
+	for !agentDone || progressChan != nil {
 		select {
 		case event, ok := <-progressChan:
 			// Receive progress event from agent
@@ -273,7 +268,7 @@ func (s *Server) CreateSession(ctx context.Context, req *loomv1.CreateSessionReq
 	sessionID := GenerateSessionID()
 
 	// Create session without sending a message to the LLM
-	session := s.agent.CreateSession(sessionID)
+	session := s.agent.CreateSession(ctx, sessionID, req.GetName())
 
 	return ConvertSession(session), nil
 }
@@ -734,6 +729,7 @@ func (s *Server) RequestToolPermission(ctx context.Context, req *loomv1.ToolPerm
 func ConvertSession(s *agent.Session) *loomv1.Session {
 	return &loomv1.Session{
 		Id:                s.ID,
+		Name:              s.Name,
 		CreatedAt:         s.CreatedAt.Unix(),
 		UpdatedAt:         s.UpdatedAt.Unix(),
 		State:             "active",

@@ -38,7 +38,7 @@ func TestNewReferenceStoreFromConfig_Memory(t *testing.T) {
 	store, err := NewReferenceStoreFromConfig(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify it's a memory store by checking it works
 	ctx := context.Background()
@@ -65,7 +65,7 @@ func TestNewReferenceStoreFromConfig_SQLite(t *testing.T) {
 	store, err := NewReferenceStoreFromConfig(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify it's a SQLite store by checking persistence
 	ctx := context.Background()
@@ -124,7 +124,7 @@ func TestNewReferenceStoreFromConfig_DefaultPath(t *testing.T) {
 	store, err := NewReferenceStoreFromConfig(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 }
 
 func TestNewReferenceStoreFromConfig_DefaultGCInterval(t *testing.T) {
@@ -141,7 +141,7 @@ func TestNewReferenceStoreFromConfig_DefaultGCInterval(t *testing.T) {
 	store, err := NewReferenceStoreFromConfig(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify default GC interval by checking it's a MemoryStore
 	memStore, ok := store.(*MemoryStore)
@@ -242,7 +242,7 @@ func TestFactoryConfig_EndToEnd(t *testing.T) {
 	// Create store
 	store, err := NewReferenceStoreFromConfig(cfg)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create policy manager
 	pm := NewPolicyManagerFromConfig(cfg)

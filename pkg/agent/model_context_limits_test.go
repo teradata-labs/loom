@@ -31,14 +31,14 @@ func TestGetModelContextLimits(t *testing.T) {
 			name:             "Claude Sonnet 4 exact match",
 			model:            "claude-sonnet-4",
 			expectedMax:      200000,
-			expectedReserved: 20000,
+			expectedReserved: 64000,
 			shouldFind:       true,
 		},
 		{
 			name:             "Claude Sonnet 4 with version suffix",
 			model:            "claude-sonnet-4-20250514",
 			expectedMax:      200000,
-			expectedReserved: 20000,
+			expectedReserved: 64000,
 			shouldFind:       true,
 		},
 		{

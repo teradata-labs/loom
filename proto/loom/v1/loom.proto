@@ -24,6 +24,7 @@ import "loom/v1/communication.proto";
 import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
+import "loom/v1/storage.proto";
 import "loom/v1/tools.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
@@ -166,6 +167,21 @@ service LoomService {
   rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse) {
     option (google.api.http) = {
       post: "/v1/server/tls:renew"
+      body: "*"
+    };
+  }
+
+  // Storage Management RPCs
+
+  // GetStorageStatus retrieves the current storage backend health and statistics.
+  rpc GetStorageStatus(GetStorageStatusRequest) returns (GetStorageStatusResponse) {
+    option (google.api.http) = {get: "/v1/server/storage"};
+  }
+
+  // RunMigration runs database migrations on the storage backend.
+  rpc RunMigration(RunMigrationRequest) returns (RunMigrationResponse) {
+    option (google.api.http) = {
+      post: "/v1/server/storage:migrate"
       body: "*"
     };
   }
@@ -562,6 +578,26 @@ service LoomService {
   // for building dynamic UI apps.
   rpc ListComponentTypes(ListComponentTypesRequest) returns (ListComponentTypesResponse) {
     option (google.api.http) = {get: "/v1/apps/component-types"};
+  }
+}
+
+// AdminService provides administrative operations that bypass RLS.
+// Used by platform operators for cross-tenant visibility and system management.
+// All RPCs require admin-level authentication.
+service AdminService {
+  // ListAllSessions lists sessions across all users (bypasses RLS).
+  rpc ListAllSessions(ListAllSessionsRequest) returns (ListAllSessionsResponse) {
+    option (google.api.http) = {get: "/v1/admin/sessions"};
+  }
+
+  // CountSessionsByUser returns session counts grouped by user.
+  rpc CountSessionsByUser(CountSessionsByUserRequest) returns (CountSessionsByUserResponse) {
+    option (google.api.http) = {get: "/v1/admin/sessions:count-by-user"};
+  }
+
+  // GetSystemStats returns aggregate system statistics across all users.
+  rpc GetSystemStats(GetSystemStatsRequest) returns (GetSystemStatsResponse) {
+    option (google.api.http) = {get: "/v1/admin/stats"};
   }
 }
 
@@ -2543,4 +2579,59 @@ message GetArtifactStatsResponse {
 
   // Number of soft-deleted artifacts
   int32 deleted_files = 5;
+}
+
+// ============================================================================
+// Admin Service Messages
+// ============================================================================
+
+// ListAllSessionsRequest lists sessions across all users (admin only).
+message ListAllSessionsRequest {
+  // Maximum number of sessions to return
+  int32 limit = 1;
+
+  // Offset for pagination
+  int32 offset = 2;
+}
+
+// ListAllSessionsResponse returns sessions across all users.
+message ListAllSessionsResponse {
+  // Sessions from all users
+  repeated Session sessions = 1;
+
+  // Total count of sessions across all users
+  int32 total_count = 2;
+}
+
+// CountSessionsByUserRequest counts sessions grouped by user.
+message CountSessionsByUserRequest {}
+
+// CountSessionsByUserResponse returns session counts per user.
+message CountSessionsByUserResponse {
+  // Map of user_id to session count
+  map<string, int32> user_counts = 1;
+}
+
+// GetSystemStatsRequest retrieves system-wide statistics.
+message GetSystemStatsRequest {}
+
+// GetSystemStatsResponse returns aggregate system statistics.
+message GetSystemStatsResponse {
+  // Total sessions across all users
+  int32 total_sessions = 1;
+
+  // Total messages across all users
+  int64 total_messages = 2;
+
+  // Total tool executions across all users
+  int64 total_tool_executions = 3;
+
+  // Total distinct users
+  int32 total_users = 4;
+
+  // Total cost in USD across all users
+  double total_cost_usd = 5;
+
+  // Total tokens consumed across all users
+  int64 total_tokens = 6;
 }

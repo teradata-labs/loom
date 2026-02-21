@@ -152,12 +152,13 @@ func ProgressToMessageWithHistory(progress *loomv1.WeaveProgress, sessionID stri
 	}
 
 	// Mark message as finished when execution completes or fails
-	if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+	switch progress.Stage {
+	case loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED:
 		msg.AddPart(message.FinishPart{
 			Reason: message.FinishReasonEndTurn,
 			Time:   progress.Timestamp,
 		})
-	} else if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_FAILED {
+	case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
 		msg.AddPart(message.FinishPart{
 			Reason:  message.FinishReasonError,
 			Message: progress.Message,
@@ -185,9 +186,10 @@ func ProgressToMessage(progress *loomv1.WeaveProgress, sessionID string, message
 	var failed bool
 	var completed bool
 
-	if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+	switch progress.Stage {
+	case loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED:
 		completed = true
-	} else if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_FAILED {
+	case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
 		failed = true
 	}
 
@@ -245,12 +247,13 @@ func ProgressToMessage(progress *loomv1.WeaveProgress, sessionID string, message
 	}
 
 	// Mark message as finished when execution completes or fails
-	if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED {
+	switch progress.Stage {
+	case loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED:
 		msg.AddPart(message.FinishPart{
 			Reason: message.FinishReasonEndTurn,
 			Time:   progress.Timestamp,
 		})
-	} else if progress.Stage == loomv1.ExecutionStage_EXECUTION_STAGE_FAILED {
+	case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
 		msg.AddPart(message.FinishPart{
 			Reason:  message.FinishReasonError,
 			Message: progress.Message,

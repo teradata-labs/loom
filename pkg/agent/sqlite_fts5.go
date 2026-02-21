@@ -11,11 +11,11 @@ package agent
 // All go build and go test commands automatically include -tags fts5.
 //
 // This provides semantic message search capabilities in SessionStore
-// via the SearchFTS5() method with BM25 ranking.
+// via the SearchMessages() method with BM25 ranking.
 //
 // If building manually without the Justfile, use:
 //   go build -tags fts5 ./...
 //   go test -tags fts5 ./...
 //
-// Without the fts5 tag, SessionStore will still work but SearchFTS5()
+// Without the fts5 tag, SessionStore will still work but SearchMessages()
 // will fail with "no such module: fts5" errors.

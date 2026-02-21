@@ -74,7 +74,8 @@ func (a *Agent) extractFindingsAsync(ctx context.Context, sessionID string) {
 	}
 
 	// Create a timeout context for extraction (5 seconds max)
-	extractCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Derive from caller's context to propagate RLS user_id and other values.
+	extractCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// Get the session to access recent messages

@@ -20,11 +20,13 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"go.uber.org/zap"
 )
 
 // SystemPromptFunc is a function that returns the system prompt for a new session.
 // It can be used to dynamically load prompts from a PromptRegistry or other source.
-type SystemPromptFunc func() string
+// Accepts context.Context to enable proper context propagation (e.g., for RLS user_id in PostgreSQL).
+type SystemPromptFunc func(ctx context.Context) string
 
 // MemoryObserver is called when messages are added to sessions.
 // This enables real-time updates across multiple sessions viewing the same agent's memory.
@@ -42,14 +44,15 @@ func (f MemoryObserverFunc) OnMessageAdded(agentID string, sessionID string, msg
 }
 
 // Memory manages conversation sessions and history.
-// Supports optional persistent storage via SessionStore.
+// Supports optional persistent storage via SessionStorage interface.
 type Memory struct {
 	mu                   sync.RWMutex
 	sessions             map[string]*Session
-	store                *SessionStore              // Optional persistent storage
+	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
 	tracer               observability.Tracer       // Optional tracer for observability
+	logger               *zap.Logger                // Structured logger for storage errors
 	llmProvider          LLMProvider                // Optional LLM provider for semantic search reranking
 	maxContextTokens     int                        // Context window size for new sessions (0 = use defaults)
 	reservedOutputTokens int                        // Reserved tokens for output (0 = use defaults)
@@ -62,21 +65,38 @@ type Memory struct {
 }
 
 // NewMemory creates a new in-memory session manager.
+// Uses zap.L() (the global logger) by default, so storage errors are visible
+// if a global logger has been configured (e.g., via zap.ReplaceGlobals).
+// If no global logger is configured, zap.L() returns a no-op logger.
+// Call SetLogger() to inject an explicit logger instance.
 func NewMemory() *Memory {
 	return &Memory{
 		sessions:  make(map[string]*Session),
 		store:     nil,
+		logger:    zap.L(),
 		observers: make(map[string][]MemoryObserver),
 	}
 }
 
 // NewMemoryWithStore creates a memory manager with persistent storage.
-func NewMemoryWithStore(store *SessionStore) *Memory {
+// Uses zap.L() (the global logger) by default, so storage errors are visible
+// if a global logger has been configured (e.g., via zap.ReplaceGlobals).
+// If no global logger is configured, zap.L() returns a no-op logger.
+// Call SetLogger() to inject an explicit logger instance.
+func NewMemoryWithStore(store SessionStorage) *Memory {
 	return &Memory{
 		sessions:  make(map[string]*Session),
 		store:     store,
+		logger:    zap.L(),
 		observers: make(map[string][]MemoryObserver),
 	}
+}
+
+// SetLogger sets the structured logger for storage error reporting.
+func (m *Memory) SetLogger(logger *zap.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = logger
 }
 
 // SetSystemPromptFunc sets a function to generate system prompts for new sessions.
@@ -108,17 +128,20 @@ func (m *Memory) SetCompressionProfile(profile *CompressionProfile) {
 
 // GetOrCreateSession gets an existing session or creates a new one.
 // If persistent storage is configured, attempts to load from database first.
-func (m *Memory) GetOrCreateSession(sessionID string) *Session {
-	return m.GetOrCreateSessionWithAgent(sessionID, "", "")
+// ctx is threaded through to storage operations to enable RLS user isolation.
+func (m *Memory) GetOrCreateSession(ctx context.Context, sessionID string) *Session {
+	return m.GetOrCreateSessionWithAgent(ctx, sessionID, "", "")
 }
 
 // GetOrCreateSessionWithAgent gets an existing session or creates a new one with agent metadata.
 // This is used for multi-agent workflows where sub-agents need to access parent sessions.
+// ctx is threaded through to storage operations to enable RLS user isolation.
 // Parameters:
+//   - ctx: Context with user identity for RLS-scoped storage access
 //   - sessionID: Unique session identifier
 //   - agentID: Agent identity (e.g., "coordinator", "analyzer-sub-agent")
 //   - parentSessionID: Parent session ID (for sub-agents to access coordinator session)
-func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID string) *Session {
+func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, agentID, parentSessionID string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -137,10 +160,10 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 
 		// Persist updated metadata to store
 		if updated && m.store != nil {
-			if err := m.store.SaveSession(context.Background(), session); err != nil {
-				// Log error but don't fail (session is updated in memory)
-				// TODO: Consider adding error callback
-				_ = err
+			if err := m.store.SaveSession(ctx, session); err != nil {
+				m.logger.Warn("Failed to persist session to storage",
+					zap.String("session_id", session.ID),
+					zap.Error(err))
 			}
 		}
 
@@ -149,7 +172,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 		if session.SegmentedMem == nil {
 			romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
 			if m.systemPromptFunc != nil {
-				romContent = m.systemPromptFunc()
+				romContent = m.systemPromptFunc(ctx)
 			}
 
 			if m.compressionProfile != nil {
@@ -183,8 +206,11 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 
 	// Try loading from persistent store
 	if m.store != nil {
-		session, err := m.store.LoadSession(context.Background(), sessionID)
-		if err == nil {
+		session, err := m.store.LoadSession(ctx, sessionID)
+		// session may be nil with nil err when the backend uses (nil, nil) to
+		// indicate "not found" (e.g. PostgreSQL soft-delete convention). Treat
+		// that the same as SQLite's "not found" error: fall through to create.
+		if err == nil && session != nil {
 			// Update agent metadata if provided
 			updated := false
 			if agentID != "" && session.AgentID == "" {
@@ -198,9 +224,10 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 
 			// Persist updated metadata
 			if updated {
-				if err := m.store.SaveSession(context.Background(), session); err != nil {
-					// Log error but don't fail
-					_ = err
+				if err := m.store.SaveSession(ctx, session); err != nil {
+					m.logger.Warn("Failed to persist updated session to storage",
+						zap.String("session_id", sessionID),
+						zap.Error(err))
 				}
 			}
 
@@ -211,7 +238,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 				// Initialize ROM content
 				romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
 				if m.systemPromptFunc != nil {
-					romContent = m.systemPromptFunc()
+					romContent = m.systemPromptFunc(ctx)
 				}
 
 				// Create SegmentedMemory with compression profile
@@ -264,7 +291,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 	// ROM content can be customized per agent
 	romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
 	if m.systemPromptFunc != nil {
-		romContent = m.systemPromptFunc()
+		romContent = m.systemPromptFunc(ctx)
 	}
 
 	// Use compression profile if configured, otherwise use balanced defaults
@@ -310,7 +337,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(sessionID, agentID, parentSessionID
 
 	// Persist to store if configured
 	if m.store != nil {
-		_ = m.store.SaveSession(context.Background(), session)
+		_ = m.store.SaveSession(ctx, session)
 	}
 
 	return session
@@ -423,9 +450,9 @@ func (m *Memory) SetTracer(tracer observability.Tracer) {
 	}
 }
 
-// GetStore returns the SessionStore if persistence is enabled, nil otherwise.
+// GetStore returns the SessionStorage if persistence is enabled, nil otherwise.
 // Used for registering cleanup hooks and accessing persistence layer.
-func (m *Memory) GetStore() *SessionStore {
+func (m *Memory) GetStore() SessionStorage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.store
@@ -452,7 +479,8 @@ func (m *Memory) SetLLMProvider(llm LLMProvider) {
 // AddMessage adds a message to a session and notifies observers.
 // This is the preferred way to add messages when real-time updates are needed.
 // Falls back to session.AddMessage if session not found in Memory.
-func (m *Memory) AddMessage(sessionID string, msg Message) {
+// ctx is threaded through to enable RLS-aware storage operations.
+func (m *Memory) AddMessage(ctx context.Context, sessionID string, msg Message) {
 	m.mu.RLock()
 	session, found := m.sessions[sessionID]
 	m.mu.RUnlock()
@@ -463,15 +491,15 @@ func (m *Memory) AddMessage(sessionID string, msg Message) {
 	}
 
 	// Add message to session (this handles SegmentedMem if configured)
-	session.AddMessage(msg)
+	session.AddMessage(ctx, msg)
 
 	// Persist to store if configured
 	if m.store != nil {
-		ctx := context.Background()
 		if err := m.store.SaveMessage(ctx, sessionID, msg); err != nil {
-			// Log error but don't fail (message is in session memory)
-			// TODO: Consider adding error callback
-			_ = err
+			m.logger.Warn("Failed to persist message to storage",
+				zap.String("session_id", sessionID),
+				zap.String("role", msg.Role),
+				zap.Error(err))
 		}
 	}
 

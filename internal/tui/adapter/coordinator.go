@@ -144,7 +144,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 				if err != nil && subscribeCtx.Err() == nil {
 					// Log error if it wasn't a cancellation
 					if f, errLog := os.OpenFile("/tmp/loom-subscription-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); errLog == nil {
-						fmt.Fprintf(f, "[%s] Subscription error for session %s: %v\n", time.Now().Format("15:04:05"), sessionID, err)
+						_, _ = fmt.Fprintf(f, "[%s] Subscription error for session %s: %v\n", time.Now().Format("15:04:05"), sessionID, err)
 						_ = f.Close()
 					}
 				}

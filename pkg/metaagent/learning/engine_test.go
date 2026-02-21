@@ -29,7 +29,7 @@ func TestNewLearningEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	if engine == nil {
@@ -49,7 +49,7 @@ func TestGetBestPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	ctx := context.Background()
@@ -132,7 +132,7 @@ func TestSuggestImprovements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	ctx := context.Background()
@@ -188,7 +188,7 @@ func TestCalculateConfidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 
@@ -233,7 +233,7 @@ func TestAnalyzePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 
@@ -288,7 +288,7 @@ func TestAnalyzeTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 
@@ -351,7 +351,7 @@ func TestAnalyzeFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 
@@ -423,7 +423,7 @@ func TestGetDomainInsights(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	ctx := context.Background()
@@ -474,7 +474,7 @@ func TestInstrumentationEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	ctx := context.Background()
@@ -543,7 +543,7 @@ func TestEmptyInsights(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	ctx := context.Background()
@@ -571,7 +571,7 @@ func TestImprovementSorting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	engine := NewLearningEngine(collector, tracer)
 	ctx := context.Background()

@@ -631,7 +631,7 @@ func TestSharedMemoryMetadata(t *testing.T) {
 // agents immediately when messages arrive, enabling event-driven workflows.
 func TestMessageQueueEventDrivenNotification(t *testing.T) {
 	queue := createTestQueue(t)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create notification channel for receiver agent
 	receiverID := "weather-analyst"
@@ -737,7 +737,7 @@ func TestSendMessageAutoHealing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create message queue
 			queue := createTestQueue(t)
-			defer queue.Close()
+			defer func() { _ = queue.Close() }()
 
 			// Create mock registry
 			registry := &mockAgentRegistry{
@@ -811,7 +811,7 @@ func TestExtractWorkflowName(t *testing.T) {
 // TestSendMessageAutoHealingWithoutRegistry tests that the tool works correctly without a registry
 func TestSendMessageAutoHealingWithoutRegistry(t *testing.T) {
 	queue := createTestQueue(t)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create tool WITHOUT setting registry
 	tool := NewSendMessageTool(queue, "sender-agent")

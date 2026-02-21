@@ -20,14 +20,14 @@ func TestGetLoomDataDir(t *testing.T) {
 	originalEnv := os.Getenv("LOOM_DATA_DIR")
 	defer func() {
 		if originalEnv != "" {
-			os.Setenv("LOOM_DATA_DIR", originalEnv)
+			_ = os.Setenv("LOOM_DATA_DIR", originalEnv)
 		} else {
-			os.Unsetenv("LOOM_DATA_DIR")
+			_ = os.Unsetenv("LOOM_DATA_DIR")
 		}
 	}()
 
 	t.Run("default to ~/.loom", func(t *testing.T) {
-		os.Unsetenv("LOOM_DATA_DIR")
+		_ = os.Unsetenv("LOOM_DATA_DIR")
 
 		dataDir := GetLoomDataDir()
 
@@ -39,7 +39,7 @@ func TestGetLoomDataDir(t *testing.T) {
 
 	t.Run("use LOOM_DATA_DIR when set", func(t *testing.T) {
 		customDir := "/custom/loom/data"
-		os.Setenv("LOOM_DATA_DIR", customDir)
+		_ = os.Setenv("LOOM_DATA_DIR", customDir)
 
 		dataDir := GetLoomDataDir()
 
@@ -47,7 +47,7 @@ func TestGetLoomDataDir(t *testing.T) {
 	})
 
 	t.Run("expand ~ in LOOM_DATA_DIR", func(t *testing.T) {
-		os.Setenv("LOOM_DATA_DIR", "~/custom/.loom")
+		_ = os.Setenv("LOOM_DATA_DIR", "~/custom/.loom")
 
 		dataDir := GetLoomDataDir()
 
@@ -58,7 +58,7 @@ func TestGetLoomDataDir(t *testing.T) {
 	})
 
 	t.Run("make relative path absolute in LOOM_DATA_DIR", func(t *testing.T) {
-		os.Setenv("LOOM_DATA_DIR", "relative/path")
+		_ = os.Setenv("LOOM_DATA_DIR", "relative/path")
 
 		dataDir := GetLoomDataDir()
 
@@ -73,14 +73,14 @@ func TestGetLoomSubDir(t *testing.T) {
 	originalEnv := os.Getenv("LOOM_DATA_DIR")
 	defer func() {
 		if originalEnv != "" {
-			os.Setenv("LOOM_DATA_DIR", originalEnv)
+			_ = os.Setenv("LOOM_DATA_DIR", originalEnv)
 		} else {
-			os.Unsetenv("LOOM_DATA_DIR")
+			_ = os.Unsetenv("LOOM_DATA_DIR")
 		}
 	}()
 
 	t.Run("return subdirectory path", func(t *testing.T) {
-		os.Unsetenv("LOOM_DATA_DIR")
+		_ = os.Unsetenv("LOOM_DATA_DIR")
 
 		agentsDir := GetLoomSubDir("agents")
 
@@ -92,7 +92,7 @@ func TestGetLoomSubDir(t *testing.T) {
 
 	t.Run("respect LOOM_DATA_DIR for subdirectories", func(t *testing.T) {
 		customDir := "/custom/loom"
-		os.Setenv("LOOM_DATA_DIR", customDir)
+		_ = os.Setenv("LOOM_DATA_DIR", customDir)
 
 		patternsDir := GetLoomSubDir("patterns")
 

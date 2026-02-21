@@ -375,15 +375,15 @@ spec:
 `
 
 	// Set env vars
-	os.Setenv("PATTERN_NAME", "dynamic-patterns")
-	os.Setenv("PATTERN_DESC", "Dynamically configured patterns")
-	os.Setenv("PATTERN_ENTRY_DESC", "Dynamic entry")
-	os.Setenv("TABLE_NAME", "users")
+	_ = os.Setenv("PATTERN_NAME", "dynamic-patterns")
+	_ = os.Setenv("PATTERN_DESC", "Dynamically configured patterns")
+	_ = os.Setenv("PATTERN_ENTRY_DESC", "Dynamic entry")
+	_ = os.Setenv("TABLE_NAME", "users")
 	defer func() {
-		os.Unsetenv("PATTERN_NAME")
-		os.Unsetenv("PATTERN_DESC")
-		os.Unsetenv("PATTERN_ENTRY_DESC")
-		os.Unsetenv("TABLE_NAME")
+		_ = os.Unsetenv("PATTERN_NAME")
+		_ = os.Unsetenv("PATTERN_DESC")
+		_ = os.Unsetenv("PATTERN_ENTRY_DESC")
+		_ = os.Unsetenv("TABLE_NAME")
 	}()
 
 	libraryPath := filepath.Join(tmpDir, "pattern.yaml")

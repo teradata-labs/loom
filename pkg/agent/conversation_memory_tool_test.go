@@ -119,13 +119,13 @@ func TestConversationMemoryTool_InvalidAction(t *testing.T) {
 func TestConversationMemoryTool_RecallAction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -134,7 +134,7 @@ func TestConversationMemoryTool_RecallAction(t *testing.T) {
 
 	// Create session with swap enabled
 	sessionID := "recall-test-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Get segmented memory
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
@@ -148,14 +148,14 @@ func TestConversationMemoryTool_RecallAction(t *testing.T) {
 			Content:   fmt.Sprintf("Message %d for recall test", i),
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
 
 	// Force compression to trigger swap
 	segMem.SetMaxL2Tokens(100)
-	_, _ = segMem.CompactMemory()
+	_, _ = segMem.CompactMemory(context.Background())
 
 	// Verify swap occurred
 	evictions, _ := segMem.GetSwapStats()
@@ -200,12 +200,12 @@ func TestConversationMemoryTool_RecallAction(t *testing.T) {
 func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemory()
 	memory.store = store
@@ -213,7 +213,7 @@ func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 
 	// Create a test session for parameter validation tests
 	sessionID := "test-session"
-	memory.GetOrCreateSession(sessionID)
+	memory.GetOrCreateSession(context.Background(), sessionID)
 
 	tool := NewConversationMemoryTool(memory)
 
@@ -277,13 +277,13 @@ func TestConversationMemoryTool_RecallErrors(t *testing.T) {
 func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -292,7 +292,7 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 
 	// Create session
 	sessionID := "limit-test-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Add many messages
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -302,14 +302,14 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 			Content:   fmt.Sprintf("Message %d", i),
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
 
 	// Force swap
 	segMem.SetMaxL2Tokens(100)
-	segMem.CompactMemory()
+	segMem.CompactMemory(context.Background())
 
 	tool := NewConversationMemoryTool(memory)
 	//nolint:staticcheck // SA1029: using string key to match tool API contract
@@ -339,13 +339,13 @@ func TestConversationMemoryTool_RecallLimits(t *testing.T) {
 func TestConversationMemoryTool_SearchAction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -354,7 +354,7 @@ func TestConversationMemoryTool_SearchAction(t *testing.T) {
 
 	// Create session
 	sessionID := "search-test-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Add messages with searchable content
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -372,14 +372,14 @@ func TestConversationMemoryTool_SearchAction(t *testing.T) {
 			Content:   content,
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
 
 	// Force swap
 	segMem.SetMaxL2Tokens(50)
-	segMem.CompactMemory()
+	segMem.CompactMemory(context.Background())
 
 	tool := NewConversationMemoryTool(memory)
 	//nolint:staticcheck // SA1029: using string key to match tool API contract
@@ -474,13 +474,13 @@ func TestConversationMemoryTool_SearchErrors(t *testing.T) {
 func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -492,7 +492,7 @@ func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 	// Create multiple sessions for the same agent
 	for sessionNum := 0; sessionNum < 3; sessionNum++ {
 		sessionID := fmt.Sprintf("agent-session-%d", sessionNum)
-		session := memory.GetOrCreateSessionWithAgent(sessionID, agentID, "")
+		session := memory.GetOrCreateSessionWithAgent(context.Background(), sessionID, agentID, "")
 
 		// Add messages to each session
 		segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -502,7 +502,7 @@ func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 				Content:   fmt.Sprintf("Session %d: SQL optimization message %d", sessionNum, i),
 				Timestamp: time.Now(),
 			}
-			segMem.AddMessage(msg)
+			segMem.AddMessage(context.Background(), msg)
 			err := store.SaveMessage(context.Background(), sessionID, msg)
 			require.NoError(t, err)
 		}
@@ -541,13 +541,13 @@ func TestConversationMemoryTool_SearchAgentScope(t *testing.T) {
 func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -558,7 +558,7 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 	agents := []string{"agent-1", "agent-2", "agent-3"}
 	for _, agentID := range agents {
 		sessionID := fmt.Sprintf("session-%s", agentID)
-		session := memory.GetOrCreateSessionWithAgent(sessionID, agentID, "")
+		session := memory.GetOrCreateSessionWithAgent(context.Background(), sessionID, agentID, "")
 
 		segMem, _ := session.SegmentedMem.(*SegmentedMemory)
 		msg := Message{
@@ -566,7 +566,7 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 			Content:   fmt.Sprintf("Performance optimization topic from %s", agentID),
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
@@ -602,13 +602,13 @@ func TestConversationMemoryTool_SearchAllScope(t *testing.T) {
 func TestConversationMemoryTool_ClearAction(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -617,7 +617,7 @@ func TestConversationMemoryTool_ClearAction(t *testing.T) {
 
 	// Create session
 	sessionID := "clear-test-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Add and recall messages
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -627,14 +627,14 @@ func TestConversationMemoryTool_ClearAction(t *testing.T) {
 			Content:   fmt.Sprintf("Message %d", i),
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
 
 	// Force swap
 	segMem.SetMaxL2Tokens(50)
-	segMem.CompactMemory()
+	segMem.CompactMemory(context.Background())
 
 	// Recall messages to promote them
 	recalled, err := segMem.RetrieveMessagesFromSwap(context.Background(), 0, 5)
@@ -726,7 +726,7 @@ func TestConversationMemoryTool_SwapNotEnabled(t *testing.T) {
 	memory := NewMemory()
 
 	sessionID := "no-swap-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Verify swap is disabled
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -774,13 +774,13 @@ func TestConversationMemoryTool_SessionNotFound(t *testing.T) {
 func TestConversationMemoryTool_Integration(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	// Create session store
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -789,7 +789,7 @@ func TestConversationMemoryTool_Integration(t *testing.T) {
 
 	// Create session
 	sessionID := "integration-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Add messages
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -799,14 +799,14 @@ func TestConversationMemoryTool_Integration(t *testing.T) {
 			Content:   fmt.Sprintf("Integration test message %d", i),
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
 
 	// Force swap
 	segMem.SetMaxL2Tokens(100)
-	segMem.CompactMemory()
+	segMem.CompactMemory(context.Background())
 
 	tool := NewConversationMemoryTool(memory)
 	//nolint:staticcheck // SA1029: using string key to match tool API contract
@@ -865,19 +865,19 @@ func TestConversationMemoryTool_AsShuttleTool(t *testing.T) {
 func TestConversationMemoryTool_SearchLimitEnforcement(t *testing.T) {
 	// Create temporary database
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	memory := NewMemory()
 	memory.store = store
 	memory.SetTracer(tracer)
 
 	sessionID := "search-limit-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Add many messages
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
@@ -887,14 +887,14 @@ func TestConversationMemoryTool_SearchLimitEnforcement(t *testing.T) {
 			Content:   fmt.Sprintf("Searchable message %d", i),
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 		err := store.SaveMessage(context.Background(), sessionID, msg)
 		require.NoError(t, err)
 	}
 
 	// Force swap
 	segMem.SetMaxL2Tokens(50)
-	segMem.CompactMemory()
+	segMem.CompactMemory(context.Background())
 
 	tool := NewConversationMemoryTool(memory)
 	//nolint:staticcheck // SA1029: using string key to match tool API contract

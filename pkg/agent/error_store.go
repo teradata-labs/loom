@@ -39,6 +39,9 @@ type ErrorStore interface {
 
 	// List returns errors matching filters (for analytics/debugging)
 	List(ctx context.Context, filters ErrorFilters) ([]*StoredError, error)
+
+	// Close releases any resources held by the error store.
+	Close() error
 }
 
 // StoredError represents a tool execution error in storage.
@@ -96,6 +99,9 @@ func NewSQLiteErrorStore(dbPath string, tracer observability.Tracer) (*SQLiteErr
 
 // initSchema creates the agent_errors table if it doesn't exist.
 func (s *SQLiteErrorStore) initSchema() error {
+	// context.Background() is intentional here: schema initialization runs at startup
+	// before any user context exists. This is a bootstrap operation that creates/migrates
+	// database tables and is not subject to RLS policies.
 	ctx := context.Background()
 	ctx, span := s.tracer.StartSpan(ctx, "error_store.init_schema")
 	defer s.tracer.EndSpan(span)
@@ -273,7 +279,7 @@ func (s *SQLiteErrorStore) List(ctx context.Context, filters ErrorFilters) ([]*S
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query errors: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var errors []*StoredError
 	for rows.Next() {
@@ -364,6 +370,11 @@ func extractFirstLine(s string, maxLen int) string {
 	}
 
 	return s[:maxLen] + "..."
+}
+
+// Close closes the underlying database connection.
+func (s *SQLiteErrorStore) Close() error {
+	return s.db.Close()
 }
 
 // Ensure SQLiteErrorStore implements ErrorStore interface.

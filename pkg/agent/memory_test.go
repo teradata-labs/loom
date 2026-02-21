@@ -14,6 +14,7 @@
 package agent
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestNewMemory(t *testing.T) {
 func TestMemory_GetOrCreateSession(t *testing.T) {
 	mem := NewMemory()
 
-	session := mem.GetOrCreateSession("test-session")
+	session := mem.GetOrCreateSession(context.Background(), "test-session")
 
 	if session == nil {
 		t.Fatal("Expected non-nil session")
@@ -60,10 +61,11 @@ func TestMemory_GetOrCreateSession(t *testing.T) {
 func TestMemory_GetOrCreateSession_ExistingSession(t *testing.T) {
 	mem := NewMemory()
 
-	session1 := mem.GetOrCreateSession("test-session")
-	session1.AddMessage(Message{Role: "user", Content: "test"})
+	ctx := context.Background()
+	session1 := mem.GetOrCreateSession(ctx, "test-session")
+	session1.AddMessage(ctx, Message{Role: "user", Content: "test"})
 
-	session2 := mem.GetOrCreateSession("test-session")
+	session2 := mem.GetOrCreateSession(ctx, "test-session")
 
 	if session1 != session2 {
 		t.Error("Expected same session instance")
@@ -78,7 +80,7 @@ func TestMemory_GetSession(t *testing.T) {
 	mem := NewMemory()
 
 	// Create session
-	_ = mem.GetOrCreateSession("test-session")
+	_ = mem.GetOrCreateSession(context.Background(), "test-session")
 
 	// Retrieve it
 	session, ok := mem.GetSession("test-session")
@@ -103,7 +105,7 @@ func TestMemory_GetSession_NotFound(t *testing.T) {
 func TestMemory_DeleteSession(t *testing.T) {
 	mem := NewMemory()
 
-	mem.GetOrCreateSession("test-session")
+	mem.GetOrCreateSession(context.Background(), "test-session")
 
 	if _, ok := mem.GetSession("test-session"); !ok {
 		t.Fatal("Expected session to exist")
@@ -119,9 +121,10 @@ func TestMemory_DeleteSession(t *testing.T) {
 func TestMemory_ListSessions(t *testing.T) {
 	mem := NewMemory()
 
-	mem.GetOrCreateSession("session1")
-	mem.GetOrCreateSession("session2")
-	mem.GetOrCreateSession("session3")
+	ctx := context.Background()
+	mem.GetOrCreateSession(ctx, "session1")
+	mem.GetOrCreateSession(ctx, "session2")
+	mem.GetOrCreateSession(ctx, "session3")
 
 	sessions := mem.ListSessions()
 	if len(sessions) != 3 {
@@ -136,8 +139,9 @@ func TestMemory_CountSessions(t *testing.T) {
 		t.Error("Expected count to be 0")
 	}
 
-	mem.GetOrCreateSession("session1")
-	mem.GetOrCreateSession("session2")
+	ctx := context.Background()
+	mem.GetOrCreateSession(ctx, "session1")
+	mem.GetOrCreateSession(ctx, "session2")
 
 	if mem.CountSessions() != 2 {
 		t.Errorf("Expected count to be 2, got %d", mem.CountSessions())
@@ -153,8 +157,9 @@ func TestMemory_CountSessions(t *testing.T) {
 func TestMemory_ClearAll(t *testing.T) {
 	mem := NewMemory()
 
-	mem.GetOrCreateSession("session1")
-	mem.GetOrCreateSession("session2")
+	ctx := context.Background()
+	mem.GetOrCreateSession(ctx, "session1")
+	mem.GetOrCreateSession(ctx, "session2")
 
 	if mem.CountSessions() != 2 {
 		t.Fatal("Expected 2 sessions before clear")
@@ -175,9 +180,10 @@ func TestMemory_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			ctx := context.Background()
 			sessionID := "session"
-			session := mem.GetOrCreateSession(sessionID)
-			session.AddMessage(Message{Role: "user", Content: "test"})
+			session := mem.GetOrCreateSession(ctx, sessionID)
+			session.AddMessage(ctx, Message{Role: "user", Content: "test"})
 			_, _ = mem.GetSession(sessionID)
 			_ = mem.ListSessions()
 			_ = mem.CountSessions()
@@ -195,9 +201,10 @@ func TestMemory_MultipleSessions_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			ctx := context.Background()
 			sessionID := "session-" + string(rune('A'+id))
-			session := mem.GetOrCreateSession(sessionID)
-			session.AddMessage(Message{Role: "user", Content: "test"})
+			session := mem.GetOrCreateSession(ctx, sessionID)
+			session.AddMessage(ctx, Message{Role: "user", Content: "test"})
 		}(i)
 	}
 
@@ -221,7 +228,7 @@ func TestSession_AddMessage(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	session.AddMessage(Message{
+	session.AddMessage(context.Background(), Message{
 		Role:       "user",
 		Content:    "test message",
 		TokenCount: 10,
@@ -252,8 +259,9 @@ func TestSession_GetMessages(t *testing.T) {
 		Context:  make(map[string]interface{}),
 	}
 
-	session.AddMessage(Message{Role: "user", Content: "msg1"})
-	session.AddMessage(Message{Role: "assistant", Content: "msg2"})
+	ctx := context.Background()
+	session.AddMessage(ctx, Message{Role: "user", Content: "msg1"})
+	session.AddMessage(ctx, Message{Role: "assistant", Content: "msg2"})
 
 	messages := session.GetMessages()
 	if len(messages) != 2 {

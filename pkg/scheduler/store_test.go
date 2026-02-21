@@ -22,7 +22,7 @@ import (
 func TestStore_CreateAndGet(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	schedule := &loomv1.ScheduledWorkflow{
 		Id:           "test-schedule-1",
@@ -62,7 +62,7 @@ func TestStore_CreateAndGet(t *testing.T) {
 func TestStore_GetNotFound(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	_, err := store.Get(ctx, "nonexistent")
 	assert.Error(t, err)
@@ -72,7 +72,7 @@ func TestStore_GetNotFound(t *testing.T) {
 func TestStore_Update(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create initial schedule
 	schedule := createTestSchedule("update-test-1", "original-workflow")
@@ -98,7 +98,7 @@ func TestStore_Update(t *testing.T) {
 func TestStore_Delete(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("delete-test-1", "test-workflow")
@@ -118,7 +118,7 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_List(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create multiple schedules
 	schedules := []*loomv1.ScheduledWorkflow{
@@ -150,7 +150,7 @@ func TestStore_List(t *testing.T) {
 func TestStore_RecordSuccess(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("success-test-1", "test-workflow")
@@ -172,7 +172,7 @@ func TestStore_RecordSuccess(t *testing.T) {
 func TestStore_RecordFailure(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("failure-test-1", "test-workflow")
@@ -196,7 +196,7 @@ func TestStore_RecordFailure(t *testing.T) {
 func TestStore_IncrementSkipped(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("skipped-test-1", "test-workflow")
@@ -217,7 +217,7 @@ func TestStore_IncrementSkipped(t *testing.T) {
 func TestStore_UpdateCurrentExecution(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("current-exec-test-1", "test-workflow")
@@ -246,7 +246,7 @@ func TestStore_UpdateCurrentExecution(t *testing.T) {
 func TestStore_UpdateNextExecution(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("next-exec-test-1", "test-workflow")
@@ -267,7 +267,7 @@ func TestStore_UpdateNextExecution(t *testing.T) {
 func TestStore_RecordExecution(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("exec-history-test-1", "test-workflow")
@@ -298,7 +298,7 @@ func TestStore_RecordExecution(t *testing.T) {
 func TestStore_GetExecutionHistory_Limit(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("history-limit-test-1", "test-workflow")
@@ -327,7 +327,7 @@ func TestStore_GetExecutionHistory_Limit(t *testing.T) {
 func TestStore_GetDueSchedules(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	now := time.Now()
 
@@ -397,7 +397,7 @@ func TestStore_Persistence(t *testing.T) {
 	// Reopen store
 	store2, err := NewStore(ctx, dbPath, logger)
 	require.NoError(t, err)
-	defer store2.Close()
+	defer func() { _ = store2.Close() }()
 
 	// Verify schedule persisted
 	retrieved, err := store2.Get(ctx, schedule.Id)
@@ -413,7 +413,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create initial schedules
 	for i := 0; i < 10; i++ {
@@ -475,7 +475,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 func TestStore_MultipleStats(t *testing.T) {
 	ctx := context.Background()
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create schedule
 	schedule := createTestSchedule("stats-test-1", "test-workflow")

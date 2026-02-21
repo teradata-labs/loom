@@ -320,7 +320,7 @@ func loadTrainset(path string) ([]*loomv1.Example, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open trainset: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var examples []*loomv1.Example
 	scanner := bufio.NewScanner(file)
@@ -365,7 +365,7 @@ func loadInstructions(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open instructions: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var instructions []string
 	scanner := bufio.NewScanner(file)
@@ -474,7 +474,7 @@ func runBootstrap(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(tpTimeout)*time.Second)
@@ -588,7 +588,7 @@ func runMIPRO(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(tpTimeout)*time.Second)
@@ -739,7 +739,7 @@ func runHistory(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(tpTimeout)*time.Second)
@@ -825,7 +825,7 @@ func runRollback(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(tpTimeout)*time.Second)
@@ -880,7 +880,7 @@ func runCompare(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Load testset
 	fmt.Print("📂 Loading testset...")

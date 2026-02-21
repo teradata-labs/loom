@@ -15,6 +15,7 @@ package docker
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,13 +24,23 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
+// skipUnlessDockerIntegration skips the test unless LOOM_TEST_DOCKER=1 is set.
+// These tests require a Docker daemon with the ability to pull and run containers.
+func skipUnlessDockerIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	if os.Getenv("LOOM_TEST_DOCKER") == "" {
+		t.Skip("Skipping Docker integration test: set LOOM_TEST_DOCKER=1 to run")
+	}
+}
+
 // TestMCPServerManager_StartStop tests basic MCP server lifecycle.
 //
 // This test requires a Docker daemon running.
 func TestMCPServerManager_StartStop(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -39,7 +50,7 @@ func TestMCPServerManager_StartStop(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -54,7 +65,7 @@ func TestMCPServerManager_StartStop(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Test: Start echo MCP server (simple Python server that echoes input)
 	mcpConfig := &loomv1.MCPServerConfig{
@@ -92,11 +103,11 @@ while True:
 
 	// Start MCP server
 	err = manager.StartMCPServer(ctx, "echo", mcpConfig, loomv1.RuntimeType_RUNTIME_TYPE_PYTHON, dockerConfig)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify server is listed
 	servers := manager.ListMCPServers()
-	assert.Len(t, servers, 1)
+	require.Len(t, servers, 1)
 	assert.Equal(t, "echo", servers[0].Name)
 	assert.True(t, servers[0].Healthy)
 
@@ -117,9 +128,7 @@ while True:
 
 // TestMCPServerManager_HealthCheck tests MCP server health checking.
 func TestMCPServerManager_HealthCheck(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -129,7 +138,7 @@ func TestMCPServerManager_HealthCheck(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -144,7 +153,7 @@ func TestMCPServerManager_HealthCheck(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Start echo MCP server
 	mcpConfig := &loomv1.MCPServerConfig{
@@ -197,9 +206,7 @@ while True:
 
 // TestMCPServerManager_MultipleServers tests managing multiple MCP servers.
 func TestMCPServerManager_MultipleServers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -209,7 +216,7 @@ func TestMCPServerManager_MultipleServers(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -224,7 +231,7 @@ func TestMCPServerManager_MultipleServers(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Simple echo server script (reusable)
 	echoScript := `
@@ -316,9 +323,7 @@ while True:
 
 // TestMCPServerManager_InvalidTransport tests error handling for unsupported transports.
 func TestMCPServerManager_InvalidTransport(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -328,7 +333,7 @@ func TestMCPServerManager_InvalidTransport(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -343,7 +348,7 @@ func TestMCPServerManager_InvalidTransport(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Try to start server with HTTP transport (not supported for Docker)
 	mcpConfig := &loomv1.MCPServerConfig{
@@ -368,9 +373,7 @@ func TestMCPServerManager_InvalidTransport(t *testing.T) {
 
 // TestMCPServerManager_DuplicateServer tests error handling when starting duplicate servers.
 func TestMCPServerManager_DuplicateServer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -380,7 +383,7 @@ func TestMCPServerManager_DuplicateServer(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor
 	executor := &DockerExecutor{
@@ -395,7 +398,7 @@ func TestMCPServerManager_DuplicateServer(t *testing.T) {
 		Logger:   logger,
 	})
 	require.NoError(t, err)
-	defer manager.Close(ctx)
+	defer func() { _ = manager.Close(ctx) }()
 
 	// Start server
 	mcpConfig := &loomv1.MCPServerConfig{

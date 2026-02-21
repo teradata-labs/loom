@@ -93,7 +93,7 @@ func newSQLBackend(config *loomv1.BackendConfig) (fabric.ExecutionBackend, error
 	ctx := context.Background()
 	if err := db.PingContext(ctx); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 

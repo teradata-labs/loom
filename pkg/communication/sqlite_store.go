@@ -58,7 +58,7 @@ func NewSQLiteStore(dbPath string, gcInterval time.Duration) (*SQLiteStore, erro
 	// Enable WAL mode for better concurrency
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
@@ -72,7 +72,7 @@ func NewSQLiteStore(dbPath string, gcInterval time.Duration) (*SQLiteStore, erro
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -263,7 +263,7 @@ func (s *SQLiteStore) List(ctx context.Context) ([]*loomv1.Reference, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list references: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	refs := make([]*loomv1.Reference, 0)
 	for rows.Next() {

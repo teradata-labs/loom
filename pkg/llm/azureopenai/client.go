@@ -267,7 +267,7 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Read response
 	respBody, err := io.ReadAll(httpResp.Body)
@@ -283,7 +283,7 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, fmt.Errorf("Azure OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type)
+		return nil, fmt.Errorf("azure OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type)
 	}
 
 	// Check status code
@@ -702,7 +702,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {

@@ -236,11 +236,7 @@ func (rl *RateLimiter) processQueue() {
 // processRequest processes a single request with token bucket rate limiting.
 func (rl *RateLimiter) processRequest(req *rateLimitedRequest) {
 	// Wait for token availability
-	for {
-		if rl.acquireToken() {
-			break
-		}
-
+	for !rl.acquireToken() {
 		select {
 		case <-time.After(50 * time.Millisecond):
 			// Continue waiting

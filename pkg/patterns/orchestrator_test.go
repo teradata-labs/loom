@@ -517,7 +517,7 @@ func TestOrchestrator_WithTracker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Initialize schema
 	if err := learning.InitSelfImprovementSchema(context.Background(), db, observability.NewNoOpTracer()); err != nil {
@@ -577,7 +577,7 @@ func TestOrchestrator_RecordPatternUsage_WithTracker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Initialize schema
 	if err := learning.InitSelfImprovementSchema(context.Background(), db, observability.NewNoOpTracer()); err != nil {
@@ -681,7 +681,7 @@ func TestOrchestrator_RecordPatternUsage_ContextExtraction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create test database: %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			// Initialize schema
 			if err := learning.InitSelfImprovementSchema(context.Background(), db, observability.NewNoOpTracer()); err != nil {
@@ -757,7 +757,7 @@ func TestOrchestrator_RecordPatternUsage_SuccessAndFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Initialize schema
 	if err := learning.InitSelfImprovementSchema(context.Background(), db, observability.NewNoOpTracer()); err != nil {

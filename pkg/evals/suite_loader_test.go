@@ -214,8 +214,8 @@ spec:
 			_ = os.WriteFile(filepath.Join(goldenDir, "simple-query.sql"), []byte("SELECT * FROM users;"), 0644)
 
 			// Set env var for test
-			os.Setenv("TEST_AGENT_ID", "test_agent")
-			defer os.Unsetenv("TEST_AGENT_ID")
+			_ = os.Setenv("TEST_AGENT_ID", "test_agent")
+			defer func() { _ = os.Unsetenv("TEST_AGENT_ID") }()
 
 			// Write suite file
 			err := os.WriteFile(suiteFile, []byte(tt.yaml), 0644)

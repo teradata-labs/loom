@@ -32,7 +32,7 @@ func TestMigrationFromV100(t *testing.T) {
 	// Create v1.0.0 schema (without session_id in artifacts)
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Enable foreign keys
 	_, err = db.Exec("PRAGMA foreign_keys=ON")
@@ -103,13 +103,13 @@ func TestMigrationFromV100(t *testing.T) {
 	require.NoError(t, err)
 
 	// Close the database
-	db.Close()
+	_ = db.Close()
 
 	// Now try to open it with NewSessionStore (this should migrate it)
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(dbPath, tracer)
 	require.NoError(t, err, "Failed to create session store with migration")
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify the migration worked
 	var count int

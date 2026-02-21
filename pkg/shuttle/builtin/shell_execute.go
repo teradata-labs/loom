@@ -22,7 +22,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
-	"github.com/teradata-labs/loom/pkg/validation"
 )
 
 const (
@@ -483,10 +482,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	if outputErr != nil {
 		// Kill the process if still running
 		if cmd.Process != nil {
-			if err := cmd.Process.Kill(); err != nil {
-				// Log kill failure but continue with error handling
-				// Process may have already exited
-			}
+			// Best-effort kill; process may have already exited
+			_ = cmd.Process.Kill()
 		}
 		return &shuttle.Result{
 			Success: false,
@@ -784,135 +781,6 @@ func intPtr(i int) *float64 {
 	return &f
 }
 
-// autoValidateConfigFiles detects and validates YAML files written to $LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/
-// Returns formatted validation output to append to command result, or empty string if no validation needed.
-func autoValidateConfigFiles(command, stdout, workingDir string) string {
-	// Extract file paths from command
-	filePaths := extractFilePaths(command, stdout, workingDir)
-
-	if len(filePaths) == 0 {
-		return ""
-	}
-
-	var validationOutputs []string
-
-	for _, filePath := range filePaths {
-		// Only validate files in .loom directories
-		if !validation.ShouldValidate(filePath) {
-			continue
-		}
-
-		// Check if file exists and was recently modified (within last 5 seconds)
-		info, err := os.Stat(filePath)
-		if err != nil || time.Since(info.ModTime()) > 5*time.Second {
-			continue
-		}
-
-		// Validate the file
-		result := validation.ValidateYAMLFile(filePath)
-
-		// Only include validation output if there are errors or warnings
-		if !result.Valid || result.HasWarnings() {
-			validationOutputs = append(validationOutputs, result.FormatForWeaver())
-		} else {
-			// File is valid - add success message
-			validationOutputs = append(validationOutputs, fmt.Sprintf("✅ %s validated successfully\n", filepath.Base(filePath)))
-		}
-	}
-
-	if len(validationOutputs) == 0 {
-		return ""
-	}
-
-	// Combine all validation outputs
-	return strings.Join(validationOutputs, "\n")
-}
-
-// extractFilePaths extracts file paths from shell command and output.
-// Looks for common patterns like:
-// - "cat > file.yaml"
-// - "echo ... > file.yaml"
-// - Output like "Created: /path/to/file.yaml"
-func extractFilePaths(command, stdout, workingDir string) []string {
-	var paths []string
-	seenPaths := make(map[string]bool)
-
-	// Pattern 1: Redirect operators (>, >>)
-	// Matches: cat > file.yaml, echo "content" > file.yaml
-	redirectPattern := regexp.MustCompile(`>\s*([~\/]?[\w\/.\_\-]+\.ya?ml)`)
-	matches := redirectPattern.FindAllStringSubmatch(command, -1)
-	for _, match := range matches {
-		if len(match) > 1 {
-			path := resolvePath(match[1], workingDir)
-			if path != "" && !seenPaths[path] {
-				paths = append(paths, path)
-				seenPaths[path] = true
-			}
-		}
-	}
-
-	// Pattern 2: tee command
-	// Matches: echo "content" | tee file.yaml
-	teePattern := regexp.MustCompile(`tee\s+([~\/]?[\w\/.\_\-]+\.ya?ml)`)
-	matches = teePattern.FindAllStringSubmatch(command, -1)
-	for _, match := range matches {
-		if len(match) > 1 {
-			path := resolvePath(match[1], workingDir)
-			if path != "" && !seenPaths[path] {
-				paths = append(paths, path)
-				seenPaths[path] = true
-			}
-		}
-	}
-
-	// Pattern 3: Output mentions (Created:, Written:, Saved:)
-	outputPattern := regexp.MustCompile(`(?i)(created|written|saved|wrote):\s*([~\/]?[\w\/.\_\-]+\.ya?ml)`)
-	matches = outputPattern.FindAllStringSubmatch(stdout, -1)
-	for _, match := range matches {
-		if len(match) > 2 {
-			path := resolvePath(match[2], workingDir)
-			if path != "" && !seenPaths[path] {
-				paths = append(paths, path)
-				seenPaths[path] = true
-			}
-		}
-	}
-
-	// Pattern 4: Direct file paths in .loom directories
-	loomPathPattern := regexp.MustCompile(`([~\/]?[\w\/\.\-]+\.loom\/(?:agents|workflows)\/[\w\-]+\.ya?ml)`)
-	matches = loomPathPattern.FindAllStringSubmatch(command+" "+stdout, -1)
-	for _, match := range matches {
-		if len(match) > 1 {
-			path := resolvePath(match[1], workingDir)
-			if path != "" && !seenPaths[path] {
-				paths = append(paths, path)
-				seenPaths[path] = true
-			}
-		}
-	}
-
-	return paths
-}
-
-// resolvePath resolves a file path (handles ~, relative paths, etc.)
-func resolvePath(path, workingDir string) string {
-	// Expand tilde
-	if strings.HasPrefix(path, "~") {
-		homeDir, err := os.UserHomeDir()
-		if err == nil {
-			path = strings.Replace(path, "~", homeDir, 1)
-		}
-	}
-
-	// Make absolute if relative
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(workingDir, path)
-	}
-
-	// Clean the path
-	return filepath.Clean(path)
-}
-
 // checkCommandTokenSize validates that a command isn't too large to execute safely.
 // Large commands (especially heredocs) can cause output token exhaustion and infinite error loops.
 //
@@ -936,13 +804,10 @@ func checkCommandTokenSize(command string) error {
 
 	if commandLength > maxCommandChars {
 		return fmt.Errorf(
-			"Command is too large: %d characters (~%d tokens). Maximum: %d characters (~%d tokens).\n\n"+
-				"Large commands often fail due to output token limits. Consider:\n"+
-				"1. Breaking large file writes into smaller sections\n"+
-				"2. Using multiple append operations instead of one large write\n"+
-				"3. Writing data incrementally rather than all at once\n\n"+
-				"Example: Instead of 'cat <<EOF > file.json' with 50KB JSON, "+
-				"create the file in sections using multiple echo/append commands.",
+			"command is too large: %d characters (~%d tokens), maximum: %d characters (~%d tokens); "+
+				"large commands often fail due to output token limits - consider breaking large file writes into smaller sections, "+
+				"using multiple append operations instead of one large write, "+
+				"or writing data incrementally rather than all at once",
 			commandLength, estimatedTokens, maxCommandChars, maxCommandTokens,
 		)
 	}

@@ -96,7 +96,7 @@ func TestIntegration_FullMCPFlow(t *testing.T) {
 		Logger:         logger,
 		RequestTimeout: 5 * time.Second,
 	})
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -182,8 +182,8 @@ func TestIntegration_FullMCPFlow(t *testing.T) {
 	serverCancel()
 
 	// Close the pipes so the server transport gets EOF and exits
-	serverInW.Close()
-	clientInW.Close()
+	_ = serverInW.Close()
+	_ = clientInW.Close()
 
 	select {
 	case err := <-serverDone:

@@ -38,15 +38,15 @@ func TestTriModalIntegration_WorkflowCoordination(t *testing.T) {
 
 	// Setup: Create all three communication modes
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	queue, err := NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	// Scenario: Workflow with 3 agents coordinating a multi-step task
 	// Agent1: Coordinator (updates workflow state, broadcasts notifications)
@@ -206,14 +206,14 @@ func TestTriModalIntegration_RequestResponseWithSharedState(t *testing.T) {
 	// Setup
 	queue, err := NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	// Subscribe to processing events
 	eventSub, err := bus.Subscribe(ctx, "monitor", "task.*", nil, 10)
@@ -380,15 +380,15 @@ func TestTriModalIntegration_ConcurrentWorkflows(t *testing.T) {
 
 	// Setup
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	queue, err := NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	sharedMem, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer sharedMem.Close()
+	defer func() { _ = sharedMem.Close() }()
 
 	// Run 5 concurrent workflows
 	numWorkflows := 5

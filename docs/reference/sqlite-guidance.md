@@ -10,6 +10,7 @@ Complete best practices for SQLite usage in Loom - session storage, HITL persist
 
 - [Quick Reference](#quick-reference)
 - [Overview](#overview)
+- [Multi-Tenancy Limitations](#multi-tenancy-limitations)
 - [Prerequisites](#prerequisites)
 - [Use Cases](#use-cases)
 - [Session Storage](#session-storage)
@@ -79,6 +80,49 @@ Loom uses **SQLite** for persistent storage of agent sessions, human-in-the-loop
 - `pkg/communication/sqlite_store.go` (353 lines) - Reference storage
 
 **Available Since**: v0.7.0
+
+
+## Multi-Tenancy Limitations
+
+SQLite operates in **single-tenant mode only**. This is by design, not a bug.
+
+### What This Means
+
+When Loom runs with a SQLite storage backend:
+
+1. **No user isolation**: All sessions share a single `"default-user"` identity regardless of the `x-user-id` gRPC metadata header.
+2. **No Row Level Security (RLS)**: SQLite does not support RLS. All data is accessible to all callers.
+3. **`require_user_id` is ignored**: Even if `require_user_id` is set to `true` in configuration, the SQLite backend forces it to `false`. A warning is logged at startup: `"SQLite backend does not support user ID requirement; require_user_id ignored"`.
+4. **All sessions visible to all users**: Any caller can list, read, and modify any session.
+
+### When to Use SQLite
+
+- Single-user local development
+- Single-tenant deployments where all users share data
+- Prototyping and testing
+- Embedded single-process applications
+
+### When to Use PostgreSQL Instead
+
+- Multi-tenant deployments requiring per-user data isolation
+- Environments where `x-user-id` header-based identity is needed
+- Compliance scenarios requiring audit trails per user
+- Production deployments serving multiple users concurrently
+
+PostgreSQL supports Row Level Security (RLS) with `SET LOCAL` session variables, providing per-user data isolation at the database level. See the PostgreSQL storage documentation for configuration details.
+
+### Implementation Details
+
+The SQLite single-tenant behavior is enforced in `cmd/looms/cmd_serve.go` at the user ID interceptor configuration. When the storage backend is not PostgreSQL:
+
+```go
+userIDCfg.RequireUserID = false
+userIDCfg.DefaultUserID = "default-user"
+```
+
+This means the `UserIDUnaryInterceptor` and `UserIDStreamInterceptor` will inject `"default-user"` into every request's context, and the storage layer will use this single identity for all operations.
+
+**Available Since**: v1.1.0 (PostgreSQL multi-tenant support)
 
 
 ## Prerequisites

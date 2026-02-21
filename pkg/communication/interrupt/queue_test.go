@@ -29,11 +29,11 @@ import (
 func TestPersistentQueue_Enqueue(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue an interrupt
 	interrupt := &Interrupt{
@@ -56,11 +56,11 @@ func TestPersistentQueue_Enqueue(t *testing.T) {
 func TestPersistentQueue_EnqueueMultiple(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue multiple interrupts
 	for i := 0; i < 5; i++ {
@@ -84,11 +84,11 @@ func TestPersistentQueue_EnqueueMultiple(t *testing.T) {
 func TestPersistentQueue_ListPending(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue interrupts with different timestamps
 	for i := 0; i < 3; i++ {
@@ -124,11 +124,11 @@ func TestPersistentQueue_ListPending(t *testing.T) {
 func TestPersistentQueue_ListPending_Limit(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue 10 interrupts
 	for i := 0; i < 10; i++ {
@@ -157,11 +157,11 @@ func TestPersistentQueue_ListPending_Limit(t *testing.T) {
 func TestPersistentQueue_GetStats(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue some interrupts
 	for i := 0; i < 3; i++ {
@@ -185,11 +185,11 @@ func TestPersistentQueue_GetStats(t *testing.T) {
 func TestPersistentQueue_Acknowledge(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue an interrupt
 	interrupt := &Interrupt{
@@ -227,11 +227,11 @@ func TestPersistentQueue_Acknowledge(t *testing.T) {
 func TestPersistentQueue_ClearOld(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue and acknowledge some interrupts
 	for i := 0; i < 5; i++ {
@@ -274,11 +274,11 @@ func TestPersistentQueue_ClearOld(t *testing.T) {
 func TestPersistentQueue_ClearOld_KeepsRecent(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue recent interrupts
 	for i := 0; i < 3; i++ {
@@ -315,7 +315,7 @@ func TestPersistentQueue_ClearOld_KeepsRecent(t *testing.T) {
 func TestPersistentQueue_Close(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
@@ -352,7 +352,7 @@ func TestPersistentQueue_Close(t *testing.T) {
 func TestPersistentQueue_Persistence(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	// Use temp file instead of :memory: to test persistence
 	// Use unique temp file per test run to avoid collisions
@@ -383,10 +383,10 @@ func TestPersistentQueue_Persistence(t *testing.T) {
 
 	// Reopen queue - data should persist
 	router2 := NewRouter(ctx)
-	defer router2.Close()
+	defer func() { _ = router2.Close() }()
 	queue2, err := NewPersistentQueue(ctx, dbPath, router2)
 	require.NoError(t, err)
-	defer queue2.Close()
+	defer func() { _ = queue2.Close() }()
 
 	// Verify data persisted
 	count, err := queue2.GetPendingCount(ctx)
@@ -405,7 +405,7 @@ func TestPersistentQueue_RetryLoop_Stub(t *testing.T) {
 
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
@@ -419,11 +419,11 @@ func TestPersistentQueue_RetryLoop_Stub(t *testing.T) {
 func TestPersistentQueue_RetryLoop_SuccessfulDelivery(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Track deliveries
 	var delivered atomic.Bool
@@ -466,11 +466,11 @@ func TestPersistentQueue_RetryLoop_ExponentialBackoff_SKIP(t *testing.T) {
 	t.Skip("Router is fire-and-forget; handler errors don't trigger queue retries")
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Handler that always fails initially
 	attemptTimes := make([]time.Time, 0)
@@ -525,13 +525,13 @@ func TestPersistentQueue_RetryLoop_MaxRetriesReached_SKIP(t *testing.T) {
 	t.Skip("Router is fire-and-forget; handler errors don't trigger queue retries")
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	// Create queue with low max retries for faster test
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
 	queue.maxRetries = 3 // Override to 3 for faster test
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Handler that always fails
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
@@ -569,11 +569,11 @@ func TestPersistentQueue_RetryLoop_MaxRetriesReached_SKIP(t *testing.T) {
 func TestPersistentQueue_RetryLoop_HandlerNotRegistered(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Enqueue interrupt without registering handler
 	interrupt := &Interrupt{
@@ -599,11 +599,11 @@ func TestPersistentQueue_RetryLoop_HandlerNotRegistered(t *testing.T) {
 func TestPersistentQueue_RetryLoop_BufferFull(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create handler that blocks to fill buffer
 	blockChan := make(chan struct{})
@@ -652,11 +652,11 @@ func TestPersistentQueue_RetryLoop_BufferFull(t *testing.T) {
 func TestPersistentQueue_RetryLoop_ConcurrentInterrupts(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Track deliveries
 	var deliveredCount atomic.Int32
@@ -703,11 +703,11 @@ func TestPersistentQueue_RetryLoop_ConcurrentInterrupts(t *testing.T) {
 func TestDebug_RetryLoop(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, ":memory:", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	var delivered atomic.Bool
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
@@ -754,11 +754,11 @@ func TestDebug_RetryLoop(t *testing.T) {
 func TestDebugWithSQL_RetryLoop(t *testing.T) {
 	ctx := context.Background()
 	router := NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queue, err := NewPersistentQueue(ctx, "/tmp/test_retry.db", router)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	var delivered atomic.Bool
 	handler := func(ctx context.Context, signal InterruptSignal, payload []byte) error {
@@ -793,7 +793,7 @@ func TestDebugWithSQL_RetryLoop(t *testing.T) {
 		}
 		t.Logf("Initial: id=%d, state=%s, retry_count=%d", id, state, retryCount)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	// Wait
 	time.Sleep(300 * time.Millisecond)
@@ -810,7 +810,7 @@ func TestDebugWithSQL_RetryLoop(t *testing.T) {
 		}
 		t.Logf("After wait: id=%d, state=%s, retry_count=%d", id, state, retryCount)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	assert.True(t, delivered.Load())
 }

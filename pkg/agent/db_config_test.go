@@ -34,7 +34,7 @@ func TestOpenDB_Unencrypted(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Test that we can create a table and insert data
 	_, err = db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
@@ -65,7 +65,7 @@ func TestOpenDB_Encrypted(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Test that we can create a table and insert data
 	_, err = db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
@@ -81,7 +81,7 @@ func TestOpenDB_Encrypted(t *testing.T) {
 	assert.Equal(t, "encrypted_value", name)
 
 	// Close the database
-	db.Close()
+	_ = db.Close()
 
 	// Try to open with wrong key - should fail
 	dbWrongKey, err := OpenDB(DBConfig{
@@ -90,7 +90,7 @@ func TestOpenDB_Encrypted(t *testing.T) {
 		EncryptionKey:   "wrong-key",
 	})
 	if err == nil {
-		dbWrongKey.Close()
+		_ = dbWrongKey.Close()
 		t.Fatal("Expected error when opening encrypted DB with wrong key")
 	}
 	assert.Error(t, err)
@@ -109,7 +109,7 @@ func TestOpenDB_Encrypted(t *testing.T) {
 		// If it opens, trying to query should fail
 		var testName string
 		queryErr := dbUnencrypted.QueryRow("SELECT name FROM test WHERE id = 1").Scan(&testName)
-		dbUnencrypted.Close()
+		_ = dbUnencrypted.Close()
 		assert.Error(t, queryErr, "Expected error when reading encrypted DB without key")
 	}
 }
@@ -122,8 +122,8 @@ func TestOpenDB_EncryptedFromEnvVar(t *testing.T) {
 	testKey := "env-encryption-key-67890"
 
 	// Set environment variable
-	os.Setenv("LOOM_DB_KEY", testKey)
-	defer os.Unsetenv("LOOM_DB_KEY")
+	_ = os.Setenv("LOOM_DB_KEY", testKey)
+	defer func() { _ = os.Unsetenv("LOOM_DB_KEY") }()
 
 	// Open encrypted database without explicit key (should use env var)
 	db, err := OpenDB(DBConfig{
@@ -133,7 +133,7 @@ func TestOpenDB_EncryptedFromEnvVar(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Test that we can create a table and insert data
 	_, err = db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)")
@@ -155,7 +155,7 @@ func TestOpenDB_EncryptedNoKey(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_nokey.db")
 
 	// Ensure env var is not set
-	os.Unsetenv("LOOM_DB_KEY")
+	_ = os.Unsetenv("LOOM_DB_KEY")
 
 	// Try to open encrypted database without key - should fail
 	db, err := OpenDB(DBConfig{
@@ -183,7 +183,7 @@ func TestNewSessionStoreWithConfig_Encrypted(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify that the tables were created
 	var tableCount int
@@ -203,7 +203,7 @@ func TestNewSessionStoreWithConfig_Unencrypted(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify that the tables were created
 	var tableCount int

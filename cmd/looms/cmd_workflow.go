@@ -252,7 +252,7 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Failed to create session store: %v\n", err)
 		os.Exit(1)
 	}
-	defer sessionStore.Close()
+	defer func() { _ = sessionStore.Close() }()
 
 	// Initialize MCP manager if MCP servers are configured
 	var mcpMgr *mcpManager

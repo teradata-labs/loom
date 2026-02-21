@@ -101,13 +101,13 @@ func setupFilesystemClient(t *testing.T, ctx context.Context, logger *zap.Logger
 		Logger:  logger,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { tr.Close() })
+	t.Cleanup(func() { _ = tr.Close() })
 
 	c := client.NewClient(client.Config{
 		Transport: tr,
 		Logger:    logger,
 	})
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 
 	clientInfo := protocol.Implementation{
 		Name:    "conformance-test",
@@ -127,13 +127,13 @@ func setupMemoryClient(t *testing.T, ctx context.Context, logger *zap.Logger) *c
 		Logger:  logger,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { tr.Close() })
+	t.Cleanup(func() { _ = tr.Close() })
 
 	c := client.NewClient(client.Config{
 		Transport: tr,
 		Logger:    logger,
 	})
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 
 	clientInfo := protocol.Implementation{
 		Name:    "conformance-test",
@@ -242,7 +242,7 @@ func TestConformance_ToolsLifecycle(t *testing.T) {
 	testFile := getTempDir() + "/mcp-conformance-test.txt"
 	testContent := "MCP Conformance Test"
 	require.NoError(t, os.WriteFile(testFile, []byte(testContent), 0644))
-	defer os.Remove(testFile)
+	defer func() { _ = os.Remove(testFile) }()
 
 	// Call the tool with dynamically determined parameter name
 	filePathParam := getFilePathParamName(readTool)
@@ -392,7 +392,7 @@ func TestConformance_ConcurrentRequests(t *testing.T) {
 	// Create test file (use real path to avoid symlink issues)
 	testFile := getTempDir() + "/mcp-concurrent-test.txt"
 	require.NoError(t, os.WriteFile(testFile, []byte("concurrent test"), 0644))
-	defer os.Remove(testFile)
+	defer func() { _ = os.Remove(testFile) }()
 
 	// Issue multiple concurrent tool calls
 	done := make(chan error, 5)

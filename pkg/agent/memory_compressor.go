@@ -86,14 +86,15 @@ func (c *LLMCompressor) simpleCompress(messages []Message) string {
 	var parts []string
 
 	for _, msg := range messages {
-		if msg.Role == "user" {
+		switch msg.Role {
+		case "user":
 			// Extract key terms from user queries
 			content := msg.Content
 			if len(content) > 60 {
 				content = content[:60] + "..."
 			}
 			parts = append(parts, fmt.Sprintf("User: %s", content))
-		} else if msg.Role == "assistant" {
+		case "assistant":
 			// Assistant responses - extract tool usage or key facts
 			if c.containsToolCall(msg) {
 				parts = append(parts, "Agent executed tools")
@@ -105,10 +106,10 @@ func (c *LLMCompressor) simpleCompress(messages []Message) string {
 				}
 				parts = append(parts, fmt.Sprintf("Agent: %s", content))
 			}
-		} else if msg.Role == "tool" {
+		case "tool":
 			// Tool results - preserve tool execution context
 			parts = append(parts, "Tool result received")
-		} else if msg.Role == "system" {
+		case "system":
 			// System messages (defensive handling)
 			parts = append(parts, "System instruction")
 		}
@@ -153,13 +154,14 @@ func (c *SimpleCompressor) CompressMessages(ctx context.Context, messages []Mess
 	var parts []string
 
 	for _, msg := range messages {
-		if msg.Role == "user" {
+		switch msg.Role {
+		case "user":
 			content := msg.Content
 			if len(content) > 60 {
 				content = content[:60] + "..."
 			}
 			parts = append(parts, fmt.Sprintf("User: %s", content))
-		} else if msg.Role == "assistant" {
+		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				parts = append(parts, "Agent executed tools")
 			} else if len(msg.Content) > 50 {
@@ -169,10 +171,10 @@ func (c *SimpleCompressor) CompressMessages(ctx context.Context, messages []Mess
 				}
 				parts = append(parts, fmt.Sprintf("Agent: %s", content))
 			}
-		} else if msg.Role == "tool" {
+		case "tool":
 			// Tool results - preserve tool execution context
 			parts = append(parts, "Tool result received")
-		} else if msg.Role == "system" {
+		case "system":
 			// System messages (defensive handling)
 			parts = append(parts, "System instruction")
 		}

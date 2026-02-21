@@ -60,7 +60,7 @@ func TestStdioServerTransport_ReceiveEOF(t *testing.T) {
 func TestStdioServerTransport_ReceiveContextCancelled(t *testing.T) {
 	// Use a pipe reader that blocks
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	var buf bytes.Buffer
 
 	transport := NewStdioServerTransport(pr, &buf)
@@ -74,7 +74,7 @@ func TestStdioServerTransport_ReceiveContextCancelled(t *testing.T) {
 	// Close the pipe to unblock the persistent reader goroutine so it
 	// can exit cleanly. Without this, the goroutine would remain blocked
 	// on ReadBytes for the duration of the test.
-	pw.Close()
+	_ = pw.Close()
 }
 
 func TestStdioServerTransport_NoGoroutineLeak(t *testing.T) {
@@ -102,7 +102,7 @@ func TestStdioServerTransport_NoGoroutineLeak(t *testing.T) {
 	}
 
 	// Close the pipe so the persistent reader goroutine exits.
-	pw.Close()
+	_ = pw.Close()
 
 	// Give the reader goroutine time to drain and exit.
 	time.Sleep(100 * time.Millisecond)
@@ -206,7 +206,7 @@ func TestStdioServerTransport_PipeBased(t *testing.T) {
 	go func() {
 		_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","method":"initialize","id":1}` + "\n"))
 		_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","method":"ping","id":2}` + "\n"))
-		pw.Close()
+		_ = pw.Close()
 	}()
 
 	// Read first message

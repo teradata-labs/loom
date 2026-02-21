@@ -380,9 +380,10 @@ func TestManager_Integration_DisabledServers(t *testing.T) {
 	// Both servers should be in list
 	var enabled, disabled *ServerInfo
 	for i := range servers {
-		if servers[i].Name == "enabled" {
+		switch servers[i].Name {
+		case "enabled":
 			enabled = &servers[i]
-		} else if servers[i].Name == "disabled" {
+		case "disabled":
 			disabled = &servers[i]
 		}
 	}

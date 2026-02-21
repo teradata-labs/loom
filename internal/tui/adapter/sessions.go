@@ -42,7 +42,7 @@ func (s *SessionAdapter) SetAgentID(agentID string) {
 	s.agentID = agentID
 	// Debug: log agent ID being set
 	if f, err := os.OpenFile("/tmp/loom-session-adapter-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] SessionAdapter.SetAgentID called with: '%s'\n", time.Now().Format("15:04:05"), agentID)
+		_, _ = fmt.Fprintf(f, "[%s] SessionAdapter.SetAgentID called with: '%s'\n", time.Now().Format("15:04:05"), agentID)
 		_ = f.Close()
 	}
 }
@@ -51,7 +51,7 @@ func (s *SessionAdapter) SetAgentID(agentID string) {
 func (s *SessionAdapter) Create(ctx context.Context, title string) (session.Session, error) {
 	// Debug: log session creation
 	if f, err := os.OpenFile("/tmp/loom-session-adapter-debug.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "[%s] SessionAdapter.Create: using agentID='%s' for session '%s'\n", time.Now().Format("15:04:05"), s.agentID, title)
+		_, _ = fmt.Fprintf(f, "[%s] SessionAdapter.Create: using agentID='%s' for session '%s'\n", time.Now().Format("15:04:05"), s.agentID, title)
 		_ = f.Close()
 	}
 

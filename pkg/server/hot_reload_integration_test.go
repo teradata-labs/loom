@@ -71,7 +71,7 @@ func TestHotReloadIntegration(t *testing.T) {
 		Logger:      logger,
 	})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	// Load agents
 	ctx := context.Background()
@@ -161,7 +161,7 @@ func TestHotReloadIntegration_MultipleAgents(t *testing.T) {
 		Logger:      logger,
 	})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	// Create multiple agent configs
 	agentNames := []string{"agent1", "agent2", "agent3"}
@@ -276,7 +276,7 @@ func TestHotReloadIntegration_CallbackError(t *testing.T) {
 		Logger:      logger,
 	})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	// Create agent config
 	config := &loomv1.AgentConfig{
@@ -390,7 +390,7 @@ func TestWatchConfigs_ReloadTriggerFile(t *testing.T) {
 		Logger:      logger,
 	})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	// Load agents
 	ctx := context.Background()
@@ -474,7 +474,7 @@ func TestWatchConfigs_ReloadTrigger_NewAgent(t *testing.T) {
 		Logger:      logger,
 	})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	// Load agents (none yet)
 	ctx := context.Background()

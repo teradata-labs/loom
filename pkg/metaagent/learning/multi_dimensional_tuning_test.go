@@ -84,9 +84,10 @@ func TestMultiDimensionalPatternTuning(t *testing.T) {
 		// Find tunings for both patterns
 		var patternATuning, patternBTuning *loomv1.PatternTuning
 		for _, tuning := range tuneResp.Tunings {
-			if tuning.PatternName == "pattern-a" {
+			switch tuning.PatternName {
+			case "pattern-a":
 				patternATuning = tuning
-			} else if tuning.PatternName == "pattern-b" {
+			case "pattern-b":
 				patternBTuning = tuning
 			}
 		}
@@ -172,9 +173,10 @@ func TestMultiDimensionalPatternTuning(t *testing.T) {
 		// Find tunings
 		var patternATuning, patternBTuning *loomv1.PatternTuning
 		for _, tuning := range tuneResp.Tunings {
-			if tuning.PatternName == "pattern-a" {
+			switch tuning.PatternName {
+			case "pattern-a":
 				patternATuning = tuning
-			} else if tuning.PatternName == "pattern-b" {
+			case "pattern-b":
 				patternBTuning = tuning
 			}
 		}

@@ -96,16 +96,17 @@ func TestMIPRO_WithMultiJudgeMetric(t *testing.T) {
 
 				var qualityScore, costScore float64
 				// Simulate different instruction quality levels
-				if instruction == "high-quality-instruction" {
+				switch instruction {
+				case "high-quality-instruction":
 					qualityScore = 95.0
 					costScore = 60.0 // Expensive
-				} else if instruction == "balanced-instruction" {
+				case "balanced-instruction":
 					qualityScore = 80.0
 					costScore = 80.0 // Balanced
-				} else if instruction == "low-cost-instruction" {
+				case "low-cost-instruction":
 					qualityScore = 70.0
 					costScore = 95.0 // Cheap
-				} else {
+				default:
 					qualityScore = 50.0
 					costScore = 50.0
 				}
@@ -234,13 +235,14 @@ func TestMIPRO_WithMultiJudgeMetric(t *testing.T) {
 				instruction := currentInstruction
 
 				var qualityScore, costScore float64
-				if instruction == "high-quality-instruction" {
+				switch instruction {
+				case "high-quality-instruction":
 					qualityScore = 95.0
 					costScore = 60.0 // Expensive (overall: 77.5)
-				} else if instruction == "balanced-instruction" {
+				case "balanced-instruction":
 					qualityScore = 80.0
 					costScore = 80.0 // Balanced (overall: 80.0)
-				} else {
+				default:
 					qualityScore = 70.0
 					costScore = 95.0 // Cheap (overall: 82.5)
 				}
@@ -353,13 +355,14 @@ func TestMIPRO_WithMultiJudgeMetric(t *testing.T) {
 				instruction := currentInstruction
 
 				var qualityScore, costScore float64
-				if instruction == "high-quality-instruction" {
+				switch instruction {
+				case "high-quality-instruction":
 					qualityScore = 95.0
 					costScore = 60.0 // Expensive
-				} else if instruction == "balanced-instruction" {
+				case "balanced-instruction":
 					qualityScore = 80.0
 					costScore = 80.0 // Balanced
-				} else {
+				default:
 					qualityScore = 70.0
 					costScore = 95.0 // Cheap (best for cost)
 				}
@@ -472,13 +475,14 @@ func TestMIPRO_WithMultiJudgeMetric(t *testing.T) {
 				instruction := currentInstruction
 
 				var qualityScore, safetyScore float64
-				if instruction == "safe-instruction" {
+				switch instruction {
+				case "safe-instruction":
 					qualityScore = 80.0
 					safetyScore = 90.0 // Safe (avg: 85.0)
-				} else if instruction == "unsafe-instruction" {
+				case "unsafe-instruction":
 					qualityScore = 95.0 // High quality
 					safetyScore = 40.0  // But unsafe! (avg: 67.5 < 70%)
-				} else {
+				default:
 					qualityScore = 75.0
 					safetyScore = 75.0 // Acceptable (avg: 75.0)
 				}

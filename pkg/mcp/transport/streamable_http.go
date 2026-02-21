@@ -140,7 +140,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	if err != nil {
 		return fmt.Errorf("POST request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Handle HTTP errors
 	if err := t.handleHTTPStatus(resp); err != nil {
@@ -165,8 +165,8 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		zap.Int("status", resp.StatusCode),
 		zap.Bool("started", started))
 
-	switch {
-	case contentType == "text/event-stream":
+	switch contentType {
+	case "text/event-stream":
 		// SSE stream response
 		t.logger.Debug("Handling SSE stream response")
 
@@ -181,7 +181,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 		// Parse the SSE data from the buffer
 		return t.handleSSEStream(ctx, io.NopCloser(bytes.NewReader(allData)))
 
-	case contentType == "application/json":
+	case "application/json":
 		// Single JSON response
 		t.logger.Debug("Handling JSON response")
 		data, err := io.ReadAll(resp.Body)
@@ -261,7 +261,7 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 	t.activeStreams.Add(1)
 	go func() {
 		defer t.activeStreams.Done()
-		defer body.Close()
+		defer func() { _ = body.Close() }()
 
 		parser := NewSSEParser(body)
 
@@ -367,7 +367,7 @@ func (t *StreamableHTTPTransport) terminateSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 405 means server doesn't allow client termination, which is okay
 	if resp.StatusCode == http.StatusMethodNotAllowed {

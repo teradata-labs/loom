@@ -133,7 +133,7 @@ func TestEnforceTokenBudget_CriticalUsage(t *testing.T) {
 
 	// Add many messages to L1
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: strings.Repeat("Test message ", 50),
 		})

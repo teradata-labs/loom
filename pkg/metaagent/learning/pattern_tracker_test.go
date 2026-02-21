@@ -48,8 +48,8 @@ func setupTrackerTest(t *testing.T) (*sql.DB, observability.Tracer, *communicati
 	bus := communication.NewMessageBus(nil, nil, nil, nil)
 
 	cleanup := func() {
-		db.Close()
-		bus.Close()
+		_ = db.Close()
+		_ = bus.Close()
 	}
 
 	return db, tracer, bus, cleanup

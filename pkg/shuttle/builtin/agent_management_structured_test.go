@@ -23,8 +23,8 @@ func TestDNDBugPrevention(t *testing.T) {
 	// Setup temp directory
 	tmpDir := t.TempDir()
 	oldLoomData := os.Getenv("LOOM_DATA_DIR")
-	os.Setenv("LOOM_DATA_DIR", tmpDir)
-	defer os.Setenv("LOOM_DATA_DIR", oldLoomData)
+	_ = os.Setenv("LOOM_DATA_DIR", tmpDir)
+	defer func() { _ = os.Setenv("LOOM_DATA_DIR", oldLoomData) }()
 
 	// Create weaver context
 	ctx := session.WithAgentID(context.Background(), "weaver")
@@ -121,8 +121,8 @@ func TestCreateAgentStructured(t *testing.T) {
 	// Setup temp directory
 	tmpDir := t.TempDir()
 	oldLoomData := os.Getenv("LOOM_DATA_DIR")
-	os.Setenv("LOOM_DATA_DIR", tmpDir)
-	defer os.Setenv("LOOM_DATA_DIR", oldLoomData)
+	_ = os.Setenv("LOOM_DATA_DIR", tmpDir)
+	defer func() { _ = os.Setenv("LOOM_DATA_DIR", oldLoomData) }()
 
 	// Create weaver context
 	ctx := session.WithAgentID(context.Background(), "weaver")
@@ -201,8 +201,8 @@ func TestAgentReferenceValidation(t *testing.T) {
 	// Setup temp directory
 	tmpDir := t.TempDir()
 	oldLoomData := os.Getenv("LOOM_DATA_DIR")
-	os.Setenv("LOOM_DATA_DIR", tmpDir)
-	defer os.Setenv("LOOM_DATA_DIR", oldLoomData)
+	_ = os.Setenv("LOOM_DATA_DIR", tmpDir)
+	defer func() { _ = os.Setenv("LOOM_DATA_DIR", oldLoomData) }()
 
 	// Create agents directory
 	agentsDir := filepath.Join(tmpDir, "agents")
@@ -290,8 +290,8 @@ spec:
 func TestUpdateWorkflowValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldLoomData := os.Getenv("LOOM_DATA_DIR")
-	os.Setenv("LOOM_DATA_DIR", tmpDir)
-	defer os.Setenv("LOOM_DATA_DIR", oldLoomData)
+	_ = os.Setenv("LOOM_DATA_DIR", tmpDir)
+	defer func() { _ = os.Setenv("LOOM_DATA_DIR", oldLoomData) }()
 
 	// Create directories
 	agentsDir := config.GetLoomSubDir("agents")

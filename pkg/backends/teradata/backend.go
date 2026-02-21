@@ -107,16 +107,16 @@ func NewBackend(ctx context.Context, cfg Config) (*Backend, error) {
 
 	// Validate required fields
 	if cfg.Host == "" {
-		return nil, fmt.Errorf("Host is required")
+		return nil, fmt.Errorf("host is required")
 	}
 	if cfg.Username == "" {
-		return nil, fmt.Errorf("Username is required")
+		return nil, fmt.Errorf("username is required")
 	}
 	if cfg.Password == "" {
-		return nil, fmt.Errorf("Password is required")
+		return nil, fmt.Errorf("password is required")
 	}
 	if cfg.Database == "" {
-		return nil, fmt.Errorf("Database is required")
+		return nil, fmt.Errorf("database is required")
 	}
 
 	// Check if teradata-mcp-server is available
@@ -184,7 +184,7 @@ func NewBackend(ctx context.Context, cfg Config) (*Backend, error) {
 	})
 	if err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		mcpClient.Close()
+		_ = mcpClient.Close()
 		return nil, fmt.Errorf("failed to create MCP backend: %w", err)
 	}
 

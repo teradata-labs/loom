@@ -57,7 +57,7 @@ func (b *GenericSQLBackend) executeSelect(ctx context.Context, query string, sta
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Get column names and types
 	columns, err := rows.Columns()
@@ -162,7 +162,7 @@ func (b *GenericSQLBackend) GetSchema(ctx context.Context, resource string) (*fa
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var fields []fabric.Field
 	if b.typ == "sqlite" {
@@ -246,7 +246,7 @@ func (b *GenericSQLBackend) ListResources(ctx context.Context, filters map[strin
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resources: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var resources []fabric.Resource
 	for rows.Next() {
@@ -597,7 +597,7 @@ func (b *RESTBackend) ExecuteQuery(ctx context.Context, query string) (*fabric.Q
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response
 	respBody, err := io.ReadAll(resp.Body)
@@ -662,7 +662,7 @@ func (b *RESTBackend) Ping(ctx context.Context) error {
 		return err
 	}
 	// #nosec G104 -- best-effort cleanup of response body
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	return nil
 }

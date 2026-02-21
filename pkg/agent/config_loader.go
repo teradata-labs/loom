@@ -155,6 +155,7 @@ type PatternConfigYAML struct {
 
 // LoadAgentConfig loads agent configuration from a YAML file and converts it to proto.
 func LoadAgentConfig(path string) (*loomv1.AgentConfig, error) {
+	path = filepath.Clean(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
@@ -764,6 +765,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 //
 // This allows connecting to individual agents while ensuring the workflow uses the same registered instances.
 func LoadWorkflowAgents(path string, llmProvider LLMProvider) ([]*loomv1.AgentConfig, error) {
+	path = filepath.Clean(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read workflow file %s: %w", path, err)

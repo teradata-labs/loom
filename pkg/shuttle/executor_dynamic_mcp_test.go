@@ -117,7 +117,7 @@ func TestDynamicRegistration_MCPTool(t *testing.T) {
 		Indexers: []registry.Indexer{newMockMCPIndexer([]*loomv1.IndexedTool{mcpTool})},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	// Index tools
 	_, err = toolReg.IndexAll(ctx)
@@ -172,7 +172,7 @@ func TestDynamicRegistration_MCPToolMissingServer(t *testing.T) {
 		Indexers: []registry.Indexer{newMockMCPIndexer([]*loomv1.IndexedTool{mcpTool})},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	_, err = toolReg.IndexAll(ctx)
 	require.NoError(t, err)
@@ -210,7 +210,7 @@ func TestDynamicRegistration_MCPToolNoManager(t *testing.T) {
 		Indexers: []registry.Indexer{newMockMCPIndexer([]*loomv1.IndexedTool{mcpTool})},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	_, err = toolReg.IndexAll(ctx)
 	require.NoError(t, err)
@@ -251,7 +251,7 @@ func TestDynamicRegistration_CustomToolNotSupported(t *testing.T) {
 		Indexers: []registry.Indexer{customIndexer},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	_, err = toolReg.IndexAll(ctx)
 	require.NoError(t, err)
@@ -307,7 +307,7 @@ func TestDynamicRegistration_UnknownSource(t *testing.T) {
 		Indexers: []registry.Indexer{mockIndexer},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	_, err = toolReg.IndexAll(ctx)
 	require.NoError(t, err)

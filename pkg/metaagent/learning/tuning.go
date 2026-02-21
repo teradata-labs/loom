@@ -56,6 +56,7 @@ type patternRuleYAML struct {
 // This function preserves comments, formatting, and structure of the YAML file.
 func UpdatePatternPriority(yamlPath, patternName string, newPriority int32) error {
 	// Read the YAML file
+	yamlPath = filepath.Clean(yamlPath)
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return fmt.Errorf("failed to read YAML file: %w", err)
@@ -195,6 +196,7 @@ func FindPatternYAMLFile(libraryPath, patternName string) (string, error) {
 
 // containsPattern checks if a YAML file contains a pattern with the given name
 func containsPattern(yamlPath, patternName string) bool {
+	yamlPath = filepath.Clean(yamlPath)
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return false
@@ -216,6 +218,7 @@ func containsPattern(yamlPath, patternName string) bool {
 
 // GetCurrentPriority reads the current priority value for a pattern from a YAML file
 func GetCurrentPriority(yamlPath, patternName string) (int32, error) {
+	yamlPath = filepath.Clean(yamlPath)
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read YAML file: %w", err)
@@ -228,7 +231,7 @@ func GetCurrentPriority(yamlPath, patternName string) (int32, error) {
 
 	for _, entry := range config.Spec.Entries {
 		if entry.Name == patternName {
-			return int32(entry.Priority), nil
+			return safeInt32(entry.Priority), nil
 		}
 	}
 

@@ -30,12 +30,12 @@ func TestSessionStore_CrossSession_AgentSessions(t *testing.T) {
 	// Create temporary database
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -108,12 +108,12 @@ func TestSessionStore_CrossSession_AgentSessions(t *testing.T) {
 func TestSessionStore_CrossSession_LoadMessagesForAgent(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -194,12 +194,12 @@ func TestSessionStore_CrossSession_LoadMessagesForAgent(t *testing.T) {
 func TestSessionStore_CrossSession_LoadMessagesFromParent(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "loom-test-*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 

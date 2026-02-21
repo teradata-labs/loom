@@ -185,7 +185,7 @@ func NewMessageQueue(dbPath string, tracer observability.Tracer, logger *zap.Log
 
 	if _, err := db.Exec(schema); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
 
@@ -645,7 +645,7 @@ func (q *MessageQueue) recoverFromDatabase(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to query database: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	recovered := 0
 	for rows.Next() {

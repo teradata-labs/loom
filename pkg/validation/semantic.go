@@ -20,11 +20,12 @@ func validateSemantics(content, kind, filePath string) ([]ValidationError, []Val
 	var errors []ValidationError
 	var warnings []ValidationWarning
 
-	if kind == "Agent" {
+	switch kind {
+	case "Agent":
 		agentErrors, agentWarnings := validateAgentSemantics(content)
 		errors = append(errors, agentErrors...)
 		warnings = append(warnings, agentWarnings...)
-	} else if kind == "Workflow" {
+	case "Workflow":
 		workflowErrors, workflowWarnings := validateWorkflowSemantics(content, filePath)
 		errors = append(errors, workflowErrors...)
 		warnings = append(warnings, workflowWarnings...)

@@ -30,7 +30,7 @@ func TestNewMetricsCollector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	if collector.db == nil {
 		t.Error("Database not initialized")
@@ -45,7 +45,7 @@ func TestRecordDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -79,7 +79,7 @@ func TestGetSuccessRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -134,7 +134,7 @@ func TestGetPatternPerformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -208,7 +208,7 @@ func TestGetTemplatePerformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -267,7 +267,7 @@ func TestGetRecentFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -340,7 +340,7 @@ func TestConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -392,7 +392,7 @@ func TestInstrumentation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -465,8 +465,8 @@ func TestDatabaseSchemaCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	tracer := observability.NewNoOpTracer()
 
@@ -474,7 +474,7 @@ func TestDatabaseSchemaCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	// Verify tables exist
 	var tableName string
@@ -488,7 +488,7 @@ func TestDatabaseSchemaCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to query indexes: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	indexCount := 0
 	for rows.Next() {
@@ -509,7 +509,7 @@ func TestEmptyDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create collector: %v", err)
 	}
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 

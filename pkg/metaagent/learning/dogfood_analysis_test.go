@@ -348,11 +348,11 @@ func runDogfoodScenario(t *testing.T, scenario struct {
 
 	// Setup database
 	dbPath := fmt.Sprintf("/tmp/loom-dogfood-%s-%d.db", scenario.domain, time.Now().UnixNano())
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	err = InitSelfImprovementSchema(ctx, db, tracer)
 	require.NoError(t, err)

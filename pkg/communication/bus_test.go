@@ -30,7 +30,7 @@ import (
 func TestBusPublishSubscribe(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -71,7 +71,7 @@ func TestBusPublishSubscribe(t *testing.T) {
 func TestBusMultipleSubscribers(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -115,7 +115,7 @@ func TestBusMultipleSubscribers(t *testing.T) {
 func TestBusMessageFiltering(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -173,7 +173,7 @@ func TestBusMessageFiltering(t *testing.T) {
 func TestBusMetadataFiltering(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -238,7 +238,7 @@ func TestBusMetadataFiltering(t *testing.T) {
 func TestBusBufferOverflow(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -289,7 +289,7 @@ done:
 func TestBusConcurrentPublish(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -343,7 +343,7 @@ func TestBusConcurrentPublish(t *testing.T) {
 func TestBusUnsubscribe(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -400,7 +400,7 @@ func TestBusUnsubscribe(t *testing.T) {
 func TestBusListTopics(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -426,7 +426,7 @@ func TestBusListTopics(t *testing.T) {
 func TestBusTopicStats(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
@@ -501,7 +501,7 @@ func TestBusClose(t *testing.T) {
 func TestBusValidation(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	bus := NewMessageBus(nil, nil, nil, logger)
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 

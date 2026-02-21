@@ -64,14 +64,14 @@ func TestMCPClient_Initialize_Integration(t *testing.T) {
 		Logger:  logger,
 	})
 	require.NoError(t, err)
-	defer trans.Close()
+	defer func() { _ = trans.Close() }()
 
 	// Create client
 	mcpClient := client.NewClient(client.Config{
 		Transport: trans,
 		Logger:    logger,
 	})
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// Initialize
 	clientInfo := protocol.Implementation{
@@ -94,7 +94,7 @@ func TestMCPClient_ListTools_Integration(t *testing.T) {
 
 	logger := zap.NewNop()
 	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// List tools
 	tools, err := mcpClient.ListTools(ctx)
@@ -121,14 +121,14 @@ func TestMCPClient_CallTool_Integration(t *testing.T) {
 
 	logger := zap.NewNop()
 	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// Create a temporary test file
 	tmpFile := filepath.Join(os.TempDir(), "loom-test-file.txt")
 	testContent := "Hello from Loom integration test!"
 	err := os.WriteFile(tmpFile, []byte(testContent), 0644)
 	require.NoError(t, err)
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	// List tools to find read_file
 	tools, err := mcpClient.ListTools(ctx)
@@ -175,14 +175,14 @@ func TestAdapter_Execute_Integration(t *testing.T) {
 
 	logger := zap.NewNop()
 	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// Create test file
 	tmpFile := filepath.Join(os.TempDir(), "loom-adapter-test.txt")
 	testContent := "Adapter integration test content"
 	err := os.WriteFile(tmpFile, []byte(testContent), 0644)
 	require.NoError(t, err)
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	// Get tools
 	tools, err := mcpClient.ListTools(ctx)
@@ -238,7 +238,7 @@ func TestAdaptMCPTools_Integration(t *testing.T) {
 
 	logger := zap.NewNop()
 	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// Adapt all MCP tools
 	shuttleTools, err := adapter.AdaptMCPTools(ctx, mcpClient, "filesystem")
@@ -283,7 +283,7 @@ func TestMCPClient_Ping_Integration(t *testing.T) {
 
 	logger := zap.NewNop()
 	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// Ping the server
 	err := mcpClient.Ping(ctx)
@@ -298,7 +298,7 @@ func TestMCPClient_ErrorHandling_Integration(t *testing.T) {
 
 	logger := zap.NewNop()
 	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	// Try to call non-existent tool
 	resultInterface, err := mcpClient.CallTool(ctx, "nonexistent_tool", map[string]interface{}{})

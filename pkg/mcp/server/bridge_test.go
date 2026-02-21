@@ -1026,7 +1026,7 @@ func TestNewLoomBridge_WithTLS_SystemPool(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, bridge)
-	defer bridge.Close()
+	defer func() { _ = bridge.Close() }()
 
 	assert.True(t, bridge.tlsEnabled)
 	assert.Empty(t, bridge.tlsCertFile)

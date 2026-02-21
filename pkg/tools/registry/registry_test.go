@@ -29,8 +29,8 @@ func TestNewRegistry(t *testing.T) {
 	// Use temp file for database
 	tmpFile, err := os.CreateTemp("", "test_registry_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	cfg := Config{
 		DBPath: tmpFile.Name(),
@@ -38,7 +38,7 @@ func TestNewRegistry(t *testing.T) {
 
 	registry, err := New(cfg)
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	assert.NotNil(t, registry)
 	assert.NotNil(t, registry.db)
@@ -47,12 +47,12 @@ func TestNewRegistry(t *testing.T) {
 func TestUpsertAndGetTool(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "test_registry_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	registry, err := New(Config{DBPath: tmpFile.Name()})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	ctx := context.Background()
 
@@ -83,12 +83,12 @@ func TestUpsertAndGetTool(t *testing.T) {
 func TestFTSSearch(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "test_registry_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	registry, err := New(Config{DBPath: tmpFile.Name()})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	ctx := context.Background()
 
@@ -188,12 +188,12 @@ func TestFTSSearch(t *testing.T) {
 func TestSearchModes(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "test_registry_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	registry, err := New(Config{DBPath: tmpFile.Name()})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	ctx := context.Background()
 
@@ -289,8 +289,8 @@ func TestSearchToolExecution(t *testing.T) {
 	// Create temp database
 	tmpFile, err := os.CreateTemp("", "test_searchtool_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	// Create registry with builtin indexer
 	registry, err := New(Config{
@@ -298,7 +298,7 @@ func TestSearchToolExecution(t *testing.T) {
 		Indexers: []Indexer{NewBuiltinIndexer(nil)},
 	})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	ctx := context.Background()
 
@@ -338,12 +338,12 @@ func TestSearchToolMissingQuery(t *testing.T) {
 	// Create temp database
 	tmpFile, err := os.CreateTemp("", "test_searchtool_error_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	registry, err := New(Config{DBPath: tmpFile.Name()})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	searchTool := NewSearchTool(registry)
 
@@ -358,12 +358,12 @@ func TestSearchToolMissingQuery(t *testing.T) {
 func TestConcurrentSearch(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "test_registry_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	registry, err := New(Config{DBPath: tmpFile.Name()})
 	require.NoError(t, err)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	ctx := context.Background()
 

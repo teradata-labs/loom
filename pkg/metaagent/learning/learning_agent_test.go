@@ -62,8 +62,8 @@ func setupTestLearningAgent(t *testing.T) (*LearningAgent, *sql.DB, func()) {
 	}
 
 	cleanup := func() {
-		collector.Close()
-		db.Close()
+		_ = collector.Close()
+		_ = db.Close()
 	}
 
 	return agent, db, cleanup

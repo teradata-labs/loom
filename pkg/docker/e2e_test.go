@@ -46,7 +46,7 @@ func TestE2E_PythonExecution(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
 		Scheduler: scheduler,
@@ -54,7 +54,7 @@ func TestE2E_PythonExecution(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that uses loom_trace library (automatically injected)
 	script := `
@@ -127,7 +127,7 @@ func TestE2E_NodeExecution(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
 		Scheduler: scheduler,
@@ -135,7 +135,7 @@ func TestE2E_NodeExecution(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Node.js script that uses loom-trace library (automatically injected)
 	script := `
@@ -204,14 +204,14 @@ func TestE2E_ErrorHandling(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
 		Scheduler: scheduler,
 		Logger:    logger,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	script := `
 import sys
@@ -257,7 +257,7 @@ func TestE2E_StderrCapture(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
 		Scheduler: scheduler,
@@ -265,7 +265,7 @@ func TestE2E_StderrCapture(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	script := `
 import sys

@@ -36,7 +36,7 @@ func TestNewBackend_File(t *testing.T) {
 	backend, err := NewBackend(config)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	assert.Equal(t, "test-file", backend.Name())
 
@@ -72,7 +72,7 @@ func TestNewBackend_SQLite(t *testing.T) {
 	backend, err := NewBackend(config)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	assert.Equal(t, "test-sqlite", backend.Name())
 
@@ -116,7 +116,7 @@ func TestNewBackend_REST(t *testing.T) {
 	backend, err := NewBackend(config)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	assert.Equal(t, "test-rest", backend.Name())
 
@@ -197,7 +197,7 @@ database:
 	backend, err := LoadFromYAML(yamlPath)
 	require.NoError(t, err)
 	require.NotNil(t, backend)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	assert.Equal(t, "test-file-backend", backend.Name())
 
@@ -271,7 +271,7 @@ func TestGenericSQLBackend_SQLite(t *testing.T) {
 
 	backend, err := NewBackend(config)
 	require.NoError(t, err)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	ctx := context.Background()
 

@@ -51,7 +51,7 @@ func runAgentsCommand(cmd *cobra.Command, args []string) {
 		}
 		os.Exit(1)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

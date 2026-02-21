@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -263,7 +264,8 @@ func isSensitivePath(path string) bool {
 	}
 
 	for _, prefix := range sensitive {
-		if filepath.HasPrefix(path, prefix) {
+		// Check if path equals prefix or is within prefix directory
+		if path == prefix || strings.HasPrefix(path, prefix+string(filepath.Separator)) {
 			return true
 		}
 	}

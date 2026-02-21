@@ -39,7 +39,7 @@ func TestDynamicRegistration_BuiltinTool(t *testing.T) {
 		Indexers: []registry.Indexer{registry.NewBuiltinIndexer(nil)},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	// Index all tools
 	_, err = toolReg.IndexAll(ctx)
@@ -99,7 +99,7 @@ func TestDynamicRegistration_AllBuiltinTools(t *testing.T) {
 				Indexers: []registry.Indexer{registry.NewBuiltinIndexer(nil)},
 			})
 			require.NoError(t, err)
-			defer toolReg.Close()
+			defer func() { _ = toolReg.Close() }()
 
 			// Index all tools
 			_, err = toolReg.IndexAll(ctx)
@@ -153,7 +153,7 @@ func TestDynamicRegistration_ToolNotFound(t *testing.T) {
 		DBPath: ":memory:",
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	exec.SetToolRegistry(toolReg)
 	exec.SetBuiltinToolProvider(builtin.NewProvider())
@@ -199,7 +199,7 @@ func TestDynamicRegistration_NoBuiltinProvider(t *testing.T) {
 		Indexers: []registry.Indexer{registry.NewBuiltinIndexer(nil)},
 	})
 	require.NoError(t, err)
-	defer toolReg.Close()
+	defer func() { _ = toolReg.Close() }()
 
 	// Index all tools
 	_, err = toolReg.IndexAll(ctx)

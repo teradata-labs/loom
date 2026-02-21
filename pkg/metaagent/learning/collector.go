@@ -330,7 +330,7 @@ func (mc *MetricsCollector) GetPatternPerformance(ctx context.Context, domain Do
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query pattern performance: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Aggregate pattern metrics
 	patternStats := make(map[string]*PatternMetrics)
@@ -409,7 +409,7 @@ func (mc *MetricsCollector) GetTemplatePerformance(ctx context.Context, domain D
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query template performance: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	templateStats := make(map[string]*TemplateMetrics)
 
@@ -466,7 +466,7 @@ func (mc *MetricsCollector) GetRecentFailures(ctx context.Context, domain Domain
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query recent failures: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var failures []*DeploymentMetric
 

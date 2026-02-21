@@ -169,6 +169,7 @@ func main() {
 	fmt.Printf("Output: %s\n", outputPath)
 
 	// Read template
+	templatePath = filepath.Clean(templatePath)
 	tmplContent, err := os.ReadFile(templatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to read template: %v\n", err)
@@ -201,7 +202,8 @@ func main() {
 	}
 
 	// Write output
-	if err := os.WriteFile(outputPath, output.Bytes(), 0644); err != nil {
+	outputPath = filepath.Clean(outputPath)
+	if err := os.WriteFile(outputPath, output.Bytes(), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to write output: %v\n", err)
 		os.Exit(1)
 	}

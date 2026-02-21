@@ -106,7 +106,7 @@ type MCPToolAdapter struct {
 	tool          protocol.Tool
 	serverName    string                     // Used as backend identifier
 	truncation    TruncationConfig           // Result truncation settings
-	sqlStore      *storage.SQLResultStore    // For storing large SQL results
+	sqlStore      storage.ResultStore        // For storing large SQL results
 	sharedMemory  *storage.SharedMemoryStore // For storing other large data
 	uiResourceURI string                     // From tool._meta.ui.resourceUri (MCP Apps)
 	logger        *zap.Logger                // Structured logger (defaults to no-op)
@@ -138,7 +138,7 @@ func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName str
 
 // SetSQLResultStore configures SQL result store for this adapter.
 // Enables automatic storage of large SQL results.
-func (a *MCPToolAdapter) SetSQLResultStore(store *storage.SQLResultStore) {
+func (a *MCPToolAdapter) SetSQLResultStore(store storage.ResultStore) {
 	a.sqlStore = store
 }
 
@@ -329,7 +329,7 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 			resultID := fmt.Sprintf("mcp_%s_%d", a.serverName, time.Now().UnixNano())
 
 			// Store SQL result directly to database
-			ref, err := a.sqlStore.Store(resultID, sqlData)
+			ref, err := a.sqlStore.Store(ctx, resultID, sqlData)
 			if err == nil {
 				// Success - return DataRef instead of full data
 				return &shuttle.Result{

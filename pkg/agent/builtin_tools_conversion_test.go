@@ -252,7 +252,7 @@ func TestConvertAndQuery_JSONArray(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -320,7 +320,7 @@ func TestConvertAndQuery_CSV(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -384,7 +384,7 @@ func TestConvertAndQuery_InvalidDataType(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -421,7 +421,7 @@ func TestConvertAndQuery_JSONObject(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,

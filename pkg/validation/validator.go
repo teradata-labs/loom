@@ -101,13 +101,14 @@ func validateSyntax(content string) []ValidationError {
 func validateStructure(content, kind string) []ValidationError {
 	var errors []ValidationError
 
-	if kind == "Agent" {
+	switch kind {
+	case "Agent":
 		// Validate agent structure using YAML parsing
 		errors = append(errors, validateAgentStructure(content)...)
-	} else if kind == "Workflow" {
+	case "Workflow":
 		// Validate workflow structure
 		errors = append(errors, validateWorkflowStructure(content)...)
-	} else if kind == "" {
+	case "":
 		errors = append(errors, ValidationError{
 			Level:    LevelStructure,
 			Message:  "Unable to determine file kind (Agent or Workflow)",

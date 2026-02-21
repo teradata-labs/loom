@@ -48,8 +48,8 @@ type BuiltinToolProvider interface {
 type Executor struct {
 	registry            *Registry
 	sharedMemory        *storage.SharedMemoryStore
-	sqlResultStore      *storage.SQLResultStore // SQL result store for queryable large results
-	threshold           int64                   // Threshold for using shared memory (bytes)
+	sqlResultStore      storage.ResultStore // SQL result store for queryable large results
+	threshold           int64               // Threshold for using shared memory (bytes)
 	permissionChecker   *PermissionChecker
 	toolRegistry        ToolRegistry        // Tool registry for dynamic tool discovery
 	mcpManager          MCPManager          // MCP manager for dynamic MCP tool registration
@@ -79,7 +79,7 @@ func (e *Executor) SetSharedMemory(sharedMemory *storage.SharedMemoryStore, thre
 }
 
 // SetSQLResultStore configures SQL result store for queryable large SQL results.
-func (e *Executor) SetSQLResultStore(sqlStore *storage.SQLResultStore) {
+func (e *Executor) SetSQLResultStore(sqlStore storage.ResultStore) {
 	e.sqlResultStore = sqlStore
 }
 
@@ -181,7 +181,7 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 		// Wrapping these outputs creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
 		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
 		if toolName != "get_tool_result" && toolName != "query_tool_result" {
-			if err := e.handleLargeResult(result); err != nil {
+			if err := e.handleLargeResult(ctx, result); err != nil {
 				// Log error but don't fail execution
 				// The result is still valid, just not optimized
 				if result.Metadata == nil {
@@ -260,7 +260,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 		// Handle large results EXCEPT for get_tool_result (deprecated) which retrieves large data
 		// query_tool_result output SHOULD be wrapped to prevent context overflow
 		if tool.Name() != "get_tool_result" {
-			if err := e.handleLargeResult(result); err != nil {
+			if err := e.handleLargeResult(ctx, result); err != nil {
 				// Log error but don't fail execution
 				if result.Metadata == nil {
 					result.Metadata = make(map[string]interface{})
@@ -281,7 +281,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 
 // handleLargeResult checks if result data is large and stores it appropriately.
 // SQL results go to SQLResultStore (queryable), other data goes to SharedMemoryStore (blob).
-func (e *Executor) handleLargeResult(result *Result) error {
+func (e *Executor) handleLargeResult(ctx context.Context, result *Result) error {
 	if result.Data == nil {
 		return nil
 	}
@@ -302,13 +302,13 @@ func (e *Executor) handleLargeResult(result *Result) error {
 	if e.sqlResultStore != nil && isSQLResult {
 		// Store in queryable SQL table
 		id := storage.GenerateID()
-		ref, err := e.sqlResultStore.Store(id, result.Data)
+		ref, err := e.sqlResultStore.Store(ctx, id, result.Data)
 		if err != nil {
 			return fmt.Errorf("failed to store SQL result: %w", err)
 		}
 
 		// Get metadata for summary
-		meta, _ := e.sqlResultStore.GetMetadata(id)
+		meta, _ := e.sqlResultStore.GetMetadata(ctx, id)
 
 		// Replace data with reference and summary
 		result.DataReference = ref

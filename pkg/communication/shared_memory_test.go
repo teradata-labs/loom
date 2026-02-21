@@ -32,7 +32,7 @@ func TestSharedMemoryPutGet(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -69,7 +69,7 @@ func TestSharedMemoryVersioning(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -122,7 +122,7 @@ func TestSharedMemoryCompression(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -166,7 +166,7 @@ func TestSharedMemoryDelete(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -213,7 +213,7 @@ func TestSharedMemoryDeleteVersionConflict(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -261,7 +261,7 @@ func TestSharedMemoryNamespaceIsolation(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -299,7 +299,7 @@ func TestSharedMemoryList(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -350,7 +350,7 @@ func TestSharedMemoryWatch(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -402,7 +402,7 @@ func TestSharedMemoryWatchIncludeInitial(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -444,7 +444,7 @@ func TestSharedMemoryStats(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -502,7 +502,7 @@ func TestSharedMemoryConcurrentPut(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -548,7 +548,7 @@ func TestSharedMemoryConcurrentVersionConflicts(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -646,7 +646,7 @@ func TestSharedMemoryValidation(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -683,7 +683,7 @@ func TestAgentNamespaceIsolation(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -744,7 +744,7 @@ func TestAgentNamespaceList(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -803,7 +803,7 @@ func TestAgentNamespaceDelete(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -858,7 +858,7 @@ func TestAgentNamespaceWatch(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -935,7 +935,7 @@ func TestAgentNamespaceConcurrentAccess(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	store, err := NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	numAgents := 10

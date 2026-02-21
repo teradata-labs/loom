@@ -220,7 +220,7 @@ func (r *FileRegistry) Watch(ctx context.Context) (<-chan PromptUpdate, error) {
 	// Add root directory and all subdirectories
 	if err := r.watchDirectory(watcher, r.rootDir); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		watcher.Close()
+		_ = watcher.Close()
 		return nil, err
 	}
 
@@ -229,7 +229,7 @@ func (r *FileRegistry) Watch(ctx context.Context) (<-chan PromptUpdate, error) {
 
 	// Start watch goroutine
 	go func() {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 		defer close(ch)
 
 		for {

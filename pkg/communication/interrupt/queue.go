@@ -104,7 +104,7 @@ func NewPersistentQueue(ctx context.Context, dbPath string, router *Router) (*Pe
 	// Create schema
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
 
@@ -227,7 +227,7 @@ func (pq *PersistentQueue) processPendingInterrupts() error {
 		}
 		return fmt.Errorf("failed to query pending interrupts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// First, collect all pending interrupts into a slice
 	// (can't modify table while iterating over rows in SQLite)
@@ -246,7 +246,7 @@ func (pq *PersistentQueue) processPendingInterrupts() error {
 		pending = append(pending, p)
 	}
 	// #nosec G104 -- rows.Close() is best-effort before processing
-	rows.Close() // Close rows before modifying table
+	_ = rows.Close() // Close rows before modifying table
 
 	// Now process each interrupt
 	processed := 0
@@ -417,7 +417,7 @@ func (pq *PersistentQueue) GetStats(ctx context.Context) (map[string]int, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var state string
@@ -449,7 +449,7 @@ func (pq *PersistentQueue) ListPending(ctx context.Context, limit int) ([]*Queue
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pending: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []*QueueEntry
 	for rows.Next() {
@@ -509,7 +509,7 @@ func (pq *PersistentQueue) Close() error {
 		return pq.db.Close()
 	case <-time.After(30 * time.Second):
 		// #nosec G104 -- best-effort cleanup on timeout
-		pq.db.Close()
+		_ = pq.db.Close()
 		return fmt.Errorf("queue close timeout: retry loop did not finish within 30s")
 	}
 }

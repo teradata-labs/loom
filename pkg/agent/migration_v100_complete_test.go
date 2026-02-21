@@ -33,7 +33,7 @@ func TestMigrationFromPreV100(t *testing.T) {
 	// Create very old schema (without migrated columns)
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Enable foreign keys
 	_, err = db.Exec("PRAGMA foreign_keys=ON")
@@ -117,13 +117,13 @@ func TestMigrationFromPreV100(t *testing.T) {
 	require.NoError(t, err)
 
 	// Close the database
-	db.Close()
+	_ = db.Close()
 
 	// Now try to open it with NewSessionStore (this should migrate it)
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(dbPath, tracer)
 	require.NoError(t, err, "Failed to create session store with migration")
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify all migrations worked
 	var count int

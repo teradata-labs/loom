@@ -86,7 +86,7 @@ func TestStreamableHTTPServer_Initialize(t *testing.T) {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
 	resp, err := http.Post(ts.URL, "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -113,7 +113,7 @@ func TestStreamableHTTPServer_Ping(t *testing.T) {
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 
 	// Now ping with session ID
 	body := `{"jsonrpc":"2.0","id":2,"method":"ping"}`
@@ -124,7 +124,7 @@ func TestStreamableHTTPServer_Ping(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
@@ -138,7 +138,7 @@ func TestStreamableHTTPServer_Notification(t *testing.T) {
 	body := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
 	resp, err := http.Post(ts.URL, "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
@@ -156,7 +156,7 @@ func TestStreamableHTTPServer_InvalidSession(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -171,7 +171,7 @@ func TestStreamableHTTPServer_DeleteSession(t *testing.T) {
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 	assert.Equal(t, 1, srv.SessionCount())
 
 	// Delete session
@@ -181,7 +181,7 @@ func TestStreamableHTTPServer_DeleteSession(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, 0, srv.SessionCount())
@@ -198,7 +198,7 @@ func TestStreamableHTTPServer_DeleteSession_NotFound(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -213,7 +213,7 @@ func TestStreamableHTTPServer_DeleteSession_NoHeader(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
@@ -228,7 +228,7 @@ func TestStreamableHTTPServer_MethodNotAllowed(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 }
@@ -240,7 +240,7 @@ func TestStreamableHTTPServer_EmptyBody(t *testing.T) {
 
 	resp, err := http.Post(ts.URL, "application/json", strings.NewReader(""))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
@@ -252,7 +252,7 @@ func TestStreamableHTTPServer_WrongContentType(t *testing.T) {
 
 	resp, err := http.Post(ts.URL, "text/plain", strings.NewReader("not json"))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusUnsupportedMediaType, resp.StatusCode)
 }
@@ -274,7 +274,7 @@ func TestStreamableHTTPServer_ConcurrentRequests(t *testing.T) {
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 
 	// Fire concurrent requests
 	done := make(chan struct{})
@@ -289,7 +289,7 @@ func TestStreamableHTTPServer_ConcurrentRequests(t *testing.T) {
 
 			resp, err := http.DefaultClient.Do(req)
 			if err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 		}(i)
 	}
@@ -345,7 +345,7 @@ func TestStreamableHTTPServer_SessionTTLExpiry(t *testing.T) {
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 	require.NotEmpty(t, sessionID)
 	assert.Equal(t, 1, srv.SessionCount())
 
@@ -403,7 +403,7 @@ func TestStreamableHTTPServer_SessionTTLRenewedByActivity(t *testing.T) {
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 	require.NotEmpty(t, sessionID)
 
 	// Keep the session alive by pinging every second for 5 seconds.
@@ -419,7 +419,7 @@ func TestStreamableHTTPServer_SessionTTLRenewedByActivity(t *testing.T) {
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "session should still be alive at iteration %d", i)
 	}
 
@@ -483,7 +483,7 @@ func TestStreamableHTTPServer_CloseStopsCleanup(t *testing.T) {
 	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 	assert.Equal(t, 1, srv.SessionCount())
 
 	// Stop cleanup before the session expires
@@ -505,7 +505,7 @@ func TestStreamableHTTPServer_NoCleanupWhenTTLZero(t *testing.T) {
 	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 	assert.Equal(t, 1, srv.SessionCount())
 
 	// Wait a bit -- session should still be there
@@ -614,7 +614,7 @@ func TestStreamableHTTPServer_ConcurrentWithCleanup(t *testing.T) {
 	initResp, err := http.Post(ts.URL, "application/json", strings.NewReader(initBody))
 	require.NoError(t, err)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 
 	// Fire concurrent requests while cleanup goroutine is running
 	var wg sync.WaitGroup
@@ -628,7 +628,7 @@ func TestStreamableHTTPServer_ConcurrentWithCleanup(t *testing.T) {
 			req.Header.Set("Mcp-Session-Id", sessionID)
 			resp, err := http.DefaultClient.Do(req)
 			if err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 		}(i)
 	}

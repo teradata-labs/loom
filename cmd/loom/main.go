@@ -116,7 +116,7 @@ func runChat(cmd *cobra.Command, args []string) {
 			c = nil
 		}
 	} else {
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 	}
 
 	// If no thread specified, default to the built-in guide
@@ -132,7 +132,7 @@ func runChat(cmd *cobra.Command, args []string) {
 
 	// Debug: Log the agent ID being set
 	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "Setting agentID on application: '%s' (serverAvailable=%v)\n", agentID, serverAvailable)
+		_, _ = fmt.Fprintf(f, "Setting agentID on application: '%s' (serverAvailable=%v)\n", agentID, serverAvailable)
 		_ = f.Close()
 	}
 
@@ -153,7 +153,7 @@ func runChat(cmd *cobra.Command, args []string) {
 
 	// Debug: Verify it was set
 	if f, err := os.OpenFile("/tmp/loom-cli-debug.log", os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		fmt.Fprintf(f, "Agent ID set on application\n")
+		_, _ = fmt.Fprintf(f, "Agent ID set on application\n")
 		_ = f.Close()
 	}
 

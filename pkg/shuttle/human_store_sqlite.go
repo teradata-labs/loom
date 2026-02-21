@@ -48,13 +48,13 @@ func NewSQLiteHumanRequestStore(config SQLiteConfig) (*SQLiteHumanRequestStore, 
 
 	// Enable WAL mode for better concurrency
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close() // #nosec G104 -- best-effort cleanup on error path
+		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	// Enable foreign keys
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close() // #nosec G104 -- best-effort cleanup on error path
+		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
@@ -65,7 +65,7 @@ func NewSQLiteHumanRequestStore(config SQLiteConfig) (*SQLiteHumanRequestStore, 
 
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
-		db.Close() // #nosec G104 -- best-effort cleanup on error path
+		_ = db.Close() // #nosec G104 -- best-effort cleanup on error path
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -334,7 +334,7 @@ func (s *SQLiteHumanRequestStore) ListPending(ctx context.Context) ([]*HumanRequ
 		span.SetAttribute("success", false)
 		return nil, fmt.Errorf("failed to query pending requests: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var requests []*HumanRequest
 	for rows.Next() {
@@ -381,7 +381,7 @@ func (s *SQLiteHumanRequestStore) ListBySession(ctx context.Context, sessionID s
 		span.SetAttribute("success", false)
 		return nil, fmt.Errorf("failed to query session requests: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var requests []*HumanRequest
 	for rows.Next() {

@@ -63,7 +63,7 @@ func createTestRegistry(t *testing.T) (*Registry, string) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		registry.Close()
+		_ = registry.Close()
 	})
 
 	return registry, tmpDir
@@ -106,7 +106,7 @@ func TestNewRegistry(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, registry)
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	// Verify agents directory was created
 	agentsDir := filepath.Join(tmpDir, "agents")

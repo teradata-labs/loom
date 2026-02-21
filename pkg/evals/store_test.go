@@ -21,7 +21,7 @@ func TestNewStore(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
 	require.NotNil(t, store)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify schema was created
 	var count int
@@ -33,7 +33,7 @@ func TestNewStore(t *testing.T) {
 func TestStore_SaveAndGet(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -101,7 +101,7 @@ func TestStore_SaveAndGet(t *testing.T) {
 func TestStore_GetNotFound(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -113,7 +113,7 @@ func TestStore_GetNotFound(t *testing.T) {
 func TestStore_ListBySuite(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -144,7 +144,7 @@ func TestStore_ListBySuite(t *testing.T) {
 func TestStore_ListByAgent(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -172,7 +172,7 @@ func TestStore_ListByAgent(t *testing.T) {
 func TestStore_GetLatest(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -198,7 +198,7 @@ func TestStore_GetLatest(t *testing.T) {
 func TestStore_GetLatest_NotFound(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -210,7 +210,7 @@ func TestStore_GetLatest_NotFound(t *testing.T) {
 func TestStore_GetSummary(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -241,7 +241,7 @@ func TestStore_GetSummary(t *testing.T) {
 func TestStore_GetTrends(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -267,7 +267,7 @@ func TestStore_GetTrends(t *testing.T) {
 func TestStore_DeleteOlderThan(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -296,7 +296,7 @@ func TestStore_DeleteOlderThan(t *testing.T) {
 func TestStore_Compare(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -371,7 +371,7 @@ func TestStore_ConcurrentSaves(t *testing.T) {
 			if !assert.NoError(t, err) {
 				return
 			}
-			defer store.Close()
+			defer func() { _ = store.Close() }()
 
 			result := CreateMockResult("concurrent-suite", "agent1", true)
 			_, err = store.Save(ctx, result)
@@ -384,7 +384,7 @@ func TestStore_ConcurrentSaves(t *testing.T) {
 	// Verify all results were saved
 	store, err := NewStore(tmpDB)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	results, err := store.ListBySuite(ctx, "concurrent-suite", 100)
 	require.NoError(t, err)
@@ -396,7 +396,7 @@ func TestStore_ConcurrentReads(t *testing.T) {
 	tmpDB := t.TempDir() + "/concurrent_read.db"
 	store, err := NewStore(tmpDB)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -428,7 +428,7 @@ func TestStore_ConcurrentReads(t *testing.T) {
 func TestStore_TransactionRollback(t *testing.T) {
 	store, err := NewStore(":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -484,7 +484,7 @@ func BenchmarkStore_Save(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	result := CreateMockResult("bench-suite", "bench-agent", true)
@@ -500,7 +500,7 @@ func BenchmarkStore_Get(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	result := CreateMockResult("bench-suite", "bench-agent", true)
@@ -517,7 +517,7 @@ func BenchmarkStore_List(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 

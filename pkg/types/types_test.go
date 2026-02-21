@@ -15,6 +15,7 @@
 package types
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -97,7 +98,7 @@ func TestSession_MessageCount_ThreadSafe(t *testing.T) {
 				Role:    "user",
 				Content: "Test message",
 			}
-			session.AddMessage(msg)
+			session.AddMessage(context.Background(), msg)
 			time.Sleep(time.Microsecond)
 		}
 		done <- true

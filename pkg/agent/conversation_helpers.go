@@ -155,7 +155,7 @@ func enforceTokenBudget(ctx context.Context, segmentedMem *SegmentedMemory, budg
 	// Force aggressive compression if budget is critical (>70% - lowered from 85%)
 	// This prevents context overflow in data-intensive workloads with many tool executions
 	if budgetInfo.budgetPct > 70 {
-		messagesCompressed, tokensSaved := segmentedMem.CompactMemory()
+		messagesCompressed, tokensSaved := segmentedMem.CompactMemory(ctx)
 		if messagesCompressed > 0 {
 			// Note: In production, use structured logging here
 			_ = fmt.Sprintf("pre_llm_compression_forced: messages=%d tokens_saved=%d new_count=%d",

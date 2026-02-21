@@ -38,7 +38,9 @@ type ServerConfig struct {
 	// Server behavior settings
 	Behavior *ServerBehavior `protobuf:"bytes,4,opt,name=behavior,proto3" json:"behavior,omitempty"`
 	// Metadata
-	Metadata      map[string]string `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Metadata map[string]string `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Storage backend configuration (default: SQLite)
+	Storage       *StorageConfig `protobuf:"bytes,6,opt,name=storage,proto3" json:"storage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -104,6 +106,13 @@ func (x *ServerConfig) GetBehavior() *ServerBehavior {
 func (x *ServerConfig) GetMetadata() map[string]string {
 	if x != nil {
 		return x.Metadata
+	}
+	return nil
+}
+
+func (x *ServerConfig) GetStorage() *StorageConfig {
+	if x != nil {
+		return x.Storage
 	}
 	return nil
 }
@@ -854,13 +863,14 @@ var File_loom_v1_server_proto protoreflect.FileDescriptor
 
 const file_loom_v1_server_proto_rawDesc = "" +
 	"\n" +
-	"\x14loom/v1/server.proto\x12\aloom.v1\"\xad\x02\n" +
+	"\x14loom/v1/server.proto\x12\aloom.v1\x1a\x15loom/v1/storage.proto\"\xdf\x02\n" +
 	"\fServerConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x120\n" +
 	"\anetwork\x18\x02 \x01(\v2\x16.loom.v1.NetworkConfigR\anetwork\x12$\n" +
 	"\x03tls\x18\x03 \x01(\v2\x12.loom.v1.TLSConfigR\x03tls\x123\n" +
 	"\bbehavior\x18\x04 \x01(\v2\x17.loom.v1.ServerBehaviorR\bbehavior\x12?\n" +
-	"\bmetadata\x18\x05 \x03(\v2#.loom.v1.ServerConfig.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\x05 \x03(\v2#.loom.v1.ServerConfig.MetadataEntryR\bmetadata\x120\n" +
+	"\astorage\x18\x06 \x01(\v2\x16.loom.v1.StorageConfigR\astorage\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa7\x01\n" +
@@ -949,22 +959,24 @@ var file_loom_v1_server_proto_goTypes = []any{
 	(*CertificateInfo)(nil),   // 8: loom.v1.CertificateInfo
 	(*RenewalStatus)(nil),     // 9: loom.v1.RenewalStatus
 	nil,                       // 10: loom.v1.ServerConfig.MetadataEntry
+	(*StorageConfig)(nil),     // 11: loom.v1.StorageConfig
 }
 var file_loom_v1_server_proto_depIdxs = []int32{
 	1,  // 0: loom.v1.ServerConfig.network:type_name -> loom.v1.NetworkConfig
 	2,  // 1: loom.v1.ServerConfig.tls:type_name -> loom.v1.TLSConfig
 	6,  // 2: loom.v1.ServerConfig.behavior:type_name -> loom.v1.ServerBehavior
 	10, // 3: loom.v1.ServerConfig.metadata:type_name -> loom.v1.ServerConfig.MetadataEntry
-	3,  // 4: loom.v1.TLSConfig.manual:type_name -> loom.v1.ManualTLSConfig
-	4,  // 5: loom.v1.TLSConfig.letsencrypt:type_name -> loom.v1.LetsEncryptConfig
-	5,  // 6: loom.v1.TLSConfig.self_signed:type_name -> loom.v1.SelfSignedConfig
-	8,  // 7: loom.v1.TLSStatus.certificate:type_name -> loom.v1.CertificateInfo
-	9,  // 8: loom.v1.TLSStatus.renewal:type_name -> loom.v1.RenewalStatus
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	11, // 4: loom.v1.ServerConfig.storage:type_name -> loom.v1.StorageConfig
+	3,  // 5: loom.v1.TLSConfig.manual:type_name -> loom.v1.ManualTLSConfig
+	4,  // 6: loom.v1.TLSConfig.letsencrypt:type_name -> loom.v1.LetsEncryptConfig
+	5,  // 7: loom.v1.TLSConfig.self_signed:type_name -> loom.v1.SelfSignedConfig
+	8,  // 8: loom.v1.TLSStatus.certificate:type_name -> loom.v1.CertificateInfo
+	9,  // 9: loom.v1.TLSStatus.renewal:type_name -> loom.v1.RenewalStatus
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_server_proto_init() }
@@ -972,6 +984,7 @@ func file_loom_v1_server_proto_init() {
 	if File_loom_v1_server_proto != nil {
 		return
 	}
+	file_loom_v1_storage_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

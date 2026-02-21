@@ -68,7 +68,7 @@ func load(r io.ReadCloser) tea.Cmd {
 }
 
 func handleLoadMsg(m Model, msg loadMsg) (Model, tea.Cmd) {
-	defer msg.Close()
+	defer func() { _ = msg.Close() }()
 
 	img, err := readerToImage(m.width, m.height, m.url, msg)
 	if err != nil {
@@ -128,8 +128,8 @@ func svgToImage(width uint, height uint, r io.Reader) (string, error) {
 		return "", err
 	}
 	tmpPngPath := tmpPngFile.Name()
-	defer os.Remove(tmpPngPath)
-	defer tmpPngFile.Close()
+	defer func() { _ = os.Remove(tmpPngPath) }()
+	defer func() { _ = tmpPngFile.Close() }()
 
 	// Rasterize the SVG:
 	icon, err := oksvg.ReadIconStream(r)
@@ -145,17 +145,17 @@ func svgToImage(width uint, height uint, r io.Reader) (string, error) {
 	err = png.Encode(tmpPngFile, rgba)
 	if err != nil {
 		// #nosec G104 -- best-effort cleanup on error path
-		tmpPngFile.Close()
+		_ = tmpPngFile.Close()
 		return "", err
 	}
 	// #nosec G104 -- best-effort cleanup after successful write
-	tmpPngFile.Close()
+	_ = tmpPngFile.Close()
 
 	rPng, err := os.Open(filepath.Clean(tmpPngPath))
 	if err != nil {
 		return "", err
 	}
-	defer rPng.Close()
+	defer func() { _ = rPng.Close() }()
 
 	img, _, err := imageorient.Decode(rPng)
 	if err != nil {

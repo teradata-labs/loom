@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,7 +52,7 @@ agent:
 	require.NotNil(t, agent)
 
 	// Step 4: Create session and verify SegmentedMemory uses the profile
-	session := agent.memory.GetOrCreateSession("test-session")
+	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")
 	require.NotNil(t, session)
 	require.NotNil(t, session.SegmentedMem)
 
@@ -94,7 +95,7 @@ agent:
 
 	// Create agent and verify memory uses conversational profile
 	agent := createTestAgentWithProfile(profile)
-	session := agent.memory.GetOrCreateSession("test-session")
+	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
 	assert.Equal(t, 9600, segMem.maxL1Tokens, "Should use conversational maxL1Tokens (9600 tokens)")
@@ -131,7 +132,7 @@ agent:
 	assert.Equal(t, 75, profile.CriticalThresholdPercent, "Should use balanced default critical threshold")
 
 	agent := createTestAgentWithProfile(profile)
-	session := agent.memory.GetOrCreateSession("test-session")
+	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
 	assert.Equal(t, 12000, segMem.maxL1Tokens, "Should use custom MaxL1Tokens (12000 from 15 messages)")
@@ -161,7 +162,7 @@ agent:
 	llmProvider := &simpleLLM{}
 	agent := NewAgent(backend, llmProvider)
 
-	session := agent.memory.GetOrCreateSession("test-session")
+	session := agent.memory.GetOrCreateSession(context.Background(), "test-session")
 	segMem := session.SegmentedMem.(*SegmentedMemory)
 
 	// Should use balanced profile defaults (backwards compatibility)

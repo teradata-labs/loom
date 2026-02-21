@@ -1,0 +1,23 @@
+# Docker Compose for Loom E2E Storage Tests
+# Provides a PostgreSQL 16 instance for testing the PostgreSQL storage backend.
+#
+# Usage:
+#   just test-e2e-storage-up    # Start PostgreSQL
+#   just test-e2e-storage-down  # Stop and remove volumes
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: loom_test
+      POSTGRES_USER: loom_test
+      POSTGRES_PASSWORD: loom_test_pass
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loom_test -d loom_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data

@@ -7,6 +7,9 @@
   "tags": [
     {
       "name": "LoomService"
+    },
+    {
+      "name": "AdminService"
     }
   ],
   "consumes": [
@@ -16,6 +19,93 @@
     "application/json"
   ],
   "paths": {
+    "/v1/admin/sessions": {
+      "get": {
+        "summary": "ListAllSessions lists sessions across all users (bypasses RLS).",
+        "operationId": "AdminService_ListAllSessions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListAllSessionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "description": "Maximum number of sessions to return",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "offset",
+            "description": "Offset for pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "AdminService"
+        ]
+      }
+    },
+    "/v1/admin/sessions:count-by-user": {
+      "get": {
+        "summary": "CountSessionsByUser returns session counts grouped by user.",
+        "operationId": "AdminService_CountSessionsByUser",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CountSessionsByUserResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "AdminService"
+        ]
+      }
+    },
+    "/v1/admin/stats": {
+      "get": {
+        "summary": "GetSystemStats returns aggregate system statistics across all users.",
+        "operationId": "AdminService_GetSystemStats",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetSystemStatsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "AdminService"
+        ]
+      }
+    },
     "/v1/agents": {
       "get": {
         "summary": "ListAgents lists all registered agents.",
@@ -1610,6 +1700,63 @@
             }
           }
         },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/server/storage": {
+      "get": {
+        "summary": "GetStorageStatus retrieves the current storage backend health and statistics.",
+        "operationId": "LoomService_GetStorageStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetStorageStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/server/storage:migrate": {
+      "post": {
+        "summary": "RunMigration runs database migrations on the storage backend.",
+        "operationId": "LoomService_RunMigration",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RunMigrationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "RunMigrationRequest runs database migrations.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1RunMigrationRequest"
+            }
+          }
+        ],
         "tags": [
           "LoomService"
         ]
@@ -4035,6 +4182,20 @@
       },
       "description": "CostInfo tracks LLM and execution costs."
     },
+    "v1CountSessionsByUserResponse": {
+      "type": "object",
+      "properties": {
+        "userCounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": "Map of user_id to session count"
+        }
+      },
+      "description": "CountSessionsByUserResponse returns session counts per user."
+    },
     "v1CreateAgentRequest": {
       "type": "object",
       "properties": {
@@ -4698,6 +4859,51 @@
       },
       "description": "GetSharedMemoryResponse returns the requested value."
     },
+    "v1GetStorageStatusResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/v1StorageHealthStatus"
+        }
+      },
+      "description": "GetStorageStatusResponse returns storage backend health."
+    },
+    "v1GetSystemStatsResponse": {
+      "type": "object",
+      "properties": {
+        "totalSessions": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total sessions across all users"
+        },
+        "totalMessages": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total messages across all users"
+        },
+        "totalToolExecutions": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total tool executions across all users"
+        },
+        "totalUsers": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total distinct users"
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "format": "double",
+          "title": "Total cost in USD across all users"
+        },
+        "totalTokens": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total tokens consumed across all users"
+        }
+      },
+      "description": "GetSystemStatsResponse returns aggregate system statistics."
+    },
     "v1GetUIAppResponse": {
       "type": "object",
       "properties": {
@@ -4974,6 +5180,25 @@
         }
       },
       "description": "ListAgentsResponse returns list of agents."
+    },
+    "v1ListAllSessionsResponse": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Session"
+          },
+          "title": "Sessions from all users"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count of sessions across all users"
+        }
+      },
+      "description": "ListAllSessionsResponse returns sessions across all users."
     },
     "v1ListArtifactsResponse": {
       "type": "object",
@@ -5543,6 +5768,44 @@
       },
       "description": "MessagePayload contains either direct value or reference to data."
     },
+    "v1MigrationConfig": {
+      "type": "object",
+      "properties": {
+        "autoMigrate": {
+          "type": "boolean",
+          "title": "Automatically run migrations on startup (default: true)"
+        },
+        "migrationDir": {
+          "type": "string",
+          "title": "Directory containing migration files (default: embedded migrations)"
+        },
+        "targetVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Target migration version (0 = latest)"
+        }
+      },
+      "description": "MigrationConfig controls database migration behavior."
+    },
+    "v1MigrationStep": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Migration version number"
+        },
+        "description": {
+          "type": "string",
+          "title": "Description of the migration"
+        },
+        "sql": {
+          "type": "string",
+          "title": "SQL to be executed (only populated in dry_run mode)"
+        }
+      },
+      "description": "MigrationStep describes a single migration step."
+    },
     "v1ModelInfo": {
       "type": "object",
       "properties": {
@@ -5985,6 +6248,129 @@
       },
       "description": "PolicyOverride forces specific behavior for a message type."
     },
+    "v1PoolStats": {
+      "type": "object",
+      "properties": {
+        "totalConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total connections in the pool"
+        },
+        "idleConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Idle connections"
+        },
+        "activeConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Active connections in use"
+        },
+        "maxConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum connections configured"
+        },
+        "waitCount": {
+          "type": "string",
+          "format": "int64",
+          "title": "Number of times a connection was waited for"
+        },
+        "waitDurationMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total time spent waiting for a connection (milliseconds)"
+        }
+      },
+      "description": "PoolStats reports connection pool statistics (PostgreSQL only)."
+    },
+    "v1PostgresPoolConfig": {
+      "type": "object",
+      "properties": {
+        "maxConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum number of connections in the pool (default: 25)"
+        },
+        "minConnections": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Minimum number of idle connections (default: 5)"
+        },
+        "maxIdleTimeSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum time a connection can be idle before being closed (seconds, default: 300)"
+        },
+        "maxLifetimeSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum lifetime of a connection (seconds, default: 3600)"
+        },
+        "healthCheckIntervalSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Health check interval (seconds, default: 30)"
+        }
+      },
+      "description": "PostgresPoolConfig configures the pgx connection pool."
+    },
+    "v1PostgresStorageConfig": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "title": "Connection parameters (used if dsn is empty)"
+        },
+        "port": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string",
+          "description": "Database password. Prefer LOOM_PG_PASSWORD env var over config file for security."
+        },
+        "dsn": {
+          "type": "string",
+          "title": "Full DSN connection string (takes precedence over individual fields).\nPrefer LOOM_PG_DSN env var over config file for security.\nExample: \"postgres://user:pass@host:5432/dbname?sslmode=require\""
+        },
+        "pool": {
+          "$ref": "#/definitions/v1PostgresPoolConfig",
+          "title": "Connection pool configuration"
+        },
+        "sslMode": {
+          "type": "string",
+          "title": "SSL mode: \"disable\", \"require\", \"verify-ca\", \"verify-full\" (default: \"require\")"
+        },
+        "defaultUserId": {
+          "type": "string",
+          "description": "Default user ID for single-tenant mode (optional).\nWhen set, requests without X-User-ID header use this value instead of rejecting."
+        },
+        "schema": {
+          "type": "string",
+          "title": "PostgreSQL schema to use (default: \"public\")"
+        },
+        "supabase": {
+          "$ref": "#/definitions/v1SupabaseConfig",
+          "description": "Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL).\nNOT YET IMPLEMENTED: Proto scaffold only. No backend code consumes this field."
+        },
+        "softDelete": {
+          "$ref": "#/definitions/v1SoftDeleteConfig",
+          "title": "Soft delete configuration (PostgreSQL-specific)"
+        },
+        "requireUserId": {
+          "type": "boolean",
+          "description": "Require X-User-ID header on all requests (default: true).\nWhen false, requests without X-User-ID use default_user_id or \"default-user\"."
+        }
+      },
+      "description": "PostgresStorageConfig configures the PostgreSQL storage backend."
+    },
     "v1PublishRequest": {
       "type": "object",
       "properties": {
@@ -6292,6 +6678,62 @@
         }
       },
       "description": "ReviewCycle represents one iteration of driver/navigator collaboration."
+    },
+    "v1RunMigrationRequest": {
+      "type": "object",
+      "properties": {
+        "targetVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Target version (0 = latest)"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "title": "If true, only report what would be done without applying changes"
+        }
+      },
+      "description": "RunMigrationRequest runs database migrations."
+    },
+    "v1RunMigrationResponse": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1MigrationStep"
+          },
+          "title": "Steps that were (or would be) applied"
+        },
+        "currentVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Current version after migration"
+        }
+      },
+      "description": "RunMigrationResponse reports migration results.\nMigration failures are reported via gRPC status errors, not in-band fields."
+    },
+    "v1SQLiteStorageConfig": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "Path to the SQLite database file (default: $LOOM_DATA_DIR/loom.db)"
+        },
+        "encrypt": {
+          "type": "boolean",
+          "title": "Enable SQLCipher encryption (default: false)"
+        },
+        "encryptionKey": {
+          "type": "string",
+          "title": "Encryption key (or use LOOM_DB_KEY env var)"
+        },
+        "walMode": {
+          "type": "boolean",
+          "title": "Enable WAL mode for better concurrency (default: true)"
+        }
+      },
+      "description": "SQLiteStorageConfig configures the SQLite storage backend."
     },
     "v1ScheduleConfig": {
       "type": "object",
@@ -6742,6 +7184,10 @@
             "type": "string"
           },
           "title": "Metadata"
+        },
+        "storage": {
+          "$ref": "#/definitions/v1StorageConfig",
+          "title": "Storage backend configuration (default: SQLite)"
         }
       },
       "description": "ServerConfig defines the configuration for the looms multi-agent server."
@@ -6952,6 +7398,26 @@
       },
       "description": "SharedMemoryValue represents a versioned value in shared memory.\nSupports optimistic concurrency control via version field."
     },
+    "v1SoftDeleteConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable soft delete (default: false for SQLite, true for PostgreSQL)"
+        },
+        "gracePeriodSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Grace period before permanent deletion (seconds, default: 2592000 = 30 days)"
+        },
+        "cleanupIntervalSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Interval for cleanup of expired soft-deleted records (seconds, default: 86400 = 1 day)"
+        }
+      },
+      "description": "SoftDeleteConfig controls soft-delete behavior for PostgreSQL."
+    },
     "v1Span": {
       "type": "object",
       "properties": {
@@ -7098,6 +7564,70 @@
       },
       "description": "StepResult represents learning progress for one curriculum step."
     },
+    "v1StorageBackendType": {
+      "type": "string",
+      "enum": [
+        "STORAGE_BACKEND_TYPE_UNSPECIFIED",
+        "STORAGE_BACKEND_TYPE_SQLITE",
+        "STORAGE_BACKEND_TYPE_POSTGRES"
+      ],
+      "default": "STORAGE_BACKEND_TYPE_UNSPECIFIED",
+      "description": "StorageBackendType identifies the storage backend in use."
+    },
+    "v1StorageConfig": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/v1StorageBackendType",
+          "title": "Which backend to use (default: SQLITE)"
+        },
+        "sqlite": {
+          "$ref": "#/definitions/v1SQLiteStorageConfig",
+          "title": "SQLite-specific configuration (used when backend == SQLITE)"
+        },
+        "postgres": {
+          "$ref": "#/definitions/v1PostgresStorageConfig",
+          "title": "PostgreSQL-specific configuration (used when backend == POSTGRES)"
+        },
+        "migration": {
+          "$ref": "#/definitions/v1MigrationConfig",
+          "title": "Migration configuration"
+        }
+      },
+      "description": "StorageConfig is the top-level storage configuration for the server.\nOne storage backend per server; all agents share the same backend."
+    },
+    "v1StorageHealthStatus": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/v1StorageBackendType",
+          "title": "Which backend is active"
+        },
+        "healthy": {
+          "type": "boolean",
+          "title": "Whether the backend is reachable"
+        },
+        "latencyMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Latency of the last health check (milliseconds)"
+        },
+        "migrationVersion": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Current migration version"
+        },
+        "error": {
+          "type": "string",
+          "title": "Error message if unhealthy"
+        },
+        "poolStats": {
+          "$ref": "#/definitions/v1PoolStats",
+          "title": "Pool statistics (PostgreSQL only)"
+        }
+      },
+      "description": "StorageHealthStatus reports the health of the storage backend."
+    },
     "v1StorageLocation": {
       "type": "string",
       "enum": [
@@ -7161,6 +7691,28 @@
         }
       },
       "description": "SubscriptionFilter filters messages at subscriber level.\nAll filter conditions are AND-ed together (all must match for delivery)."
+    },
+    "v1SupabaseConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Whether to enable Supabase integration"
+        },
+        "projectUrl": {
+          "type": "string",
+          "title": "Supabase project URL"
+        },
+        "anonKey": {
+          "type": "string",
+          "title": "Supabase anonymous key (for client-side access)"
+        },
+        "serviceRoleKey": {
+          "type": "string",
+          "title": "Supabase service role key (for server-side access)"
+        }
+      },
+      "description": "SupabaseConfig configures Supabase-specific features.\nSTATUS: Planned. Proto scaffold only — no implementation exists yet.\nThis message is reserved for a future PR that adds Supabase-hosted PostgreSQL support."
     },
     "v1SwarmPattern": {
       "type": "object",

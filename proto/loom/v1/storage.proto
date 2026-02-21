@@ -1,0 +1,241 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// StorageBackendType identifies the storage backend in use.
+enum StorageBackendType {
+  STORAGE_BACKEND_TYPE_UNSPECIFIED = 0;
+  STORAGE_BACKEND_TYPE_SQLITE = 1;
+  STORAGE_BACKEND_TYPE_POSTGRES = 2;
+}
+
+// StorageConfig is the top-level storage configuration for the server.
+// One storage backend per server; all agents share the same backend.
+message StorageConfig {
+  // Which backend to use (default: SQLITE)
+  StorageBackendType backend = 1;
+
+  // SQLite-specific configuration (used when backend == SQLITE)
+  SQLiteStorageConfig sqlite = 2;
+
+  // PostgreSQL-specific configuration (used when backend == POSTGRES)
+  PostgresStorageConfig postgres = 3;
+
+  // Migration configuration
+  MigrationConfig migration = 4;
+
+  // Reserved: soft_delete moved to PostgresStorageConfig
+  reserved 5;
+  reserved "soft_delete";
+}
+
+// SQLiteStorageConfig configures the SQLite storage backend.
+message SQLiteStorageConfig {
+  // Path to the SQLite database file (default: $LOOM_DATA_DIR/loom.db)
+  string path = 1;
+
+  // Enable SQLCipher encryption (default: false)
+  bool encrypt = 2;
+
+  // Encryption key (or use LOOM_DB_KEY env var)
+  string encryption_key = 3;
+
+  // Enable WAL mode for better concurrency (default: true)
+  bool wal_mode = 4;
+}
+
+// PostgresStorageConfig configures the PostgreSQL storage backend.
+message PostgresStorageConfig {
+  // Connection parameters (used if dsn is empty)
+  string host = 1;
+  int32 port = 2;
+  string database = 3;
+  string user = 4;
+
+  // Database password. Prefer LOOM_PG_PASSWORD env var over config file for security.
+  string password = 5;
+
+  // Full DSN connection string (takes precedence over individual fields).
+  // Prefer LOOM_PG_DSN env var over config file for security.
+  // Example: "postgres://user:pass@host:5432/dbname?sslmode=require"
+  string dsn = 6;
+
+  // Connection pool configuration
+  PostgresPoolConfig pool = 7;
+
+  // SSL mode: "disable", "require", "verify-ca", "verify-full" (default: "require")
+  string ssl_mode = 8;
+
+  // Default user ID for single-tenant mode (optional).
+  // When set, requests without X-User-ID header use this value instead of rejecting.
+  string default_user_id = 9;
+
+  // PostgreSQL schema to use (default: "public")
+  string schema = 10;
+
+  // Supabase-specific configuration (optional, for Supabase-hosted PostgreSQL).
+  // NOT YET IMPLEMENTED: Proto scaffold only. No backend code consumes this field.
+  SupabaseConfig supabase = 11;
+
+  // Soft delete configuration (PostgreSQL-specific)
+  SoftDeleteConfig soft_delete = 12;
+
+  // Require X-User-ID header on all requests (default: true).
+  // When false, requests without X-User-ID use default_user_id or "default-user".
+  bool require_user_id = 13;
+}
+
+// PostgresPoolConfig configures the pgx connection pool.
+message PostgresPoolConfig {
+  // Maximum number of connections in the pool (default: 25)
+  int32 max_connections = 1;
+
+  // Minimum number of idle connections (default: 5)
+  int32 min_connections = 2;
+
+  // Maximum time a connection can be idle before being closed (seconds, default: 300)
+  int32 max_idle_time_seconds = 3;
+
+  // Maximum lifetime of a connection (seconds, default: 3600)
+  int32 max_lifetime_seconds = 4;
+
+  // Health check interval (seconds, default: 30)
+  int32 health_check_interval_seconds = 5;
+}
+
+// SupabaseConfig configures Supabase-specific features.
+// STATUS: Planned. Proto scaffold only — no implementation exists yet.
+// This message is reserved for a future PR that adds Supabase-hosted PostgreSQL support.
+message SupabaseConfig {
+  // Whether to enable Supabase integration
+  bool enabled = 1;
+
+  // Supabase project URL
+  string project_url = 2;
+
+  // Supabase anonymous key (for client-side access)
+  string anon_key = 3;
+
+  // Supabase service role key (for server-side access)
+  string service_role_key = 4;
+}
+
+// MigrationConfig controls database migration behavior.
+message MigrationConfig {
+  // Automatically run migrations on startup (default: true)
+  bool auto_migrate = 1;
+
+  // Directory containing migration files (default: embedded migrations)
+  string migration_dir = 2;
+
+  // Target migration version (0 = latest)
+  int32 target_version = 3;
+}
+
+// SoftDeleteConfig controls soft-delete behavior for PostgreSQL.
+message SoftDeleteConfig {
+  // Enable soft delete (default: false for SQLite, true for PostgreSQL)
+  bool enabled = 1;
+
+  // Grace period before permanent deletion (seconds, default: 2592000 = 30 days)
+  int32 grace_period_seconds = 2;
+
+  // Interval for cleanup of expired soft-deleted records (seconds, default: 86400 = 1 day)
+  int32 cleanup_interval_seconds = 3;
+}
+
+// StorageHealthStatus reports the health of the storage backend.
+message StorageHealthStatus {
+  // Which backend is active
+  StorageBackendType backend = 1;
+
+  // Whether the backend is reachable
+  bool healthy = 2;
+
+  // Latency of the last health check (milliseconds)
+  int64 latency_ms = 3;
+
+  // Current migration version
+  int32 migration_version = 4;
+
+  // Error message if unhealthy
+  string error = 5;
+
+  // Pool statistics (PostgreSQL only)
+  PoolStats pool_stats = 6;
+}
+
+// PoolStats reports connection pool statistics (PostgreSQL only).
+message PoolStats {
+  // Total connections in the pool
+  int32 total_connections = 1;
+
+  // Idle connections
+  int32 idle_connections = 2;
+
+  // Active connections in use
+  int32 active_connections = 3;
+
+  // Maximum connections configured
+  int32 max_connections = 4;
+
+  // Number of times a connection was waited for
+  int64 wait_count = 5;
+
+  // Total time spent waiting for a connection (milliseconds)
+  int64 wait_duration_ms = 6;
+}
+
+// GetStorageStatusRequest retrieves storage backend health.
+message GetStorageStatusRequest {}
+
+// GetStorageStatusResponse returns storage backend health.
+message GetStorageStatusResponse {
+  StorageHealthStatus status = 1;
+}
+
+// RunMigrationRequest runs database migrations.
+message RunMigrationRequest {
+  // Target version (0 = latest)
+  int32 target_version = 1;
+
+  // If true, only report what would be done without applying changes
+  bool dry_run = 2;
+}
+
+// MigrationStep describes a single migration step.
+message MigrationStep {
+  // Migration version number
+  int32 version = 1;
+
+  // Description of the migration
+  string description = 2;
+
+  // SQL to be executed (only populated in dry_run mode)
+  string sql = 3;
+}
+
+// RunMigrationResponse reports migration results.
+// Migration failures are reported via gRPC status errors, not in-band fields.
+message RunMigrationResponse {
+  // Reserved: success removed — use gRPC status codes instead
+  reserved 1;
+  reserved "success";
+
+  // Steps that were (or would be) applied
+  repeated MigrationStep steps = 2;
+
+  // Current version after migration
+  int32 current_version = 3;
+
+  // Reserved: error removed — use gRPC status errors instead
+  reserved 4;
+  reserved "error";
+}

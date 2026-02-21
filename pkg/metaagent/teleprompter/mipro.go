@@ -146,7 +146,7 @@ func (m *MIPRO) Compile(
 		bestCandidate.Demonstrations,
 		bestCandidate.TrainsetScore,
 		bestCandidate.DevsetScore,
-		int32(len(req.Trainset)),
+		safeInt32(len(req.Trainset)),
 		bestCandidate.SuccessfulTraces,
 		1,   // #nosec G115 optimization rounds (MIPRO is single-pass)
 		0.0, // improvement delta (no baseline comparison)
@@ -256,7 +256,7 @@ func (m *MIPRO) evaluateCandidates(
 			Demonstrations:   demonstrations,
 			TrainsetScore:    avgTrainsetScore,
 			DevsetScore:      devsetScore,
-			SuccessfulTraces: int32(len(traces)),
+			SuccessfulTraces: safeInt32(len(traces)),
 		}
 
 		evaluatedCandidates = append(evaluatedCandidates, candidate)

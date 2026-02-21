@@ -193,13 +193,13 @@ agent:
 		t.Run(tt.name, func(t *testing.T) {
 			// Set up environment variables for the env var test
 			if tt.name == "config with environment variables" {
-				os.Setenv("AGENT_NAME", "env_test_agent")
-				os.Setenv("LLM_PROVIDER", "anthropic")
-				os.Setenv("LLM_MODEL", "claude-3")
+				_ = os.Setenv("AGENT_NAME", "env_test_agent")
+				_ = os.Setenv("LLM_PROVIDER", "anthropic")
+				_ = os.Setenv("LLM_MODEL", "claude-3")
 				defer func() {
-					os.Unsetenv("AGENT_NAME")
-					os.Unsetenv("LLM_PROVIDER")
-					os.Unsetenv("LLM_MODEL")
+					_ = os.Unsetenv("AGENT_NAME")
+					_ = os.Unsetenv("LLM_PROVIDER")
+					_ = os.Unsetenv("LLM_MODEL")
 				}()
 			}
 
@@ -433,8 +433,8 @@ func TestLoadAgentConfig_FileNotFound(t *testing.T) {
 
 // TestExpandEnvVars tests environment variable expansion
 func TestExpandEnvVars(t *testing.T) {
-	os.Setenv("TEST_VAR", "value")
-	defer os.Unsetenv("TEST_VAR")
+	_ = os.Setenv("TEST_VAR", "value")
+	defer func() { _ = os.Unsetenv("TEST_VAR") }()
 
 	// Test basic expansion
 	result := expandEnvVars("prefix-${TEST_VAR}-suffix")

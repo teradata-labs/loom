@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
@@ -67,6 +69,7 @@ type SharedMemoryStore struct {
 	compressionThreshold int64
 	ttl                  time.Duration
 	overflowHandler      OverflowHandler
+	logger               *zap.Logger
 
 	// Metrics
 	hits         atomic.Int64
@@ -88,6 +91,7 @@ type Config struct {
 	CompressionThreshold int64
 	TTLSeconds           int64
 	OverflowHandler      OverflowHandler
+	Logger               *zap.Logger
 }
 
 // NewSharedMemoryStore creates a new shared memory store.
@@ -111,6 +115,11 @@ func NewSharedMemoryStore(config *Config) *SharedMemoryStore {
 		ttl = DefaultTTLSeconds * time.Second
 	}
 
+	logger := config.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	store := &SharedMemoryStore{
 		data:                 make(map[string]*SharedData),
 		lruList:              list.New(),
@@ -118,6 +127,7 @@ func NewSharedMemoryStore(config *Config) *SharedMemoryStore {
 		compressionThreshold: compressionThreshold,
 		ttl:                  ttl,
 		overflowHandler:      config.OverflowHandler,
+		logger:               logger,
 	}
 
 	// Start cleanup goroutine
@@ -357,8 +367,9 @@ func (s *SharedMemoryStore) evictLRU() bool {
 		// Store to disk before removing from memory
 		if err := s.overflowHandler.Store(sharedData.ID, sharedData.Data, metadata); err != nil {
 			// Log error but continue with eviction - memory pressure is critical
-			// In production, this should emit a metric for monitoring
-			_ = fmt.Sprintf("Failed to move data to disk overflow: %v", err)
+			s.logger.Warn("Failed to move data to disk overflow",
+				zap.String("data_id", sharedData.ID),
+				zap.Error(err))
 		}
 		// Note: Data now persists on disk even after memory eviction
 	}
@@ -393,7 +404,7 @@ func (s *SharedMemoryStore) decompress(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	return io.ReadAll(gz)
 }
@@ -417,8 +428,11 @@ func (s *SharedMemoryStore) cleanup() {
 	toDelete := []string{}
 
 	// Find expired items
+	// RefCount <= 0 means the item is not pinned by any session.
+	// This is consistent with evictLRU which checks RefCount > 0 to protect pinned items.
+	// RefCount can be negative if Release is called without a matching IncrementRefCount.
 	for id, sharedData := range s.data {
-		if now.Sub(sharedData.AccessedAt) > s.ttl && atomic.LoadInt32(&sharedData.RefCount) == 0 {
+		if now.Sub(sharedData.AccessedAt) > s.ttl && atomic.LoadInt32(&sharedData.RefCount) <= 0 {
 			toDelete = append(toDelete, id)
 		}
 	}

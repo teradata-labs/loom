@@ -447,7 +447,7 @@ func TestAgent_SendAsync_WithQueue(t *testing.T) {
 	// Create message queue
 	queue, err := communication.NewMessageQueue(":memory:", nil, nil)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create agent with message queue
 	agent := &Agent{
@@ -501,7 +501,7 @@ func TestAgent_ReceiveWithTimeout_WithQueue(t *testing.T) {
 	// Create message queue
 	queue, err := communication.NewMessageQueue(":memory:", nil, nil)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create agent with message queue
 	agent := &Agent{
@@ -558,7 +558,7 @@ func TestAgent_ReceiveWithTimeout_Timeout(t *testing.T) {
 	// Create message queue (empty)
 	queue, err := communication.NewMessageQueue(":memory:", nil, nil)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create agent with message queue
 	agent := &Agent{
@@ -582,7 +582,7 @@ func TestAgent_SendAsync_ReceiveWithTimeout_Integration(t *testing.T) {
 	// Create shared message queue
 	queue, err := communication.NewMessageQueue(":memory:", nil, nil)
 	require.NoError(t, err)
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	// Create two agents sharing the queue
 	agent1 := &Agent{

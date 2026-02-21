@@ -102,7 +102,7 @@ func ExportToHawk(ctx context.Context, result *loomv1.EvalResult, config *HawkEx
 	if err != nil {
 		return fmt.Errorf("failed to export to hawk: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
@@ -176,7 +176,7 @@ func ExportBatch(ctx context.Context, results []*loomv1.EvalResult, config *Hawk
 	if err != nil {
 		return fmt.Errorf("failed to export batch to hawk: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {

@@ -29,12 +29,12 @@ import (
 func TestUpdateDeploymentFeedback(t *testing.T) {
 	// Create temporary database
 	dbPath := t.TempDir() + "/test_feedback.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	tracer := observability.NewNoOpTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -87,12 +87,12 @@ func TestUpdateDeploymentFeedback(t *testing.T) {
 // TestUpdateDeploymentFeedback_NonExistentAgent tests updating feedback for non-existent agent
 func TestUpdateDeploymentFeedback_NonExistentAgent(t *testing.T) {
 	dbPath := t.TempDir() + "/test_feedback_nonexistent.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	tracer := observability.NewNoOpTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -118,12 +118,12 @@ func TestUpdateDeploymentFeedback_NonExistentAgent(t *testing.T) {
 // TestUpdateDeploymentFeedback_Multiple tests updating feedback for multiple agents
 func TestUpdateDeploymentFeedback_Multiple(t *testing.T) {
 	dbPath := t.TempDir() + "/test_feedback_multiple.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	tracer := observability.NewNoOpTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -176,12 +176,12 @@ func TestUpdateDeploymentFeedback_Multiple(t *testing.T) {
 // TestUpdateDeploymentFeedback_Concurrent tests concurrent feedback updates
 func TestUpdateDeploymentFeedback_Concurrent(t *testing.T) {
 	dbPath := t.TempDir() + "/test_feedback_concurrent.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	tracer := observability.NewNoOpTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -250,12 +250,12 @@ func TestUpdateDeploymentFeedback_Concurrent(t *testing.T) {
 // TestUpdateDeploymentFeedback_WithErrorMessage tests feedback with error messages
 func TestUpdateDeploymentFeedback_WithErrorMessage(t *testing.T) {
 	dbPath := t.TempDir() + "/test_feedback_error.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	tracer := observability.NewNoOpTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -314,13 +314,13 @@ func TestUpdateDeploymentFeedback_WithErrorMessage(t *testing.T) {
 // TestUpdateDeploymentFeedback_Instrumentation tests that instrumentation is working
 func TestUpdateDeploymentFeedback_Instrumentation(t *testing.T) {
 	dbPath := t.TempDir() + "/test_feedback_instrumentation.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	// Use mock tracer to verify instrumentation
 	tracer := observability.NewMockTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 
@@ -383,12 +383,12 @@ func TestUpdateDeploymentFeedback_Instrumentation(t *testing.T) {
 // TestUpdateDeploymentFeedback_WithUserRatings tests feedback with user ratings
 func TestUpdateDeploymentFeedback_WithUserRatings(t *testing.T) {
 	dbPath := t.TempDir() + "/test_feedback_ratings.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	tracer := observability.NewNoOpTracer()
 	collector, err := NewMetricsCollector(dbPath, tracer)
 	require.NoError(t, err)
-	defer collector.Close()
+	defer func() { _ = collector.Close() }()
 
 	ctx := context.Background()
 

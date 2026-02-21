@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ type Registry struct {
 	mcpMgr       *manager.Manager
 	llmProvider  LLMProvider
 	tracer       observability.Tracer
-	sessionStore *SessionStore          // For persistent agent session traces
+	sessionStore SessionStorage         // For persistent agent session traces
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 	sharedMemory interface{}            // SharedMemoryStore for large tool result storage
 	onReload     ReloadCallback         // Callback when config changes
@@ -88,7 +89,7 @@ type RegistryConfig struct {
 	LLMProvider  LLMProvider
 	Logger       *zap.Logger
 	Tracer       observability.Tracer
-	SessionStore *SessionStore          // For persistent agent session traces
+	SessionStore SessionStorage         // For persistent agent session traces
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
 	// Agent dependencies (injected by server)
@@ -127,15 +128,19 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 
 	// Initialize database schema
 	if err := initRegistryDB(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to initialize registry database: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to initialize registry database: %w", err),
+			db.Close(),
+		)
 	}
 
 	// Create file watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create file watcher: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to create file watcher: %w", err),
+			db.Close(),
+		)
 	}
 
 	r := &Registry{
@@ -500,7 +505,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 
 	// Create memory with session storage for trace persistence
 	var memory *Memory
-	var sessionStore *SessionStore
+	var sessionStore SessionStorage
 
 	// Check if per-agent memory configuration is provided
 	if config.Memory != nil && config.Memory.Type != "" {
@@ -932,7 +937,7 @@ func (r *Registry) registerMCPTools(ctx context.Context, agent *Agent, mcpConfig
 
 // createSessionStore creates a session store based on memory configuration.
 // Supports per-agent memory isolation with different storage backends.
-func (r *Registry) createSessionStore(memConfig *loomv1.MemoryConfig) (*SessionStore, error) {
+func (r *Registry) createSessionStore(memConfig *loomv1.MemoryConfig) (SessionStorage, error) {
 	switch memConfig.Type {
 	case "memory", "":
 		// In-memory storage - return nil to use in-memory sessions
@@ -979,12 +984,12 @@ func (r *Registry) createSessionStore(memConfig *loomv1.MemoryConfig) (*SessionS
 		return store, nil
 
 	case "postgres":
-		// PostgreSQL storage
-		if memConfig.Dsn == "" {
-			return nil, fmt.Errorf("memory.dsn required for postgres storage")
+		// PostgreSQL storage: use the shared session store from the storage backend
+		if r.sessionStore != nil {
+			r.logger.Info("Using shared PostgreSQL session store for agent")
+			return r.sessionStore, nil
 		}
-		// Note: PostgreSQL session store not yet implemented
-		return nil, fmt.Errorf("postgres session store not yet implemented - use sqlite or memory")
+		return nil, fmt.Errorf("postgres session store requires SessionStore in RegistryConfig")
 
 	default:
 		return nil, fmt.Errorf("unsupported memory type: %s (use 'memory', 'sqlite', or 'postgres')", memConfig.Type)
@@ -1745,7 +1750,7 @@ func (r *Registry) loadAgentsFromDB() error {
 	if err != nil {
 		return fmt.Errorf("failed to query agents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var info AgentInstanceInfo
@@ -1794,8 +1799,7 @@ func (r *Registry) loadAgentsFromDB() error {
 
 // Close closes the registry and cleans up resources
 func (r *Registry) Close() error {
-	r.watcher.Close()
-	return r.db.Close()
+	return errors.Join(r.watcher.Close(), r.db.Close())
 }
 
 // initRegistryDB initializes the SQLite registry database schema
