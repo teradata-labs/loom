@@ -32,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 )
 
 // progressCallbackKey is the context key for storing progress callbacks
@@ -710,6 +711,10 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Persist message if storage configured
 	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
 		// Log error but don't fail the request
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", sessionID),
+			zap.String("role", userMsg.Role),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
@@ -770,11 +775,18 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 
 	// Persist final message and session
 	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", sessionID),
+			zap.String("role", assistantMsg.Role),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
 	}
 	if err := a.memory.PersistSession(ctx, session); err != nil {
+		zap.L().Warn("Failed to persist session",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
@@ -884,6 +896,10 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// Persist message if storage configured
 	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
 		// Log error but don't fail the request
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", sessionID),
+			zap.String("role", userMsg.Role),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
@@ -937,11 +953,18 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 
 	// Persist final message and session
 	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", sessionID),
+			zap.String("role", assistantMsg.Role),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
 	}
 	if err := a.memory.PersistSession(ctx, session); err != nil {
+		zap.L().Warn("Failed to persist session",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
@@ -1345,6 +1368,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// Persist assistant message with tool calls (critical for observability)
 		if err := a.memory.PersistMessage(ctx, session.ID, assistantMsg); err != nil {
 			// Log error but don't fail the request
+			zap.L().Warn("Failed to persist message",
+				zap.String("session_id", session.ID),
+				zap.String("role", assistantMsg.Role),
+				zap.Error(err))
 			if span != nil {
 				span.RecordError(err)
 			}
@@ -1508,6 +1535,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Persist message
 			if persistErr := a.memory.PersistMessage(ctx, session.ID, toolMsg); persistErr != nil {
 				// Log but don't fail
+				zap.L().Warn("Failed to persist message",
+					zap.String("session_id", session.ID),
+					zap.String("role", toolMsg.Role),
+					zap.Error(persistErr))
 				if toolSpan != nil {
 					toolSpan.RecordError(persistErr)
 				}
@@ -1594,6 +1625,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// Persist synthesis message for observability
 	if err := a.memory.PersistMessage(ctx, session.ID, synthesisMsg); err != nil {
 		// Log error but don't fail the request
+		zap.L().Warn("Failed to persist message",
+			zap.String("session_id", session.ID),
+			zap.String("role", synthesisMsg.Role),
+			zap.Error(err))
 		if span != nil {
 			span.RecordError(err)
 		}
