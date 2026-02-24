@@ -134,9 +134,33 @@ type RateLimiterMetrics struct {
 }
 
 // NewRateLimiter creates a new rate limiter.
+// Zero-value fields in config are backfilled from DefaultRateLimiterConfig().
 func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
+	defaults := DefaultRateLimiterConfig()
+
 	if config.Logger == nil {
-		config.Logger = zap.NewNop()
+		config.Logger = defaults.Logger
+	}
+	if config.RequestsPerSecond == 0 {
+		config.RequestsPerSecond = defaults.RequestsPerSecond
+	}
+	if config.TokensPerMinute == 0 {
+		config.TokensPerMinute = defaults.TokensPerMinute
+	}
+	if config.BurstCapacity == 0 {
+		config.BurstCapacity = defaults.BurstCapacity
+	}
+	if config.MinDelay == 0 {
+		config.MinDelay = defaults.MinDelay
+	}
+	if config.MaxRetries == 0 {
+		config.MaxRetries = defaults.MaxRetries
+	}
+	if config.RetryBackoff == 0 {
+		config.RetryBackoff = defaults.RetryBackoff
+	}
+	if config.QueueTimeout == 0 {
+		config.QueueTimeout = defaults.QueueTimeout
 	}
 
 	rl := &RateLimiter{
