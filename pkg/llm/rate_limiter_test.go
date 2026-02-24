@@ -41,6 +41,38 @@ func TestNewRateLimiter(t *testing.T) {
 	assert.Equal(t, float64(config.BurstCapacity), rl.tokens)
 }
 
+func TestNewRateLimiter_ZeroValueDefaults(t *testing.T) {
+	// Regression test: when only Enabled and Logger are set (as registry.go does),
+	// all other fields must be backfilled from DefaultRateLimiterConfig().
+	config := RateLimiterConfig{
+		Enabled: true,
+		Logger:  zaptest.NewLogger(t),
+	}
+
+	rl := NewRateLimiter(config)
+	require.NotNil(t, rl)
+	defer func() { _ = rl.Close() }()
+
+	defaults := DefaultRateLimiterConfig()
+
+	// Verify all fields got defaults applied
+	assert.Equal(t, defaults.RequestsPerSecond, rl.refillRate, "RequestsPerSecond should be defaulted")
+	assert.Equal(t, float64(defaults.BurstCapacity), rl.maxTokens, "BurstCapacity should be defaulted")
+	assert.Equal(t, float64(defaults.BurstCapacity), rl.tokens, "initial tokens should equal BurstCapacity")
+	assert.Equal(t, defaults.MinDelay, rl.config.MinDelay, "MinDelay should be defaulted")
+	assert.Equal(t, defaults.MaxRetries, rl.config.MaxRetries, "MaxRetries should be defaulted")
+	assert.Equal(t, defaults.RetryBackoff, rl.config.RetryBackoff, "RetryBackoff should be defaulted")
+	assert.Equal(t, defaults.QueueTimeout, rl.config.QueueTimeout, "QueueTimeout should be defaulted")
+	assert.Equal(t, defaults.TokensPerMinute, rl.config.TokensPerMinute, "TokensPerMinute should be defaulted")
+
+	// Verify the limiter actually works (requests don't get starved)
+	result, err := rl.Do(context.Background(), func(ctx context.Context) (interface{}, error) {
+		return "success", nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "success", result)
+}
+
 func TestRateLimiter_Do_Success(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
