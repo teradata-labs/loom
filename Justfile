@@ -489,3 +489,44 @@ version-sync:
     @echo "Syncing all files to canonical version..."
     @go run ./cmd/version-manager sync --commit
     @echo "✅ All files synced. Review: git show HEAD"
+
+# ============================================================================
+# Database Upgrade
+# ============================================================================
+
+# Upgrade: build new binaries, install, and run database migrations
+upgrade: build install-patterns install-docs
+    #!/usr/bin/env bash
+    set -euo pipefail
+    BIN_DIR="${LOOM_BIN_DIR:-~/.local/bin}"
+    echo "Installing updated binaries to $BIN_DIR..."
+    mkdir -p "$BIN_DIR"
+    cp bin/looms "$BIN_DIR/"
+    cp bin/loom "$BIN_DIR/"
+    chmod +x "$BIN_DIR/looms" "$BIN_DIR/loom"
+    echo "Running database upgrade (backup + migrate)..."
+    "$BIN_DIR/looms" upgrade --yes
+    echo ""
+    echo "✅ Upgrade complete!"
+    "$BIN_DIR/looms" --version
+
+# Backup the SQLite database
+backup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v looms >/dev/null 2>&1; then
+        looms upgrade --backup-only
+    elif [ -f bin/looms ]; then
+        bin/looms upgrade --backup-only
+    else
+        LOOM_DIR="${LOOM_DATA_DIR:-~/.loom}"
+        DB_PATH="$LOOM_DIR/loom.db"
+        if [ -f "$DB_PATH" ]; then
+            BACKUP_PATH="${DB_PATH}.backup.$(date +%Y%m%dT%H%M%S)"
+            cp "$DB_PATH" "$BACKUP_PATH"
+            echo "✅ Backup created: $BACKUP_PATH"
+        else
+            echo "No database found at $DB_PATH"
+            exit 1
+        fi
+    fi

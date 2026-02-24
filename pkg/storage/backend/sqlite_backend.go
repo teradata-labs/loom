@@ -25,6 +25,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/storage/sqlite"
 )
 
 // SQLiteBackend implements StorageBackend by wrapping existing SQLite stores.
@@ -35,6 +36,7 @@ type SQLiteBackend struct {
 	artifactStore     artifacts.ArtifactStore
 	resultStore       storage.ResultStore
 	humanRequestStore shuttle.HumanRequestStore
+	migrator          *sqlite.Migrator
 	dbPath            string
 	tracer            observability.Tracer
 }
@@ -114,12 +116,38 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		)
 	}
 
+	// Create migrator for versioned schema management
+	migratorDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL")
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for migrator: %w", err),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+			resultStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	migrator, err := sqlite.NewMigrator(migratorDB, tracer)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to create migrator: %w", err),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+			resultStore.Close(),
+			humanStore.Close(),
+		)
+	}
+
 	return &SQLiteBackend{
 		sessionStore:      sessionStore,
 		errorStore:        errorStore,
 		artifactStore:     artifactStore,
 		resultStore:       resultStore,
 		humanRequestStore: humanStore,
+		migrator:          migrator,
 		dbPath:            dbPath,
 		tracer:            tracer,
 	}, nil
@@ -150,15 +178,44 @@ func (b *SQLiteBackend) HumanRequestStore() shuttle.HumanRequestStore {
 	return b.humanRequestStore
 }
 
-// Migrate is a no-op for SQLite.
-//
-// Unlike the PostgreSQL backend, which runs versioned SQL migration scripts
-// (see internal/pgxdriver), SQLite stores create and manage their schemas
-// implicitly via each store's initSchema() method during construction
-// (using go-sqlite3's CREATE TABLE IF NOT EXISTS pattern). Therefore no
-// explicit migration step is required at runtime.
-func (b *SQLiteBackend) Migrate(_ context.Context) error {
-	return nil
+// Migrate applies all pending versioned schema migrations to the SQLite database.
+// Individual stores still create their schemas via initSchema() during construction
+// (using CREATE TABLE IF NOT EXISTS), so Migrate acts as an additional layer for
+// tracking schema versions and applying future incremental migrations.
+func (b *SQLiteBackend) Migrate(ctx context.Context) error {
+	return b.migrator.MigrateUp(ctx)
+}
+
+// PendingMigrations implements MigrationInspector by delegating to the SQLite migrator.
+func (b *SQLiteBackend) PendingMigrations(ctx context.Context) ([]*PendingMigration, error) {
+	raw, err := b.migrator.PendingMigrations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*PendingMigration, len(raw))
+	for i, m := range raw {
+		result[i] = &PendingMigration{
+			Version:     safeInt32(m.Version),
+			Description: m.Description,
+			SQL:         m.UpSQL,
+		}
+	}
+	return result, nil
+}
+
+// StorageDetails implements StorageDetailProvider by querying the migrator for
+// the current schema version. Pool stats are nil for SQLite (not connection-pooled).
+func (b *SQLiteBackend) StorageDetails(ctx context.Context) (int32, *loomv1.PoolStats, error) {
+	version, err := b.migrator.CurrentVersion(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to get migration version: %w", err)
+	}
+	return safeInt32(version), nil, nil
+}
+
+// Migrator returns the underlying SQLite migrator for direct access.
+func (b *SQLiteBackend) Migrator() *sqlite.Migrator {
+	return b.migrator
 }
 
 // Ping verifies the SQLite database is accessible.
@@ -197,5 +254,7 @@ func (b *SQLiteBackend) Close() error {
 	return firstErr
 }
 
-// Compile-time check: SQLiteBackend implements StorageBackend.
+// Compile-time checks
 var _ StorageBackend = (*SQLiteBackend)(nil)
+var _ MigrationInspector = (*SQLiteBackend)(nil)
+var _ StorageDetailProvider = (*SQLiteBackend)(nil)
