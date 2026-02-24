@@ -247,6 +247,29 @@ go install github.com/teradata-labs/loom/cmd/looms@latest
 just install-patterns   # Patterns required for Weaver
 ```
 
+### Upgrading
+
+When upgrading to a new version, run `just upgrade` (build from source) or `looms upgrade` to migrate the database schema:
+
+```bash
+# From source: builds new binaries, installs assets, migrates database
+just upgrade
+
+# Or run the upgrade command directly
+looms upgrade              # Backup + migrate (default)
+looms upgrade --dry-run    # Show pending migrations without applying
+looms upgrade --backup-only # Create a backup only
+looms upgrade --no-backup  # Skip backup (not recommended)
+looms upgrade --yes        # Skip confirmation prompt
+```
+
+SQLite databases are backed up automatically before migration (via `VACUUM INTO`). Backup files are named with a timestamp suffix (e.g., `loom.db.backup.20260224T153000`). PostgreSQL backends use the same versioned migration system with advisory locks.
+
+```bash
+# Create a standalone backup at any time
+just backup
+```
+
 ### Package Managers
 
 **macOS** (Homebrew) and **Windows** (Scoop, winget, Chocolatey) formulas are ready in `packaging/` but not yet published to registries. Use quickstart or manual install for now.
@@ -272,6 +295,7 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 | Streaming | [docs/reference/streaming.md](docs/reference/streaming.md) |
 | MCP Apps Guide | [docs/guides/mcp-apps-guide.md](docs/guides/mcp-apps-guide.md) |
 | MCP Apps Reference | [docs/reference/mcp-apps.md](docs/reference/mcp-apps.md) |
+| Database Upgrade | `looms upgrade --help` |
 | API Reference | [pkg.go.dev](https://pkg.go.dev/github.com/teradata-labs/loom) |
 | Examples | [examples/](examples/) |
 
