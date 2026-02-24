@@ -21,6 +21,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 )
@@ -158,11 +159,11 @@ var _ shuttle.Tool = (*GetErrorDetailsTool)(nil)
 // preventing context blowout from accidentally loading 50MB results.
 type GetToolResultTool struct {
 	memoryStore *storage.SharedMemoryStore
-	sqlStore    *storage.SQLResultStore
+	sqlStore    storage.ResultStore
 }
 
 // NewGetToolResultTool creates a new GetToolResultTool.
-func NewGetToolResultTool(memoryStore *storage.SharedMemoryStore, sqlStore *storage.SQLResultStore) *GetToolResultTool {
+func NewGetToolResultTool(memoryStore *storage.SharedMemoryStore, sqlStore storage.ResultStore) *GetToolResultTool {
 	return &GetToolResultTool{
 		memoryStore: memoryStore,
 		sqlStore:    sqlStore,
@@ -260,7 +261,7 @@ func (t *GetToolResultTool) Execute(ctx context.Context, input map[string]interf
 				},
 			}, nil
 		}
-		metadata, err = t.sqlStore.GetMetadata(refID)
+		metadata, err = t.sqlStore.GetMetadata(ctx, refID)
 
 	default: // MEMORY or DISK
 		if t.memoryStore == nil {
@@ -424,12 +425,12 @@ var _ shuttle.Tool = (*GetToolResultTool)(nil)
 // For JSON arrays: Use offset/limit for pagination (SQL support coming in Phase 4.5)
 // For CSV data: SQL queries coming in Phase 4.5
 type QueryToolResultTool struct {
-	sqlStore    *storage.SQLResultStore
+	sqlStore    storage.ResultStore
 	memoryStore *storage.SharedMemoryStore
 }
 
 // NewQueryToolResultTool creates a new QueryToolResultTool.
-func NewQueryToolResultTool(sqlStore *storage.SQLResultStore, memoryStore *storage.SharedMemoryStore) *QueryToolResultTool {
+func NewQueryToolResultTool(sqlStore storage.ResultStore, memoryStore *storage.SharedMemoryStore) *QueryToolResultTool {
 	return &QueryToolResultTool{
 		sqlStore:    sqlStore,
 		memoryStore: memoryStore,
@@ -557,7 +558,7 @@ func (t *QueryToolResultTool) querySQLResult(ctx context.Context, refID string, 
 	}
 
 	// Get metadata
-	meta, err := t.sqlStore.GetMetadata(refID)
+	meta, err := t.sqlStore.GetMetadata(ctx, refID)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -596,7 +597,7 @@ func (t *QueryToolResultTool) querySQLResult(ctx context.Context, refID string, 
 	}
 
 	// Execute query
-	result, err := t.sqlStore.Query(refID, query)
+	result, err := t.sqlStore.Query(ctx, refID, query)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -740,7 +741,7 @@ func (t *QueryToolResultTool) convertAndQuery(ctx context.Context, ref *loomv1.D
 		"columns": columnsInterface,
 		"rows":    rowsInterface,
 	}
-	dataRef, err := t.sqlStore.Store(tempID, dataMap)
+	dataRef, err := t.sqlStore.Store(ctx, tempID, dataMap)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -752,7 +753,7 @@ func (t *QueryToolResultTool) convertAndQuery(ctx context.Context, ref *loomv1.D
 	}
 
 	// Get metadata for table name
-	tableMeta, err := t.sqlStore.GetMetadata(dataRef.Id)
+	tableMeta, err := t.sqlStore.GetMetadata(ctx, dataRef.Id)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -768,7 +769,7 @@ func (t *QueryToolResultTool) convertAndQuery(ctx context.Context, ref *loomv1.D
 	actualQuery = strings.ReplaceAll(actualQuery, "from results", fmt.Sprintf("FROM %s", tableMeta.TableName))
 
 	// Execute query
-	result, err := t.sqlStore.Query(dataRef.Id, actualQuery)
+	result, err := t.sqlStore.Query(ctx, dataRef.Id, actualQuery)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -1111,9 +1112,9 @@ func (t *RecordFindingTool) InputSchema() *shuttle.JSONSchema {
 
 // Execute records the finding in working memory.
 func (t *RecordFindingTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	// Extract session_id from context
-	sessionID, ok := ctx.Value("session_id").(string)
-	if !ok || sessionID == "" {
+	// Extract session_id from context (typed key)
+	sessionID := session.SessionIDFromContext(ctx)
+	if sessionID == "" {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{

@@ -336,8 +336,8 @@ func (m *patternEditorDialogCmp) Cursor() *tea.Cursor {
 	// Get textarea cursor position
 	textareaCursor := m.textarea.Cursor()
 	if textareaCursor != nil {
-		x := col + 2 + textareaCursor.Position.X // border (1) + padding (1) + textarea position
-		y := contentStartRow + textareaCursor.Position.Y
+		x := col + 2 + textareaCursor.X // border (1) + padding (1) + textarea position
+		y := contentStartRow + textareaCursor.Y
 		return tea.NewCursor(x, y)
 	}
 

@@ -509,7 +509,7 @@ func (s *SQLiteStore) List(ctx context.Context, filter *Filter) ([]*Artifact, er
 		}
 		return nil, fmt.Errorf("failed to list artifacts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var artifacts []*Artifact
 	for rows.Next() {
@@ -576,7 +576,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, sessionID string
 		}
 		return nil, fmt.Errorf("failed to search artifacts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var artifacts []*Artifact
 	for rows.Next() {
@@ -912,7 +912,7 @@ func ComputeChecksum(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

@@ -70,7 +70,7 @@ func setupBroadcastTestServer(t *testing.T, agents map[string]*agent.Agent, regi
 
 	sessionStore, err := agent.NewSessionStore(":memory:", tracer)
 	require.NoError(t, err)
-	t.Cleanup(func() { sessionStore.Close() })
+	t.Cleanup(func() { _ = sessionStore.Close() })
 
 	srv := NewMultiAgentServer(agents, sessionStore)
 	srv.registry = registry
@@ -78,16 +78,16 @@ func setupBroadcastTestServer(t *testing.T, agents map[string]*agent.Agent, regi
 
 	// Configure message bus
 	bus := communication.NewMessageBus(nil, nil, nil, logger)
-	t.Cleanup(func() { bus.Close() })
+	t.Cleanup(func() { _ = bus.Close() })
 
 	// Configure message queue (needed for spawnWorkflowSubAgents)
 	queue, err := communication.NewMessageQueue(":memory:", nil, logger)
 	require.NoError(t, err)
-	t.Cleanup(func() { queue.Close() })
+	t.Cleanup(func() { _ = queue.Close() })
 
 	sharedMem, err := communication.NewSharedMemoryStore(nil, logger)
 	require.NoError(t, err)
-	t.Cleanup(func() { sharedMem.Close() })
+	t.Cleanup(func() { _ = sharedMem.Close() })
 
 	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{
 		Store: communication.StoreConfig{Backend: "memory"},
@@ -126,7 +126,7 @@ func TestCoordinatorBroadcastAutoInjection_SingleSubscription(t *testing.T) {
 		MCPManager:  nil,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { registry.Close() })
+	t.Cleanup(func() { _ = registry.Close() })
 
 	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
@@ -232,7 +232,7 @@ func TestCoordinatorBroadcastAutoInjection_MultipleSubscriptions(t *testing.T) {
 		MCPManager:  nil,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { registry.Close() })
+	t.Cleanup(func() { _ = registry.Close() })
 
 	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
@@ -355,7 +355,7 @@ func TestCoordinatorBroadcastAutoInjection_SkipsSelfMessages(t *testing.T) {
 		MCPManager:  nil,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { registry.Close() })
+	t.Cleanup(func() { _ = registry.Close() })
 
 	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{
@@ -439,7 +439,7 @@ func TestCoordinatorBroadcastAutoInjection_CleanupOnSessionEnd(t *testing.T) {
 		MCPManager:  nil,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { registry.Close() })
+	t.Cleanup(func() { _ = registry.Close() })
 
 	// Register coordinator
 	registry.RegisterConfig(&loomv1.AgentConfig{

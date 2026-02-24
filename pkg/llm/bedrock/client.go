@@ -548,9 +548,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []map[str
 								},
 							}
 							// Add either data or url based on source type
-							if block.Image.Source.Type == "base64" {
+							switch block.Image.Source.Type {
+							case "base64":
 								imageBlock["source"].(map[string]interface{})["data"] = block.Image.Source.Data
-							} else if block.Image.Source.Type == "url" {
+							case "url":
 								imageBlock["source"].(map[string]interface{})["url"] = block.Image.Source.URL
 							}
 							content = append(content, imageBlock)

@@ -64,7 +64,7 @@ func newTestServerWithRegistry(t *testing.T) (*MultiAgentServer, func()) {
 		if err := reg.Close(); err != nil {
 			t.Logf("warning: failed to close registry: %v", err)
 		}
-		os.Remove(dbPath)
+		_ = os.Remove(dbPath)
 	}
 	return server, cleanup
 }

@@ -23,12 +23,12 @@ mcp:
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.WriteString(yamlContent); err != nil {
 		t.Fatalf("Failed to write test YAML: %v", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// Create a config with lowercased env keys (simulating Viper's behavior)
 	config := &Config{

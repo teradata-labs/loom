@@ -427,7 +427,7 @@ func (h *HTTPServer) handleApps(w http.ResponseWriter, r *http.Request) {
 // (alphanumeric, hyphens, underscores). Rejects path traversal attempts.
 func isValidAppName(name string) bool {
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' {
 			return false
 		}
 	}
@@ -490,6 +490,6 @@ func (h *HTTPServer) sendSSEError(w http.ResponseWriter, flusher http.Flusher, e
 	}
 
 	data, _ := json.Marshal(errorEvent)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 }

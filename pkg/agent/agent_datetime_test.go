@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func TestGetSystemPromptIncludesDatetime(t *testing.T) {
 		config: config,
 	}
 
-	systemPrompt := agent.getSystemPrompt()
+	systemPrompt := agent.getSystemPrompt(context.Background())
 
 	// Verify datetime information is included
 	if !strings.Contains(systemPrompt, "CURRENT DATE AND TIME") {

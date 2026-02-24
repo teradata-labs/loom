@@ -419,7 +419,7 @@ func (r *Registry) ftsSearch(ctx context.Context, query string, expandedTerms []
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*loomv1.ToolSearchResult
 	for rows.Next() {
@@ -619,7 +619,7 @@ func (r *Registry) ListSources(ctx context.Context) ([]*loomv1.ToolSourceInfo, e
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sources []*loomv1.ToolSourceInfo
 	for rows.Next() {
@@ -679,7 +679,7 @@ func (r *Registry) GetToolsByCapability(ctx context.Context, capability string, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tools []*loomv1.IndexedTool
 	for rows.Next() {

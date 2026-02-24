@@ -109,7 +109,7 @@ func TestSegmentedMemory_CompressionMetrics_DataIntensive(t *testing.T) {
 	// Add large messages to trigger token-based compression
 	// Each message ~600 tokens, 8 messages = ~4800 tokens > 4000 limit
 	for i := 0; i < 8; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: strings.Repeat(fmt.Sprintf("Test message %d with substantial content to consume tokens ", i), 80), // ~600 tokens
 		})
@@ -189,7 +189,7 @@ func TestSegmentedMemory_CompressionMetrics_ConversationalProfile(t *testing.T) 
 	// Add many large messages to trigger compression (token-based)
 	// Each message ~700 tokens, 20 messages = ~14K tokens > 9600 limit
 	for i := 0; i < 20; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: strings.Repeat(fmt.Sprintf("Conversational message %d ", i), 100), // ~700 tokens
 		})
@@ -243,7 +243,7 @@ func TestSegmentedMemory_CompressionMetrics_BatchSizeLabels(t *testing.T) {
 
 			// Add messages to trigger compression
 			for i := 0; i < 10; i++ {
-				sm.AddMessage(Message{
+				sm.AddMessage(context.Background(), Message{
 					Role:    "user",
 					Content: "Message with content to fill budget " + string(make([]byte, 500)),
 				})
@@ -324,7 +324,7 @@ func TestSegmentedMemory_NoMetricsWithoutTracer(t *testing.T) {
 
 	// Add messages to trigger compression
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: "Test message " + string(rune(i)),
 		})

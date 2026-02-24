@@ -76,6 +76,9 @@ type HumanRequestStore interface {
 
 	// ListBySession returns all requests for a session
 	ListBySession(ctx context.Context, sessionID string) ([]*HumanRequest, error)
+
+	// Close releases any resources held by the store.
+	Close() error
 }
 
 // Notifier sends notifications to humans when their input is requested.
@@ -561,6 +564,11 @@ func (s *InMemoryHumanRequestStore) RespondToRequest(ctx context.Context, reques
 	return nil
 }
 
+// Close is a no-op; in-memory store has no resources to release.
+func (s *InMemoryHumanRequestStore) Close() error {
+	return nil
+}
+
 // NoOpNotifier is a no-op implementation of Notifier for testing.
 type NoOpNotifier struct{}
 
@@ -606,7 +614,7 @@ func (n *JSONNotifier) Notify(ctx context.Context, req *HumanRequest) error {
 	if err != nil {
 		return fmt.Errorf("failed to send webhook: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check response status
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

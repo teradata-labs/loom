@@ -29,7 +29,7 @@ func ExampleFileRegistry() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create a sample prompt file
 	promptContent := `---
@@ -88,7 +88,7 @@ func ExampleFileRegistry_variants() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create default variant
 	defaultContent := `---
@@ -152,7 +152,7 @@ func ExampleFileRegistry_List() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create prompts with different tags
 	testPrompts := []struct {
@@ -213,7 +213,7 @@ func ExampleFileRegistry_GetMetadata() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	promptContent := `---
 key: agent.system

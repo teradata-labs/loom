@@ -85,7 +85,6 @@ func analyzeColumn(header string, position int, rows []map[string]interface{}) C
 	}
 
 	// Collect values and compute statistics
-	var values []interface{}
 	distinctValues := make(map[string]bool)
 	var numericValues []float64
 	var stringLengths []int
@@ -103,8 +102,6 @@ func analyzeColumn(header string, position int, rows []map[string]interface{}) C
 			stats.NullCount++
 			continue
 		}
-
-		values = append(values, val)
 
 		// Convert to string for distinct counting
 		strVal := fmt.Sprintf("%v", val)

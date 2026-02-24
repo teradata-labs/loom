@@ -114,7 +114,7 @@ func NewDockerExecutor(ctx context.Context, config DockerExecutorConfig) (*Docke
 	config.Logger.Debug("pinging Docker daemon")
 	if _, err := dockerClient.Ping(ctx); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		dockerClient.Close()
+		_ = dockerClient.Close()
 		config.Logger.Error("failed to ping Docker daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to ping Docker daemon: %w", err)
 	}
@@ -141,7 +141,7 @@ func NewDockerExecutor(ctx context.Context, config DockerExecutorConfig) (*Docke
 		})
 		if err != nil {
 			// #nosec G104 -- best-effort cleanup on initialization failure
-			dockerClient.Close()
+			_ = dockerClient.Close()
 			config.Logger.Error("failed to create trace collector", zap.Error(err))
 			return nil, fmt.Errorf("failed to create trace collector: %w", err)
 		}
@@ -565,7 +565,7 @@ func (de *DockerExecutor) executeCommand(ctx context.Context, containerID string
 				}
 			}
 			// #nosec G104 -- best-effort cleanup of pipe writer
-			stderrPipeWriter.Close()
+			_ = stderrPipeWriter.Close()
 			// Wait for trace collection to complete and log errors
 			if err := <-traceDone; err != nil && err != io.EOF {
 				de.logger.Warn("trace collection ended with error",
@@ -719,14 +719,14 @@ func (de *DockerExecutor) Health(ctx context.Context) error {
 	// Check Docker daemon connectivity
 	if de.dockerClient == nil {
 		de.logger.Error("Docker client not initialized")
-		return fmt.Errorf("Docker client not initialized")
+		return fmt.Errorf("docker client not initialized")
 	}
 
 	de.logger.Debug("pinging Docker daemon")
 	_, err := de.dockerClient.Ping(ctx)
 	if err != nil {
 		de.logger.Error("Docker daemon ping failed", zap.Error(err))
-		return fmt.Errorf("Docker daemon not reachable: %w", err)
+		return fmt.Errorf("docker daemon not reachable: %w", err)
 	}
 	de.logger.Debug("Docker daemon ping successful")
 
@@ -783,7 +783,7 @@ func (de *DockerExecutor) GetContainerLogs(ctx context.Context, containerID stri
 		)
 		return "", fmt.Errorf("failed to get container logs: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Read logs into string
 	var logBuf strings.Builder

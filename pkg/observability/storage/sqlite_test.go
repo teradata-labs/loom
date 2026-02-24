@@ -50,7 +50,7 @@ func TestNewSQLiteStorage(t *testing.T) {
 				t.Errorf("NewSQLiteStorage() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if storage != nil {
-				defer storage.Close()
+				defer func() { _ = storage.Close() }()
 			}
 
 			if !tt.wantErr {
@@ -440,14 +440,14 @@ func TestSQLiteStorage_Persistence(t *testing.T) {
 		t.Fatalf("CreateEval() failed: %v", err)
 	}
 
-	storage1.Close()
+	_ = storage1.Close()
 
 	// Reopen database and verify data persists
 	storage2, err := NewSQLiteStorage(dbPath)
 	if err != nil {
 		t.Fatalf("NewSQLiteStorage() reopen failed: %v", err)
 	}
-	defer storage2.Close()
+	defer func() { _ = storage2.Close() }()
 
 	var count int
 	err = storage2.db.QueryRow("SELECT COUNT(*) FROM evals WHERE id = ?", eval.ID).Scan(&count)
@@ -535,7 +535,7 @@ func setupSQLiteTest(t *testing.T) (*SQLiteStorage, func()) {
 	}
 
 	cleanup := func() {
-		storage.Close()
+		_ = storage.Close()
 	}
 
 	return storage, cleanup

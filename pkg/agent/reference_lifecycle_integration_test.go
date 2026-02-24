@@ -32,13 +32,13 @@ func TestReferenceLifecycle_Integration(t *testing.T) {
 	// Create temporary database for session storage
 	tmpfile, err := os.CreateTemp("", "reference_lifecycle_test_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	// Create SessionStore with observability
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile.Name(), tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create SharedMemoryStore (global singleton pattern)
 	sharedMem := storage.GetGlobalSharedMemory(&storage.Config{
@@ -70,7 +70,7 @@ func TestReferenceLifecycle_Integration(t *testing.T) {
 
 	// Create a test session
 	sessionID := "test_session_ref_lifecycle"
-	session := agent.CreateSession(sessionID)
+	session := agent.CreateSession(context.Background(), sessionID, "")
 	require.NotNil(t, session)
 
 	// Manually create and store a reference (simulating what formatToolResult does)
@@ -121,13 +121,13 @@ func TestReferenceLifecycle_MultipleReferences(t *testing.T) {
 	// Create temporary database
 	tmpfile, err := os.CreateTemp("", "reference_multi_test_*.db")
 	require.NoError(t, err)
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	// Setup agent with store and shared memory
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpfile.Name(), tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sharedMem := storage.GetGlobalSharedMemory(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -143,7 +143,7 @@ func TestReferenceLifecycle_MultipleReferences(t *testing.T) {
 
 	// Create session
 	sessionID := "test_session_multi_refs"
-	agent.CreateSession(sessionID)
+	agent.CreateSession(context.Background(), sessionID, "")
 
 	// Create and pin multiple references
 	ctx := context.Background()
@@ -195,7 +195,7 @@ func TestReferenceLifecycle_NoStore(t *testing.T) {
 
 	// Create a session and verify basic functionality
 	sessionID := "test_session_no_store"
-	session := agent.CreateSession(sessionID)
+	session := agent.CreateSession(context.Background(), sessionID, "")
 	require.NotNil(t, session)
 
 	// Pin a reference manually

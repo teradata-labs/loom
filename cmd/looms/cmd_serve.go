@@ -57,6 +57,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/tui/components"
@@ -342,15 +343,15 @@ func exportConfigToEnv(cfg *Config) {
 	// Export web search API keys if configured
 	if cfg.Tools.WebSearch.BraveAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		os.Setenv("BRAVE_API_KEY", cfg.Tools.WebSearch.BraveAPIKey)
+		_ = os.Setenv("BRAVE_API_KEY", cfg.Tools.WebSearch.BraveAPIKey)
 	}
 	if cfg.Tools.WebSearch.TavilyAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		os.Setenv("TAVILY_API_KEY", cfg.Tools.WebSearch.TavilyAPIKey)
+		_ = os.Setenv("TAVILY_API_KEY", cfg.Tools.WebSearch.TavilyAPIKey)
 	}
 	if cfg.Tools.WebSearch.SerpAPIKey != "" {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
-		os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
+		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
 	}
 }
 
@@ -471,22 +472,30 @@ func runServe(cmd *cobra.Command, args []string) {
 		tracer = observability.NewNoOpTracer()
 	}
 
-	// Create session store
-	logger.Info("Database configuration",
-		zap.String("path", config.Database.Path),
-		zap.String("driver", config.Database.Driver))
-	store, err := agent.NewSessionStore(config.Database.Path, tracer)
+	// Create storage backend (unified store factory)
+	storageCfg := config.BuildProtoStorageConfig()
+	logger.Info("Storage backend configuration",
+		zap.String("backend", config.Storage.Backend),
+		zap.String("sqlite_path", config.resolveStoragePath()))
+	storageBackend, err := backend.NewStorageBackend(context.Background(), storageCfg, tracer)
 	if err != nil {
-		logger.Fatal("Failed to create session store", zap.Error(err))
+		logger.Fatal("Failed to create storage backend", zap.Error(err))
 	}
-	defer store.Close()
+	defer func() { _ = storageBackend.Close() }()
 
-	// Create error store (uses same database for error submission channel)
-	errorStore, err := agent.NewSQLiteErrorStore(config.Database.Path, tracer)
-	if err != nil {
-		logger.Fatal("Failed to create error store", zap.Error(err))
+	// Run auto-migrations if configured
+	if config.Storage.Migration.AutoMigrate {
+		if err := storageBackend.Migrate(context.Background()); err != nil {
+			logger.Fatal("Failed to run storage migrations", zap.Error(err))
+		}
+		logger.Info("Storage migrations completed")
 	}
-	logger.Info("Error store initialized (error submission channel enabled)")
+
+	// Extract individual stores from backend
+	store := storageBackend.SessionStorage()
+	errorStore := storageBackend.ErrorStore()
+	logger.Info("Storage backend initialized",
+		zap.String("backend", config.Storage.Backend))
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -622,12 +631,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Create artifact store
-	artifactStore, err := artifacts.NewSQLiteStore(config.Database.Path, tracer)
-	if err != nil {
-		logger.Fatal("Failed to create artifact store", zap.Error(err))
-	}
-	defer artifactStore.Close()
+	// Get artifact store from storage backend
+	artifactStore := storageBackend.ArtifactStore()
 	logger.Info("Artifact store initialized")
 
 	// Start artifact watcher for hot-reload
@@ -949,6 +954,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		Logger:       logger,
 		Tracer:       tracer,
 		ToolRegistry: toolRegistry,
+		SessionStore: store,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -1345,17 +1351,90 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("TLS disabled")
 	}
 
-	// Create gRPC server with optional TLS
+	// Configure user ID interceptor for multi-tenancy
+	userIDCfg := server.UserIDConfig{
+		RequireUserID: true, // default: strict mode
+		DefaultUserID: "",
+		Logger:        logger,
+	}
+	if storageCfg.GetPostgres() != nil {
+		pgCfg := storageCfg.GetPostgres()
+		userIDCfg.RequireUserID = pgCfg.GetRequireUserId()
+		userIDCfg.DefaultUserID = pgCfg.GetDefaultUserId()
+	} else {
+		// SQLite mode: single-tenant only.
+		//
+		// SQLite does not support Row Level Security (RLS), so multi-tenant
+		// user isolation is not available. All sessions share a single
+		// "default-user" identity. This means:
+		//   - RequireUserID is forced to false (user ID headers are ignored)
+		//   - All data is accessible to all callers
+		//   - There is no per-user data isolation
+		//
+		// For multi-tenant deployments with per-user data isolation,
+		// use the PostgreSQL storage backend which supports RLS.
+		// See: docs/reference/sqlite-guidance.md (Multi-Tenancy Limitations)
+		userIDCfg.RequireUserID = false
+		userIDCfg.DefaultUserID = "default-user"
+		logger.Warn("SQLite backend does not support user ID requirement; require_user_id ignored")
+	}
+
+	// Create gRPC server with optional TLS and user ID interceptors
 	var grpcServer *grpc.Server
+	serverOpts := []grpc.ServerOption{
+		grpc.UnaryInterceptor(server.UserIDUnaryInterceptor(userIDCfg)),
+		grpc.StreamInterceptor(server.UserIDStreamInterceptor(userIDCfg)),
+	}
 	if tlsManager != nil {
 		creds := credentials.NewTLS(tlsManager.TLSConfig())
-		grpcServer = grpc.NewServer(grpc.Creds(creds))
+		serverOpts = append(serverOpts, grpc.Creds(creds))
+		grpcServer = grpc.NewServer(serverOpts...)
 		logger.Info("gRPC server TLS credentials applied")
 	} else {
-		grpcServer = grpc.NewServer()
+		grpcServer = grpc.NewServer(serverOpts...)
 	}
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
+
+	// Register AdminService if the storage backend supports admin operations (PostgreSQL only).
+	// SQLite backends do not provide multi-tenant admin and are silently skipped.
+	if adminProvider, ok := storageBackend.(backend.AdminStorageProvider); ok {
+		// Validate that the admin connection has appropriate privileges (e.g., BYPASSRLS).
+		// This is a best-effort check; failures are logged but do not block startup.
+		if err := adminProvider.ValidateAdminPermissions(context.Background()); err != nil {
+			logger.Warn("Admin permission validation failed (admin may still work if RLS policies allow)",
+				zap.Error(err),
+			)
+		}
+
+		adminToken := os.Getenv("LOOM_ADMIN_TOKEN")
+		if adminToken == "" {
+			if !config.Server.InsecureAdmin {
+				logger.Error("LOOM_ADMIN_TOKEN not set and server.insecure_admin is not enabled; skipping admin service registration. " +
+					"Set LOOM_ADMIN_TOKEN or set server.insecure_admin=true in config to run admin endpoints without authentication")
+			} else {
+				logger.Warn("LOOM_ADMIN_TOKEN not set and insecure_admin is enabled; admin endpoints are unprotected")
+				adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+				if adminServer != nil {
+					loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+					logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled, WARNING: no authentication)")
+				}
+			}
+		} else {
+			adminServer := server.NewAdminServer(adminProvider.AdminStorage(), adminToken)
+			if adminServer != nil {
+				loomv1.RegisterAdminServiceServer(grpcServer, adminServer)
+				logger.Info("Admin service registered (PostgreSQL multi-tenant admin enabled)")
+			}
+		}
+	} else {
+		logger.Info("Admin service not registered (only available with PostgreSQL backend)")
+	}
+
+	// Set storage backend for health checks and migration RPCs
+	loomService.SetStorageBackend(storageBackend)
+	loomService.SetStorageBackendType(storageCfg.Backend)
+	logger.Info("Storage backend configured on server for health checks and migration RPCs")
 
 	// Set logger for server operations
 	loomService.SetLogger(logger)
@@ -1406,22 +1485,85 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("UI app compiler ready for dynamic app creation")
 	}
 
-	// Initialize tri-modal communication system
+	// Configure tri-modal communication (inter-agent messaging)
 	logger.Info("Initializing tri-modal communication system")
+	var (
+		messageBus   *communication.MessageBus
+		messageQueue *communication.MessageQueue
+		sharedMemory *communication.SharedMemoryStore
+	)
+	{
+		commConfig := communication.FactoryConfig{
+			Store: communication.StoreConfig{
+				Backend: config.Communication.Store.Backend,
+				Path:    config.Communication.Store.Path,
+			},
+			GC: communication.GCConfig{
+				Enabled:  config.Communication.GC.Enabled,
+				Strategy: config.Communication.GC.Strategy,
+				Interval: config.Communication.GC.Interval,
+			},
+			AutoPromote: communication.AutoPromoteConfigParams{
+				Enabled:   config.Communication.AutoPromote.Enabled,
+				Threshold: config.Communication.AutoPromote.Threshold,
+			},
+			Policies: communication.PoliciesConfig{
+				AlwaysReference: config.Communication.Policies.AlwaysReference,
+				AlwaysValue:     config.Communication.Policies.AlwaysValue,
+			},
+		}
 
-	// 1. MessageBus for broadcast/pub-sub
-	messageBus := communication.NewMessageBus(nil, nil, nil, logger)
+		// Create reference store
+		refStore, err := communication.NewReferenceStoreFromConfig(commConfig)
+		if err != nil {
+			logger.Fatal("Failed to create reference store", zap.Error(err))
+		}
 
-	// 2. MessageQueue for point-to-point with SQLite persistence
-	messageQueue, err := communication.NewMessageQueue(":memory:", nil, logger)
-	if err != nil {
-		logger.Fatal("Failed to create message queue", zap.Error(err))
-	}
+		// Create policy manager
+		policyManager := communication.NewPolicyManagerFromConfig(commConfig)
 
-	// 3. SharedMemoryStore for zero-copy data sharing
-	sharedMemory, err := communication.NewSharedMemoryStore(nil, logger)
-	if err != nil {
-		logger.Fatal("Failed to create shared memory store", zap.Error(err))
+		// Create tri-modal communication components
+		// 1. Broadcast Bus for pub/sub
+		messageBus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
+		logger.Info("Broadcast bus initialized")
+
+		// 2. Message Queue for point-to-point async messaging
+		queuePath := config.Communication.Store.Path
+		if queuePath == "" {
+			queuePath = config.Database.Path // Fallback to main database
+		}
+		messageQueue, err = communication.NewMessageQueue(queuePath, tracer, logger)
+		if err != nil {
+			logger.Fatal("Failed to create message queue", zap.Error(err))
+		}
+		logger.Info("Message queue initialized", zap.String("path", queuePath))
+
+		// Set agent validator to prevent messages being sent to non-existent agents
+		if registry != nil {
+			messageQueue.SetAgentValidator(func(agentID string) bool {
+				return registry.GetConfig(agentID) != nil
+			})
+			logger.Info("Agent validator enabled for message queue")
+		}
+
+		// 3. Shared Memory for namespace-isolated data sharing
+		sharedMemory, err = communication.NewSharedMemoryStore(tracer, logger)
+		if err != nil {
+			logger.Fatal("Failed to create shared memory communication", zap.Error(err))
+		}
+		logger.Info("Shared memory communication initialized")
+
+		// Configure server with tri-modal system
+		if err := loomService.ConfigureCommunication(messageBus, messageQueue, sharedMemory, refStore, policyManager, logger); err != nil {
+			logger.Fatal("Failed to configure tri-modal communication", zap.Error(err))
+		}
+
+		logger.Info("Tri-modal communication system enabled",
+			zap.String("backend", config.Communication.Store.Backend),
+			zap.String("store_path", config.Communication.Store.Path),
+			zap.Bool("auto_promote", config.Communication.AutoPromote.Enabled),
+			zap.Int64("threshold_kb", config.Communication.AutoPromote.Threshold/1024),
+			zap.Int("gc_interval_sec", config.Communication.GC.Interval))
 	}
 
 	// Get global SharedMemoryStore for tool results (different from communication SharedMemoryStore)
@@ -1444,40 +1586,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("SharedMemoryStore injected into agent", zap.String("agent", name))
 	}
 
-	// 3.5. SQL Result Store for queryable large SQL results
-	sqlResultStore, err := storage.NewSQLResultStore(&storage.SQLResultStoreConfig{
-		DBPath:     storage.GetDefaultLoomDBPath(),
-		TTLSeconds: 3600, // 1 hour TTL
-	})
-	if err != nil {
-		logger.Warn("Failed to initialize SQL result store, SQL results will fall back to shared memory", zap.Error(err))
-	} else {
+	// SQL Result Store for queryable large SQL results (from storage backend)
+	sqlResultStore := storageBackend.ResultStore()
+	if sqlResultStore != nil {
 		// Inject SQL result store into all agents
 		for name, ag := range agents {
 			ag.SetSQLResultStore(sqlResultStore)
 			logger.Info("SQLResultStore injected into agent", zap.String("agent", name))
 		}
 	}
-
-	// 4. ReferenceStore for large payload handling
-	refStore, err := communication.NewReferenceStoreFromConfig(communication.FactoryConfig{
-		Store: communication.StoreConfig{Backend: "memory"},
-		GC:    communication.GCConfig{Enabled: false},
-	})
-	if err != nil {
-		logger.Fatal("Failed to create reference store", zap.Error(err))
-	}
-
-	// 5. PolicyManager for communication policies
-	policyManager := communication.NewPolicyManager()
-
-	// Configure the server with communication components
-	err = loomService.ConfigureCommunication(messageBus, messageQueue, sharedMemory, refStore, policyManager, logger)
-	if err != nil {
-		logger.Fatal("Failed to configure communication system", zap.Error(err))
-	}
-
-	logger.Info("Tri-modal communication system initialized successfully")
 
 	// Inject MCP manager into multi-agent server if available
 	if mcpManager != nil {
@@ -1502,11 +1619,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	var learningService *server.LearningService
 	{
 		// 1. Open database connection for learning agent
-		learningDB, err := sql.Open("sqlite3", config.Database.Path)
+		learningDBPath := config.Database.Path
+		if learningDBPath == "" {
+			learningDBPath = filepath.Join(loomconfig.GetLoomDataDir(), "learning.db")
+		}
+		learningDB, err := sql.Open("sqlite3", learningDBPath)
 		if err != nil {
 			logger.Fatal("Failed to open database for learning agent", zap.Error(err))
 		}
-		defer learningDB.Close()
+		defer func() { _ = learningDB.Close() }()
 
 		// 2. Initialize self-improvement schema
 		ctx := context.Background()
@@ -1516,11 +1637,11 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("  Self-improvement schema initialized")
 
 		// 3. Create metrics collector
-		collector, err := learning.NewMetricsCollector(config.Database.Path, tracer)
+		collector, err := learning.NewMetricsCollector(learningDBPath, tracer)
 		if err != nil {
 			logger.Fatal("Failed to create metrics collector", zap.Error(err))
 		}
-		defer collector.Close()
+		defer func() { _ = collector.Close() }()
 		logger.Info("  Metrics collector created")
 
 		// 4. Create learning engine
@@ -1795,95 +1916,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		_ = stats // For future metrics logging
 	}
 
-	// Configure tri-modal communication (inter-agent messaging)
-	var (
-		bus           *communication.MessageBus
-		queue         *communication.MessageQueue
-		sharedMemComm *communication.SharedMemoryStore
-	)
-	{
-		commConfig := communication.FactoryConfig{
-			Store: communication.StoreConfig{
-				Backend: config.Communication.Store.Backend,
-				Path:    config.Communication.Store.Path,
-			},
-			GC: communication.GCConfig{
-				Enabled:  config.Communication.GC.Enabled,
-				Strategy: config.Communication.GC.Strategy,
-				Interval: config.Communication.GC.Interval,
-			},
-			AutoPromote: communication.AutoPromoteConfigParams{
-				Enabled:   config.Communication.AutoPromote.Enabled,
-				Threshold: config.Communication.AutoPromote.Threshold,
-			},
-			Policies: communication.PoliciesConfig{
-				AlwaysReference: config.Communication.Policies.AlwaysReference,
-				AlwaysValue:     config.Communication.Policies.AlwaysValue,
-			},
-		}
-
-		// Create reference store
-		refStore, err := communication.NewReferenceStoreFromConfig(commConfig)
-		if err != nil {
-			logger.Fatal("Failed to create reference store", zap.Error(err))
-		}
-
-		// Create policy manager
-		policyManager := communication.NewPolicyManagerFromConfig(commConfig)
-
-		// Create tri-modal communication components
-		// 1. Broadcast Bus for pub/sub
-		bus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
-		logger.Info("Broadcast bus initialized")
-
-		// 2. Message Queue for point-to-point async messaging
-		queuePath := config.Communication.Store.Path
-		if queuePath == "" {
-			queuePath = config.Database.Path // Fallback to main database
-		}
-		queue, err = communication.NewMessageQueue(queuePath, tracer, logger)
-		if err != nil {
-			logger.Fatal("Failed to create message queue", zap.Error(err))
-		}
-		logger.Info("Message queue initialized", zap.String("path", queuePath))
-
-		// Set agent validator to prevent messages being sent to non-existent agents
-		if registry != nil {
-			queue.SetAgentValidator(func(agentID string) bool {
-				return registry.GetConfig(agentID) != nil
-			})
-			logger.Info("Agent validator enabled for message queue")
-		}
-
-		// 3. Shared Memory for namespace-isolated data sharing
-		sharedMemComm, err = communication.NewSharedMemoryStore(tracer, logger)
-		if err != nil {
-			logger.Fatal("Failed to create shared memory communication", zap.Error(err))
-		}
-		logger.Info("Shared memory communication initialized")
-
-		// Configure server with tri-modal system
-		if err := loomService.ConfigureCommunication(bus, queue, sharedMemComm, refStore, policyManager, logger); err != nil {
-			logger.Fatal("Failed to configure tri-modal communication", zap.Error(err))
-		}
-
-		logger.Info("Tri-modal communication system enabled",
-			zap.String("backend", config.Communication.Store.Backend),
-			zap.String("store_path", config.Communication.Store.Path),
-			zap.Bool("auto_promote", config.Communication.AutoPromote.Enabled),
-			zap.Int64("threshold_kb", config.Communication.AutoPromote.Threshold/1024),
-			zap.Int("gc_interval_sec", config.Communication.GC.Interval))
-
-		// Register communication tools with all loaded agents
-		// This ensures agents loaded from YAML configs get pub/sub tools
-		logger.Info("Registering communication tools with loaded agents...")
-		for agentID, ag := range agents {
-			commTools := builtin.CommunicationTools(queue, bus, sharedMemComm, agentID)
-			ag.RegisterTools(commTools...)
-			logger.Info("  Communication tools registered",
-				zap.String("agent", agentID),
-				zap.Int("num_tools", len(commTools)))
-		}
+	// Register communication tools with all loaded agents
+	// This ensures agents loaded from YAML configs get pub/sub tools
+	logger.Info("Registering communication tools with loaded agents...")
+	for agentID, ag := range agents {
+		commTools := builtin.CommunicationTools(messageQueue, messageBus, sharedMemory, agentID)
+		ag.RegisterTools(commTools...)
+		logger.Info("  Communication tools registered",
+			zap.String("agent", agentID),
+			zap.Int("num_tools", len(commTools)))
 	}
 
 	// Register UI app tools with all loaded agents (auto-registered like communication tools)
@@ -2251,6 +2292,20 @@ func runServe(cmd *cobra.Command, args []string) {
 			zap.String("health_endpoint", fmt.Sprintf("http://%s/health", httpAddr)))
 	}
 
+	// Start soft-delete cleanup goroutine if storage supports it (PostgreSQL)
+	var softDeleteCleaner *storage.SoftDeleteCleaner
+	if sds, ok := store.(storage.Purger); ok {
+		softDeleteCfg := config.Storage.Postgres.SoftDelete
+		if softDeleteCfg.Enabled {
+			softDeleteCleaner = storage.StartSoftDeleteCleanup(
+				sds,
+				softDeleteCfg.GracePeriodSeconds,
+				softDeleteCfg.CleanupIntervalSeconds,
+				logger,
+			)
+		}
+	}
+
 	logger.Info("Ready to weave!")
 
 	// Start message queue monitor for event-driven workflow agent notifications
@@ -2299,6 +2354,12 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 		}
 
+		// Stop soft-delete cleanup goroutine
+		if softDeleteCleaner != nil {
+			softDeleteCleaner.Stop()
+			logger.Info("Soft-delete cleanup stopped")
+		}
+
 		// Stop artifact watcher
 		if artifactWatcher != nil {
 			if err := artifactWatcher.Stop(); err != nil {
@@ -2328,22 +2389,22 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 
 		// Stop tri-modal communication system
-		if bus != nil {
-			if err := bus.Close(); err != nil {
+		if messageBus != nil {
+			if err := messageBus.Close(); err != nil {
 				logger.Warn("Error closing message bus", zap.Error(err))
 			} else {
 				logger.Info("Message bus closed")
 			}
 		}
-		if queue != nil {
-			if err := queue.Close(); err != nil {
+		if messageQueue != nil {
+			if err := messageQueue.Close(); err != nil {
 				logger.Warn("Error closing message queue", zap.Error(err))
 			} else {
 				logger.Info("Message queue closed")
 			}
 		}
-		if sharedMemComm != nil {
-			if err := sharedMemComm.Close(); err != nil {
+		if sharedMemory != nil {
+			if err := sharedMemory.Close(); err != nil {
 				logger.Warn("Error closing shared memory communication", zap.Error(err))
 			} else {
 				logger.Info("Shared memory communication closed")

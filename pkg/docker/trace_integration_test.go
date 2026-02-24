@@ -36,9 +36,7 @@ import (
 //  4. Verify container spans collected and forwarded to tracer
 //  5. Verify parent-child span relationships
 func TestTraceCollector_PythonIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -51,7 +49,7 @@ func TestTraceCollector_PythonIntegration(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -60,7 +58,7 @@ func TestTraceCollector_PythonIntegration(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that creates child spans
 	pythonScript := `
@@ -158,9 +156,7 @@ print(f"__LOOM_TRACE__:{json.dumps(child_span)}", file=sys.stderr, flush=True)
 
 // TestTraceCollector_NodeIntegration tests end-to-end Node.js trace propagation.
 func TestTraceCollector_NodeIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -173,7 +169,7 @@ func TestTraceCollector_NodeIntegration(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -182,7 +178,7 @@ func TestTraceCollector_NodeIntegration(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Node.js script that creates child spans
 	nodeScript := `
@@ -256,9 +252,7 @@ process.stderr.write('__LOOM_TRACE__:' + JSON.stringify(childSpan) + '\n');
 
 // TestTraceCollector_MultipleSpans tests collecting multiple spans from single execution.
 func TestTraceCollector_MultipleSpans(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -271,7 +265,7 @@ func TestTraceCollector_MultipleSpans(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -280,7 +274,7 @@ func TestTraceCollector_MultipleSpans(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that creates multiple spans
 	pythonScript := `
@@ -346,9 +340,7 @@ print("Created 3 spans")
 
 // TestTraceCollector_ErrorHandling tests trace collection with span errors.
 func TestTraceCollector_ErrorHandling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -361,7 +353,7 @@ func TestTraceCollector_ErrorHandling(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -370,7 +362,7 @@ func TestTraceCollector_ErrorHandling(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script with error span
 	pythonScript := `
@@ -432,9 +424,7 @@ print(f"__LOOM_TRACE__:{json.dumps(span)}", file=sys.stderr, flush=True)
 
 // TestTraceCollector_BaggagePropagation tests W3C baggage propagation.
 func TestTraceCollector_BaggagePropagation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -447,7 +437,7 @@ func TestTraceCollector_BaggagePropagation(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor with tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -456,7 +446,7 @@ func TestTraceCollector_BaggagePropagation(t *testing.T) {
 		Tracer:    tracer,
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Start span with tenant context
 	ctx, parentSpan := tracer.StartSpan(ctx, "test_baggage",
@@ -506,9 +496,7 @@ for part in parts:
 
 // TestTraceCollector_NoTracer tests graceful behavior when tracing disabled.
 func TestTraceCollector_NoTracer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	skipUnlessDockerIntegration(t)
 
 	ctx := context.Background()
 	logger := zaptest.NewLogger(t)
@@ -518,7 +506,7 @@ func TestTraceCollector_NoTracer(t *testing.T) {
 		Logger: logger,
 	})
 	require.NoError(t, err)
-	defer scheduler.Close()
+	defer func() { _ = scheduler.Close() }()
 
 	// Create executor WITHOUT tracer
 	executor, err := NewDockerExecutor(ctx, DockerExecutorConfig{
@@ -527,7 +515,7 @@ func TestTraceCollector_NoTracer(t *testing.T) {
 		Tracer:    nil, // No tracer!
 	})
 	require.NoError(t, err)
-	defer executor.Close()
+	defer func() { _ = executor.Close() }()
 
 	// Python script that tries to use tracing
 	pythonScript := `
@@ -599,7 +587,7 @@ func TestTraceCollector_Stats(t *testing.T) {
 	}
 
 	// Close writer to signal EOF
-	writer.Close()
+	_ = writer.Close()
 
 	// Wait for collection to complete
 	<-done
@@ -651,7 +639,7 @@ func TestTraceCollector_ContextCancellation(t *testing.T) {
 	cancel()
 
 	// Close writer
-	writer.Close()
+	_ = writer.Close()
 
 	// Wait for collection to complete
 	err = <-done
@@ -687,7 +675,7 @@ func TestTraceCollector_PipeWriteFailure(t *testing.T) {
 	}()
 
 	// Close writer immediately to cause write failure
-	writer.Close()
+	_ = writer.Close()
 
 	// Wait for collection to complete
 	collectionErr := <-done
@@ -762,7 +750,7 @@ func TestTraceCollector_MalformedJSON(t *testing.T) {
 			require.NoError(t, writeErr)
 
 			// Close writer
-			writer.Close()
+			_ = writer.Close()
 
 			// Wait for collection to complete
 			<-done

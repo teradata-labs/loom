@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -57,9 +58,11 @@ func TestAddMessage_CompressionTriggersAtProfileThreshold_DataIntensive(t *testi
 	sm := NewSegmentedMemoryWithCompression(romContent, 10000, 1000, profile) // Small budget to test thresholds
 	sm.SetCompressor(&mockCompressor{enabled: true})
 
+	ctx := context.Background()
+
 	// Add messages until we exceed maxL1Messages (5 for data_intensive)
 	for i := 0; i < 6; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:    "user",
 			Content: "Test message " + string(rune(i)),
 		})
@@ -118,9 +121,11 @@ func TestAddMessage_CompressionBatchSizeVariesByBudgetUsage(t *testing.T) {
 			mockComp := &mockCompressor{enabled: true}
 			sm.SetCompressor(mockComp)
 
+			ctx := context.Background()
+
 			// Add messages to trigger compression
 			for i := 0; i < tt.messageCount; i++ {
-				sm.AddMessage(Message{
+				sm.AddMessage(ctx, Message{
 					Role:    "user",
 					Content: "Test message with some content to consume tokens",
 				})
@@ -142,10 +147,12 @@ func TestGetBudgetWarning_UsesProfileThresholds(t *testing.T) {
 	profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE]
 	sm := NewSegmentedMemoryWithCompression(romContent, contextSize, reservedOutput, profile)
 
+	ctx := context.Background()
+
 	// Add large messages to exceed warning threshold (50% for data_intensive)
 	largeContent := string(make([]byte, 1000)) // 1KB content
 	for i := 0; i < 3; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(ctx, Message{
 			Role:    "user",
 			Content: "Large message: " + largeContent,
 		})
@@ -193,7 +200,7 @@ func TestSegmentedMemory_BackwardsCompatibility(t *testing.T) {
 	assert.Equal(t, 4, sm.minL1Messages)
 
 	// Should function normally
-	sm.AddMessage(Message{Role: "user", Content: "test"})
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "test"})
 	assert.Equal(t, 1, len(sm.l1Messages))
 }
 
@@ -219,10 +226,12 @@ func TestAddMessage_DataIntensiveTriggersCompressionEarlier(t *testing.T) {
 		Content: "This is a large message with lots of content to consume tokens. " + string(make([]byte, 1000)),
 	}
 
+	ctx := context.Background()
+
 	// Add enough messages to trigger warning threshold
 	for i := 0; i < 10; i++ {
-		dataIntensiveSM.AddMessage(largeMessage)
-		conversationalSM.AddMessage(largeMessage)
+		dataIntensiveSM.AddMessage(ctx, largeMessage)
+		conversationalSM.AddMessage(ctx, largeMessage)
 	}
 
 	// Data intensive should have compressed more aggressively (lower maxL1)

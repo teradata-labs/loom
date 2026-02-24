@@ -379,7 +379,7 @@ func (t *SharedMemoryReadTool) Execute(ctx context.Context, params map[string]in
 		result["value_type"] = "text"
 	}
 
-	if resp.Value.Metadata != nil && len(resp.Value.Metadata) > 0 {
+	if len(resp.Value.Metadata) > 0 {
 		result["metadata"] = resp.Value.Metadata
 	}
 

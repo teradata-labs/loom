@@ -172,8 +172,8 @@ spec:
 			_ = os.WriteFile(filepath.Join(patternsDir, "sql.yaml"), []byte("# test"), 0644)
 
 			// Set env var for test
-			os.Setenv("TEST_HAWK_ENDPOINT", "http://test:8080")
-			defer os.Unsetenv("TEST_HAWK_ENDPOINT")
+			_ = os.Setenv("TEST_HAWK_ENDPOINT", "http://test:8080")
+			defer func() { _ = os.Unsetenv("TEST_HAWK_ENDPOINT") }()
 
 			// Write project file
 			err := os.WriteFile(projectFile, []byte(tt.yaml), 0644)
@@ -272,8 +272,8 @@ spec:
 }
 
 func TestEnvVarExpansion(t *testing.T) {
-	os.Setenv("TEST_VAR", "test_value")
-	defer os.Unsetenv("TEST_VAR")
+	_ = os.Setenv("TEST_VAR", "test_value")
+	defer func() { _ = os.Unsetenv("TEST_VAR") }()
 
 	input := "value is ${TEST_VAR}"
 	result := expandEnvVars(input)

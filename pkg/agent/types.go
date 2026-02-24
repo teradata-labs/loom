@@ -102,7 +102,7 @@ type Agent struct {
 	refTracker *storage.SessionReferenceTracker
 
 	// SQL result store for queryable large SQL results
-	sqlResultStore *storage.SQLResultStore
+	sqlResultStore storage.ResultStore
 
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter

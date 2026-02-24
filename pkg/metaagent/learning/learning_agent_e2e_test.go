@@ -38,11 +38,11 @@ func TestEndToEnd_FullLearningLoop(t *testing.T) {
 
 	// Setup database
 	dbPath := fmt.Sprintf("/tmp/loom-e2e-test-%d.db", time.Now().UnixNano())
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Initialize schema
 	err = InitSelfImprovementSchema(ctx, db, tracer)
@@ -143,11 +143,12 @@ func TestEndToEnd_FullLearningLoop(t *testing.T) {
 	t.Logf("✅ Analyzed %d patterns:", len(analysisResp.Patterns))
 	for _, p := range analysisResp.Patterns {
 		icon := "✅"
-		if p.Recommendation == loomv1.PatternRecommendation_PATTERN_PROMOTE {
+		switch p.Recommendation {
+		case loomv1.PatternRecommendation_PATTERN_PROMOTE:
 			icon = "⬆️"
-		} else if p.Recommendation == loomv1.PatternRecommendation_PATTERN_REMOVE {
+		case loomv1.PatternRecommendation_PATTERN_REMOVE:
 			icon = "❌"
-		} else if p.Recommendation == loomv1.PatternRecommendation_PATTERN_DEMOTE {
+		case loomv1.PatternRecommendation_PATTERN_DEMOTE:
 			icon = "⬇️"
 		}
 		t.Logf("  %s %s (variant: %s): %.1f%% success, recommendation: %s",
@@ -266,11 +267,11 @@ func TestEndToEnd_AutonomyLevels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup
 			dbPath := fmt.Sprintf("/tmp/loom-e2e-autonomy-%s-%d.db", tt.name, time.Now().UnixNano())
-			defer os.Remove(dbPath)
+			defer func() { _ = os.Remove(dbPath) }()
 
 			db, err := sql.Open("sqlite3", dbPath)
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			err = InitSelfImprovementSchema(ctx, db, tracer)
 			require.NoError(t, err)
@@ -302,11 +303,11 @@ func TestEndToEnd_CircuitBreaker(t *testing.T) {
 
 	// Setup
 	dbPath := fmt.Sprintf("/tmp/loom-e2e-circuit-%d.db", time.Now().UnixNano())
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	err = InitSelfImprovementSchema(ctx, db, tracer)
 	require.NoError(t, err)
@@ -342,11 +343,11 @@ func TestEndToEnd_ConcurrentOperations(t *testing.T) {
 
 	// Setup
 	dbPath := fmt.Sprintf("/tmp/loom-e2e-concurrent-%d.db", time.Now().UnixNano())
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	err = InitSelfImprovementSchema(ctx, db, tracer)
 	require.NoError(t, err)
@@ -416,11 +417,11 @@ func TestEndToEnd_Dogfooding(t *testing.T) {
 
 	// Setup
 	dbPath := fmt.Sprintf("/tmp/loom-e2e-dogfood-%d.db", time.Now().UnixNano())
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	err = InitSelfImprovementSchema(ctx, db, tracer)
 	require.NoError(t, err)

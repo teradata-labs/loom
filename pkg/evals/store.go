@@ -35,7 +35,7 @@ func NewStore(dbPath string) (*Store, error) {
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -239,7 +239,7 @@ func (s *Store) ListBySuite(ctx context.Context, suiteName string, limit int) ([
 	if err != nil {
 		return nil, fmt.Errorf("failed to query eval results: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*loomv1.EvalResult
 	for rows.Next() {
@@ -273,7 +273,7 @@ func (s *Store) ListByAgent(ctx context.Context, agentID string, limit int) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("failed to query eval results: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*loomv1.EvalResult
 	for rows.Next() {
@@ -368,7 +368,7 @@ func (s *Store) GetTrends(ctx context.Context, suiteName string, days int) ([]*T
 	if err != nil {
 		return nil, fmt.Errorf("failed to query trends: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var trends []*TrendPoint
 	for rows.Next() {

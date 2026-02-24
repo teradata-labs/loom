@@ -59,6 +59,32 @@ test-integration:
     @echo "This may take 10+ minutes and will incur AWS costs."
     GOWORK=off go test -tags fts5 -race -v ./test/...
 
+# Start PostgreSQL for e2e storage tests
+test-e2e-storage-up:
+    docker compose -f test/e2e/docker-compose.yml up -d --wait
+
+# Stop PostgreSQL for e2e storage tests
+test-e2e-storage-down:
+    docker compose -f test/e2e/docker-compose.yml down -v
+
+# Run e2e storage tests against the running server (sqlite or postgres)
+test-e2e-storage backend="sqlite":
+    LOOM_E2E_BACKEND={{backend}} \
+        GOWORK=off go test -tags "fts5 integration" -race -v -timeout 5m -count=1 ./test/e2e/...
+
+# Full e2e: test SQLite, then switch to Postgres and test again
+test-e2e-storage-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== Phase 1: SQLite E2E Tests ==="
+    echo "Ensure looms is running at :60051 with SQLite backend"
+    LOOM_E2E_BACKEND=sqlite GOWORK=off go test -tags "fts5 integration" -race -v -timeout 5m -count=1 ./test/e2e/...
+    echo ""
+    echo "=== Phase 2: PostgreSQL E2E Tests ==="
+    just test-e2e-storage-up
+    echo "Restart looms with: looms serve --config test/e2e/looms-postgres.yaml"
+    echo "Then run: just test-e2e-storage postgres"
+
 # Run tests for specific package
 test-pkg pkg:
     GOWORK=off go test -tags fts5 -race -v ./{{pkg}}/...
@@ -262,7 +288,7 @@ deps:
 # Run security scanner
 security:
     @echo "Running security scan..."
-    @gosec -no-fail -fmt=text ./... || echo "⚠️  Security issues found (non-blocking)"
+    @gosec -exclude-dir=gen -fmt=text ./...
 
 # Clean build artifacts
 clean:
@@ -463,3 +489,44 @@ version-sync:
     @echo "Syncing all files to canonical version..."
     @go run ./cmd/version-manager sync --commit
     @echo "✅ All files synced. Review: git show HEAD"
+
+# ============================================================================
+# Database Upgrade
+# ============================================================================
+
+# Upgrade: build new binaries, install, and run database migrations
+upgrade: build install-patterns install-docs
+    #!/usr/bin/env bash
+    set -euo pipefail
+    BIN_DIR="${LOOM_BIN_DIR:-~/.local/bin}"
+    echo "Installing updated binaries to $BIN_DIR..."
+    mkdir -p "$BIN_DIR"
+    cp bin/looms "$BIN_DIR/"
+    cp bin/loom "$BIN_DIR/"
+    chmod +x "$BIN_DIR/looms" "$BIN_DIR/loom"
+    echo "Running database upgrade (backup + migrate)..."
+    "$BIN_DIR/looms" upgrade --yes
+    echo ""
+    echo "✅ Upgrade complete!"
+    "$BIN_DIR/looms" --version
+
+# Backup the SQLite database
+backup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v looms >/dev/null 2>&1; then
+        looms upgrade --backup-only
+    elif [ -f bin/looms ]; then
+        bin/looms upgrade --backup-only
+    else
+        LOOM_DIR="${LOOM_DATA_DIR:-~/.loom}"
+        DB_PATH="$LOOM_DIR/loom.db"
+        if [ -f "$DB_PATH" ]; then
+            BACKUP_PATH="${DB_PATH}.backup.$(date +%Y%m%dT%H%M%S)"
+            cp "$DB_PATH" "$BACKUP_PATH"
+            echo "✅ Backup created: $BACKUP_PATH"
+        else
+            echo "No database found at $DB_PATH"
+            exit 1
+        fi
+    fi

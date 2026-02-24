@@ -116,7 +116,7 @@ func runStandalone(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to connect to embedded server: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Simple CLI mode for now (TUI integration coming soon)
 	log.Printf("Loom standalone server running on %s", serverAddr)
@@ -245,7 +245,7 @@ func findAvailablePort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer lis.Close()
+	defer func() { _ = lis.Close() }()
 
 	return lis.Addr().(*net.TCPAddr).Port, nil
 }
