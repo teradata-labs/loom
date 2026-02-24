@@ -192,6 +192,11 @@ func (e *PipelineExecutor) buildStagePromptWithContext(stage *loomv1.PipelineSta
 		}
 	}
 
+	// If prompt template is empty, use the previous output (or initial prompt) directly
+	if prompt == "" {
+		prompt = previousOutput
+	}
+
 	return prompt
 }
 

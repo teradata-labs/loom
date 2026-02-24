@@ -83,7 +83,7 @@ func TestJudgeDataFlow_Debug(t *testing.T) {
 		FROM pattern_effectiveness
 	`)
 	require.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	rowCount := 0
 	for rows.Next() {

@@ -33,7 +33,7 @@ func testDBPath(t *testing.T) string {
 func TestSQLiteStore_StoreAndResolve(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("test data")
@@ -60,7 +60,7 @@ func TestSQLiteStore_StoreAndResolve(t *testing.T) {
 func TestSQLiteStore_StoreEmptyData(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -77,7 +77,7 @@ func TestSQLiteStore_StoreEmptyData(t *testing.T) {
 func TestSQLiteStore_ResolveNonExistent(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	ref := &loomv1.Reference{
@@ -95,7 +95,7 @@ func TestSQLiteStore_ResolveNonExistent(t *testing.T) {
 func TestSQLiteStore_RefCounting(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("reference counted data")
@@ -144,7 +144,7 @@ func TestSQLiteStore_RefCounting(t *testing.T) {
 func TestSQLiteStore_TTLExpiration(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("expiring data")
@@ -175,7 +175,7 @@ func TestSQLiteStore_TTLExpiration(t *testing.T) {
 func TestSQLiteStore_Deduplication(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("duplicate data")
@@ -204,7 +204,7 @@ func TestSQLiteStore_Deduplication(t *testing.T) {
 func TestSQLiteStore_List(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -243,7 +243,7 @@ func TestSQLiteStore_List(t *testing.T) {
 func TestSQLiteStore_Stats(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -282,7 +282,7 @@ func TestSQLiteStore_GarbageCollection(t *testing.T) {
 	// Use short GC interval for testing
 	store, err := NewSQLiteStore(testDBPath(t), 500*time.Millisecond)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	data := []byte("gc test data")
@@ -312,7 +312,7 @@ func TestSQLiteStore_GarbageCollection(t *testing.T) {
 func TestSQLiteStore_ConcurrentAccess(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	opts := StoreOptions{
@@ -391,7 +391,7 @@ func TestSQLiteStore_Persistence(t *testing.T) {
 	// Reopen store
 	store2, err := NewSQLiteStore(dbPath, 1*time.Minute)
 	require.NoError(t, err)
-	defer store2.Close()
+	defer func() { _ = store2.Close() }()
 
 	// Verify data persisted
 	resolved, err := store2.Resolve(ctx, ref)
@@ -408,7 +408,7 @@ func TestSQLiteStore_Persistence(t *testing.T) {
 func TestSQLiteStore_WALMode(t *testing.T) {
 	store, err := NewSQLiteStore(testDBPath(t), 1*time.Minute)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify WAL mode is enabled
 	var journalMode string

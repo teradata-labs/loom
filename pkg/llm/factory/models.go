@@ -331,10 +331,10 @@ func (r *ModelRegistry) DiscoverOllamaModels(endpoint string) error {
 	if err != nil {
 		return fmt.Errorf("failed to reach Ollama at %s: %w", endpoint, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Ollama /api/tags returned status %d", resp.StatusCode)
+		return fmt.Errorf("ollama /api/tags returned status %d", resp.StatusCode)
 	}
 
 	var tagsResp ollamaTagsResponse

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
+
+// validSQLIdentifier matches only safe SQL identifiers (alphanumeric and underscores).
+var validSQLIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // SessionCleanupHook is called when a session is deleted.
 // Used for cleanup tasks like releasing shared memory references.
@@ -78,6 +82,9 @@ func NewSessionStoreWithConfig(config DBConfig, tracer observability.Tracer) (*S
 
 // initSchema creates the database schema if it doesn't exist.
 func (s *SessionStore) initSchema() error {
+	// context.Background() is intentional here: schema initialization runs at startup
+	// before any user context exists. This is a bootstrap operation that creates/migrates
+	// database tables and is not subject to RLS policies.
 	ctx := context.Background()
 	var span *observability.Span
 	if s.tracer != nil {
@@ -88,6 +95,7 @@ func (s *SessionStore) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
 		id TEXT PRIMARY KEY,
+		name TEXT,
 		agent_id TEXT,
 		parent_session_id TEXT,
 		context_json TEXT,
@@ -271,7 +279,12 @@ func (s *SessionStore) initSchema() error {
 			table = "sessions"
 		}
 
-		checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s'", table, columnName)
+		// Validate table and column names are safe SQL identifiers to prevent injection.
+		// Parameterized queries cannot be used for SQLite pragma_table_info() arguments.
+		if !validSQLIdentifier.MatchString(table) || !validSQLIdentifier.MatchString(columnName) {
+			return fmt.Errorf("invalid SQL identifier: table=%q column=%q", table, columnName)
+		}
+		checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s'", table, columnName) // #nosec G201 -- table and columnName validated above
 		var count int
 		if err := s.db.QueryRowContext(ctx, checkQuery).Scan(&count); err == nil && count == 0 {
 			if _, err := s.db.ExecContext(ctx, migration); err != nil {
@@ -302,6 +315,21 @@ func (s *SessionStore) initSchema() error {
 				if span != nil {
 					span.SetAttribute(fmt.Sprintf("migration_applied_%s", columnName), "true")
 				}
+			}
+		}
+	}
+
+	// Migration: Add name column to sessions table
+	checkQuery = `SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='name'`
+	if err := s.db.QueryRowContext(ctx, checkQuery).Scan(&columnCount); err == nil && columnCount == 0 {
+		migration := `ALTER TABLE sessions ADD COLUMN name TEXT`
+		if _, err := s.db.ExecContext(ctx, migration); err != nil {
+			if span != nil {
+				span.RecordError(fmt.Errorf("migration warning (non-fatal) for name: %w", err))
+			}
+		} else {
+			if span != nil {
+				span.SetAttribute("migration_applied_session_name", "true")
 			}
 		}
 	}
@@ -377,9 +405,10 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	}
 
 	query := `
-		INSERT INTO sessions (id, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
 			agent_id = excluded.agent_id,
 			parent_session_id = excluded.parent_session_id,
 			context_json = excluded.context_json,
@@ -388,8 +417,11 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 			total_tokens = excluded.total_tokens
 	`
 
-	// Handle NULL for empty agent fields (SQLite compatibility)
-	var agentID, parentSessionID interface{}
+	// Handle NULL for empty optional fields (SQLite compatibility)
+	var sessionName, agentID, parentSessionID interface{}
+	if session.Name != "" {
+		sessionName = session.Name
+	}
 	if session.AgentID != "" {
 		agentID = session.AgentID
 	}
@@ -399,6 +431,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 
 	_, err = s.db.ExecContext(ctx, query,
 		session.ID,
+		sessionName,
 		agentID,
 		parentSessionID,
 		string(contextJSON),
@@ -428,7 +461,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
 		FROM sessions
 		WHERE id = ?
 	`
@@ -438,10 +471,11 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	var session Session
 	var contextJSON string
 	var createdAt, updatedAt int64
-	var agentID, parentSessionID sql.NullString
+	var sessionName, agentID, parentSessionID sql.NullString
 
 	err := row.Scan(
 		&session.ID,
+		&sessionName,
 		&agentID,
 		&parentSessionID,
 		&contextJSON,
@@ -451,13 +485,18 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 		&session.TotalTokens,
 	)
 
-	// Populate agent fields from nullable database values
+	// Populate optional fields from nullable database values
+	if sessionName.Valid {
+		session.Name = sessionName.String
+	}
 	if agentID.Valid {
 		session.AgentID = agentID.String
 	}
 	if parentSessionID.Valid {
 		session.ParentSessionID = parentSessionID.String
 	}
+	// SQLite backend is single-tenant; set default UserID
+	session.UserID = "default-user"
 
 	if err == sql.ErrNoRows {
 		span.SetAttribute("found", "false")
@@ -592,7 +631,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -627,7 +666,8 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		if agentID.Valid {
 			msg.AgentID = agentID.String
 		}
-		// If agentID is NULL, msg.AgentID stays empty string (default zero value)
+		// SQLite backend is single-tenant; set default UserID
+		msg.UserID = "default-user"
 		if err != nil {
 			span.RecordError(err)
 			return nil, fmt.Errorf("failed to scan message: %w", err)
@@ -692,7 +732,7 @@ func (s *SessionStore) LoadAgentSessions(ctx context.Context, agentID string) ([
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query agent sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessionIDs []string
 	for rows.Next() {
@@ -753,7 +793,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query agent messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -878,7 +918,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query parent messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -1084,7 +1124,7 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessionIDs []string
 	for rows.Next() {
@@ -1178,7 +1218,7 @@ func (s *SessionStore) LoadMemorySnapshots(ctx context.Context, sessionID string
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query memory snapshots: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var snapshots []MemorySnapshot
 	for rows.Next() {
@@ -1318,17 +1358,18 @@ func (s *SessionStore) backfillFTS5(ctx context.Context) error {
 	return nil
 }
 
-// SearchFTS5 searches message content using FTS5 full-text search with BM25 ranking.
-// Returns messages sorted by relevance (highest BM25 score first).
+// SearchMessages searches message content using full-text search with BM25 ranking.
+// For SQLite, this uses FTS5. For PostgreSQL, this uses tsvector/tsquery.
+// Returns messages sorted by relevance (highest score first).
 //
 // Parameters:
-//   - sessionID: Filter results to specific session
-//   - query: Natural language search query (FTS5 MATCH syntax)
+//   - sessionID: Filter results to specific session (empty = all sessions)
+//   - query: Natural language search query
 //   - limit: Maximum number of results to return
 //
-// Returns messages ordered by BM25 relevance score.
-func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, limit int) ([]Message, error) {
-	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_fts5")
+// Returns messages ordered by relevance score.
+func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query string, limit int) ([]Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_messages")
 	defer s.tracer.EndSpan(span)
 
 	span.SetAttribute("session_id", sessionID)
@@ -1386,7 +1427,7 @@ func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, 
 		span.RecordError(err)
 		return nil, fmt.Errorf("FTS5 search failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -1448,10 +1489,12 @@ func (s *SessionStore) SearchFTS5(ctx context.Context, sessionID, query string, 
 //
 // This allows finding documents that contain ANY of the search terms,
 // which is more suitable for semantic search than requiring ALL terms.
-// SearchFTS5ByAgent searches messages across all sessions for a given agent using FTS5.
-// Uses BM25 ranking to return most relevant results first.
-func (s *SessionStore) SearchFTS5ByAgent(ctx context.Context, agentID, query string, limit int) ([]Message, error) {
-	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_fts5_by_agent")
+
+// SearchMessagesByAgent searches messages across all sessions for a given agent using full-text search.
+// For SQLite, this uses FTS5. For PostgreSQL, this uses tsvector/tsquery.
+// Uses BM25/rank scoring to return most relevant results first.
+func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query string, limit int) ([]Message, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.search_messages_by_agent")
 	defer s.tracer.EndSpan(span)
 
 	span.SetAttribute("agent_id", agentID)
@@ -1489,7 +1532,7 @@ func (s *SessionStore) SearchFTS5ByAgent(ctx context.Context, agentID, query str
 		span.RecordError(err)
 		return nil, fmt.Errorf("agent-scoped FTS5 search failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {

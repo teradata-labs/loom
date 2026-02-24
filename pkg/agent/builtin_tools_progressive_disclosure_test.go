@@ -38,7 +38,7 @@ func TestProgressiveDisclosure_LargeJSONArray(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -142,7 +142,7 @@ func TestProgressiveDisclosure_CSVPagination(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -224,7 +224,7 @@ func TestProgressiveDisclosure_PreventContextBlowout(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -284,7 +284,7 @@ func TestProgressiveDisclosure_SQLFiltering(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -355,7 +355,7 @@ func TestProgressiveDisclosure_MultipleQueries(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,
@@ -421,7 +421,7 @@ func TestProgressiveDisclosure_JSONObject(t *testing.T) {
 		TTLSeconds: 3600,
 	})
 	require.NoError(t, err)
-	defer sqlStore.Close()
+	defer func() { _ = sqlStore.Close() }()
 
 	memoryStore := storage.NewSharedMemoryStore(&storage.Config{
 		MaxMemoryBytes:       10 * 1024 * 1024,

@@ -534,7 +534,7 @@ func (la *LearningAgent) AnalyzePatternEffectiveness(
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query pattern effectiveness: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var patterns []*loomv1.PatternMetric
 	totalUsages := int32(0)
@@ -641,19 +641,20 @@ func (la *LearningAgent) AnalyzePatternEffectiveness(
 	patternsToPromote := 0
 	patternsToDeprecate := 0
 	for _, p := range patterns {
-		if p.Recommendation == loomv1.PatternRecommendation_PATTERN_PROMOTE {
+		switch p.Recommendation {
+		case loomv1.PatternRecommendation_PATTERN_PROMOTE:
 			patternsToPromote++
-		} else if p.Recommendation == loomv1.PatternRecommendation_PATTERN_REMOVE {
+		case loomv1.PatternRecommendation_PATTERN_REMOVE:
 			patternsToDeprecate++
 		}
 	}
 
 	summary := &loomv1.PatternAnalysisSummary{
-		TotalPatternsAnalyzed: int32(len(patterns)),
+		TotalPatternsAnalyzed: safeInt32(len(patterns)),
 		OverallSuccessRate:    overallSuccessRate,
 		TotalCostUsd:          totalCost,
-		PatternsToPromote:     int32(patternsToPromote),
-		PatternsToDeprecate:   int32(patternsToDeprecate),
+		PatternsToPromote:     safeInt32(patternsToPromote),
+		PatternsToDeprecate:   safeInt32(patternsToDeprecate),
 		AnalysisWindowHours:   windowHours,
 	}
 
@@ -725,7 +726,7 @@ func (la *LearningAgent) GenerateImprovements(
 
 	return &loomv1.ImprovementsResponse{
 		Improvements:  improvements,
-		TotalProposed: int32(len(improvements)),
+		TotalProposed: safeInt32(len(improvements)),
 	}, nil
 }
 
@@ -918,7 +919,7 @@ func (la *LearningAgent) GetImprovementHistory(
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query improvement history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var improvements []*loomv1.Improvement
 	for rows.Next() {
@@ -2003,8 +2004,8 @@ func (la *LearningAgent) applyPatternTunings(
 // calculateTuningSummary computes aggregate tuning statistics
 func (la *LearningAgent) calculateTuningSummary(tunings []*loomv1.PatternTuning) *loomv1.TuningSummary {
 	summary := &loomv1.TuningSummary{
-		PatternsAnalyzed:  int32(len(tunings)),
-		PatternsTuned:     int32(len(tunings)),
+		PatternsAnalyzed:  safeInt32(len(tunings)),
+		PatternsTuned:     safeInt32(len(tunings)),
 		PatternsPromoted:  0,
 		PatternsDemoted:   0,
 		PatternsUnchanged: 0,
@@ -2278,7 +2279,7 @@ func (la *LearningAgent) handleABTestInterrupt(ctx context.Context, payload []by
 			span.RecordError(err)
 			return fmt.Errorf("failed to query variants: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		for rows.Next() {
 			var variant string
@@ -2660,7 +2661,7 @@ func (la *LearningAgent) handleSyncInterrupt(ctx context.Context, payload []byte
 			span.RecordError(err)
 			return fmt.Errorf("failed to query pattern effectiveness for push: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		for rows.Next() {
 			var (

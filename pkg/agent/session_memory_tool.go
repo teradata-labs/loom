@@ -19,18 +19,19 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // SessionMemoryTool provides unified access to session lifecycle and cross-session memory.
 // Consolidates list, summary, and compact operations into a single tool with action parameter.
 type SessionMemoryTool struct {
-	store  *SessionStore
+	store  SessionStorage
 	memory *Memory
 }
 
 // NewSessionMemoryTool creates a new session memory tool.
-func NewSessionMemoryTool(store *SessionStore, memory *Memory) *SessionMemoryTool {
+func NewSessionMemoryTool(store SessionStorage, memory *Memory) *SessionMemoryTool {
 	return &SessionMemoryTool{
 		store:  store,
 		memory: memory,
@@ -135,9 +136,9 @@ func (t *SessionMemoryTool) executeList(ctx context.Context, input map[string]in
 	// Get agent ID from input or context
 	agentID, ok := input["agent_id"].(string)
 	if !ok || agentID == "" {
-		// Try to get from context
-		agentID, ok = ctx.Value("agent_id").(string)
-		if !ok || agentID == "" {
+		// Try to get from context (typed key)
+		agentID = session.AgentIDFromContext(ctx)
+		if agentID == "" {
 			return &shuttle.Result{
 				Success: false,
 				Error: &shuttle.Error{
@@ -203,53 +204,31 @@ func (t *SessionMemoryTool) executeList(ctx context.Context, input map[string]in
 }
 
 // getSessionMetadata retrieves metadata for a single session.
+// Uses SessionStorage interface methods for backend-agnostic access.
 func (t *SessionMemoryTool) getSessionMetadata(ctx context.Context, sessionID string) (map[string]interface{}, error) {
-	// Query session metadata
-	query := `
-		SELECT s.id, s.agent_id, s.created_at, s.updated_at, s.total_tokens,
-		       COUNT(m.id) as message_count
-		FROM sessions s
-		LEFT JOIN messages m ON m.session_id = s.id
-		WHERE s.id = ?
-		GROUP BY s.id
-	`
-
-	var id, agentID string
-	var createdAt, updatedAt int64
-	var totalTokens, messageCount int
-
-	err := t.store.db.QueryRowContext(ctx, query, sessionID).Scan(
-		&id, &agentID, &createdAt, &updatedAt, &totalTokens, &messageCount,
-	)
+	// Load session with messages via interface
+	session, err := t.store.LoadSession(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query session metadata: %w", err)
+		return nil, fmt.Errorf("failed to load session metadata: %w", err)
 	}
 
 	// Get last message preview
-	lastMessageQuery := `
-		SELECT content
-		FROM messages
-		WHERE session_id = ?
-		ORDER BY timestamp DESC
-		LIMIT 1
-	`
-
 	var lastMessagePreview string
-	err = t.store.db.QueryRowContext(ctx, lastMessageQuery, sessionID).Scan(&lastMessagePreview)
-	if err != nil {
-		// No messages yet, that's ok
-		lastMessagePreview = ""
-	} else if len(lastMessagePreview) > 100 {
-		lastMessagePreview = lastMessagePreview[:100] + "..."
+	if len(session.Messages) > 0 {
+		lastMsg := session.Messages[len(session.Messages)-1]
+		lastMessagePreview = lastMsg.Content
+		if len(lastMessagePreview) > 100 {
+			lastMessagePreview = lastMessagePreview[:100] + "..."
+		}
 	}
 
 	return map[string]interface{}{
-		"session_id":           id,
-		"agent_id":             agentID,
-		"created_at":           fmt.Sprintf("%d", createdAt),
-		"updated_at":           fmt.Sprintf("%d", updatedAt),
-		"message_count":        messageCount,
-		"total_tokens":         totalTokens,
+		"session_id":           session.ID,
+		"agent_id":             session.AgentID,
+		"created_at":           fmt.Sprintf("%d", session.CreatedAt.Unix()),
+		"updated_at":           fmt.Sprintf("%d", session.UpdatedAt.Unix()),
+		"message_count":        len(session.Messages),
+		"total_tokens":         session.TotalTokens,
 		"last_message_preview": lastMessagePreview,
 	}, nil
 }
@@ -400,7 +379,7 @@ func (t *SessionMemoryTool) executeCompact(ctx context.Context, input map[string
 	}
 
 	// Trigger compaction
-	messagesCompressed, tokensSaved := segMem.CompactMemory()
+	messagesCompressed, tokensSaved := segMem.CompactMemory(ctx)
 
 	// Format response
 	responseData := map[string]interface{}{

@@ -26,7 +26,7 @@ func TestUpdatePatternPriority(t *testing.T) {
 	// Create a temporary directory for test files
 	tmpDir, err := os.MkdirTemp("", "pattern-tuning-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create a test YAML file
 	yamlContent := `apiVersion: loom/v1
@@ -95,7 +95,7 @@ func TestUpdatePatternPriority_NotFound(t *testing.T) {
 	// Create a temporary directory for test files
 	tmpDir, err := os.MkdirTemp("", "pattern-tuning-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create a test YAML file
 	yamlContent := `apiVersion: loom/v1
@@ -130,7 +130,7 @@ func TestFindPatternYAMLFile(t *testing.T) {
 	// Create a temporary directory with multiple YAML files
 	tmpDir, err := os.MkdirTemp("", "pattern-tuning-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create test YAML files
 	yamlContent1 := `apiVersion: loom/v1
@@ -188,7 +188,7 @@ func TestFindPatternYAMLFile_SingleFile(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "pattern-tuning-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create a single YAML file
 	yamlContent := `apiVersion: loom/v1
@@ -224,7 +224,7 @@ func TestGetCurrentPriority(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "pattern-tuning-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create a test YAML file
 	yamlContent := `apiVersion: loom/v1
@@ -271,7 +271,7 @@ func TestUpdatePatternPriority_PreservesFormat(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "pattern-tuning-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create a YAML file with comments and specific formatting
 	yamlContent := `# This is a test pattern library

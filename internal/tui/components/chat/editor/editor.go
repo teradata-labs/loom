@@ -140,7 +140,7 @@ func (m *editorCmp) openEditor(value string) tea.Cmd {
 			return util.ReportWarn("Message is empty")
 		}
 		// #nosec G104 -- best-effort cleanup of temp file
-		os.Remove(tmpfile.Name())
+		_ = os.Remove(tmpfile.Name())
 		return OpenEditorMsg{
 			Text: strings.TrimSpace(string(content)),
 		}

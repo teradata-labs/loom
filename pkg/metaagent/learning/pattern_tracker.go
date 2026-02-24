@@ -328,7 +328,7 @@ func (t *PatternEffectivenessTracker) flush(ctx context.Context) error {
 		span.RecordError(err)
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	// Insert all buffered stats
 	recordsWritten := 0
@@ -456,9 +456,9 @@ func (t *PatternEffectivenessTracker) publishMetric(
 		PatternName:  stats.PatternName,
 		Variant:      stats.Variant,
 		Domain:       stats.Domain,
-		TotalUsages:  int32(stats.TotalUsages),
-		SuccessCount: int32(stats.SuccessCount),
-		FailureCount: int32(stats.FailureCount),
+		TotalUsages:  safeInt32(stats.TotalUsages),
+		SuccessCount: safeInt32(stats.SuccessCount),
+		FailureCount: safeInt32(stats.FailureCount),
 		SuccessRate:  successRate,
 		AvgCostUsd:   avgCost,
 		AvgLatencyMs: avgLatency,
@@ -506,7 +506,7 @@ func (t *PatternEffectivenessTracker) publishMetric(
 func convertErrorTypes(errorTypes map[string]int) map[string]int32 {
 	result := make(map[string]int32, len(errorTypes))
 	for k, v := range errorTypes {
-		result[k] = int32(v)
+		result[k] = safeInt32(v)
 	}
 	return result
 }

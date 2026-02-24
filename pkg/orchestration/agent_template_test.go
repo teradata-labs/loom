@@ -262,8 +262,8 @@ spec:
 `
 
 	// Set environment variable
-	os.Setenv("LOOM_TEST_KEY", "secret-123")
-	defer os.Unsetenv("LOOM_TEST_KEY")
+	_ = os.Setenv("LOOM_TEST_KEY", "secret-123")
+	defer func() { _ = os.Unsetenv("LOOM_TEST_KEY") }()
 
 	registry := NewTemplateRegistry()
 	err := registry.LoadTemplateFromString(template)

@@ -146,7 +146,7 @@ func (t *HTTPClientTool) Execute(ctx context.Context, params map[string]interfac
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response body
 	respBody, err := io.ReadAll(resp.Body)
@@ -166,7 +166,7 @@ func (t *HTTPClientTool) Execute(ctx context.Context, params map[string]interfac
 	isJSON := false
 	if json.Valid(respBody) {
 		// #nosec G104 -- JSON unmarshal with fallback to raw response
-		json.Unmarshal(respBody, &jsonData)
+		_ = json.Unmarshal(respBody, &jsonData)
 		isJSON = true
 	}
 

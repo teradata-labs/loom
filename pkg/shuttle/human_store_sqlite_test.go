@@ -20,7 +20,7 @@ import (
 
 func TestSQLiteHumanRequestStore_BasicOperations(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -79,7 +79,7 @@ func TestSQLiteHumanRequestStore_BasicOperations(t *testing.T) {
 
 func TestSQLiteHumanRequestStore_GetNotFound(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -90,7 +90,7 @@ func TestSQLiteHumanRequestStore_GetNotFound(t *testing.T) {
 
 func TestSQLiteHumanRequestStore_ListPending(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -150,7 +150,7 @@ func TestSQLiteHumanRequestStore_ListPending(t *testing.T) {
 
 func TestSQLiteHumanRequestStore_ListBySession(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -217,7 +217,7 @@ func TestSQLiteHumanRequestStore_ListBySession(t *testing.T) {
 
 func TestSQLiteHumanRequestStore_RespondToRequest(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -261,7 +261,7 @@ func TestSQLiteHumanRequestStore_RespondToRequest(t *testing.T) {
 
 func TestSQLiteHumanRequestStore_RespondToRequest_AlreadyResponded(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -294,7 +294,7 @@ func TestSQLiteHumanRequestStore_RespondToRequest_AlreadyResponded(t *testing.T)
 
 func TestSQLiteHumanRequestStore_RespondToRequest_NotFound(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -308,7 +308,7 @@ func TestSQLiteHumanRequestStore_Concurrent(t *testing.T) {
 
 	t.Run("ConcurrentWrites", func(t *testing.T) {
 		store := newTestSQLiteStore(t)
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		var wg sync.WaitGroup
 		numGoroutines := 10
@@ -347,7 +347,7 @@ func TestSQLiteHumanRequestStore_Concurrent(t *testing.T) {
 
 	t.Run("ConcurrentReads", func(t *testing.T) {
 		store := newTestSQLiteStore(t)
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Create a request
 		now := time.Now()
@@ -388,7 +388,7 @@ func TestSQLiteHumanRequestStore_Concurrent(t *testing.T) {
 
 	t.Run("ConcurrentReadWrite", func(t *testing.T) {
 		store := newTestSQLiteStore(t)
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Create a request
 		now := time.Now()
@@ -485,7 +485,7 @@ func TestSQLiteHumanRequestStore_Persistence(t *testing.T) {
 		Tracer: observability.NewNoOpTracer(),
 	})
 	require.NoError(t, err)
-	defer store2.Close()
+	defer func() { _ = store2.Close() }()
 
 	retrieved, err := store2.Get(ctx, "persist-req")
 	require.NoError(t, err)
@@ -497,7 +497,7 @@ func TestSQLiteHumanRequestStore_Persistence(t *testing.T) {
 
 func TestSQLiteHumanRequestStore_UpdateNotFound(t *testing.T) {
 	store := newTestSQLiteStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 

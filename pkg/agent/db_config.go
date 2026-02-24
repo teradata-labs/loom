@@ -15,6 +15,7 @@ package agent
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 
@@ -64,8 +65,10 @@ func OpenDB(config DBConfig) (*sql.DB, error) {
 
 	// Set encryption key if encryption is enabled
 	if config.EncryptDatabase && !sqlitedriver.EncryptionSupported {
-		db.Close()
-		return nil, fmt.Errorf("database encryption requires CGO (SQLCipher); not available in this build")
+		return nil, errors.Join(
+			fmt.Errorf("database encryption requires CGO (SQLCipher); not available in this build"),
+			db.Close(),
+		)
 	}
 	if config.EncryptDatabase {
 		// Check for encryption key
@@ -75,33 +78,45 @@ func OpenDB(config DBConfig) (*sql.DB, error) {
 			key = os.Getenv("LOOM_DB_KEY")
 		}
 		if key == "" {
-			db.Close()
-			return nil, fmt.Errorf("encryption enabled but no key provided (set EncryptionKey or LOOM_DB_KEY env var)")
+			return nil, errors.Join(
+				fmt.Errorf("encryption enabled but no key provided (set EncryptionKey or LOOM_DB_KEY env var)"),
+				db.Close(),
+			)
 		}
 
 		// Set encryption key via PRAGMA
 		// Note: This must be the first operation after opening the database
 		_, err = db.Exec(fmt.Sprintf("PRAGMA key = '%s'", key))
 		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("failed to set encryption key: %w", err)
+			return nil, errors.Join(
+				fmt.Errorf("failed to set encryption key: %w", err),
+				db.Close(),
+			)
 		}
 	}
 
 	// Test the connection
 	if err := db.Ping(); err != nil {
-		db.Close()
+		closeErr := db.Close()
 		if config.EncryptDatabase {
-			return nil, fmt.Errorf("failed to verify encryption key (wrong key or corrupted database): %w", err)
+			return nil, errors.Join(
+				fmt.Errorf("failed to verify encryption key (wrong key or corrupted database): %w", err),
+				closeErr,
+			)
 		}
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to open database: %w", err),
+			closeErr,
+		)
 	}
 
 	// Enable foreign keys for CASCADE operations
 	// This must be set for each connection as it defaults to OFF in SQLite
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		_ = db.Close() // Ignore close error in error path
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("failed to enable foreign keys: %w", err),
+			db.Close(),
+		)
 	}
 
 	return db, nil

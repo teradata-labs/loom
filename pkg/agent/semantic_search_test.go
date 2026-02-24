@@ -27,15 +27,15 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// TestSearchFTS5_BasicQuery tests that FTS5 returns relevant results.
-func TestSearchFTS5_BasicQuery(t *testing.T) {
+// TestSearchMessages_BasicQuery tests that full-text search returns relevant results.
+func TestSearchMessages_BasicQuery(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "basic-query-session"
@@ -64,7 +64,7 @@ func TestSearchFTS5_BasicQuery(t *testing.T) {
 	}
 
 	// Search for database-related content
-	results, err := store.SearchFTS5(ctx, sessionID, "database optimization", 10)
+	results, err := store.SearchMessages(ctx, sessionID, "database optimization", 10)
 	require.NoError(t, err)
 
 	assert.Greater(t, len(results), 0, "Should find database-related messages")
@@ -80,15 +80,15 @@ func TestSearchFTS5_BasicQuery(t *testing.T) {
 	assert.True(t, found, "Should find messages about database optimization")
 }
 
-// TestSearchFTS5_SessionFiltering tests that only messages from the session are returned.
-func TestSearchFTS5_SessionFiltering(t *testing.T) {
+// TestSearchMessages_SessionFiltering tests that only messages from the session are returned.
+func TestSearchMessages_SessionFiltering(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -123,22 +123,22 @@ func TestSearchFTS5_SessionFiltering(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search in session1 only
-	results, err := store.SearchFTS5(ctx, session1, "database", 10)
+	results, err := store.SearchMessages(ctx, session1, "database", 10)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, len(results), "Should only find messages from session1")
 	assert.Equal(t, msg1.Content, results[0].Content)
 }
 
-// TestSearchFTS5_BM25Ranking tests that results are ordered by relevance.
-func TestSearchFTS5_BM25Ranking(t *testing.T) {
+// TestSearchMessages_BM25Ranking tests that results are ordered by relevance.
+func TestSearchMessages_BM25Ranking(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "ranking-session"
@@ -165,7 +165,7 @@ func TestSearchFTS5_BM25Ranking(t *testing.T) {
 	}
 
 	// Search for SQL performance
-	results, err := store.SearchFTS5(ctx, sessionID, "SQL performance", 10)
+	results, err := store.SearchMessages(ctx, sessionID, "SQL performance", 10)
 	require.NoError(t, err)
 
 	assert.Greater(t, len(results), 0, "Should find SQL-related messages")
@@ -177,39 +177,39 @@ func TestSearchFTS5_BM25Ranking(t *testing.T) {
 	assert.Contains(t, topContent, "performance", "Top result should contain performance")
 }
 
-// TestSearchFTS5_EmptyQuery tests handling of empty queries.
-func TestSearchFTS5_EmptyQuery(t *testing.T) {
+// TestSearchMessages_EmptyQuery tests handling of empty queries.
+func TestSearchMessages_EmptyQuery(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "empty-query-session"
 
 	// Search with empty query
-	results, err := store.SearchFTS5(ctx, sessionID, "", 10)
+	results, err := store.SearchMessages(ctx, sessionID, "", 10)
 	require.NoError(t, err)
 	assert.Equal(t, 0, len(results), "Empty query should return no results")
 
 	// Search with whitespace-only query
-	results, err = store.SearchFTS5(ctx, sessionID, "   ", 10)
+	results, err = store.SearchMessages(ctx, sessionID, "   ", 10)
 	require.NoError(t, err)
 	assert.Equal(t, 0, len(results), "Whitespace query should return no results")
 }
 
-// TestSearchFTS5_NoResults tests behavior when no matches are found.
-func TestSearchFTS5_NoResults(t *testing.T) {
+// TestSearchMessages_NoResults tests behavior when no matches are found.
+func TestSearchMessages_NoResults(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	sessionID := "no-results-session"
@@ -229,7 +229,7 @@ func TestSearchFTS5_NoResults(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search for unrelated content
-	results, err := store.SearchFTS5(ctx, sessionID, "kubernetes deployment", 10)
+	results, err := store.SearchMessages(ctx, sessionID, "kubernetes deployment", 10)
 	require.NoError(t, err)
 	assert.Equal(t, 0, len(results), "Should return empty array when no matches")
 }
@@ -364,12 +364,12 @@ func TestRerankByRelevance_MalformedJSON(t *testing.T) {
 // TestSearchMessages_Integration tests full pipeline (BM25 + rerank).
 func TestSearchMessages_Integration(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with store
 	memory := NewMemory()
@@ -377,7 +377,7 @@ func TestSearchMessages_Integration(t *testing.T) {
 	memory.SetTracer(tracer)
 
 	sessionID := "integration-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	// Get segmented memory
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
@@ -414,12 +414,12 @@ func TestSearchMessages_Integration(t *testing.T) {
 // TestSearchMessages_TokenBudget tests that promotion respects token budget.
 func TestSearchMessages_TokenBudget(t *testing.T) {
 	tmpDB := t.TempDir() + "/test.db"
-	defer os.Remove(tmpDB)
+	defer func() { _ = os.Remove(tmpDB) }()
 
 	tracer := observability.NewNoOpTracer()
 	store, err := NewSessionStore(tmpDB, tracer)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create memory with small token budget
 	memory := NewMemory()
@@ -428,7 +428,7 @@ func TestSearchMessages_TokenBudget(t *testing.T) {
 	memory.reservedOutputTokens = 100
 
 	sessionID := "budget-session"
-	session := memory.GetOrCreateSession(sessionID)
+	session := memory.GetOrCreateSession(context.Background(), sessionID)
 
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	require.True(t, ok)
@@ -442,7 +442,7 @@ func TestSearchMessages_TokenBudget(t *testing.T) {
 			Content:   "This is a message to fill up the token budget with some content.",
 			Timestamp: time.Now(),
 		}
-		segMem.AddMessage(msg)
+		segMem.AddMessage(context.Background(), msg)
 	}
 
 	// Save large messages to database

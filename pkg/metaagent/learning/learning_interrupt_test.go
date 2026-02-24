@@ -44,19 +44,19 @@ func TestLearningAgent_InterruptIntegration(t *testing.T) {
 
 	// Create interrupt channel with router and queue
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_interrupt_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	// Set interrupt channel on learning agent
 	agentID := "test-agent"
@@ -115,19 +115,19 @@ func TestLearningAgent_AnalyzeInterrupt(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_analyze_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -177,19 +177,19 @@ func TestLearningAgent_SelfTrigger(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_trigger_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	executionTrigger := int64(5) // Trigger after 5 executions
@@ -257,19 +257,19 @@ func TestLearningAgent_OptimizeInterrupt(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_optimize_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -405,19 +405,19 @@ func TestLearningAgent_ABTestInterrupt(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_abtest_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -470,19 +470,19 @@ func TestLearningAgent_ABTestInterrupt_InsufficientSamples(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_abtest_samples_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -535,19 +535,19 @@ func TestLearningAgent_ABTestInterrupt_AutoDiscoverVariants(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_abtest_auto_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -696,19 +696,19 @@ func TestLearningAgent_SyncInterrupt_Push(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_sync_push_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -759,19 +759,19 @@ func TestLearningAgent_SyncInterrupt_Pull(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_sync_pull_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -818,19 +818,19 @@ func TestLearningAgent_SyncInterrupt_Bidirectional(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_sync_bidir_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {
@@ -880,19 +880,19 @@ func TestLearningAgent_SyncInterrupt_WithPatternFilter(t *testing.T) {
 
 	// Create interrupt channel
 	router := interrupt.NewRouter(ctx)
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 
 	queueFile := "test_sync_filter_queue.db"
-	defer os.Remove(queueFile)
+	defer func() { _ = os.Remove(queueFile) }()
 
 	queue, err := interrupt.NewPersistentQueue(ctx, queueFile, router)
 	if err != nil {
 		t.Fatalf("Failed to create persistent queue: %v", err)
 	}
-	defer queue.Close()
+	defer func() { _ = queue.Close() }()
 
 	ic := interrupt.NewInterruptChannel(ctx, router, queue)
-	defer ic.Close()
+	defer func() { _ = ic.Close() }()
 
 	agentID := "test-agent"
 	if err := agent.SetInterruptChannel(ic, agentID, 0); err != nil {

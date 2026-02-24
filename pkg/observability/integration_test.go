@@ -45,7 +45,7 @@ func TestAutoSelectTracer_EmbeddedMemory(t *testing.T) {
 		t.Errorf("Expected EmbeddedTracer, got %T", tracer)
 		return
 	}
-	defer embeddedTracer.Close()
+	defer func() { _ = embeddedTracer.Close() }()
 
 	// Test basic span operations
 	ctx := context.Background()
@@ -85,7 +85,7 @@ func TestAutoSelectTracer_EmbeddedSQLite(t *testing.T) {
 		t.Errorf("Expected EmbeddedTracer, got %T", tracer)
 		return
 	}
-	defer embeddedTracer.Close()
+	defer func() { _ = embeddedTracer.Close() }()
 
 	// Test basic span operations
 	ctx := context.Background()
@@ -122,7 +122,7 @@ func TestAutoSelectTracer_Auto_PreferEmbedded(t *testing.T) {
 		t.Errorf("Expected EmbeddedTracer with PreferEmbedded=true, got %T", tracer)
 		return
 	}
-	defer embeddedTracer.Close()
+	defer func() { _ = embeddedTracer.Close() }()
 }
 
 // TestAutoSelectTracer_None verifies none mode returns NoOpTracer
@@ -157,7 +157,7 @@ func TestEmbeddedTracer_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 
@@ -208,7 +208,7 @@ func BenchmarkEmbeddedTracer_HighThroughput(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create tracer: %v", err)
 	}
-	defer tracer.Close()
+	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
 

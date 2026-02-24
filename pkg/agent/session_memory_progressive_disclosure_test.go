@@ -47,23 +47,23 @@ func TestSessionMemoryTool_ProgressiveDisclosure(t *testing.T) {
 	// Create 2 sessions - should NOT trigger registration
 	for i := 0; i < 2; i++ {
 		sessionID := fmt.Sprintf("session-%d", i)
-		session := agent.memory.GetOrCreateSession(sessionID)
+		session := agent.memory.GetOrCreateSession(ctx, sessionID)
 		session.AgentID = "test-agent"
 		require.NoError(t, store.SaveSession(ctx, session))
 	}
 
 	// Check progressive disclosure (should not register yet)
-	agent.checkAndRegisterSessionMemoryTool()
+	agent.checkAndRegisterSessionMemoryTool(ctx)
 	assert.False(t, agent.tools.IsRegistered("session_memory"), "session_memory should not be registered with only 2 sessions")
 
 	// Create 3rd session - should trigger registration
 	session3ID := "session-3"
-	session3 := agent.memory.GetOrCreateSession(session3ID)
+	session3 := agent.memory.GetOrCreateSession(ctx, session3ID)
 	session3.AgentID = "test-agent"
 	require.NoError(t, store.SaveSession(ctx, session3))
 
 	// Check progressive disclosure (should register now)
-	agent.checkAndRegisterSessionMemoryTool()
+	agent.checkAndRegisterSessionMemoryTool(ctx)
 	assert.True(t, agent.tools.IsRegistered("session_memory"), "session_memory should be registered after 3+ sessions")
 
 	// Verify tool is functional
@@ -83,7 +83,7 @@ func TestSessionMemoryTool_NoStoreNoRegistration(t *testing.T) {
 	agent.config = &Config{Name: "test-agent"}
 
 	// No store - should not register
-	agent.checkAndRegisterSessionMemoryTool()
+	agent.checkAndRegisterSessionMemoryTool(context.Background())
 	assert.False(t, agent.tools.IsRegistered("session_memory"), "session_memory should not be registered without store")
 }
 
@@ -105,17 +105,17 @@ func TestSessionMemoryTool_IdempotentRegistration(t *testing.T) {
 	// Create 3 sessions
 	for i := 0; i < 3; i++ {
 		sessionID := fmt.Sprintf("session-%d", i)
-		session := agent.memory.GetOrCreateSession(sessionID)
+		session := agent.memory.GetOrCreateSession(ctx, sessionID)
 		session.AgentID = "test-agent"
 		require.NoError(t, store.SaveSession(ctx, session))
 	}
 
 	// First registration
-	agent.checkAndRegisterSessionMemoryTool()
+	agent.checkAndRegisterSessionMemoryTool(ctx)
 	assert.True(t, agent.tools.IsRegistered("session_memory"))
 
 	// Call again - should not panic or duplicate
-	agent.checkAndRegisterSessionMemoryTool()
+	agent.checkAndRegisterSessionMemoryTool(ctx)
 	assert.True(t, agent.tools.IsRegistered("session_memory"))
 
 	// Verify still functional

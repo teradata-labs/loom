@@ -103,12 +103,12 @@ func TestBuildLogger_NeverUsesStdout(t *testing.T) {
 	_ = logger.Sync()
 
 	// Close the write end and read what was captured
-	stdoutW.Close()
+	_ = stdoutW.Close()
 	os.Stdout = origStdout
 
 	buf := make([]byte, 4096)
 	n, _ := stdoutR.Read(buf)
-	stdoutR.Close()
+	_ = stdoutR.Close()
 
 	assert.Equal(t, 0, n, "nothing should be written to stdout; got: %s", string(buf[:n]))
 }

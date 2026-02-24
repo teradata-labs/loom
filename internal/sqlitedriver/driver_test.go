@@ -18,7 +18,7 @@ func TestDriverRegistered(t *testing.T) {
 func TestBasicCRUD(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	_, err = db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
 	require.NoError(t, err)
@@ -35,7 +35,7 @@ func TestBasicCRUD(t *testing.T) {
 func TestFTS5Available(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	_, err = db.Exec("CREATE VIRTUAL TABLE fts_test USING fts5(content)")
 	require.NoError(t, err, "FTS5 should be available")

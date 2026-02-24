@@ -63,11 +63,11 @@ spec:
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// Load config
 	config, warnings, err := LoadLearningAgentConfig(tmpFile.Name())
@@ -118,11 +118,11 @@ spec:
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	config, warnings, err := LoadLearningAgentConfig(tmpFile.Name())
 	require.NoError(t, err)
@@ -156,11 +156,11 @@ spec: {}
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	_, _, err = LoadLearningAgentConfig(tmpFile.Name())
 	assert.Error(t, err)
@@ -178,11 +178,11 @@ spec: {}
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	_, _, err = LoadLearningAgentConfig(tmpFile.Name())
 	assert.Error(t, err)
@@ -199,11 +199,11 @@ spec: {}
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	_, _, err = LoadLearningAgentConfig(tmpFile.Name())
 	assert.Error(t, err)
@@ -222,11 +222,11 @@ spec:
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	_, _, err = LoadLearningAgentConfig(tmpFile.Name())
 	assert.Error(t, err)
@@ -245,11 +245,11 @@ spec:
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	_, _, err = LoadLearningAgentConfig(tmpFile.Name())
 	assert.Error(t, err)
@@ -271,11 +271,11 @@ spec:
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	config, warnings, err := LoadLearningAgentConfig(tmpFile.Name())
 	require.NoError(t, err)
@@ -294,8 +294,8 @@ spec:
 
 func TestLoadLearningAgentConfig_EnvVarExpansion(t *testing.T) {
 	// Set env var
-	os.Setenv("TEST_SLACK_WEBHOOK", "https://hooks.slack.com/env-test")
-	defer os.Unsetenv("TEST_SLACK_WEBHOOK")
+	_ = os.Setenv("TEST_SLACK_WEBHOOK", "https://hooks.slack.com/env-test")
+	defer func() { _ = os.Unsetenv("TEST_SLACK_WEBHOOK") }()
 
 	content := `
 apiVersion: loom/v1
@@ -310,11 +310,11 @@ spec:
 
 	tmpFile, err := os.CreateTemp("", "learning-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	config, _, err := LoadLearningAgentConfig(tmpFile.Name())
 	require.NoError(t, err)
@@ -454,7 +454,7 @@ func TestLoadLearningAgentConfigs_Directory(t *testing.T) {
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "learning-configs-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create two config files
 	config1 := `

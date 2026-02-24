@@ -243,9 +243,10 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		// Handle scroll in sidebar
-		if msg.Button == tea.MouseWheelUp {
+		switch msg.Button {
+		case tea.MouseWheelUp:
 			m.scrollUp(1)
-		} else if msg.Button == tea.MouseWheelDown {
+		case tea.MouseWheelDown:
 			m.scrollDown(1)
 		}
 		return m, nil

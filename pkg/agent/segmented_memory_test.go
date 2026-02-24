@@ -76,7 +76,7 @@ func TestSegmentedMemory_AddMessage(t *testing.T) {
 			Content:   fmt.Sprintf("Message %d", i),
 			Timestamp: time.Now(),
 		}
-		sm.AddMessage(msg)
+		sm.AddMessage(context.Background(), msg)
 	}
 
 	assert.Equal(t, 5, sm.GetL1MessageCount())
@@ -99,7 +99,7 @@ func TestSegmentedMemory_AddMessage_Compression(t *testing.T) {
 			Content:   fmt.Sprintf("Message %d with some content to take up tokens", i),
 			Timestamp: time.Now(),
 		}
-		sm.AddMessage(msg)
+		sm.AddMessage(context.Background(), msg)
 	}
 
 	// Should trigger compression and keep L1 messages reasonable
@@ -133,7 +133,7 @@ func TestSegmentedMemory_AddMessage_AdaptiveCompression(t *testing.T) {
 			Content:   strings.Repeat(fmt.Sprintf("Long message %d ", i), 100), // ~500 tokens each
 			Timestamp: time.Now(),
 		}
-		sm.AddMessage(msg)
+		sm.AddMessage(context.Background(), msg)
 	}
 
 	// Should have compressed some messages (token-based compression)
@@ -256,8 +256,8 @@ func TestSegmentedMemory_GetContextWindow(t *testing.T) {
 	sm := NewSegmentedMemory("ROM: System documentation", 0, 0)
 
 	// Add messages
-	sm.AddMessage(Message{Role: "user", Content: "Hello"})
-	sm.AddMessage(Message{Role: "assistant", Content: "Hi there"})
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "Hello"})
+	sm.AddMessage(context.Background(), Message{Role: "assistant", Content: "Hi there"})
 
 	// Add tool result
 	sm.AddToolResult(CachedToolResult{
@@ -288,7 +288,7 @@ func TestSegmentedMemory_CompactMemory(t *testing.T) {
 
 	// Add messages
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: fmt.Sprintf("Message %d", i),
 		})
@@ -300,7 +300,7 @@ func TestSegmentedMemory_CompactMemory(t *testing.T) {
 	assert.Equal(t, 10, initialL1Count, "All 10 tiny messages should fit in L1")
 
 	// Compact memory
-	messagesCompressed, tokensSaved := sm.CompactMemory()
+	messagesCompressed, tokensSaved := sm.CompactMemory(context.Background())
 
 	// All messages should be compressed
 	assert.Equal(t, initialL1Count, messagesCompressed)
@@ -320,7 +320,7 @@ func TestSegmentedMemory_GetMemoryStats(t *testing.T) {
 	sm := NewSegmentedMemory("ROM content for testing", 0, 0)
 
 	// Add some data
-	sm.AddMessage(Message{Role: "user", Content: "Test message"})
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "Test message"})
 	sm.AddToolResult(CachedToolResult{
 		ToolName: "test",
 		Args:     map[string]interface{}{"param": "value"},
@@ -377,14 +377,14 @@ func TestSegmentedMemory_ClearL2(t *testing.T) {
 
 	// Add messages
 	for i := 0; i < 15; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: strings.Repeat(fmt.Sprintf("Message %d ", i), 50),
 		})
 	}
 
 	// Manually trigger compaction to create L2 content
-	sm.CompactMemory()
+	sm.CompactMemory(context.Background())
 
 	// Verify L2 has content
 	sm.mu.RLock()
@@ -419,7 +419,7 @@ func TestSegmentedMemory_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < operationsPerGoroutine; j++ {
-				sm.AddMessage(Message{
+				sm.AddMessage(context.Background(), Message{
 					Role:    "user",
 					Content: fmt.Sprintf("Message from goroutine %d iteration %d", id, j),
 				})
@@ -487,7 +487,7 @@ func TestSegmentedMemory_CompressionWithMockCompressor(t *testing.T) {
 
 	// Add messages to trigger compression
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: fmt.Sprintf("msg%d", i),
 		})
@@ -513,7 +513,7 @@ func TestSegmentedMemory_CompressionFallback(t *testing.T) {
 
 	// Add messages to trigger compression
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: fmt.Sprintf("Message %d", i),
 		})
@@ -534,7 +534,7 @@ func TestSegmentedMemory_TokenCountAccuracy(t *testing.T) {
 	require.Greater(t, initialTokens, 0, "ROM should have tokens")
 
 	// Add a message
-	sm.AddMessage(Message{
+	sm.AddMessage(context.Background(), Message{
 		Role:    "user",
 		Content: "Hello world",
 	})
@@ -564,7 +564,7 @@ func BenchmarkSegmentedMemory_AddMessage(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: "Benchmark message",
 		})
@@ -576,7 +576,7 @@ func BenchmarkSegmentedMemory_GetContextWindow(b *testing.B) {
 
 	// Pre-populate with data
 	for i := 0; i < 10; i++ {
-		sm.AddMessage(Message{
+		sm.AddMessage(context.Background(), Message{
 			Role:    "user",
 			Content: fmt.Sprintf("Message %d", i),
 		})
@@ -600,7 +600,7 @@ func BenchmarkSegmentedMemory_ConcurrentAccess(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			if i%2 == 0 {
-				sm.AddMessage(Message{
+				sm.AddMessage(context.Background(), Message{
 					Role:    "user",
 					Content: fmt.Sprintf("Message %d", i),
 				})
@@ -729,7 +729,7 @@ func TestFindingsInjectionIntoContext(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 100000, 10000)
 
 	// Add a user message
-	sm.AddMessage(Message{Role: "user", Content: "Analyze data"})
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "Analyze data"})
 
 	// Record findings
 	sm.RecordFinding("table.row_count", 1000, "statistic", "", "")

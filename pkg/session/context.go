@@ -21,10 +21,16 @@ func WithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, sessionIDKey{}, sessionID)
 }
 
-// SessionIDFromContext extracts the session ID from the context
-// Returns empty string if not found
+// SessionIDFromContext extracts the session ID from the context.
+// Returns empty string if not found.
+// Supports both typed key (sessionIDKey{}) and string key ("session_id") for backward compatibility.
 func SessionIDFromContext(ctx context.Context) string {
+	// Try typed key first
 	if sessionID, ok := ctx.Value(sessionIDKey{}).(string); ok {
+		return sessionID
+	}
+	// Fallback to string key for backward compatibility with contextWithValue wrappers
+	if sessionID, ok := ctx.Value("session_id").(string); ok {
 		return sessionID
 	}
 	return ""

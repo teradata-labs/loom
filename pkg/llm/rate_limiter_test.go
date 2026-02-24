@@ -306,7 +306,7 @@ func TestRateLimiter_QueueTimeout(t *testing.T) {
 	assert.Greater(t, metrics.DroppedRequests, int64(0))
 
 	// Clean up
-	rl.Close()
+	_ = rl.Close()
 	wg.Wait()
 }
 

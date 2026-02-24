@@ -571,8 +571,8 @@ func TestValidateFileCreation_PreventFakeFiles(t *testing.T) {
 	// Create a temporary file for testing
 	tmpFile, err := os.CreateTemp("", "test-report-*.html")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name()) // Clean up after test
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }() // Clean up after test
+	_ = tmpFile.Close()
 
 	// Stage 10 claiming non-existent file (hallucination)
 	stage10Hallucinated := StageOutput{

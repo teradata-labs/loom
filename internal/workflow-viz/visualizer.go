@@ -292,7 +292,7 @@ func GenerateHTML(data *VisualizationData, outputPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating output file: %w", err)
 	}
-	defer outFile.Close()
+	defer func() { _ = outFile.Close() }()
 
 	if err := tmpl.Execute(outFile, data); err != nil {
 		return fmt.Errorf("executing template: %w", err)

@@ -1389,7 +1389,7 @@ func newMockClientWithHandler(t *testing.T, handler requestHandler) (*client.Cli
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
-		c.Close()
+		_ = c.Close()
 	})
 
 	go func() {

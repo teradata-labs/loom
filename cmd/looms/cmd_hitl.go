@@ -192,7 +192,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	var requests []*shuttle.HumanRequest
 	if hitlSessionID != "" {
@@ -235,8 +235,8 @@ func runHitlList(cmd *cobra.Command, args []string) {
 
 	// Print table
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tAGENT\tPRIORITY\tTYPE\tAGE\tQUESTION")
-	fmt.Fprintln(w, strings.Repeat("-", 80))
+	_, _ = fmt.Fprintln(w, "ID\tAGENT\tPRIORITY\tTYPE\tAGE\tQUESTION")
+	_, _ = fmt.Fprintln(w, strings.Repeat("-", 80))
 
 	for _, req := range requests {
 		age := time.Since(req.CreatedAt).Round(time.Second)
@@ -245,7 +245,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 			question = question[:47] + "..."
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
 			req.ID,
 			req.AgentID,
 			req.Priority,
@@ -256,7 +256,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 	}
 
 	// #nosec G104 -- Flush to stdout, no error handling needed
-	w.Flush()
+	_ = w.Flush()
 	fmt.Printf("\nTotal: %d pending request(s)\n", len(requests))
 }
 
@@ -282,7 +282,7 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	req, err := store.Get(ctx, requestID)
 	if err != nil {
@@ -368,7 +368,7 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Parse response data if provided
 	var responseData map[string]interface{}
