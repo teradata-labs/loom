@@ -298,7 +298,7 @@ Each pattern includes:
 
 ## 📞 Questions?
 
-**Location**: `/Users/ilsun.park/Projects/loom-public-c2/workflow_examples/`
+**Location**: `workflow_examples/`
 
 **Start here**: `README.md`  
 **Navigate**: `INDEX.md`  

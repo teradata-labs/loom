@@ -830,8 +830,11 @@ func LoadConfig(cfgFile string) (*Config, error) {
 		// Config file not found; using defaults + env vars + flags
 	}
 
-	// Bind environment variables
+	// Bind environment variables.
+	// SetEnvKeyReplacer maps dots in config keys to underscores in env var names,
+	// e.g. storage.postgres.dsn → LOOM_STORAGE_POSTGRES_DSN.
 	viper.SetEnvPrefix("LOOM")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
 	// Unmarshal config
@@ -912,6 +915,8 @@ func setDefaults() {
 	viper.SetDefault("storage.backend", "sqlite")
 	viper.SetDefault("storage.sqlite.path", defaultDBPath)
 	viper.SetDefault("storage.sqlite.wal_mode", true)
+	viper.SetDefault("storage.postgres.dsn", "")
+	viper.SetDefault("storage.postgres.host", "")
 	viper.SetDefault("storage.postgres.port", 5432)
 	viper.SetDefault("storage.postgres.ssl_mode", "require")
 	viper.SetDefault("storage.postgres.schema", "public")

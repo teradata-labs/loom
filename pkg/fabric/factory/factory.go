@@ -13,9 +13,11 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/backends/mcp"
+	supabasebackend "github.com/teradata-labs/loom/pkg/backends/supabase"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
@@ -24,7 +26,7 @@ import (
 
 	// SQL drivers
 	_ "github.com/go-sql-driver/mysql"                      // mysql
-	_ "github.com/lib/pq"                                   // postgres
+	_ "github.com/jackc/pgx/v5/stdlib"                      // postgres (pgx)
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver" // sqlite3
 )
 
@@ -53,8 +55,11 @@ func NewBackend(config *loomv1.BackendConfig) (fabric.ExecutionBackend, error) {
 	case "mcp":
 		return newMCPBackend(config)
 
+	case "supabase":
+		return newSupabaseBackend(config)
+
 	default:
-		return nil, fmt.Errorf("unsupported backend type: %s (supported: postgres, mysql, sqlite, file, rest, mcp)", config.Type)
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: postgres, mysql, sqlite, file, rest, mcp, supabase)", config.Type)
 	}
 }
 
@@ -73,6 +78,9 @@ func newSQLBackend(config *loomv1.BackendConfig) (fabric.ExecutionBackend, error
 	driver := config.Type
 	if driver == "sqlite" {
 		driver = "sqlite3" // go-sqlite3 driver name
+	}
+	if driver == "postgres" {
+		driver = "pgx" // pgx/v5/stdlib registers as "pgx"
 	}
 
 	// Open database connection
@@ -239,4 +247,19 @@ func createMCPClientFromConfig(config *loomv1.MCPConnection) (mcp.MCPClient, err
 	}
 
 	return mcpClient, nil
+}
+
+// newSupabaseBackend creates a Supabase backend with native pgxpool
+func newSupabaseBackend(config *loomv1.BackendConfig) (fabric.ExecutionBackend, error) {
+	sbConfig := config.GetSupabase()
+	if sbConfig == nil {
+		return nil, fmt.Errorf("supabase connection config is required for supabase backend")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	logger := zap.NewNop()
+
+	return supabasebackend.NewBackend(ctx, config.Name, sbConfig, logger)
 }

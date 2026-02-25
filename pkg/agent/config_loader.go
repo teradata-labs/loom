@@ -65,6 +65,7 @@ type K8sStyleAgentConfig struct {
 			Type   string                 `yaml:"type"`
 			Config map[string]interface{} `yaml:"config"`
 		} `yaml:"backend"`
+		BackendPath   string                 `yaml:"backend_path"` // Path to backend YAML config file
 		LLM           LLMConfigYAML          `yaml:"llm"`
 		Tools         interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
 		SystemPrompt  string                 `yaml:"system_prompt"`
@@ -313,10 +314,11 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 		legacy.Agent.Metadata[k] = v
 	}
 
-	// Backend path from spec.backend
+	// Backend path from spec.backend_path or spec.backend
+	if k8s.Spec.BackendPath != "" {
+		legacy.Agent.BackendPath = k8s.Spec.BackendPath
+	}
 	if k8s.Spec.Backend.Name != "" {
-		// For now, just store backend name in metadata
-		// TODO: Support full backend config conversion if needed
 		legacy.Agent.Metadata["backend_name"] = k8s.Spec.Backend.Name
 		legacy.Agent.Metadata["backend_type"] = k8s.Spec.Backend.Type
 	}

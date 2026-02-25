@@ -491,6 +491,238 @@ rest:
 	assert.Equal(t, "secret123", rest.Auth.Password)
 }
 
+func TestLoadBackend_Supabase(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	yamlContent := `apiVersion: loom/v1
+kind: Backend
+name: my-supabase
+description: Supabase analytics database
+type: supabase
+supabase:
+  project_ref: abcdefghijklmnop
+  api_key: ${SUPABASE_ANON_KEY}
+  database_password: ${SUPABASE_DB_PASSWORD}
+  pooler_mode: transaction
+  enable_rls: true
+  database: analytics
+  max_pool_size: 20
+  region: us-east-1
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 1800
+health_check:
+  enabled: true
+  interval_seconds: 60
+  timeout_seconds: 5
+  query: "SELECT 1"
+`
+
+	_ = os.Setenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test")
+	_ = os.Setenv("SUPABASE_DB_PASSWORD", "super-secret-pass")
+	defer func() {
+		_ = os.Unsetenv("SUPABASE_ANON_KEY")
+		_ = os.Unsetenv("SUPABASE_DB_PASSWORD")
+	}()
+
+	backendPath := filepath.Join(tmpDir, "supabase.yaml")
+	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
+
+	backend, err := LoadBackend(backendPath)
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+
+	// Verify basic fields
+	assert.Equal(t, "my-supabase", backend.Name)
+	assert.Equal(t, "Supabase analytics database", backend.Description)
+	assert.Equal(t, "supabase", backend.Type)
+
+	// Verify Supabase connection
+	sb := backend.GetSupabase()
+	require.NotNil(t, sb)
+	assert.Equal(t, "abcdefghijklmnop", sb.ProjectRef)
+	assert.Equal(t, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test", sb.ApiKey)
+	assert.Equal(t, "super-secret-pass", sb.DatabasePassword)
+	assert.Equal(t, int32(2), int32(sb.PoolerMode)) // POOLER_MODE_TRANSACTION
+	assert.True(t, sb.EnableRls)
+	assert.Equal(t, "analytics", sb.Database)
+	assert.Equal(t, int32(20), sb.MaxPoolSize)
+	assert.Equal(t, "us-east-1", sb.Region)
+
+	// Verify schema discovery
+	assert.True(t, backend.SchemaDiscovery.Enabled)
+	assert.Equal(t, int32(1800), backend.SchemaDiscovery.CacheTtlSeconds)
+
+	// Verify health check
+	assert.True(t, backend.HealthCheck.Enabled)
+	assert.Equal(t, "SELECT 1", backend.HealthCheck.Query)
+}
+
+func TestLoadBackend_SupabaseDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Minimal Supabase config to test defaults
+	yamlContent := `apiVersion: loom/v1
+kind: Backend
+name: minimal-supabase
+type: supabase
+supabase:
+  project_ref: myproject
+  database_password: secret
+  region: eu-west-1
+`
+
+	backendPath := filepath.Join(tmpDir, "supabase.yaml")
+	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
+
+	backend, err := LoadBackend(backendPath)
+	require.NoError(t, err)
+
+	sb := backend.GetSupabase()
+	require.NotNil(t, sb)
+	assert.Equal(t, "postgres", sb.Database, "default database should be 'postgres'")
+	assert.Equal(t, int32(10), sb.MaxPoolSize, "default max_pool_size should be 10")
+}
+
+func TestLoadBackend_SupabaseSessionMode(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	yamlContent := `apiVersion: loom/v1
+kind: Backend
+name: session-supabase
+type: supabase
+supabase:
+  project_ref: proj
+  database_password: pass
+  pooler_mode: session
+  region: us-west-2
+`
+
+	backendPath := filepath.Join(tmpDir, "supabase.yaml")
+	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
+
+	backend, err := LoadBackend(backendPath)
+	require.NoError(t, err)
+
+	sb := backend.GetSupabase()
+	require.NotNil(t, sb)
+	assert.Equal(t, int32(1), int32(sb.PoolerMode)) // POOLER_MODE_SESSION
+}
+
+func TestLoadBackend_SupabaseValidationErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		expectedErr string
+	}{
+		{
+			name: "missing supabase config",
+			yaml: `apiVersion: loom/v1
+kind: Backend
+name: test
+type: supabase`,
+			expectedErr: "supabase connection config is required",
+		},
+		{
+			name: "missing project_ref",
+			yaml: `apiVersion: loom/v1
+kind: Backend
+name: test
+type: supabase
+supabase:
+  database_password: secret
+  region: us-east-1`,
+			expectedErr: "supabase.project_ref is required",
+		},
+		{
+			name: "missing database_password",
+			yaml: `apiVersion: loom/v1
+kind: Backend
+name: test
+type: supabase
+supabase:
+  project_ref: proj
+  region: us-east-1`,
+			expectedErr: "supabase.database_password is required",
+		},
+		{
+			name: "missing region",
+			yaml: `apiVersion: loom/v1
+kind: Backend
+name: test
+type: supabase
+supabase:
+  project_ref: proj
+  database_password: secret`,
+			expectedErr: "supabase.region is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			backendPath := filepath.Join(tmpDir, "backend.yaml")
+			require.NoError(t, os.WriteFile(backendPath, []byte(tt.yaml), 0644))
+
+			_, err := LoadBackend(backendPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectedErr)
+		})
+	}
+}
+
+func TestLoadBackend_SupabasePoolerHost(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	yamlContent := `apiVersion: loom/v1
+kind: Backend
+name: pooler-host-supabase
+type: supabase
+supabase:
+  project_ref: abcdefghijklmnopqrst
+  database_password: secret
+  pooler_mode: session
+  region: us-east-1
+  pooler_host: aws-1-us-east-1.pooler.supabase.com
+`
+
+	backendPath := filepath.Join(tmpDir, "supabase.yaml")
+	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
+
+	backend, err := LoadBackend(backendPath)
+	require.NoError(t, err)
+
+	sb := backend.GetSupabase()
+	require.NotNil(t, sb)
+	assert.Equal(t, "aws-1-us-east-1.pooler.supabase.com", sb.PoolerHost)
+	assert.Equal(t, "abcdefghijklmnopqrst", sb.ProjectRef)
+	assert.Equal(t, "us-east-1", sb.Region)
+}
+
+func TestLoadBackend_SupabasePoolerHostEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	yamlContent := `apiVersion: loom/v1
+kind: Backend
+name: no-pooler-host
+type: supabase
+supabase:
+  project_ref: myproj
+  database_password: secret
+  region: eu-west-1
+`
+
+	backendPath := filepath.Join(tmpDir, "supabase.yaml")
+	require.NoError(t, os.WriteFile(backendPath, []byte(yamlContent), 0644))
+
+	backend, err := LoadBackend(backendPath)
+	require.NoError(t, err)
+
+	sb := backend.GetSupabase()
+	require.NotNil(t, sb)
+	assert.Empty(t, sb.PoolerHost, "pooler_host should be empty when not specified")
+}
+
 func TestLoadBackend_MySQLAndSQLite(t *testing.T) {
 	tests := []struct {
 		name   string
