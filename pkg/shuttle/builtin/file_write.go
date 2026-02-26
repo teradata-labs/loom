@@ -54,20 +54,8 @@ func (t *FileWriteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/file.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *FileWriteTool) Description() string {
-	return `⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (echo command).
-
-Writes content to files on the local filesystem. Creates parent directories automatically.
-Safe by default - won't overwrite system files.
-
-Use this tool to:
-- Save API responses to files
-- Create data files from agent operations
-- Store results for later processing
-- Generate output files
-
-RECOMMENDED ALTERNATIVES:
-- workspace tool: action=write, scope=artifact (session-scoped, indexed, searchable)
-- shell_execute: echo "content" > /path/to/file (direct filesystem access)`
+	return `⚠️ DEPRECATED: Use workspace (action=write, scope=artifact) or shell_execute instead.
+Writes content to files on the local filesystem, creating parent directories automatically. Won't overwrite system files.`
 }
 
 func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {
@@ -75,7 +63,7 @@ func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for writing files",
 		map[string]*shuttle.JSONSchema{
-			"path": shuttle.NewStringSchema("File path to write (required). Relative paths are safe."),
+			"path": shuttle.NewStringSchema("File path to write (required)."),
 			"content": shuttle.NewStringSchema("Content to write to the file (required). Max 50KB per call - use append mode for larger content.").
 				WithLength(nil, &maxContentLen),
 			"mode": shuttle.NewStringSchema("Write mode: 'create' (fail if exists), 'overwrite', or 'append' (default: create)").

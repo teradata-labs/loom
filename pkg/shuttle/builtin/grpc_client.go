@@ -41,25 +41,17 @@ func (t *GRPCClientTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/grpc.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *GRPCClientTool) Description() string {
-	return `Calls gRPC services using server reflection. No proto files needed!
-Automatically discovers service methods and constructs requests.
-
-Use this tool to:
-- Call other microservices
-- Query gRPC APIs
-- Integrate with gRPC-based systems
-- Test gRPC endpoints
-
-The tool uses gRPC reflection to automatically understand the service schema.`
+	return `Calls gRPC services using server reflection — no proto files needed.
+Automatically discovers service methods, constructs requests, and returns typed responses.`
 }
 
 func (t *GRPCClientTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for gRPC call",
 		map[string]*shuttle.JSONSchema{
-			"address": shuttle.NewStringSchema("gRPC server address (e.g., 'localhost:9090')"),
-			"service": shuttle.NewStringSchema("Service name (e.g., 'loom.v1.LoomService')"),
-			"method":  shuttle.NewStringSchema("Method name (e.g., 'Weave' or 'GetHealth')"),
+			"address": shuttle.NewStringSchema("gRPC server address (host:port)."),
+			"service": shuttle.NewStringSchema("Fully qualified service name."),
+			"method":  shuttle.NewStringSchema("Method name."),
 			"request": shuttle.NewObjectSchema("Request parameters as JSON object", map[string]*shuttle.JSONSchema{}, nil),
 			"timeout_seconds": shuttle.NewNumberSchema("Call timeout in seconds (default: 30)").
 				WithDefault(30),

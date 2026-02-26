@@ -74,7 +74,7 @@ func (t *SendMessageTool) InputSchema() *shuttle.JSONSchema {
 		"Parameters for sending a message to another agent",
 		map[string]*shuttle.JSONSchema{
 			"to_agent": shuttle.NewStringSchema("Target agent ID (required)"),
-			"message_type": shuttle.NewStringSchema("Message type (e.g., 'data.request', 'data.response', 'task.update')").
+			"message_type": shuttle.NewStringSchema("Message type (e.g., 'data.request').").
 				WithDefault("message"),
 			"message": shuttle.NewStringSchema("The message content to send (required)"),
 			"metadata": shuttle.NewObjectSchema(

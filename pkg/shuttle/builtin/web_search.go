@@ -88,32 +88,9 @@ func (t *WebSearchTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/web_search.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *WebSearchTool) Description() string {
-	return `Search the web for current information, news, articles, and documentation.
-Returns search results with titles, URLs, snippets, and optional content.
-AI-optimized search results using Tavily by default!
-
-Supports multiple providers:
-- Tavily (default, AI-optimized results, requires FREE API key, 1000/month)
-- Brave Search (excellent results, requires FREE API key, 2000/month)
-- SerpAPI (Google results, requires API key, 100/month free)
-- DuckDuckGo (no API key, instant answers for factual queries, limited results)
-
-Use this tool to:
-- Find current information beyond training data cutoff
-- Research recent news and events
-- Look up documentation and guides
-- Verify facts and claims
-- Find sources for citations
-- Search for recipes, shopping, how-tos, and more
-
-Note: Tavily provides AI-optimized search results. Get your FREE API key from:
-- Tavily: https://tavily.com/ (1000 searches/month FREE)
-- Brave Search: https://brave.com/search/api/ (2000 searches/month FREE)
-
-API keys can be configured via:
-- CLI: 'looms config set-key tavily_api_key' (secure system keyring)
-- Environment: TAVILY_API_KEY, BRAVE_API_KEY, SERPAPI_KEY
-- Parameter: api_key="your-key" (direct specification)`
+	return `Search the web for current information beyond the model's training cutoff.
+Returns results with titles, URLs, and snippets.
+Providers: tavily (default), brave, serpapi, duckduckgo.`
 }
 
 func (t *WebSearchTool) InputSchema() *shuttle.JSONSchema {
@@ -124,7 +101,7 @@ func (t *WebSearchTool) InputSchema() *shuttle.JSONSchema {
 			"provider": shuttle.NewStringSchema("Search provider to use (default: tavily)").
 				WithEnum("tavily", "brave", "serpapi", "duckduckgo").
 				WithDefault("tavily"),
-			"api_key": shuttle.NewStringSchema("API key for the search provider (required for brave, tavily, serpapi; not needed for duckduckgo)"),
+			"api_key": shuttle.NewStringSchema("API key for the provider (not needed for duckduckgo)"),
 			"max_results": shuttle.NewNumberSchema("Maximum number of results to return (default: 10)").
 				WithDefault(10),
 			"search_lang": shuttle.NewStringSchema("Search language code (default: en)").
