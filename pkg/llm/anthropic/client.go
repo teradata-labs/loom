@@ -50,6 +50,28 @@ var (
 	globalRateLimiterOnce sync.Once
 )
 
+// DefaultAnthropicRateLimiterConfig returns safe defaults for Anthropic's API.
+//
+// Anthropic rate limits by tier (as of 2026):
+//   - Free / Tier 1: 50 RPM, 30K–100K ITPM
+//   - Tier 2:        1000 RPM, 2M ITPM
+//   - Tier 3+:       5000+ RPM
+//
+// These defaults target Tier 1 (the most common). Users on higher tiers should
+// increase requests_per_second and tokens_per_minute in loom.yaml.
+func DefaultAnthropicRateLimiterConfig() llm.RateLimiterConfig {
+	return llm.RateLimiterConfig{
+		Enabled:           true,
+		RequestsPerSecond: 0.7,                    // ~42 RPM — safely under Tier 1 50 RPM limit
+		TokensPerMinute:   80000,                  // 80% of Tier 1 100K ITPM (30K on free)
+		BurstCapacity:     3,                      // Conservative burst for multi-agent sessions
+		MinDelay:          800 * time.Millisecond, // ~1.25 RPS ceiling; prevents burst overshoots
+		MaxRetries:        5,
+		RetryBackoff:      2 * time.Second, // Longer initial backoff for Anthropic 429s
+		QueueTimeout:      5 * time.Minute,
+	}
+}
+
 // Client implements the LLMProvider interface for Anthropic's Claude API.
 type Client struct {
 	apiKey      string
@@ -121,9 +143,39 @@ func NewClient(config Config) *Client {
 }
 
 // getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
+// Caller-supplied non-zero fields override DefaultAnthropicRateLimiterConfig values.
 func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
 	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
+		// Start from Anthropic-specific defaults, then apply caller overrides.
+		// This ensures we don't blindly fall through to DefaultRateLimiterConfig()
+		// (which is tuned for Bedrock and allows 2 RPS — exceeding Anthropic Tier 1).
+		merged := DefaultAnthropicRateLimiterConfig()
+		merged.Enabled = config.Enabled
+		if config.Logger != nil {
+			merged.Logger = config.Logger
+		}
+		if config.RequestsPerSecond > 0 {
+			merged.RequestsPerSecond = config.RequestsPerSecond
+		}
+		if config.TokensPerMinute > 0 {
+			merged.TokensPerMinute = config.TokensPerMinute
+		}
+		if config.BurstCapacity > 0 {
+			merged.BurstCapacity = config.BurstCapacity
+		}
+		if config.MinDelay > 0 {
+			merged.MinDelay = config.MinDelay
+		}
+		if config.MaxRetries > 0 {
+			merged.MaxRetries = config.MaxRetries
+		}
+		if config.RetryBackoff > 0 {
+			merged.RetryBackoff = config.RetryBackoff
+		}
+		if config.QueueTimeout > 0 {
+			merged.QueueTimeout = config.QueueTimeout
+		}
+		globalRateLimiter = llm.NewRateLimiter(merged)
 	})
 	return globalRateLimiter
 }
