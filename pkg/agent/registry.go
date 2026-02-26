@@ -67,6 +67,11 @@ type Registry struct {
 	errorStore        ErrorStore                 // For error tracking and retrieval
 	permissionChecker *shuttle.PermissionChecker // For permission validation
 	artifactStore     interface{}                // artifacts.Store for workspace tool
+
+	// providerPool is the server-level named provider pool injected by cmd_serve.go.
+	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
+	// Protected by mu (RW lock shared with the rest of the registry state).
+	providerPool map[string]LLMProvider
 }
 
 // AgentInstanceInfo tracks runtime information about an agent instance
@@ -168,6 +173,19 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 	}
 
 	return r, nil
+}
+
+// SetProviderPool injects a server-level named provider pool into the registry.
+// Agents whose LLM config names a pool entry (e.g., provider: "fast") will receive
+// the corresponding pre-built LLMProvider instead of constructing a new one.
+// This must be called before agents are loaded or created to take effect.
+// It is safe to call concurrently with other registry operations.
+func (r *Registry) SetProviderPool(pool map[string]LLMProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providerPool = pool
+	r.logger.Info("Provider pool configured in registry",
+		zap.Int("providers", len(pool)))
 }
 
 // LoadAgents loads all agent configurations from the agents directory and workflows
@@ -804,8 +822,31 @@ func (r *Registry) isCustomTool(toolName string, config *loomv1.AgentConfig) boo
 	return false
 }
 
-// createLLMProvider creates an LLM provider from configuration
+// createLLMProvider creates an LLM provider from configuration.
+// Resolution order:
+//  1. If config.Provider names a pool entry (injected via SetProviderPool), use it.
+//  2. If a registry-level default LLMProvider is set and no per-agent provider is
+//     named, use the default.
+//  3. Otherwise construct a new provider from the standard provider type names
+//     ("anthropic", "bedrock", etc.).
 func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, error) {
+	// Check the named provider pool first.
+	// This allows agent configs to reference a pre-built pool entry by name
+	// (e.g., provider: "fast") rather than repeating full credentials inline.
+	if config.Provider != "" {
+		r.mu.RLock()
+		pool := r.providerPool
+		r.mu.RUnlock()
+
+		if pool != nil {
+			if poolProvider, found := pool[config.Provider]; found {
+				r.logger.Debug("Using provider pool entry",
+					zap.String("name", config.Provider))
+				return poolProvider, nil
+			}
+		}
+	}
+
 	// If a default provider is configured and no per-agent provider specified, use it
 	if r.llmProvider != nil && config.Provider == "" {
 		r.logger.Debug("Using default LLM provider")

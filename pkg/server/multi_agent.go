@@ -20,6 +20,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
@@ -129,6 +130,11 @@ type MultiAgentServer struct {
 	// Storage backend for health checks and migration RPCs
 	storageBackend     backend.StorageBackend
 	storageBackendType loomv1.StorageBackendType
+
+	// Provider pool for ABTest and ListProviders RPCs.
+	// singleServer is a Server wrapping the default agent and shared pool;
+	// ABTest and ListProviders delegate to it to avoid code duplication.
+	singleServer *Server
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -2800,6 +2806,65 @@ func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchMo
 		NewModel:      newModel,
 		Success:       true,
 	}, nil
+}
+
+// SetProviderPool configures the named provider pool used by ListProviders and ABTest RPCs.
+// It builds an internal *Server wrapping the default agent so that both RPCs can delegate
+// to the same implementation used by the single-agent Server.
+func (s *MultiAgentServer) SetProviderPool(pool map[string]agent.LLMProvider, active string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Fetch the default agent (under the lock we already hold).
+	defaultAg := s.agents[s.defaultAgentID]
+
+	// Build or update the delegate single-agent server.
+	if s.singleServer == nil {
+		s.singleServer = NewServer(defaultAg, s.sessionStore)
+	}
+	s.singleServer.SetProviderPool(pool, active)
+}
+
+// SetEvalStore configures the evaluation store for persisting ABTest results.
+// It propagates the store to the internal delegate server used for ABTest.
+func (s *MultiAgentServer) SetEvalStore(store *evals.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.singleServer == nil {
+		// singleServer may not be set yet if SetProviderPool was not called.
+		// We need the default agent to build it.  It is safe to read defaultAgentID
+		// here because it is set in the constructor and never mutated after that.
+		defaultAg := s.agents[s.defaultAgentID]
+		s.singleServer = NewServer(defaultAg, s.sessionStore)
+	}
+	s.singleServer.SetEvalStore(store)
+}
+
+// ListProviders lists named providers in the pool configured via SetProviderPool.
+func (s *MultiAgentServer) ListProviders(ctx context.Context, req *loomv1.ListProvidersRequest) (*loomv1.ListProvidersResponse, error) {
+	s.mu.RLock()
+	ss := s.singleServer
+	s.mu.RUnlock()
+
+	if ss == nil {
+		// No pool configured: return empty response (consistent with Server.ListProviders).
+		return &loomv1.ListProvidersResponse{}, nil
+	}
+	return ss.ListProviders(ctx, req)
+}
+
+// ABTest runs an A/B test across multiple named providers.
+// Delegates to the internal single-agent Server so the implementation is shared.
+func (s *MultiAgentServer) ABTest(req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer) error {
+	s.mu.RLock()
+	ss := s.singleServer
+	s.mu.RUnlock()
+
+	if ss == nil {
+		return status.Error(codes.FailedPrecondition, "provider pool not configured; call SetProviderPool first")
+	}
+	return ss.ABTest(req, stream)
 }
 
 // SetProgressMultiplexer sets the progress multiplexer for an agent.

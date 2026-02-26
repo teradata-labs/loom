@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -143,6 +144,96 @@ func createPromptRegistry(config *Config, logger *zap.Logger) (prompts.PromptReg
 // This function simply initializes the map that will be populated by the registry.
 func initializeAgentsMap() map[string]*agent.Agent {
 	return make(map[string]*agent.Agent)
+}
+
+// providerPoolSetter is an optional interface that server types may implement to accept
+// a named provider pool. It is checked via type assertion so that cmd_serve.go compiles
+// regardless of whether the server has been updated to support provider pools yet.
+type providerPoolSetter interface {
+	SetProviderPool(pool map[string]agent.LLMProvider, active string)
+}
+
+// evalStoreSetter is an optional interface that server types may implement to accept an
+// evals store. It is checked via type assertion so that cmd_serve.go compiles regardless
+// of whether the server-side SetEvalStore method has been added yet.
+type evalStoreSetter interface {
+	SetEvalStore(store *evals.Store)
+}
+
+// buildProviderPool constructs a named provider pool from the server configuration.
+// Each entry in cfg.Providers is created by instantiating a per-entry ProviderFactory
+// that carries that entry's credentials so they do not bleed across entries.
+// The shared factory f is accepted for API consistency with the caller but is not
+// used directly — each entry builds its own factory to isolate credentials.
+// Returns nil, nil if no providers are configured.
+func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
+	if len(cfg.Providers) == 0 {
+		return nil, nil
+	}
+
+	pool := make(map[string]agent.LLMProvider, len(cfg.Providers))
+	for _, entry := range cfg.Providers {
+		if entry.Name == "" {
+			return nil, fmt.Errorf("provider pool entry has empty name")
+		}
+
+		// Build a per-entry factory so each entry can carry distinct credentials.
+		// Fields left empty fall through to environment variables in the factory.
+		entryFactory := factory.NewProviderFactory(factory.FactoryConfig{
+			DefaultProvider: entry.LLM.Provider,
+
+			AnthropicAPIKey: entry.LLM.AnthropicAPIKey,
+			AnthropicModel:  entry.LLM.AnthropicModel,
+
+			BedrockRegion:          entry.LLM.BedrockRegion,
+			BedrockAccessKeyID:     entry.LLM.BedrockAccessKeyID,
+			BedrockSecretAccessKey: entry.LLM.BedrockSecretAccessKey,
+			BedrockSessionToken:    entry.LLM.BedrockSessionToken,
+			BedrockProfile:         entry.LLM.BedrockProfile,
+			BedrockModelID:         entry.LLM.BedrockModelID,
+
+			OllamaEndpoint: entry.LLM.OllamaEndpoint,
+			OllamaModel:    entry.LLM.OllamaModel,
+
+			OpenAIAPIKey: entry.LLM.OpenAIAPIKey,
+			OpenAIModel:  entry.LLM.OpenAIModel,
+
+			AzureOpenAIEndpoint:     entry.LLM.AzureOpenAIEndpoint,
+			AzureOpenAIDeploymentID: entry.LLM.AzureOpenAIDeploymentID,
+			AzureOpenAIAPIKey:       entry.LLM.AzureOpenAIAPIKey,
+			AzureOpenAIEntraToken:   entry.LLM.AzureOpenAIEntraToken,
+
+			MistralAPIKey: entry.LLM.MistralAPIKey,
+			MistralModel:  entry.LLM.MistralModel,
+
+			GeminiAPIKey: entry.LLM.GeminiAPIKey,
+			GeminiModel:  entry.LLM.GeminiModel,
+
+			HuggingFaceToken: entry.LLM.HuggingFaceToken,
+			HuggingFaceModel: entry.LLM.HuggingFaceModel,
+
+			MaxTokens:   entry.LLM.MaxTokens,
+			Temperature: entry.LLM.Temperature,
+			Timeout:     entry.LLM.Timeout,
+		})
+
+		providerIface, err := entryFactory.CreateProvider(entry.LLM.Provider, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create provider %q: %w", entry.Name, err)
+		}
+
+		provider, ok := providerIface.(agent.LLMProvider)
+		if !ok {
+			return nil, fmt.Errorf("provider %q: factory returned unexpected type %T", entry.Name, providerIface)
+		}
+
+		pool[entry.Name] = provider
+		logger.Info("Provider pool entry created",
+			zap.String("name", entry.Name),
+			zap.String("backend", entry.LLM.Provider))
+	}
+
+	return pool, nil
 }
 
 // llmRoleDisplayName returns a short, human-readable name for an LLM role enum.
@@ -1460,6 +1551,39 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Set provider factory for dynamic model switching
 	loomService.SetProviderFactory(providerFactory)
 	logger.Info("Provider factory configured on server for model switching")
+
+	// Wire provider pool from config.
+	if providerPool, err := buildProviderPool(config, providerFactory, logger); err != nil {
+		logger.Warn("Failed to build provider pool from config; pool-based features will be unavailable",
+			zap.Error(err))
+	} else if providerPool != nil {
+		if pps, ok := interface{}(loomService).(providerPoolSetter); ok {
+			pps.SetProviderPool(providerPool, config.ActiveProvider)
+			logger.Info("Provider pool configured on server",
+				zap.Int("providers", len(providerPool)),
+				zap.String("active", config.ActiveProvider))
+		}
+		// Inject the pool into the agent registry so per-agent pool references resolve.
+		if registry != nil {
+			registry.SetProviderPool(providerPool)
+			logger.Info("Provider pool injected into agent registry",
+				zap.Int("providers", len(providerPool)))
+		}
+		// Wire the eval store for ABTest result persistence.
+		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
+			evalDBPath := config.Database.Path
+			if evalDBPath == "" {
+				evalDBPath = "./evals.db"
+			}
+			if store, storeErr := evals.NewStore(evalDBPath); storeErr != nil {
+				logger.Warn("Failed to create eval store; ABTest results will not be persisted",
+					zap.Error(storeErr))
+			} else {
+				ess.SetEvalStore(store)
+				logger.Info("Eval store configured for ABTest persistence", zap.String("path", evalDBPath))
+			}
+		}
+	}
 
 	// Set agent registry for workflow execution
 	if registry != nil {

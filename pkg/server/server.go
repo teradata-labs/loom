@@ -26,6 +26,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
@@ -51,6 +52,12 @@ type Server struct {
 	modelRegistry      *factory.ModelRegistry
 	providerPool       map[string]agent.LLMProvider // name → provider
 	activeProviderName string                       // currently active pool provider
+	evalStore          *evals.Store                 // optional; nil means no persistence
+}
+
+// SetEvalStore configures the evaluation store for persisting ABTest results.
+func (s *Server) SetEvalStore(store *evals.Store) {
+	s.evalStore = store
 }
 
 // NewServer creates a new LoomService server.
@@ -643,6 +650,7 @@ func (s *Server) ABTest(req *loomv1.ABTestRequest, stream loomv1.LoomService_ABT
 }
 
 // runABTestSideBySide runs each provider sequentially and streams results with provider labels.
+// It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
 func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
 	var mu sync.Mutex
 	sendEvent := func(evt *loomv1.ABTestEvent) error {
@@ -659,18 +667,15 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 	}
 	results := make([]result, len(providerNames))
 
-	// Save the original agent LLM and restore it when done.
-	originalLLM := s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)
-	defer s.agent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, originalLLM)
+	messages := []types.Message{{Role: "user", Content: req.Prompt}}
 
 	for i, name := range providerNames {
 		if ctx.Err() != nil {
 			break
 		}
 		provider := pool[name]
-		s.agent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, provider)
 		start := time.Now()
-		resp, err := s.agent.Chat(ctx, sessionID+"-ab-"+name, req.Prompt)
+		llmResp, err := provider.Chat(ctx, messages, nil)
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
 			_ = sendEvent(&loomv1.ABTestEvent{
@@ -682,10 +687,10 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 			results[i] = result{name: name, err: err, latency: latency}
 			continue
 		}
-		results[i] = result{name: name, content: resp.Content, latency: latency}
+		results[i] = result{name: name, content: llmResp.Content, latency: latency}
 		if err2 := sendEvent(&loomv1.ABTestEvent{
 			ProviderName: name,
-			ContentChunk: resp.Content,
+			ContentChunk: llmResp.Content,
 			Finished:     true,
 			LatencyMs:    latency,
 			AbTestId:     abTestID,
@@ -702,14 +707,44 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 			break
 		}
 	}
-	return sendEvent(&loomv1.ABTestEvent{
+	if err := sendEvent(&loomv1.ABTestEvent{
 		AbTestId: abTestID,
 		Winner:   winner,
 		Finished: true,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Persist results if eval store is configured.
+	if s.evalStore != nil {
+		responses := make([]evals.ABTestResponse, 0, len(results))
+		for _, r := range results {
+			if r.err == nil {
+				responses = append(responses, evals.ABTestResponse{
+					ProviderName: r.name,
+					ResponseText: r.content,
+					LatencyMs:    r.latency,
+				})
+			}
+		}
+		abResult := evals.ABTestResult{
+			ABTestID:       abTestID,
+			SessionID:      sessionID,
+			Prompt:         req.Prompt,
+			Mode:           "side_by_side",
+			WinnerProvider: winner,
+			Responses:      responses,
+		}
+		if saveErr := s.evalStore.SaveABTest(ctx, abResult); saveErr != nil {
+			zap.L().Warn("failed to persist ABTest result", zap.String("ab_test_id", abTestID), zap.Error(saveErr))
+		}
+	}
+
+	return nil
 }
 
 // runABTestSequentialScored runs each provider sequentially and streams results with stub scores.
+// It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
 func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
 	var mu sync.Mutex
 	sendEvent := func(evt *loomv1.ABTestEvent) error {
@@ -727,17 +762,15 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 	}
 	results := make([]result, len(providerNames))
 
-	originalLLM := s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)
-	defer s.agent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, originalLLM)
+	messages := []types.Message{{Role: "user", Content: req.Prompt}}
 
 	for i, name := range providerNames {
 		if ctx.Err() != nil {
 			break
 		}
 		provider := pool[name]
-		s.agent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, provider)
 		start := time.Now()
-		resp, err := s.agent.Chat(ctx, sessionID+"-abscore-"+name, req.Prompt)
+		llmResp, err := provider.Chat(ctx, messages, nil)
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
 			_ = sendEvent(&loomv1.ABTestEvent{
@@ -751,10 +784,10 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 		}
 		// Stub score at midpoint; full judge integration is a future enhancement.
 		const stubScore float32 = 5.0
-		results[i] = result{name: name, content: resp.Content, score: stubScore, latency: latency}
+		results[i] = result{name: name, content: llmResp.Content, score: stubScore, latency: latency}
 		if err2 := sendEvent(&loomv1.ABTestEvent{
 			ProviderName: name,
-			ContentChunk: resp.Content,
+			ContentChunk: llmResp.Content,
 			Finished:     true,
 			Score:        stubScore,
 			LatencyMs:    latency,
@@ -773,30 +806,60 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 			winner = r.name
 		}
 	}
-	return sendEvent(&loomv1.ABTestEvent{
+	if err := sendEvent(&loomv1.ABTestEvent{
 		AbTestId: abTestID,
 		Winner:   winner,
 		Finished: true,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Persist results if eval store is configured.
+	if s.evalStore != nil {
+		responses := make([]evals.ABTestResponse, 0, len(results))
+		for _, r := range results {
+			if r.err == nil {
+				responses = append(responses, evals.ABTestResponse{
+					ProviderName: r.name,
+					ResponseText: r.content,
+					Score:        float64(r.score),
+					LatencyMs:    r.latency,
+				})
+			}
+		}
+		abResult := evals.ABTestResult{
+			ABTestID:       abTestID,
+			SessionID:      sessionID,
+			Prompt:         req.Prompt,
+			Mode:           "sequential_scored",
+			WinnerProvider: winner,
+			Responses:      responses,
+		}
+		if saveErr := s.evalStore.SaveABTest(ctx, abResult); saveErr != nil {
+			zap.L().Warn("failed to persist ABTest result", zap.String("ab_test_id", abTestID), zap.Error(saveErr))
+		}
+	}
+
+	return nil
 }
 
 // runABTestShadow runs the primary provider for the client and the rest silently in the background.
+// It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
+// Shadow goroutines are bounded by a 30-second timeout and tracked via a WaitGroup.
 func (s *Server) runABTestShadow(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
 	if len(providerNames) == 0 {
 		return status.Error(codes.InvalidArgument, "no providers for shadow test")
 	}
 
+	messages := []types.Message{{Role: "user", Content: req.Prompt}}
+
 	// Primary provider: first in list
 	primaryName := providerNames[0]
 	primaryProvider := pool[primaryName]
 
-	originalLLM := s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)
-	s.agent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, primaryProvider)
 	start := time.Now()
-	resp, err := s.agent.Chat(ctx, sessionID+"-abshadow-"+primaryName, req.Prompt)
+	primaryResp, err := primaryProvider.Chat(ctx, messages, nil)
 	latency := time.Since(start).Milliseconds()
-	// Restore original before launching background goroutines
-	s.agent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, originalLLM)
 
 	if err != nil {
 		return status.Errorf(codes.Internal, "primary provider %q failed: %v", primaryName, err)
@@ -804,7 +867,7 @@ func (s *Server) runABTestShadow(ctx context.Context, req *loomv1.ABTestRequest,
 
 	if err2 := stream.Send(&loomv1.ABTestEvent{
 		ProviderName: primaryName,
-		ContentChunk: resp.Content,
+		ContentChunk: primaryResp.Content,
 		Finished:     true,
 		LatencyMs:    latency,
 		AbTestId:     abTestID,
@@ -813,17 +876,47 @@ func (s *Server) runABTestShadow(ctx context.Context, req *loomv1.ABTestRequest,
 		return err2
 	}
 
-	// Shadow providers run in the background; results are only logged.
-	for _, name := range providerNames[1:] {
-		shadowName := name
-		shadowProvider := pool[shadowName]
+	// Persist primary result if eval store is configured.
+	if s.evalStore != nil {
+		abResult := evals.ABTestResult{
+			ABTestID:       abTestID,
+			SessionID:      sessionID,
+			Prompt:         req.Prompt,
+			Mode:           "shadow",
+			WinnerProvider: primaryName,
+			Responses: []evals.ABTestResponse{
+				{
+					ProviderName: primaryName,
+					ResponseText: primaryResp.Content,
+					LatencyMs:    latency,
+				},
+			},
+		}
+		if saveErr := s.evalStore.SaveABTest(ctx, abResult); saveErr != nil {
+			zap.L().Warn("failed to persist ABTest result", zap.String("ab_test_id", abTestID), zap.Error(saveErr))
+		}
+	}
+
+	// Shadow providers run in the background with a 30-second timeout; results are only logged.
+	if len(providerNames) > 1 {
+		var wg sync.WaitGroup
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer bgCancel()
+
+		for _, name := range providerNames[1:] {
+			shadowName := name
+			shadowProvider := pool[shadowName]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = shadowProvider.Chat(bgCtx, messages, nil)
+			}()
+		}
+
+		// Wait in background so the RPC returns promptly while goroutines are bounded.
 		go func() {
-			bgCtx := context.Background()
-			bgAgent := s.agent
-			savedLLM := bgAgent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)
-			bgAgent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, shadowProvider)
-			_, _ = bgAgent.Chat(bgCtx, sessionID+"-shadow-"+shadowName, req.Prompt)
-			bgAgent.SetLLMProviderForRole(loomv1.LLMRole_LLM_ROLE_AGENT, savedLLM)
+			wg.Wait()
+			bgCancel()
 		}()
 	}
 
