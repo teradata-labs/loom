@@ -1,0 +1,49 @@
+# Loom Server Configuration — Supabase as storage backend
+# Use with: looms serve --config looms-supabase-e2e.yaml
+#
+# This config uses Supabase PostgreSQL for Loom's internal storage
+# (sessions, agents, state) instead of SQLite.
+#
+# The DSN must be set via environment variable:
+#   export LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.PROJECT:PASS@HOST:5432/postgres?sslmode=require"
+#
+# Or pass directly via CLI flag.
+
+server:
+  port: 60051
+  host: 0.0.0.0
+  enable_reflection: true
+
+llm:
+  provider: bedrock
+  bedrock_model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  bedrock_region: us-east-1
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+
+# Use Supabase PostgreSQL as the storage backend
+storage:
+  backend: postgres
+  postgres:
+    # DSN will be overridden by env var LOOM_STORAGE_POSTGRES_DSN
+    dsn: ""
+    pool:
+      max_connections: 10
+      min_connections: 2
+      max_idle_time_seconds: 300
+      max_lifetime_seconds: 1800
+      health_check_interval_seconds: 30
+  migration:
+    auto_migrate: true
+
+observability:
+  enabled: false
+
+logging:
+  level: info
+  format: text
+
+tools:
+  permissions:
+    yolo: true

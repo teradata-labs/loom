@@ -162,6 +162,39 @@ type evalStoreSetter interface {
 
 // buildProviderPool constructs a named provider pool from the server configuration.
 // Each entry in cfg.Providers is created by instantiating a per-entry ProviderFactory
+// buildRateLimiterConfig converts the YAML-sourced LLMRateLimitConfig into the
+// llm package's RateLimiterConfig. Rate limiting is always enabled unless
+// cfg.Disabled is true. Zero numeric fields fall back to provider defaults
+// via NewRateLimiter()'s zero-value backfill logic.
+func buildRateLimiterConfig(cfg LLMRateLimitConfig, logger *zap.Logger) llm.RateLimiterConfig {
+	rc := llm.RateLimiterConfig{
+		Enabled: !cfg.Disabled,
+		Logger:  logger,
+	}
+	if cfg.RequestsPerSecond > 0 {
+		rc.RequestsPerSecond = cfg.RequestsPerSecond
+	}
+	if cfg.TokensPerMinute > 0 {
+		rc.TokensPerMinute = cfg.TokensPerMinute
+	}
+	if cfg.BurstCapacity > 0 {
+		rc.BurstCapacity = cfg.BurstCapacity
+	}
+	if cfg.MinDelayMs > 0 {
+		rc.MinDelay = time.Duration(cfg.MinDelayMs) * time.Millisecond
+	}
+	if cfg.MaxRetries > 0 {
+		rc.MaxRetries = cfg.MaxRetries
+	}
+	if cfg.RetryBackoffMs > 0 {
+		rc.RetryBackoff = time.Duration(cfg.RetryBackoffMs) * time.Millisecond
+	}
+	if cfg.QueueTimeoutSeconds > 0 {
+		rc.QueueTimeout = time.Duration(cfg.QueueTimeoutSeconds) * time.Second
+	}
+	return rc
+}
+
 // that carries that entry's credentials so they do not bleed across entries.
 // The shared factory f is accepted for API consistency with the caller but is not
 // used directly — each entry builds its own factory to isolate credentials.
@@ -177,54 +210,11 @@ func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logg
 			return nil, fmt.Errorf("provider pool entry has empty name")
 		}
 
-		// Build a per-entry factory so each entry can carry distinct credentials.
-		// Fields left empty fall through to environment variables in the factory.
-		entryFactory := factory.NewProviderFactory(factory.FactoryConfig{
-			DefaultProvider: entry.LLM.Provider,
-
-			AnthropicAPIKey: entry.LLM.AnthropicAPIKey,
-			AnthropicModel:  entry.LLM.AnthropicModel,
-
-			BedrockRegion:          entry.LLM.BedrockRegion,
-			BedrockAccessKeyID:     entry.LLM.BedrockAccessKeyID,
-			BedrockSecretAccessKey: entry.LLM.BedrockSecretAccessKey,
-			BedrockSessionToken:    entry.LLM.BedrockSessionToken,
-			BedrockProfile:         entry.LLM.BedrockProfile,
-			BedrockModelID:         entry.LLM.BedrockModelID,
-
-			OllamaEndpoint: entry.LLM.OllamaEndpoint,
-			OllamaModel:    entry.LLM.OllamaModel,
-
-			OpenAIAPIKey: entry.LLM.OpenAIAPIKey,
-			OpenAIModel:  entry.LLM.OpenAIModel,
-
-			AzureOpenAIEndpoint:     entry.LLM.AzureOpenAIEndpoint,
-			AzureOpenAIDeploymentID: entry.LLM.AzureOpenAIDeploymentID,
-			AzureOpenAIAPIKey:       entry.LLM.AzureOpenAIAPIKey,
-			AzureOpenAIEntraToken:   entry.LLM.AzureOpenAIEntraToken,
-
-			MistralAPIKey: entry.LLM.MistralAPIKey,
-			MistralModel:  entry.LLM.MistralModel,
-
-			GeminiAPIKey: entry.LLM.GeminiAPIKey,
-			GeminiModel:  entry.LLM.GeminiModel,
-
-			HuggingFaceToken: entry.LLM.HuggingFaceToken,
-			HuggingFaceModel: entry.LLM.HuggingFaceModel,
-
-			MaxTokens:   entry.LLM.MaxTokens,
-			Temperature: entry.LLM.Temperature,
-			Timeout:     entry.LLM.Timeout,
-		})
-
-		providerIface, err := entryFactory.CreateProvider(entry.LLM.Provider, "")
+		// Create each pool entry directly (not via factory) so rate limiting is wired in.
+		// Fields left empty fall through to environment variables in each client.
+		provider, err := createProviderWithRateLimit(entry.LLM, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create provider %q: %w", entry.Name, err)
-		}
-
-		provider, ok := providerIface.(agent.LLMProvider)
-		if !ok {
-			return nil, fmt.Errorf("provider %q: factory returned unexpected type %T", entry.Name, providerIface)
 		}
 
 		pool[entry.Name] = provider
@@ -234,6 +224,159 @@ func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logg
 	}
 
 	return pool, nil
+}
+
+// createProviderWithRateLimit creates an LLM provider from a server LLMConfig,
+// always enabling rate limiting (unless cfg.RateLimit.Disabled is true).
+// This is used for both the default server provider and pool entries.
+func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMProvider, error) {
+	rlCfg := buildRateLimiterConfig(cfg.RateLimit, logger)
+
+	// Resolve API keys: prefer explicit config, fall back to environment variables.
+	apiKey := func(explicit, envKey string) string {
+		if explicit != "" {
+			return explicit
+		}
+		return os.Getenv(envKey)
+	}
+
+	switch cfg.Provider {
+	case "anthropic":
+		key := apiKey(cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("anthropic API key not configured (set llm.anthropic_api_key or ANTHROPIC_API_KEY)")
+		}
+		return anthropic.NewClient(anthropic.Config{
+			APIKey:            key,
+			Model:             cfg.AnthropicModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	case "bedrock":
+		client, err := bedrock.NewSDKClient(bedrock.Config{
+			Region:            cfg.BedrockRegion,
+			AccessKeyID:       cfg.BedrockAccessKeyID,
+			SecretAccessKey:   cfg.BedrockSecretAccessKey,
+			SessionToken:      cfg.BedrockSessionToken,
+			Profile:           cfg.BedrockProfile,
+			ModelID:           cfg.BedrockModelID,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: %w", err)
+		}
+		return client, nil
+
+	case "ollama":
+		endpoint := cfg.OllamaEndpoint
+		if endpoint == "" {
+			endpoint = os.Getenv("OLLAMA_ENDPOINT")
+		}
+		if endpoint == "" {
+			endpoint = "http://localhost:11434"
+		}
+		return ollama.NewClient(ollama.Config{
+			Endpoint:          endpoint,
+			Model:             cfg.OllamaModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	case "openai":
+		key := apiKey(cfg.OpenAIAPIKey, "OPENAI_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("openai API key not configured (set llm.openai_api_key or OPENAI_API_KEY)")
+		}
+		return openai.NewClient(openai.Config{
+			APIKey:            key,
+			Model:             cfg.OpenAIModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	case "azure-openai", "azureopenai":
+		key := apiKey(cfg.AzureOpenAIAPIKey, "AZURE_OPENAI_API_KEY")
+		entraToken := apiKey(cfg.AzureOpenAIEntraToken, "AZURE_OPENAI_ENTRA_TOKEN")
+		endpoint := cfg.AzureOpenAIEndpoint
+		if endpoint == "" {
+			endpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
+		}
+		if endpoint == "" {
+			return nil, fmt.Errorf("azure openai endpoint not configured")
+		}
+		deploymentID := cfg.AzureOpenAIDeploymentID
+		if deploymentID == "" {
+			deploymentID = os.Getenv("AZURE_OPENAI_DEPLOYMENT_ID")
+		}
+		client, err := azureopenai.NewClient(azureopenai.Config{
+			Endpoint:          endpoint,
+			DeploymentID:      deploymentID,
+			APIKey:            key,
+			EntraToken:        entraToken,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("azure-openai: %w", err)
+		}
+		return client, nil
+
+	case "mistral":
+		key := apiKey(cfg.MistralAPIKey, "MISTRAL_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("mistral API key not configured (set llm.mistral_api_key or MISTRAL_API_KEY)")
+		}
+		return mistral.NewClient(mistral.Config{
+			APIKey:            key,
+			Model:             cfg.MistralModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	case "gemini":
+		key := apiKey(cfg.GeminiAPIKey, "GEMINI_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("gemini API key not configured (set llm.gemini_api_key or GEMINI_API_KEY)")
+		}
+		return gemini.NewClient(gemini.Config{
+			APIKey:            key,
+			Model:             cfg.GeminiModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	case "huggingface":
+		key := apiKey(cfg.HuggingFaceToken, "HUGGINGFACE_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("huggingface token not configured (set llm.huggingface_token or HUGGINGFACE_API_KEY)")
+		}
+		return huggingface.NewClient(huggingface.Config{
+			Token:             key,
+			Model:             cfg.HuggingFaceModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		}), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
+	}
 }
 
 // llmRoleDisplayName returns a short, human-readable name for an LLM role enum.
@@ -775,148 +918,19 @@ func runServe(cmd *cobra.Command, args []string) {
 	// to avoid sharing the system prompt function across agents.
 	// (memory := agent.NewMemoryWithStore(store) would be shared)
 
-	// Create LLM provider
-	var llmProvider agent.LLMProvider
-	switch config.LLM.Provider {
-	case "anthropic":
-		llmProvider = anthropic.NewClient(anthropic.Config{
-			APIKey:      config.LLM.AnthropicAPIKey,
-			Model:       config.LLM.AnthropicModel,
-			MaxTokens:   config.LLM.MaxTokens,
-			Temperature: config.LLM.Temperature,
-		})
-		logger.Info("LLM provider: Anthropic",
-			zap.String("model", config.LLM.AnthropicModel),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "bedrock":
-		bedrockClient, err := bedrock.NewClient(bedrock.Config{
-			Region:          config.LLM.BedrockRegion,
-			AccessKeyID:     config.LLM.BedrockAccessKeyID,
-			SecretAccessKey: config.LLM.BedrockSecretAccessKey,
-			SessionToken:    config.LLM.BedrockSessionToken,
-			Profile:         config.LLM.BedrockProfile,
-			ModelID:         config.LLM.BedrockModelID,
-			MaxTokens:       config.LLM.MaxTokens,
-			Temperature:     config.LLM.Temperature,
-		})
-		if err != nil {
-			logger.Fatal("Failed to create Bedrock client", zap.Error(err))
-		}
-		llmProvider = bedrockClient
-
-		authMethod := "default credentials chain"
-		if config.LLM.BedrockAccessKeyID != "" {
-			authMethod = "explicit credentials"
-		} else if config.LLM.BedrockProfile != "" {
-			authMethod = fmt.Sprintf("profile: %s", config.LLM.BedrockProfile)
-		}
-		logger.Info("LLM provider: AWS Bedrock",
-			zap.String("region", config.LLM.BedrockRegion),
-			zap.String("model", config.LLM.BedrockModelID),
-			zap.String("auth", authMethod),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "ollama":
-		llmProvider = ollama.NewClient(ollama.Config{
-			Endpoint:    config.LLM.OllamaEndpoint,
-			Model:       config.LLM.OllamaModel,
-			MaxTokens:   config.LLM.MaxTokens,
-			Temperature: config.LLM.Temperature,
-			Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
-		})
-		logger.Info("LLM provider: Ollama",
-			zap.String("endpoint", config.LLM.OllamaEndpoint),
-			zap.String("model", config.LLM.OllamaModel),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "openai":
-		llmProvider = openai.NewClient(openai.Config{
-			APIKey:      config.LLM.OpenAIAPIKey,
-			Model:       config.LLM.OpenAIModel,
-			MaxTokens:   config.LLM.MaxTokens,
-			Temperature: config.LLM.Temperature,
-			Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
-		})
-		logger.Info("LLM provider: OpenAI",
-			zap.String("model", config.LLM.OpenAIModel),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "azure-openai", "azureopenai":
-		// Determine auth method
-		authMethod := "API key"
-		if config.LLM.AzureOpenAIEntraToken != "" {
-			authMethod = "Microsoft Entra ID"
-		}
-
-		azureClient, err := azureopenai.NewClient(azureopenai.Config{
-			Endpoint:     config.LLM.AzureOpenAIEndpoint,
-			DeploymentID: config.LLM.AzureOpenAIDeploymentID,
-			APIKey:       config.LLM.AzureOpenAIAPIKey,
-			EntraToken:   config.LLM.AzureOpenAIEntraToken,
-			MaxTokens:    config.LLM.MaxTokens,
-			Temperature:  config.LLM.Temperature,
-			Timeout:      time.Duration(config.LLM.Timeout) * time.Second,
-		})
-		if err != nil {
-			logger.Fatal("Failed to create Azure OpenAI client", zap.Error(err))
-		}
-		llmProvider = azureClient
-		logger.Info("LLM provider: Azure OpenAI",
-			zap.String("endpoint", config.LLM.AzureOpenAIEndpoint),
-			zap.String("deployment", config.LLM.AzureOpenAIDeploymentID),
-			zap.String("auth", authMethod),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "mistral":
-		llmProvider = mistral.NewClient(mistral.Config{
-			APIKey:      config.LLM.MistralAPIKey,
-			Model:       config.LLM.MistralModel,
-			MaxTokens:   config.LLM.MaxTokens,
-			Temperature: config.LLM.Temperature,
-			Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
-		})
-		logger.Info("LLM provider: Mistral AI",
-			zap.String("model", config.LLM.MistralModel),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "gemini":
-		llmProvider = gemini.NewClient(gemini.Config{
-			APIKey:      config.LLM.GeminiAPIKey,
-			Model:       config.LLM.GeminiModel,
-			MaxTokens:   config.LLM.MaxTokens,
-			Temperature: config.LLM.Temperature,
-			Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
-		})
-		logger.Info("LLM provider: Google Gemini",
-			zap.String("model", config.LLM.GeminiModel),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	case "huggingface":
-		llmProvider = huggingface.NewClient(huggingface.Config{
-			Token:       config.LLM.HuggingFaceToken,
-			Model:       config.LLM.HuggingFaceModel,
-			MaxTokens:   config.LLM.MaxTokens,
-			Temperature: config.LLM.Temperature,
-			Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
-		})
-		logger.Info("LLM provider: HuggingFace",
-			zap.String("model", config.LLM.HuggingFaceModel),
-			zap.Float64("temperature", config.LLM.Temperature),
-			zap.Int("max_tokens", config.LLM.MaxTokens))
-
-	default:
-		logger.Fatal("Unsupported LLM provider",
+	// Create LLM provider with rate limiting always enabled.
+	// Rate limit parameters come from config.LLM.RateLimit (loom.yaml); zeros use provider defaults.
+	llmProvider, err := createProviderWithRateLimit(config.LLM, logger)
+	if err != nil {
+		logger.Fatal("Failed to create LLM provider",
 			zap.String("provider", config.LLM.Provider),
-			zap.String("supported", "anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface"))
+			zap.Error(err))
 	}
+	logger.Info("LLM provider created with rate limiting",
+		zap.String("provider", config.LLM.Provider),
+		zap.Float64("temperature", config.LLM.Temperature),
+		zap.Int("max_tokens", config.LLM.MaxTokens),
+		zap.Bool("rate_limit_disabled", config.LLM.RateLimit.Disabled))
 
 	// Initialize MCP manager (always, to allow dynamic server addition via TUI/gRPC)
 	var mcpManager *mcpManager

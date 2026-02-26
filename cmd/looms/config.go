@@ -291,6 +291,44 @@ type LLMConfig struct {
 	Temperature float64 `mapstructure:"temperature"`
 	MaxTokens   int     `mapstructure:"max_tokens"`
 	Timeout     int     `mapstructure:"timeout_seconds"`
+
+	// Client-side rate limiting (applies to the server's default provider)
+	// Zero values use provider defaults. Example loom.yaml:
+	//   llm:
+	//     rate_limit:
+	//       requests_per_second: 2.0
+	//       tokens_per_minute: 30000
+	//       min_delay_ms: 400
+	RateLimit LLMRateLimitConfig `mapstructure:"rate_limit"`
+}
+
+// LLMRateLimitConfig holds client-side rate limiting parameters for the LLM provider.
+// All numeric fields default to 0, which means "use provider default".
+type LLMRateLimitConfig struct {
+	// Disable rate limiting entirely (default: false — rate limiting is ON).
+	Disabled bool `mapstructure:"disabled"`
+
+	// Max requests per second (0 = default: 2.0).
+	RequestsPerSecond float64 `mapstructure:"requests_per_second"`
+
+	// Max tokens per minute for token-based throttling (0 = default: 40000).
+	// Match your API tier: Anthropic free=30000, Tier1=100000, Bedrock varies.
+	TokensPerMinute int64 `mapstructure:"tokens_per_minute"`
+
+	// Max burst size before queuing (0 = default: 5).
+	BurstCapacity int `mapstructure:"burst_capacity"`
+
+	// Minimum milliseconds between requests (0 = default: 300).
+	MinDelayMs int `mapstructure:"min_delay_ms"`
+
+	// Max retries on 429 throttle errors (0 = default: 5).
+	MaxRetries int `mapstructure:"max_retries"`
+
+	// Initial retry backoff in milliseconds, doubles each retry (0 = default: 1000).
+	RetryBackoffMs int `mapstructure:"retry_backoff_ms"`
+
+	// Max seconds a request can wait in the queue before being dropped (0 = default: 300).
+	QueueTimeoutSeconds int `mapstructure:"queue_timeout_seconds"`
 }
 
 // DatabaseConfig holds database configuration.
