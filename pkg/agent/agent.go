@@ -564,7 +564,10 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		}
 
 		// Check if streaming is supported by the LLM provider
-		streamingSupported := types.SupportsStreaming(a.llm)
+		a.mu.RLock()
+		currentLLM := a.llm
+		a.mu.RUnlock()
+		streamingSupported := types.SupportsStreaming(currentLLM)
 
 		// Try streaming-specific prompt if supported
 		if streamingSupported {
@@ -723,8 +726,11 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		span.SetAttribute(observability.AttrSessionID, sessionID)
 		span.SetAttribute("message.length", len(userMessage))
 		span.SetAttribute("message.preview", truncateString(userMessage, 100))
-		span.SetAttribute("llm.provider", a.llm.Name())
-		span.SetAttribute("llm.model", a.llm.Model())
+		a.mu.RLock()
+		currentLLM := a.llm
+		a.mu.RUnlock()
+		span.SetAttribute("llm.provider", currentLLM.Name())
+		span.SetAttribute("llm.model", currentLLM.Model())
 		span.SetAttribute("config.max_turns", a.config.MaxTurns)
 		span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 

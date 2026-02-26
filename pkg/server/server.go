@@ -27,7 +27,9 @@ import (
 	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/evals"
+	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/shuttle/metadata"
@@ -649,8 +651,10 @@ func (s *Server) ABTest(req *loomv1.ABTestRequest, stream loomv1.LoomService_ABT
 	}
 }
 
-// runABTestSideBySide runs each provider sequentially and streams results with provider labels.
-// It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
+// runABTestSideBySide runs all providers concurrently and streams results with provider labels
+// as each goroutine completes. It calls the LLM provider directly rather than mutating s.agent,
+// eliminating data races. The winner is the first provider (by original sort order) with a
+// successful response.
 func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
 	var mu sync.Mutex
 	sendEvent := func(evt *loomv1.ABTestEvent) error {
@@ -669,35 +673,40 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 
 	messages := []types.Message{{Role: "user", Content: req.Prompt}}
 
+	var wg sync.WaitGroup
 	for i, name := range providerNames {
-		if ctx.Err() != nil {
-			break
-		}
-		provider := pool[name]
-		start := time.Now()
-		llmResp, err := provider.Chat(ctx, messages, nil)
-		latency := time.Since(start).Milliseconds()
-		if err != nil {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				results[i] = result{name: name, err: ctx.Err()}
+				return
+			}
+			provider := pool[name]
+			start := time.Now()
+			llmResp, err := provider.Chat(ctx, messages, nil)
+			latency := time.Since(start).Milliseconds()
+			if err != nil {
+				results[i] = result{name: name, err: err, latency: latency}
+				_ = sendEvent(&loomv1.ABTestEvent{
+					ProviderName: name,
+					Finished:     true,
+					AbTestId:     abTestID,
+					LatencyMs:    latency,
+				})
+				return
+			}
+			results[i] = result{name: name, content: llmResp.Content, latency: latency}
 			_ = sendEvent(&loomv1.ABTestEvent{
 				ProviderName: name,
+				ContentChunk: llmResp.Content,
 				Finished:     true,
-				AbTestId:     abTestID,
 				LatencyMs:    latency,
+				AbTestId:     abTestID,
 			})
-			results[i] = result{name: name, err: err, latency: latency}
-			continue
-		}
-		results[i] = result{name: name, content: llmResp.Content, latency: latency}
-		if err2 := sendEvent(&loomv1.ABTestEvent{
-			ProviderName: name,
-			ContentChunk: llmResp.Content,
-			Finished:     true,
-			LatencyMs:    latency,
-			AbTestId:     abTestID,
-		}); err2 != nil {
-			return err2
-		}
+		}(i, name)
 	}
+	wg.Wait()
 
 	// Send final event with winner (first successful response for side-by-side)
 	winner := ""
@@ -743,9 +752,23 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 	return nil
 }
 
-// runABTestSequentialScored runs each provider sequentially and streams results with stub scores.
-// It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
+// runABTestSequentialScored runs each provider sequentially and scores each response using an
+// LLM judge. It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
 func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
+	// Resolve the judge LLM: prefer the dedicated judge role, fall back to the main agent LLM.
+	judgeLLM := s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_JUDGE)
+	if judgeLLM == nil {
+		judgeLLM = s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)
+	}
+	judgeConfig := &loomv1.JudgeConfig{
+		Name:     "ab-test-scorer",
+		Criteria: "response quality, accuracy, completeness",
+	}
+	judge, err := judges.NewLLMJudge(judgeLLM, judgeConfig, observability.NewNoOpTracer())
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "cannot create judge for scoring: %v", err)
+	}
+
 	var mu sync.Mutex
 	sendEvent := func(evt *loomv1.ABTestEvent) error {
 		mu.Lock()
@@ -782,14 +805,25 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 			results[i] = result{name: name, err: err, latency: latency}
 			continue
 		}
-		// Stub score at midpoint; full judge integration is a future enhancement.
-		const stubScore float32 = 5.0
-		results[i] = result{name: name, content: llmResp.Content, score: stubScore, latency: latency}
+		// Score the response using the LLM judge.
+		evalCtx := &loomv1.EvaluationContext{
+			Prompt:    req.Prompt,
+			Response:  llmResp.Content,
+			SessionId: sessionID,
+			LatencyMs: latency,
+		}
+		var score float32
+		if judgeResult, judgeErr := judge.Evaluate(ctx, evalCtx); judgeErr != nil {
+			score = 0.0
+		} else {
+			score = float32(judgeResult.OverallScore)
+		}
+		results[i] = result{name: name, content: llmResp.Content, score: score, latency: latency}
 		if err2 := sendEvent(&loomv1.ABTestEvent{
 			ProviderName: name,
 			ContentChunk: llmResp.Content,
 			Finished:     true,
-			Score:        stubScore,
+			Score:        score,
 			LatencyMs:    latency,
 			AbTestId:     abTestID,
 		}); err2 != nil {
