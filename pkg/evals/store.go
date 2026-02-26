@@ -547,7 +547,7 @@ func (s *Store) GetABTest(ctx context.Context, abTestID string) (*ABTestResult, 
 	if err != nil {
 		return nil, fmt.Errorf("query ab_test_responses: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r ABTestResponse
 		if err := rows.Scan(&r.ProviderName, &r.ResponseText, &r.Score, &r.LatencyMs, &r.CostUSD); err != nil {
@@ -575,7 +575,7 @@ func (s *Store) ListABTests(ctx context.Context, sessionID string, limit int) ([
 	if err != nil {
 		return nil, fmt.Errorf("list ab tests: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var results []ABTestResult
 	for rows.Next() {
 		var r ABTestResult
