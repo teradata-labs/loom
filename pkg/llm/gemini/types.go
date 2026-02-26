@@ -104,6 +104,9 @@ type UsageMetadata struct {
 	PromptTokenCount     int `json:"promptTokenCount"`
 	CandidatesTokenCount int `json:"candidatesTokenCount"`
 	TotalTokenCount      int `json:"totalTokenCount"`
+	// CachedContentTokenCount: tokens served from Gemini's implicit cache (automatic since May 2025).
+	// Note: for Gemini, cached tokens still count against rate limits (cost savings only).
+	CachedContentTokenCount int `json:"cachedContentTokenCount"`
 }
 
 // APIError represents an error from the Gemini API.

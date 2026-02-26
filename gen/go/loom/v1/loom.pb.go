@@ -1325,9 +1325,14 @@ type LLMCost struct {
 	// Model used
 	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
 	// Provider
-	Provider      string `protobuf:"bytes,6,opt,name=provider,proto3" json:"provider,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Provider string `protobuf:"bytes,6,opt,name=provider,proto3" json:"provider,omitempty"`
+	// Tokens served from prompt cache (do NOT count against ITPM rate limit for Anthropic).
+	// For OpenAI/Gemini, these still count against rate limits but at reduced cost.
+	CacheReadInputTokens int32 `protobuf:"varint,7,opt,name=cache_read_input_tokens,json=cacheReadInputTokens,proto3" json:"cache_read_input_tokens,omitempty"`
+	// Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
+	CacheCreationInputTokens int32 `protobuf:"varint,8,opt,name=cache_creation_input_tokens,json=cacheCreationInputTokens,proto3" json:"cache_creation_input_tokens,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *LLMCost) Reset() {
@@ -1400,6 +1405,20 @@ func (x *LLMCost) GetProvider() string {
 		return x.Provider
 	}
 	return ""
+}
+
+func (x *LLMCost) GetCacheReadInputTokens() int32 {
+	if x != nil {
+		return x.CacheReadInputTokens
+	}
+	return 0
+}
+
+func (x *LLMCost) GetCacheCreationInputTokens() int32 {
+	if x != nil {
+		return x.CacheCreationInputTokens
+	}
+	return 0
 }
 
 // ExecutionMetadata contains execution metadata.
@@ -10483,14 +10502,16 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\bCostInfo\x12$\n" +
 	"\x0etotal_cost_usd\x18\x01 \x01(\x01R\ftotalCostUsd\x12+\n" +
 	"\bllm_cost\x18\x02 \x01(\v2\x10.loom.v1.LLMCostR\allmCost\x12(\n" +
-	"\x10backend_cost_usd\x18\x03 \x01(\x01R\x0ebackendCostUsd\"\xc1\x01\n" +
+	"\x10backend_cost_usd\x18\x03 \x01(\x01R\x0ebackendCostUsd\"\xb7\x02\n" +
 	"\aLLMCost\x12!\n" +
 	"\ftotal_tokens\x18\x01 \x01(\x05R\vtotalTokens\x12!\n" +
 	"\finput_tokens\x18\x02 \x01(\x05R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\x03 \x01(\x05R\foutputTokens\x12\x19\n" +
 	"\bcost_usd\x18\x04 \x01(\x01R\acostUsd\x12\x14\n" +
 	"\x05model\x18\x05 \x01(\tR\x05model\x12\x1a\n" +
-	"\bprovider\x18\x06 \x01(\tR\bprovider\"\x88\x02\n" +
+	"\bprovider\x18\x06 \x01(\tR\bprovider\x125\n" +
+	"\x17cache_read_input_tokens\x18\a \x01(\x05R\x14cacheReadInputTokens\x12=\n" +
+	"\x1bcache_creation_input_tokens\x18\b \x01(\x05R\x18cacheCreationInputTokens\"\x88\x02\n" +
 	"\x11ExecutionMetadata\x12!\n" +
 	"\fpattern_name\x18\x01 \x01(\tR\vpatternName\x12\x1b\n" +
 	"\tllm_calls\x18\x02 \x01(\x05R\bllmCalls\x12'\n" +

@@ -744,11 +744,13 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		AgentId:   agentID,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
-				Provider:     ag.GetLLMProviderName(),
-				Model:        ag.GetLLMModel(),
-				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:      resp.Usage.CostUSD,
+				Provider:                 ag.GetLLMProviderName(),
+				Model:                    ag.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
@@ -929,11 +931,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		Cost: &loomv1.CostInfo{
 			TotalCostUsd: resp.Usage.CostUSD,
 			LlmCost: &loomv1.LLMCost{
-				Provider:     ag.GetLLMProviderName(),
-				Model:        ag.GetLLMModel(),
-				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:      resp.Usage.CostUSD,
+				Provider:                 ag.GetLLMProviderName(),
+				Model:                    ag.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 		},
 	}

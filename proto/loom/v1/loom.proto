@@ -899,6 +899,13 @@ message LLMCost {
 
   // Provider
   string provider = 6;
+
+  // Tokens served from prompt cache (do NOT count against ITPM rate limit for Anthropic).
+  // For OpenAI/Gemini, these still count against rate limits but at reduced cost.
+  int32 cache_read_input_tokens = 7;
+
+  // Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
+  int32 cache_creation_input_tokens = 8;
 }
 
 // ExecutionMetadata contains execution metadata.

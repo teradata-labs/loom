@@ -5304,6 +5304,16 @@
         "provider": {
           "type": "string",
           "title": "Provider"
+        },
+        "cacheReadInputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Tokens served from prompt cache (do NOT count against ITPM rate limit for Anthropic).\nFor OpenAI/Gemini, these still count against rate limits but at reduced cost."
+        },
+        "cacheCreationInputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Tokens written to prompt cache (billed at 1.25x input price for Anthropic)."
         }
       },
       "description": "LLMCost tracks token usage and costs."

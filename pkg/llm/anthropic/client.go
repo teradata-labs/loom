@@ -155,8 +155,8 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		Temperature: c.temperature,
 	}
 
-	// Add system prompt if present (Anthropic Messages API requires separate system field)
-	if systemPrompt != "" {
+	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
+	if len(systemPrompt) > 0 {
 		req.System = systemPrompt
 	}
 
@@ -175,10 +175,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 }
 
 // convertMessages converts agent messages to Anthropic format.
-// Returns the system prompt (combined from all system messages) and the API messages.
+// Returns the system prompt blocks (with cache_control on the last block) and the API messages.
 // System messages are extracted and combined, as Anthropic Messages API requires
 // them to be sent as a separate "system" field, not in the messages array.
-func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message) {
+func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam, []Message) {
 	var systemPrompts []string
 	var apiMessages []Message
 
@@ -277,16 +277,29 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message
 		}
 	}
 
-	// Combine all system prompts with double newlines
-	systemPrompt := strings.Join(systemPrompts, "\n\n")
-
-	return systemPrompt, apiMessages
+	// Combine all system prompts and wrap in a TextBlockParam with cache_control.
+	// Placing cache_control on the system block caches it for ~5 minutes.
+	// For Anthropic, cached tokens don't count against the ITPM rate limit.
+	if len(systemPrompts) == 0 {
+		return nil, apiMessages
+	}
+	systemText := strings.Join(systemPrompts, "\n\n")
+	systemBlocks := []TextBlockParam{
+		{
+			Type:         "text",
+			Text:         systemText,
+			CacheControl: &CacheControl{Type: "ephemeral"},
+		},
+	}
+	return systemBlocks, apiMessages
 }
 
 // convertTools converts shuttle tools to Anthropic format.
 // Tool names are sanitized to replace colons with underscores for provider compatibility.
-func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
-	var apiTools []Tool
+// The last tool in the list is marked with cache_control: ephemeral so the entire tool
+// list is cached. For Anthropic, cached tool tokens don't count against ITPM rate limits.
+func (c *Client) convertTools(tools []shuttle.Tool) []CacheableTool {
+	var apiTools []CacheableTool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
@@ -295,7 +308,7 @@ func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 			c.toolNameMap[sanitizedName] = originalName
 		}
 
-		apiTool := Tool{
+		apiTool := CacheableTool{
 			Name:        sanitizedName,
 			Description: tool.Description(),
 		}
@@ -311,6 +324,12 @@ func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 		}
 
 		apiTools = append(apiTools, apiTool)
+	}
+
+	// Mark the last tool with cache_control to cache the entire tool list.
+	// Anthropic caches everything up to and including the marked breakpoint.
+	if len(apiTools) > 0 {
+		apiTools[len(apiTools)-1].CacheControl = &CacheControl{Type: "ephemeral"}
 	}
 
 	return apiTools
@@ -355,10 +374,12 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			CostUSD:      c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens),
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			TotalTokens:              resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			CostUSD:                  c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 		},
 		Metadata: map[string]interface{}{
 			"model":       resp.Model,
@@ -385,14 +406,19 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 }
 
 // calculateCost estimates the cost in USD based on token usage.
-// Pricing as of 2024-11 for Claude 3.5 Sonnet.
-func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	// Claude 3.5 Sonnet pricing (2024-11):
+// Pricing as of 2025-01 for Claude claude-sonnet-4-6.
+// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
+	// Claude claude-sonnet-4-6 pricing (2025-01):
 	// Input: $3 per million tokens
 	// Output: $15 per million tokens
+	// Cache write (creation): $3.75 per million tokens (1.25x input)
+	// Cache read: $0.30 per million tokens (0.10x input)
 	inputCost := float64(inputTokens) * 3.0 / 1_000_000
 	outputCost := float64(outputTokens) * 15.0 / 1_000_000
-	return inputCost + outputCost
+	cacheWriteCost := float64(cacheCreationTokens) * 3.75 / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * 0.30 / 1_000_000
+	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
 // ChatStream implements token-by-token streaming for Anthropic.
@@ -414,8 +440,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Stream:      true, // Enable streaming
 	}
 
-	// Add system prompt if present (Anthropic Messages API requires separate system field)
-	if systemPrompt != "" {
+	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
+	if len(systemPrompt) > 0 {
 		req.System = systemPrompt
 	}
 
@@ -439,6 +465,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", c.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
+	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 
 	// 2. Send request with rate limiting if enabled
 	var httpResp *http.Response
@@ -550,6 +578,14 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				delete(toolInputBuffers, event.Index)
 				delete(toolCallIndex, event.Index)
 
+			case "message_start":
+				// Initial event: capture input tokens and cache token counts
+				if event.Message != nil {
+					usage.InputTokens = event.Message.Usage.InputTokens
+					usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
+					usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
+				}
+
 			case "message_delta":
 				if event.Delta != nil && event.Delta.StopReason != "" {
 					stopReason = event.Delta.StopReason
@@ -559,10 +595,20 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 
 			case "message_stop":
-				// Final event
+				// Final event — usage may be updated here with cache tokens too
 				if event.Usage != nil {
-					usage.InputTokens = event.Usage.InputTokens
-					usage.OutputTokens = event.Usage.OutputTokens
+					if event.Usage.InputTokens > 0 {
+						usage.InputTokens = event.Usage.InputTokens
+					}
+					if event.Usage.OutputTokens > 0 {
+						usage.OutputTokens = event.Usage.OutputTokens
+					}
+					if event.Usage.CacheReadInputTokens > 0 {
+						usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+					}
+					if event.Usage.CacheCreationInputTokens > 0 {
+						usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+					}
 				}
 			}
 
@@ -584,7 +630,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		usage.OutputTokens = tokenCount
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -623,6 +669,8 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", c.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
+	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 
 	// Send request with rate limiting if enabled
 	var httpResp *http.Response

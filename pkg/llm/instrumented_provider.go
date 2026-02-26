@@ -136,6 +136,14 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	span.SetAttribute("llm.stop_reason", resp.StopReason)
 	span.SetAttribute("llm.duration_ms", duration.Milliseconds())
 
+	// Capture cache token metrics for observability
+	if resp.Usage.CacheReadInputTokens > 0 {
+		span.SetAttribute("llm.tokens.cache_read", resp.Usage.CacheReadInputTokens)
+	}
+	if resp.Usage.CacheCreationInputTokens > 0 {
+		span.SetAttribute("llm.tokens.cache_write", resp.Usage.CacheCreationInputTokens)
+	}
+
 	// Capture tool calls if present
 	if len(resp.ToolCalls) > 0 {
 		span.SetAttribute("llm.tool_calls.count", len(resp.ToolCalls))
@@ -151,12 +159,14 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 
 	// Record success event
 	span.AddEvent("llm.call.completed", map[string]interface{}{
-		"duration_ms":   duration.Milliseconds(),
-		"input_tokens":  resp.Usage.InputTokens,
-		"output_tokens": resp.Usage.OutputTokens,
-		"cost_usd":      resp.Usage.CostUSD,
-		"stop_reason":   resp.StopReason,
-		"tool_calls":    len(resp.ToolCalls),
+		"duration_ms":           duration.Milliseconds(),
+		"input_tokens":          resp.Usage.InputTokens,
+		"output_tokens":         resp.Usage.OutputTokens,
+		"cache_read_tokens":     resp.Usage.CacheReadInputTokens,
+		"cache_creation_tokens": resp.Usage.CacheCreationInputTokens,
+		"cost_usd":              resp.Usage.CostUSD,
+		"stop_reason":           resp.StopReason,
+		"tool_calls":            len(resp.ToolCalls),
 	})
 
 	// Emit metrics
@@ -184,6 +194,26 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 		observability.AttrLLMProvider: p.provider.Name(),
 		observability.AttrLLMModel:    p.provider.Model(),
 	})
+
+	// Emit cache hit rate metric when cache activity detected
+	if resp.Usage.CacheReadInputTokens > 0 || resp.Usage.CacheCreationInputTokens > 0 {
+		totalCacheTokens := resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
+		if totalCacheTokens > 0 {
+			hitRate := float64(resp.Usage.CacheReadInputTokens) / float64(totalCacheTokens)
+			p.tracer.RecordMetric("llm.cache.hit_rate", hitRate, map[string]string{
+				observability.AttrLLMProvider: p.provider.Name(),
+				observability.AttrLLMModel:    p.provider.Model(),
+			})
+		}
+		p.tracer.RecordMetric("llm.tokens.cache_read", float64(resp.Usage.CacheReadInputTokens), map[string]string{
+			observability.AttrLLMProvider: p.provider.Name(),
+			observability.AttrLLMModel:    p.provider.Model(),
+		})
+		p.tracer.RecordMetric("llm.tokens.cache_write", float64(resp.Usage.CacheCreationInputTokens), map[string]string{
+			observability.AttrLLMProvider: p.provider.Name(),
+			observability.AttrLLMModel:    p.provider.Model(),
+		})
+	}
 
 	return resp, nil
 }
@@ -309,6 +339,14 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	span.SetAttribute("llm.ttft_ms", ttft.Milliseconds())
 	span.SetAttribute("llm.streaming.chunks", tokenCount)
 
+	// Capture cache token metrics for observability
+	if resp.Usage.CacheReadInputTokens > 0 {
+		span.SetAttribute("llm.tokens.cache_read", resp.Usage.CacheReadInputTokens)
+	}
+	if resp.Usage.CacheCreationInputTokens > 0 {
+		span.SetAttribute("llm.tokens.cache_write", resp.Usage.CacheCreationInputTokens)
+	}
+
 	// Calculate throughput (tokens per second)
 	if duration.Seconds() > 0 {
 		throughput := float64(resp.Usage.OutputTokens) / duration.Seconds()
@@ -336,14 +374,16 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 
 	// Record success event
 	span.AddEvent("stream.completed", map[string]interface{}{
-		"duration_ms":   duration.Milliseconds(),
-		"ttft_ms":       ttft.Milliseconds(),
-		"input_tokens":  resp.Usage.InputTokens,
-		"output_tokens": resp.Usage.OutputTokens,
-		"cost_usd":      resp.Usage.CostUSD,
-		"stop_reason":   resp.StopReason,
-		"tool_calls":    len(resp.ToolCalls),
-		"chunks":        tokenCount,
+		"duration_ms":           duration.Milliseconds(),
+		"ttft_ms":               ttft.Milliseconds(),
+		"input_tokens":          resp.Usage.InputTokens,
+		"output_tokens":         resp.Usage.OutputTokens,
+		"cache_read_tokens":     resp.Usage.CacheReadInputTokens,
+		"cache_creation_tokens": resp.Usage.CacheCreationInputTokens,
+		"cost_usd":              resp.Usage.CostUSD,
+		"stop_reason":           resp.StopReason,
+		"tool_calls":            len(resp.ToolCalls),
+		"chunks":                tokenCount,
 	})
 
 	// Emit standard LLM metrics (same as non-streaming)
@@ -371,6 +411,26 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 		observability.AttrLLMProvider: p.provider.Name(),
 		observability.AttrLLMModel:    p.provider.Model(),
 	})
+
+	// Emit cache metrics when cache activity detected
+	if resp.Usage.CacheReadInputTokens > 0 || resp.Usage.CacheCreationInputTokens > 0 {
+		totalCacheTokens := resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
+		if totalCacheTokens > 0 {
+			hitRate := float64(resp.Usage.CacheReadInputTokens) / float64(totalCacheTokens)
+			p.tracer.RecordMetric("llm.cache.hit_rate", hitRate, map[string]string{
+				observability.AttrLLMProvider: p.provider.Name(),
+				observability.AttrLLMModel:    p.provider.Model(),
+			})
+		}
+		p.tracer.RecordMetric("llm.tokens.cache_read", float64(resp.Usage.CacheReadInputTokens), map[string]string{
+			observability.AttrLLMProvider: p.provider.Name(),
+			observability.AttrLLMModel:    p.provider.Model(),
+		})
+		p.tracer.RecordMetric("llm.tokens.cache_write", float64(resp.Usage.CacheCreationInputTokens), map[string]string{
+			observability.AttrLLMProvider: p.provider.Name(),
+			observability.AttrLLMModel:    p.provider.Model(),
+		})
+	}
 
 	// Emit streaming-specific metric
 	p.tracer.RecordMetric("llm.streaming.chunks.total", float64(tokenCount), map[string]string{

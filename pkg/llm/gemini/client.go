@@ -235,6 +235,9 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
 			CostUSD:      c.calculateCost(resp.UsageMetadata.PromptTokenCount, resp.UsageMetadata.CandidatesTokenCount),
+			// Gemini implicit caching (automatic since May 2025): map to CacheReadInputTokens for observability.
+			// Note: for Gemini, cached tokens still count against rate limits (cost savings only, not rate limit relief).
+			CacheReadInputTokens: resp.UsageMetadata.CachedContentTokenCount,
 		},
 		Metadata: map[string]interface{}{
 			"provider": "gemini",
@@ -648,6 +651,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.InputTokens = chunk.UsageMetadata.PromptTokenCount
 			usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
 			usage.TotalTokens = chunk.UsageMetadata.TotalTokenCount
+			// Track Gemini implicit cache hits for observability
+			usage.CacheReadInputTokens = chunk.UsageMetadata.CachedContentTokenCount
 		}
 
 		// Check context cancellation

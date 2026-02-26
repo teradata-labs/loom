@@ -107,11 +107,13 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		SessionId: sessionID,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
-				Provider:     s.agent.GetLLMProviderName(),
-				Model:        s.agent.GetLLMModel(),
-				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:      resp.Usage.CostUSD,
+				Provider:                 s.agent.GetLLMProviderName(),
+				Model:                    s.agent.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
