@@ -1622,7 +1622,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Wire provider pool from config.
 	if providerPool, err := buildProviderPool(config, providerFactory, logger); err != nil {
 		logger.Warn("Failed to build provider pool from config; pool-based features will be unavailable",
-			zap.Error(err))
+			zap.String("reason", "provider pool configuration error; check LLM provider settings"))
 	} else if providerPool != nil {
 		if pps, ok := interface{}(loomService).(providerPoolSetter); ok {
 			pps.SetProviderPool(providerPool, config.ActiveProvider)
