@@ -79,6 +79,7 @@ Support:
 	rootCmd.AddCommand(sessionsCmd)
 	rootCmd.AddCommand(artifactsCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(providersCmd)
 }
 
 func main() {

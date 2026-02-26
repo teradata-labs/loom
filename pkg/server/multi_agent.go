@@ -2742,14 +2742,58 @@ func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthR
 // SwitchModel switches the LLM provider/model for a specific agent.
 // The agent is identified by agent_id in the request.
 func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest) (*loomv1.SwitchModelResponse, error) {
+	// Pool-based switch by name — look up the provider in singleServer's pool and apply it
+	// directly to the target agent.  We do NOT delegate to ss.SwitchModel because that would
+	// always act on the default agent regardless of req.AgentId.
+	if req.ProviderName != "" {
+		s.mu.RLock()
+		ss := s.singleServer
+		s.mu.RUnlock()
+		if ss == nil {
+			return nil, status.Error(codes.FailedPrecondition, "provider pool not configured")
+		}
+		pool := ss.GetProviderPool()
+		if pool == nil {
+			return nil, status.Error(codes.FailedPrecondition, "provider pool not configured")
+		}
+		provider, ok := pool[req.ProviderName]
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "provider %q not found in pool", req.ProviderName)
+		}
+		ag, _, err := s.getAgent(req.AgentId)
+		if err != nil {
+			return nil, err
+		}
+		previousModel := &loomv1.ModelInfo{
+			Id:       ag.GetLLMModelForRole(req.Role),
+			Name:     ag.GetLLMModelForRole(req.Role),
+			Provider: ag.GetLLMProviderNameForRole(req.Role),
+		}
+		ag.SetLLMProviderForRole(req.Role, provider)
+		ss.SetActiveProviderName(req.ProviderName)
+		actualModel := ag.GetLLMModelForRole(req.Role)
+		actualProvider := ag.GetLLMProviderNameForRole(req.Role)
+		return &loomv1.SwitchModelResponse{
+			Success:       true,
+			PreviousModel: previousModel,
+			NewModel: &loomv1.ModelInfo{
+				Id:       actualModel,
+				Name:     actualModel,
+				Provider: actualProvider,
+			},
+			Message: fmt.Sprintf("Switched to provider pool entry %q", req.ProviderName),
+		}, nil
+	}
+
+	// Legacy switch: require session_id, provider, and model.
 	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+		return nil, status.Error(codes.InvalidArgument, "session_id is required (or use provider_name for pool-based switch)")
 	}
 	if req.Provider == "" {
-		return nil, status.Error(codes.InvalidArgument, "provider is required")
+		return nil, status.Error(codes.InvalidArgument, "provider is required (or use provider_name for pool-based switch)")
 	}
 	if req.Model == "" {
-		return nil, status.Error(codes.InvalidArgument, "model is required")
+		return nil, status.Error(codes.InvalidArgument, "model is required (or use provider_name for pool-based switch)")
 	}
 
 	// Get the agent (uses agent_id from request, or default if not specified)

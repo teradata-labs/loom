@@ -199,6 +199,55 @@ func buildRateLimiterConfig(cfg LLMRateLimitConfig, logger *zap.Logger) llm.Rate
 // The shared factory f is accepted for API consistency with the caller but is not
 // used directly — each entry builds its own factory to isolate credentials.
 // Returns nil, nil if no providers are configured.
+// inheritCredentials returns a copy of dst with any empty credential fields filled
+// from src. This lets pool entries omit API keys that are already resolved via
+// keyring/env for the main LLM — same provider = same credentials by default.
+func inheritCredentials(dst, src LLMConfig) LLMConfig {
+	if dst.AnthropicAPIKey == "" {
+		dst.AnthropicAPIKey = src.AnthropicAPIKey
+	}
+	if dst.BedrockAccessKeyID == "" {
+		dst.BedrockAccessKeyID = src.BedrockAccessKeyID
+	}
+	if dst.BedrockSecretAccessKey == "" {
+		dst.BedrockSecretAccessKey = src.BedrockSecretAccessKey
+	}
+	if dst.BedrockSessionToken == "" {
+		dst.BedrockSessionToken = src.BedrockSessionToken
+	}
+	if dst.BedrockProfile == "" {
+		dst.BedrockProfile = src.BedrockProfile
+	}
+	if dst.BedrockRegion == "" {
+		dst.BedrockRegion = src.BedrockRegion
+	}
+	if dst.OllamaEndpoint == "" {
+		dst.OllamaEndpoint = src.OllamaEndpoint
+	}
+	if dst.OpenAIAPIKey == "" {
+		dst.OpenAIAPIKey = src.OpenAIAPIKey
+	}
+	if dst.AzureOpenAIAPIKey == "" {
+		dst.AzureOpenAIAPIKey = src.AzureOpenAIAPIKey
+	}
+	if dst.AzureOpenAIEntraToken == "" {
+		dst.AzureOpenAIEntraToken = src.AzureOpenAIEntraToken
+	}
+	if dst.AzureOpenAIEndpoint == "" {
+		dst.AzureOpenAIEndpoint = src.AzureOpenAIEndpoint
+	}
+	if dst.MistralAPIKey == "" {
+		dst.MistralAPIKey = src.MistralAPIKey
+	}
+	if dst.GeminiAPIKey == "" {
+		dst.GeminiAPIKey = src.GeminiAPIKey
+	}
+	if dst.HuggingFaceToken == "" {
+		dst.HuggingFaceToken = src.HuggingFaceToken
+	}
+	return dst
+}
+
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, nil
@@ -210,9 +259,13 @@ func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logg
 			return nil, fmt.Errorf("provider pool entry has empty name")
 		}
 
+		// Inherit resolved credentials from cfg.LLM for any fields not set in the pool entry.
+		// This lets pool entries omit API keys that are already resolved via keyring/env for the
+		// main LLM (pool entries that share the same provider don't need to repeat the key).
+		entryLLM := inheritCredentials(entry.LLM, cfg.LLM)
+
 		// Create each pool entry directly (not via factory) so rate limiting is wired in.
-		// Fields left empty fall through to environment variables in each client.
-		provider, err := createProviderWithRateLimit(entry.LLM, logger)
+		provider, err := createProviderWithRateLimit(entryLLM, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create provider %q: %w", entry.Name, err)
 		}

@@ -83,6 +83,16 @@ func (s *Server) SetProviderPool(pool map[string]agent.LLMProvider, active strin
 	s.activeProviderName = active
 }
 
+// GetProviderPool returns the server's named provider pool (may be nil).
+func (s *Server) GetProviderPool() map[string]agent.LLMProvider {
+	return s.providerPool
+}
+
+// SetActiveProviderName updates the tracked active provider name.
+func (s *Server) SetActiveProviderName(name string) {
+	s.activeProviderName = name
+}
+
 // Weave executes a user query using the agent.
 func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.WeaveResponse, error) {
 	if req.Query == "" {
@@ -498,8 +508,10 @@ func llmRoleToString(role loomv1.LLMRole) string {
 
 // SwitchModel switches the LLM model/provider for a session.
 func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest) (*loomv1.SwitchModelResponse, error) {
-	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	// Pool-based switches (provider_name set) are server-level and don't require a session.
+	// Legacy switches (provider + model) still require session_id for backward compat.
+	if req.ProviderName == "" && req.SessionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required (or use provider_name for pool-based switch)")
 	}
 
 	// Get previous model info using role-aware methods.
@@ -516,9 +528,13 @@ func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest
 		if s.providerPool == nil {
 			return nil, status.Error(codes.FailedPrecondition, "provider pool not configured")
 		}
-		if err := s.agent.SetActiveProvider(req.ProviderName); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to switch to provider %q: %v", req.ProviderName, err)
+		provider, ok := s.providerPool[req.ProviderName]
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "provider %q not found in pool", req.ProviderName)
 		}
+		// Apply directly to the agent — the pool is stored server-side, not on the agent itself.
+		s.agent.SetLLMProviderForRole(req.Role, provider)
+		s.activeProviderName = req.ProviderName
 		actualModel := s.agent.GetLLMModelForRole(req.Role)
 		actualProvider := s.agent.GetLLMProviderNameForRole(req.Role)
 		return &loomv1.SwitchModelResponse{
