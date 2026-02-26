@@ -507,32 +507,51 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// 2. Send request with rate limiting if enabled.
+	// The lambda creates a fresh HTTP request on each attempt so the request body
+	// can be re-read on a 429 retry. A 429 response is converted to an error so
+	// the rate limiter's exponential-backoff retry logic fires automatically.
+	buildStreamReq := func(ctx context.Context) (*http.Request, error) {
+		r, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("x-api-key", c.apiKey)
+		r.Header.Set("anthropic-version", "2023-06-01")
+		// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
+		r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+		return r, nil
 	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
-	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-
-	// 2. Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
 		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
+			req, err := buildStreamReq(ctx)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			// Convert 429 to a retryable error so the rate limiter backs off and retries.
+			if resp.StatusCode == http.StatusTooManyRequests {
+				respBody, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			}
+			return resp, nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		req, err := buildStreamReq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		httpResp, err = c.httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
@@ -711,32 +730,51 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// Send request with rate limiting if enabled.
+	// The lambda creates a fresh HTTP request on each attempt so the request body
+	// can be re-read on a 429 retry. A 429 response is converted to an error so
+	// the rate limiter's exponential-backoff retry logic fires automatically.
+	buildAPIReq := func(ctx context.Context) (*http.Request, error) {
+		r, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("x-api-key", c.apiKey)
+		r.Header.Set("anthropic-version", "2023-06-01")
+		// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
+		r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+		return r, nil
 	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
-	httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-
-	// Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
 		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
+			req, err := buildAPIReq(ctx)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			// Convert 429 to a retryable error so the rate limiter backs off and retries.
+			if resp.StatusCode == http.StatusTooManyRequests {
+				respBody, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			}
+			return resp, nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		req, err := buildAPIReq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		httpResp, err = c.httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
