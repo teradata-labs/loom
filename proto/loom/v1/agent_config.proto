@@ -77,6 +77,31 @@ message AgentConfig {
 
   // Memory compression/semantic search reranking override (e.g., Haiku for cost-effective compression)
   LLMConfig compressor_llm = 17;
+
+  // Named provider override: use this named entry from the global provider pool instead of llm.
+  // Must be a name defined in the server's providers list.
+  string active_provider = 18;
+
+  // Restrict this agent to only use providers in this list (subset of global pool).
+  // Empty means all pool providers are allowed.
+  repeated string allowed_providers = 19;
+}
+
+// ProviderEntry is a named LLM configuration in the global provider pool.
+message ProviderEntry {
+  // Alias for this provider, e.g. "claude-opus", "llama-local"
+  string name = 1;
+
+  // Full LLM config for this provider
+  LLMConfig config = 2;
+}
+
+// ProviderPool is the global pool of named LLM providers (server-level).
+message ProviderPool {
+  repeated ProviderEntry providers = 1;
+
+  // Name of the currently active provider
+  string active = 2;
 }
 
 // LLMConfig configures the language model provider and parameters

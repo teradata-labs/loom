@@ -90,20 +90,22 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 // Legacy format with "agent:" as root key.
 type AgentConfigYAML struct {
 	Agent struct {
-		Name            string                 `yaml:"name"`
-		Description     string                 `yaml:"description"`
-		BackendPath     string                 `yaml:"backend_path"`
-		LLM             LLMConfigYAML          `yaml:"llm"`
-		JudgeLLM        *LLMConfigYAML         `yaml:"judge_llm"`
-		OrchestratorLLM *LLMConfigYAML         `yaml:"orchestrator_llm"`
-		ClassifierLLM   *LLMConfigYAML         `yaml:"classifier_llm"`
-		CompressorLLM   *LLMConfigYAML         `yaml:"compressor_llm"`
-		SystemPrompt    string                 `yaml:"system_prompt"`
-		ROM             string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
-		Tools           ToolsConfigYAML        `yaml:"tools"`
-		Memory          MemoryConfigYAML       `yaml:"memory"`
-		Behavior        BehaviorConfigYAML     `yaml:"behavior"`
-		Metadata        map[string]interface{} `yaml:"metadata"`
+		Name             string                 `yaml:"name"`
+		Description      string                 `yaml:"description"`
+		BackendPath      string                 `yaml:"backend_path"`
+		LLM              LLMConfigYAML          `yaml:"llm"`
+		JudgeLLM         *LLMConfigYAML         `yaml:"judge_llm"`
+		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
+		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
+		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		ActiveProvider   string                 `yaml:"active_provider"`
+		AllowedProviders []string               `yaml:"allowed_providers"`
+		SystemPrompt     string                 `yaml:"system_prompt"`
+		ROM              string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
+		Tools            ToolsConfigYAML        `yaml:"tools"`
+		Memory           MemoryConfigYAML       `yaml:"memory"`
+		Behavior         BehaviorConfigYAML     `yaml:"behavior"`
+		Metadata         map[string]interface{} `yaml:"metadata"`
 	} `yaml:"agent"`
 }
 
@@ -125,17 +127,19 @@ type K8sStyleAgentConfig struct {
 			Type   string                 `yaml:"type"`
 			Config map[string]interface{} `yaml:"config"`
 		} `yaml:"backend"`
-		LLM             LLMConfigYAML          `yaml:"llm"`
-		JudgeLLM        *LLMConfigYAML         `yaml:"judge_llm"`
-		OrchestratorLLM *LLMConfigYAML         `yaml:"orchestrator_llm"`
-		ClassifierLLM   *LLMConfigYAML         `yaml:"classifier_llm"`
-		CompressorLLM   *LLMConfigYAML         `yaml:"compressor_llm"`
-		Tools           interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
-		SystemPrompt    string                 `yaml:"system_prompt"`
-		ROM             string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
-		Config          BehaviorConfigYAML     `yaml:"config"`
-		Memory          MemoryConfigYAML       `yaml:"memory"`
-		Observability   map[string]interface{} `yaml:"observability"`
+		LLM              LLMConfigYAML          `yaml:"llm"`
+		JudgeLLM         *LLMConfigYAML         `yaml:"judge_llm"`
+		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
+		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
+		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		ActiveProvider   string                 `yaml:"active_provider"`
+		AllowedProviders []string               `yaml:"allowed_providers"`
+		Tools            interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
+		SystemPrompt     string                 `yaml:"system_prompt"`
+		ROM              string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
+		Config           BehaviorConfigYAML     `yaml:"config"`
+		Memory           MemoryConfigYAML       `yaml:"memory"`
+		Observability    map[string]interface{} `yaml:"observability"`
 	} `yaml:"spec"`
 }
 
@@ -322,6 +326,8 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	legacy.Agent.OrchestratorLLM = k8s.Spec.OrchestratorLLM
 	legacy.Agent.ClassifierLLM = k8s.Spec.ClassifierLLM
 	legacy.Agent.CompressorLLM = k8s.Spec.CompressorLLM
+	legacy.Agent.ActiveProvider = k8s.Spec.ActiveProvider
+	legacy.Agent.AllowedProviders = k8s.Spec.AllowedProviders
 
 	// System prompt
 	legacy.Agent.SystemPrompt = k8s.Spec.SystemPrompt
@@ -508,6 +514,10 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		}
 		config.CompressorLlm = compressorLLM
 	}
+
+	// Provider pool fields
+	config.ActiveProvider = yaml.Agent.ActiveProvider
+	config.AllowedProviders = yaml.Agent.AllowedProviders
 
 	// Convert tools config
 	config.Tools = &loomv1.ToolsConfig{

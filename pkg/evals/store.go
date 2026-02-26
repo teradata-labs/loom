@@ -96,6 +96,31 @@ func (s *Store) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_test_eval_result_id ON test_case_results(eval_result_id);
 	CREATE INDEX IF NOT EXISTS idx_test_name ON test_case_results(test_name);
+
+	CREATE TABLE IF NOT EXISTS ab_test_results (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		ab_test_id      TEXT NOT NULL,
+		session_id      TEXT,
+		prompt          TEXT,
+		mode            TEXT,
+		run_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+		winner_provider TEXT
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ab_test_id ON ab_test_results(ab_test_id);
+	CREATE INDEX IF NOT EXISTS idx_ab_session ON ab_test_results(session_id);
+
+	CREATE TABLE IF NOT EXISTS ab_test_responses (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		ab_test_id    TEXT NOT NULL,
+		provider_name TEXT,
+		response_text TEXT,
+		score         REAL,
+		latency_ms    INTEGER,
+		cost_usd      REAL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ab_resp_test_id ON ab_test_responses(ab_test_id);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -451,6 +476,115 @@ type Comparison struct {
 	CostDelta       float64
 	LatencyDelta    int64
 	PassedTestDelta int32
+}
+
+// ABTestResult holds the data for one A/B test run.
+type ABTestResult struct {
+	ABTestID       string
+	SessionID      string
+	Prompt         string
+	Mode           string
+	WinnerProvider string
+	Responses      []ABTestResponse
+}
+
+// ABTestResponse holds one provider's response in an A/B test.
+type ABTestResponse struct {
+	ProviderName string
+	ResponseText string
+	Score        float64
+	LatencyMs    int64
+	CostUSD      float64
+}
+
+// SaveABTest persists an A/B test result and its per-provider responses.
+func (s *Store) SaveABTest(ctx context.Context, result ABTestResult) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO ab_test_results (ab_test_id, session_id, prompt, mode, winner_provider)
+		VALUES (?, ?, ?, ?, ?)`,
+		result.ABTestID, result.SessionID, result.Prompt, result.Mode, result.WinnerProvider,
+	)
+	if err != nil {
+		return fmt.Errorf("insert ab_test_results: %w", err)
+	}
+
+	for _, r := range result.Responses {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO ab_test_responses (ab_test_id, provider_name, response_text, score, latency_ms, cost_usd)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			result.ABTestID, r.ProviderName, r.ResponseText, r.Score, r.LatencyMs, r.CostUSD,
+		)
+		if err != nil {
+			return fmt.Errorf("insert ab_test_responses: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetABTest retrieves an A/B test result by its ID.
+func (s *Store) GetABTest(ctx context.Context, abTestID string) (*ABTestResult, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT ab_test_id, session_id, prompt, mode, winner_provider
+		FROM ab_test_results WHERE ab_test_id = ?`, abTestID)
+	result := &ABTestResult{}
+	if err := row.Scan(&result.ABTestID, &result.SessionID, &result.Prompt, &result.Mode, &result.WinnerProvider); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("ab test %q not found", abTestID)
+		}
+		return nil, fmt.Errorf("query ab_test_results: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT provider_name, response_text, score, latency_ms, cost_usd
+		FROM ab_test_responses WHERE ab_test_id = ?`, abTestID)
+	if err != nil {
+		return nil, fmt.Errorf("query ab_test_responses: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r ABTestResponse
+		if err := rows.Scan(&r.ProviderName, &r.ResponseText, &r.Score, &r.LatencyMs, &r.CostUSD); err != nil {
+			return nil, fmt.Errorf("scan ab_test_response: %w", err)
+		}
+		result.Responses = append(result.Responses, r)
+	}
+	return result, rows.Err()
+}
+
+// ListABTests returns recent A/B test results, optionally filtered by session.
+func (s *Store) ListABTests(ctx context.Context, sessionID string, limit int) ([]ABTestResult, error) {
+	query := `SELECT ab_test_id, session_id, prompt, mode, winner_provider
+			  FROM ab_test_results`
+	args := []any{}
+	if sessionID != "" {
+		query += ` WHERE session_id = ?`
+		args = append(args, sessionID)
+	}
+	query += ` ORDER BY run_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(` LIMIT %d`, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ab tests: %w", err)
+	}
+	defer rows.Close()
+	var results []ABTestResult
+	for rows.Next() {
+		var r ABTestResult
+		if err := rows.Scan(&r.ABTestID, &r.SessionID, &r.Prompt, &r.Mode, &r.WinnerProvider); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
 }
 
 // CreateMockResult creates a mock eval result for testing

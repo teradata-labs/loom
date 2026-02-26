@@ -1682,6 +1682,87 @@
         ]
       }
     },
+    "/v1/providers": {
+      "get": {
+        "summary": "ListProviders lists named providers in the global pool with their active state.",
+        "operationId": "LoomService_ListProviders",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListProvidersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agentId",
+            "description": "Optional: filter to a specific agent's allowed providers",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "sessionId",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/providers:abtest": {
+      "post": {
+        "summary": "ABTest runs side-by-side, sequential-scored, or shadow A/B tests across providers.",
+        "operationId": "LoomService_ABTest",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/v1ABTestEvent"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of v1ABTestEvent"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ABTestRequest initiates an A/B test across multiple providers.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ABTestRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/server/config": {
       "get": {
         "summary": "GetServerConfig retrieves the current server configuration.",
@@ -3248,6 +3329,10 @@
         "role": {
           "$ref": "#/definitions/v1LLMRole",
           "description": "Target LLM role to switch (default: unspecified = main agent LLM)\nAllows switching role-specific LLMs (judge, orchestrator, classifier, compressor)\nwithout affecting other roles."
+        },
+        "providerName": {
+          "type": "string",
+          "title": "Switch by named provider from pool (alternative to specifying provider+model)"
         }
       },
       "description": "SwitchModelRequest switches the LLM model for a session."
@@ -3408,6 +3493,78 @@
         }
       }
     },
+    "v1ABTestEvent": {
+      "type": "object",
+      "properties": {
+        "providerName": {
+          "type": "string"
+        },
+        "contentChunk": {
+          "type": "string"
+        },
+        "finished": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        },
+        "latencyMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "float"
+        },
+        "winner": {
+          "type": "string",
+          "title": "Set on the final event with the winning provider name"
+        },
+        "abTestId": {
+          "type": "string",
+          "title": "Unique ID for this test run (for DB lookup)"
+        }
+      },
+      "description": "ABTestEvent is streamed back to the client during an A/B test."
+    },
+    "v1ABTestMode": {
+      "type": "string",
+      "enum": [
+        "AB_TEST_MODE_UNSPECIFIED",
+        "AB_TEST_MODE_SIDE_BY_SIDE",
+        "AB_TEST_MODE_SEQUENTIAL_SCORED",
+        "AB_TEST_MODE_SHADOW"
+      ],
+      "default": "AB_TEST_MODE_UNSPECIFIED",
+      "description": "ABTestMode selects how providers are evaluated against each other.\n\n - AB_TEST_MODE_SIDE_BY_SIDE: Run all providers concurrently, stream all responses\n - AB_TEST_MODE_SEQUENTIAL_SCORED: Run providers one at a time, judge scores each response\n - AB_TEST_MODE_SHADOW: Primary provider responds normally; others run silently in background"
+    },
+    "v1ABTestRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "providerNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider names to test; empty = use all providers in pool"
+        },
+        "mode": {
+          "$ref": "#/definitions/v1ABTestMode"
+        },
+        "judgeId": {
+          "type": "string",
+          "title": "Optional agent ID for scoring (used in SEQUENTIAL_SCORED mode)"
+        }
+      },
+      "description": "ABTestRequest initiates an A/B test across multiple providers."
+    },
     "v1AddMCPServerRequest": {
       "type": "object",
       "properties": {
@@ -3565,6 +3722,17 @@
         "compressorLlm": {
           "$ref": "#/definitions/v1LLMConfig",
           "title": "Memory compression/semantic search reranking override (e.g., Haiku for cost-effective compression)"
+        },
+        "activeProvider": {
+          "type": "string",
+          "description": "Named provider override: use this named entry from the global provider pool instead of llm.\nMust be a name defined in the server's providers list."
+        },
+        "allowedProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Restrict this agent to only use providers in this list (subset of global pool).\nEmpty means all pool providers are allowed."
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -5346,6 +5514,22 @@
       },
       "description": "ListPatternsResponse returns patterns."
     },
+    "v1ListProvidersResponse": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ProviderEntry"
+          }
+        },
+        "activeProvider": {
+          "type": "string"
+        }
+      },
+      "description": "ListProvidersResponse returns provider pool information."
+    },
     "v1ListScheduledWorkflowsResponse": {
       "type": "object",
       "properties": {
@@ -6403,6 +6587,20 @@
         }
       },
       "description": "PostgresStorageConfig configures the PostgreSQL storage backend."
+    },
+    "v1ProviderEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "Alias for this provider, e.g. \"claude-opus\", \"llama-local\""
+        },
+        "config": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "title": "Full LLM config for this provider"
+        }
+      },
+      "description": "ProviderEntry is a named LLM configuration in the global provider pool."
     },
     "v1PublishRequest": {
       "type": "object",

@@ -120,6 +120,11 @@ type Agent struct {
 
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
+
+	// Provider pool support
+	providerPool       map[string]LLMProvider // name → provider (nil = pool not configured)
+	activeProviderName string                 // currently active provider name (empty = use llm field)
+	allowedProviders   []string               // empty = all pool providers allowed
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts

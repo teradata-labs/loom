@@ -91,6 +91,13 @@ type Config struct {
 
 	// Scheduler configuration (for cron-based workflow execution)
 	Scheduler SchedulerConfig `mapstructure:"scheduler"`
+
+	// Providers is the global named provider pool.
+	// Backward-compat: if empty and LLM is set, a "default" entry is auto-created.
+	Providers []ProviderPoolEntry `mapstructure:"providers"`
+
+	// ActiveProvider names the currently active entry in the Providers pool.
+	ActiveProvider string `mapstructure:"active_provider"`
 }
 
 // ArtifactsConfig holds artifacts storage configuration.
@@ -229,6 +236,12 @@ type SelfSignedTLSConfig struct {
 	IPAddresses  []string `mapstructure:"ip_addresses"`  // IP addresses to include in certificate
 	ValidityDays int32    `mapstructure:"validity_days"` // Certificate validity in days
 	Organization string   `mapstructure:"organization"`  // Organization name
+}
+
+// ProviderPoolEntry is a named LLM provider in the global pool.
+type ProviderPoolEntry struct {
+	Name string    `mapstructure:"name" yaml:"name"`
+	LLM  LLMConfig `mapstructure:",squash" yaml:",inline"`
 }
 
 // LLMConfig holds LLM provider configuration.

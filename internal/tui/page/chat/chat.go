@@ -51,6 +51,7 @@ import (
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/commands"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/filepicker"
 	mcpdialog "github.com/teradata-labs/loom/internal/tui/components/dialogs/mcp"
+	"github.com/teradata-labs/loom/internal/tui/components/dialogs/models"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/pattern"
 	"github.com/teradata-labs/loom/internal/tui/page"
 	"github.com/teradata-labs/loom/internal/tui/styles"
@@ -483,6 +484,10 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		u, cmd := p.editor.Update(msg)
 		p.editor = u.(editor.Editor)
 		return p, cmd
+	case commands.SwitchModelMsg:
+		return p, p.openProviderSwitcher()
+	case models.ModelSelectedMsg:
+		return p, p.switchToProvider(msg)
 	case sidebar.AgentsListMsg:
 		u, cmd := p.sidebar.Update(msg)
 		p.sidebar = u.(sidebar.Sidebar)
@@ -1971,6 +1976,51 @@ func (p *chatPage) hasInProgressTodo() bool {
 		}
 	}
 	return false
+}
+
+// openProviderSwitcher calls ListProviders RPC and opens the interactive provider dialog.
+func (p *chatPage) openProviderSwitcher() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		client := p.app.Client()
+		dialog := models.New()
+		dialog.SetSize(p.width, p.height)
+		if client != nil {
+			resp, err := client.ListProviders(ctx, &loomv1.ListProvidersRequest{
+				SessionId: p.session.ID,
+				AgentId:   p.currentAgentID,
+			})
+			if err == nil && resp != nil {
+				dialog.SetProviders(resp.Providers, resp.ActiveProvider)
+			}
+		}
+		return dialogs.OpenDialogMsg{Model: dialog}
+	}
+}
+
+// switchToProvider calls SwitchModel RPC with the selected provider name.
+func (p *chatPage) switchToProvider(msg models.ModelSelectedMsg) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		client := p.app.Client()
+		if client == nil {
+			return util.InfoMsg{
+				Text: "no gRPC client available",
+				Type: util.InfoTypeError,
+			}
+		}
+		_, err := client.SwitchModelByProvider(ctx, p.session.ID, p.currentAgentID, msg.Model.Name)
+		if err != nil {
+			return util.InfoMsg{
+				Text: fmt.Sprintf("switch provider failed: %v", err),
+				Type: util.InfoTypeError,
+			}
+		}
+		return util.InfoMsg{
+			Text: fmt.Sprintf("Switched to provider: %s", msg.Model.Name),
+			Type: util.InfoTypeSuccess,
+		}
+	}
 }
 
 // parseAgentNameFromToolResult extracts the agent name from an agent_management tool result JSON.

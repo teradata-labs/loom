@@ -248,6 +248,19 @@ service LoomService {
     option (google.api.http) = {get: "/v1/models"};
   }
 
+  // ListProviders lists named providers in the global pool with their active state.
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse) {
+    option (google.api.http) = {get: "/v1/providers"};
+  }
+
+  // ABTest runs side-by-side, sequential-scored, or shadow A/B tests across providers.
+  rpc ABTest(ABTestRequest) returns (stream ABTestEvent) {
+    option (google.api.http) = {
+      post: "/v1/providers:abtest"
+      body: "*"
+    };
+  }
+
   // RequestToolPermission requests user permission to execute a tool.
   rpc RequestToolPermission(ToolPermissionRequest) returns (ToolPermissionResponse) {
     option (google.api.http) = {
@@ -2003,6 +2016,9 @@ message SwitchModelRequest {
   // Allows switching role-specific LLMs (judge, orchestrator, classifier, compressor)
   // without affecting other roles.
   LLMRole role = 6;
+
+  // Switch by named provider from pool (alternative to specifying provider+model)
+  string provider_name = 7;
 }
 
 // SwitchModelResponse confirms model switch.
@@ -2036,6 +2052,55 @@ message ListAvailableModelsResponse {
 
   // Total count
   int32 total_count = 2;
+}
+
+// ListProvidersRequest lists named providers in the pool.
+message ListProvidersRequest {
+  // Optional: filter to a specific agent's allowed providers
+  string agent_id = 1;
+  string session_id = 2;
+}
+
+// ListProvidersResponse returns provider pool information.
+message ListProvidersResponse {
+  repeated ProviderEntry providers = 1;
+  string active_provider = 2;
+}
+
+// ABTestMode selects how providers are evaluated against each other.
+enum ABTestMode {
+  AB_TEST_MODE_UNSPECIFIED = 0;
+  // Run all providers concurrently, stream all responses
+  AB_TEST_MODE_SIDE_BY_SIDE = 1;
+  // Run providers one at a time, judge scores each response
+  AB_TEST_MODE_SEQUENTIAL_SCORED = 2;
+  // Primary provider responds normally; others run silently in background
+  AB_TEST_MODE_SHADOW = 3;
+}
+
+// ABTestRequest initiates an A/B test across multiple providers.
+message ABTestRequest {
+  string session_id = 1;
+  string prompt = 2;
+  // Provider names to test; empty = use all providers in pool
+  repeated string provider_names = 3;
+  ABTestMode mode = 4;
+  // Optional agent ID for scoring (used in SEQUENTIAL_SCORED mode)
+  string judge_id = 5;
+}
+
+// ABTestEvent is streamed back to the client during an A/B test.
+message ABTestEvent {
+  string provider_name = 1;
+  string content_chunk = 2;
+  bool finished = 3;
+  float score = 4;
+  int64 latency_ms = 5;
+  float cost_usd = 6;
+  // Set on the final event with the winning provider name
+  string winner = 7;
+  // Unique ID for this test run (for DB lookup)
+  string ab_test_id = 8;
 }
 
 // ModelInfo provides information about an LLM model.

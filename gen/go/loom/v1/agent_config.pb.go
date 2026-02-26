@@ -265,8 +265,14 @@ type AgentConfig struct {
 	ClassifierLlm *LLMConfig `protobuf:"bytes,16,opt,name=classifier_llm,json=classifierLlm,proto3" json:"classifier_llm,omitempty"`
 	// Memory compression/semantic search reranking override (e.g., Haiku for cost-effective compression)
 	CompressorLlm *LLMConfig `protobuf:"bytes,17,opt,name=compressor_llm,json=compressorLlm,proto3" json:"compressor_llm,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Named provider override: use this named entry from the global provider pool instead of llm.
+	// Must be a name defined in the server's providers list.
+	ActiveProvider string `protobuf:"bytes,18,opt,name=active_provider,json=activeProvider,proto3" json:"active_provider,omitempty"`
+	// Restrict this agent to only use providers in this list (subset of global pool).
+	// Empty means all pool providers are allowed.
+	AllowedProviders []string `protobuf:"bytes,19,rep,name=allowed_providers,json=allowedProviders,proto3" json:"allowed_providers,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AgentConfig) Reset() {
@@ -418,6 +424,129 @@ func (x *AgentConfig) GetCompressorLlm() *LLMConfig {
 	return nil
 }
 
+func (x *AgentConfig) GetActiveProvider() string {
+	if x != nil {
+		return x.ActiveProvider
+	}
+	return ""
+}
+
+func (x *AgentConfig) GetAllowedProviders() []string {
+	if x != nil {
+		return x.AllowedProviders
+	}
+	return nil
+}
+
+// ProviderEntry is a named LLM configuration in the global provider pool.
+type ProviderEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Alias for this provider, e.g. "claude-opus", "llama-local"
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Full LLM config for this provider
+	Config        *LLMConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProviderEntry) Reset() {
+	*x = ProviderEntry{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProviderEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProviderEntry) ProtoMessage() {}
+
+func (x *ProviderEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProviderEntry.ProtoReflect.Descriptor instead.
+func (*ProviderEntry) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ProviderEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ProviderEntry) GetConfig() *LLMConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+// ProviderPool is the global pool of named LLM providers (server-level).
+type ProviderPool struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Providers []*ProviderEntry       `protobuf:"bytes,1,rep,name=providers,proto3" json:"providers,omitempty"`
+	// Name of the currently active provider
+	Active        string `protobuf:"bytes,2,opt,name=active,proto3" json:"active,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProviderPool) Reset() {
+	*x = ProviderPool{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProviderPool) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProviderPool) ProtoMessage() {}
+
+func (x *ProviderPool) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProviderPool.ProtoReflect.Descriptor instead.
+func (*ProviderPool) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ProviderPool) GetProviders() []*ProviderEntry {
+	if x != nil {
+		return x.Providers
+	}
+	return nil
+}
+
+func (x *ProviderPool) GetActive() string {
+	if x != nil {
+		return x.Active
+	}
+	return ""
+}
+
 // LLMConfig configures the language model provider and parameters
 type LLMConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -449,7 +578,7 @@ type LLMConfig struct {
 
 func (x *LLMConfig) Reset() {
 	*x = LLMConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[1]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -461,7 +590,7 @@ func (x *LLMConfig) String() string {
 func (*LLMConfig) ProtoMessage() {}
 
 func (x *LLMConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[1]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -474,7 +603,7 @@ func (x *LLMConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LLMConfig.ProtoReflect.Descriptor instead.
 func (*LLMConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *LLMConfig) GetProvider() string {
@@ -555,7 +684,7 @@ type ToolsConfig struct {
 
 func (x *ToolsConfig) Reset() {
 	*x = ToolsConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[2]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -567,7 +696,7 @@ func (x *ToolsConfig) String() string {
 func (*ToolsConfig) ProtoMessage() {}
 
 func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[2]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -580,7 +709,7 @@ func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsConfig.ProtoReflect.Descriptor instead.
 func (*ToolsConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ToolsConfig) GetMcp() []*MCPToolConfig {
@@ -617,7 +746,7 @@ type MCPToolConfig struct {
 
 func (x *MCPToolConfig) Reset() {
 	*x = MCPToolConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[3]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -629,7 +758,7 @@ func (x *MCPToolConfig) String() string {
 func (*MCPToolConfig) ProtoMessage() {}
 
 func (x *MCPToolConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[3]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -642,7 +771,7 @@ func (x *MCPToolConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPToolConfig.ProtoReflect.Descriptor instead.
 func (*MCPToolConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{3}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *MCPToolConfig) GetServer() string {
@@ -672,7 +801,7 @@ type CustomToolConfig struct {
 
 func (x *CustomToolConfig) Reset() {
 	*x = CustomToolConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[4]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -684,7 +813,7 @@ func (x *CustomToolConfig) String() string {
 func (*CustomToolConfig) ProtoMessage() {}
 
 func (x *CustomToolConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[4]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -697,7 +826,7 @@ func (x *CustomToolConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomToolConfig.ProtoReflect.Descriptor instead.
 func (*CustomToolConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{4}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CustomToolConfig) GetName() string {
@@ -733,7 +862,7 @@ type MemoryConfig struct {
 
 func (x *MemoryConfig) Reset() {
 	*x = MemoryConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[5]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -745,7 +874,7 @@ func (x *MemoryConfig) String() string {
 func (*MemoryConfig) ProtoMessage() {}
 
 func (x *MemoryConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[5]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -758,7 +887,7 @@ func (x *MemoryConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryConfig.ProtoReflect.Descriptor instead.
 func (*MemoryConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{5}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *MemoryConfig) GetType() string {
@@ -811,7 +940,7 @@ type MemoryCompressionBatchSizes struct {
 
 func (x *MemoryCompressionBatchSizes) Reset() {
 	*x = MemoryCompressionBatchSizes{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[6]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -823,7 +952,7 @@ func (x *MemoryCompressionBatchSizes) String() string {
 func (*MemoryCompressionBatchSizes) ProtoMessage() {}
 
 func (x *MemoryCompressionBatchSizes) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[6]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -836,7 +965,7 @@ func (x *MemoryCompressionBatchSizes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCompressionBatchSizes.ProtoReflect.Descriptor instead.
 func (*MemoryCompressionBatchSizes) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{6}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MemoryCompressionBatchSizes) GetNormal() int32 {
@@ -886,7 +1015,7 @@ type MemoryCompressionConfig struct {
 
 func (x *MemoryCompressionConfig) Reset() {
 	*x = MemoryCompressionConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[7]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -898,7 +1027,7 @@ func (x *MemoryCompressionConfig) String() string {
 func (*MemoryCompressionConfig) ProtoMessage() {}
 
 func (x *MemoryCompressionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[7]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -911,7 +1040,7 @@ func (x *MemoryCompressionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCompressionConfig.ProtoReflect.Descriptor instead.
 func (*MemoryCompressionConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{7}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MemoryCompressionConfig) GetWorkloadProfile() WorkloadProfile {
@@ -981,7 +1110,7 @@ type BehaviorConfig struct {
 
 func (x *BehaviorConfig) Reset() {
 	*x = BehaviorConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[8]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -993,7 +1122,7 @@ func (x *BehaviorConfig) String() string {
 func (*BehaviorConfig) ProtoMessage() {}
 
 func (x *BehaviorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[8]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1006,7 +1135,7 @@ func (x *BehaviorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BehaviorConfig.ProtoReflect.Descriptor instead.
 func (*BehaviorConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{8}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *BehaviorConfig) GetMaxIterations() int32 {
@@ -1090,7 +1219,7 @@ type PatternConfig struct {
 
 func (x *PatternConfig) Reset() {
 	*x = PatternConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[9]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1102,7 +1231,7 @@ func (x *PatternConfig) String() string {
 func (*PatternConfig) ProtoMessage() {}
 
 func (x *PatternConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[9]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1115,7 +1244,7 @@ func (x *PatternConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatternConfig.ProtoReflect.Descriptor instead.
 func (*PatternConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{9}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PatternConfig) GetEnabled() bool {
@@ -1170,7 +1299,7 @@ type AgentTemplate struct {
 
 func (x *AgentTemplate) Reset() {
 	*x = AgentTemplate{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1182,7 +1311,7 @@ func (x *AgentTemplate) String() string {
 func (*AgentTemplate) ProtoMessage() {}
 
 func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1195,7 +1324,7 @@ func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTemplate.ProtoReflect.Descriptor instead.
 func (*AgentTemplate) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{10}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *AgentTemplate) GetName() string {
@@ -1245,7 +1374,7 @@ type TemplateParameter struct {
 
 func (x *TemplateParameter) Reset() {
 	*x = TemplateParameter{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1257,7 +1386,7 @@ func (x *TemplateParameter) String() string {
 func (*TemplateParameter) ProtoMessage() {}
 
 func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1270,7 +1399,7 @@ func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TemplateParameter.ProtoReflect.Descriptor instead.
 func (*TemplateParameter) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TemplateParameter) GetName() string {
@@ -1323,7 +1452,7 @@ type AgentProfile struct {
 
 func (x *AgentProfile) Reset() {
 	*x = AgentProfile{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1335,7 +1464,7 @@ func (x *AgentProfile) String() string {
 func (*AgentProfile) ProtoMessage() {}
 
 func (x *AgentProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1348,7 +1477,7 @@ func (x *AgentProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentProfile.ProtoReflect.Descriptor instead.
 func (*AgentProfile) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AgentProfile) GetName() string {
@@ -1392,7 +1521,7 @@ type EphemeralAgentPolicy struct {
 
 func (x *EphemeralAgentPolicy) Reset() {
 	*x = EphemeralAgentPolicy{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1404,7 +1533,7 @@ func (x *EphemeralAgentPolicy) String() string {
 func (*EphemeralAgentPolicy) ProtoMessage() {}
 
 func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1417,7 +1546,7 @@ func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EphemeralAgentPolicy.ProtoReflect.Descriptor instead.
 func (*EphemeralAgentPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EphemeralAgentPolicy) GetRole() string {
@@ -1470,7 +1599,7 @@ type SpawnTrigger struct {
 
 func (x *SpawnTrigger) Reset() {
 	*x = SpawnTrigger{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1482,7 +1611,7 @@ func (x *SpawnTrigger) String() string {
 func (*SpawnTrigger) ProtoMessage() {}
 
 func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1495,7 +1624,7 @@ func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnTrigger.ProtoReflect.Descriptor instead.
 func (*SpawnTrigger) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SpawnTrigger) GetType() SpawnTriggerType {
@@ -1523,7 +1652,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\xeb\x06\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\xc1\a\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1542,10 +1671,18 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\tjudge_llm\x18\x0e \x01(\v2\x12.loom.v1.LLMConfigR\bjudgeLlm\x12=\n" +
 	"\x10orchestrator_llm\x18\x0f \x01(\v2\x12.loom.v1.LLMConfigR\x0forchestratorLlm\x129\n" +
 	"\x0eclassifier_llm\x18\x10 \x01(\v2\x12.loom.v1.LLMConfigR\rclassifierLlm\x129\n" +
-	"\x0ecompressor_llm\x18\x11 \x01(\v2\x12.loom.v1.LLMConfigR\rcompressorLlm\x1a;\n" +
+	"\x0ecompressor_llm\x18\x11 \x01(\v2\x12.loom.v1.LLMConfigR\rcompressorLlm\x12'\n" +
+	"\x0factive_provider\x18\x12 \x01(\tR\x0eactiveProvider\x12+\n" +
+	"\x11allowed_providers\x18\x13 \x03(\tR\x10allowedProviders\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb3\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
+	"\rProviderEntry\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12*\n" +
+	"\x06config\x18\x02 \x01(\v2\x12.loom.v1.LLMConfigR\x06config\"\\\n" +
+	"\fProviderPool\x124\n" +
+	"\tproviders\x18\x01 \x03(\v2\x16.loom.v1.ProviderEntryR\tproviders\x12\x16\n" +
+	"\x06active\x18\x02 \x01(\tR\x06active\"\xb3\x02\n" +
 	"\tLLMConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12 \n" +
@@ -1667,59 +1804,63 @@ func file_loom_v1_agent_config_proto_rawDescGZIP() []byte {
 }
 
 var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_loom_v1_agent_config_proto_goTypes = []any{
 	(LLMRole)(0),                        // 0: loom.v1.LLMRole
 	(WorkloadProfile)(0),                // 1: loom.v1.WorkloadProfile
 	(SpawnTriggerType)(0),               // 2: loom.v1.SpawnTriggerType
 	(*AgentConfig)(nil),                 // 3: loom.v1.AgentConfig
-	(*LLMConfig)(nil),                   // 4: loom.v1.LLMConfig
-	(*ToolsConfig)(nil),                 // 5: loom.v1.ToolsConfig
-	(*MCPToolConfig)(nil),               // 6: loom.v1.MCPToolConfig
-	(*CustomToolConfig)(nil),            // 7: loom.v1.CustomToolConfig
-	(*MemoryConfig)(nil),                // 8: loom.v1.MemoryConfig
-	(*MemoryCompressionBatchSizes)(nil), // 9: loom.v1.MemoryCompressionBatchSizes
-	(*MemoryCompressionConfig)(nil),     // 10: loom.v1.MemoryCompressionConfig
-	(*BehaviorConfig)(nil),              // 11: loom.v1.BehaviorConfig
-	(*PatternConfig)(nil),               // 12: loom.v1.PatternConfig
-	(*AgentTemplate)(nil),               // 13: loom.v1.AgentTemplate
-	(*TemplateParameter)(nil),           // 14: loom.v1.TemplateParameter
-	(*AgentProfile)(nil),                // 15: loom.v1.AgentProfile
-	(*EphemeralAgentPolicy)(nil),        // 16: loom.v1.EphemeralAgentPolicy
-	(*SpawnTrigger)(nil),                // 17: loom.v1.SpawnTrigger
-	nil,                                 // 18: loom.v1.AgentConfig.MetadataEntry
-	nil,                                 // 19: loom.v1.AgentProfile.OverridesEntry
+	(*ProviderEntry)(nil),               // 4: loom.v1.ProviderEntry
+	(*ProviderPool)(nil),                // 5: loom.v1.ProviderPool
+	(*LLMConfig)(nil),                   // 6: loom.v1.LLMConfig
+	(*ToolsConfig)(nil),                 // 7: loom.v1.ToolsConfig
+	(*MCPToolConfig)(nil),               // 8: loom.v1.MCPToolConfig
+	(*CustomToolConfig)(nil),            // 9: loom.v1.CustomToolConfig
+	(*MemoryConfig)(nil),                // 10: loom.v1.MemoryConfig
+	(*MemoryCompressionBatchSizes)(nil), // 11: loom.v1.MemoryCompressionBatchSizes
+	(*MemoryCompressionConfig)(nil),     // 12: loom.v1.MemoryCompressionConfig
+	(*BehaviorConfig)(nil),              // 13: loom.v1.BehaviorConfig
+	(*PatternConfig)(nil),               // 14: loom.v1.PatternConfig
+	(*AgentTemplate)(nil),               // 15: loom.v1.AgentTemplate
+	(*TemplateParameter)(nil),           // 16: loom.v1.TemplateParameter
+	(*AgentProfile)(nil),                // 17: loom.v1.AgentProfile
+	(*EphemeralAgentPolicy)(nil),        // 18: loom.v1.EphemeralAgentPolicy
+	(*SpawnTrigger)(nil),                // 19: loom.v1.SpawnTrigger
+	nil,                                 // 20: loom.v1.AgentConfig.MetadataEntry
+	nil,                                 // 21: loom.v1.AgentProfile.OverridesEntry
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
-	4,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
-	5,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
-	8,  // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
-	11, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
-	18, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
-	16, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
-	4,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
-	4,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
-	4,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
-	4,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
-	6,  // 10: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
-	7,  // 11: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	10, // 12: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
-	1,  // 13: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	9,  // 14: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	12, // 15: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	14, // 16: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 17: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 18: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	19, // 19: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	17, // 20: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 21: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 22: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 23: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	24, // [24:24] is the sub-list for method output_type
-	24, // [24:24] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
+	7,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
+	10, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
+	13, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
+	20, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
+	18, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
+	6,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
+	6,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
+	6,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
+	6,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
+	6,  // 10: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
+	4,  // 11: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
+	8,  // 12: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
+	9,  // 13: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
+	12, // 14: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	1,  // 15: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	11, // 16: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	14, // 17: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	16, // 18: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	3,  // 19: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	3,  // 20: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	21, // 21: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	19, // 22: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	3,  // 23: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	2,  // 24: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	3,  // 25: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	26, // [26:26] is the sub-list for method output_type
+	26, // [26:26] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -1733,7 +1874,7 @@ func file_loom_v1_agent_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_agent_config_proto_rawDesc), len(file_loom_v1_agent_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

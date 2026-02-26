@@ -2380,18 +2380,24 @@ func (a *Agent) GetOrchestrator() *patterns.Orchestrator {
 
 // GetLLMProviderName returns the name of the LLM provider (e.g., "anthropic", "bedrock", "ollama").
 func (a *Agent) GetLLMProviderName() string {
-	if a.llm == nil {
+	a.mu.RLock()
+	llm := a.llm
+	a.mu.RUnlock()
+	if llm == nil {
 		return ""
 	}
-	return a.llm.Name()
+	return llm.Name()
 }
 
 // GetLLMModel returns the model identifier (e.g., "claude-3-5-sonnet-20241022").
 func (a *Agent) GetLLMModel() string {
-	if a.llm == nil {
+	a.mu.RLock()
+	llm := a.llm
+	a.mu.RUnlock()
+	if llm == nil {
 		return ""
 	}
-	return a.llm.Model()
+	return llm.Model()
 }
 
 // SetLLMProvider switches the main LLM provider for this agent.
@@ -2399,9 +2405,12 @@ func (a *Agent) GetLLMModel() string {
 // The new provider will be used for all future LLM calls in all sessions.
 // Only updates memory's LLM provider if no dedicated compressor LLM is set.
 func (a *Agent) SetLLMProvider(llm LLMProvider) {
+	a.mu.Lock()
 	a.llm = llm
+	compressorSet := a.compressorLLM != nil
+	a.mu.Unlock()
 	// Only update memory's LLM provider if no dedicated compressor exists
-	if a.memory != nil && a.compressorLLM == nil {
+	if a.memory != nil && !compressorSet {
 		a.memory.SetLLMProvider(llm)
 	}
 }
@@ -2618,4 +2627,66 @@ func WithCommunicationPolicy(policy *communication.PolicyManager) Option {
 	return func(a *Agent) {
 		a.commPolicy = policy
 	}
+}
+
+// GetProviderPool returns the named provider pool (nil if not configured).
+func (a *Agent) GetProviderPool() map[string]LLMProvider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.providerPool
+}
+
+// GetActiveProviderName returns the currently active provider name.
+func (a *Agent) GetActiveProviderName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.activeProviderName
+}
+
+// SetActiveProvider switches to a named provider from the pool.
+// Returns an error if the name is not in the pool or not in the allowed list.
+func (a *Agent) SetActiveProvider(name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.providerPool == nil {
+		return fmt.Errorf("provider pool not configured")
+	}
+	provider, ok := a.providerPool[name]
+	if !ok {
+		return fmt.Errorf("provider %q not found in pool", name)
+	}
+	// Check allowed list if restricted
+	if len(a.allowedProviders) > 0 {
+		allowed := false
+		for _, ap := range a.allowedProviders {
+			if ap == name {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("provider %q not in allowed providers list", name)
+		}
+	}
+	a.llm = provider
+	a.activeProviderName = name
+	// Update memory's LLM provider if no dedicated compressor
+	if a.memory != nil && a.compressorLLM == nil {
+		a.memory.SetLLMProvider(provider)
+	}
+	return nil
+}
+
+// SetProviderPool configures the named provider pool and optional active provider.
+func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allowed []string) error {
+	a.mu.Lock()
+	a.providerPool = pool
+	a.allowedProviders = allowed
+	a.mu.Unlock()
+
+	if active != "" {
+		return a.SetActiveProvider(active)
+	}
+	return nil
 }
