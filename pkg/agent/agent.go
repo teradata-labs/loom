@@ -425,6 +425,48 @@ func (a *Agent) UnregisterTool(name string) {
 	a.tools.Unregister(name)
 }
 
+// RegisterLazyTools registers tools that will only be added to the active tool set
+// when trigger(userMessage) returns true. Safe to call concurrently.
+func (a *Agent) RegisterLazyTools(tools []shuttle.Tool, trigger func(string) bool) {
+	if len(tools) == 0 || trigger == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lazyToolSets = append(a.lazyToolSets, lazyToolSet{tools: tools, trigger: trigger})
+}
+
+// evaluateLazyTools promotes any lazy tool sets whose trigger matches msg
+// into the active registry. Idempotent — already-registered tools are skipped.
+// Called once per turn, before ListTools(), from the conversation loop.
+func (a *Agent) evaluateLazyTools(msg string) {
+	a.mu.RLock()
+	sets := make([]lazyToolSet, len(a.lazyToolSets))
+	copy(sets, a.lazyToolSets)
+	a.mu.RUnlock()
+
+	for _, set := range sets {
+		// Short-circuit if all tools in this set are already registered.
+		allRegistered := true
+		for _, t := range set.tools {
+			if !a.tools.IsRegistered(t.Name()) {
+				allRegistered = false
+				break
+			}
+		}
+		if allRegistered {
+			continue
+		}
+		if set.trigger(msg) {
+			for _, t := range set.tools {
+				if !a.tools.IsRegistered(t.Name()) {
+					a.tools.Register(t)
+				}
+			}
+		}
+	}
+}
+
 // ToolCount returns the number of registered tools.
 func (a *Agent) ToolCount() int {
 	return a.tools.Count()
@@ -1141,6 +1183,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		fmt.Printf("MaxTurns: %d\n", a.config.MaxTurns)
 		fmt.Printf("MaxToolExecutions: %d\n", a.config.MaxToolExecutions)
 		fmt.Printf("=== END DEBUG ===\n\n")
+	}
+
+	// Lazy tool disclosure: promote tools whose trigger matches the current user message.
+	{
+		msgs := session.GetMessages()
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == "user" {
+				a.evaluateLazyTools(msgs[i].Content)
+				break
+			}
+		}
 	}
 
 	// Get available tools

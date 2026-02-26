@@ -653,3 +653,105 @@ func TestUIAppTools_ConcurrentExecution(t *testing.T) {
 	wg.Wait()
 	// Race detector is the primary assertion
 }
+
+// ============================================================================
+// ContainsUIIntent tests
+// ============================================================================
+
+func TestContainsUIIntent_Positives(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{"dashboard keyword", "show me a dashboard"},
+		{"visualization keyword", "I need a visualization of the data"},
+		{"visualize keyword", "visualize sales trends"},
+		{"chart keyword", "create a chart for this data"},
+		{"graph keyword", "plot a graph of revenue"},
+		{"create a ui", "create a ui for this report"},
+		{"build a ui", "build a ui that shows metrics"},
+		{"make a ui", "can you make a ui for this"},
+		{"create ui", "create ui with bar charts"},
+		{"build ui", "build ui dashboard"},
+		{"create an app", "create an app for the team"},
+		{"build an app", "build an app to display results"},
+		{"create app", "create app for sales data"},
+		{"build app", "build app with charts"},
+		{"interactive app", "I want an interactive app"},
+		{"ui app", "make a ui app for this data"},
+		{"web app", "build a web app"},
+		{"create_ui_app", "use create_ui_app to build this"},
+		{"display as a chart", "display as a chart"},
+		{"show as a chart", "show as a chart"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.True(t, ContainsUIIntent(tc.msg), "expected UI intent for: %q", tc.msg)
+		})
+	}
+}
+
+func TestContainsUIIntent_Negatives(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{"plain query", "query the database for sales data"},
+		{"count query", "how many records are in the table"},
+		{"export query", "export the results to CSV"},
+		{"update query", "update the record with id 42"},
+		{"debug query", "why is this query slow"},
+		{"schema query", "what columns are in the users table"},
+		{"empty string", ""},
+		{"unrelated word", "use charger cable"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.False(t, ContainsUIIntent(tc.msg), "expected no UI intent for: %q", tc.msg)
+		})
+	}
+}
+
+func TestContainsUIIntent_CaseInsensitive(t *testing.T) {
+	cases := []string{
+		"DASHBOARD",
+		"Dashboard",
+		"dAsHbOaRd",
+		"VISUALIZATION",
+		"Create A UI",
+		"BUILD UI",
+		"Create_UI_App",
+	}
+
+	for _, msg := range cases {
+		assert.True(t, ContainsUIIntent(msg), "expected UI intent for mixed-case: %q", msg)
+	}
+}
+
+func TestContainsUIIntent_Race(t *testing.T) {
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	messages := []string{
+		"query the database",
+		"create a dashboard",
+		"show me a chart",
+		"update records",
+		"build a web app",
+	}
+
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			msg := messages[i%len(messages)]
+			_ = ContainsUIIntent(msg)
+		}()
+	}
+
+	wg.Wait()
+	// Race detector validates no concurrent write issues.
+}

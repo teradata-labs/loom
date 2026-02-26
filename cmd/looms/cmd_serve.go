@@ -2083,13 +2083,14 @@ func runServe(cmd *cobra.Command, args []string) {
 			zap.Int("num_tools", len(commTools)))
 	}
 
-	// Register UI app tools with all loaded agents (auto-registered like communication tools)
+	// Register UI app tools with all loaded agents using lazy disclosure:
+	// tools are only promoted into the active tool set when ContainsUIIntent fires.
 	if appCompiler != nil && uiRegistry != nil {
-		logger.Info("Registering UI app tools with loaded agents...")
+		logger.Info("Registering UI app tools for lazy disclosure with loaded agents...")
 		for agentID, ag := range agents {
 			uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
-			ag.RegisterTools(uiAppTools...)
-			logger.Info("  UI app tools registered",
+			ag.RegisterLazyTools(uiAppTools, server.ContainsUIIntent)
+			logger.Info("  UI app tools registered for lazy disclosure",
 				zap.String("agent", agentID),
 				zap.Int("num_tools", len(uiAppTools)))
 		}
@@ -2315,11 +2316,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Info("  Enabled dynamic tool registration")
 			}
 
-			// Register UI app tools for hot-reloaded agents
+			// Register UI app tools for hot-reloaded agents using lazy disclosure
 			if appCompiler != nil && uiRegistry != nil {
 				uiAppTools := server.UIAppTools(appCompiler, uiRegistry)
-				newAgent.RegisterTools(uiAppTools...)
-				logger.Info("  UI app tools registered", zap.Int("num_tools", len(uiAppTools)))
+				newAgent.RegisterLazyTools(uiAppTools, server.ContainsUIIntent)
+				logger.Info("  UI app tools registered for lazy disclosure", zap.Int("num_tools", len(uiAppTools)))
 			}
 
 			// Check if agent already exists in server (by GUID)

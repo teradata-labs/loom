@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -25,9 +26,30 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+// uiIntentKeywords are case-insensitive phrases that indicate a user wants a UI visualization.
+var uiIntentKeywords = []string{
+	"dashboard", "visualization", "visualize", "chart", "graph",
+	"create a ui", "build a ui", "make a ui", "create ui", "build ui",
+	"create an app", "build an app", "create app", "build app",
+	"interactive app", "ui app", "web app", "create_ui_app",
+	"display as a chart", "show as a chart",
+}
+
+// ContainsUIIntent reports whether msg suggests the user wants a UI visualization.
+// Case-insensitive keyword scan — fast and deterministic, no LLM cost.
+func ContainsUIIntent(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, kw := range uiIntentKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // UIAppTools returns shuttle.Tool implementations that allow server-side agents
-// to create, update, list, and delete MCP UI apps. These tools are auto-registered
-// to all agents so any agent can create interactive visualizations.
+// to create, update, list, and delete MCP UI apps. These tools are registered
+// lazily — only when ContainsUIIntent signals that the user wants a visualization.
 func UIAppTools(compiler AppCompiler, provider AppProvider) []shuttle.Tool {
 	return []shuttle.Tool{
 		&createUIAppTool{compiler: compiler, provider: provider},

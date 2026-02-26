@@ -35,6 +35,12 @@ type MCPClientRef struct {
 	ServerName string
 }
 
+// lazyToolSet groups tools that are registered only when trigger(userMsg) returns true.
+type lazyToolSet struct {
+	tools   []shuttle.Tool
+	trigger func(string) bool
+}
+
 // Agent is the core conversation agent that orchestrates LLM calls, tool execution,
 // and backend interactions. It's designed to be backend-agnostic and work with
 // any ExecutionBackend implementation (SQL databases, REST APIs, documents, etc.).
@@ -125,6 +131,10 @@ type Agent struct {
 	providerPool       map[string]LLMProvider // name → provider (nil = pool not configured)
 	activeProviderName string                 // currently active provider name (empty = use llm field)
 	allowedProviders   []string               // empty = all pool providers allowed
+
+	// Lazy tool sets: registered only when trigger(userMessage) returns true.
+	// Guarded by a.mu.
+	lazyToolSets []lazyToolSet
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
