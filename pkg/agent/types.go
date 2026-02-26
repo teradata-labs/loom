@@ -190,6 +190,11 @@ type Config struct {
 	EnableFindingExtraction bool // Whether to enable automatic finding extraction (default: true)
 	ExtractionCadence       int  // Number of tool executions between extractions (default: 3)
 	MaxFindings             int  // Maximum findings to keep in cache (default: 50)
+
+	// OutputTokenCBThreshold is the number of consecutive turns where the LLM
+	// hits the output token limit AND returns truncated tool calls before the
+	// circuit breaker fires. 0 uses the default (8). -1 disables the CB entirely.
+	OutputTokenCBThreshold int
 }
 
 // PatternConfig holds pattern injection configuration

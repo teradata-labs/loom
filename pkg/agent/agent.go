@@ -1340,39 +1340,79 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// === OUTPUT TOKEN CIRCUIT BREAKER ===
-		// Check if output token limit was hit and circuit breaker should trigger
+		// Protects against the agent getting stuck in an infinite tool-call loop where
+		// each turn hits the output token limit with truncated (incomplete) tool calls,
+		// making no forward progress.
+		//
+		// IMPORTANT: Only count as a failure when the LLM hits max_tokens AND returns
+		// truncated tool calls. A verbose text response (no tool calls) that hits the
+		// token limit is a legitimate, complete response and must NOT increment the counter.
 		if failureTracker, ok := session.FailureTracker.(*consecutiveFailureTracker); ok && failureTracker != nil {
+			threshold := a.config.OutputTokenCBThreshold
+			if threshold == 0 {
+				threshold = 8 // Default if not configured
+			}
+
 			if llmResp.StopReason == "max_tokens" {
-				// Detect if tool calls are truncated (empty Input indicates mid-generation cutoff)
 				hasEmptyToolCall := detectEmptyToolCall(llmResp.ToolCalls)
 
-				// Record output token exhaustion
-				exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
+				switch {
+				case threshold < 0:
+					// CB disabled entirely — do nothing
 
-				// Add tracing event
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("output_token.exhaustion", map[string]interface{}{
-						"count":              exhaustionCount,
-						"has_empty_toolcall": hasEmptyToolCall,
-						"stop_reason":        llmResp.StopReason,
-						"output_tokens":      llmResp.Usage.OutputTokens,
-					})
-				}
+				case len(llmResp.ToolCalls) > 0 && hasEmptyToolCall:
+					// TRUE FAILURE: agent is stuck in agentic loop with truncated tool calls.
+					// The tool calls cannot be executed because they are incomplete.
+					exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
 
-				// Check if circuit breaker threshold exceeded (default: 3 consecutive failures)
-				if err := failureTracker.checkOutputTokenCircuitBreaker(3); err != nil {
-					// Circuit breaker triggered - fail with actionable error message
 					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
-							"exhaustion_count":   exhaustionCount,
+						span.AddEvent("output_token.exhaustion", map[string]interface{}{
+							"count":              exhaustionCount,
+							"has_empty_toolcall": hasEmptyToolCall,
+							"stop_reason":        llmResp.StopReason,
+							"output_tokens":      llmResp.Usage.OutputTokens,
+							"threshold":          threshold,
+						})
+					}
+
+					if err := failureTracker.checkOutputTokenCircuitBreaker(threshold); err != nil {
+						if a.config.EnableTracing && span != nil {
+							span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
+								"exhaustion_count":   exhaustionCount,
+								"has_empty_toolcall": hasEmptyToolCall,
+								"threshold":          threshold,
+							})
+							span.RecordError(err)
+						}
+						return nil, fmt.Errorf("output token circuit breaker: %w", err)
+					}
+
+				case len(llmResp.ToolCalls) == 0:
+					// NOT A FAILURE: the LLM returned a complete text response that hit the
+					// token limit. This is a valid terminal response. Reset the counter so
+					// prior verbose turns do not accumulate toward the CB threshold.
+					failureTracker.clearOutputTokenExhaustion()
+
+					if a.config.EnableTracing && span != nil {
+						span.AddEvent("output_token.text_response_cleared", map[string]interface{}{
+							"stop_reason":   llmResp.StopReason,
+							"output_tokens": llmResp.Usage.OutputTokens,
+						})
+					}
+
+				default:
+					// max_tokens with non-truncated tool calls: agent may still make progress
+					// on the next turn. Don't count, don't clear — let it continue.
+					if a.config.EnableTracing && span != nil {
+						span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
+							"stop_reason":        llmResp.StopReason,
+							"tool_call_count":    len(llmResp.ToolCalls),
 							"has_empty_toolcall": hasEmptyToolCall,
 						})
-						span.RecordError(err)
 					}
-					return nil, fmt.Errorf("output token circuit breaker: %w", err)
 				}
 			} else {
-				// Clear output token exhaustion counter on successful response
+				// Normal completion (end_turn, stop_sequence, etc.) — clear the counter.
 				failureTracker.clearOutputTokenExhaustion()
 
 				if a.config.EnableTracing && span != nil {

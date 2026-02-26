@@ -277,6 +277,15 @@ message BehaviorConfig {
 
   // Pattern configuration for pattern-guided learning (optional)
   PatternConfig patterns = 7;
+
+  // Output token circuit breaker threshold: number of consecutive turns where
+  // the LLM hits the output token limit AND returns truncated tool calls before
+  // the circuit breaker fires (default: 8, was hardcoded to 3).
+  //
+  // The circuit breaker only triggers when the agent is stuck in a tool loop
+  // with truncated calls — it does NOT trigger on verbose text responses.
+  // Set to 0 to use the default. Set to -1 to disable entirely.
+  int32 output_token_cb_threshold = 8;
 }
 
 // PatternConfig defines pattern-guided learning configuration

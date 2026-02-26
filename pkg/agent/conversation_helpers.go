@@ -296,32 +296,33 @@ func (t *consecutiveFailureTracker) clearOutputTokenExhaustion() {
 
 // checkOutputTokenCircuitBreaker checks if output token circuit breaker should trigger.
 // Returns error if threshold exceeded, nil otherwise.
-// threshold: number of consecutive max_tokens failures before circuit breaker triggers (default: 3)
+// threshold: number of consecutive turns with truncated tool calls before the CB fires (default: 8).
+// This only fires when the agent is stuck in an agentic tool loop — NOT on verbose text responses.
 func (t *consecutiveFailureTracker) checkOutputTokenCircuitBreaker(threshold int) error {
 	if t.outputTokenExhaustions < threshold {
 		return nil
 	}
 
-	// Build detailed error message with actionable suggestions
-	const msgTemplate = "\n\n🔴 OUTPUT TOKEN CIRCUIT BREAKER TRIGGERED\n\n" +
-		"The model has hit the output token limit %d times in a row.\n" +
-		"This usually happens when generating very large outputs (e.g., large JSON files, long code blocks).\n\n" +
-		"IMMEDIATE ACTIONS:\n" +
-		"1. Break this task into smaller chunks (e.g., create file sections separately)\n" +
-		"2. Use file write operations instead of heredocs for large content\n" +
-		"3. Simplify the output format or reduce the amount of data generated\n" +
-		"4. If creating JSON artifacts, write them incrementally rather than all at once\n\n" +
-		"TECHNICAL DETAILS:\n" +
-		"- Model output limit: 8,192 tokens (approximately 6,000 words)\n" +
-		"- Consecutive failures: %d\n" +
-		"- Truncated tool calls detected: %t\n\n" +
-		"The conversation will now stop to prevent an infinite error loop.\n" +
-		"Please reformulate your approach with smaller, incremental steps."
+	// The title line is extracted by the TUI as the status bar summary; keep it concise.
+	// Subsequent lines become the expandable details panel rendered as markdown.
+	msgTemplate := "Output token circuit breaker triggered after %d consecutive turns with truncated tool calls.\n\n" +
+		"The agent is stuck: each turn hits the model output limit before tool calls complete, " +
+		"so no forward progress can be made.\n\n" +
+		"## Immediate Actions\n\n" +
+		"1. Break this task into smaller steps and re-submit\n" +
+		"2. Ask the agent to generate large content incrementally (e.g., section by section)\n" +
+		"3. Use file write tools instead of generating large blocks inline\n" +
+		"4. Simplify the task scope\n\n" +
+		"## Technical Details\n\n" +
+		"- Consecutive truncated-tool-call turns: %d\n" +
+		"- Threshold: %d (configurable via `output_token_cb_threshold` in agent YAML)\n\n" +
+		"The conversation has stopped to prevent an infinite loop. " +
+		"Reformulate your request with smaller, incremental steps."
 
 	msg := fmt.Sprintf(msgTemplate,
 		t.outputTokenExhaustions,
 		t.outputTokenExhaustions,
-		t.hasEmptyToolCall,
+		threshold,
 	)
 
 	return fmt.Errorf("%s", msg)

@@ -1103,9 +1103,17 @@ type BehaviorConfig struct {
 	// Maximum tool executions per conversation (default: 50)
 	MaxToolExecutions int32 `protobuf:"varint,6,opt,name=max_tool_executions,json=maxToolExecutions,proto3" json:"max_tool_executions,omitempty"`
 	// Pattern configuration for pattern-guided learning (optional)
-	Patterns      *PatternConfig `protobuf:"bytes,7,opt,name=patterns,proto3" json:"patterns,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Patterns *PatternConfig `protobuf:"bytes,7,opt,name=patterns,proto3" json:"patterns,omitempty"`
+	// Output token circuit breaker threshold: number of consecutive turns where
+	// the LLM hits the output token limit AND returns truncated tool calls before
+	// the circuit breaker fires (default: 8, was hardcoded to 3).
+	//
+	// The circuit breaker only triggers when the agent is stuck in a tool loop
+	// with truncated calls — it does NOT trigger on verbose text responses.
+	// Set to 0 to use the default. Set to -1 to disable entirely.
+	OutputTokenCbThreshold int32 `protobuf:"varint,8,opt,name=output_token_cb_threshold,json=outputTokenCbThreshold,proto3" json:"output_token_cb_threshold,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *BehaviorConfig) Reset() {
@@ -1185,6 +1193,13 @@ func (x *BehaviorConfig) GetPatterns() *PatternConfig {
 		return x.Patterns
 	}
 	return nil
+}
+
+func (x *BehaviorConfig) GetOutputTokenCbThreshold() int32 {
+	if x != nil {
+		return x.OutputTokenCbThreshold
+	}
+	return 0
 }
 
 // PatternConfig defines pattern-guided learning configuration
@@ -1722,7 +1737,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x19warning_threshold_percent\x18\x04 \x01(\x05R\x17warningThresholdPercent\x12<\n" +
 	"\x1acritical_threshold_percent\x18\x05 \x01(\x05R\x18criticalThresholdPercent\x12E\n" +
 	"\vbatch_sizes\x18\x06 \x01(\v2$.loom.v1.MemoryCompressionBatchSizesR\n" +
-	"batchSizes\"\xbc\x02\n" +
+	"batchSizes\"\xf7\x02\n" +
 	"\x0eBehaviorConfig\x12%\n" +
 	"\x0emax_iterations\x18\x01 \x01(\x05R\rmaxIterations\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\x120\n" +
@@ -1730,7 +1745,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x0fallowed_domains\x18\x04 \x03(\tR\x0eallowedDomains\x12\x1b\n" +
 	"\tmax_turns\x18\x05 \x01(\x05R\bmaxTurns\x12.\n" +
 	"\x13max_tool_executions\x18\x06 \x01(\x05R\x11maxToolExecutions\x122\n" +
-	"\bpatterns\x18\a \x01(\v2\x16.loom.v1.PatternConfigR\bpatterns\"\xda\x01\n" +
+	"\bpatterns\x18\a \x01(\v2\x16.loom.v1.PatternConfigR\bpatterns\x129\n" +
+	"\x19output_token_cb_threshold\x18\b \x01(\x05R\x16outputTokenCbThreshold\"\xda\x01\n" +
 	"\rPatternConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0emin_confidence\x18\x02 \x01(\x02R\rminConfidence\x121\n" +

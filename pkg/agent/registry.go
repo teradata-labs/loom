@@ -561,12 +561,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, WithDescription(config.Description))
 	}
 
-	// Set behavior config (max_tool_executions, max_turns) if provided
+	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold) if provided
 	if config.Behavior != nil {
 		agentConfig := &Config{
-			Name:              config.Name, // Preserve name from config
-			MaxToolExecutions: int(config.Behavior.MaxToolExecutions),
-			MaxTurns:          int(config.Behavior.MaxTurns),
+			Name:                   config.Name, // Preserve name from config
+			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
+			MaxTurns:               int(config.Behavior.MaxTurns),
+			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {
@@ -574,6 +575,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		}
 		if agentConfig.MaxTurns == 0 {
 			agentConfig.MaxTurns = 25 // Default from config_loader.go:258
+		}
+		if agentConfig.OutputTokenCBThreshold == 0 {
+			agentConfig.OutputTokenCBThreshold = 8
 		}
 		opts = append(opts, WithConfig(agentConfig))
 	}

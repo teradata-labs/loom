@@ -159,9 +159,11 @@ func ProgressToMessageWithHistory(progress *loomv1.WeaveProgress, sessionID stri
 			Time:   progress.Timestamp,
 		})
 	case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
+		errTitle, errDetails := splitErrorMessage(progress.Message)
 		msg.AddPart(message.FinishPart{
 			Reason:  message.FinishReasonError,
-			Message: progress.Message,
+			Message: errTitle,
+			Details: errDetails,
 			Time:    progress.Timestamp,
 		})
 	}
@@ -254,14 +256,45 @@ func ProgressToMessage(progress *loomv1.WeaveProgress, sessionID string, message
 			Time:   progress.Timestamp,
 		})
 	case loomv1.ExecutionStage_EXECUTION_STAGE_FAILED:
+		errTitle, errDetails := splitErrorMessage(progress.Message)
 		msg.AddPart(message.FinishPart{
 			Reason:  message.FinishReasonError,
-			Message: progress.Message,
+			Message: errTitle,
+			Details: errDetails,
 			Time:    progress.Timestamp,
 		})
 	}
 
 	return msg
+}
+
+// splitErrorMessage splits a (potentially multi-line) error string into a short
+// title for the error badge and a details body for the expandable section.
+// The title is the first non-empty, non-whitespace line with leading emoji/symbols
+// stripped to a reasonable length. The details are the remaining lines.
+func splitErrorMessage(msg string) (title, details string) {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return "An error occurred", ""
+	}
+
+	lines := strings.Split(msg, "\n")
+
+	// Find the first non-empty line to use as title
+	titleIdx := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			titleIdx = i
+			break
+		}
+	}
+	if titleIdx == -1 {
+		return msg, ""
+	}
+
+	title = strings.TrimSpace(lines[titleIdx])
+	details = strings.TrimSpace(strings.Join(lines[titleIdx+1:], "\n"))
+	return title, details
 }
 
 // formatStageName converts an ExecutionStage enum to a human-readable string

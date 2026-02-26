@@ -203,13 +203,14 @@ type MemoryCompressionBatchSizesYAML struct {
 
 // BehaviorConfigYAML represents behavior configuration in YAML
 type BehaviorConfigYAML struct {
-	MaxIterations      int                `yaml:"max_iterations"`
-	TimeoutSeconds     int                `yaml:"timeout_seconds"`
-	AllowCodeExecution bool               `yaml:"allow_code_execution"`
-	AllowedDomains     []string           `yaml:"allowed_domains"`
-	MaxTurns           int                `yaml:"max_turns"`
-	MaxToolExecutions  int                `yaml:"max_tool_executions"`
-	Patterns           *PatternConfigYAML `yaml:"patterns"`
+	MaxIterations          int                `yaml:"max_iterations"`
+	TimeoutSeconds         int                `yaml:"timeout_seconds"`
+	AllowCodeExecution     bool               `yaml:"allow_code_execution"`
+	AllowedDomains         []string           `yaml:"allowed_domains"`
+	MaxTurns               int                `yaml:"max_turns"`
+	MaxToolExecutions      int                `yaml:"max_tool_executions"`
+	Patterns               *PatternConfigYAML `yaml:"patterns"`
+	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 }
 
 // PatternConfigYAML represents pattern configuration in YAML
@@ -583,14 +584,19 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid behavior config: %w", err)
 	}
+	outputTokenCBThreshold, err := safeInt32(yaml.Agent.Behavior.OutputTokenCBThreshold, "OutputTokenCBThreshold")
+	if err != nil {
+		return nil, fmt.Errorf("invalid behavior config: %w", err)
+	}
 
 	config.Behavior = &loomv1.BehaviorConfig{
-		MaxIterations:      maxIterations,
-		TimeoutSeconds:     timeoutSeconds,
-		AllowCodeExecution: yaml.Agent.Behavior.AllowCodeExecution,
-		AllowedDomains:     yaml.Agent.Behavior.AllowedDomains,
-		MaxTurns:           maxTurns,
-		MaxToolExecutions:  maxToolExecutions,
+		MaxIterations:          maxIterations,
+		TimeoutSeconds:         timeoutSeconds,
+		AllowCodeExecution:     yaml.Agent.Behavior.AllowCodeExecution,
+		AllowedDomains:         yaml.Agent.Behavior.AllowedDomains,
+		MaxTurns:               maxTurns,
+		MaxToolExecutions:      maxToolExecutions,
+		OutputTokenCbThreshold: outputTokenCBThreshold,
 	}
 
 	// Parse pattern config if present
@@ -636,6 +642,10 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 	if config.Behavior.MaxToolExecutions == 0 {
 		config.Behavior.MaxToolExecutions = 50 // Default tool executions
+	}
+	// 0 means use default (8). Negative value (-1) means disabled (handled in agent).
+	if config.Behavior.OutputTokenCbThreshold == 0 {
+		config.Behavior.OutputTokenCbThreshold = 8 // Default CB threshold
 	}
 
 	return config, nil
@@ -855,12 +865,13 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	// Convert behavior config
 	if config.Behavior != nil {
 		yaml.Agent.Behavior = BehaviorConfigYAML{
-			MaxIterations:      int(config.Behavior.MaxIterations),
-			TimeoutSeconds:     int(config.Behavior.TimeoutSeconds),
-			AllowCodeExecution: config.Behavior.AllowCodeExecution,
-			AllowedDomains:     config.Behavior.AllowedDomains,
-			MaxTurns:           int(config.Behavior.MaxTurns),
-			MaxToolExecutions:  int(config.Behavior.MaxToolExecutions),
+			MaxIterations:          int(config.Behavior.MaxIterations),
+			TimeoutSeconds:         int(config.Behavior.TimeoutSeconds),
+			AllowCodeExecution:     config.Behavior.AllowCodeExecution,
+			AllowedDomains:         config.Behavior.AllowedDomains,
+			MaxTurns:               int(config.Behavior.MaxTurns),
+			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
+			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 	}
 

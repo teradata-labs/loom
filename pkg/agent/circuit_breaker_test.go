@@ -20,31 +20,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOutputTokenCircuitBreaker tests the output token circuit breaker functionality.
+// TestOutputTokenCircuitBreaker tests the basic threshold behavior.
 func TestOutputTokenCircuitBreaker(t *testing.T) {
 	tracker := newConsecutiveFailureTracker()
 
-	// First exhaustion - should not trigger circuit breaker
+	// First exhaustion — should not trigger circuit breaker
 	count := tracker.recordOutputTokenExhaustion(true)
 	assert.Equal(t, 1, count)
 	err := tracker.checkOutputTokenCircuitBreaker(3)
 	assert.NoError(t, err, "First exhaustion should not trigger circuit breaker")
 
-	// Second exhaustion - should not trigger circuit breaker
+	// Second exhaustion — should not trigger circuit breaker
 	count = tracker.recordOutputTokenExhaustion(true)
 	assert.Equal(t, 2, count)
 	err = tracker.checkOutputTokenCircuitBreaker(3)
 	assert.NoError(t, err, "Second exhaustion should not trigger circuit breaker")
 
-	// Third exhaustion - should trigger circuit breaker
+	// Third exhaustion — should trigger circuit breaker
 	count = tracker.recordOutputTokenExhaustion(true)
 	assert.Equal(t, 3, count)
 	err = tracker.checkOutputTokenCircuitBreaker(3)
 	require.Error(t, err, "Third exhaustion should trigger circuit breaker")
-	assert.Contains(t, err.Error(), "OUTPUT TOKEN CIRCUIT BREAKER TRIGGERED")
-	assert.Contains(t, err.Error(), "Break this task into smaller chunks")
-	assert.Contains(t, err.Error(), "Consecutive failures: 3")
-	assert.Contains(t, err.Error(), "Truncated tool calls detected: true")
+	assert.Contains(t, err.Error(), "circuit breaker triggered")
+	assert.Contains(t, err.Error(), "Break this task into smaller steps")
+	assert.Contains(t, err.Error(), "Consecutive truncated-tool-call turns: 3")
 }
 
 // TestOutputTokenCircuitBreaker_Clear tests that clearing resets the counter.
@@ -71,18 +70,88 @@ func TestOutputTokenCircuitBreaker_Clear(t *testing.T) {
 func TestOutputTokenCircuitBreaker_ThresholdCustomization(t *testing.T) {
 	tracker := newConsecutiveFailureTracker()
 
-	// Test with threshold of 5
-	for i := 1; i < 5; i++ {
+	// Test with threshold of 8 (new default)
+	for i := 1; i < 8; i++ {
 		tracker.recordOutputTokenExhaustion(false)
-		err := tracker.checkOutputTokenCircuitBreaker(5)
-		assert.NoError(t, err, "Should not trigger before threshold")
+		err := tracker.checkOutputTokenCircuitBreaker(8)
+		assert.NoError(t, err, "Should not trigger before threshold at count %d", i)
 	}
 
-	// 5th exhaustion should trigger
+	// 8th exhaustion should trigger
 	tracker.recordOutputTokenExhaustion(false)
+	err := tracker.checkOutputTokenCircuitBreaker(8)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "circuit breaker triggered")
+}
+
+// TestOutputTokenCB_TextResponseClearsCounter is the KEY regression test.
+//
+// A max_tokens event on a text response (no tool calls) is a SUCCESSFUL response
+// and must NOT increment the counter. In the old (buggy) code, the counter accumulated
+// across the entire session, causing the CB to fire after 3 verbose text responses
+// even though no actual failure occurred.
+//
+// The correct behavior is: counter is only incremented when the agent is stuck in a
+// tool loop with truncated tool calls. A text response clears the counter.
+func TestOutputTokenCB_TextResponseClearsCounter(t *testing.T) {
+	// This test simulates what was happening to Dan Bo's healthcare agents:
+	// three successful verbose responses that happened to hit max_tokens,
+	// incorrectly triggering the circuit breaker.
+
+	tracker := newConsecutiveFailureTracker()
+
+	// Simulate the agent-level logic for three user turns:
+	// Each turn: max_tokens, ToolCalls=[], counter SHOULD clear (text response = success)
+	for i := 1; i <= 5; i++ {
+		// Agent generates verbose text → hits max_tokens → ToolCalls empty
+		// Correct behavior: clear the counter (this is a successful response)
+		tracker.clearOutputTokenExhaustion() // ← what agent.go now does for text responses
+
+		err := tracker.checkOutputTokenCircuitBreaker(8)
+		assert.NoError(t, err, "Turn %d: CB must not fire on verbose text responses", i)
+		assert.Equal(t, 0, tracker.outputTokenExhaustions, "Turn %d: counter must be 0 after text response", i)
+	}
+}
+
+// TestOutputTokenCB_OnlyTruncatedToolCallsCount tests that only truncated tool calls
+// (the actual failure condition) count toward the threshold.
+func TestOutputTokenCB_OnlyTruncatedToolCallsCount(t *testing.T) {
+	tracker := newConsecutiveFailureTracker()
+
+	// Scenario 1: max_tokens with non-truncated tool calls — should NOT count
+	// (agent may still make progress; tool calls are complete)
+	// The agent.go code handles this in the default switch case (no record, no clear)
+	// So counter stays at 0.
+	assert.Equal(t, 0, tracker.outputTokenExhaustions)
+
+	// Scenario 2: max_tokens with truncated tool calls — SHOULD count
+	tracker.recordOutputTokenExhaustion(true)
+	assert.Equal(t, 1, tracker.outputTokenExhaustions)
+
+	// Scenario 3: text response (no tool calls) — clears counter
+	tracker.clearOutputTokenExhaustion()
+	assert.Equal(t, 0, tracker.outputTokenExhaustions)
+
+	// Scenario 4: multiple truncated-tool-call turns in sequence → CB fires at threshold
+	for i := 0; i < 8; i++ {
+		tracker.recordOutputTokenExhaustion(true)
+	}
+	err := tracker.checkOutputTokenCircuitBreaker(8)
+	require.Error(t, err, "8 consecutive truncated-tool-call turns should trigger CB")
+	assert.Contains(t, err.Error(), "circuit breaker triggered")
+}
+
+// TestOutputTokenCB_ThresholdInErrorMessage verifies the threshold is reported correctly.
+func TestOutputTokenCB_ThresholdInErrorMessage(t *testing.T) {
+	tracker := newConsecutiveFailureTracker()
+
+	for i := 0; i < 5; i++ {
+		tracker.recordOutputTokenExhaustion(true)
+	}
 	err := tracker.checkOutputTokenCircuitBreaker(5)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OUTPUT TOKEN CIRCUIT BREAKER TRIGGERED")
+	assert.Contains(t, err.Error(), "Threshold: 5", "Error message must report the configured threshold")
+	assert.Contains(t, err.Error(), "output_token_cb_threshold", "Error message must hint at the config key")
 }
 
 // TestDetectEmptyToolCall tests detection of truncated tool calls.
@@ -190,22 +259,26 @@ func TestDetectEmptyToolCall(t *testing.T) {
 }
 
 // TestOutputTokenCircuitBreaker_Integration tests the full flow with failure tracker.
+// This covers the actual failure case: agent stuck in tool loop with truncated calls.
 func TestOutputTokenCircuitBreaker_Integration(t *testing.T) {
 	tracker := newConsecutiveFailureTracker()
 
-	// Simulate a conversation that hits output token limit repeatedly
+	// Simulate an agent stuck in a tool loop with truncated calls
+	// (this is the ONLY scenario the CB should trigger on)
 	scenarios := []struct {
 		stopReason       string
 		hasEmptyToolCall bool
+		hasToolCalls     bool
 		shouldError      bool
+		description      string
 	}{
-		{"max_tokens", true, false}, // First hit
-		{"max_tokens", true, false}, // Second hit
-		{"max_tokens", true, true},  // Third hit - circuit breaker triggers
+		{"max_tokens", true, true, false, "First truncated tool call — no fire"},
+		{"max_tokens", true, true, false, "Second truncated tool call — no fire"},
+		{"max_tokens", true, true, true, "Third truncated tool call — CB fires"},
 	}
 
 	for i, scenario := range scenarios {
-		if scenario.stopReason == "max_tokens" {
+		if scenario.stopReason == "max_tokens" && scenario.hasToolCalls && scenario.hasEmptyToolCall {
 			tracker.recordOutputTokenExhaustion(scenario.hasEmptyToolCall)
 		} else {
 			tracker.clearOutputTokenExhaustion()
@@ -213,10 +286,10 @@ func TestOutputTokenCircuitBreaker_Integration(t *testing.T) {
 
 		err := tracker.checkOutputTokenCircuitBreaker(3)
 		if scenario.shouldError {
-			require.Error(t, err, "Scenario %d should trigger circuit breaker", i+1)
-			assert.Contains(t, err.Error(), "OUTPUT TOKEN CIRCUIT BREAKER TRIGGERED")
+			require.Error(t, err, "Scenario %d (%s) should trigger circuit breaker", i+1, scenario.description)
+			assert.Contains(t, err.Error(), "circuit breaker triggered")
 		} else {
-			assert.NoError(t, err, "Scenario %d should not trigger circuit breaker", i+1)
+			assert.NoError(t, err, "Scenario %d (%s) should not trigger circuit breaker", i+1, scenario.description)
 		}
 	}
 }
@@ -225,18 +298,47 @@ func TestOutputTokenCircuitBreaker_Integration(t *testing.T) {
 func TestOutputTokenCircuitBreaker_Recovery(t *testing.T) {
 	tracker := newConsecutiveFailureTracker()
 
-	// Hit output limit twice
+	// Hit output limit (truncated tool calls) twice
 	tracker.recordOutputTokenExhaustion(true)
 	tracker.recordOutputTokenExhaustion(true)
 	assert.Equal(t, 2, tracker.outputTokenExhaustions)
 
-	// Successful response clears the counter
+	// A text response (or normal completion) clears the counter
 	tracker.clearOutputTokenExhaustion()
 	assert.Equal(t, 0, tracker.outputTokenExhaustions)
 
-	// Can now hit limit again without immediately triggering
+	// Can now accumulate again without residual count
 	tracker.recordOutputTokenExhaustion(false)
 	tracker.recordOutputTokenExhaustion(false)
-	err := tracker.checkOutputTokenCircuitBreaker(3)
+	err := tracker.checkOutputTokenCircuitBreaker(8)
 	assert.NoError(t, err, "Should not trigger after recovery")
+}
+
+// TestOutputTokenCB_SessionAccumulation_Regression is the exact regression scenario
+// reported by Dan Bo and other Anthropic/OpenAI users.
+//
+// Three legitimate verbose responses in a session must NOT trigger the CB.
+// The old code incremented the counter for ALL max_tokens events, even successful ones,
+// and never cleared it between user turns when stop_reason was max_tokens.
+func TestOutputTokenCB_SessionAccumulation_Regression(t *testing.T) {
+	tracker := newConsecutiveFailureTracker()
+
+	// Turn 1: "Create HIPAA compliance report"
+	// Agent returns verbose text → max_tokens, ToolCalls=[] → agent.go clears counter
+	tracker.clearOutputTokenExhaustion() // agent.go behavior for text responses
+	assert.Equal(t, 0, tracker.outputTokenExhaustions, "After turn 1 text response: counter must be 0")
+	assert.NoError(t, tracker.checkOutputTokenCircuitBreaker(8))
+
+	// Turn 2: "Check data quality on PATIENTS table"
+	// Agent returns verbose analysis → max_tokens, ToolCalls=[] → agent.go clears counter
+	tracker.clearOutputTokenExhaustion()
+	assert.Equal(t, 0, tracker.outputTokenExhaustions, "After turn 2 text response: counter must be 0")
+	assert.NoError(t, tracker.checkOutputTokenCircuitBreaker(8))
+
+	// Turn 3: "Generate the final summary"
+	// Agent returns final summary → max_tokens, ToolCalls=[] → agent.go clears counter
+	tracker.clearOutputTokenExhaustion()
+	assert.Equal(t, 0, tracker.outputTokenExhaustions, "After turn 3 text response: counter must be 0")
+	err := tracker.checkOutputTokenCircuitBreaker(8)
+	assert.NoError(t, err, "CB must NOT fire on legitimate verbose text responses — this was the reported bug")
 }

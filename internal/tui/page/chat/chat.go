@@ -1318,7 +1318,7 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 			}
 			return util.InfoMsg{
 				Type: util.InfoTypeError,
-				Msg:  err.Error(),
+				Msg:  extractErrorTitle(err.Error()),
 			}
 		}
 		return nil
@@ -2049,4 +2049,27 @@ func parseAgentNameFromToolResult(jsonContent string) string {
 	agentName = strings.TrimSuffix(agentName, ".yml")
 
 	return agentName
+}
+
+// extractErrorTitle returns a clean single-line summary from an error string.
+// gRPC errors arrive as "rpc error: code = Internal desc = agent error: <details>"
+// and multi-line error bodies (like the circuit breaker message) get mangled when
+// displayed in the one-line status bar. This extracts the first meaningful line.
+func extractErrorTitle(errStr string) string {
+	// Strip the gRPC boilerplate prefix if present
+	if idx := strings.Index(errStr, " desc = "); idx != -1 {
+		errStr = errStr[idx+len(" desc = "):]
+	}
+	// Strip common wrapping prefixes that add no information
+	for _, prefix := range []string{"agent error: ", "conversation loop failed: ", "LLM call failed: "} {
+		errStr = strings.TrimPrefix(errStr, prefix)
+	}
+	// Take only the first non-empty line
+	for _, line := range strings.Split(errStr, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return errStr
 }
