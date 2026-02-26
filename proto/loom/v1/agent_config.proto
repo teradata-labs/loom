@@ -136,6 +136,51 @@ message LLMConfig {
   // If not set, will be calculated as max_context_tokens * 0.1
   // Examples: Claude (200K) = 20000, Llama (128K) = 12800, Mistral (32K) = 3200
   int32 reserved_output_tokens = 9;
+
+  // Client-side rate limiting configuration.
+  // When nil, rate limiting is enabled with provider-appropriate defaults.
+  LLMRateLimitConfig rate_limit = 10;
+}
+
+// LLMRateLimitConfig configures client-side rate limiting for an LLM provider.
+// All numeric fields default to 0 (zero), which means "use provider default".
+// Rate limiting is always enabled unless disabled is explicitly set to true.
+message LLMRateLimitConfig {
+  // Disable client-side rate limiting entirely.
+  // Default: false (rate limiting is ON). Set to true only if the provider
+  // has its own throttle handling or you are managing concurrency externally.
+  bool disabled = 1;
+
+  // Maximum requests per second across all agents sharing this provider.
+  // 0 = use default (2.0 RPS).
+  double requests_per_second = 2;
+
+  // Maximum input+output tokens per minute for token-based throttling.
+  // 0 = use default (40000 TPM).
+  // Set this to match your API tier:
+  //   Anthropic free: 30000, Tier 1: 100000
+  //   Bedrock: varies by model (40000-400000)
+  int64 tokens_per_minute = 3;
+
+  // Burst capacity: maximum concurrent requests allowed before queuing.
+  // 0 = use default (5).
+  int32 burst_capacity = 4;
+
+  // Minimum delay between consecutive requests, in milliseconds.
+  // 0 = use default (300 ms).
+  int32 min_delay_ms = 5;
+
+  // Maximum number of retries when a 429 throttle error is received.
+  // 0 = use default (5).
+  int32 max_retries = 6;
+
+  // Initial retry backoff in milliseconds (doubles each retry).
+  // 0 = use default (1000 ms).
+  int32 retry_backoff_ms = 7;
+
+  // Maximum time a request may wait in the queue before being dropped, in seconds.
+  // 0 = use default (300 s = 5 min).
+  int32 queue_timeout_seconds = 8;
 }
 
 // LLMRole identifies the purpose/role of an LLM provider within an agent.

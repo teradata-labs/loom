@@ -866,6 +866,8 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		zap.String("provider", config.Provider),
 		zap.String("model", config.Model))
 
+	rlCfg := r.buildRateLimiterConfig(config.RateLimit)
+
 	switch config.Provider {
 	case "anthropic":
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -873,14 +875,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
 		}
 		return anthropic.NewClient(anthropic.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "bedrock":
@@ -893,16 +892,12 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			profile = "default"
 		}
 		return bedrock.NewClient(bedrock.Config{
-			Region:      region,
-			Profile:     profile,
-			ModelID:     config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true, // Always enable rate limiter for Bedrock to prevent throttling
-				Logger:  r.logger,
-				// Use defaults for other fields (RequestsPerSecond, TokensPerMinute, etc.)
-			},
+			Region:            region,
+			Profile:           profile,
+			ModelID:           config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "ollama":
@@ -911,14 +906,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			endpoint = "http://localhost:11434"
 		}
 		return ollama.NewClient(ollama.Config{
-			Endpoint:    endpoint,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			Endpoint:          endpoint,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "openai":
@@ -927,14 +919,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
 		}
 		return openai.NewClient(openai.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "azure-openai", "azureopenai":
@@ -947,15 +936,12 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("AZURE_OPENAI_ENDPOINT environment variable not set")
 		}
 		return azureopenai.NewClient(azureopenai.Config{
-			APIKey:       apiKey,
-			Endpoint:     endpoint,
-			DeploymentID: config.Model,
-			MaxTokens:    int(config.MaxTokens),
-			Temperature:  float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Endpoint:          endpoint,
+			DeploymentID:      config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "mistral":
@@ -964,14 +950,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("MISTRAL_API_KEY environment variable not set")
 		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "gemini":
@@ -980,14 +963,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("GEMINI_API_KEY environment variable not set")
 		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "huggingface":
@@ -996,19 +976,61 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("HUGGINGFACE_API_KEY environment variable not set")
 		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:       apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			Token:             apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
+}
+
+// buildRateLimiterConfig converts the proto LLMRateLimitConfig to the llm package config.
+// When proto config is nil, returns enabled-by-default config (zero fields → provider defaults).
+// When proto config has disabled=true, returns a disabled rate limiter config.
+// Non-zero numeric fields override the provider defaults set by NewRateLimiter().
+func (r *Registry) buildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig) llm.RateLimiterConfig {
+	cfg := llm.RateLimiterConfig{
+		Enabled: true,
+		Logger:  r.logger,
+		// All numeric fields left at zero → NewRateLimiter() fills them from DefaultRateLimiterConfig()
+	}
+
+	if proto == nil {
+		return cfg
+	}
+
+	if proto.Disabled {
+		cfg.Enabled = false
+		return cfg
+	}
+
+	if proto.RequestsPerSecond > 0 {
+		cfg.RequestsPerSecond = proto.RequestsPerSecond
+	}
+	if proto.TokensPerMinute > 0 {
+		cfg.TokensPerMinute = proto.TokensPerMinute
+	}
+	if proto.BurstCapacity > 0 {
+		cfg.BurstCapacity = int(proto.BurstCapacity)
+	}
+	if proto.MinDelayMs > 0 {
+		cfg.MinDelay = time.Duration(proto.MinDelayMs) * time.Millisecond
+	}
+	if proto.MaxRetries > 0 {
+		cfg.MaxRetries = int(proto.MaxRetries)
+	}
+	if proto.RetryBackoffMs > 0 {
+		cfg.RetryBackoff = time.Duration(proto.RetryBackoffMs) * time.Millisecond
+	}
+	if proto.QueueTimeoutSeconds > 0 {
+		cfg.QueueTimeout = time.Duration(proto.QueueTimeoutSeconds) * time.Second
+	}
+
+	return cfg
 }
 
 // registerMCPTools registers MCP tools for an agent

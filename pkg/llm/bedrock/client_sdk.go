@@ -481,8 +481,15 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		params.Tools = toolUnions
 	}
 
-	// Call streaming API (rate limiting doesn't apply well to streams)
-	// The stream will be consumed synchronously, so we don't need rate limiting here
+	// Acquire rate limit slot before initiating the stream to prevent Bedrock throttling.
+	// NewStreaming initiates the HTTP request immediately, so we must throttle before calling it.
+	if c.rateLimiter != nil {
+		if _, rlErr := c.rateLimiter.Do(ctx, func(_ context.Context) (interface{}, error) {
+			return nil, nil
+		}); rlErr != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", rlErr)
+		}
+	}
 	stream := c.client.Messages.NewStreaming(ctx, params)
 
 	// Process stream events
