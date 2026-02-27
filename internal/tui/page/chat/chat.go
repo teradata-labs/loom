@@ -384,7 +384,9 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		if msg.Payload.ID == p.session.ID {
 			prevHasIncompleteTodos := hasIncompleteTodos(p.session.Todos)
 			prevHasInProgress := p.hasInProgressTodo()
-			p.session = msg.Payload
+			// Merge preserves existing fields (Title, Todos) that cost/token
+			// update events from the coordinator don't include.
+			p.session = p.session.Merge(msg.Payload)
 			newHasIncompleteTodos := hasIncompleteTodos(p.session.Todos)
 			newHasInProgress := p.hasInProgressTodo()
 			if prevHasIncompleteTodos != newHasIncompleteTodos {
@@ -488,6 +490,12 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		return p, p.openProviderSwitcher()
 	case models.ModelSelectedMsg:
 		return p, p.switchToProvider(msg)
+	case providerSwitchedMsg:
+		// Refresh agents list so the sidebar shows the updated model for the active agent.
+		return p, tea.Batch(
+			p.fetchAgentsList(),
+			util.ReportInfo(fmt.Sprintf("Switched to provider: %s", msg.providerName)),
+		)
 	case sidebar.AgentsListMsg:
 		u, cmd := p.sidebar.Update(msg)
 		p.sidebar = u.(sidebar.Sidebar)
@@ -1885,6 +1893,12 @@ type MCPServerToolsMsg struct {
 	Tools      []sidebar.MCPToolInfo
 }
 
+// providerSwitchedMsg signals a successful model/provider switch.
+// Handled by refreshing the agents list so the sidebar shows the new model.
+type providerSwitchedMsg struct {
+	providerName string
+}
+
 // fetchMCPServerTools fetches the tools for a specific MCP server
 func (p *chatPage) fetchMCPServerTools(serverName string) tea.Cmd {
 	return func() tea.Msg {
@@ -2016,10 +2030,9 @@ func (p *chatPage) switchToProvider(msg models.ModelSelectedMsg) tea.Cmd {
 				Type: util.InfoTypeError,
 			}
 		}
-		return util.InfoMsg{
-			Text: fmt.Sprintf("Switched to provider: %s", msg.Model.Name),
-			Type: util.InfoTypeSuccess,
-		}
+		// Return providerSwitchedMsg so the Update handler can refresh the agents
+		// list, which causes the sidebar to display the new model immediately.
+		return providerSwitchedMsg{providerName: msg.Model.Name}
 	}
 }
 

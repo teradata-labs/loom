@@ -329,7 +329,9 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent {
 			if m.session.ID == msg.Payload.ID {
-				m.session = msg.Payload
+				// Merge to preserve fields like Title that the coordinator
+				// does not include in cost/token update events.
+				m.session = m.session.Merge(msg.Payload)
 			}
 		}
 	}
@@ -631,17 +633,46 @@ func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 }
 
 func (s *sidebarCmp) currentModelBlock() string {
-	model := config.Get().GetModel()
 	t := styles.CurrentTheme()
 
-	modelIcon := t.S().Base.Foreground(t.FgSubtle).Render(styles.ModelIcon)
-	modelName := t.S().Text.Render(model.Name)
-	modelInfo := fmt.Sprintf("%s %s", modelIcon, modelName)
-	parts := []string{
-		modelInfo,
+	// Determine model to display — use the most specific/current source available:
+	// 1. session.Model (actual model from the last LLM cost report — most accurate)
+	// 2. current agent's ModelInfo from the agents list (configured model)
+	// 3. global config fallback
+	var modelDisplayName string
+	var showReasoning bool
+	contextWindow := 200000 // Reasonable default for frontier models
+
+	if s.session.Model != "" {
+		// Best source: actual model reported in cost info
+		if s.session.Provider != "" {
+			modelDisplayName = s.session.Provider + "/" + s.session.Model
+		} else {
+			modelDisplayName = s.session.Model
+		}
+	} else if s.currentAgent != "" {
+		// Second: agent's configured model from the agents list
+		for _, ag := range s.agents {
+			if ag.ID == s.currentAgent && ag.ModelInfo != "" {
+				modelDisplayName = ag.ModelInfo
+				break
+			}
+		}
 	}
 
-	if model.CanReason() {
+	if modelDisplayName == "" {
+		// Fallback: global config (always available)
+		model := config.Get().GetModel()
+		modelDisplayName = model.Name
+		showReasoning = model.CanReason()
+		contextWindow = model.ContextWindow
+	}
+
+	modelIcon := t.S().Base.Foreground(t.FgSubtle).Render(styles.ModelIcon)
+	modelName := t.S().Text.Render(modelDisplayName)
+	parts := []string{fmt.Sprintf("%s %s", modelIcon, modelName)}
+
+	if showReasoning {
 		reasoningInfoStyle := t.S().Subtle.PaddingLeft(2)
 		parts = append(parts, reasoningInfoStyle.Render("Thinking enabled"))
 	}
@@ -651,15 +682,12 @@ func (s *sidebarCmp) currentModelBlock() string {
 			parts,
 			"  "+formatTokensAndCost(
 				int64(s.session.CompletionTokens+s.session.PromptTokens),
-				int64(model.ContextWindow),
+				int64(contextWindow),
 				s.session.Cost,
 			),
 		)
 	}
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		parts...,
-	)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 // SetSession implements Sidebar.
