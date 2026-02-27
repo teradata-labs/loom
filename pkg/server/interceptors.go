@@ -101,8 +101,6 @@ func extractUserID(ctx context.Context, cfg UserIDConfig) (context.Context, erro
 	if defaultID == "" {
 		defaultID = "default-user"
 	}
-	logger.Warn("using default user ID, no x-user-id header provided",
-		zap.String("default_user_id", defaultID))
 	return postgres.ContextWithUserID(ctx, defaultID), nil
 }
 

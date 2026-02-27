@@ -63,7 +63,7 @@ Support:
   Documentation: https://github.com/teradata-labs/loom
 `)
 
-	rootCmd.PersistentFlags().StringVarP(&serverAddr, "server", "s", "localhost:60051", "Loom server address")
+	rootCmd.PersistentFlags().StringVarP(&serverAddr, "server", "s", "127.0.0.1:60051", "Loom server address")
 	rootCmd.PersistentFlags().StringVar(&sessionID, "session", "", "Resume existing session ID")
 	rootCmd.PersistentFlags().StringVarP(&agentID, "thread", "t", "", "Thread ID to connect to (e.g., file-explorer-abc123, sql-optimizer-def456)")
 
