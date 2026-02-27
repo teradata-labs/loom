@@ -92,8 +92,8 @@ func runListProviders(_ *cobra.Command, _ []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPROVIDER\tMODEL\tACTIVE")
-	fmt.Fprintln(w, "----\t--------\t-----\t------")
+	_, _ = fmt.Fprintln(w, "NAME\tPROVIDER\tMODEL\tACTIVE")
+	_, _ = fmt.Fprintln(w, "----\t--------\t-----\t------")
 	for _, p := range resp.Providers {
 		active := ""
 		if p.Name == resp.ActiveProvider {
@@ -107,7 +107,7 @@ func runListProviders(_ *cobra.Command, _ []string) {
 		if p.Config != nil {
 			prov = p.Config.Provider
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, prov, model, active)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, prov, model, active)
 	}
 	_ = w.Flush()
 }
