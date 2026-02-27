@@ -175,9 +175,8 @@ Set `storage.backend: postgres` and provide your Supabase connection string:
 export LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require"
 ```
 
-For example, if your project ref is `abcdefghijklmnop`, region is `us-east-1`, and pooler prefix is `aws-1`:
 ```bash
-export LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.PROJECT_REF:DB_PASSWORD@aws-N-REGION.pooler.supabase.com:5432/postgres?sslmode=require"
+export LOOM_STORAGE_POSTGRES_DSN="postgresql://postgres.PROJECT_REF:DB_PASSWORD@POOLER_HOST:5432/postgres?sslmode=require"
 ```
 
 Then in your `looms.yaml`:
