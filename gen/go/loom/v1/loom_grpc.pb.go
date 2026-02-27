@@ -66,6 +66,8 @@ const (
 	LoomService_ReloadAgent_FullMethodName                 = "/loom.v1.LoomService/ReloadAgent"
 	LoomService_SwitchModel_FullMethodName                 = "/loom.v1.LoomService/SwitchModel"
 	LoomService_ListAvailableModels_FullMethodName         = "/loom.v1.LoomService/ListAvailableModels"
+	LoomService_ListProviders_FullMethodName               = "/loom.v1.LoomService/ListProviders"
+	LoomService_ABTest_FullMethodName                      = "/loom.v1.LoomService/ABTest"
 	LoomService_RequestToolPermission_FullMethodName       = "/loom.v1.LoomService/RequestToolPermission"
 	LoomService_ListMCPServers_FullMethodName              = "/loom.v1.LoomService/ListMCPServers"
 	LoomService_GetMCPServer_FullMethodName                = "/loom.v1.LoomService/GetMCPServer"
@@ -194,6 +196,10 @@ type LoomServiceClient interface {
 	SwitchModel(ctx context.Context, in *SwitchModelRequest, opts ...grpc.CallOption) (*SwitchModelResponse, error)
 	// ListAvailableModels lists all available LLM models/providers.
 	ListAvailableModels(ctx context.Context, in *ListAvailableModelsRequest, opts ...grpc.CallOption) (*ListAvailableModelsResponse, error)
+	// ListProviders lists named providers in the global pool with their active state.
+	ListProviders(ctx context.Context, in *ListProvidersRequest, opts ...grpc.CallOption) (*ListProvidersResponse, error)
+	// ABTest runs side-by-side, sequential-scored, or shadow A/B tests across providers.
+	ABTest(ctx context.Context, in *ABTestRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ABTestEvent], error)
 	// RequestToolPermission requests user permission to execute a tool.
 	RequestToolPermission(ctx context.Context, in *ToolPermissionRequest, opts ...grpc.CallOption) (*ToolPermissionResponse, error)
 	// ListMCPServers lists all configured MCP servers.
@@ -652,6 +658,35 @@ func (c *loomServiceClient) ListAvailableModels(ctx context.Context, in *ListAva
 	return out, nil
 }
 
+func (c *loomServiceClient) ListProviders(ctx context.Context, in *ListProvidersRequest, opts ...grpc.CallOption) (*ListProvidersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProvidersResponse)
+	err := c.cc.Invoke(ctx, LoomService_ListProviders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) ABTest(ctx context.Context, in *ABTestRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ABTestEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[3], LoomService_ABTest_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ABTestRequest, ABTestEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type LoomService_ABTestClient = grpc.ServerStreamingClient[ABTestEvent]
+
 func (c *loomServiceClient) RequestToolPermission(ctx context.Context, in *ToolPermissionRequest, opts ...grpc.CallOption) (*ToolPermissionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ToolPermissionResponse)
@@ -764,7 +799,7 @@ func (c *loomServiceClient) ExecuteWorkflow(ctx context.Context, in *ExecuteWork
 
 func (c *loomServiceClient) StreamWorkflow(ctx context.Context, in *ExecuteWorkflowRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WorkflowProgress], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[3], LoomService_StreamWorkflow_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[4], LoomService_StreamWorkflow_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -903,7 +938,7 @@ func (c *loomServiceClient) Publish(ctx context.Context, in *PublishRequest, opt
 
 func (c *loomServiceClient) Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BusMessage], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[4], LoomService_Subscribe_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[5], LoomService_Subscribe_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1002,7 +1037,7 @@ func (c *loomServiceClient) DeleteSharedMemory(ctx context.Context, in *DeleteSh
 
 func (c *loomServiceClient) WatchSharedMemory(ctx context.Context, in *WatchSharedMemoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SharedMemoryValue], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[5], LoomService_WatchSharedMemory_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &LoomService_ServiceDesc.Streams[6], LoomService_WatchSharedMemory_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1246,6 +1281,10 @@ type LoomServiceServer interface {
 	SwitchModel(context.Context, *SwitchModelRequest) (*SwitchModelResponse, error)
 	// ListAvailableModels lists all available LLM models/providers.
 	ListAvailableModels(context.Context, *ListAvailableModelsRequest) (*ListAvailableModelsResponse, error)
+	// ListProviders lists named providers in the global pool with their active state.
+	ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersResponse, error)
+	// ABTest runs side-by-side, sequential-scored, or shadow A/B tests across providers.
+	ABTest(*ABTestRequest, grpc.ServerStreamingServer[ABTestEvent]) error
 	// RequestToolPermission requests user permission to execute a tool.
 	RequestToolPermission(context.Context, *ToolPermissionRequest) (*ToolPermissionResponse, error)
 	// ListMCPServers lists all configured MCP servers.
@@ -1452,6 +1491,12 @@ func (UnimplementedLoomServiceServer) SwitchModel(context.Context, *SwitchModelR
 }
 func (UnimplementedLoomServiceServer) ListAvailableModels(context.Context, *ListAvailableModelsRequest) (*ListAvailableModelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAvailableModels not implemented")
+}
+func (UnimplementedLoomServiceServer) ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListProviders not implemented")
+}
+func (UnimplementedLoomServiceServer) ABTest(*ABTestRequest, grpc.ServerStreamingServer[ABTestEvent]) error {
+	return status.Error(codes.Unimplemented, "method ABTest not implemented")
 }
 func (UnimplementedLoomServiceServer) RequestToolPermission(context.Context, *ToolPermissionRequest) (*ToolPermissionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestToolPermission not implemented")
@@ -2175,6 +2220,35 @@ func _LoomService_ListAvailableModels_Handler(srv interface{}, ctx context.Conte
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _LoomService_ListProviders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProvidersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ListProviders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ListProviders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ListProviders(ctx, req.(*ListProvidersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_ABTest_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ABTestRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(LoomServiceServer).ABTest(m, &grpc.GenericServerStream[ABTestRequest, ABTestEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type LoomService_ABTestServer = grpc.ServerStreamingServer[ABTestEvent]
 
 func _LoomService_RequestToolPermission_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ToolPermissionRequest)
@@ -3161,6 +3235,10 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _LoomService_ListAvailableModels_Handler,
 		},
 		{
+			MethodName: "ListProviders",
+			Handler:    _LoomService_ListProviders_Handler,
+		},
+		{
 			MethodName: "RequestToolPermission",
 			Handler:    _LoomService_RequestToolPermission_Handler,
 		},
@@ -3359,6 +3437,11 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubscribeToSession",
 			Handler:       _LoomService_SubscribeToSession_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "ABTest",
+			Handler:       _LoomService_ABTest_Handler,
 			ServerStreams: true,
 		},
 		{

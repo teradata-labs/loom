@@ -84,16 +84,9 @@ func (t *ShellExecuteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/shell_execute.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *ShellExecuteTool) Description() string {
-	return `Executes shell commands on the local system with real-time output streaming.
-Supports bash/sh on Unix and PowerShell/cmd on Windows.
-
-Use this tool to:
-- Run system commands for automation tasks
-- Execute build commands, tests, linters
-- Run data processing scripts
-- Perform system operations
-
-Security: Validates working directories, filters sensitive environment variables, enforces timeouts.`
+	return `Executes shell commands on the local system. Supports bash/sh on Unix and PowerShell/cmd on Windows.
+Use for automation, builds, tests, data processing, and system operations.
+Security: validates working directories, filters sensitive env vars, enforces timeouts.`
 }
 
 func (t *ShellExecuteTool) InputSchema() *shuttle.JSONSchema {
@@ -102,7 +95,7 @@ func (t *ShellExecuteTool) InputSchema() *shuttle.JSONSchema {
 		map[string]*shuttle.JSONSchema{
 			"command": shuttle.NewStringSchema("Shell command to execute (required)"),
 			"working_dir": shuttle.NewStringSchema(
-				"Working directory for command execution (default: current directory)",
+				"Working directory for command execution.",
 			),
 			"env": shuttle.NewObjectSchema(
 				"Environment variables to set (merged with system environment)",
@@ -114,11 +107,11 @@ func (t *ShellExecuteTool) InputSchema() *shuttle.JSONSchema {
 			).WithDefault(DefaultShellTimeout).
 				WithRange(intPtr(1), intPtr(MaxShellTimeout)),
 			"shell": shuttle.NewStringSchema(
-				"Shell to use (default: auto-detect, bash/sh on Unix, powershell/cmd on Windows)",
+				"Shell to use.",
 			).WithEnum("default", "bash", "sh", "powershell", "cmd").
 				WithDefault("default"),
 			"max_output_bytes": shuttle.NewNumberSchema(
-				"Maximum output size in bytes (default: 1048576 = 1MB)",
+				"Maximum output size in bytes.",
 			).WithDefault(DefaultMaxOutputBytes),
 		},
 		[]string{"command"},

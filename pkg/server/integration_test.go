@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
@@ -359,8 +360,21 @@ func TestServer_GetHealth_Success(t *testing.T) {
 		t.Errorf("Expected healthy status, got: %s", resp.Status)
 	}
 
-	if resp.Version != "0.1.0" {
-		t.Errorf("Expected version 0.1.0, got: %s", resp.Version)
+	expectedVersion := version.Get()
+	if resp.Version != expectedVersion {
+		t.Errorf("Expected version %s, got: %s", expectedVersion, resp.Version)
+	}
+
+	// Verify that at least the agent LLM component is reported
+	if len(resp.Components) == 0 {
+		t.Error("Expected at least one component in health check")
+	}
+
+	agentComponent, ok := resp.Components["llm.agent"]
+	if !ok {
+		t.Error("Expected llm.agent component in health check")
+	} else if agentComponent.Status != "healthy" {
+		t.Errorf("Expected llm.agent to be healthy, got: %s", agentComponent.Status)
 	}
 }
 

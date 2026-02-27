@@ -549,3 +549,441 @@ agent:
 		})
 	}
 }
+
+// TestRoleLLMConfigs tests loading, validation, and round-trip of role-specific LLM configs.
+func TestRoleLLMConfigs(t *testing.T) {
+	t.Run("load legacy format with all role LLMs", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: multi_llm_agent
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  judge_llm:
+    provider: anthropic
+    model: claude-3-opus-20240229
+    temperature: 0.3
+    max_tokens: 2048
+  orchestrator_llm:
+    provider: bedrock
+    model: anthropic.claude-v2
+    temperature: 0.5
+  classifier_llm:
+    provider: ollama
+    model: llama3
+    max_tokens: 512
+  compressor_llm:
+    provider: openai
+    model: gpt-4o-mini
+    temperature: 0.2
+    max_tokens: 1024
+`
+		config, err := LoadConfigFromString(yamlContent)
+		require.NoError(t, err)
+		require.NotNil(t, config)
+
+		// Main LLM
+		assert.Equal(t, "anthropic", config.Llm.Provider)
+		assert.Equal(t, "claude-3-5-sonnet-20241022", config.Llm.Model)
+
+		// Judge LLM
+		require.NotNil(t, config.JudgeLlm)
+		assert.Equal(t, "anthropic", config.JudgeLlm.Provider)
+		assert.Equal(t, "claude-3-opus-20240229", config.JudgeLlm.Model)
+		assert.Equal(t, float32(0.3), config.JudgeLlm.Temperature)
+		assert.Equal(t, int32(2048), config.JudgeLlm.MaxTokens)
+
+		// Orchestrator LLM
+		require.NotNil(t, config.OrchestratorLlm)
+		assert.Equal(t, "bedrock", config.OrchestratorLlm.Provider)
+		assert.Equal(t, "anthropic.claude-v2", config.OrchestratorLlm.Model)
+		assert.Equal(t, float32(0.5), config.OrchestratorLlm.Temperature)
+
+		// Classifier LLM
+		require.NotNil(t, config.ClassifierLlm)
+		assert.Equal(t, "ollama", config.ClassifierLlm.Provider)
+		assert.Equal(t, "llama3", config.ClassifierLlm.Model)
+		assert.Equal(t, int32(512), config.ClassifierLlm.MaxTokens)
+
+		// Compressor LLM
+		require.NotNil(t, config.CompressorLlm)
+		assert.Equal(t, "openai", config.CompressorLlm.Provider)
+		assert.Equal(t, "gpt-4o-mini", config.CompressorLlm.Model)
+		assert.Equal(t, float32(0.2), config.CompressorLlm.Temperature)
+		assert.Equal(t, int32(1024), config.CompressorLlm.MaxTokens)
+	})
+
+	t.Run("load config with no role LLMs leaves them nil", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: simple_agent
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+`
+		config, err := LoadConfigFromString(yamlContent)
+		require.NoError(t, err)
+		require.NotNil(t, config)
+
+		assert.Nil(t, config.JudgeLlm)
+		assert.Nil(t, config.OrchestratorLlm)
+		assert.Nil(t, config.ClassifierLlm)
+		assert.Nil(t, config.CompressorLlm)
+	})
+
+	t.Run("load config with only one role LLM", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: judge_only_agent
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  judge_llm:
+    provider: anthropic
+    model: claude-3-opus-20240229
+`
+		config, err := LoadConfigFromString(yamlContent)
+		require.NoError(t, err)
+
+		require.NotNil(t, config.JudgeLlm)
+		assert.Equal(t, "claude-3-opus-20240229", config.JudgeLlm.Model)
+		assert.Nil(t, config.OrchestratorLlm)
+		assert.Nil(t, config.ClassifierLlm)
+		assert.Nil(t, config.CompressorLlm)
+	})
+
+	t.Run("role LLM validation - provider without model", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: invalid_role_llm
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  judge_llm:
+    provider: anthropic
+`
+		_, err := LoadConfigFromString(yamlContent)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "LLM model is required when provider is specified")
+		assert.Contains(t, err.Error(), "judge_llm")
+	})
+
+	t.Run("role LLM validation - model without provider", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: invalid_role_llm
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  compressor_llm:
+    model: gpt-4o-mini
+`
+		_, err := LoadConfigFromString(yamlContent)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "LLM provider is required when model is specified")
+		assert.Contains(t, err.Error(), "compressor_llm")
+	})
+
+	t.Run("role LLM with all LLMConfig fields", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: full_role_llm_agent
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  judge_llm:
+    provider: anthropic
+    model: claude-3-opus-20240229
+    temperature: 0.1
+    max_tokens: 8192
+    top_p: 0.95
+    top_k: 40
+    max_context_tokens: 100000
+    reserved_output_tokens: 4096
+    stop_sequences: ["STOP", "END"]
+`
+		config, err := LoadConfigFromString(yamlContent)
+		require.NoError(t, err)
+		require.NotNil(t, config.JudgeLlm)
+
+		assert.Equal(t, "anthropic", config.JudgeLlm.Provider)
+		assert.Equal(t, "claude-3-opus-20240229", config.JudgeLlm.Model)
+		assert.Equal(t, float32(0.1), config.JudgeLlm.Temperature)
+		assert.Equal(t, int32(8192), config.JudgeLlm.MaxTokens)
+		assert.Equal(t, float32(0.95), config.JudgeLlm.TopP)
+		assert.Equal(t, int32(40), config.JudgeLlm.TopK)
+		assert.Equal(t, int32(100000), config.JudgeLlm.MaxContextTokens)
+		assert.Equal(t, int32(4096), config.JudgeLlm.ReservedOutputTokens)
+		assert.Equal(t, []string{"STOP", "END"}, config.JudgeLlm.StopSequences)
+	})
+
+	t.Run("role LLM integer overflow protection", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: overflow_role_llm
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  classifier_llm:
+    provider: ollama
+    model: llama3
+    max_tokens: 2147483648
+`
+		_, err := LoadConfigFromString(yamlContent)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid classifier_llm config")
+	})
+
+	t.Run("k8s-style format with role LLMs", func(t *testing.T) {
+		yamlContent := `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: k8s_multi_llm
+spec:
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  judge_llm:
+    provider: bedrock
+    model: anthropic.claude-v2
+    temperature: 0.2
+  orchestrator_llm:
+    provider: openai
+    model: gpt-4
+`
+		config, err := LoadConfigFromString(yamlContent)
+		require.NoError(t, err)
+		require.NotNil(t, config)
+
+		assert.Equal(t, "anthropic", config.Llm.Provider)
+
+		require.NotNil(t, config.JudgeLlm)
+		assert.Equal(t, "bedrock", config.JudgeLlm.Provider)
+		assert.Equal(t, "anthropic.claude-v2", config.JudgeLlm.Model)
+		assert.Equal(t, float32(0.2), config.JudgeLlm.Temperature)
+
+		require.NotNil(t, config.OrchestratorLlm)
+		assert.Equal(t, "openai", config.OrchestratorLlm.Provider)
+		assert.Equal(t, "gpt-4", config.OrchestratorLlm.Model)
+
+		assert.Nil(t, config.ClassifierLlm)
+		assert.Nil(t, config.CompressorLlm)
+	})
+
+	t.Run("round-trip save and load with role LLMs", func(t *testing.T) {
+		original := &loomv1.AgentConfig{
+			Name: "roundtrip_agent",
+			Llm: &loomv1.LLMConfig{
+				Provider:    "anthropic",
+				Model:       "claude-3-5-sonnet-20241022",
+				Temperature: 0.7,
+				MaxTokens:   4096,
+			},
+			JudgeLlm: &loomv1.LLMConfig{
+				Provider:    "anthropic",
+				Model:       "claude-3-opus-20240229",
+				Temperature: 0.3,
+				MaxTokens:   2048,
+			},
+			OrchestratorLlm: &loomv1.LLMConfig{
+				Provider:    "bedrock",
+				Model:       "anthropic.claude-v2",
+				Temperature: 0.5,
+			},
+			// ClassifierLlm intentionally nil
+			CompressorLlm: &loomv1.LLMConfig{
+				Provider:    "openai",
+				Model:       "gpt-4o-mini",
+				Temperature: 0.2,
+				MaxTokens:   1024,
+			},
+			Metadata: map[string]string{},
+		}
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "roundtrip.yaml")
+
+		err := SaveAgentConfig(original, configPath)
+		require.NoError(t, err)
+
+		loaded, err := LoadAgentConfig(configPath)
+		require.NoError(t, err)
+
+		// Main LLM
+		assert.Equal(t, original.Llm.Provider, loaded.Llm.Provider)
+		assert.Equal(t, original.Llm.Model, loaded.Llm.Model)
+
+		// Judge LLM
+		require.NotNil(t, loaded.JudgeLlm)
+		assert.Equal(t, original.JudgeLlm.Provider, loaded.JudgeLlm.Provider)
+		assert.Equal(t, original.JudgeLlm.Model, loaded.JudgeLlm.Model)
+		assert.Equal(t, original.JudgeLlm.Temperature, loaded.JudgeLlm.Temperature)
+		assert.Equal(t, original.JudgeLlm.MaxTokens, loaded.JudgeLlm.MaxTokens)
+
+		// Orchestrator LLM
+		require.NotNil(t, loaded.OrchestratorLlm)
+		assert.Equal(t, original.OrchestratorLlm.Provider, loaded.OrchestratorLlm.Provider)
+		assert.Equal(t, original.OrchestratorLlm.Model, loaded.OrchestratorLlm.Model)
+
+		// Classifier LLM should be nil
+		assert.Nil(t, loaded.ClassifierLlm)
+
+		// Compressor LLM
+		require.NotNil(t, loaded.CompressorLlm)
+		assert.Equal(t, original.CompressorLlm.Provider, loaded.CompressorLlm.Provider)
+		assert.Equal(t, original.CompressorLlm.Model, loaded.CompressorLlm.Model)
+	})
+}
+
+// TestConvertLLMConfigYAMLToProto tests the helper function directly.
+func TestConvertLLMConfigYAMLToProto(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *LLMConfigYAML
+		wantNil  bool
+		wantErr  bool
+		validate func(*testing.T, *loomv1.LLMConfig)
+	}{
+		{
+			name:    "nil input returns nil",
+			input:   nil,
+			wantNil: true,
+		},
+		{
+			name: "full config converts correctly",
+			input: &LLMConfigYAML{
+				Provider:             "anthropic",
+				Model:                "claude-3-opus",
+				Temperature:          0.3,
+				MaxTokens:            2048,
+				TopP:                 0.95,
+				TopK:                 40,
+				MaxContextTokens:     100000,
+				ReservedOutputTokens: 4096,
+				StopSequences:        []string{"STOP"},
+			},
+			validate: func(t *testing.T, cfg *loomv1.LLMConfig) {
+				assert.Equal(t, "anthropic", cfg.Provider)
+				assert.Equal(t, "claude-3-opus", cfg.Model)
+				assert.Equal(t, float32(0.3), cfg.Temperature)
+				assert.Equal(t, int32(2048), cfg.MaxTokens)
+				assert.Equal(t, float32(0.95), cfg.TopP)
+				assert.Equal(t, int32(40), cfg.TopK)
+				assert.Equal(t, int32(100000), cfg.MaxContextTokens)
+				assert.Equal(t, int32(4096), cfg.ReservedOutputTokens)
+				assert.Equal(t, []string{"STOP"}, cfg.StopSequences)
+			},
+		},
+		{
+			name: "overflow in max_tokens",
+			input: &LLMConfigYAML{
+				Provider:  "anthropic",
+				Model:     "claude-3",
+				MaxTokens: 2147483648,
+			},
+			wantErr: true,
+		},
+		{
+			name: "overflow in top_k",
+			input: &LLMConfigYAML{
+				Provider: "anthropic",
+				Model:    "claude-3",
+				TopK:     2147483648,
+			},
+			wantErr: true,
+		},
+		{
+			name:  "empty config returns zero-value proto",
+			input: &LLMConfigYAML{},
+			validate: func(t *testing.T, cfg *loomv1.LLMConfig) {
+				assert.Equal(t, "", cfg.Provider)
+				assert.Equal(t, "", cfg.Model)
+				assert.Equal(t, float32(0), cfg.Temperature)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertLLMConfigYAMLToProto(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			if tt.wantNil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+// TestConvertProtoToLLMConfigYAML tests the reverse helper function.
+func TestConvertProtoToLLMConfigYAML(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *loomv1.LLMConfig
+		wantNil  bool
+		validate func(*testing.T, *LLMConfigYAML)
+	}{
+		{
+			name:    "nil input returns nil",
+			input:   nil,
+			wantNil: true,
+		},
+		{
+			name:    "empty provider returns nil",
+			input:   &loomv1.LLMConfig{Model: "some-model"},
+			wantNil: true,
+		},
+		{
+			name: "full config converts correctly",
+			input: &loomv1.LLMConfig{
+				Provider:             "anthropic",
+				Model:                "claude-3-opus",
+				Temperature:          0.3,
+				MaxTokens:            2048,
+				TopP:                 0.95,
+				TopK:                 40,
+				MaxContextTokens:     100000,
+				ReservedOutputTokens: 4096,
+				StopSequences:        []string{"STOP"},
+			},
+			validate: func(t *testing.T, cfg *LLMConfigYAML) {
+				assert.Equal(t, "anthropic", cfg.Provider)
+				assert.Equal(t, "claude-3-opus", cfg.Model)
+				assert.InDelta(t, 0.3, cfg.Temperature, 0.01)
+				assert.Equal(t, 2048, cfg.MaxTokens)
+				assert.InDelta(t, 0.95, cfg.TopP, 0.01)
+				assert.Equal(t, 40, cfg.TopK)
+				assert.Equal(t, 100000, cfg.MaxContextTokens)
+				assert.Equal(t, 4096, cfg.ReservedOutputTokens)
+				assert.Equal(t, []string{"STOP"}, cfg.StopSequences)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertProtoToLLMConfigYAML(tt.input)
+
+			if tt.wantNil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}

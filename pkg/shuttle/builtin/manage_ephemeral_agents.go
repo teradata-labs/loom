@@ -75,32 +75,9 @@ func (t *ManageEphemeralAgentsTool) Name() string {
 }
 
 func (t *ManageEphemeralAgentsTool) Description() string {
-	return `Manage ephemeral sub-agents - spawn and despawn agents dynamically.
-
-COMMANDS:
-- spawn: Create a new agent instance to run in the background
-- despawn: Terminate a spawned agent and clean up resources
-
-SPAWN use cases:
-- Interactive workflows (spawn party members for D&D campaigns)
-- Parallel delegation (spawn specialists for concurrent tasks)
-- Context isolation (spawn fresh agent when context is bloated)
-- Dynamic scaling (create agents on demand)
-
-Spawned agents:
-- Run independently in background with own sessions
-- Auto-subscribe to pub/sub topics for group communication
-- Process messages and respond automatically
-- Clean up when parent ends or when explicitly despawned
-
-DESPAWN use cases:
-- End agent lifecycle when work is complete
-- Free up resources from inactive agents
-- Clean up after workflow steps finish
-
-Examples:
-  spawn: {"command": "spawn", "agent_id": "fighter-spawnable", "workflow_id": "dungeon-crawl", "auto_subscribe": ["party-chat"]}
-  despawn: {"command": "despawn", "sub_agent_id": "dungeon-crawl:fighter-spawnable", "reason": "adventure complete"}`
+	return `Spawn and despawn ephemeral sub-agents dynamically.
+Spawned agents run independently with their own sessions, auto-subscribe to pub/sub topics, and are cleaned up when despawned or the parent ends.
+Commands: spawn (create), despawn (terminate).`
 }
 
 func (t *ManageEphemeralAgentsTool) InputSchema() *shuttle.JSONSchema {

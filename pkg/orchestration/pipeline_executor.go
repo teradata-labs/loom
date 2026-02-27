@@ -284,9 +284,12 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 }
 
 // validateStageOutput validates a stage's output using the validation prompt.
+// Uses the orchestrator's merge LLM (GetMergeLLM) which resolves through the
+// fallback chain: explicit LLM -> orchestrator role LLM from agents -> error.
 func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID string, stage *loomv1.PipelineStage, output string, stageNum int) (bool, error) {
-	if e.orchestrator.llmProvider == nil {
-		return true, fmt.Errorf("LLM provider required for validation")
+	validationLLM := e.orchestrator.GetMergeLLM()
+	if validationLLM == nil {
+		return true, fmt.Errorf("LLM provider required for validation (configure orchestrator LLM or agent orchestrator role LLM)")
 	}
 
 	// Build validation prompt
@@ -318,8 +321,8 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 		},
 	}
 
-	// Call LLM for validation
-	response, err := e.orchestrator.llmProvider.Chat(agentCtx, messages, nil)
+	// Call LLM for validation using resolved orchestrator LLM
+	response, err := validationLLM.Chat(agentCtx, messages, nil)
 	if err != nil {
 		return false, fmt.Errorf("validation LLM call failed: %w", err)
 	}

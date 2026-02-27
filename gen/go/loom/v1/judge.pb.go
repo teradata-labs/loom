@@ -1226,7 +1226,11 @@ type JudgeConfig struct {
 	// Phase 8: Custom dimension description (optional, for documentation/UI)
 	CustomDimensionDescription string `protobuf:"bytes,21,opt,name=custom_dimension_description,json=customDimensionDescription,proto3" json:"custom_dimension_description,omitempty"`
 	// Retry configuration (Phase 7)
-	RetryConfig   *RetryConfig `protobuf:"bytes,30,opt,name=retry_config,json=retryConfig,proto3" json:"retry_config,omitempty"`
+	RetryConfig *RetryConfig `protobuf:"bytes,30,opt,name=retry_config,json=retryConfig,proto3" json:"retry_config,omitempty"`
+	// Full LLM configuration for this judge (overrides string model field 8)
+	// Allows specifying provider, temperature, max_tokens etc. for judge evaluation.
+	// When set, this takes precedence over the simple `model` string field.
+	LlmConfig     *LLMConfig `protobuf:"bytes,31,opt,name=llm_config,json=llmConfig,proto3" json:"llm_config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1355,6 +1359,13 @@ func (x *JudgeConfig) GetCustomDimensionDescription() string {
 func (x *JudgeConfig) GetRetryConfig() *RetryConfig {
 	if x != nil {
 		return x.RetryConfig
+	}
+	return nil
+}
+
+func (x *JudgeConfig) GetLlmConfig() *LLMConfig {
+	if x != nil {
+		return x.LlmConfig
 	}
 	return nil
 }
@@ -2255,7 +2266,7 @@ var File_loom_v1_judge_proto protoreflect.FileDescriptor
 
 const file_loom_v1_judge_proto_rawDesc = "" +
 	"\n" +
-	"\x13loom/v1/judge.proto\x12\aloom.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\x02\n" +
+	"\x13loom/v1/judge.proto\x12\aloom.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aloom/v1/agent_config.proto\"\xcf\x02\n" +
 	"\x0fEvaluateRequest\x124\n" +
 	"\acontext\x18\x01 \x01(\v2\x1a.loom.v1.EvaluationContextR\acontext\x12\x1b\n" +
 	"\tjudge_ids\x18\x02 \x03(\tR\bjudgeIds\x12>\n" +
@@ -2351,7 +2362,7 @@ const file_loom_v1_judge_proto_rawDesc = "" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12\x1b\n" +
 	"\tfail_fast\x18\x05 \x01(\bR\bfailFast\x12=\n" +
 	"\x0eexecution_mode\x18\x06 \x01(\x0e2\x16.loom.v1.ExecutionModeR\rexecutionMode\x12$\n" +
-	"\x0eexport_to_hawk\x18\a \x01(\bR\fexportToHawk\"\xb4\x04\n" +
+	"\x0eexport_to_hawk\x18\a \x01(\bR\fexportToHawk\"\xe7\x04\n" +
 	"\vJudgeConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -2369,7 +2380,9 @@ const file_loom_v1_judge_proto_rawDesc = "" +
 	"dimensions\x122\n" +
 	"\x15custom_dimension_name\x18\x14 \x01(\tR\x13customDimensionName\x12@\n" +
 	"\x1ccustom_dimension_description\x18\x15 \x01(\tR\x1acustomDimensionDescription\x127\n" +
-	"\fretry_config\x18\x1e \x01(\v2\x14.loom.v1.RetryConfigR\vretryConfig\"D\n" +
+	"\fretry_config\x18\x1e \x01(\v2\x14.loom.v1.RetryConfigR\vretryConfig\x121\n" +
+	"\n" +
+	"llm_config\x18\x1f \x01(\v2\x12.loom.v1.LLMConfigR\tllmConfig\"D\n" +
 	"\x14RegisterJudgeRequest\x12,\n" +
 	"\x06config\x18\x01 \x01(\v2\x14.loom.v1.JudgeConfigR\x06config\"L\n" +
 	"\x15RegisterJudgeResponse\x12\x19\n" +
@@ -2516,6 +2529,7 @@ var file_loom_v1_judge_proto_goTypes = []any{
 	nil,                             // 27: loom.v1.JudgeResult.DimensionScoresEntry
 	nil,                             // 28: loom.v1.AggregatedJudgeMetrics.AvgDimensionScoresEntry
 	(*timestamppb.Timestamp)(nil),   // 29: google.protobuf.Timestamp
+	(*LLMConfig)(nil),               // 30: loom.v1.LLMConfig
 }
 var file_loom_v1_judge_proto_depIdxs = []int32{
 	6,  // 0: loom.v1.EvaluateRequest.context:type_name -> loom.v1.EvaluationContext
@@ -2538,34 +2552,35 @@ var file_loom_v1_judge_proto_depIdxs = []int32{
 	3,  // 17: loom.v1.JudgeConfig.type:type_name -> loom.v1.JudgeType
 	4,  // 18: loom.v1.JudgeConfig.dimensions:type_name -> loom.v1.JudgeDimension
 	18, // 19: loom.v1.JudgeConfig.retry_config:type_name -> loom.v1.RetryConfig
-	12, // 20: loom.v1.RegisterJudgeRequest.config:type_name -> loom.v1.JudgeConfig
-	29, // 21: loom.v1.GetJudgeHistoryRequest.start_time:type_name -> google.protobuf.Timestamp
-	29, // 22: loom.v1.GetJudgeHistoryRequest.end_time:type_name -> google.protobuf.Timestamp
-	17, // 23: loom.v1.GetJudgeHistoryResponse.evaluations:type_name -> loom.v1.HistoricalEvaluation
-	7,  // 24: loom.v1.HistoricalEvaluation.result:type_name -> loom.v1.EvaluateResponse
-	29, // 25: loom.v1.HistoricalEvaluation.evaluated_at:type_name -> google.protobuf.Timestamp
-	19, // 26: loom.v1.RetryConfig.circuit_breaker:type_name -> loom.v1.CircuitBreakerConfig
-	21, // 27: loom.v1.EvaluateProgress.judge_started:type_name -> loom.v1.JudgeStarted
-	22, // 28: loom.v1.EvaluateProgress.judge_completed:type_name -> loom.v1.JudgeCompleted
-	23, // 29: loom.v1.EvaluateProgress.example_completed:type_name -> loom.v1.ExampleCompleted
-	24, // 30: loom.v1.EvaluateProgress.evaluation_completed:type_name -> loom.v1.EvaluationCompleted
-	29, // 31: loom.v1.JudgeStarted.started_at:type_name -> google.protobuf.Timestamp
-	8,  // 32: loom.v1.JudgeCompleted.result:type_name -> loom.v1.JudgeResult
-	8,  // 33: loom.v1.ExampleCompleted.results:type_name -> loom.v1.JudgeResult
-	7,  // 34: loom.v1.EvaluationCompleted.final_result:type_name -> loom.v1.EvaluateResponse
-	5,  // 35: loom.v1.JudgeService.EvaluateWithJudges:input_type -> loom.v1.EvaluateRequest
-	5,  // 36: loom.v1.JudgeService.EvaluateWithJudgesStream:input_type -> loom.v1.EvaluateRequest
-	13, // 37: loom.v1.JudgeService.RegisterJudge:input_type -> loom.v1.RegisterJudgeRequest
-	15, // 38: loom.v1.JudgeService.GetJudgeHistory:input_type -> loom.v1.GetJudgeHistoryRequest
-	7,  // 39: loom.v1.JudgeService.EvaluateWithJudges:output_type -> loom.v1.EvaluateResponse
-	20, // 40: loom.v1.JudgeService.EvaluateWithJudgesStream:output_type -> loom.v1.EvaluateProgress
-	14, // 41: loom.v1.JudgeService.RegisterJudge:output_type -> loom.v1.RegisterJudgeResponse
-	16, // 42: loom.v1.JudgeService.GetJudgeHistory:output_type -> loom.v1.GetJudgeHistoryResponse
-	39, // [39:43] is the sub-list for method output_type
-	35, // [35:39] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	30, // 20: loom.v1.JudgeConfig.llm_config:type_name -> loom.v1.LLMConfig
+	12, // 21: loom.v1.RegisterJudgeRequest.config:type_name -> loom.v1.JudgeConfig
+	29, // 22: loom.v1.GetJudgeHistoryRequest.start_time:type_name -> google.protobuf.Timestamp
+	29, // 23: loom.v1.GetJudgeHistoryRequest.end_time:type_name -> google.protobuf.Timestamp
+	17, // 24: loom.v1.GetJudgeHistoryResponse.evaluations:type_name -> loom.v1.HistoricalEvaluation
+	7,  // 25: loom.v1.HistoricalEvaluation.result:type_name -> loom.v1.EvaluateResponse
+	29, // 26: loom.v1.HistoricalEvaluation.evaluated_at:type_name -> google.protobuf.Timestamp
+	19, // 27: loom.v1.RetryConfig.circuit_breaker:type_name -> loom.v1.CircuitBreakerConfig
+	21, // 28: loom.v1.EvaluateProgress.judge_started:type_name -> loom.v1.JudgeStarted
+	22, // 29: loom.v1.EvaluateProgress.judge_completed:type_name -> loom.v1.JudgeCompleted
+	23, // 30: loom.v1.EvaluateProgress.example_completed:type_name -> loom.v1.ExampleCompleted
+	24, // 31: loom.v1.EvaluateProgress.evaluation_completed:type_name -> loom.v1.EvaluationCompleted
+	29, // 32: loom.v1.JudgeStarted.started_at:type_name -> google.protobuf.Timestamp
+	8,  // 33: loom.v1.JudgeCompleted.result:type_name -> loom.v1.JudgeResult
+	8,  // 34: loom.v1.ExampleCompleted.results:type_name -> loom.v1.JudgeResult
+	7,  // 35: loom.v1.EvaluationCompleted.final_result:type_name -> loom.v1.EvaluateResponse
+	5,  // 36: loom.v1.JudgeService.EvaluateWithJudges:input_type -> loom.v1.EvaluateRequest
+	5,  // 37: loom.v1.JudgeService.EvaluateWithJudgesStream:input_type -> loom.v1.EvaluateRequest
+	13, // 38: loom.v1.JudgeService.RegisterJudge:input_type -> loom.v1.RegisterJudgeRequest
+	15, // 39: loom.v1.JudgeService.GetJudgeHistory:input_type -> loom.v1.GetJudgeHistoryRequest
+	7,  // 40: loom.v1.JudgeService.EvaluateWithJudges:output_type -> loom.v1.EvaluateResponse
+	20, // 41: loom.v1.JudgeService.EvaluateWithJudgesStream:output_type -> loom.v1.EvaluateProgress
+	14, // 42: loom.v1.JudgeService.RegisterJudge:output_type -> loom.v1.RegisterJudgeResponse
+	16, // 43: loom.v1.JudgeService.GetJudgeHistory:output_type -> loom.v1.GetJudgeHistoryResponse
+	40, // [40:44] is the sub-list for method output_type
+	36, // [36:40] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_judge_proto_init() }
@@ -2573,6 +2588,7 @@ func file_loom_v1_judge_proto_init() {
 	if File_loom_v1_judge_proto != nil {
 		return
 	}
+	file_loom_v1_agent_config_proto_init()
 	file_loom_v1_judge_proto_msgTypes[15].OneofWrappers = []any{
 		(*EvaluateProgress_JudgeStarted)(nil),
 		(*EvaluateProgress_JudgeCompleted)(nil),

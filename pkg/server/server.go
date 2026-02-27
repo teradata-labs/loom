@@ -18,12 +18,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/evals"
+	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/shuttle/metadata"
@@ -42,10 +48,24 @@ const (
 type Server struct {
 	loomv1.UnimplementedLoomServiceServer
 
-	agent         *agent.Agent
-	sessionStore  agent.SessionStorage
-	factory       *factory.ProviderFactory
-	modelRegistry *factory.ModelRegistry
+	agent              *agent.Agent
+	sessionStore       agent.SessionStorage
+	factory            *factory.ProviderFactory
+	modelRegistry      *factory.ModelRegistry
+	providerPool       map[string]agent.LLMProvider // name → provider
+	activeProviderName string                       // currently active pool provider
+	evalStore          *evals.Store                 // optional; nil means no persistence
+	judgeServer        *JudgeServer                 // optional; nil means use hardcoded judge
+}
+
+// SetJudgeServer wires an in-memory JudgeServer so that ABTest can resolve req.JudgeId.
+func (s *Server) SetJudgeServer(js *JudgeServer) {
+	s.judgeServer = js
+}
+
+// SetEvalStore configures the evaluation store for persisting ABTest results.
+func (s *Server) SetEvalStore(store *evals.Store) {
+	s.evalStore = store
 }
 
 // NewServer creates a new LoomService server.
@@ -61,6 +81,22 @@ func NewServer(ag *agent.Agent, store agent.SessionStorage) *Server {
 // SetProviderFactory sets the LLM provider factory for dynamic model switching.
 func (s *Server) SetProviderFactory(f *factory.ProviderFactory) {
 	s.factory = f
+}
+
+// SetProviderPool configures the server's named provider pool.
+func (s *Server) SetProviderPool(pool map[string]agent.LLMProvider, active string) {
+	s.providerPool = pool
+	s.activeProviderName = active
+}
+
+// GetProviderPool returns the server's named provider pool (may be nil).
+func (s *Server) GetProviderPool() map[string]agent.LLMProvider {
+	return s.providerPool
+}
+
+// SetActiveProviderName updates the tracked active provider name.
+func (s *Server) SetActiveProviderName(name string) {
+	s.activeProviderName = name
 }
 
 // Weave executes a user query using the agent.
@@ -87,11 +123,13 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		SessionId: sessionID,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
-				Provider:     s.agent.GetLLMProviderName(),
-				Model:        s.agent.GetLLMModel(),
-				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:      resp.Usage.CostUSD,
+				Provider:                 s.agent.GetLLMProviderName(),
+				Model:                    s.agent.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
@@ -393,31 +431,136 @@ func (s *Server) GetTrace(ctx context.Context, req *loomv1.GetTraceRequest) (*lo
 	return nil, status.Error(codes.Unimplemented, "trace retrieval not yet implemented")
 }
 
-// GetHealth performs a health check.
+// GetHealth performs a health check by pinging each configured LLM provider.
+// Returns per-component status in the components map with keys like "llm.agent", "llm.judge", etc.
+// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
 func (s *Server) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
+	components := make(map[string]*loomv1.ComponentHealth)
+	overallHealthy := true
+
+	// Check each configured LLM provider
+	roleLLMs := s.agent.GetAllRoleLLMs()
+	for role, llmProvider := range roleLLMs {
+		componentName := "llm." + llmRoleToString(role)
+		start := time.Now()
+
+		// Send minimal health check with short timeout
+		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := llmProvider.Chat(checkCtx, []types.Message{
+			{Role: "user", Content: "ping"},
+		}, nil)
+		cancel()
+
+		latency := time.Since(start).Milliseconds()
+
+		if err != nil {
+			components[componentName] = &loomv1.ComponentHealth{
+				Status:    "unhealthy",
+				LastCheck: time.Now().Unix(),
+				Error:     err.Error(),
+				LatencyMs: latency,
+			}
+			overallHealthy = false
+		} else {
+			components[componentName] = &loomv1.ComponentHealth{
+				Status:    "healthy",
+				LastCheck: time.Now().Unix(),
+				LatencyMs: latency,
+			}
+		}
+	}
+
+	healthStatus := "healthy"
+	if !overallHealthy {
+		// Check if ANY are healthy for "degraded" vs "unhealthy"
+		anyHealthy := false
+		for _, c := range components {
+			if c.Status == "healthy" {
+				anyHealthy = true
+				break
+			}
+		}
+		if anyHealthy {
+			healthStatus = "degraded"
+		} else {
+			healthStatus = "unhealthy"
+		}
+	}
+
 	return &loomv1.HealthStatus{
-		Status:  "healthy",
-		Version: "0.1.0",
+		Status:     healthStatus,
+		Version:    version.Get(),
+		Components: components,
 	}, nil
+}
+
+// llmRoleToString converts an LLMRole enum to a human-readable string for component naming.
+func llmRoleToString(role loomv1.LLMRole) string {
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_AGENT:
+		return "agent"
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		return "judge"
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		return "orchestrator"
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		return "classifier"
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		return "compressor"
+	default:
+		return "unknown"
+	}
 }
 
 // SwitchModel switches the LLM model/provider for a session.
 func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest) (*loomv1.SwitchModelResponse, error) {
-	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
-	if req.Provider == "" {
-		return nil, status.Error(codes.InvalidArgument, "provider is required")
-	}
-	if req.Model == "" {
-		return nil, status.Error(codes.InvalidArgument, "model is required")
+	// Pool-based switches (provider_name set) are server-level and don't require a session.
+	// Legacy switches (provider + model) still require session_id for backward compat.
+	if req.ProviderName == "" && req.SessionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required (or use provider_name for pool-based switch)")
 	}
 
-	// Get previous model info
+	// Get previous model info using role-aware methods.
+	// When req.Role is LLM_ROLE_UNSPECIFIED (0), GetLLMModelForRole/GetLLMProviderNameForRole
+	// fall through to the main agent LLM, preserving backward compatibility.
 	previousModel := &loomv1.ModelInfo{
-		Id:       s.agent.GetLLMModel(),
-		Name:     s.agent.GetLLMModel(),
-		Provider: s.agent.GetLLMProviderName(),
+		Id:       s.agent.GetLLMModelForRole(req.Role),
+		Name:     s.agent.GetLLMModelForRole(req.Role),
+		Provider: s.agent.GetLLMProviderNameForRole(req.Role),
+	}
+
+	// If provider_name is set, use the named pool provider.
+	if req.ProviderName != "" {
+		if s.providerPool == nil {
+			return nil, status.Error(codes.FailedPrecondition, "provider pool not configured")
+		}
+		provider, ok := s.providerPool[req.ProviderName]
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "provider %q not found in pool", req.ProviderName)
+		}
+		// Apply directly to the agent — the pool is stored server-side, not on the agent itself.
+		s.agent.SetLLMProviderForRole(req.Role, provider)
+		s.activeProviderName = req.ProviderName
+		actualModel := s.agent.GetLLMModelForRole(req.Role)
+		actualProvider := s.agent.GetLLMProviderNameForRole(req.Role)
+		return &loomv1.SwitchModelResponse{
+			Success:       true,
+			PreviousModel: previousModel,
+			NewModel: &loomv1.ModelInfo{
+				Id:       actualModel,
+				Name:     actualModel,
+				Provider: actualProvider,
+			},
+			Message: fmt.Sprintf("Switched to provider pool entry %q", req.ProviderName),
+		}, nil
+	}
+
+	// Standard model switch: require provider and model.
+	if req.Provider == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider is required (or set provider_name for pool-based switch)")
+	}
+	if req.Model == "" {
+		return nil, status.Error(codes.InvalidArgument, "model is required (or set provider_name for pool-based switch)")
 	}
 
 	// Check if factory is configured
@@ -437,14 +580,18 @@ func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest
 		return nil, status.Error(codes.Internal, "failed to cast provider to LLMProvider interface")
 	}
 
-	// Switch the agent's LLM provider
-	s.agent.SetLLMProvider(newProvider)
+	// Switch the agent's LLM provider for the specified role.
+	// When req.Role is LLM_ROLE_UNSPECIFIED, SetLLMProviderForRole delegates to the main agent LLM.
+	s.agent.SetLLMProviderForRole(req.Role, newProvider)
 
-	// Get new model info
+	// Verify the switch by reading back actual values from the agent
+	actualModel := s.agent.GetLLMModelForRole(req.Role)
+	actualProvider := s.agent.GetLLMProviderNameForRole(req.Role)
+
 	newModel := &loomv1.ModelInfo{
-		Id:       req.Model,
-		Name:     req.Model,
-		Provider: req.Provider,
+		Id:       actualModel,
+		Name:     actualModel,
+		Provider: actualProvider,
 	}
 
 	return &loomv1.SwitchModelResponse{
@@ -452,6 +599,396 @@ func (s *Server) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest
 		NewModel:      newModel,
 		Success:       true,
 	}, nil
+}
+
+// ListProviders lists named providers in the pool.
+func (s *Server) ListProviders(_ context.Context, _ *loomv1.ListProvidersRequest) (*loomv1.ListProvidersResponse, error) {
+	if s.providerPool == nil {
+		return &loomv1.ListProvidersResponse{}, nil
+	}
+	entries := make([]*loomv1.ProviderEntry, 0, len(s.providerPool))
+	for name, p := range s.providerPool {
+		entries = append(entries, &loomv1.ProviderEntry{
+			Name: name,
+			Config: &loomv1.LLMConfig{
+				Provider: p.Name(),
+				Model:    p.Model(),
+			},
+		})
+	}
+	// Sort for stable ordering
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+	return &loomv1.ListProvidersResponse{
+		Providers:      entries,
+		ActiveProvider: s.activeProviderName,
+	}, nil
+}
+
+// ABTest runs an A/B test across multiple named providers.
+func (s *Server) ABTest(req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer) error {
+	if req.Prompt == "" {
+		return status.Error(codes.InvalidArgument, "prompt is required")
+	}
+	if s.providerPool == nil {
+		return status.Error(codes.FailedPrecondition, "provider pool not configured")
+	}
+
+	abTestID := uuid.New().String()
+
+	// Determine which providers to test
+	poolProviders := s.providerPool
+	var providerNames []string
+	if len(req.ProviderNames) > 0 {
+		for _, name := range req.ProviderNames {
+			if _, ok := poolProviders[name]; ok {
+				providerNames = append(providerNames, name)
+			}
+		}
+	} else {
+		for name := range poolProviders {
+			providerNames = append(providerNames, name)
+		}
+		sort.Strings(providerNames)
+	}
+
+	if len(providerNames) == 0 {
+		return status.Error(codes.InvalidArgument, "no valid providers found")
+	}
+
+	ctx := stream.Context()
+	sessionID := req.SessionId
+	if sessionID == "" {
+		sessionID = GenerateSessionID()
+	}
+
+	switch req.Mode {
+	case loomv1.ABTestMode_AB_TEST_MODE_SIDE_BY_SIDE, loomv1.ABTestMode_AB_TEST_MODE_UNSPECIFIED:
+		return s.runABTestSideBySide(ctx, req, stream, providerNames, poolProviders, abTestID, sessionID)
+	case loomv1.ABTestMode_AB_TEST_MODE_SEQUENTIAL_SCORED:
+		return s.runABTestSequentialScored(ctx, req, stream, providerNames, poolProviders, abTestID, sessionID)
+	case loomv1.ABTestMode_AB_TEST_MODE_SHADOW:
+		return s.runABTestShadow(ctx, req, stream, providerNames, poolProviders, abTestID, sessionID)
+	default:
+		return status.Errorf(codes.InvalidArgument, "unknown AB test mode: %v", req.Mode)
+	}
+}
+
+// runABTestSideBySide runs all providers concurrently and streams results with provider labels
+// as each goroutine completes. It calls the LLM provider directly rather than mutating s.agent,
+// eliminating data races. The winner is the first provider (by original sort order) with a
+// successful response.
+func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
+	var mu sync.Mutex
+	sendEvent := func(evt *loomv1.ABTestEvent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		return stream.Send(evt)
+	}
+
+	type result struct {
+		name    string
+		content string
+		latency int64
+		err     error
+	}
+	results := make([]result, len(providerNames))
+
+	messages := []types.Message{{Role: "user", Content: req.Prompt}}
+
+	var wg sync.WaitGroup
+	for i, name := range providerNames {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				results[i] = result{name: name, err: ctx.Err()}
+				return
+			}
+			provider := pool[name]
+			start := time.Now()
+			llmResp, err := provider.Chat(ctx, messages, nil)
+			latency := time.Since(start).Milliseconds()
+			if err != nil {
+				results[i] = result{name: name, err: err, latency: latency}
+				_ = sendEvent(&loomv1.ABTestEvent{
+					ProviderName: name,
+					Finished:     true,
+					AbTestId:     abTestID,
+					LatencyMs:    latency,
+				})
+				return
+			}
+			results[i] = result{name: name, content: llmResp.Content, latency: latency}
+			_ = sendEvent(&loomv1.ABTestEvent{
+				ProviderName: name,
+				ContentChunk: llmResp.Content,
+				Finished:     true,
+				LatencyMs:    latency,
+				AbTestId:     abTestID,
+			})
+		}(i, name)
+	}
+	wg.Wait()
+
+	// Send final event with winner (first successful response for side-by-side)
+	winner := ""
+	for _, r := range results {
+		if r.err == nil {
+			winner = r.name
+			break
+		}
+	}
+	if err := sendEvent(&loomv1.ABTestEvent{
+		AbTestId: abTestID,
+		Winner:   winner,
+		Finished: true,
+	}); err != nil {
+		return err
+	}
+
+	// Persist results if eval store is configured.
+	if s.evalStore != nil {
+		responses := make([]evals.ABTestResponse, 0, len(results))
+		for _, r := range results {
+			if r.err == nil {
+				responses = append(responses, evals.ABTestResponse{
+					ProviderName: r.name,
+					ResponseText: r.content,
+					LatencyMs:    r.latency,
+				})
+			}
+		}
+		abResult := evals.ABTestResult{
+			ABTestID:       abTestID,
+			SessionID:      sessionID,
+			Prompt:         req.Prompt,
+			Mode:           "side_by_side",
+			WinnerProvider: winner,
+			Responses:      responses,
+		}
+		if saveErr := s.evalStore.SaveABTest(ctx, abResult); saveErr != nil {
+			zap.L().Warn("failed to persist ABTest result", zap.String("ab_test_id", abTestID), zap.Error(saveErr))
+		}
+	}
+
+	return nil
+}
+
+// runABTestSequentialScored runs each provider sequentially and scores each response using an
+// LLM judge. It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
+func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
+	// Resolve the judge LLM: prefer the dedicated judge role, fall back to the main agent LLM.
+	judgeLLM := s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_JUDGE)
+	if judgeLLM == nil {
+		judgeLLM = s.agent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_AGENT)
+	}
+	judgeConfig := &loomv1.JudgeConfig{
+		Name:     "ab-test-scorer",
+		Criteria: "response quality, accuracy, completeness",
+	}
+	if req.JudgeId != "" {
+		if s.judgeServer == nil {
+			return status.Errorf(codes.FailedPrecondition, "judge server not initialized; cannot resolve judge_id %q", req.JudgeId)
+		}
+		cfg, cfgErr := s.judgeServer.GetJudgeConfig(req.JudgeId)
+		if cfgErr != nil {
+			return status.Errorf(codes.NotFound, "judge %q not found: %v", req.JudgeId, cfgErr)
+		}
+		judgeConfig = cfg
+	}
+	judge, err := judges.NewLLMJudge(judgeLLM, judgeConfig, observability.NewNoOpTracer())
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "cannot create judge for scoring: %v", err)
+	}
+
+	var mu sync.Mutex
+	sendEvent := func(evt *loomv1.ABTestEvent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		return stream.Send(evt)
+	}
+
+	type result struct {
+		name    string
+		content string
+		score   float32
+		latency int64
+		err     error
+	}
+	results := make([]result, len(providerNames))
+
+	messages := []types.Message{{Role: "user", Content: req.Prompt}}
+
+	for i, name := range providerNames {
+		if ctx.Err() != nil {
+			break
+		}
+		provider := pool[name]
+		start := time.Now()
+		llmResp, err := provider.Chat(ctx, messages, nil)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			_ = sendEvent(&loomv1.ABTestEvent{
+				ProviderName: name,
+				Finished:     true,
+				AbTestId:     abTestID,
+				LatencyMs:    latency,
+			})
+			results[i] = result{name: name, err: err, latency: latency}
+			continue
+		}
+		// Score the response using the LLM judge.
+		evalCtx := &loomv1.EvaluationContext{
+			Prompt:    req.Prompt,
+			Response:  llmResp.Content,
+			SessionId: sessionID,
+			LatencyMs: latency,
+		}
+		var score float32
+		if judgeResult, judgeErr := judge.Evaluate(ctx, evalCtx); judgeErr != nil {
+			score = 0.0
+		} else {
+			score = float32(judgeResult.OverallScore)
+		}
+		results[i] = result{name: name, content: llmResp.Content, score: score, latency: latency}
+		if err2 := sendEvent(&loomv1.ABTestEvent{
+			ProviderName: name,
+			ContentChunk: llmResp.Content,
+			Finished:     true,
+			Score:        score,
+			LatencyMs:    latency,
+			AbTestId:     abTestID,
+		}); err2 != nil {
+			return err2
+		}
+	}
+
+	// Pick winner by highest score among successful results
+	winner := ""
+	var bestScore float32 = -1
+	for _, r := range results {
+		if r.err == nil && r.score > bestScore {
+			bestScore = r.score
+			winner = r.name
+		}
+	}
+	if err := sendEvent(&loomv1.ABTestEvent{
+		AbTestId: abTestID,
+		Winner:   winner,
+		Finished: true,
+	}); err != nil {
+		return err
+	}
+
+	// Persist results if eval store is configured.
+	if s.evalStore != nil {
+		responses := make([]evals.ABTestResponse, 0, len(results))
+		for _, r := range results {
+			if r.err == nil {
+				responses = append(responses, evals.ABTestResponse{
+					ProviderName: r.name,
+					ResponseText: r.content,
+					Score:        float64(r.score),
+					LatencyMs:    r.latency,
+				})
+			}
+		}
+		abResult := evals.ABTestResult{
+			ABTestID:       abTestID,
+			SessionID:      sessionID,
+			Prompt:         req.Prompt,
+			Mode:           "sequential_scored",
+			WinnerProvider: winner,
+			Responses:      responses,
+		}
+		if saveErr := s.evalStore.SaveABTest(ctx, abResult); saveErr != nil {
+			zap.L().Warn("failed to persist ABTest result", zap.String("ab_test_id", abTestID), zap.Error(saveErr))
+		}
+	}
+
+	return nil
+}
+
+// runABTestShadow runs the primary provider for the client and the rest silently in the background.
+// It calls the LLM provider directly rather than mutating s.agent, eliminating data races.
+// Shadow goroutines are bounded by a 30-second timeout and tracked via a WaitGroup.
+func (s *Server) runABTestShadow(ctx context.Context, req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer, providerNames []string, pool map[string]agent.LLMProvider, abTestID, sessionID string) error {
+	if len(providerNames) == 0 {
+		return status.Error(codes.InvalidArgument, "no providers for shadow test")
+	}
+
+	messages := []types.Message{{Role: "user", Content: req.Prompt}}
+
+	// Primary provider: first in list
+	primaryName := providerNames[0]
+	primaryProvider := pool[primaryName]
+
+	start := time.Now()
+	primaryResp, err := primaryProvider.Chat(ctx, messages, nil)
+	latency := time.Since(start).Milliseconds()
+
+	if err != nil {
+		return status.Errorf(codes.Internal, "primary provider %q failed: %v", primaryName, err)
+	}
+
+	if err2 := stream.Send(&loomv1.ABTestEvent{
+		ProviderName: primaryName,
+		ContentChunk: primaryResp.Content,
+		Finished:     true,
+		LatencyMs:    latency,
+		AbTestId:     abTestID,
+		Winner:       primaryName,
+	}); err2 != nil {
+		return err2
+	}
+
+	// Persist primary result if eval store is configured.
+	if s.evalStore != nil {
+		abResult := evals.ABTestResult{
+			ABTestID:       abTestID,
+			SessionID:      sessionID,
+			Prompt:         req.Prompt,
+			Mode:           "shadow",
+			WinnerProvider: primaryName,
+			Responses: []evals.ABTestResponse{
+				{
+					ProviderName: primaryName,
+					ResponseText: primaryResp.Content,
+					LatencyMs:    latency,
+				},
+			},
+		}
+		if saveErr := s.evalStore.SaveABTest(ctx, abResult); saveErr != nil {
+			zap.L().Warn("failed to persist ABTest result", zap.String("ab_test_id", abTestID), zap.Error(saveErr))
+		}
+	}
+
+	// Shadow providers run in the background with a 30-second timeout; results are only logged.
+	if len(providerNames) > 1 {
+		var wg sync.WaitGroup
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer bgCancel()
+
+		for _, name := range providerNames[1:] {
+			shadowName := name
+			shadowProvider := pool[shadowName]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = shadowProvider.Chat(bgCtx, messages, nil)
+			}()
+		}
+
+		// Wait in background so the RPC returns promptly while goroutines are bounded.
+		go func() {
+			wg.Wait()
+			bgCancel()
+		}()
+	}
+
+	return nil
 }
 
 // ListAvailableModels lists all available LLM models/providers.

@@ -497,6 +497,10 @@
         "retryConfig": {
           "$ref": "#/definitions/v1RetryConfig",
           "title": "Retry configuration (Phase 7)"
+        },
+        "llmConfig": {
+          "$ref": "#/definitions/v1LLMConfig",
+          "description": "Full LLM configuration for this judge (overrides string model field 8)\nAllows specifying provider, temperature, max_tokens etc. for judge evaluation.\nWhen set, this takes precedence over the simple `model` string field."
         }
       },
       "title": "JudgeConfig defines a single judge"
@@ -658,6 +662,106 @@
       "default": "JUDGE_TYPE_UNSPECIFIED",
       "description": "- JUDGE_TYPE_HAWK: Uses Hawk's embedded judge library\n - JUDGE_TYPE_AGENT: Uses Loom agent as judge\n - JUDGE_TYPE_CUSTOM: Custom judge implementation",
       "title": "JudgeType defines the implementation type"
+    },
+    "v1LLMConfig": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "title": "Provider name: \"anthropic\", \"bedrock\", \"ollama\""
+        },
+        "model": {
+          "type": "string",
+          "title": "Model identifier (e.g., \"claude-3-5-sonnet-20241022-v2:0\")"
+        },
+        "temperature": {
+          "type": "number",
+          "format": "float",
+          "title": "Temperature (0.0-1.0) controls randomness"
+        },
+        "maxTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum tokens in response"
+        },
+        "stopSequences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Stop sequences to end generation"
+        },
+        "topP": {
+          "type": "number",
+          "format": "float",
+          "title": "Top-p sampling parameter (0.0-1.0)"
+        },
+        "topK": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Top-k sampling parameter"
+        },
+        "maxContextTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum context window tokens supported by the model\nIf not set, will be auto-detected from model name or use provider default\nExamples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000"
+        },
+        "reservedOutputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Tokens reserved for model output (typically 10% of max_context_tokens)\nIf not set, will be calculated as max_context_tokens * 0.1\nExamples: Claude (200K) = 20000, Llama (128K) = 12800, Mistral (32K) = 3200"
+        },
+        "rateLimit": {
+          "$ref": "#/definitions/v1LLMRateLimitConfig",
+          "description": "Client-side rate limiting configuration.\nWhen nil, rate limiting is enabled with provider-appropriate defaults."
+        }
+      },
+      "title": "LLMConfig configures the language model provider and parameters"
+    },
+    "v1LLMRateLimitConfig": {
+      "type": "object",
+      "properties": {
+        "disabled": {
+          "type": "boolean",
+          "description": "Disable client-side rate limiting entirely.\nDefault: false (rate limiting is ON). Set to true only if the provider\nhas its own throttle handling or you are managing concurrency externally."
+        },
+        "requestsPerSecond": {
+          "type": "number",
+          "format": "double",
+          "description": "Maximum requests per second across all agents sharing this provider.\n0 = use default (2.0 RPS)."
+        },
+        "tokensPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "title": "Maximum input+output tokens per minute for token-based throttling.\n0 = use default (40000 TPM).\nSet this to match your API tier:\n  Anthropic free: 30000, Tier 1: 100000\n  Bedrock: varies by model (40000-400000)"
+        },
+        "burstCapacity": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Burst capacity: maximum concurrent requests allowed before queuing.\n0 = use default (5)."
+        },
+        "minDelayMs": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Minimum delay between consecutive requests, in milliseconds.\n0 = use default (300 ms)."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum number of retries when a 429 throttle error is received.\n0 = use default (5)."
+        },
+        "retryBackoffMs": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Initial retry backoff in milliseconds (doubles each retry).\n0 = use default (1000 ms)."
+        },
+        "queueTimeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum time a request may wait in the queue before being dropped, in seconds.\n0 = use default (300 s = 5 min)."
+        }
+      },
+      "description": "LLMRateLimitConfig configures client-side rate limiting for an LLM provider.\nAll numeric fields default to 0 (zero), which means \"use provider default\".\nRate limiting is always enabled unless disabled is explicitly set to true."
     },
     "v1RegisterJudgeResponse": {
       "type": "object",

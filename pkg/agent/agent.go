@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -110,8 +111,13 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.orchestrator = patterns.NewOrchestrator(patternLibrary)
 
 	// Initialize LLM classifier if configured
+	// Use classifier role LLM if available, otherwise fall back to main LLM
 	if a.config.PatternConfig.UseLLMClassifier && llmProvider != nil {
-		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmProvider)
+		classifierProvider := llmProvider
+		if a.classifierLLM != nil {
+			classifierProvider = a.classifierLLM
+		}
+		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(classifierProvider)
 		llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 		a.orchestrator.SetIntentClassifier(llmClassifier)
 	}
@@ -155,7 +161,12 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		// Pass tracer to memory for error logging in swap operations
 		a.memory.SetTracer(a.tracer)
 		// Pass LLM provider to memory for semantic search reranking
-		a.memory.SetLLMProvider(a.llm)
+		// Use dedicated compressor LLM if available, otherwise main LLM
+		if a.compressorLLM != nil {
+			a.memory.SetLLMProvider(a.compressorLLM)
+		} else {
+			a.memory.SetLLMProvider(a.llm)
+		}
 	}
 
 	// Set shared memory on executor so large tool results are stored in the same store
@@ -352,6 +363,34 @@ func WithMessageQueue(queue *communication.MessageQueue) Option {
 	}
 }
 
+// WithJudgeLLM sets the LLM provider for evaluation operations.
+func WithJudgeLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.judgeLLM = llm
+	}
+}
+
+// WithOrchestratorLLM sets the LLM provider for fork-join merge/synthesis.
+func WithOrchestratorLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.orchestratorLLM = llm
+	}
+}
+
+// WithClassifierLLM sets the LLM provider for intent classification.
+func WithClassifierLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.classifierLLM = llm
+	}
+}
+
+// WithCompressorLLM sets the LLM provider for memory compression.
+func WithCompressorLLM(llm LLMProvider) Option {
+	return func(a *Agent) {
+		a.compressorLLM = llm
+	}
+}
+
 // WithPatternConfig sets pattern configuration.
 func WithPatternConfig(cfg *PatternConfig) Option {
 	return func(a *Agent) {
@@ -384,6 +423,48 @@ func (a *Agent) RegisterTools(tools ...shuttle.Tool) {
 // UnregisterTool unregisters a tool by name.
 func (a *Agent) UnregisterTool(name string) {
 	a.tools.Unregister(name)
+}
+
+// RegisterLazyTools registers tools that will only be added to the active tool set
+// when trigger(userMessage) returns true. Safe to call concurrently.
+func (a *Agent) RegisterLazyTools(tools []shuttle.Tool, trigger func(string) bool) {
+	if len(tools) == 0 || trigger == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lazyToolSets = append(a.lazyToolSets, lazyToolSet{tools: tools, trigger: trigger})
+}
+
+// evaluateLazyTools promotes any lazy tool sets whose trigger matches msg
+// into the active registry. Idempotent — already-registered tools are skipped.
+// Called once per turn, before ListTools(), from the conversation loop.
+func (a *Agent) evaluateLazyTools(msg string) {
+	a.mu.RLock()
+	sets := make([]lazyToolSet, len(a.lazyToolSets))
+	copy(sets, a.lazyToolSets)
+	a.mu.RUnlock()
+
+	for _, set := range sets {
+		// Short-circuit if all tools in this set are already registered.
+		allRegistered := true
+		for _, t := range set.tools {
+			if !a.tools.IsRegistered(t.Name()) {
+				allRegistered = false
+				break
+			}
+		}
+		if allRegistered {
+			continue
+		}
+		if set.trigger(msg) {
+			for _, t := range set.tools {
+				if !a.tools.IsRegistered(t.Name()) {
+					a.tools.Register(t)
+				}
+			}
+		}
+	}
 }
 
 // ToolCount returns the number of registered tools.
@@ -525,7 +606,10 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		}
 
 		// Check if streaming is supported by the LLM provider
-		streamingSupported := types.SupportsStreaming(a.llm)
+		a.mu.RLock()
+		currentLLM := a.llm
+		a.mu.RUnlock()
+		streamingSupported := types.SupportsStreaming(currentLLM)
 
 		// Try streaming-specific prompt if supported
 		if streamingSupported {
@@ -684,8 +768,11 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		span.SetAttribute(observability.AttrSessionID, sessionID)
 		span.SetAttribute("message.length", len(userMessage))
 		span.SetAttribute("message.preview", truncateString(userMessage, 100))
-		span.SetAttribute("llm.provider", a.llm.Name())
-		span.SetAttribute("llm.model", a.llm.Model())
+		a.mu.RLock()
+		currentLLM := a.llm
+		a.mu.RUnlock()
+		span.SetAttribute("llm.provider", currentLLM.Name())
+		span.SetAttribute("llm.model", currentLLM.Model())
 		span.SetAttribute("config.max_turns", a.config.MaxTurns)
 		span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 
@@ -1098,6 +1185,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		fmt.Printf("=== END DEBUG ===\n\n")
 	}
 
+	// Lazy tool disclosure: promote tools whose trigger matches the current user message.
+	{
+		msgs := session.GetMessages()
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == "user" {
+				a.evaluateLazyTools(msgs[i].Content)
+				break
+			}
+		}
+	}
+
 	// Get available tools
 	tools := a.tools.ListTools()
 
@@ -1295,39 +1393,79 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// === OUTPUT TOKEN CIRCUIT BREAKER ===
-		// Check if output token limit was hit and circuit breaker should trigger
+		// Protects against the agent getting stuck in an infinite tool-call loop where
+		// each turn hits the output token limit with truncated (incomplete) tool calls,
+		// making no forward progress.
+		//
+		// IMPORTANT: Only count as a failure when the LLM hits max_tokens AND returns
+		// truncated tool calls. A verbose text response (no tool calls) that hits the
+		// token limit is a legitimate, complete response and must NOT increment the counter.
 		if failureTracker, ok := session.FailureTracker.(*consecutiveFailureTracker); ok && failureTracker != nil {
+			threshold := a.config.OutputTokenCBThreshold
+			if threshold == 0 {
+				threshold = 8 // Default if not configured
+			}
+
 			if llmResp.StopReason == "max_tokens" {
-				// Detect if tool calls are truncated (empty Input indicates mid-generation cutoff)
 				hasEmptyToolCall := detectEmptyToolCall(llmResp.ToolCalls)
 
-				// Record output token exhaustion
-				exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
+				switch {
+				case threshold < 0:
+					// CB disabled entirely — do nothing
 
-				// Add tracing event
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("output_token.exhaustion", map[string]interface{}{
-						"count":              exhaustionCount,
-						"has_empty_toolcall": hasEmptyToolCall,
-						"stop_reason":        llmResp.StopReason,
-						"output_tokens":      llmResp.Usage.OutputTokens,
-					})
-				}
+				case len(llmResp.ToolCalls) > 0 && hasEmptyToolCall:
+					// TRUE FAILURE: agent is stuck in agentic loop with truncated tool calls.
+					// The tool calls cannot be executed because they are incomplete.
+					exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
 
-				// Check if circuit breaker threshold exceeded (default: 3 consecutive failures)
-				if err := failureTracker.checkOutputTokenCircuitBreaker(3); err != nil {
-					// Circuit breaker triggered - fail with actionable error message
 					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
-							"exhaustion_count":   exhaustionCount,
+						span.AddEvent("output_token.exhaustion", map[string]interface{}{
+							"count":              exhaustionCount,
+							"has_empty_toolcall": hasEmptyToolCall,
+							"stop_reason":        llmResp.StopReason,
+							"output_tokens":      llmResp.Usage.OutputTokens,
+							"threshold":          threshold,
+						})
+					}
+
+					if err := failureTracker.checkOutputTokenCircuitBreaker(threshold); err != nil {
+						if a.config.EnableTracing && span != nil {
+							span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
+								"exhaustion_count":   exhaustionCount,
+								"has_empty_toolcall": hasEmptyToolCall,
+								"threshold":          threshold,
+							})
+							span.RecordError(err)
+						}
+						return nil, fmt.Errorf("output token circuit breaker: %w", err)
+					}
+
+				case len(llmResp.ToolCalls) == 0:
+					// NOT A FAILURE: the LLM returned a complete text response that hit the
+					// token limit. This is a valid terminal response. Reset the counter so
+					// prior verbose turns do not accumulate toward the CB threshold.
+					failureTracker.clearOutputTokenExhaustion()
+
+					if a.config.EnableTracing && span != nil {
+						span.AddEvent("output_token.text_response_cleared", map[string]interface{}{
+							"stop_reason":   llmResp.StopReason,
+							"output_tokens": llmResp.Usage.OutputTokens,
+						})
+					}
+
+				default:
+					// max_tokens with non-truncated tool calls: agent may still make progress
+					// on the next turn. Don't count, don't clear — let it continue.
+					if a.config.EnableTracing && span != nil {
+						span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
+							"stop_reason":        llmResp.StopReason,
+							"tool_call_count":    len(llmResp.ToolCalls),
 							"has_empty_toolcall": hasEmptyToolCall,
 						})
-						span.RecordError(err)
 					}
-					return nil, fmt.Errorf("output token circuit breaker: %w", err)
 				}
 			} else {
-				// Clear output token exhaustion counter on successful response
+				// Normal completion (end_turn, stop_sequence, etc.) — clear the counter.
 				failureTracker.clearOutputTokenExhaustion()
 
 				if a.config.EnableTracing && span != nil {
@@ -2341,29 +2479,145 @@ func (a *Agent) GetOrchestrator() *patterns.Orchestrator {
 
 // GetLLMProviderName returns the name of the LLM provider (e.g., "anthropic", "bedrock", "ollama").
 func (a *Agent) GetLLMProviderName() string {
-	if a.llm == nil {
+	a.mu.RLock()
+	llm := a.llm
+	a.mu.RUnlock()
+	if llm == nil {
 		return ""
 	}
-	return a.llm.Name()
+	return llm.Name()
 }
 
 // GetLLMModel returns the model identifier (e.g., "claude-3-5-sonnet-20241022").
 func (a *Agent) GetLLMModel() string {
-	if a.llm == nil {
+	a.mu.RLock()
+	llm := a.llm
+	a.mu.RUnlock()
+	if llm == nil {
 		return ""
 	}
-	return a.llm.Model()
+	return llm.Model()
 }
 
-// SetLLMProvider switches the LLM provider for this agent.
+// SetLLMProvider switches the main LLM provider for this agent.
 // This allows mid-session model switching while preserving conversation context.
 // The new provider will be used for all future LLM calls in all sessions.
+// Only updates memory's LLM provider if no dedicated compressor LLM is set.
 func (a *Agent) SetLLMProvider(llm LLMProvider) {
+	a.mu.Lock()
 	a.llm = llm
-	// Also update memory's LLM provider for compression operations
-	if a.memory != nil {
+	compressorSet := a.compressorLLM != nil
+	a.mu.Unlock()
+	// Only update memory's LLM provider if no dedicated compressor exists
+	if a.memory != nil && !compressorSet {
 		a.memory.SetLLMProvider(llm)
 	}
+}
+
+// GetLLMForRole returns the LLM provider for a specific role.
+// Fallback chain: role-specific LLM -> main agent LLM.
+func (a *Agent) GetLLMForRole(role loomv1.LLMRole) LLMProvider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		if a.judgeLLM != nil {
+			return a.judgeLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		if a.orchestratorLLM != nil {
+			return a.orchestratorLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		if a.classifierLLM != nil {
+			return a.classifierLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		if a.compressorLLM != nil {
+			return a.compressorLLM
+		}
+	case loomv1.LLMRole_LLM_ROLE_AGENT, loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
+		// Fall through to return main LLM
+	}
+	return a.llm
+}
+
+// SetLLMProviderForRole sets the LLM provider for a specific role.
+// For COMPRESSOR role, also updates memory's LLM provider.
+// For AGENT/UNSPECIFIED role, delegates to SetLLMProvider.
+func (a *Agent) SetLLMProviderForRole(role loomv1.LLMRole, llm LLMProvider) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	switch role {
+	case loomv1.LLMRole_LLM_ROLE_JUDGE:
+		a.judgeLLM = llm
+	case loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR:
+		a.orchestratorLLM = llm
+	case loomv1.LLMRole_LLM_ROLE_CLASSIFIER:
+		a.classifierLLM = llm
+		// Update the orchestrator's intent classifier if pattern classification is enabled
+		if a.orchestrator != nil && a.config.PatternConfig.UseLLMClassifier && llm != nil {
+			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llm)
+			llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
+			a.orchestrator.SetIntentClassifier(llmClassifier)
+		}
+	case loomv1.LLMRole_LLM_ROLE_COMPRESSOR:
+		a.compressorLLM = llm
+		if a.memory != nil {
+			a.memory.SetLLMProvider(llm)
+		}
+	case loomv1.LLMRole_LLM_ROLE_AGENT, loomv1.LLMRole_LLM_ROLE_UNSPECIFIED:
+		a.llm = llm
+		// Only update memory if no dedicated compressor
+		if a.memory != nil && a.compressorLLM == nil {
+			a.memory.SetLLMProvider(llm)
+		}
+	}
+}
+
+// GetLLMModelForRole returns the model identifier for a specific role's LLM.
+func (a *Agent) GetLLMModelForRole(role loomv1.LLMRole) string {
+	llm := a.GetLLMForRole(role)
+	if llm == nil {
+		return ""
+	}
+	return llm.Model()
+}
+
+// GetLLMProviderNameForRole returns the provider name for a specific role's LLM.
+func (a *Agent) GetLLMProviderNameForRole(role loomv1.LLMRole) string {
+	llm := a.GetLLMForRole(role)
+	if llm == nil {
+		return ""
+	}
+	return llm.Name()
+}
+
+// GetAllRoleLLMs returns all configured role-specific LLM providers (non-nil only).
+// Always includes the main agent LLM. Used for health checks and diagnostics.
+func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	result := make(map[loomv1.LLMRole]LLMProvider)
+	if a.llm != nil {
+		result[loomv1.LLMRole_LLM_ROLE_AGENT] = a.llm
+	}
+	if a.judgeLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_JUDGE] = a.judgeLLM
+	}
+	if a.orchestratorLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_ORCHESTRATOR] = a.orchestratorLLM
+	}
+	if a.classifierLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_CLASSIFIER] = a.classifierLLM
+	}
+	if a.compressorLLM != nil {
+		result[loomv1.LLMRole_LLM_ROLE_COMPRESSOR] = a.compressorLLM
+	}
+	return result
 }
 
 // SetSharedMemory configures shared memory for this agent.
@@ -2472,4 +2726,66 @@ func WithCommunicationPolicy(policy *communication.PolicyManager) Option {
 	return func(a *Agent) {
 		a.commPolicy = policy
 	}
+}
+
+// GetProviderPool returns the named provider pool (nil if not configured).
+func (a *Agent) GetProviderPool() map[string]LLMProvider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.providerPool
+}
+
+// GetActiveProviderName returns the currently active provider name.
+func (a *Agent) GetActiveProviderName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.activeProviderName
+}
+
+// SetActiveProvider switches to a named provider from the pool.
+// Returns an error if the name is not in the pool or not in the allowed list.
+func (a *Agent) SetActiveProvider(name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.providerPool == nil {
+		return fmt.Errorf("provider pool not configured")
+	}
+	provider, ok := a.providerPool[name]
+	if !ok {
+		return fmt.Errorf("provider %q not found in pool", name)
+	}
+	// Check allowed list if restricted
+	if len(a.allowedProviders) > 0 {
+		allowed := false
+		for _, ap := range a.allowedProviders {
+			if ap == name {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("provider %q not in allowed providers list", name)
+		}
+	}
+	a.llm = provider
+	a.activeProviderName = name
+	// Update memory's LLM provider if no dedicated compressor
+	if a.memory != nil && a.compressorLLM == nil {
+		a.memory.SetLLMProvider(provider)
+	}
+	return nil
+}
+
+// SetProviderPool configures the named provider pool and optional active provider.
+func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allowed []string) error {
+	a.mu.Lock()
+	a.providerPool = pool
+	a.allowedProviders = allowed
+	a.mu.Unlock()
+
+	if active != "" {
+		return a.SetActiveProvider(active)
+	}
+	return nil
 }

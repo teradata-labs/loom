@@ -60,6 +60,12 @@ type Judge interface {
 	Config() *loomv1.JudgeConfig
 }
 
+// LLMProviderFactory creates an LLM provider from a proto LLMConfig.
+// This allows the judge to use per-judge LLM configuration (config.LlmConfig field 31)
+// without depending on the agent registry's internal provider creation logic.
+// Callers (e.g., cmd_eval, server) supply a factory backed by their registry or factory instance.
+type LLMProviderFactory func(config *loomv1.LLMConfig) (types.LLMProvider, error)
+
 // LLMJudge provides LLM-as-a-judge evaluation for Loom's multi-judge framework.
 // This implementation uses a simple LLM-based evaluation and maps it to Loom's
 // multi-judge framework with dimensions, criticality, and aggregation.
@@ -72,15 +78,42 @@ type LLMJudge struct {
 }
 
 // NewLLMJudge creates a new LLM-based judge.
-func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tracer observability.Tracer) (*LLMJudge, error) {
-	if llmProvider == nil {
-		return nil, fmt.Errorf("LLM provider required")
-	}
+// The llmProvider is the fallback LLM used when the judge config does not specify
+// its own LlmConfig or Model override. Pass opts to supply an LLMProviderFactory
+// that enables per-judge LLM configuration from JudgeConfig.LlmConfig.
+//
+// LLM resolution order:
+//  1. config.LlmConfig (full LLMConfig with provider/model/params) -- requires factory
+//  2. config.Model (simple model string) -- uses fallback provider with model override (not yet wired)
+//  3. llmProvider (the fallback, typically the agent's judge role LLM or main LLM)
+func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, tracer observability.Tracer, opts ...LLMJudgeOption) (*LLMJudge, error) {
 	if config == nil {
 		return nil, fmt.Errorf("judge config required")
 	}
 	if config.Name == "" {
 		return nil, fmt.Errorf("judge name required")
+	}
+
+	// Apply options
+	options := &llmJudgeOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	// Resolve the effective LLM provider using the priority chain:
+	// 1. config.LlmConfig (full config) if factory is available
+	// 2. fallback llmProvider parameter
+	effectiveProvider := llmProvider
+	if config.GetLlmConfig() != nil && config.GetLlmConfig().Provider != "" && options.providerFactory != nil {
+		configProvider, err := options.providerFactory(config.GetLlmConfig())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create LLM provider from judge config llm_config: %w", err)
+		}
+		effectiveProvider = configProvider
+	}
+
+	if effectiveProvider == nil {
+		return nil, fmt.Errorf("LLM provider required: no fallback provider and no llm_config in judge config")
 	}
 
 	// Phase 8: Validate custom dimension configuration
@@ -101,7 +134,7 @@ func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, trac
 
 	// Create LLM judge instance
 	judge, err := llmjudge.NewJudge(&llmjudge.Config{
-		Provider: llmProvider,
+		Provider: effectiveProvider,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM judge: %w", err)
@@ -121,8 +154,26 @@ func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, trac
 		llmJudge:    judge,
 		config:      config,
 		tracer:      tracer,
-		llmProvider: llmProvider,
+		llmProvider: effectiveProvider,
 	}, nil
+}
+
+// llmJudgeOptions holds optional configuration for NewLLMJudge.
+type llmJudgeOptions struct {
+	providerFactory LLMProviderFactory
+}
+
+// LLMJudgeOption is a functional option for NewLLMJudge.
+type LLMJudgeOption func(*llmJudgeOptions)
+
+// WithProviderFactory sets the LLM provider factory for creating providers
+// from JudgeConfig.LlmConfig. When set, and the judge config has a non-nil
+// LlmConfig with a Provider field, the factory is used to create a dedicated
+// LLM provider for this judge instead of using the fallback provider.
+func WithProviderFactory(factory LLMProviderFactory) LLMJudgeOption {
+	return func(o *llmJudgeOptions) {
+		o.providerFactory = factory
+	}
 }
 
 // ID returns the judge identifier

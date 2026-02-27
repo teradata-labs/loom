@@ -46,6 +46,13 @@ build/
 # Generated files (from templates)
 embedded/weaver.yaml
 
+# Local dev binaries built at repo root (not in bin/)
+generate-weaver
+
+# Local test/dev server configs (not for source control)
+looms-*-test.yaml
+looms-*-e2e.yaml
+
 # Temporary files
 tmp/
 temp/

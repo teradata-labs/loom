@@ -452,16 +452,41 @@ func (c *Client) ListAvailableModels(ctx context.Context) ([]*loomv1.ModelInfo, 
 }
 
 // SwitchModel switches the LLM model/provider for a session.
-func (c *Client) SwitchModel(ctx context.Context, sessionID, provider, model string) (*loomv1.SwitchModelResponse, error) {
+// role specifies which LLM role to switch (0/unspecified = main agent LLM for backward compatibility).
+func (c *Client) SwitchModel(ctx context.Context, sessionID, provider, model string, role loomv1.LLMRole) (*loomv1.SwitchModelResponse, error) {
 	req := &loomv1.SwitchModelRequest{
 		SessionId:       sessionID,
 		Provider:        provider,
 		Model:           model,
 		PreserveContext: true,
+		Role:            role,
 	}
 	resp, err := c.client.SwitchModel(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to switch model: %w", err)
+	}
+	return resp, nil
+}
+
+// SwitchModelByProvider switches the agent to a named provider from the pool.
+func (c *Client) SwitchModelByProvider(ctx context.Context, sessionID, agentID, providerName string) (*loomv1.SwitchModelResponse, error) {
+	req := &loomv1.SwitchModelRequest{
+		SessionId:    sessionID,
+		AgentId:      agentID,
+		ProviderName: providerName,
+	}
+	resp, err := c.client.SwitchModel(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to switch to provider %q: %w", providerName, err)
+	}
+	return resp, nil
+}
+
+// ListProviders lists named providers in the global pool.
+func (c *Client) ListProviders(ctx context.Context, req *loomv1.ListProvidersRequest) (*loomv1.ListProvidersResponse, error) {
+	resp, err := c.client.ListProviders(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list providers: %w", err)
 	}
 	return resp, nil
 }

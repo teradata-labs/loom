@@ -145,6 +145,11 @@ type Usage struct {
 	OutputTokens int
 	TotalTokens  int
 	CostUSD      float64
+	// CacheReadInputTokens: tokens served from prompt cache.
+	// For Anthropic, these do NOT count against ITPM rate limits.
+	CacheReadInputTokens int
+	// CacheCreationInputTokens: tokens written to prompt cache (billed at 1.25x for Anthropic).
+	CacheCreationInputTokens int
 }
 
 // LLMResponse represents a response from the LLM.

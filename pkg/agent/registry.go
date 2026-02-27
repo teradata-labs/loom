@@ -67,6 +67,11 @@ type Registry struct {
 	errorStore        ErrorStore                 // For error tracking and retrieval
 	permissionChecker *shuttle.PermissionChecker // For permission validation
 	artifactStore     interface{}                // artifacts.Store for workspace tool
+
+	// providerPool is the server-level named provider pool injected by cmd_serve.go.
+	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
+	// Protected by mu (RW lock shared with the rest of the registry state).
+	providerPool map[string]LLMProvider
 }
 
 // AgentInstanceInfo tracks runtime information about an agent instance
@@ -168,6 +173,19 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 	}
 
 	return r, nil
+}
+
+// SetProviderPool injects a server-level named provider pool into the registry.
+// Agents whose LLM config names a pool entry (e.g., provider: "fast") will receive
+// the corresponding pre-built LLMProvider instead of constructing a new one.
+// This must be called before agents are loaded or created to take effect.
+// It is safe to call concurrently with other registry operations.
+func (r *Registry) SetProviderPool(pool map[string]LLMProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providerPool = pool
+	r.logger.Info("Provider pool configured in registry",
+		zap.Int("providers", len(pool)))
 }
 
 // LoadAgents loads all agent configurations from the agents directory and workflows
@@ -471,6 +489,68 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		WithName(config.Name),
 	}
 
+	// Create role-specific LLM providers (graceful degradation: warn on error, fallback to main LLM)
+	if config.JudgeLlm != nil && config.JudgeLlm.Provider != "" {
+		judgeLLM, err := r.createLLMProvider(config.JudgeLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create judge LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.JudgeLlm.Provider),
+				zap.String("model", config.JudgeLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				judgeLLM = llm.NewInstrumentedProvider(judgeLLM, r.tracer)
+			}
+			opts = append(opts, WithJudgeLLM(judgeLLM))
+		}
+	}
+	if config.OrchestratorLlm != nil && config.OrchestratorLlm.Provider != "" {
+		orchLLM, err := r.createLLMProvider(config.OrchestratorLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create orchestrator LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.OrchestratorLlm.Provider),
+				zap.String("model", config.OrchestratorLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				orchLLM = llm.NewInstrumentedProvider(orchLLM, r.tracer)
+			}
+			opts = append(opts, WithOrchestratorLLM(orchLLM))
+		}
+	}
+	if config.ClassifierLlm != nil && config.ClassifierLlm.Provider != "" {
+		classLLM, err := r.createLLMProvider(config.ClassifierLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create classifier LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.ClassifierLlm.Provider),
+				zap.String("model", config.ClassifierLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				classLLM = llm.NewInstrumentedProvider(classLLM, r.tracer)
+			}
+			opts = append(opts, WithClassifierLLM(classLLM))
+		}
+	}
+	if config.CompressorLlm != nil && config.CompressorLlm.Provider != "" {
+		compLLM, err := r.createLLMProvider(config.CompressorLlm)
+		if err != nil {
+			r.logger.Warn("Failed to create compressor LLM provider, falling back to main LLM",
+				zap.String("agent", config.Name),
+				zap.String("provider", config.CompressorLlm.Provider),
+				zap.String("model", config.CompressorLlm.Model),
+				zap.Error(err))
+		} else {
+			if r.tracer != nil {
+				compLLM = llm.NewInstrumentedProvider(compLLM, r.tracer)
+			}
+			opts = append(opts, WithCompressorLLM(compLLM))
+		}
+	}
+
 	// Set system prompt if provided
 	if config.SystemPrompt != "" {
 		opts = append(opts, WithSystemPrompt(config.SystemPrompt))
@@ -481,12 +561,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, WithDescription(config.Description))
 	}
 
-	// Set behavior config (max_tool_executions, max_turns) if provided
+	// Set behavior config (max_tool_executions, max_turns, output_token_cb_threshold) if provided
 	if config.Behavior != nil {
 		agentConfig := &Config{
-			Name:              config.Name, // Preserve name from config
-			MaxToolExecutions: int(config.Behavior.MaxToolExecutions),
-			MaxTurns:          int(config.Behavior.MaxTurns),
+			Name:                   config.Name, // Preserve name from config
+			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
+			MaxTurns:               int(config.Behavior.MaxTurns),
+			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {
@@ -494,6 +575,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		}
 		if agentConfig.MaxTurns == 0 {
 			agentConfig.MaxTurns = 25 // Default from config_loader.go:258
+		}
+		if agentConfig.OutputTokenCBThreshold == 0 {
+			agentConfig.OutputTokenCBThreshold = 8
 		}
 		opts = append(opts, WithConfig(agentConfig))
 	}
@@ -742,8 +826,31 @@ func (r *Registry) isCustomTool(toolName string, config *loomv1.AgentConfig) boo
 	return false
 }
 
-// createLLMProvider creates an LLM provider from configuration
+// createLLMProvider creates an LLM provider from configuration.
+// Resolution order:
+//  1. If config.Provider names a pool entry (injected via SetProviderPool), use it.
+//  2. If a registry-level default LLMProvider is set and no per-agent provider is
+//     named, use the default.
+//  3. Otherwise construct a new provider from the standard provider type names
+//     ("anthropic", "bedrock", etc.).
 func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, error) {
+	// Check the named provider pool first.
+	// This allows agent configs to reference a pre-built pool entry by name
+	// (e.g., provider: "fast") rather than repeating full credentials inline.
+	if config.Provider != "" {
+		r.mu.RLock()
+		pool := r.providerPool
+		r.mu.RUnlock()
+
+		if pool != nil {
+			if poolProvider, found := pool[config.Provider]; found {
+				r.logger.Debug("Using provider pool entry",
+					zap.String("name", config.Provider))
+				return poolProvider, nil
+			}
+		}
+	}
+
 	// If a default provider is configured and no per-agent provider specified, use it
 	if r.llmProvider != nil && config.Provider == "" {
 		r.logger.Debug("Using default LLM provider")
@@ -759,6 +866,8 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		zap.String("provider", config.Provider),
 		zap.String("model", config.Model))
 
+	rlCfg := r.buildRateLimiterConfig(config.RateLimit)
+
 	switch config.Provider {
 	case "anthropic":
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -766,14 +875,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
 		}
 		return anthropic.NewClient(anthropic.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "bedrock":
@@ -786,16 +892,12 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			profile = "default"
 		}
 		return bedrock.NewClient(bedrock.Config{
-			Region:      region,
-			Profile:     profile,
-			ModelID:     config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true, // Always enable rate limiter for Bedrock to prevent throttling
-				Logger:  r.logger,
-				// Use defaults for other fields (RequestsPerSecond, TokensPerMinute, etc.)
-			},
+			Region:            region,
+			Profile:           profile,
+			ModelID:           config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "ollama":
@@ -804,14 +906,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			endpoint = "http://localhost:11434"
 		}
 		return ollama.NewClient(ollama.Config{
-			Endpoint:    endpoint,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			Endpoint:          endpoint,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "openai":
@@ -820,14 +919,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
 		}
 		return openai.NewClient(openai.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "azure-openai", "azureopenai":
@@ -840,15 +936,12 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("AZURE_OPENAI_ENDPOINT environment variable not set")
 		}
 		return azureopenai.NewClient(azureopenai.Config{
-			APIKey:       apiKey,
-			Endpoint:     endpoint,
-			DeploymentID: config.Model,
-			MaxTokens:    int(config.MaxTokens),
-			Temperature:  float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Endpoint:          endpoint,
+			DeploymentID:      config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		})
 
 	case "mistral":
@@ -857,14 +950,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("MISTRAL_API_KEY environment variable not set")
 		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "gemini":
@@ -873,14 +963,11 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("GEMINI_API_KEY environment variable not set")
 		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:      apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			APIKey:            apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	case "huggingface":
@@ -889,19 +976,61 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			return nil, fmt.Errorf("HUGGINGFACE_API_KEY environment variable not set")
 		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:       apiKey,
-			Model:       config.Model,
-			MaxTokens:   int(config.MaxTokens),
-			Temperature: float64(config.Temperature),
-			RateLimiterConfig: llm.RateLimiterConfig{
-				Enabled: true,
-				Logger:  r.logger,
-			},
+			Token:             apiKey,
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
 		}), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", config.Provider)
 	}
+}
+
+// buildRateLimiterConfig converts the proto LLMRateLimitConfig to the llm package config.
+// When proto config is nil, returns enabled-by-default config (zero fields → provider defaults).
+// When proto config has disabled=true, returns a disabled rate limiter config.
+// Non-zero numeric fields override the provider defaults set by NewRateLimiter().
+func (r *Registry) buildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig) llm.RateLimiterConfig {
+	cfg := llm.RateLimiterConfig{
+		Enabled: true,
+		Logger:  r.logger,
+		// All numeric fields left at zero → NewRateLimiter() fills them from DefaultRateLimiterConfig()
+	}
+
+	if proto == nil {
+		return cfg
+	}
+
+	if proto.Disabled {
+		cfg.Enabled = false
+		return cfg
+	}
+
+	if proto.RequestsPerSecond > 0 {
+		cfg.RequestsPerSecond = proto.RequestsPerSecond
+	}
+	if proto.TokensPerMinute > 0 {
+		cfg.TokensPerMinute = proto.TokensPerMinute
+	}
+	if proto.BurstCapacity > 0 {
+		cfg.BurstCapacity = int(proto.BurstCapacity)
+	}
+	if proto.MinDelayMs > 0 {
+		cfg.MinDelay = time.Duration(proto.MinDelayMs) * time.Millisecond
+	}
+	if proto.MaxRetries > 0 {
+		cfg.MaxRetries = int(proto.MaxRetries)
+	}
+	if proto.RetryBackoffMs > 0 {
+		cfg.RetryBackoff = time.Duration(proto.RetryBackoffMs) * time.Millisecond
+	}
+	if proto.QueueTimeoutSeconds > 0 {
+		cfg.QueueTimeout = time.Duration(proto.QueueTimeoutSeconds) * time.Second
+	}
+
+	return cfg
 }
 
 // registerMCPTools registers MCP tools for an agent

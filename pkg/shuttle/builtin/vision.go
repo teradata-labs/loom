@@ -48,22 +48,8 @@ func (t *VisionTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/vision.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *VisionTool) Description() string {
-	return `Analyzes images using vision capabilities.
-Use this tool to understand visual content like charts, screenshots, diagrams, photos, etc.
-
-Use this tool for:
-- Chart and graph interpretation
-- Screenshot analysis and debugging
-- OCR (extracting text from images)
-- Diagram understanding (architecture, flowcharts, etc.)
-- Product photo descriptions
-- Form extraction from scanned documents
-- Any task requiring visual understanding
-
-Supported formats: JPEG, PNG, GIF, WebP
-Max image size: 20MB
-
-Note: Vision capabilities require LLM providers with multi-modal support (Claude 3+, GPT-4 Vision, Gemini, etc.)`
+	return `Analyzes images using vision capabilities. Understands charts, screenshots, diagrams, photos, and scanned documents.
+Supports JPEG, PNG, GIF, WebP (max 20MB). Requires a multi-modal LLM provider.`
 }
 
 func (t *VisionTool) InputSchema() *shuttle.JSONSchema {
@@ -71,7 +57,7 @@ func (t *VisionTool) InputSchema() *shuttle.JSONSchema {
 		"Parameters for analyzing images",
 		map[string]*shuttle.JSONSchema{
 			"image_path": shuttle.NewStringSchema("Path to the image file (required). Supports JPEG, PNG, GIF, WebP formats."),
-			"question":   shuttle.NewStringSchema("Optional question or task about the image (e.g., 'Extract all text', 'What are the key trends?', 'Describe this diagram')"),
+			"question":   shuttle.NewStringSchema("Optional question or instruction about the image."),
 		},
 		[]string{"image_path"},
 	)

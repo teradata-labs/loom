@@ -29,21 +29,83 @@ func safeInt32(val int, fieldName string) (int32, error) {
 	return int32(val), nil
 }
 
+// convertLLMConfigYAMLToProto converts a LLMConfigYAML pointer to a proto LLMConfig.
+// Returns (nil, nil) if the input is nil, allowing callers to distinguish "not configured"
+// from "configured with values". This is used for role-specific LLM configs (judge, orchestrator, etc.)
+// where nil means "fall back to the main LLM".
+func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
+	if y == nil {
+		return nil, nil
+	}
+	maxTokens, err := safeInt32(y.MaxTokens, "LLM.MaxTokens")
+	if err != nil {
+		return nil, err
+	}
+	topK, err := safeInt32(y.TopK, "LLM.TopK")
+	if err != nil {
+		return nil, err
+	}
+	maxContextTokens, err := safeInt32(y.MaxContextTokens, "LLM.MaxContextTokens")
+	if err != nil {
+		return nil, err
+	}
+	reservedOutputTokens, err := safeInt32(y.ReservedOutputTokens, "LLM.ReservedOutputTokens")
+	if err != nil {
+		return nil, err
+	}
+	return &loomv1.LLMConfig{
+		Provider:             y.Provider,
+		Model:                y.Model,
+		Temperature:          float32(y.Temperature),
+		MaxTokens:            maxTokens,
+		StopSequences:        y.StopSequences,
+		TopP:                 float32(y.TopP),
+		TopK:                 topK,
+		MaxContextTokens:     maxContextTokens,
+		ReservedOutputTokens: reservedOutputTokens,
+	}, nil
+}
+
+// convertProtoToLLMConfigYAML converts a proto LLMConfig to a LLMConfigYAML pointer.
+// Returns nil if the input is nil or has no provider set.
+func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
+	if pb == nil || pb.Provider == "" {
+		return nil
+	}
+	return &LLMConfigYAML{
+		Provider:             pb.Provider,
+		Model:                pb.Model,
+		Temperature:          float64(pb.Temperature),
+		MaxTokens:            int(pb.MaxTokens),
+		StopSequences:        pb.StopSequences,
+		TopP:                 float64(pb.TopP),
+		TopK:                 int(pb.TopK),
+		MaxContextTokens:     int(pb.MaxContextTokens),
+		ReservedOutputTokens: int(pb.ReservedOutputTokens),
+	}
+}
+
 // AgentConfigYAML represents the YAML structure for agent configuration.
 // This struct mirrors the proto AgentConfig but uses YAML-friendly types.
 // Legacy format with "agent:" as root key.
 type AgentConfigYAML struct {
 	Agent struct {
-		Name         string                 `yaml:"name"`
-		Description  string                 `yaml:"description"`
-		BackendPath  string                 `yaml:"backend_path"`
-		LLM          LLMConfigYAML          `yaml:"llm"`
-		SystemPrompt string                 `yaml:"system_prompt"`
-		ROM          string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
-		Tools        ToolsConfigYAML        `yaml:"tools"`
-		Memory       MemoryConfigYAML       `yaml:"memory"`
-		Behavior     BehaviorConfigYAML     `yaml:"behavior"`
-		Metadata     map[string]interface{} `yaml:"metadata"`
+		Name             string                 `yaml:"name"`
+		Description      string                 `yaml:"description"`
+		BackendPath      string                 `yaml:"backend_path"`
+		LLM              LLMConfigYAML          `yaml:"llm"`
+		JudgeLLM         *LLMConfigYAML         `yaml:"judge_llm"`
+		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
+		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
+		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		ActiveProvider   string                 `yaml:"active_provider"`
+		AllowedProviders []string               `yaml:"allowed_providers"`
+		SystemPrompt     string                 `yaml:"system_prompt"`
+		ROM              string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
+		Tools            ToolsConfigYAML        `yaml:"tools"`
+		Memory           MemoryConfigYAML       `yaml:"memory"`
+		Behavior         BehaviorConfigYAML     `yaml:"behavior"`
+		Metadata         map[string]interface{} `yaml:"metadata"`
 	} `yaml:"agent"`
 }
 
@@ -65,14 +127,20 @@ type K8sStyleAgentConfig struct {
 			Type   string                 `yaml:"type"`
 			Config map[string]interface{} `yaml:"config"`
 		} `yaml:"backend"`
-		BackendPath   string                 `yaml:"backend_path"` // Path to backend YAML config file
-		LLM           LLMConfigYAML          `yaml:"llm"`
-		Tools         interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
-		SystemPrompt  string                 `yaml:"system_prompt"`
-		ROM           string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
-		Config        BehaviorConfigYAML     `yaml:"config"`
-		Memory        MemoryConfigYAML       `yaml:"memory"`
-		Observability map[string]interface{} `yaml:"observability"`
+		BackendPath      string                 `yaml:"backend_path"` // Path to backend YAML config file
+		LLM              LLMConfigYAML          `yaml:"llm"`
+		JudgeLLM         *LLMConfigYAML         `yaml:"judge_llm"`
+		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
+		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
+		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		ActiveProvider   string                 `yaml:"active_provider"`
+		AllowedProviders []string               `yaml:"allowed_providers"`
+		Tools            interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
+		SystemPrompt     string                 `yaml:"system_prompt"`
+		ROM              string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
+		Config           BehaviorConfigYAML     `yaml:"config"`
+		Memory           MemoryConfigYAML       `yaml:"memory"`
+		Observability    map[string]interface{} `yaml:"observability"`
 	} `yaml:"spec"`
 }
 
@@ -136,13 +204,14 @@ type MemoryCompressionBatchSizesYAML struct {
 
 // BehaviorConfigYAML represents behavior configuration in YAML
 type BehaviorConfigYAML struct {
-	MaxIterations      int                `yaml:"max_iterations"`
-	TimeoutSeconds     int                `yaml:"timeout_seconds"`
-	AllowCodeExecution bool               `yaml:"allow_code_execution"`
-	AllowedDomains     []string           `yaml:"allowed_domains"`
-	MaxTurns           int                `yaml:"max_turns"`
-	MaxToolExecutions  int                `yaml:"max_tool_executions"`
-	Patterns           *PatternConfigYAML `yaml:"patterns"`
+	MaxIterations          int                `yaml:"max_iterations"`
+	TimeoutSeconds         int                `yaml:"timeout_seconds"`
+	AllowCodeExecution     bool               `yaml:"allow_code_execution"`
+	AllowedDomains         []string           `yaml:"allowed_domains"`
+	MaxTurns               int                `yaml:"max_turns"`
+	MaxToolExecutions      int                `yaml:"max_tool_executions"`
+	Patterns               *PatternConfigYAML `yaml:"patterns"`
+	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 }
 
 // PatternConfigYAML represents pattern configuration in YAML
@@ -221,6 +290,26 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 		return nil, fmt.Errorf("LLM provider is required when model is specified")
 	}
 
+	// Validate role-specific LLMs: if partially specified, both provider and model are required
+	roleLLMs := map[string]*LLMConfigYAML{
+		"judge_llm":        yamlConfig.Agent.JudgeLLM,
+		"orchestrator_llm": yamlConfig.Agent.OrchestratorLLM,
+		"classifier_llm":   yamlConfig.Agent.ClassifierLLM,
+		"compressor_llm":   yamlConfig.Agent.CompressorLLM,
+	}
+	for roleName, roleLLM := range roleLLMs {
+		if roleLLM != nil {
+			roleHasProvider := roleLLM.Provider != ""
+			roleHasModel := roleLLM.Model != ""
+			if roleHasProvider && !roleHasModel {
+				return nil, fmt.Errorf("LLM model is required when provider is specified (in %s config)", roleName)
+			}
+			if roleHasModel && !roleHasProvider {
+				return nil, fmt.Errorf("LLM provider is required when model is specified (in %s config)", roleName)
+			}
+		}
+	}
+
 	// Convert YAML to proto
 	return yamlToProto(&yamlConfig)
 }
@@ -235,6 +324,12 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 
 	// LLM config
 	legacy.Agent.LLM = k8s.Spec.LLM
+	legacy.Agent.JudgeLLM = k8s.Spec.JudgeLLM
+	legacy.Agent.OrchestratorLLM = k8s.Spec.OrchestratorLLM
+	legacy.Agent.ClassifierLLM = k8s.Spec.ClassifierLLM
+	legacy.Agent.CompressorLLM = k8s.Spec.CompressorLLM
+	legacy.Agent.ActiveProvider = k8s.Spec.ActiveProvider
+	legacy.Agent.AllowedProviders = k8s.Spec.AllowedProviders
 
 	// System prompt
 	legacy.Agent.SystemPrompt = k8s.Spec.SystemPrompt
@@ -378,35 +473,12 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		Metadata:     metadata,
 	}
 
-	// Convert LLM config with safe integer conversions
-	maxTokens, err := safeInt32(yaml.Agent.LLM.MaxTokens, "LLM.MaxTokens")
+	// Convert main LLM config using helper (main LLM is not a pointer, so take its address)
+	mainLLM, err := convertLLMConfigYAMLToProto(&yaml.Agent.LLM)
 	if err != nil {
 		return nil, fmt.Errorf("invalid LLM config: %w", err)
 	}
-	topK, err := safeInt32(yaml.Agent.LLM.TopK, "LLM.TopK")
-	if err != nil {
-		return nil, fmt.Errorf("invalid LLM config: %w", err)
-	}
-	maxContextTokens, err := safeInt32(yaml.Agent.LLM.MaxContextTokens, "LLM.MaxContextTokens")
-	if err != nil {
-		return nil, fmt.Errorf("invalid LLM config: %w", err)
-	}
-	reservedOutputTokens, err := safeInt32(yaml.Agent.LLM.ReservedOutputTokens, "LLM.ReservedOutputTokens")
-	if err != nil {
-		return nil, fmt.Errorf("invalid LLM config: %w", err)
-	}
-
-	config.Llm = &loomv1.LLMConfig{
-		Provider:             yaml.Agent.LLM.Provider,
-		Model:                yaml.Agent.LLM.Model,
-		Temperature:          float32(yaml.Agent.LLM.Temperature),
-		MaxTokens:            maxTokens,
-		StopSequences:        yaml.Agent.LLM.StopSequences,
-		TopP:                 float32(yaml.Agent.LLM.TopP),
-		TopK:                 topK,
-		MaxContextTokens:     maxContextTokens,
-		ReservedOutputTokens: reservedOutputTokens,
-	}
+	config.Llm = mainLLM
 
 	// Set defaults for LLM if not specified
 	if config.Llm.MaxTokens == 0 {
@@ -415,6 +487,40 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	if config.Llm.Temperature == 0 {
 		config.Llm.Temperature = 0.7
 	}
+
+	// Convert role-specific LLM configs
+	if yaml.Agent.JudgeLLM != nil {
+		judgeLLM, err := convertLLMConfigYAMLToProto(yaml.Agent.JudgeLLM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid judge_llm config: %w", err)
+		}
+		config.JudgeLlm = judgeLLM
+	}
+	if yaml.Agent.OrchestratorLLM != nil {
+		orchestratorLLM, err := convertLLMConfigYAMLToProto(yaml.Agent.OrchestratorLLM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid orchestrator_llm config: %w", err)
+		}
+		config.OrchestratorLlm = orchestratorLLM
+	}
+	if yaml.Agent.ClassifierLLM != nil {
+		classifierLLM, err := convertLLMConfigYAMLToProto(yaml.Agent.ClassifierLLM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid classifier_llm config: %w", err)
+		}
+		config.ClassifierLlm = classifierLLM
+	}
+	if yaml.Agent.CompressorLLM != nil {
+		compressorLLM, err := convertLLMConfigYAMLToProto(yaml.Agent.CompressorLLM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid compressor_llm config: %w", err)
+		}
+		config.CompressorLlm = compressorLLM
+	}
+
+	// Provider pool fields
+	config.ActiveProvider = yaml.Agent.ActiveProvider
+	config.AllowedProviders = yaml.Agent.AllowedProviders
 
 	// Convert tools config
 	config.Tools = &loomv1.ToolsConfig{
@@ -480,14 +586,19 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid behavior config: %w", err)
 	}
+	outputTokenCBThreshold, err := safeInt32(yaml.Agent.Behavior.OutputTokenCBThreshold, "OutputTokenCBThreshold")
+	if err != nil {
+		return nil, fmt.Errorf("invalid behavior config: %w", err)
+	}
 
 	config.Behavior = &loomv1.BehaviorConfig{
-		MaxIterations:      maxIterations,
-		TimeoutSeconds:     timeoutSeconds,
-		AllowCodeExecution: yaml.Agent.Behavior.AllowCodeExecution,
-		AllowedDomains:     yaml.Agent.Behavior.AllowedDomains,
-		MaxTurns:           maxTurns,
-		MaxToolExecutions:  maxToolExecutions,
+		MaxIterations:          maxIterations,
+		TimeoutSeconds:         timeoutSeconds,
+		AllowCodeExecution:     yaml.Agent.Behavior.AllowCodeExecution,
+		AllowedDomains:         yaml.Agent.Behavior.AllowedDomains,
+		MaxTurns:               maxTurns,
+		MaxToolExecutions:      maxToolExecutions,
+		OutputTokenCbThreshold: outputTokenCBThreshold,
 	}
 
 	// Parse pattern config if present
@@ -533,6 +644,10 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 	if config.Behavior.MaxToolExecutions == 0 {
 		config.Behavior.MaxToolExecutions = 50 // Default tool executions
+	}
+	// 0 means use default (8). Negative value (-1) means disabled (handled in agent).
+	if config.Behavior.OutputTokenCbThreshold == 0 {
+		config.Behavior.OutputTokenCbThreshold = 8 // Default CB threshold
 	}
 
 	return config, nil
@@ -700,15 +815,23 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	// Convert LLM config
 	if config.Llm != nil {
 		yaml.Agent.LLM = LLMConfigYAML{
-			Provider:      config.Llm.Provider,
-			Model:         config.Llm.Model,
-			Temperature:   float64(config.Llm.Temperature),
-			MaxTokens:     int(config.Llm.MaxTokens),
-			StopSequences: config.Llm.StopSequences,
-			TopP:          float64(config.Llm.TopP),
-			TopK:          int(config.Llm.TopK),
+			Provider:             config.Llm.Provider,
+			Model:                config.Llm.Model,
+			Temperature:          float64(config.Llm.Temperature),
+			MaxTokens:            int(config.Llm.MaxTokens),
+			StopSequences:        config.Llm.StopSequences,
+			TopP:                 float64(config.Llm.TopP),
+			TopK:                 int(config.Llm.TopK),
+			MaxContextTokens:     int(config.Llm.MaxContextTokens),
+			ReservedOutputTokens: int(config.Llm.ReservedOutputTokens),
 		}
 	}
+
+	// Convert role-specific LLM configs
+	yaml.Agent.JudgeLLM = convertProtoToLLMConfigYAML(config.JudgeLlm)
+	yaml.Agent.OrchestratorLLM = convertProtoToLLMConfigYAML(config.OrchestratorLlm)
+	yaml.Agent.ClassifierLLM = convertProtoToLLMConfigYAML(config.ClassifierLlm)
+	yaml.Agent.CompressorLLM = convertProtoToLLMConfigYAML(config.CompressorLlm)
 
 	// Convert tools config
 	if config.Tools != nil {
@@ -744,12 +867,13 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	// Convert behavior config
 	if config.Behavior != nil {
 		yaml.Agent.Behavior = BehaviorConfigYAML{
-			MaxIterations:      int(config.Behavior.MaxIterations),
-			TimeoutSeconds:     int(config.Behavior.TimeoutSeconds),
-			AllowCodeExecution: config.Behavior.AllowCodeExecution,
-			AllowedDomains:     config.Behavior.AllowedDomains,
-			MaxTurns:           int(config.Behavior.MaxTurns),
-			MaxToolExecutions:  int(config.Behavior.MaxToolExecutions),
+			MaxIterations:          int(config.Behavior.MaxIterations),
+			TimeoutSeconds:         int(config.Behavior.TimeoutSeconds),
+			AllowCodeExecution:     config.Behavior.AllowCodeExecution,
+			AllowedDomains:         config.Behavior.AllowedDomains,
+			MaxTurns:               int(config.Behavior.MaxTurns),
+			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
+			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 	}
 

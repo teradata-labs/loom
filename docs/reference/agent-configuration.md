@@ -175,7 +175,7 @@ Model identifier specific to provider.
 
 **Anthropic models**:
 - `claude-sonnet-4-5-20250929` (200k context)
-- `claude-opus-4-5-20251101` (200k context)
+- `claude-opus-4-6` (200k context)
 
 **Ollama models**:
 - `llama3.2:latest` (128k context)
@@ -844,7 +844,7 @@ description: GitHub repository management agent
 
 llm:
   provider: bedrock
-  model: anthropic.claude-3-5-sonnet-20241022-v2:0
+  model: anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.5
 
 backend:
@@ -882,7 +882,7 @@ description: Teradata Vantage SQL agent via MCP
 
 llm:
   provider: anthropic
-  model: claude-opus-4-5-20251101
+  model: claude-opus-4-6
   temperature: 0.0
   max_tokens: 8192
 

@@ -15,15 +15,38 @@ package anthropic
 
 import "encoding/json"
 
+// CacheControl marks a content block for prompt caching.
+// When set to {"type": "ephemeral"}, the block is cached for ~5 minutes.
+// Cached tokens don't count against Anthropic's ITPM rate limit.
+type CacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+// TextBlockParam represents a system prompt block that may be cached.
+type TextBlockParam struct {
+	Type         string        `json:"type"` // "text"
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+// CacheableTool wraps a Tool definition and allows attaching a cache_control marker.
+// The last tool in the list is marked with cache_control to cache the entire tool list.
+type CacheableTool struct {
+	Name         string        `json:"name"`
+	Description  string        `json:"description"`
+	InputSchema  InputSchema   `json:"input_schema"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
 // MessagesRequest represents a request to the Anthropic Messages API.
 type MessagesRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float64   `json:"temperature,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	System      string    `json:"system,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []Message        `json:"messages"`
+	MaxTokens   int              `json:"max_tokens"`
+	Temperature float64          `json:"temperature,omitempty"`
+	Tools       []CacheableTool  `json:"tools,omitempty"`
+	System      []TextBlockParam `json:"system,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
 }
 
 // MessagesResponse represents a response from the Anthropic Messages API.
@@ -118,18 +141,28 @@ type InputSchema struct {
 
 // Usage represents token usage information.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// StreamStartMessage is the message object in a message_start SSE event.
+// It carries the initial usage (including cache token counts) for the stream.
+type StreamStartMessage struct {
+	ID    string `json:"id"`
+	Model string `json:"model"`
+	Usage Usage  `json:"usage"`
 }
 
 // StreamEvent represents a streaming event from the Anthropic API.
 type StreamEvent struct {
-	Type         string        `json:"type"` // message_start, content_block_start, content_block_delta, message_delta, message_stop
-	Message      *Message      `json:"message,omitempty"`
-	Index        int           `json:"index,omitempty"`
-	ContentBlock *ContentBlock `json:"content_block,omitempty"`
-	Delta        *StreamDelta  `json:"delta,omitempty"`
-	Usage        *Usage        `json:"usage,omitempty"`
+	Type         string              `json:"type"` // message_start, content_block_start, content_block_delta, message_delta, message_stop
+	Message      *StreamStartMessage `json:"message,omitempty"`
+	Index        int                 `json:"index,omitempty"`
+	ContentBlock *ContentBlock       `json:"content_block,omitempty"`
+	Delta        *StreamDelta        `json:"delta,omitempty"`
+	Usage        *Usage              `json:"usage,omitempty"`
 }
 
 // StreamDelta represents a delta in a streaming event.

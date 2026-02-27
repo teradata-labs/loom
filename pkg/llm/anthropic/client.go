@@ -50,6 +50,28 @@ var (
 	globalRateLimiterOnce sync.Once
 )
 
+// DefaultAnthropicRateLimiterConfig returns safe defaults for Anthropic's API.
+//
+// Anthropic rate limits by tier (as of 2026):
+//   - Free / Tier 1: 50 RPM, 30K–100K ITPM
+//   - Tier 2:        1000 RPM, 2M ITPM
+//   - Tier 3+:       5000+ RPM
+//
+// These defaults target Tier 1 (the most common). Users on higher tiers should
+// increase requests_per_second and tokens_per_minute in loom.yaml.
+func DefaultAnthropicRateLimiterConfig() llm.RateLimiterConfig {
+	return llm.RateLimiterConfig{
+		Enabled:           true,
+		RequestsPerSecond: 0.7,                    // ~42 RPM — safely under Tier 1 50 RPM limit
+		TokensPerMinute:   80000,                  // 80% of Tier 1 100K ITPM (30K on free)
+		BurstCapacity:     3,                      // Conservative burst for multi-agent sessions
+		MinDelay:          800 * time.Millisecond, // ~1.25 RPS ceiling; prevents burst overshoots
+		MaxRetries:        5,
+		RetryBackoff:      2 * time.Second, // Longer initial backoff for Anthropic 429s
+		QueueTimeout:      5 * time.Minute,
+	}
+}
+
 // Client implements the LLMProvider interface for Anthropic's Claude API.
 type Client struct {
 	apiKey      string
@@ -121,9 +143,39 @@ func NewClient(config Config) *Client {
 }
 
 // getOrCreateGlobalRateLimiter returns the global rate limiter, creating it if necessary.
+// Caller-supplied non-zero fields override DefaultAnthropicRateLimiterConfig values.
 func getOrCreateGlobalRateLimiter(config llm.RateLimiterConfig) *llm.RateLimiter {
 	globalRateLimiterOnce.Do(func() {
-		globalRateLimiter = llm.NewRateLimiter(config)
+		// Start from Anthropic-specific defaults, then apply caller overrides.
+		// This ensures we don't blindly fall through to DefaultRateLimiterConfig()
+		// (which is tuned for Bedrock and allows 2 RPS — exceeding Anthropic Tier 1).
+		merged := DefaultAnthropicRateLimiterConfig()
+		merged.Enabled = config.Enabled
+		if config.Logger != nil {
+			merged.Logger = config.Logger
+		}
+		if config.RequestsPerSecond > 0 {
+			merged.RequestsPerSecond = config.RequestsPerSecond
+		}
+		if config.TokensPerMinute > 0 {
+			merged.TokensPerMinute = config.TokensPerMinute
+		}
+		if config.BurstCapacity > 0 {
+			merged.BurstCapacity = config.BurstCapacity
+		}
+		if config.MinDelay > 0 {
+			merged.MinDelay = config.MinDelay
+		}
+		if config.MaxRetries > 0 {
+			merged.MaxRetries = config.MaxRetries
+		}
+		if config.RetryBackoff > 0 {
+			merged.RetryBackoff = config.RetryBackoff
+		}
+		if config.QueueTimeout > 0 {
+			merged.QueueTimeout = config.QueueTimeout
+		}
+		globalRateLimiter = llm.NewRateLimiter(merged)
 	})
 	return globalRateLimiter
 }
@@ -155,8 +207,8 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		Temperature: c.temperature,
 	}
 
-	// Add system prompt if present (Anthropic Messages API requires separate system field)
-	if systemPrompt != "" {
+	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
+	if len(systemPrompt) > 0 {
 		req.System = systemPrompt
 	}
 
@@ -175,10 +227,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 }
 
 // convertMessages converts agent messages to Anthropic format.
-// Returns the system prompt (combined from all system messages) and the API messages.
+// Returns the system prompt blocks (with cache_control on the last block) and the API messages.
 // System messages are extracted and combined, as Anthropic Messages API requires
 // them to be sent as a separate "system" field, not in the messages array.
-func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message) {
+func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam, []Message) {
 	var systemPrompts []string
 	var apiMessages []Message
 
@@ -277,16 +329,29 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []Message
 		}
 	}
 
-	// Combine all system prompts with double newlines
-	systemPrompt := strings.Join(systemPrompts, "\n\n")
-
-	return systemPrompt, apiMessages
+	// Combine all system prompts and wrap in a TextBlockParam with cache_control.
+	// Placing cache_control on the system block caches it for ~5 minutes.
+	// For Anthropic, cached tokens don't count against the ITPM rate limit.
+	if len(systemPrompts) == 0 {
+		return nil, apiMessages
+	}
+	systemText := strings.Join(systemPrompts, "\n\n")
+	systemBlocks := []TextBlockParam{
+		{
+			Type:         "text",
+			Text:         systemText,
+			CacheControl: &CacheControl{Type: "ephemeral"},
+		},
+	}
+	return systemBlocks, apiMessages
 }
 
 // convertTools converts shuttle tools to Anthropic format.
 // Tool names are sanitized to replace colons with underscores for provider compatibility.
-func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
-	var apiTools []Tool
+// The last tool in the list is marked with cache_control: ephemeral so the entire tool
+// list is cached. For Anthropic, cached tool tokens don't count against ITPM rate limits.
+func (c *Client) convertTools(tools []shuttle.Tool) []CacheableTool {
+	var apiTools []CacheableTool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
@@ -295,7 +360,7 @@ func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 			c.toolNameMap[sanitizedName] = originalName
 		}
 
-		apiTool := Tool{
+		apiTool := CacheableTool{
 			Name:        sanitizedName,
 			Description: tool.Description(),
 		}
@@ -311,6 +376,12 @@ func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 		}
 
 		apiTools = append(apiTools, apiTool)
+	}
+
+	// Mark the last tool with cache_control to cache the entire tool list.
+	// Anthropic caches everything up to and including the marked breakpoint.
+	if len(apiTools) > 0 {
+		apiTools[len(apiTools)-1].CacheControl = &CacheControl{Type: "ephemeral"}
 	}
 
 	return apiTools
@@ -355,10 +426,12 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			CostUSD:      c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens),
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			TotalTokens:              resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			CostUSD:                  c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 		},
 		Metadata: map[string]interface{}{
 			"model":       resp.Model,
@@ -385,14 +458,19 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 }
 
 // calculateCost estimates the cost in USD based on token usage.
-// Pricing as of 2024-11 for Claude 3.5 Sonnet.
-func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
-	// Claude 3.5 Sonnet pricing (2024-11):
+// Pricing as of 2025-01 for Claude claude-sonnet-4-6.
+// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
+	// Claude claude-sonnet-4-6 pricing (2025-01):
 	// Input: $3 per million tokens
 	// Output: $15 per million tokens
+	// Cache write (creation): $3.75 per million tokens (1.25x input)
+	// Cache read: $0.30 per million tokens (0.10x input)
 	inputCost := float64(inputTokens) * 3.0 / 1_000_000
 	outputCost := float64(outputTokens) * 15.0 / 1_000_000
-	return inputCost + outputCost
+	cacheWriteCost := float64(cacheCreationTokens) * 3.75 / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * 0.30 / 1_000_000
+	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
 // ChatStream implements token-by-token streaming for Anthropic.
@@ -414,8 +492,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Stream:      true, // Enable streaming
 	}
 
-	// Add system prompt if present (Anthropic Messages API requires separate system field)
-	if systemPrompt != "" {
+	// Add system prompt blocks if present (Anthropic Messages API requires separate system field)
+	if len(systemPrompt) > 0 {
 		req.System = systemPrompt
 	}
 
@@ -429,30 +507,51 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// 2. Send request with rate limiting if enabled.
+	// The lambda creates a fresh HTTP request on each attempt so the request body
+	// can be re-read on a 429 retry. A 429 response is converted to an error so
+	// the rate limiter's exponential-backoff retry logic fires automatically.
+	buildStreamReq := func(ctx context.Context) (*http.Request, error) {
+		r, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("x-api-key", c.apiKey)
+		r.Header.Set("anthropic-version", "2023-06-01")
+		// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
+		r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+		return r, nil
 	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	// 2. Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
 		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
+			req, err := buildStreamReq(ctx)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			// Convert 429 to a retryable error so the rate limiter backs off and retries.
+			if resp.StatusCode == http.StatusTooManyRequests {
+				respBody, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			}
+			return resp, nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		req, err := buildStreamReq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		httpResp, err = c.httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
@@ -550,6 +649,14 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				delete(toolInputBuffers, event.Index)
 				delete(toolCallIndex, event.Index)
 
+			case "message_start":
+				// Initial event: capture input tokens and cache token counts
+				if event.Message != nil {
+					usage.InputTokens = event.Message.Usage.InputTokens
+					usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
+					usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
+				}
+
 			case "message_delta":
 				if event.Delta != nil && event.Delta.StopReason != "" {
 					stopReason = event.Delta.StopReason
@@ -559,10 +666,20 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 
 			case "message_stop":
-				// Final event
+				// Final event — usage may be updated here with cache tokens too
 				if event.Usage != nil {
-					usage.InputTokens = event.Usage.InputTokens
-					usage.OutputTokens = event.Usage.OutputTokens
+					if event.Usage.InputTokens > 0 {
+						usage.InputTokens = event.Usage.InputTokens
+					}
+					if event.Usage.OutputTokens > 0 {
+						usage.OutputTokens = event.Usage.OutputTokens
+					}
+					if event.Usage.CacheReadInputTokens > 0 {
+						usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+					}
+					if event.Usage.CacheCreationInputTokens > 0 {
+						usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+					}
 				}
 			}
 
@@ -584,7 +701,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		usage.OutputTokens = tokenCount
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -613,30 +730,51 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// Send request with rate limiting if enabled.
+	// The lambda creates a fresh HTTP request on each attempt so the request body
+	// can be re-read on a 429 retry. A 429 response is converted to an error so
+	// the rate limiter's exponential-backoff retry logic fires automatically.
+	buildAPIReq := func(ctx context.Context) (*http.Request, error) {
+		r, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("x-api-key", c.apiKey)
+		r.Header.Set("anthropic-version", "2023-06-01")
+		// Enable prompt caching beta — cached tokens don't count against Anthropic's ITPM rate limit
+		r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+		return r, nil
 	}
-
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	// Send request with rate limiting if enabled
 	var httpResp *http.Response
 	if c.rateLimiter != nil {
 		result, err := c.rateLimiter.Do(ctx, func(ctx context.Context) (interface{}, error) {
-			return c.httpClient.Do(httpReq)
+			req, err := buildAPIReq(ctx)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			// Convert 429 to a retryable error so the rate limiter backs off and retries.
+			if resp.StatusCode == http.StatusTooManyRequests {
+				respBody, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("API error (status 429): %s", string(respBody))
+			}
+			return resp, nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
-		var err error
-		httpResp, err = c.httpClient.Do(httpReq)
+		req, err := buildAPIReq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		httpResp, err = c.httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}

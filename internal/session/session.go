@@ -30,6 +30,40 @@ type Session struct {
 	PromptTokens     int
 	Cost             float64
 	Todos            []Todo
+	Model            string // Model used in this session (e.g., "claude-sonnet-4-6")
+	Provider         string // Provider used in this session (e.g., "anthropic")
+}
+
+// Merge returns a copy of s with non-zero fields from update applied.
+// This preserves existing fields like Title and Todos when receiving
+// partial updates (e.g., cost/token updates from the coordinator).
+func (s Session) Merge(update Session) Session {
+	result := s
+	if update.CompletionTokens > 0 {
+		result.CompletionTokens = update.CompletionTokens
+	}
+	if update.PromptTokens > 0 {
+		result.PromptTokens = update.PromptTokens
+	}
+	if update.Cost > 0 {
+		result.Cost = update.Cost
+	}
+	if update.Model != "" {
+		result.Model = update.Model
+	}
+	if update.Provider != "" {
+		result.Provider = update.Provider
+	}
+	if update.Title != "" {
+		result.Title = update.Title
+	}
+	if update.UpdatedAt > 0 {
+		result.UpdatedAt = update.UpdatedAt
+	}
+	if len(update.Todos) > 0 {
+		result.Todos = update.Todos
+	}
+	return result
 }
 
 // Todo represents a todo item.
