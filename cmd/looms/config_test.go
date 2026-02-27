@@ -14,6 +14,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -560,6 +562,80 @@ func TestInsecureAdmin_ConfigField(t *testing.T) {
 			assert.Equal(t, tt.expected, tt.config.InsecureAdmin)
 		})
 	}
+}
+
+func TestEnvVar_StoragePostgresDSN(t *testing.T) {
+	// Verify that LOOM_STORAGE_POSTGRES_DSN env var overrides storage.postgres.dsn.
+	// This tests the SetEnvKeyReplacer(".", "_") mapping for nested config keys.
+	viper.Reset()
+
+	// Write a minimal config that sets storage.backend=postgres with empty DSN.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "looms.yaml")
+	err := os.WriteFile(cfgPath, []byte(`
+server:
+  port: 60051
+storage:
+  backend: postgres
+  postgres:
+    dsn: ""
+`), 0o644)
+	require.NoError(t, err)
+
+	const testDSN = "postgresql://user:pass@host:5432/db?sslmode=require"
+	t.Setenv("LOOM_STORAGE_POSTGRES_DSN", testDSN)
+
+	cfg, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, testDSN, cfg.Storage.Postgres.DSN,
+		"LOOM_STORAGE_POSTGRES_DSN should override storage.postgres.dsn")
+}
+
+func TestEnvVar_StoragePostgresDSN_NoYAMLKey(t *testing.T) {
+	// Verify that LOOM_STORAGE_POSTGRES_DSN works even when the YAML
+	// does not contain a dsn key at all (relies on SetDefault).
+	viper.Reset()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "looms.yaml")
+	err := os.WriteFile(cfgPath, []byte(`
+server:
+  port: 60051
+storage:
+  backend: postgres
+`), 0o644)
+	require.NoError(t, err)
+
+	const testDSN = "postgresql://user:pass@host:5432/db?sslmode=require"
+	t.Setenv("LOOM_STORAGE_POSTGRES_DSN", testDSN)
+
+	cfg, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, testDSN, cfg.Storage.Postgres.DSN,
+		"LOOM_STORAGE_POSTGRES_DSN should work even without dsn key in YAML")
+}
+
+func TestEnvVar_NestedKeys(t *testing.T) {
+	// Verify SetEnvKeyReplacer works for other nested keys too.
+	viper.Reset()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "looms.yaml")
+	err := os.WriteFile(cfgPath, []byte(`
+server:
+  port: 60051
+`), 0o644)
+	require.NoError(t, err)
+
+	t.Setenv("LOOM_SERVER_PORT", "9999")
+	t.Setenv("LOOM_LOGGING_LEVEL", "debug")
+
+	cfg, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 9999, cfg.Server.Port,
+		"LOOM_SERVER_PORT should override server.port")
+	assert.Equal(t, "debug", cfg.Logging.Level,
+		"LOOM_LOGGING_LEVEL should override logging.level")
 }
 
 func TestGenerateExampleConfig_ContainsInsecureAdmin(t *testing.T) {

@@ -1162,6 +1162,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Load backend from backend_path if specified
 				var backend fabric.ExecutionBackend
 				if backendPath, ok := cfg.Metadata["backend_path"]; ok && backendPath != "" {
+					// Resolve relative paths against $LOOM_DATA_DIR
+					if !filepath.IsAbs(backendPath) {
+						backendPath = filepath.Join(configDir, backendPath)
+					}
 					logger.Info("    Backend path", zap.String("path", backendPath))
 					backend, err = fabricfactory.LoadFromYAML(backendPath)
 					if err != nil {
@@ -2191,6 +2195,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Load backend from backend_path if specified
 			var backend fabric.ExecutionBackend
 			if backendPath, ok := agentConfig.Metadata["backend_path"]; ok && backendPath != "" {
+				// Resolve relative paths against $LOOM_DATA_DIR
+				if !filepath.IsAbs(backendPath) {
+					backendPath = filepath.Join(configDir, backendPath)
+				}
 				logger.Info("  Loading backend", zap.String("path", backendPath))
 				loadedBackend, err := fabricfactory.LoadFromYAML(backendPath)
 				if err != nil {

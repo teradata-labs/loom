@@ -26,6 +26,56 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// PoolerMode specifies the Supabase connection pooler mode
+type PoolerMode int32
+
+const (
+	PoolerMode_POOLER_MODE_UNSPECIFIED PoolerMode = 0
+	PoolerMode_POOLER_MODE_SESSION     PoolerMode = 1
+	PoolerMode_POOLER_MODE_TRANSACTION PoolerMode = 2
+)
+
+// Enum value maps for PoolerMode.
+var (
+	PoolerMode_name = map[int32]string{
+		0: "POOLER_MODE_UNSPECIFIED",
+		1: "POOLER_MODE_SESSION",
+		2: "POOLER_MODE_TRANSACTION",
+	}
+	PoolerMode_value = map[string]int32{
+		"POOLER_MODE_UNSPECIFIED": 0,
+		"POOLER_MODE_SESSION":     1,
+		"POOLER_MODE_TRANSACTION": 2,
+	}
+)
+
+func (x PoolerMode) Enum() *PoolerMode {
+	p := new(PoolerMode)
+	*p = x
+	return p
+}
+
+func (x PoolerMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PoolerMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_backend_proto_enumTypes[0].Descriptor()
+}
+
+func (PoolerMode) Type() protoreflect.EnumType {
+	return &file_loom_v1_backend_proto_enumTypes[0]
+}
+
+func (x PoolerMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PoolerMode.Descriptor instead.
+func (PoolerMode) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_backend_proto_rawDescGZIP(), []int{0}
+}
+
 // BackendConfig represents a pluggable execution backend
 type BackendConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -43,6 +93,7 @@ type BackendConfig struct {
 	//	*BackendConfig_Graphql
 	//	*BackendConfig_Grpc
 	//	*BackendConfig_Mcp
+	//	*BackendConfig_Supabase
 	Connection isBackendConfig_Connection `protobuf_oneof:"connection"`
 	// Schema discovery (for SQL backends)
 	SchemaDiscovery *SchemaDiscoveryConfig `protobuf:"bytes,8,opt,name=schema_discovery,json=schemaDiscovery,proto3" json:"schema_discovery,omitempty"`
@@ -157,6 +208,15 @@ func (x *BackendConfig) GetMcp() *MCPConnection {
 	return nil
 }
 
+func (x *BackendConfig) GetSupabase() *SupabaseConnection {
+	if x != nil {
+		if x, ok := x.Connection.(*BackendConfig_Supabase); ok {
+			return x.Supabase
+		}
+	}
+	return nil
+}
+
 func (x *BackendConfig) GetSchemaDiscovery() *SchemaDiscoveryConfig {
 	if x != nil {
 		return x.SchemaDiscovery
@@ -202,6 +262,10 @@ type BackendConfig_Mcp struct {
 	Mcp *MCPConnection `protobuf:"bytes,11,opt,name=mcp,proto3,oneof"`
 }
 
+type BackendConfig_Supabase struct {
+	Supabase *SupabaseConnection `protobuf:"bytes,12,opt,name=supabase,proto3,oneof"`
+}
+
 func (*BackendConfig_Database) isBackendConfig_Connection() {}
 
 func (*BackendConfig_Rest) isBackendConfig_Connection() {}
@@ -211,6 +275,8 @@ func (*BackendConfig_Graphql) isBackendConfig_Connection() {}
 func (*BackendConfig_Grpc) isBackendConfig_Connection() {}
 
 func (*BackendConfig_Mcp) isBackendConfig_Connection() {}
+
+func (*BackendConfig_Supabase) isBackendConfig_Connection() {}
 
 type DatabaseConnection struct {
 	state                    protoimpl.MessageState `protogen:"open.v1"`
@@ -624,6 +690,127 @@ func (x *MCPConnection) GetEnableResumption() bool {
 	return false
 }
 
+// SupabaseConnection configures a connection to a Supabase project.
+// Fields marked SENSITIVE should never be logged or exposed in error messages.
+type SupabaseConnection struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Supabase project reference (e.g., "abcdefghijklmnop")
+	ProjectRef string `protobuf:"bytes,1,opt,name=project_ref,json=projectRef,proto3" json:"project_ref,omitempty"`
+	// SENSITIVE: Supabase API key (anon or service_role). Use env vars in config.
+	ApiKey string `protobuf:"bytes,2,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
+	// SENSITIVE: Database password for direct connection. Use env vars in config.
+	DatabasePassword string `protobuf:"bytes,3,opt,name=database_password,json=databasePassword,proto3" json:"database_password,omitempty"`
+	// Pooler mode: session (port 5432) or transaction (port 6543)
+	PoolerMode PoolerMode `protobuf:"varint,4,opt,name=pooler_mode,json=poolerMode,proto3,enum=loom.v1.PoolerMode" json:"pooler_mode,omitempty"`
+	// Enable Row Level Security context injection
+	EnableRls bool `protobuf:"varint,5,opt,name=enable_rls,json=enableRls,proto3" json:"enable_rls,omitempty"`
+	// Database name (default: "postgres")
+	Database string `protobuf:"bytes,6,opt,name=database,proto3" json:"database,omitempty"`
+	// Maximum pool size (default: 10)
+	MaxPoolSize int32 `protobuf:"varint,7,opt,name=max_pool_size,json=maxPoolSize,proto3" json:"max_pool_size,omitempty"`
+	// Supabase region (e.g., "us-east-1")
+	Region string `protobuf:"bytes,8,opt,name=region,proto3" json:"region,omitempty"`
+	// Pooler hostname (e.g., "aws-1-us-east-1.pooler.supabase.com").
+	// Found in Project Settings > Database > Connection string.
+	// If empty, auto-constructed as "aws-0-{region}.pooler.supabase.com".
+	PoolerHost    string `protobuf:"bytes,9,opt,name=pooler_host,json=poolerHost,proto3" json:"pooler_host,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SupabaseConnection) Reset() {
+	*x = SupabaseConnection{}
+	mi := &file_loom_v1_backend_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SupabaseConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SupabaseConnection) ProtoMessage() {}
+
+func (x *SupabaseConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_backend_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SupabaseConnection.ProtoReflect.Descriptor instead.
+func (*SupabaseConnection) Descriptor() ([]byte, []int) {
+	return file_loom_v1_backend_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SupabaseConnection) GetProjectRef() string {
+	if x != nil {
+		return x.ProjectRef
+	}
+	return ""
+}
+
+func (x *SupabaseConnection) GetApiKey() string {
+	if x != nil {
+		return x.ApiKey
+	}
+	return ""
+}
+
+func (x *SupabaseConnection) GetDatabasePassword() string {
+	if x != nil {
+		return x.DatabasePassword
+	}
+	return ""
+}
+
+func (x *SupabaseConnection) GetPoolerMode() PoolerMode {
+	if x != nil {
+		return x.PoolerMode
+	}
+	return PoolerMode_POOLER_MODE_UNSPECIFIED
+}
+
+func (x *SupabaseConnection) GetEnableRls() bool {
+	if x != nil {
+		return x.EnableRls
+	}
+	return false
+}
+
+func (x *SupabaseConnection) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *SupabaseConnection) GetMaxPoolSize() int32 {
+	if x != nil {
+		return x.MaxPoolSize
+	}
+	return 0
+}
+
+func (x *SupabaseConnection) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *SupabaseConnection) GetPoolerHost() string {
+	if x != nil {
+		return x.PoolerHost
+	}
+	return ""
+}
+
 type AuthConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`                               // "bearer", "basic", "apikey", "oauth2"
@@ -637,7 +824,7 @@ type AuthConfig struct {
 
 func (x *AuthConfig) Reset() {
 	*x = AuthConfig{}
-	mi := &file_loom_v1_backend_proto_msgTypes[6]
+	mi := &file_loom_v1_backend_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -649,7 +836,7 @@ func (x *AuthConfig) String() string {
 func (*AuthConfig) ProtoMessage() {}
 
 func (x *AuthConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_backend_proto_msgTypes[6]
+	mi := &file_loom_v1_backend_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -662,7 +849,7 @@ func (x *AuthConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthConfig.ProtoReflect.Descriptor instead.
 func (*AuthConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_backend_proto_rawDescGZIP(), []int{6}
+	return file_loom_v1_backend_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *AuthConfig) GetType() string {
@@ -712,7 +899,7 @@ type SchemaDiscoveryConfig struct {
 
 func (x *SchemaDiscoveryConfig) Reset() {
 	*x = SchemaDiscoveryConfig{}
-	mi := &file_loom_v1_backend_proto_msgTypes[7]
+	mi := &file_loom_v1_backend_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -724,7 +911,7 @@ func (x *SchemaDiscoveryConfig) String() string {
 func (*SchemaDiscoveryConfig) ProtoMessage() {}
 
 func (x *SchemaDiscoveryConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_backend_proto_msgTypes[7]
+	mi := &file_loom_v1_backend_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -737,7 +924,7 @@ func (x *SchemaDiscoveryConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemaDiscoveryConfig.ProtoReflect.Descriptor instead.
 func (*SchemaDiscoveryConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_backend_proto_rawDescGZIP(), []int{7}
+	return file_loom_v1_backend_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SchemaDiscoveryConfig) GetEnabled() bool {
@@ -778,7 +965,7 @@ type ToolGenerationConfig struct {
 
 func (x *ToolGenerationConfig) Reset() {
 	*x = ToolGenerationConfig{}
-	mi := &file_loom_v1_backend_proto_msgTypes[8]
+	mi := &file_loom_v1_backend_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -790,7 +977,7 @@ func (x *ToolGenerationConfig) String() string {
 func (*ToolGenerationConfig) ProtoMessage() {}
 
 func (x *ToolGenerationConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_backend_proto_msgTypes[8]
+	mi := &file_loom_v1_backend_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,7 +990,7 @@ func (x *ToolGenerationConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolGenerationConfig.ProtoReflect.Descriptor instead.
 func (*ToolGenerationConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_backend_proto_rawDescGZIP(), []int{8}
+	return file_loom_v1_backend_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ToolGenerationConfig) GetTools() []string {
@@ -832,7 +1019,7 @@ type HealthCheckConfig struct {
 
 func (x *HealthCheckConfig) Reset() {
 	*x = HealthCheckConfig{}
-	mi := &file_loom_v1_backend_proto_msgTypes[9]
+	mi := &file_loom_v1_backend_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -844,7 +1031,7 @@ func (x *HealthCheckConfig) String() string {
 func (*HealthCheckConfig) ProtoMessage() {}
 
 func (x *HealthCheckConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_backend_proto_msgTypes[9]
+	mi := &file_loom_v1_backend_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -857,7 +1044,7 @@ func (x *HealthCheckConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckConfig.ProtoReflect.Descriptor instead.
 func (*HealthCheckConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_backend_proto_rawDescGZIP(), []int{9}
+	return file_loom_v1_backend_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *HealthCheckConfig) GetEnabled() bool {
@@ -892,7 +1079,7 @@ var File_loom_v1_backend_proto protoreflect.FileDescriptor
 
 const file_loom_v1_backend_proto_rawDesc = "" +
 	"\n" +
-	"\x15loom/v1/backend.proto\x12\aloom.v1\"\xb6\x04\n" +
+	"\x15loom/v1/backend.proto\x12\aloom.v1\"\xf1\x04\n" +
 	"\rBackendConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x12\n" +
@@ -901,7 +1088,8 @@ const file_loom_v1_backend_proto_rawDesc = "" +
 	"\x04rest\x18\x05 \x01(\v2\x17.loom.v1.RestConnectionH\x00R\x04rest\x126\n" +
 	"\agraphql\x18\x06 \x01(\v2\x1a.loom.v1.GraphQLConnectionH\x00R\agraphql\x12-\n" +
 	"\x04grpc\x18\a \x01(\v2\x17.loom.v1.GRPCConnectionH\x00R\x04grpc\x12*\n" +
-	"\x03mcp\x18\v \x01(\v2\x16.loom.v1.MCPConnectionH\x00R\x03mcp\x12I\n" +
+	"\x03mcp\x18\v \x01(\v2\x16.loom.v1.MCPConnectionH\x00R\x03mcp\x129\n" +
+	"\bsupabase\x18\f \x01(\v2\x1b.loom.v1.SupabaseConnectionH\x00R\bsupabase\x12I\n" +
 	"\x10schema_discovery\x18\b \x01(\v2\x1e.loom.v1.SchemaDiscoveryConfigR\x0fschemaDiscovery\x12F\n" +
 	"\x0ftool_generation\x18\t \x01(\v2\x1d.loom.v1.ToolGenerationConfigR\x0etoolGeneration\x12=\n" +
 	"\fhealth_check\x18\n" +
@@ -955,7 +1143,21 @@ const file_loom_v1_backend_proto_rawDesc = "" +
 	"\x11enable_resumption\x18\b \x01(\bR\x10enableResumption\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8f\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc9\x02\n" +
+	"\x12SupabaseConnection\x12\x1f\n" +
+	"\vproject_ref\x18\x01 \x01(\tR\n" +
+	"projectRef\x12\x17\n" +
+	"\aapi_key\x18\x02 \x01(\tR\x06apiKey\x12+\n" +
+	"\x11database_password\x18\x03 \x01(\tR\x10databasePassword\x124\n" +
+	"\vpooler_mode\x18\x04 \x01(\x0e2\x13.loom.v1.PoolerModeR\n" +
+	"poolerMode\x12\x1d\n" +
+	"\n" +
+	"enable_rls\x18\x05 \x01(\bR\tenableRls\x12\x1a\n" +
+	"\bdatabase\x18\x06 \x01(\tR\bdatabase\x12\"\n" +
+	"\rmax_pool_size\x18\a \x01(\x05R\vmaxPoolSize\x12\x16\n" +
+	"\x06region\x18\b \x01(\tR\x06region\x12\x1f\n" +
+	"\vpooler_host\x18\t \x01(\tR\n" +
+	"poolerHost\"\x8f\x01\n" +
 	"\n" +
 	"AuthConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x14\n" +
@@ -977,7 +1179,12 @@ const file_loom_v1_backend_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12)\n" +
 	"\x10interval_seconds\x18\x02 \x01(\x05R\x0fintervalSeconds\x12'\n" +
 	"\x0ftimeout_seconds\x18\x03 \x01(\x05R\x0etimeoutSeconds\x12\x14\n" +
-	"\x05query\x18\x04 \x01(\tR\x05queryB5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\x05query\x18\x04 \x01(\tR\x05query*_\n" +
+	"\n" +
+	"PoolerMode\x12\x1b\n" +
+	"\x17POOLER_MODE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13POOLER_MODE_SESSION\x10\x01\x12\x1b\n" +
+	"\x17POOLER_MODE_TRANSACTION\x10\x02B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_backend_proto_rawDescOnce sync.Once
@@ -991,43 +1198,48 @@ func file_loom_v1_backend_proto_rawDescGZIP() []byte {
 	return file_loom_v1_backend_proto_rawDescData
 }
 
-var file_loom_v1_backend_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_loom_v1_backend_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_loom_v1_backend_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_loom_v1_backend_proto_goTypes = []any{
-	(*BackendConfig)(nil),         // 0: loom.v1.BackendConfig
-	(*DatabaseConnection)(nil),    // 1: loom.v1.DatabaseConnection
-	(*RestConnection)(nil),        // 2: loom.v1.RestConnection
-	(*GraphQLConnection)(nil),     // 3: loom.v1.GraphQLConnection
-	(*GRPCConnection)(nil),        // 4: loom.v1.GRPCConnection
-	(*MCPConnection)(nil),         // 5: loom.v1.MCPConnection
-	(*AuthConfig)(nil),            // 6: loom.v1.AuthConfig
-	(*SchemaDiscoveryConfig)(nil), // 7: loom.v1.SchemaDiscoveryConfig
-	(*ToolGenerationConfig)(nil),  // 8: loom.v1.ToolGenerationConfig
-	(*HealthCheckConfig)(nil),     // 9: loom.v1.HealthCheckConfig
-	nil,                           // 10: loom.v1.RestConnection.HeadersEntry
-	nil,                           // 11: loom.v1.GraphQLConnection.HeadersEntry
-	nil,                           // 12: loom.v1.GRPCConnection.MetadataEntry
-	nil,                           // 13: loom.v1.MCPConnection.EnvEntry
+	(PoolerMode)(0),               // 0: loom.v1.PoolerMode
+	(*BackendConfig)(nil),         // 1: loom.v1.BackendConfig
+	(*DatabaseConnection)(nil),    // 2: loom.v1.DatabaseConnection
+	(*RestConnection)(nil),        // 3: loom.v1.RestConnection
+	(*GraphQLConnection)(nil),     // 4: loom.v1.GraphQLConnection
+	(*GRPCConnection)(nil),        // 5: loom.v1.GRPCConnection
+	(*MCPConnection)(nil),         // 6: loom.v1.MCPConnection
+	(*SupabaseConnection)(nil),    // 7: loom.v1.SupabaseConnection
+	(*AuthConfig)(nil),            // 8: loom.v1.AuthConfig
+	(*SchemaDiscoveryConfig)(nil), // 9: loom.v1.SchemaDiscoveryConfig
+	(*ToolGenerationConfig)(nil),  // 10: loom.v1.ToolGenerationConfig
+	(*HealthCheckConfig)(nil),     // 11: loom.v1.HealthCheckConfig
+	nil,                           // 12: loom.v1.RestConnection.HeadersEntry
+	nil,                           // 13: loom.v1.GraphQLConnection.HeadersEntry
+	nil,                           // 14: loom.v1.GRPCConnection.MetadataEntry
+	nil,                           // 15: loom.v1.MCPConnection.EnvEntry
 }
 var file_loom_v1_backend_proto_depIdxs = []int32{
-	1,  // 0: loom.v1.BackendConfig.database:type_name -> loom.v1.DatabaseConnection
-	2,  // 1: loom.v1.BackendConfig.rest:type_name -> loom.v1.RestConnection
-	3,  // 2: loom.v1.BackendConfig.graphql:type_name -> loom.v1.GraphQLConnection
-	4,  // 3: loom.v1.BackendConfig.grpc:type_name -> loom.v1.GRPCConnection
-	5,  // 4: loom.v1.BackendConfig.mcp:type_name -> loom.v1.MCPConnection
-	7,  // 5: loom.v1.BackendConfig.schema_discovery:type_name -> loom.v1.SchemaDiscoveryConfig
-	8,  // 6: loom.v1.BackendConfig.tool_generation:type_name -> loom.v1.ToolGenerationConfig
-	9,  // 7: loom.v1.BackendConfig.health_check:type_name -> loom.v1.HealthCheckConfig
-	6,  // 8: loom.v1.RestConnection.auth:type_name -> loom.v1.AuthConfig
-	10, // 9: loom.v1.RestConnection.headers:type_name -> loom.v1.RestConnection.HeadersEntry
-	6,  // 10: loom.v1.GraphQLConnection.auth:type_name -> loom.v1.AuthConfig
-	11, // 11: loom.v1.GraphQLConnection.headers:type_name -> loom.v1.GraphQLConnection.HeadersEntry
-	12, // 12: loom.v1.GRPCConnection.metadata:type_name -> loom.v1.GRPCConnection.MetadataEntry
-	13, // 13: loom.v1.MCPConnection.env:type_name -> loom.v1.MCPConnection.EnvEntry
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	2,  // 0: loom.v1.BackendConfig.database:type_name -> loom.v1.DatabaseConnection
+	3,  // 1: loom.v1.BackendConfig.rest:type_name -> loom.v1.RestConnection
+	4,  // 2: loom.v1.BackendConfig.graphql:type_name -> loom.v1.GraphQLConnection
+	5,  // 3: loom.v1.BackendConfig.grpc:type_name -> loom.v1.GRPCConnection
+	6,  // 4: loom.v1.BackendConfig.mcp:type_name -> loom.v1.MCPConnection
+	7,  // 5: loom.v1.BackendConfig.supabase:type_name -> loom.v1.SupabaseConnection
+	9,  // 6: loom.v1.BackendConfig.schema_discovery:type_name -> loom.v1.SchemaDiscoveryConfig
+	10, // 7: loom.v1.BackendConfig.tool_generation:type_name -> loom.v1.ToolGenerationConfig
+	11, // 8: loom.v1.BackendConfig.health_check:type_name -> loom.v1.HealthCheckConfig
+	8,  // 9: loom.v1.RestConnection.auth:type_name -> loom.v1.AuthConfig
+	12, // 10: loom.v1.RestConnection.headers:type_name -> loom.v1.RestConnection.HeadersEntry
+	8,  // 11: loom.v1.GraphQLConnection.auth:type_name -> loom.v1.AuthConfig
+	13, // 12: loom.v1.GraphQLConnection.headers:type_name -> loom.v1.GraphQLConnection.HeadersEntry
+	14, // 13: loom.v1.GRPCConnection.metadata:type_name -> loom.v1.GRPCConnection.MetadataEntry
+	15, // 14: loom.v1.MCPConnection.env:type_name -> loom.v1.MCPConnection.EnvEntry
+	0,  // 15: loom.v1.SupabaseConnection.pooler_mode:type_name -> loom.v1.PoolerMode
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_backend_proto_init() }
@@ -1041,19 +1253,21 @@ func file_loom_v1_backend_proto_init() {
 		(*BackendConfig_Graphql)(nil),
 		(*BackendConfig_Grpc)(nil),
 		(*BackendConfig_Mcp)(nil),
+		(*BackendConfig_Supabase)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_backend_proto_rawDesc), len(file_loom_v1_backend_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   14,
+			NumEnums:      1,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_loom_v1_backend_proto_goTypes,
 		DependencyIndexes: file_loom_v1_backend_proto_depIdxs,
+		EnumInfos:         file_loom_v1_backend_proto_enumTypes,
 		MessageInfos:      file_loom_v1_backend_proto_msgTypes,
 	}.Build()
 	File_loom_v1_backend_proto = out.File
