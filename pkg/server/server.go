@@ -55,6 +55,12 @@ type Server struct {
 	providerPool       map[string]agent.LLMProvider // name → provider
 	activeProviderName string                       // currently active pool provider
 	evalStore          *evals.Store                 // optional; nil means no persistence
+	judgeServer        *JudgeServer                 // optional; nil means use hardcoded judge
+}
+
+// SetJudgeServer wires an in-memory JudgeServer so that ABTest can resolve req.JudgeId.
+func (s *Server) SetJudgeServer(js *JudgeServer) {
+	s.judgeServer = js
 }
 
 // SetEvalStore configures the evaluation store for persisting ABTest results.
@@ -781,6 +787,16 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 	judgeConfig := &loomv1.JudgeConfig{
 		Name:     "ab-test-scorer",
 		Criteria: "response quality, accuracy, completeness",
+	}
+	if req.JudgeId != "" {
+		if s.judgeServer == nil {
+			return status.Errorf(codes.FailedPrecondition, "judge server not initialized; cannot resolve judge_id %q", req.JudgeId)
+		}
+		cfg, cfgErr := s.judgeServer.GetJudgeConfig(req.JudgeId)
+		if cfgErr != nil {
+			return status.Errorf(codes.NotFound, "judge %q not found: %v", req.JudgeId, cfgErr)
+		}
+		judgeConfig = cfg
 	}
 	judge, err := judges.NewLLMJudge(judgeLLM, judgeConfig, observability.NewNoOpTracer())
 	if err != nil {

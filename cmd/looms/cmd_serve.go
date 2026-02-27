@@ -160,6 +160,11 @@ type evalStoreSetter interface {
 	SetEvalStore(store *evals.Store)
 }
 
+// judgeServerSetter is an optional interface for wiring the JudgeServer into the main service.
+type judgeServerSetter interface {
+	SetJudgeServer(js *server.JudgeServer)
+}
+
 // buildProviderPool constructs a named provider pool from the server configuration.
 // Each entry in cfg.Providers is created by instantiating a per-entry ProviderFactory
 // buildRateLimiterConfig converts the YAML-sourced LLMRateLimitConfig into the
@@ -1572,6 +1577,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
+	// Register JudgeService for multi-judge LLM evaluation capabilities.
+	judgeServer := server.NewJudgeServer(tracer, logger)
+	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
+	logger.Info("Judge service registered")
+
 	// Register AdminService if the storage backend supports admin operations (PostgreSQL only).
 	// SQLite backends do not provide multi-tenant admin and are silently skipped.
 	if adminProvider, ok := storageBackend.(backend.AdminStorageProvider); ok {
@@ -1649,6 +1659,14 @@ func runServe(cmd *cobra.Command, args []string) {
 				ess.SetEvalStore(store)
 				logger.Info("Eval store configured for ABTest persistence", zap.String("path", evalDBPath))
 			}
+		}
+		// Wire judgeServer into loomService so ABTest can resolve judge_id.
+		// Provide the active pool provider as the fallback LLM for evaluations.
+		activeProvider := providerPool[config.ActiveProvider]
+		judgeServer.SetProviderPool(providerPool, activeProvider)
+		if jss, ok := interface{}(loomService).(judgeServerSetter); ok {
+			jss.SetJudgeServer(judgeServer)
+			logger.Info("Judge server wired into loom service for ABTest judge_id resolution")
 		}
 	}
 

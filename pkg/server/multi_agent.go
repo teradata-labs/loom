@@ -135,6 +135,9 @@ type MultiAgentServer struct {
 	// singleServer is a Server wrapping the default agent and shared pool;
 	// ABTest and ListProviders delegate to it to avoid code duplication.
 	singleServer *Server
+
+	// judgeServer holds the registered judge configurations for ABTest judge_id resolution.
+	judgeServer *JudgeServer
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -2869,6 +2872,9 @@ func (s *MultiAgentServer) SetProviderPool(pool map[string]agent.LLMProvider, ac
 	// Build or update the delegate single-agent server.
 	if s.singleServer == nil {
 		s.singleServer = NewServer(defaultAg, s.sessionStore)
+		if s.judgeServer != nil {
+			s.singleServer.SetJudgeServer(s.judgeServer)
+		}
 	}
 	s.singleServer.SetProviderPool(pool, active)
 }
@@ -2885,8 +2891,22 @@ func (s *MultiAgentServer) SetEvalStore(store *evals.Store) {
 		// here because it is set in the constructor and never mutated after that.
 		defaultAg := s.agents[s.defaultAgentID]
 		s.singleServer = NewServer(defaultAg, s.sessionStore)
+		if s.judgeServer != nil {
+			s.singleServer.SetJudgeServer(s.judgeServer)
+		}
 	}
 	s.singleServer.SetEvalStore(store)
+}
+
+// SetJudgeServer wires the JudgeServer for ABTest judge_id resolution.
+// It propagates the judge server to singleServer if it has already been initialized.
+func (s *MultiAgentServer) SetJudgeServer(js *JudgeServer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.judgeServer = js
+	if s.singleServer != nil {
+		s.singleServer.SetJudgeServer(js)
+	}
 }
 
 // ListProviders lists named providers in the pool configured via SetProviderPool.
