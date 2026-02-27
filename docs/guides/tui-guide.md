@@ -309,11 +309,11 @@ Each agent gets a distinct color for message identification:
 Change LLM model mid-conversation without losing context:
 
 **Available Models** (17+):
-- **Anthropic**: Claude Sonnet 4.5/3.5, Opus 3.5
-- **OpenAI**: GPT-5, GPT-4o, GPT-4o-mini
-- **Anthropic Bedrock**: Claude models via AWS
+- **Anthropic**: Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5
+- **OpenAI**: GPT-5.2, GPT-4.1 Mini, o4-mini
+- **Anthropic Bedrock**: Claude 4.5 models via AWS
 - **Ollama** (local/free): Llama 3.1/3.2, Qwen 2.5, Gemma 2
-- **Google**: Gemini 2.0 Flash, Gemini 1.5 Pro
+- **Google**: Gemini 2.0 Flash, Gemini 2.5 Pro, Gemini 3.x (preview)
 - **Mistral**: Mistral Large, Mistral Small
 - **HuggingFace**: Various open models
 

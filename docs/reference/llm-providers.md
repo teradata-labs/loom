@@ -124,8 +124,8 @@ llm:
 | Model | Context | Input Cost | Output Cost | Best For |
 |-------|---------|------------|-------------|----------|
 | `claude-sonnet-4-5-20250929` | 200k | $3/1M tokens | $15/1M tokens | General tasks (recommended) |
-| `claude-opus-4-5-20251101` | 200k | $15/1M tokens | $75/1M tokens | Complex reasoning |
-| `claude-3-5-haiku-20241022` | 200k | $0.80/1M tokens | $4/1M tokens | Speed/cost optimization |
+| `claude-opus-4-6` | 200k | $15/1M tokens | $75/1M tokens | Complex reasoning |
+| `claude-haiku-4-5-20251001` | 200k | $0.80/1M tokens | $4/1M tokens | Speed/cost optimization |
 
 **Tool Calling**:
 - Native support via Anthropic's tool calling API
@@ -182,7 +182,7 @@ llm:
 | Model ID | Model | Region Availability |
 |----------|-------|---------------------|
 | `anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 | us-east-1, us-west-2 |
-| `anthropic.claude-3-5-sonnet-20241022-v2:0` | Claude 3.5 Sonnet | All AWS regions |
+| `anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 | All AWS regions |
 
 **Tool Calling**:
 - Native support (same as Anthropic direct)
@@ -600,7 +600,7 @@ llm:
   provider: vertex-ai
   vertex_project_id: my-project
   vertex_location: us-central1
-  vertex_model: claude-3-5-sonnet
+  vertex_model: claude-sonnet-4-5@20250929
   temperature: 1.0
   max_tokens: 4096
 ```
@@ -724,7 +724,7 @@ huggingface_model: meta-llama/Meta-Llama-3.1-70B-Instruct
 ```yaml
 vertex_project_id: your-gcp-project
 vertex_location: us-central1
-vertex_model: claude-3-5-sonnet@20241022
+vertex_model: claude-sonnet-4-5@20250929
 ```
 
 

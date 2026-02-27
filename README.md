@@ -162,11 +162,11 @@ Session-scoped file storage with SQLite FTS5 full-text search, automatic metadat
 
 | Provider | Models |
 |----------|--------|
-| **Anthropic** | Claude Sonnet 4.5, Claude 3.5 Sonnet, Claude 3 Opus |
+| **Anthropic** | Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5 |
 | **AWS Bedrock** | Claude Sonnet 4.5, Claude Opus 4.5, Claude Haiku 4.5 |
-| **OpenAI** | GPT-4o, GPT-4 Turbo, GPT-4o Mini |
+| **OpenAI** | GPT-5.2, GPT-4.1 Mini, o4-mini |
 | **Azure OpenAI** | GPT-4o |
-| **Google Gemini** | Gemini 2.0 Flash, Gemini 1.5 Pro |
+| **Google Gemini** | Gemini 2.0 Flash, Gemini 2.5 Pro, Gemini 3.x (preview) |
 | **Mistral** | Mistral Large, Mistral Small |
 | **Ollama** | Llama 3.1, Llama 3.2, Qwen 2.5 (+ any local model) |
 | **HuggingFace** | Llama 3.1 70B (+ Inference API models) |

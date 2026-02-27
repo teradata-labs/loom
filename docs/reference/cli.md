@@ -1907,7 +1907,7 @@ llm:
       model: claude-sonnet-4-5-20250929
     bedrock:
       region: us-east-1
-      model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
+      model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
 
 mcp:
   servers:
