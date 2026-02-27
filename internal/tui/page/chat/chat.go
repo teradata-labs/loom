@@ -1775,7 +1775,9 @@ func (p *chatPage) IsChatFocused() bool {
 	return p.focusedPane == PanelTypeChat
 }
 
-// fetchAgentsList fetches the list of available agents from the server
+// fetchAgentsList fetches the list of available agents from the server.
+// It also fetches the active provider name so the sidebar can display the
+// current model without depending on agent-level LLM config.
 func (p *chatPage) fetchAgentsList() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1799,9 +1801,19 @@ func (p *chatPage) fetchAgentsList() tea.Cmd {
 			}
 		}
 
+		// Also fetch the active provider name so the sidebar always shows the
+		// correct model even when agents don't have an explicit llm: config.
+		var activeProvider string
+		if client := p.app.Client(); client != nil {
+			if resp, err := client.ListProviders(ctx, &loomv1.ListProvidersRequest{}); err == nil {
+				activeProvider = resp.GetActiveProvider()
+			}
+		}
+
 		return sidebar.AgentsListMsg{
-			Agents:       agents,
-			CurrentAgent: p.currentAgentID,
+			Agents:         agents,
+			CurrentAgent:   p.currentAgentID,
+			ActiveProvider: activeProvider,
 		}
 	}
 }
