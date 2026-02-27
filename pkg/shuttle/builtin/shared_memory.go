@@ -39,19 +39,7 @@ func (t *SharedMemoryWriteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/communication.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *SharedMemoryWriteTool) Description() string {
-	return `Writes data to shared memory accessible by all agents in the workflow.
-
-Use this tool to:
-- Store comprehensive results for other agents to query
-- Share large datasets between workflow stages
-- Cache frequently accessed data
-- Maintain workflow state accessible to all agents
-
-Data is organized in namespaces:
-- GLOBAL: Accessible to all agents
-- WORKFLOW: Scoped to current workflow
-- SWARM: Scoped to agent swarm
-
+	return `Writes data to shared memory for workflow-wide access by key and namespace (global/workflow/swarm/agent).
 Use shared_memory_read to retrieve stored data.`
 }
 
@@ -61,7 +49,7 @@ func (t *SharedMemoryWriteTool) InputSchema() *shuttle.JSONSchema {
 		map[string]*shuttle.JSONSchema{
 			"key":   shuttle.NewStringSchema("Unique key to store data under (required)"),
 			"value": shuttle.NewStringSchema("Data to store (required, JSON string or plain text)"),
-			"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', 'swarm', or 'agent' (default: global). Use 'agent' for agent-private data.").
+			"namespace": shuttle.NewStringSchema("Memory namespace. Use 'agent' for private data.").
 				WithEnum("global", "workflow", "swarm", "agent").
 				WithDefault("global"),
 			"metadata": shuttle.NewObjectSchema(
@@ -227,19 +215,7 @@ func (t *SharedMemoryReadTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/communication.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *SharedMemoryReadTool) Description() string {
-	return `Reads data from shared memory written by other agents in the workflow.
-
-Use this tool to:
-- Access comprehensive results from previous stages
-- Read large datasets stored by other agents
-- Query workflow state
-- Retrieve cached data
-
-Data is organized in namespaces:
-- GLOBAL: Accessible to all agents
-- WORKFLOW: Scoped to current workflow
-- AGENT: Private to specific agents
-
+	return `Reads data from shared memory by key and namespace (global/workflow/swarm/agent).
 Use shared_memory_write to store data for others to read.`
 }
 
@@ -248,7 +224,7 @@ func (t *SharedMemoryReadTool) InputSchema() *shuttle.JSONSchema {
 		"Parameters for reading from shared memory",
 		map[string]*shuttle.JSONSchema{
 			"key": shuttle.NewStringSchema("Key to retrieve data from (required)"),
-			"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', 'swarm', or 'agent' (default: global). Use 'agent' for agent-private data.").
+			"namespace": shuttle.NewStringSchema("Memory namespace. Use 'agent' for private data.").
 				WithEnum("global", "workflow", "swarm", "agent").
 				WithDefault("global"),
 		},

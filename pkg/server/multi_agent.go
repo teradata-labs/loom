@@ -16,9 +16,11 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
@@ -128,6 +130,14 @@ type MultiAgentServer struct {
 	// Storage backend for health checks and migration RPCs
 	storageBackend     backend.StorageBackend
 	storageBackendType loomv1.StorageBackendType
+
+	// Provider pool for ABTest and ListProviders RPCs.
+	// singleServer is a Server wrapping the default agent and shared pool;
+	// ABTest and ListProviders delegate to it to avoid code duplication.
+	singleServer *Server
+
+	// judgeServer holds the registered judge configurations for ABTest judge_id resolution.
+	judgeServer *JudgeServer
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -737,11 +747,13 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		AgentId:   agentID,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
-				Provider:     ag.GetLLMProviderName(),
-				Model:        ag.GetLLMModel(),
-				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:      resp.Usage.CostUSD,
+				Provider:                 ag.GetLLMProviderName(),
+				Model:                    ag.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
@@ -922,11 +934,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		Cost: &loomv1.CostInfo{
 			TotalCostUsd: resp.Usage.CostUSD,
 			LlmCost: &loomv1.LLMCost{
-				Provider:     ag.GetLLMProviderName(),
-				Model:        ag.GetLLMModel(),
-				InputTokens:  types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens: types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:      resp.Usage.CostUSD,
+				Provider:                 ag.GetLLMProviderName(),
+				Model:                    ag.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
 			},
 		},
 	}
@@ -2659,25 +2673,130 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check.
+// GetHealth performs a health check by pinging each configured LLM provider across all agents.
+// Returns per-component status in the components map with keys like "agent-id.llm.role".
+// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
+	components := make(map[string]*loomv1.ComponentHealth)
+	overallHealthy := true
+
+	s.mu.RLock()
+	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
+	for id, ag := range s.agents {
+		agentsCopy[id] = ag
+	}
+	s.mu.RUnlock()
+
+	for agentID, ag := range agentsCopy {
+		roleLLMs := ag.GetAllRoleLLMs()
+		for role, llmProvider := range roleLLMs {
+			componentName := agentID + ".llm." + llmRoleToString(role)
+			start := time.Now()
+
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := llmProvider.Chat(checkCtx, []types.Message{
+				{Role: "user", Content: "ping"},
+			}, nil)
+			cancel()
+
+			latency := time.Since(start).Milliseconds()
+
+			if err != nil {
+				components[componentName] = &loomv1.ComponentHealth{
+					Status:    "unhealthy",
+					LastCheck: time.Now().Unix(),
+					Error:     err.Error(),
+					LatencyMs: latency,
+				}
+				overallHealthy = false
+			} else {
+				components[componentName] = &loomv1.ComponentHealth{
+					Status:    "healthy",
+					LastCheck: time.Now().Unix(),
+					LatencyMs: latency,
+				}
+			}
+		}
+	}
+
+	healthStatus := "healthy"
+	if !overallHealthy {
+		anyHealthy := false
+		for _, c := range components {
+			if c.Status == "healthy" {
+				anyHealthy = true
+				break
+			}
+		}
+		if anyHealthy {
+			healthStatus = "degraded"
+		} else {
+			healthStatus = "unhealthy"
+		}
+	}
+
 	return &loomv1.HealthStatus{
-		Status:  "healthy",
-		Version: "0.1.0",
+		Status:     healthStatus,
+		Version:    version.Get(),
+		Components: components,
 	}, nil
 }
 
 // SwitchModel switches the LLM provider/model for a specific agent.
 // The agent is identified by agent_id in the request.
 func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchModelRequest) (*loomv1.SwitchModelResponse, error) {
+	// Pool-based switch by name — look up the provider in singleServer's pool and apply it
+	// directly to the target agent.  We do NOT delegate to ss.SwitchModel because that would
+	// always act on the default agent regardless of req.AgentId.
+	if req.ProviderName != "" {
+		s.mu.RLock()
+		ss := s.singleServer
+		s.mu.RUnlock()
+		if ss == nil {
+			return nil, status.Error(codes.FailedPrecondition, "provider pool not configured")
+		}
+		pool := ss.GetProviderPool()
+		if pool == nil {
+			return nil, status.Error(codes.FailedPrecondition, "provider pool not configured")
+		}
+		provider, ok := pool[req.ProviderName]
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "provider %q not found in pool", req.ProviderName)
+		}
+		ag, _, err := s.getAgent(req.AgentId)
+		if err != nil {
+			return nil, err
+		}
+		previousModel := &loomv1.ModelInfo{
+			Id:       ag.GetLLMModelForRole(req.Role),
+			Name:     ag.GetLLMModelForRole(req.Role),
+			Provider: ag.GetLLMProviderNameForRole(req.Role),
+		}
+		ag.SetLLMProviderForRole(req.Role, provider)
+		ss.SetActiveProviderName(req.ProviderName)
+		actualModel := ag.GetLLMModelForRole(req.Role)
+		actualProvider := ag.GetLLMProviderNameForRole(req.Role)
+		return &loomv1.SwitchModelResponse{
+			Success:       true,
+			PreviousModel: previousModel,
+			NewModel: &loomv1.ModelInfo{
+				Id:       actualModel,
+				Name:     actualModel,
+				Provider: actualProvider,
+			},
+			Message: fmt.Sprintf("Switched to provider pool entry %q", req.ProviderName),
+		}, nil
+	}
+
+	// Legacy switch: require session_id, provider, and model.
 	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+		return nil, status.Error(codes.InvalidArgument, "session_id is required (or use provider_name for pool-based switch)")
 	}
 	if req.Provider == "" {
-		return nil, status.Error(codes.InvalidArgument, "provider is required")
+		return nil, status.Error(codes.InvalidArgument, "provider is required (or use provider_name for pool-based switch)")
 	}
 	if req.Model == "" {
-		return nil, status.Error(codes.InvalidArgument, "model is required")
+		return nil, status.Error(codes.InvalidArgument, "model is required (or use provider_name for pool-based switch)")
 	}
 
 	// Get the agent (uses agent_id from request, or default if not specified)
@@ -2686,11 +2805,12 @@ func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchMo
 		return nil, err
 	}
 
-	// Get previous model info
+	// Get previous model info using role-aware methods.
+	// When req.Role is LLM_ROLE_UNSPECIFIED (0), these fall through to the main agent LLM.
 	previousModel := &loomv1.ModelInfo{
-		Id:       ag.GetLLMModel(),
-		Name:     ag.GetLLMModel(),
-		Provider: ag.GetLLMProviderName(),
+		Id:       ag.GetLLMModelForRole(req.Role),
+		Name:     ag.GetLLMModelForRole(req.Role),
+		Provider: ag.GetLLMProviderNameForRole(req.Role),
 	}
 
 	// Check if factory is configured
@@ -2717,12 +2837,13 @@ func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchMo
 		return nil, status.Error(codes.Internal, "failed to cast provider to LLMProvider interface")
 	}
 
-	// Switch the agent's LLM provider
-	ag.SetLLMProvider(newProvider)
+	// Switch the agent's LLM provider for the specified role.
+	// When req.Role is LLM_ROLE_UNSPECIFIED, SetLLMProviderForRole delegates to the main agent LLM.
+	ag.SetLLMProviderForRole(req.Role, newProvider)
 
-	// Verify the switch by checking the agent's current model
-	actualModel := ag.GetLLMModel()
-	actualProvider := ag.GetLLMProviderName()
+	// Verify the switch by checking the agent's current model for this role
+	actualModel := ag.GetLLMModelForRole(req.Role)
+	actualProvider := ag.GetLLMProviderNameForRole(req.Role)
 
 	// Get new model info (use actual values from agent to verify)
 	newModel := &loomv1.ModelInfo{
@@ -2736,6 +2857,82 @@ func (s *MultiAgentServer) SwitchModel(ctx context.Context, req *loomv1.SwitchMo
 		NewModel:      newModel,
 		Success:       true,
 	}, nil
+}
+
+// SetProviderPool configures the named provider pool used by ListProviders and ABTest RPCs.
+// It builds an internal *Server wrapping the default agent so that both RPCs can delegate
+// to the same implementation used by the single-agent Server.
+func (s *MultiAgentServer) SetProviderPool(pool map[string]agent.LLMProvider, active string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Fetch the default agent (under the lock we already hold).
+	defaultAg := s.agents[s.defaultAgentID]
+
+	// Build or update the delegate single-agent server.
+	if s.singleServer == nil {
+		s.singleServer = NewServer(defaultAg, s.sessionStore)
+		if s.judgeServer != nil {
+			s.singleServer.SetJudgeServer(s.judgeServer)
+		}
+	}
+	s.singleServer.SetProviderPool(pool, active)
+}
+
+// SetEvalStore configures the evaluation store for persisting ABTest results.
+// It propagates the store to the internal delegate server used for ABTest.
+func (s *MultiAgentServer) SetEvalStore(store *evals.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.singleServer == nil {
+		// singleServer may not be set yet if SetProviderPool was not called.
+		// We need the default agent to build it.  It is safe to read defaultAgentID
+		// here because it is set in the constructor and never mutated after that.
+		defaultAg := s.agents[s.defaultAgentID]
+		s.singleServer = NewServer(defaultAg, s.sessionStore)
+		if s.judgeServer != nil {
+			s.singleServer.SetJudgeServer(s.judgeServer)
+		}
+	}
+	s.singleServer.SetEvalStore(store)
+}
+
+// SetJudgeServer wires the JudgeServer for ABTest judge_id resolution.
+// It propagates the judge server to singleServer if it has already been initialized.
+func (s *MultiAgentServer) SetJudgeServer(js *JudgeServer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.judgeServer = js
+	if s.singleServer != nil {
+		s.singleServer.SetJudgeServer(js)
+	}
+}
+
+// ListProviders lists named providers in the pool configured via SetProviderPool.
+func (s *MultiAgentServer) ListProviders(ctx context.Context, req *loomv1.ListProvidersRequest) (*loomv1.ListProvidersResponse, error) {
+	s.mu.RLock()
+	ss := s.singleServer
+	s.mu.RUnlock()
+
+	if ss == nil {
+		// No pool configured: return empty response (consistent with Server.ListProviders).
+		return &loomv1.ListProvidersResponse{}, nil
+	}
+	return ss.ListProviders(ctx, req)
+}
+
+// ABTest runs an A/B test across multiple named providers.
+// Delegates to the internal single-agent Server so the implementation is shared.
+func (s *MultiAgentServer) ABTest(req *loomv1.ABTestRequest, stream loomv1.LoomService_ABTestServer) error {
+	s.mu.RLock()
+	ss := s.singleServer
+	s.mu.RUnlock()
+
+	if ss == nil {
+		return status.Error(codes.FailedPrecondition, "provider pool not configured; call SetProviderPool first")
+	}
+	return ss.ABTest(req, stream)
 }
 
 // SetProgressMultiplexer sets the progress multiplexer for an agent.

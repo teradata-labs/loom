@@ -16,9 +16,12 @@
 package models
 
 import (
+	"fmt"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/config"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs"
 	"github.com/teradata-labs/loom/internal/tui/exp/list"
@@ -43,6 +46,12 @@ type ModelSelectedMsg struct {
 	ModelType config.SelectedModelType
 }
 
+// ProvidersLoadedMsg is sent when the provider list has been loaded.
+type ProvidersLoadedMsg struct {
+	Providers []*loomv1.ProviderEntry
+	Active    string
+}
+
 // ModelOption represents a model selection option.
 type ModelOption struct {
 	Name        string
@@ -52,8 +61,11 @@ type ModelOption struct {
 
 // Model is the model selector dialog.
 type Model struct {
-	width  int
-	height int
+	width     int
+	height    int
+	providers []*loomv1.ProviderEntry
+	active    string // currently active provider name
+	cursor    int
 }
 
 // New creates a new model selector.
@@ -71,14 +83,52 @@ func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
+// SetProviders sets the provider list and currently active provider.
+func (m *Model) SetProviders(providers []*loomv1.ProviderEntry, active string) {
+	m.providers = providers
+	m.active = active
+	m.cursor = 0
+	// Position cursor on the active provider if present
+	for i, p := range providers {
+		if p.GetName() == active {
+			m.cursor = i
+			break
+		}
+	}
+}
+
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 		return m, nil
+	case ProvidersLoadedMsg:
+		m.SetProviders(msg.Providers, msg.Active)
+		return m, nil
 	case tea.KeyPressMsg:
-		if key.Matches(msg, key.NewBinding(key.WithKeys("esc", "enter", "q"))) {
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
+			return m, util.CmdHandler(dialogs.CloseDialogMsg{})
+		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
+			if m.cursor < len(m.providers)-1 {
+				m.cursor++
+			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			if len(m.providers) > 0 {
+				selected := m.providers[m.cursor]
+				return m, tea.Batch(
+					util.CmdHandler(dialogs.CloseDialogMsg{}),
+					util.CmdHandler(ModelSelectedMsg{
+						Model: config.Model{Name: selected.GetName()},
+					}),
+				)
+			}
+			// No providers loaded: just close
 			return m, util.CmdHandler(dialogs.CloseDialogMsg{})
 		}
 	}
@@ -89,20 +139,53 @@ func (m *Model) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 func (m *Model) View() string {
 	t := styles.CurrentTheme()
 
-	title := t.S().Base.Bold(true).Foreground(t.Primary).Render("Model Selection")
-	body := t.S().Base.Foreground(t.FgBase).Render(
-		"Model configuration is managed server-side.\n\n" +
-			"Edit your looms.yaml to change models:\n" +
-			"  llm:\n" +
-			"    provider: anthropic\n" +
-			"    model: claude-sonnet-4-20250514\n\n" +
-			"Press ESC to close",
-	)
+	title := t.S().Base.Bold(true).Foreground(t.Primary).Render("Provider Pool")
+
+	var body string
+	if len(m.providers) == 0 {
+		// Fallback: no providers configured - show static config hint
+		body = t.S().Base.Foreground(t.FgBase).Render(
+			"No named providers in pool.\n\n" +
+				"Edit your looms.yaml to add providers:\n" +
+				"  providers:\n" +
+				"    - name: claude-opus\n" +
+				"      provider: anthropic\n" +
+				"      anthropic_model: claude-opus-4-5\n" +
+				"    - name: llama-local\n" +
+				"      provider: ollama\n" +
+				"      ollama_model: llama3.2\n\n" +
+				"Press ESC to close",
+		)
+	} else {
+		lines := make([]string, 0, len(m.providers)+2)
+		lines = append(lines, "Select a provider (enter to switch, esc to cancel):\n")
+		for i, p := range m.providers {
+			cfg := p.GetConfig()
+			providerStr := ""
+			modelStr := ""
+			if cfg != nil {
+				providerStr = cfg.GetProvider()
+				modelStr = cfg.GetModel()
+			}
+			label := fmt.Sprintf("  %s  [%s / %s]", p.GetName(), providerStr, modelStr)
+			if p.GetName() == m.active {
+				label += " *"
+			}
+			if i == m.cursor {
+				label = t.S().Base.Bold(true).Foreground(t.Primary).Render("> " + label[2:])
+			} else {
+				label = t.S().Base.Foreground(t.FgBase).Render(label)
+			}
+			lines = append(lines, label)
+		}
+		lines = append(lines, "\n[up/down] navigate  [enter] select  [esc] cancel")
+		body = lipgloss.JoinVertical(lipgloss.Left, lines...)
+	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, title, "", body)
 
 	return t.S().Base.
-		Width(50).
+		Width(64).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.BorderFocus).
@@ -118,7 +201,7 @@ func (m *Model) ID() dialogs.DialogID {
 func (m *Model) Position() (int, int) {
 	row := m.height/4 - 2 // just a bit above the center
 	col := m.width / 2
-	col -= 25 // half of dialog width
+	col -= 32 // half of dialog width (64/2)
 	// Ensure non-negative positions
 	if row < 0 {
 		row = 0

@@ -44,8 +44,8 @@ llm:
 | Model | Bedrock Model ID | Context | Best For |
 |-------|------------------|---------|----------|
 | **Claude Sonnet 4.5** | `anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | Latest, best performance (recommended) |
-| **Claude Haiku 4.5** | `anthropic.claude-haiku-4-5-20250128-v1:0` | 200k | Fast, cost-effective |
-| **Claude Opus 4.1** | `anthropic.claude-opus-4-1-20250514-v1:0` | 200k | Maximum intelligence |
+| **Claude Haiku 4.5** | `anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | Fast, cost-effective |
+| **Claude Opus 4.5** | `anthropic.claude-opus-4-5-20251101-v1:0` | 200k | Maximum intelligence |
 | **Claude 3.5 Sonnet v2** | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 200k | Previous generation |
 | **Claude 3.5 Sonnet** | `anthropic.claude-3-5-sonnet-20240620-v1:0` | 200k | Legacy |
 | **Claude 3 Opus** | `anthropic.claude-3-opus-20240229-v1:0` | 200k | Legacy maximum intelligence |
@@ -359,8 +359,8 @@ Bedrock model identifier for Claude.
 
 **Examples**:
 - `anthropic.claude-sonnet-4-5-20250929-v1:0` - Claude Sonnet 4.5 (recommended)
-- `anthropic.claude-haiku-4-5-20250128-v1:0` - Claude Haiku 4.5
-- `anthropic.claude-opus-4-1-20250514-v1:0` - Claude Opus 4.1
+- `anthropic.claude-haiku-4-5-20251001-v1:0` - Claude Haiku 4.5
+- `anthropic.claude-opus-4-5-20251101-v1:0` - Claude Opus 4.5
 
 **See**: [Available Models](#available-models)
 
@@ -477,8 +477,8 @@ timeout_seconds: 60
 | Model | Bedrock Model ID | Context | Best For |
 |-------|------------------|---------|----------|
 | **Claude Sonnet 4.5** | `anthropic.claude-sonnet-4-5-20250929-v1:0` | 200k | Latest, best performance (recommended) |
-| **Claude Haiku 4.5** | `anthropic.claude-haiku-4-5-20250128-v1:0` | 200k | Fast, cost-effective |
-| **Claude Opus 4.1** | `anthropic.claude-opus-4-1-20250514-v1:0` | 200k | Maximum intelligence, complex reasoning |
+| **Claude Haiku 4.5** | `anthropic.claude-haiku-4-5-20251001-v1:0` | 200k | Fast, cost-effective |
+| **Claude Opus 4.5** | `anthropic.claude-opus-4-5-20251101-v1:0` | 200k | Maximum intelligence, complex reasoning |
 | **Claude 3.5 Sonnet v2** | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 200k | Previous generation |
 | **Claude 3.5 Sonnet** | `anthropic.claude-3-5-sonnet-20240620-v1:0` | 200k | Legacy |
 | **Claude 3 Opus** | `anthropic.claude-3-opus-20240229-v1:0` | 200k | Legacy maximum intelligence |
@@ -649,8 +649,12 @@ Bedrock pricing varies by region. US East (us-east-1) pricing:
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
       "Resource": [
-        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-*",
-        "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-*"
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-*",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-*",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-*",
+        "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-*",
+        "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-*",
+        "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-4-*"
       ]
     }
   ]
@@ -1041,7 +1045,7 @@ max_tokens: 2048  # Faster completion
 **Option 3: Use faster model**:
 ```yaml
 # Switch to Haiku for speed
-bedrock_model_id: anthropic.claude-haiku-4-5-20250128-v1:0
+bedrock_model_id: anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
 **Option 4: Check network latency**:

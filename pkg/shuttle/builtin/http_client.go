@@ -45,14 +45,8 @@ func (t *HTTPClientTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/rest_api.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *HTTPClientTool) Description() string {
-	return `Makes HTTP requests to APIs and websites. Supports GET, POST, PUT, DELETE, PATCH methods.
-Returns response body, status code, and headers. Automatically handles JSON content.
-
-Use this tool to:
-- Fetch data from REST APIs
-- Call web services
-- Download content from URLs
-- Send data to HTTP endpoints`
+	return `Makes HTTP requests to APIs and websites. Supports GET, POST, PUT, DELETE, PATCH.
+Returns response body, status code, and headers. Handles JSON automatically.`
 }
 
 func (t *HTTPClientTool) InputSchema() *shuttle.JSONSchema {
@@ -65,7 +59,7 @@ func (t *HTTPClientTool) InputSchema() *shuttle.JSONSchema {
 				WithEnum("GET", "POST", "PUT", "DELETE", "PATCH").
 				WithDefault("GET"),
 			"headers": shuttle.NewObjectSchema(
-				"HTTP headers to send (e.g., {\"Content-Type\": \"application/json\"})",
+				"HTTP headers to send",
 				nil,
 				nil,
 			),

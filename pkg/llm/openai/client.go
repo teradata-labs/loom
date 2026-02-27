@@ -155,8 +155,12 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	req := &ChatCompletionRequest{
 		Model:       c.model,
 		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
+	}
+	if c.usesMaxCompletionTokens() {
+		req.MaxCompletionTokens = c.maxTokens
+	} else {
+		req.MaxTokens = c.maxTokens
 	}
 
 	if len(apiTools) > 0 {
@@ -465,6 +469,27 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 	return inputCost + outputCost
 }
 
+// usesMaxCompletionTokens returns true when the model requires max_completion_tokens
+// instead of the legacy max_tokens parameter.
+//
+// OpenAI deprecated max_tokens for newer models:
+//   - o-series (o1, o3, o4, …): only accept max_completion_tokens
+//   - gpt-4o family: only accept max_completion_tokens
+//   - Legacy (gpt-3.5-turbo, gpt-4-0613, gpt-4-32k): require max_tokens
+//
+// Default: max_completion_tokens (forward-compatible for future models).
+func (c *Client) usesMaxCompletionTokens() bool {
+	m := strings.ToLower(c.model)
+	// Legacy models that still require the old max_tokens field
+	legacyPrefixes := []string{"gpt-3.5", "gpt-35", "gpt-4-0613", "gpt-4-32k"}
+	for _, p := range legacyPrefixes {
+		if strings.HasPrefix(m, p) {
+			return false
+		}
+	}
+	return true // gpt-4o, o1, o3, o4, future models
+}
+
 // ChatStream implements token-by-token streaming for OpenAI.
 // This method uses OpenAI's Chat Completions API with stream=true to stream tokens
 // as they are generated. The tokenCallback is called for each token received.
@@ -479,9 +504,13 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	req := &ChatCompletionRequest{
 		Model:       c.model,
 		Messages:    apiMessages,
-		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
 		Stream:      true, // Enable streaming
+	}
+	if c.usesMaxCompletionTokens() {
+		req.MaxCompletionTokens = c.maxTokens
+	} else {
+		req.MaxTokens = c.maxTokens
 	}
 
 	if len(apiTools) > 0 {

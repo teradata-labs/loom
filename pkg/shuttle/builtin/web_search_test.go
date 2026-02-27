@@ -25,8 +25,8 @@ func TestWebSearchTool_Description(t *testing.T) {
 	tool := NewWebSearchTool()
 	desc := tool.Description()
 	assert.Contains(t, desc, "Search the web")
-	assert.Contains(t, desc, "Brave")
-	assert.Contains(t, desc, "Tavily")
+	assert.Contains(t, desc, "brave")
+	assert.Contains(t, desc, "tavily")
 }
 
 func TestWebSearchTool_InputSchema(t *testing.T) {

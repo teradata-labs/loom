@@ -70,7 +70,7 @@ func (t *TopNQueryTool) InputSchema() *shuttle.JSONSchema {
 			"direction": shuttle.NewStringSchema("Sort direction: 'asc' or 'desc' (default: desc)").
 				WithEnum("asc", "desc").
 				WithDefault("desc"),
-			"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', or 'swarm' (default: workflow)").
+			"namespace": shuttle.NewStringSchema("Memory namespace.").
 				WithEnum("global", "workflow", "swarm").
 				WithDefault("workflow"),
 		},
@@ -369,7 +369,7 @@ func (t *GroupByQueryTool) InputSchema() *shuttle.JSONSchema {
 					[]string{"function"},
 				),
 			),
-			"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', or 'swarm' (default: workflow)").
+			"namespace": shuttle.NewStringSchema("Memory namespace.").
 				WithEnum("global", "workflow", "swarm").
 				WithDefault("workflow"),
 		},

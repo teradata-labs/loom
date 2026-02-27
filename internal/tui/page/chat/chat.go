@@ -51,6 +51,7 @@ import (
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/commands"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/filepicker"
 	mcpdialog "github.com/teradata-labs/loom/internal/tui/components/dialogs/mcp"
+	"github.com/teradata-labs/loom/internal/tui/components/dialogs/models"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/pattern"
 	"github.com/teradata-labs/loom/internal/tui/page"
 	"github.com/teradata-labs/loom/internal/tui/styles"
@@ -383,7 +384,9 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		if msg.Payload.ID == p.session.ID {
 			prevHasIncompleteTodos := hasIncompleteTodos(p.session.Todos)
 			prevHasInProgress := p.hasInProgressTodo()
-			p.session = msg.Payload
+			// Merge preserves existing fields (Title, Todos) that cost/token
+			// update events from the coordinator don't include.
+			p.session = p.session.Merge(msg.Payload)
 			newHasIncompleteTodos := hasIncompleteTodos(p.session.Todos)
 			newHasInProgress := p.hasInProgressTodo()
 			if prevHasIncompleteTodos != newHasIncompleteTodos {
@@ -483,6 +486,16 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		u, cmd := p.editor.Update(msg)
 		p.editor = u.(editor.Editor)
 		return p, cmd
+	case commands.SwitchModelMsg:
+		return p, p.openProviderSwitcher()
+	case models.ModelSelectedMsg:
+		return p, p.switchToProvider(msg)
+	case providerSwitchedMsg:
+		// Refresh agents list so the sidebar shows the updated model for the active agent.
+		return p, tea.Batch(
+			p.fetchAgentsList(),
+			util.ReportInfo(fmt.Sprintf("Switched to provider: %s", msg.providerName)),
+		)
 	case sidebar.AgentsListMsg:
 		u, cmd := p.sidebar.Update(msg)
 		p.sidebar = u.(sidebar.Sidebar)
@@ -1313,7 +1326,7 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 			}
 			return util.InfoMsg{
 				Type: util.InfoTypeError,
-				Msg:  err.Error(),
+				Msg:  extractErrorTitle(err.Error()),
 			}
 		}
 		return nil
@@ -1762,7 +1775,9 @@ func (p *chatPage) IsChatFocused() bool {
 	return p.focusedPane == PanelTypeChat
 }
 
-// fetchAgentsList fetches the list of available agents from the server
+// fetchAgentsList fetches the list of available agents from the server.
+// It also fetches the active provider name so the sidebar can display the
+// current model without depending on agent-level LLM config.
 func (p *chatPage) fetchAgentsList() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1778,15 +1793,27 @@ func (p *chatPage) fetchAgentsList() tea.Cmd {
 		agents := make([]sidebar.AgentInfo, len(agentInfos))
 		for i, info := range agentInfos {
 			agents[i] = sidebar.AgentInfo{
-				ID:     info.ID,
-				Name:   info.Name,
-				Status: info.Status,
+				ID:           info.ID,
+				Name:         info.Name,
+				Status:       info.Status,
+				ModelInfo:    info.ModelInfo,
+				RoleLLMCount: info.RoleLLMCount,
+			}
+		}
+
+		// Also fetch the active provider name so the sidebar always shows the
+		// correct model even when agents don't have an explicit llm: config.
+		var activeProvider string
+		if client := p.app.Client(); client != nil {
+			if resp, err := client.ListProviders(ctx, &loomv1.ListProvidersRequest{}); err == nil {
+				activeProvider = resp.GetActiveProvider()
 			}
 		}
 
 		return sidebar.AgentsListMsg{
-			Agents:       agents,
-			CurrentAgent: p.currentAgentID,
+			Agents:         agents,
+			CurrentAgent:   p.currentAgentID,
+			ActiveProvider: activeProvider,
 		}
 	}
 }
@@ -1876,6 +1903,12 @@ func (p *chatPage) handleAddMCPServer(req *loomv1.AddMCPServerRequest) tea.Cmd {
 type MCPServerToolsMsg struct {
 	ServerName string
 	Tools      []sidebar.MCPToolInfo
+}
+
+// providerSwitchedMsg signals a successful model/provider switch.
+// Handled by refreshing the agents list so the sidebar shows the new model.
+type providerSwitchedMsg struct {
+	providerName string
 }
 
 // fetchMCPServerTools fetches the tools for a specific MCP server
@@ -1971,6 +2004,50 @@ func (p *chatPage) hasInProgressTodo() bool {
 	return false
 }
 
+// openProviderSwitcher calls ListProviders RPC and opens the interactive provider dialog.
+func (p *chatPage) openProviderSwitcher() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		client := p.app.Client()
+		dialog := models.New()
+		dialog.SetSize(p.width, p.height)
+		if client != nil {
+			resp, err := client.ListProviders(ctx, &loomv1.ListProvidersRequest{
+				SessionId: p.session.ID,
+				AgentId:   p.currentAgentID,
+			})
+			if err == nil && resp != nil {
+				dialog.SetProviders(resp.Providers, resp.ActiveProvider)
+			}
+		}
+		return dialogs.OpenDialogMsg{Model: dialog}
+	}
+}
+
+// switchToProvider calls SwitchModel RPC with the selected provider name.
+func (p *chatPage) switchToProvider(msg models.ModelSelectedMsg) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		client := p.app.Client()
+		if client == nil {
+			return util.InfoMsg{
+				Text: "no gRPC client available",
+				Type: util.InfoTypeError,
+			}
+		}
+		_, err := client.SwitchModelByProvider(ctx, p.session.ID, p.currentAgentID, msg.Model.Name)
+		if err != nil {
+			return util.InfoMsg{
+				Text: fmt.Sprintf("switch provider failed: %v", err),
+				Type: util.InfoTypeError,
+			}
+		}
+		// Return providerSwitchedMsg so the Update handler can refresh the agents
+		// list, which causes the sidebar to display the new model immediately.
+		return providerSwitchedMsg{providerName: msg.Model.Name}
+	}
+}
+
 // parseAgentNameFromToolResult extracts the agent name from an agent_management tool result JSON.
 // The JSON structure from agent_management create action is:
 // {"action":"create","type":"agent","name":"agent-name","path":"...","validation":"..."}
@@ -1997,4 +2074,27 @@ func parseAgentNameFromToolResult(jsonContent string) string {
 	agentName = strings.TrimSuffix(agentName, ".yml")
 
 	return agentName
+}
+
+// extractErrorTitle returns a clean single-line summary from an error string.
+// gRPC errors arrive as "rpc error: code = Internal desc = agent error: <details>"
+// and multi-line error bodies (like the circuit breaker message) get mangled when
+// displayed in the one-line status bar. This extracts the first meaningful line.
+func extractErrorTitle(errStr string) string {
+	// Strip the gRPC boilerplate prefix if present
+	if idx := strings.Index(errStr, " desc = "); idx != -1 {
+		errStr = errStr[idx+len(" desc = "):]
+	}
+	// Strip common wrapping prefixes that add no information
+	for _, prefix := range []string{"agent error: ", "conversation loop failed: ", "LLM call failed: "} {
+		errStr = strings.TrimPrefix(errStr, prefix)
+	}
+	// Take only the first non-empty line
+	for _, line := range strings.Split(errStr, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return errStr
 }

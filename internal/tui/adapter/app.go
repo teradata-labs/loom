@@ -168,8 +168,9 @@ func (a *LoomApp) ListAvailableModels(ctx context.Context) ([]*loomv1.ModelInfo,
 }
 
 // SwitchModel switches the model for a session.
-func (a *LoomApp) SwitchModel(ctx context.Context, sessionID, provider, model string) (*loomv1.SwitchModelResponse, error) {
-	return a.client.SwitchModel(ctx, sessionID, provider, model)
+// role specifies which LLM role to switch (0/unspecified = main agent LLM for backward compatibility).
+func (a *LoomApp) SwitchModel(ctx context.Context, sessionID, provider, model string, role loomv1.LLMRole) (*loomv1.SwitchModelResponse, error) {
+	return a.client.SwitchModel(ctx, sessionID, provider, model, role)
 }
 
 // IsBusy returns true if the current default agent is busy.

@@ -247,7 +247,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 					Provider:     progress.Cost.LlmCost.GetProvider(),
 					Model:        progress.Cost.LlmCost.GetModel(),
 				}
-				// Send session update with cost and token counts
+				// Send session update with cost, token counts, and model info
 				if c.events != nil {
 					c.events <- pubsub.Event[session.Session]{
 						Type: pubsub.UpdatedEvent,
@@ -256,6 +256,8 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 							Cost:             progress.Cost.TotalCostUsd,
 							CompletionTokens: int(progress.Cost.LlmCost.GetOutputTokens()),
 							PromptTokens:     int(progress.Cost.LlmCost.GetInputTokens()),
+							Model:            progress.Cost.LlmCost.GetModel(),
+							Provider:         progress.Cost.LlmCost.GetProvider(),
 						},
 					}
 				}
@@ -265,6 +267,21 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 
 	if err != nil {
 		result.Error = err
+		// Best-effort: if we accumulated cost before the error, still update the session metrics.
+		// This covers cancellation mid-stream where COMPLETED was never sent.
+		if result.Cost != nil && c.events != nil {
+			c.events <- pubsub.Event[session.Session]{
+				Type: pubsub.UpdatedEvent,
+				Payload: session.Session{
+					ID:               sessionID,
+					Cost:             result.Cost.TotalCost,
+					CompletionTokens: int(result.Cost.OutputTokens),
+					PromptTokens:     int(result.Cost.InputTokens),
+					Model:            result.Cost.Model,
+					Provider:         result.Cost.Provider,
+				},
+			}
+		}
 		return &result, err
 	}
 
@@ -353,11 +370,27 @@ func (c *CoordinatorAdapter) ListAgents(ctx context.Context) ([]agent.AgentInfo,
 
 	result := make([]agent.AgentInfo, len(agentInfos))
 	for i, info := range agentInfos {
-		result[i] = agent.AgentInfo{
+		ai := agent.AgentInfo{
 			ID:     info.Id,
 			Name:   info.Name,
 			Status: info.Status,
 		}
+		// Extract model info from agent config if available
+		if cfg := info.GetConfig(); cfg != nil {
+			if llm := cfg.GetLlm(); llm != nil && llm.GetProvider() != "" {
+				ai.ModelInfo = llm.GetProvider() + "/" + llm.GetModel()
+			}
+			// Count role-specific LLM overrides
+			for _, roleLLM := range []*loomv1.LLMConfig{
+				cfg.GetJudgeLlm(), cfg.GetOrchestratorLlm(),
+				cfg.GetClassifierLlm(), cfg.GetCompressorLlm(),
+			} {
+				if roleLLM != nil && roleLLM.GetProvider() != "" {
+					ai.RoleLLMCount++
+				}
+			}
+		}
+		result[i] = ai
 	}
 
 	return result, nil

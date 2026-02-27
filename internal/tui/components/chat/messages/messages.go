@@ -211,10 +211,17 @@ func (m *messageCmp) renderAssistantMessage() string {
 		content = "*Canceled*"
 	} else if finished && content == "" && finishedData.Reason == message.FinishReasonError {
 		errTag := t.S().Base.Padding(0, 1).Background(t.Red).Foreground(t.White).Render("ERROR")
+		// Title: one line, truncated to fit alongside the ERROR badge
 		truncated := ansi.Truncate(finishedData.Message, m.textWidth()-2-lipgloss.Width(errTag), "...")
 		title := fmt.Sprintf("%s %s", errTag, t.S().Base.Foreground(t.FgHalfMuted).Render(truncated))
-		details := t.S().Base.Foreground(t.FgSubtle).Width(m.textWidth() - 2).Render(finishedData.Details)
-		errorContent := fmt.Sprintf("%s\n\n%s", title, details)
+		var errorContent string
+		if finishedData.Details != "" {
+			// Render full details as markdown so multi-line guidance (like CB messages) is readable
+			detailsMd := m.toMarkdown(finishedData.Details)
+			errorContent = fmt.Sprintf("%s\n\n%s", title, detailsMd)
+		} else {
+			errorContent = title
+		}
 		return m.style().Render(errorContent)
 	}
 

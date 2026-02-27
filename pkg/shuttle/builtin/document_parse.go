@@ -62,20 +62,9 @@ func (t *DocumentParseTool) Name() string {
 
 // Description returns the tool description.
 func (t *DocumentParseTool) Description() string {
-	return `Parse and extract structured data from documents. Supports:
-- CSV files: Headers, type inference, custom delimiters (max 10,000 rows)
-- PDF files: Text extraction, metadata, page selection (max 100 pages)
-- Excel files (.xlsx): Multi-sheet parsing, cell types, formulas (max 10,000 rows/sheet)
-
-Parameters:
-- file_path (required): Path to the document file
-- format (optional): "auto" (default), "csv", "pdf", or "xlsx" - auto-detects from extension
-- options (optional): Format-specific options:
-  CSV: delimiter, has_headers, max_rows
-  PDF: pages (array/string), max_pages, include_metadata
-  Excel: sheets (array/string), max_rows, include_formulas, has_headers
-
-Returns structured data including content, metadata, and statistics.`
+	return `Parses and extracts structured data from CSV, PDF, and Excel (.xlsx) files.
+Auto-detects format from extension. Returns content, metadata, and statistics.
+CSV: up to 10,000 rows. PDF: up to 100 pages. Excel: multi-sheet support.`
 }
 
 // InputSchema returns the JSON schema for the tool's input.
@@ -98,7 +87,7 @@ func (t *DocumentParseTool) InputSchema() *shuttle.JSONSchema {
 				Properties: map[string]*shuttle.JSONSchema{
 					"detailed_analysis": {
 						Type:        "boolean",
-						Description: "Enable enhanced statistical profiling and Teradata type inference (CSV only). Returns column statistics, data quality scores, and generated DDL.",
+						Description: "Enable statistical profiling and type inference (CSV only).",
 					},
 					"database": {
 						Type:        "string",

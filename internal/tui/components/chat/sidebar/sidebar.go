@@ -59,15 +59,18 @@ const (
 
 // AgentInfo represents an agent in the multi-agent system
 type AgentInfo struct {
-	ID     string
-	Name   string
-	Status string
+	ID           string
+	Name         string
+	Status       string
+	ModelInfo    string // Primary model (e.g., "anthropic/claude-sonnet-4")
+	RoleLLMCount int    // Number of role-specific LLM overrides (0-4)
 }
 
 // AgentsListMsg contains the list of available agents
 type AgentsListMsg struct {
-	Agents       []AgentInfo
-	CurrentAgent string // ID of currently active agent
+	Agents         []AgentInfo
+	CurrentAgent   string // ID of currently active agent
+	ActiveProvider string // Name of the currently active provider (e.g., "gemini-flash")
 }
 
 // AgentSelectedMsg is sent when an agent is selected
@@ -164,6 +167,8 @@ type sidebarCmp struct {
 	agents        []AgentInfo // List of available agents
 	currentAgent  string      // ID of currently active agent
 
+	activeProvider string // Name of the currently active provider from ListProviders
+
 	// Selection state
 	selectedSection SidebarSection
 	selectedIndex   int
@@ -206,13 +211,16 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case AgentsListMsg:
 		if debugLog != nil {
-			debugLog.Printf("[DEBUG] AgentsListMsg received with %d agents, currentAgent='%s'\n", len(msg.Agents), msg.CurrentAgent)
+			debugLog.Printf("[DEBUG] AgentsListMsg received with %d agents, currentAgent='%s', activeProvider='%s'\n", len(msg.Agents), msg.CurrentAgent, msg.ActiveProvider)
 			for i, agent := range msg.Agents {
 				debugLog.Printf("  [%d] name='%s', id='%s', status='%s'\n", i, agent.Name, agent.ID, agent.Status)
 			}
 		}
 		m.agents = msg.Agents
 		m.currentAgent = msg.CurrentAgent
+		if msg.ActiveProvider != "" {
+			m.activeProvider = msg.ActiveProvider
+		}
 		m.updateCachedItems()
 		m.resetSelectionIfNeeded()
 		return m, nil
@@ -327,7 +335,9 @@ func (m *sidebarCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent {
 			if m.session.ID == msg.Payload.ID {
-				m.session = msg.Payload
+				// Merge to preserve fields like Title that the coordinator
+				// does not include in cost/token update events.
+				m.session = m.session.Merge(msg.Payload)
 			}
 		}
 	}
@@ -629,17 +639,49 @@ func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 }
 
 func (s *sidebarCmp) currentModelBlock() string {
-	model := config.Get().GetModel()
 	t := styles.CurrentTheme()
 
-	modelIcon := t.S().Base.Foreground(t.FgSubtle).Render(styles.ModelIcon)
-	modelName := t.S().Text.Render(model.Name)
-	modelInfo := fmt.Sprintf("%s %s", modelIcon, modelName)
-	parts := []string{
-		modelInfo,
+	// Determine model to display — use the most specific/current source available:
+	// 1. session.Model (actual model from the last LLM cost report — most accurate)
+	// 2. current agent's ModelInfo from the agents list (configured model)
+	// 3. global config fallback
+	var modelDisplayName string
+	var showReasoning bool
+	contextWindow := 200000 // Reasonable default for frontier models
+
+	if s.session.Model != "" {
+		// Best source: actual model reported in LLM cost info
+		if s.session.Provider != "" {
+			modelDisplayName = s.session.Provider + "/" + s.session.Model
+		} else {
+			modelDisplayName = s.session.Model
+		}
+	} else if s.activeProvider != "" {
+		// Second: active provider name from ListProviders RPC (e.g., "gemini-flash")
+		modelDisplayName = s.activeProvider
+	} else if s.currentAgent != "" {
+		// Third: agent's configured model from the agents list
+		for _, ag := range s.agents {
+			if ag.ID == s.currentAgent && ag.ModelInfo != "" {
+				modelDisplayName = ag.ModelInfo
+				break
+			}
+		}
 	}
 
-	if model.CanReason() {
+	if modelDisplayName == "" {
+		// Fallback: global config (always available)
+		model := config.Get().GetModel()
+		modelDisplayName = model.Name
+		showReasoning = model.CanReason()
+		contextWindow = model.ContextWindow
+	}
+
+	modelIcon := t.S().Base.Foreground(t.FgSubtle).Render(styles.ModelIcon)
+	modelName := t.S().Text.Render(modelDisplayName)
+	parts := []string{fmt.Sprintf("%s %s", modelIcon, modelName)}
+
+	if showReasoning {
 		reasoningInfoStyle := t.S().Subtle.PaddingLeft(2)
 		parts = append(parts, reasoningInfoStyle.Render("Thinking enabled"))
 	}
@@ -649,15 +691,12 @@ func (s *sidebarCmp) currentModelBlock() string {
 			parts,
 			"  "+formatTokensAndCost(
 				int64(s.session.CompletionTokens+s.session.PromptTokens),
-				int64(model.ContextWindow),
+				int64(contextWindow),
 				s.session.Cost,
 			),
 		)
 	}
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		parts...,
-	)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 // SetSession implements Sidebar.

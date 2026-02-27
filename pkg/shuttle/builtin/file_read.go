@@ -56,29 +56,15 @@ func (t *FileReadTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/file.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *FileReadTool) Description() string {
-	return `⚠️ DEPRECATED: Use workspace tool instead (session-scoped, indexed, searchable) or shell_execute (cat command).
-
-Reads content from files on the local filesystem.
-Use this tool to ground your responses in actual data rather than guessing.
-
-Use this tool to:
-- Read data files saved by previous workflow stages
-- Verify file contents before summarizing
-- Load configuration or results files
-- Read markdown, JSON, XML, or other text files
-
-Safety: Won't read sensitive system files. Max file size: 10MB.
-
-RECOMMENDED ALTERNATIVES:
-- workspace tool: action=read, scope=artifact (session-scoped, indexed, searchable)
-- shell_execute: cat /path/to/file (direct filesystem access)`
+	return `⚠️ DEPRECATED: Use workspace (action=read, scope=artifact) or shell_execute (cat) instead.
+Reads text and binary files from the local filesystem. Max 10MB. Won't read sensitive system paths.`
 }
 
 func (t *FileReadTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for reading files",
 		map[string]*shuttle.JSONSchema{
-			"path": shuttle.NewStringSchema("File path to read (required). Relative paths are resolved from working directory."),
+			"path": shuttle.NewStringSchema("File path to read (required)."),
 			"encoding": shuttle.NewStringSchema("Output encoding: 'text' (default) or 'base64' for binary files").
 				WithEnum("text", "base64").
 				WithDefault("text"),

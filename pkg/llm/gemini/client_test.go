@@ -440,6 +440,73 @@ func TestConvertMessages(t *testing.T) {
 	}
 }
 
+// TestConvertMessages_EmptyPartsSkipped verifies that messages which would
+// produce empty Parts arrays are skipped instead of triggering the Gemini
+// "at least one parts field" error.
+func TestConvertMessages_EmptyPartsSkipped(t *testing.T) {
+	tests := []struct {
+		name        string
+		messages    []types.Message
+		wantLen     int
+		wantNoPanic bool
+	}{
+		{
+			name: "empty user content skipped",
+			messages: []types.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "user", Content: ""}, // empty — must be skipped
+			},
+			wantLen: 1,
+		},
+		{
+			name: "empty assistant (no content, no tool calls) skipped",
+			messages: []types.Message{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", Content: "", ToolCalls: nil}, // empty — must be skipped
+			},
+			wantLen: 1,
+		},
+		{
+			name: "assistant with only tool calls kept",
+			messages: []types.Message{
+				{Role: "user", Content: "what is 2+2"},
+				{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []types.ToolCall{
+						{ID: "c1", Name: "calc", Input: map[string]interface{}{"expr": "2+2"}},
+					},
+				},
+			},
+			wantLen: 2,
+		},
+		{
+			name: "content blocks with no supported types falls back to text",
+			messages: []types.Message{
+				{
+					Role:    "user",
+					Content: "fallback text",
+					ContentBlocks: []types.ContentBlock{
+						{Type: "unsupported_type"}, // no matching block → fallback
+					},
+				},
+			},
+			wantLen: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			contents := convertMessages(tt.messages)
+			assert.Len(t, contents, tt.wantLen, "unexpected number of Gemini content items")
+			// Verify no content has empty Parts (this is what triggers the API error)
+			for i, c := range contents {
+				assert.NotEmpty(t, c.Parts, "content[%d] has empty Parts — Gemini will reject this", i)
+			}
+		})
+	}
+}
+
 func TestThoughtSignature_RoundTrip(t *testing.T) {
 	// Simulates the full round-trip:
 	// 1. Gemini returns a function call with a thoughtSignature at Part level
@@ -748,4 +815,5 @@ func (t *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.original.RoundTrip(req)
 	}
 	return http.DefaultTransport.RoundTrip(req)
+
 }

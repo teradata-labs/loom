@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -25,9 +26,30 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+// uiIntentKeywords are case-insensitive phrases that indicate a user wants a UI visualization.
+var uiIntentKeywords = []string{
+	"dashboard", "visualization", "visualize", "chart", "graph",
+	"create a ui", "build a ui", "make a ui", "create ui", "build ui",
+	"create an app", "build an app", "create app", "build app",
+	"interactive app", "ui app", "web app", "create_ui_app",
+	"display as a chart", "show as a chart",
+}
+
+// ContainsUIIntent reports whether msg suggests the user wants a UI visualization.
+// Case-insensitive keyword scan — fast and deterministic, no LLM cost.
+func ContainsUIIntent(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, kw := range uiIntentKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // UIAppTools returns shuttle.Tool implementations that allow server-side agents
-// to create, update, list, and delete MCP UI apps. These tools are auto-registered
-// to all agents so any agent can create interactive visualizations.
+// to create, update, list, and delete MCP UI apps. These tools are registered
+// lazily — only when ContainsUIIntent signals that the user wants a visualization.
 func UIAppTools(compiler AppCompiler, provider AppProvider) []shuttle.Tool {
 	return []shuttle.Tool{
 		&createUIAppTool{compiler: compiler, provider: provider},
@@ -68,19 +90,37 @@ Layouts: stack (vertical), grid-2 (two columns), grid-3 (three columns).`
 }
 
 func (t *createUIAppTool) InputSchema() *shuttle.JSONSchema {
+	componentSchema := shuttle.NewObjectSchema(
+		"UI component",
+		map[string]*shuttle.JSONSchema{
+			"type":  shuttle.NewStringSchema("Component type identifier from list_component_types (e.g. 'chart', 'table', 'stat-cards')"),
+			"props": shuttle.NewObjectSchema("Type-specific component properties (see list_component_types for prop schemas)", nil, nil),
+			"id":    shuttle.NewStringSchema("Optional ID for postMessage data-binding"),
+		},
+		[]string{"type"},
+	)
+	specSchema := shuttle.NewObjectSchema(
+		"Declarative app spec",
+		map[string]*shuttle.JSONSchema{
+			"version":     shuttle.NewStringSchema("Spec version, always '1.0'").WithDefault("1.0"),
+			"title":       shuttle.NewStringSchema("App/dashboard title shown in header"),
+			"layout":      shuttle.NewStringSchema("Component layout: 'stack' (vertical), 'grid-2' (two columns), 'grid-3' (three columns)").WithDefault("stack"),
+			"description": shuttle.NewStringSchema("Optional subtitle shown below the title"),
+			"components": shuttle.NewArraySchema(
+				"Ordered list of UI components to render",
+				componentSchema,
+			),
+		},
+		[]string{"title", "components"},
+	)
 	return shuttle.NewObjectSchema(
 		"Parameters for creating a UI app",
 		map[string]*shuttle.JSONSchema{
-			"name": shuttle.NewStringSchema(
-				"URL-safe short name (lowercase alphanumeric and hyphens, e.g. 'revenue-analysis')",
-			).WithPattern(`^[a-z0-9][a-z0-9-]{0,62}$`),
+			"name":         shuttle.NewStringSchema("URL-safe app name (lowercase letters, numbers, hyphens; e.g. 'revenue-analysis')").WithPattern(`^[a-z0-9][a-z0-9-]{0,62}$`),
 			"display_name": shuttle.NewStringSchema("Human-readable display name (optional, defaults to spec title)"),
 			"description":  shuttle.NewStringSchema("Description of what this app shows (optional)"),
-			"spec": shuttle.NewObjectSchema(
-				"Declarative app spec: {version: '1.0', title, layout, components: [{type, props, children?, id?}]}",
-				nil, nil,
-			),
-			"overwrite": shuttle.NewBooleanSchema("Overwrite an existing dynamic app with the same name (default: false)"),
+			"spec":         specSchema,
+			"overwrite":    shuttle.NewBooleanSchema("Overwrite an existing dynamic app with the same name (default: false)"),
 		},
 		[]string{"name", "spec"},
 	)
@@ -101,8 +141,12 @@ func (t *createUIAppTool) Execute(ctx context.Context, params map[string]interfa
 	name, _ := params["name"].(string)
 	if name == "" {
 		return &shuttle.Result{
-			Success:         false,
-			Error:           &shuttle.Error{Code: "INVALID_PARAMS", Message: "name is required", Suggestion: "Provide a lowercase alphanumeric name with hyphens"},
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_PARAMS",
+				Message:    "name is required",
+				Suggestion: `Provide both required params. Example: {"name": "sql-dashboard", "spec": {"title": "Dashboard", "layout": "stack", "components": [{"type": "header", "props": {"title": "Dashboard"}}]}}`,
+			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -273,8 +317,14 @@ func (t *updateUIAppTool) InputSchema() *shuttle.JSONSchema {
 			"display_name": shuttle.NewStringSchema("New display name (empty = keep existing)"),
 			"description":  shuttle.NewStringSchema("New description (empty = keep existing)"),
 			"spec": shuttle.NewObjectSchema(
-				"New declarative app spec",
-				nil, nil,
+				"New declarative app spec (same structure as create_ui_app spec)",
+				map[string]*shuttle.JSONSchema{
+					"version":    shuttle.NewStringSchema("Spec version, always '1.0'").WithDefault("1.0"),
+					"title":      shuttle.NewStringSchema("App/dashboard title"),
+					"layout":     shuttle.NewStringSchema("Layout: 'stack', 'grid-2', 'grid-3'").WithDefault("stack"),
+					"components": shuttle.NewArraySchema("UI components", shuttle.NewObjectSchema("Component", map[string]*shuttle.JSONSchema{"type": shuttle.NewStringSchema("Component type"), "props": shuttle.NewObjectSchema("Props", nil, nil)}, []string{"type"})),
+				},
+				[]string{"title", "components"},
 			),
 		},
 		[]string{"name", "spec"},

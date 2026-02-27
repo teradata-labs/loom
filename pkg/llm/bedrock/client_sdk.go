@@ -179,17 +179,24 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 		Temperature: anthropic.Float(c.temperature),
 	}
 
-	// Add system prompt if present
+	// Add system prompt if present, with cache_control for prompt caching
 	if systemPrompt != "" {
 		params.System = []anthropic.TextBlockParam{
-			{Text: systemPrompt},
+			{
+				Text:         systemPrompt,
+				CacheControl: anthropic.NewCacheControlEphemeralParam(),
+			},
 		}
 	}
 
-	// Add tools if provided
+	// Add tools if provided; mark the last tool with cache_control
 	if len(tools) > 0 {
 		c.toolNameMap = make(map[string]string)
 		sdkTools := c.convertToolsToSDK(tools)
+		// Mark the last tool with cache_control so the entire tool list is cached
+		if len(sdkTools) > 0 {
+			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
 		// Convert []ToolParam to []ToolUnionParam
 		toolUnions := make([]anthropic.ToolUnionParam, len(sdkTools))
 		for i := range sdkTools {
@@ -353,13 +360,17 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) []anthropic.ToolPara
 
 // convertResponseFromSDK converts Anthropic SDK response to agent format.
 func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message) *llmtypes.LLMResponse {
+	cacheRead := int(message.Usage.CacheReadInputTokens)
+	cacheCreation := int(message.Usage.CacheCreationInputTokens)
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: string(message.StopReason),
 		Usage: llmtypes.Usage{
-			InputTokens:  int(message.Usage.InputTokens),
-			OutputTokens: int(message.Usage.OutputTokens),
-			TotalTokens:  int(message.Usage.InputTokens + message.Usage.OutputTokens),
-			CostUSD:      c.calculateCost(int(message.Usage.InputTokens), int(message.Usage.OutputTokens)),
+			InputTokens:              int(message.Usage.InputTokens),
+			OutputTokens:             int(message.Usage.OutputTokens),
+			TotalTokens:              int(message.Usage.InputTokens + message.Usage.OutputTokens),
+			CostUSD:                  c.calculateCost(int(message.Usage.InputTokens), int(message.Usage.OutputTokens), cacheRead, cacheCreation),
+			CacheReadInputTokens:     cacheRead,
+			CacheCreationInputTokens: cacheCreation,
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
@@ -396,7 +407,8 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message) *llmtypes
 }
 
 // calculateCost estimates cost for Bedrock Claude models.
-func (c *SDKClient) calculateCost(inputTokens, outputTokens int) float64 {
+// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
 	var inputPricePerMillion, outputPricePerMillion float64
 
 	switch {
@@ -416,7 +428,10 @@ func (c *SDKClient) calculateCost(inputTokens, outputTokens int) float64 {
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	return inputCost + outputCost
+	// Cache write at 1.25x input price, cache read at 0.10x input price
+	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
+	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
 // ChatStream streams tokens as they're generated from Bedrock using the Anthropic SDK.
@@ -439,17 +454,24 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Temperature: anthropic.Float(c.temperature),
 	}
 
-	// Add system prompt if present
+	// Add system prompt if present, with cache_control for prompt caching
 	if systemPrompt != "" {
 		params.System = []anthropic.TextBlockParam{
-			{Text: systemPrompt},
+			{
+				Text:         systemPrompt,
+				CacheControl: anthropic.NewCacheControlEphemeralParam(),
+			},
 		}
 	}
 
-	// Add tools if provided
+	// Add tools if provided; mark the last tool with cache_control
 	if len(tools) > 0 {
 		c.toolNameMap = make(map[string]string)
 		sdkTools := c.convertToolsToSDK(tools)
+		// Mark the last tool with cache_control so the entire tool list is cached
+		if len(sdkTools) > 0 {
+			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
 		toolUnions := make([]anthropic.ToolUnionParam, len(sdkTools))
 		for i := range sdkTools {
 			toolUnions[i] = anthropic.ToolUnionParam{
@@ -459,8 +481,15 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		params.Tools = toolUnions
 	}
 
-	// Call streaming API (rate limiting doesn't apply well to streams)
-	// The stream will be consumed synchronously, so we don't need rate limiting here
+	// Acquire rate limit slot before initiating the stream to prevent Bedrock throttling.
+	// NewStreaming initiates the HTTP request immediately, so we must throttle before calling it.
+	if c.rateLimiter != nil {
+		if _, rlErr := c.rateLimiter.Do(ctx, func(_ context.Context) (interface{}, error) {
+			return nil, nil
+		}); rlErr != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", rlErr)
+		}
+	}
 	stream := c.client.Messages.NewStreaming(ctx, params)
 
 	// Process stream events
@@ -480,9 +509,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 		switch event.Type {
 		case "message_start":
-			// Extract message ID and initial usage
+			// Extract message ID and initial usage (including cache tokens)
 			messageID = event.Message.ID
 			usage.InputTokens = int(event.Message.Usage.InputTokens)
+			usage.CacheReadInputTokens = int(event.Message.Usage.CacheReadInputTokens)
+			usage.CacheCreationInputTokens = int(event.Message.Usage.CacheCreationInputTokens)
 
 		case "content_block_start":
 			// Check if this is a tool use block
@@ -557,7 +588,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Build final response
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {

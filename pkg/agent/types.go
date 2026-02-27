@@ -35,6 +35,12 @@ type MCPClientRef struct {
 	ServerName string
 }
 
+// lazyToolSet groups tools that are registered only when trigger(userMsg) returns true.
+type lazyToolSet struct {
+	tools   []shuttle.Tool
+	trigger func(string) bool
+}
+
 // Agent is the core conversation agent that orchestrates LLM calls, tool execution,
 // and backend interactions. It's designed to be backend-agnostic and work with
 // any ExecutionBackend implementation (SQL databases, REST APIs, documents, etc.).
@@ -67,6 +73,12 @@ type Agent struct {
 
 	// LLM provider for generating responses
 	llm LLMProvider
+
+	// Role-specific LLM providers (nil = fallback to main llm)
+	judgeLLM        LLMProvider // For evaluation operations
+	orchestratorLLM LLMProvider // For merge/synthesis in fork-join orchestration
+	classifierLLM   LLMProvider // For intent classification / pattern selection
+	compressorLLM   LLMProvider // For memory compression / semantic search reranking
 
 	// Tracer for observability
 	tracer observability.Tracer
@@ -114,6 +126,15 @@ type Agent struct {
 
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
+
+	// Provider pool support
+	providerPool       map[string]LLMProvider // name → provider (nil = pool not configured)
+	activeProviderName string                 // currently active provider name (empty = use llm field)
+	allowedProviders   []string               // empty = all pool providers allowed
+
+	// Lazy tool sets: registered only when trigger(userMessage) returns true.
+	// Guarded by a.mu.
+	lazyToolSets []lazyToolSet
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
@@ -179,6 +200,11 @@ type Config struct {
 	EnableFindingExtraction bool // Whether to enable automatic finding extraction (default: true)
 	ExtractionCadence       int  // Number of tool executions between extractions (default: 3)
 	MaxFindings             int  // Maximum findings to keep in cache (default: 50)
+
+	// OutputTokenCBThreshold is the number of consecutive turns where the LLM
+	// hits the output token limit AND returns truncated tool calls before the
+	// circuit breaker fires. 0 uses the default (8). -1 disables the CB entirely.
+	OutputTokenCBThreshold int
 }
 
 // PatternConfig holds pattern injection configuration

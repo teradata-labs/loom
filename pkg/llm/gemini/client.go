@@ -235,6 +235,9 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
 			CostUSD:      c.calculateCost(resp.UsageMetadata.PromptTokenCount, resp.UsageMetadata.CandidatesTokenCount),
+			// Gemini implicit caching (automatic since May 2025): map to CacheReadInputTokens for observability.
+			// Note: for Gemini, cached tokens still count against rate limits (cost savings only, not rate limit relief).
+			CacheReadInputTokens: resp.UsageMetadata.CachedContentTokenCount,
 		},
 		Metadata: map[string]interface{}{
 			"provider": "gemini",
@@ -380,12 +383,23 @@ func convertMessages(messages []llmtypes.Message) []Content {
 						// Note: Gemini doesn't support URL-based images directly
 					}
 				}
+				if len(parts) == 0 {
+					// No supported content blocks — fall back to text content if available
+					if msg.Content != "" {
+						parts = []Part{{Text: msg.Content}}
+					} else {
+						continue // skip empty messages; Gemini requires at least one part
+					}
+				}
 				contents = append(contents, Content{
 					Role:  "user",
 					Parts: parts,
 				})
 			} else {
 				// Fallback to plain text (backward compatible)
+				if msg.Content == "" {
+					continue // skip empty user messages; Gemini requires at least one part
+				}
 				contents = append(contents, Content{
 					Role: "user",
 					Parts: []Part{
@@ -395,7 +409,7 @@ func convertMessages(messages []llmtypes.Message) []Content {
 			}
 
 		case "assistant":
-			parts := []Part{}
+			var parts []Part
 
 			if msg.Content != "" {
 				parts = append(parts, Part{Text: msg.Content})
@@ -412,6 +426,9 @@ func convertMessages(messages []llmtypes.Message) []Content {
 				})
 			}
 
+			if len(parts) == 0 {
+				continue // skip empty assistant turns; Gemini requires at least one part
+			}
 			contents = append(contents, Content{
 				Role:  "model", // Gemini uses "model" instead of "assistant"
 				Parts: parts,
@@ -648,6 +665,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.InputTokens = chunk.UsageMetadata.PromptTokenCount
 			usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
 			usage.TotalTokens = chunk.UsageMetadata.TotalTokenCount
+			// Track Gemini implicit cache hits for observability
+			usage.CacheReadInputTokens = chunk.UsageMetadata.CachedContentTokenCount
 		}
 
 		// Check context cancellation

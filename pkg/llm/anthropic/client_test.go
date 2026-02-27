@@ -16,6 +16,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -481,8 +482,8 @@ data: {"type":"message_stop"}
 func TestClient_CalculateCost(t *testing.T) {
 	client := &Client{}
 
-	// Test with known values
-	cost := client.calculateCost(1_000_000, 1_000_000)
+	// Test with known values (no caching)
+	cost := client.calculateCost(1_000_000, 1_000_000, 0, 0)
 
 	// Expected: $3 + $15 = $18
 	expected := 18.0
@@ -490,11 +491,25 @@ func TestClient_CalculateCost(t *testing.T) {
 		t.Errorf("Expected cost $%.2f, got $%.2f", expected, cost)
 	}
 
-	// Test with smaller values
-	cost = client.calculateCost(1000, 1000)
+	// Test with smaller values (no caching)
+	cost = client.calculateCost(1000, 1000, 0, 0)
 	expected = 0.018 // $0.003 + $0.015
 	if cost != expected {
 		t.Errorf("Expected cost $%.6f, got $%.6f", expected, cost)
+	}
+
+	// Test cache read pricing: $0.30 per million (0.10x input rate of $3)
+	cost = client.calculateCost(0, 0, 1_000_000, 0)
+	expected = 0.30
+	if cost != expected {
+		t.Errorf("Expected cache read cost $%.2f, got $%.2f", expected, cost)
+	}
+
+	// Test cache creation pricing: $3.75 per million (1.25x input rate of $3)
+	cost = client.calculateCost(0, 0, 0, 1_000_000)
+	expected = 3.75
+	if cost != expected {
+		t.Errorf("Expected cache creation cost $%.2f, got $%.2f", expected, cost)
 	}
 }
 
@@ -543,4 +558,194 @@ func (m *mockTool) Execute(ctx context.Context, params map[string]interface{}) (
 
 func (m *mockTool) Backend() string {
 	return ""
+}
+
+func TestClient_Chat_PromptCachingHeader(t *testing.T) {
+	var capturedBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("anthropic-beta")
+		resp := MessagesResponse{
+			ID:         "msg_cache",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-sonnet-4-5-20250929",
+			StopReason: "end_turn",
+			Content:    []ContentBlock{{Type: "text", Text: "ok"}},
+			Usage:      Usage{InputTokens: 10, OutputTokens: 5},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	ctx := &mockContext{Context: context.Background()}
+	_, err := client.Chat(ctx, []types.Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedBeta != "prompt-caching-2024-07-31" {
+		t.Errorf("expected prompt-caching-2024-07-31 beta header, got %q", capturedBeta)
+	}
+}
+
+func TestClient_Chat_SystemBlockCacheControl(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		capturedBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read body: %v", err)
+		}
+		resp := MessagesResponse{
+			ID:         "msg_sys",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-sonnet-4-5-20250929",
+			StopReason: "end_turn",
+			Content:    []ContentBlock{{Type: "text", Text: "ok"}},
+			Usage:      Usage{InputTokens: 100, OutputTokens: 5},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	ctx := &mockContext{Context: context.Background()}
+	msgs := []types.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "hi"},
+	}
+	_, err := client.Chat(ctx, msgs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the system block contains cache_control: ephemeral
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	systemRaw, ok := parsed["system"]
+	if !ok {
+		t.Fatal("expected system field in request")
+	}
+	systemBlocks, ok := systemRaw.([]interface{})
+	if !ok || len(systemBlocks) == 0 {
+		t.Fatal("expected system to be an array of blocks")
+	}
+	block := systemBlocks[0].(map[string]interface{})
+	cc, hasCacheControl := block["cache_control"]
+	if !hasCacheControl {
+		t.Error("expected cache_control on system block")
+	}
+	ccMap := cc.(map[string]interface{})
+	if ccMap["type"] != "ephemeral" {
+		t.Errorf("expected cache_control.type == ephemeral, got %v", ccMap["type"])
+	}
+}
+
+func TestClient_Chat_ToolCacheControl(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		capturedBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read body: %v", err)
+		}
+		resp := MessagesResponse{
+			ID:         "msg_tools",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-sonnet-4-5-20250929",
+			StopReason: "end_turn",
+			Content:    []ContentBlock{{Type: "text", Text: "ok"}},
+			Usage:      Usage{InputTokens: 100, OutputTokens: 5},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	ctx := &mockContext{Context: context.Background()}
+	tools := []shuttle.Tool{
+		&mockTool{name: "tool_a", description: "Tool A"},
+		&mockTool{name: "tool_b", description: "Tool B"},
+	}
+	_, err := client.Chat(ctx, []types.Message{{Role: "user", Content: "hi"}}, tools)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the last tool has cache_control: ephemeral
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	toolsRaw, ok := parsed["tools"]
+	if !ok {
+		t.Fatal("expected tools field in request")
+	}
+	toolsList := toolsRaw.([]interface{})
+	if len(toolsList) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(toolsList))
+	}
+	// First tool should NOT have cache_control
+	firstTool := toolsList[0].(map[string]interface{})
+	if _, hasCc := firstTool["cache_control"]; hasCc {
+		t.Error("first tool should not have cache_control")
+	}
+	// Last tool should have cache_control: ephemeral
+	lastTool := toolsList[len(toolsList)-1].(map[string]interface{})
+	cc, hasCc := lastTool["cache_control"]
+	if !hasCc {
+		t.Error("last tool should have cache_control")
+	}
+	ccMap := cc.(map[string]interface{})
+	if ccMap["type"] != "ephemeral" {
+		t.Errorf("expected last tool cache_control.type == ephemeral, got %v", ccMap["type"])
+	}
+}
+
+func TestClient_Chat_CacheTokensInResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := MessagesResponse{
+			ID:         "msg_cached",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-sonnet-4-5-20250929",
+			StopReason: "end_turn",
+			Content:    []ContentBlock{{Type: "text", Text: "cached response"}},
+			Usage: Usage{
+				InputTokens:              50,
+				OutputTokens:             10,
+				CacheReadInputTokens:     800,
+				CacheCreationInputTokens: 0,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	ctx := &mockContext{Context: context.Background()}
+	resp, err := client.Chat(ctx, []types.Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Usage.CacheReadInputTokens != 800 {
+		t.Errorf("expected 800 cache read tokens, got %d", resp.Usage.CacheReadInputTokens)
+	}
+	if resp.Usage.CacheCreationInputTokens != 0 {
+		t.Errorf("expected 0 cache creation tokens, got %d", resp.Usage.CacheCreationInputTokens)
+	}
+	// Verify cost includes cache read pricing
+	// 50 input * $3/M + 10 output * $15/M + 800 cache_read * $0.30/M
+	expectedCost := 50.0*3.0/1_000_000 + 10.0*15.0/1_000_000 + 800.0*0.30/1_000_000
+	if resp.Usage.CostUSD != expectedCost {
+		t.Errorf("expected cost $%.8f, got $%.8f", expectedCost, resp.Usage.CostUSD)
+	}
 }
