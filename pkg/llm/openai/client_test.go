@@ -14,6 +14,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -708,4 +709,93 @@ func (m *mockShuttleTool) Execute(ctx context.Context, params map[string]interfa
 
 func (m *mockShuttleTool) Backend() string {
 	return ""
+}
+
+// TestUsesMaxCompletionTokens verifies that modern models use max_completion_tokens
+// and legacy models continue to use max_tokens.
+func TestUsesMaxCompletionTokens(t *testing.T) {
+	cases := []struct {
+		model   string
+		wantNew bool // true = expects max_completion_tokens
+	}{
+		// Modern models → max_completion_tokens
+		{"gpt-4o", true},
+		{"gpt-4o-mini", true},
+		{"gpt-4o-2024-11-20", true},
+		{"o1", true},
+		{"o1-mini", true},
+		{"o1-preview", true},
+		{"o3", true},
+		{"o3-mini", true},
+		{"o4-mini", true},
+		{"gpt-4-turbo", true},
+		{"gpt-4-turbo-preview", true},
+		{"gpt-4.1", true},
+		{"gpt-5", true},
+		// Legacy models → max_tokens
+		{"gpt-3.5-turbo", false},
+		{"gpt-3.5-turbo-0125", false},
+		{"gpt-35-turbo", false},
+		{"gpt-4-0613", false},
+		{"gpt-4-32k", false},
+		{"gpt-4-32k-0613", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			c := &Client{model: tc.model}
+			got := c.usesMaxCompletionTokens()
+			if got != tc.wantNew {
+				t.Errorf("model %q: usesMaxCompletionTokens()=%v, want %v", tc.model, got, tc.wantNew)
+			}
+		})
+	}
+}
+
+// TestChatRequest_MaxTokensField verifies that Chat() populates the correct field
+// in the JSON request body based on model generation.
+func TestChatRequest_MaxTokensField(t *testing.T) {
+	cases := []struct {
+		model         string
+		wantMaxTokens bool // true = max_tokens, false = max_completion_tokens
+	}{
+		{"o1-mini", false},
+		{"gpt-4o", false},
+		{"gpt-3.5-turbo", true},
+		{"gpt-4-0613", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var captured []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var buf bytes.Buffer
+				_, _ = buf.ReadFrom(r.Body)
+				captured = buf.Bytes()
+
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ChatCompletionResponse{
+					Choices: []ChatCompletionChoice{{Message: ChatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+				})
+			}))
+			defer server.Close()
+
+			ctx := &mockContext{Context: context.Background()}
+			c := NewClient(Config{Model: tc.model, MaxTokens: 512, Endpoint: server.URL})
+			_, _ = c.Chat(ctx, []types.Message{{Role: "user", Content: "hi"}}, nil)
+
+			var body map[string]interface{}
+			_ = json.Unmarshal(captured, &body)
+
+			_, hasOld := body["max_tokens"]
+			_, hasNew := body["max_completion_tokens"]
+
+			if tc.wantMaxTokens {
+				assert.True(t, hasOld, "expected max_tokens in request for model %s", tc.model)
+				assert.False(t, hasNew, "expected no max_completion_tokens for model %s", tc.model)
+			} else {
+				assert.False(t, hasOld, "expected no max_tokens in request for model %s", tc.model)
+				assert.True(t, hasNew, "expected max_completion_tokens in request for model %s", tc.model)
+			}
+		})
+	}
 }

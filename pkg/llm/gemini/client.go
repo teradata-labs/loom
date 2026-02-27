@@ -383,12 +383,23 @@ func convertMessages(messages []llmtypes.Message) []Content {
 						// Note: Gemini doesn't support URL-based images directly
 					}
 				}
+				if len(parts) == 0 {
+					// No supported content blocks — fall back to text content if available
+					if msg.Content != "" {
+						parts = []Part{{Text: msg.Content}}
+					} else {
+						continue // skip empty messages; Gemini requires at least one part
+					}
+				}
 				contents = append(contents, Content{
 					Role:  "user",
 					Parts: parts,
 				})
 			} else {
 				// Fallback to plain text (backward compatible)
+				if msg.Content == "" {
+					continue // skip empty user messages; Gemini requires at least one part
+				}
 				contents = append(contents, Content{
 					Role: "user",
 					Parts: []Part{
@@ -398,7 +409,7 @@ func convertMessages(messages []llmtypes.Message) []Content {
 			}
 
 		case "assistant":
-			parts := []Part{}
+			var parts []Part
 
 			if msg.Content != "" {
 				parts = append(parts, Part{Text: msg.Content})
@@ -415,6 +426,9 @@ func convertMessages(messages []llmtypes.Message) []Content {
 				})
 			}
 
+			if len(parts) == 0 {
+				continue // skip empty assistant turns; Gemini requires at least one part
+			}
 			contents = append(contents, Content{
 				Role:  "model", // Gemini uses "model" instead of "assistant"
 				Parts: parts,
