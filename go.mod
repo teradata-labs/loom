@@ -11,8 +11,8 @@ require (
 )
 
 require (
-	charm.land/bubbles/v2 v2.0.0-rc.1
-	charm.land/bubbletea/v2 v2.0.0-rc.2.0.20251216153312-819e2e89c62e
+	charm.land/bubbles/v2 v2.0.0
+	charm.land/bubbletea/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.0
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/alecthomas/chroma/v2 v2.23.1
@@ -22,7 +22,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.10
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.10
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.0
-	github.com/charmbracelet/ultraviolet v0.0.0-20251212194010-b927aa605560
+	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
 	github.com/disintegration/imageorient v0.0.0-20180920195336-8147d86e83ec
@@ -109,7 +109,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jhump/protoreflect/v2 v2.0.0-beta.1 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-runewidth v0.0.19 // indirect
+	github.com/mattn/go-runewidth v0.0.20 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
