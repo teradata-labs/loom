@@ -151,7 +151,7 @@ jobs:
           echo "## Nightly Coverage: $COVERAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: nightly-coverage-${{ github.run_number }}
           path: |
@@ -263,7 +263,7 @@ jobs:
           "ZIP_FILE=$ZIP_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload binaries artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: nightly-binaries-${{ matrix.os }}-${{ github.run_number }}
           path: |
@@ -329,7 +329,7 @@ jobs:
           fi
 
       - name: Upload security report artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: nightly-security-report-${{ github.run_number }}
           path: results.sarif
