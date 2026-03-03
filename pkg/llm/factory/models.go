@@ -333,7 +333,7 @@ func (r *ModelRegistry) DiscoverOllamaModels(endpoint string) error {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(endpoint + "/api/tags") // #nosec G107 -- endpoint validated by url.ParseRequestURI above
+	resp, err := client.Get(endpoint + "/api/tags") // #nosec -- endpoint validated by url.ParseRequestURI above
 	if err != nil {
 		return fmt.Errorf("failed to reach Ollama at %s: %w", endpoint, err)
 	}

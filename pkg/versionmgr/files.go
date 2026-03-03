@@ -14,7 +14,7 @@
 
 // Package versionmgr manages version updates across multiple file formats.
 // All file paths are from hardcoded GetAllTargets() with no user input.
-// #nosec G304 G306 -- File paths are validated, controlled by tool, and files must be world-readable
+// #nosec -- File paths are validated, controlled by tool, and files must be world-readable
 package versionmgr
 
 import (
@@ -127,8 +127,7 @@ func GetAllTargets(repoRoot string) []FileTarget {
 
 // updateVersionFile updates the canonical VERSION file (single line)
 func updateVersionFile(path string, version Version) error {
-	// #nosec G306 -- VERSION file needs to be readable by all users for build tools
-	return os.WriteFile(path, []byte(version.String()+"\n"), 0644)
+	return os.WriteFile(path, []byte(version.String()+"\n"), 0644) // #nosec -- VERSION file needs to be readable by all users for build tools
 }
 
 // extractVersionFile extracts version from VERSION file
@@ -151,7 +150,7 @@ func updateGoVersionFile(path string, version Version) error {
 	re := regexp.MustCompile(`var Version = "[^"]*"`)
 	newContent := re.ReplaceAllString(string(content), fmt.Sprintf(`var Version = "%s"`, version.String()))
 
-	return os.WriteFile(path, []byte(newContent), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(newContent), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractGoVersionFile extracts version from Go version file
@@ -187,7 +186,7 @@ func updateHomebrewFormula(path string, version Version) error {
 	re2 := regexp.MustCompile(`/v[0-9]+\.[0-9]+\.[0-9]+/`)
 	text = re2.ReplaceAllString(text, fmt.Sprintf("/%s/", version.WithV()))
 
-	return os.WriteFile(path, []byte(text), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractHomebrewFormula extracts versions from Homebrew formula
@@ -238,7 +237,7 @@ func updateChocolateySpec(path string, version Version) error {
 	re2 := regexp.MustCompile(`<releaseNotes>https://github\.com/teradata-labs/loom/releases/tag/v[0-9]+\.[0-9]+\.[0-9]+</releaseNotes>`)
 	text = re2.ReplaceAllString(text, fmt.Sprintf("<releaseNotes>%s</releaseNotes>", releaseNotesURL))
 
-	return os.WriteFile(path, []byte(text), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractChocolateySpec extracts version from Chocolatey spec
@@ -291,7 +290,7 @@ func updateScoopManifest(path string, version Version) error {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	return os.WriteFile(path, append(output, '\n'), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, append(output, '\n'), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractScoopManifest extracts version from Scoop manifest
@@ -333,7 +332,7 @@ func updateWingetInstaller(path string, version Version) error {
 	// Update ReleaseDate (if present) - keep the format that's there
 	// We don't need to update this actually, as it's set during release
 
-	return os.WriteFile(path, []byte(text), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractWingetInstaller extracts version from Winget installer
@@ -373,7 +372,7 @@ func updateWingetLocale(path string, version Version) error {
 	re3 := regexp.MustCompile(`ReleaseNotesUrl: https://github\.com/teradata-labs/loom/releases/tag/v[0-9]+\.[0-9]+\.[0-9]+`)
 	text = re3.ReplaceAllString(text, fmt.Sprintf("ReleaseNotesUrl: https://github.com/teradata-labs/loom/releases/tag/%s", version.WithV()))
 
-	return os.WriteFile(path, []byte(text), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(text), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractWingetLocale extracts version from Winget locale
@@ -403,7 +402,7 @@ func updateReadmeVersion(path string, version Version) error {
 	re := regexp.MustCompile(`\*\*Version\*\*: v[0-9]+\.[0-9]+\.[0-9]+`)
 	newContent := re.ReplaceAllString(string(content), fmt.Sprintf("**Version**: %s", version.WithV()))
 
-	return os.WriteFile(path, []byte(newContent), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(newContent), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractReadmeVersion extracts version from README.md
@@ -450,7 +449,7 @@ func updateClaudeVersion(path string, version Version) error {
 		return err
 	}
 
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractClaudeVersion extracts version from CLAUDE.md
@@ -490,7 +489,7 @@ func updateDocsReadme(path string, version Version) error {
 	re := regexp.MustCompile(`\*\*Version\*\*: v[0-9]+\.[0-9]+\.[0-9]+`)
 	newContent := re.ReplaceAllString(string(content), fmt.Sprintf("**Version**: %s", version.WithV()))
 
-	return os.WriteFile(path, []byte(newContent), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(newContent), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractDocsReadme extracts version from docs/README.md
@@ -521,7 +520,7 @@ func updateChocolateyInstall(path string, version Version) error {
 	re := regexp.MustCompile(`\$version = '[0-9]+\.[0-9]+\.[0-9]+'`)
 	newContent := re.ReplaceAllString(string(content), fmt.Sprintf(`$$version = '%s'`, version.String()))
 
-	return os.WriteFile(path, []byte(newContent), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(newContent), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractChocolateyInstall extracts version from chocolateyinstall.ps1
@@ -551,7 +550,7 @@ func updateWingetVersion(path string, version Version) error {
 	newContent := re.ReplaceAllString(string(content),
 		fmt.Sprintf("PackageVersion: %s", version.String()))
 
-	return os.WriteFile(path, []byte(newContent), 0644) // #nosec G304 G306 -- path from GetAllTargets(), controlled by version manager tool
+	return os.WriteFile(path, []byte(newContent), 0644) // #nosec -- path from GetAllTargets(), controlled by version manager tool
 }
 
 // extractWingetVersion extracts version from Teradata.Loom.yaml

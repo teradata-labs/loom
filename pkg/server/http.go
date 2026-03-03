@@ -478,7 +478,7 @@ func (h *HTTPServer) handleAppHTML(w http.ResponseWriter, _ *http.Request, name 
 			"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "+
 			"connect-src 'self'; frame-ancestors 'self'")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(content) // #nosec G203 -- trusted internal app HTML served with strict CSP headers
+	_, _ = w.Write(content) // #nosec -- trusted internal app HTML served with strict CSP headers
 }
 
 // sendSSEError sends an error event via SSE

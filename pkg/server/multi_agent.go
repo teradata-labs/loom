@@ -1010,7 +1010,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 
 	// Extract workflow topic for auto-subscribe
 	var workflowTopic string
-	if _, statErr := os.Stat(workflowPath); statErr == nil { // #nosec G304 -- workflowPath is filepath.Join(homeDir, ".loom", "workflows", name+".yaml")
+	if _, statErr := os.Stat(workflowPath); statErr == nil { // #nosec -- workflowPath is filepath.Join(homeDir, ".loom", "workflows", name+".yaml")
 		s.logger.Info("Loading workflow definition for auto-subscribe",
 			zap.String("path", workflowPath))
 

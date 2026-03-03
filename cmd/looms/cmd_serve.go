@@ -860,7 +860,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		filepath.Join(filepath.Dir(os.Args[0]), "..", "examples"),
 	}
 	for _, path := range possibleExamplesPaths {
-		if info, err := os.Stat(path); err == nil && info.IsDir() { // #nosec G304 -- paths are from hardcoded filepath.Join patterns
+		if info, err := os.Stat(path); err == nil && info.IsDir() { // #nosec -- paths constructed from hardcoded filepath.Join patterns
 			examplesSourceDir = path
 			break
 		}
@@ -2861,13 +2861,13 @@ func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
 // copyDir recursively copies a directory tree from src to dst.
 func copyDir(src, dst string) error {
 	// Get source directory info
-	srcInfo, err := os.Stat(src) // #nosec G304 -- src is from controlled internal directory copy
+	srcInfo, err := os.Stat(src) // #nosec -- src is from controlled internal directory copy
 	if err != nil {
 		return fmt.Errorf("failed to stat source: %w", err)
 	}
 
 	// Create destination directory
-	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil { // #nosec G306 -- permissions inherited from source directory
+	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil { // #nosec -- permissions inherited from source directory
 		return fmt.Errorf("failed to create destination: %w", err)
 	}
 
@@ -2901,19 +2901,19 @@ func copyDir(src, dst string) error {
 // copyFile copies a single file from src to dst.
 func copyFile(src, dst string) error {
 	// Read source file
-	data, err := os.ReadFile(src) // #nosec G304 -- src is from controlled internal directory copy
+	data, err := os.ReadFile(src) // #nosec -- src is from controlled internal directory copy
 	if err != nil {
 		return fmt.Errorf("failed to read source file: %w", err)
 	}
 
 	// Get source file info for permissions
-	srcInfo, err := os.Stat(src) // #nosec G304 -- src path from controlled internal directory copy
+	srcInfo, err := os.Stat(src) // #nosec -- src path from controlled internal directory copy
 	if err != nil {
 		return fmt.Errorf("failed to stat source file: %w", err)
 	}
 
 	// Write destination file
-	if err := os.WriteFile(dst, data, srcInfo.Mode()); err != nil { // #nosec G304 G306 -- dst path and permissions from controlled internal copy operation
+	if err := os.WriteFile(dst, data, srcInfo.Mode()); err != nil { // #nosec -- dst path and permissions from controlled internal copy operation
 		return fmt.Errorf("failed to write destination file: %w", err)
 	}
 

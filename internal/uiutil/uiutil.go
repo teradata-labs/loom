@@ -30,7 +30,7 @@ func OpenInEditor(path string) error {
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, path) // #nosec G204 -- intentional: CLI tool uses $EDITOR env var (standard Unix practice)
+	cmd := exec.Command(editor, path) // #nosec -- intentional: CLI tool uses $EDITOR env var (standard Unix practice)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

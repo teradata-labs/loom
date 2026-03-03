@@ -411,7 +411,7 @@ func (p *LetsEncryptProvider) loadOrCreateUser() (*ACMEUser, error) {
 		PrivateKey:   string(keyPEM),
 	}
 
-	data, _ := json.MarshalIndent(savedUser, "", "  ") // #nosec G101 -- intentional: saving TLS user credentials to protected disk file (mode 0600)
+	data, _ := json.MarshalIndent(savedUser, "", "  ") // #nosec -- intentional: saving TLS user credentials to protected disk file (mode 0600)
 	if err := os.WriteFile(userPath, data, 0600); err != nil {
 		p.logger.Warn("failed to save user", zap.Error(err))
 	}
