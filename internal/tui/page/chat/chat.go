@@ -631,6 +631,18 @@ func (p *chatPage) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		dialog := mcpdialog.NewToolDetailsDialog(msg.ServerName, msg.Tool)
 		return p, util.CmdHandler(dialogs.OpenDialogMsg{Model: dialog})
 
+	case sidebar.OpenPatternBrowserMsg:
+		// Open pattern browser dialog
+		return p, util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: pattern.NewPatternBrowserDialog(),
+		})
+
+	case editor.ShowSlashHelpMsg:
+		// Open the slash commands help dialog
+		return p, util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: commands.NewSlashHelpDialog(),
+		})
+
 	case sidebar.AddMCPServerActionMsg:
 		// Open add MCP server dialog
 		dialog := mcpdialog.NewAddMCPServerDialog(

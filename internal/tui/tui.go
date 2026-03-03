@@ -278,6 +278,41 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleWindowResize(a.wWidth, a.wHeight)
 
 	// Browse Apps
+	case commands.OpenAgentsDialogMsg:
+		if !a.isConfigured {
+			return a, nil
+		}
+		if a.dialog.HasDialogs() {
+			return a, nil
+		}
+		return a, func() tea.Msg {
+			agentsList, err := a.app.AgentCoordinator.ListAgents(context.Background())
+			if err != nil {
+				return util.ReportError(err)
+			}
+			regularAgents := a.filterRegularAgents(agentsList)
+			return dialogs.OpenDialogMsg{
+				Model: agents.NewAgentsDialog(regularAgents),
+			}
+		}
+	case commands.OpenWorkflowsDialogMsg:
+		if !a.isConfigured {
+			return a, nil
+		}
+		if a.dialog.HasDialogs() {
+			return a, nil
+		}
+		return a, func() tea.Msg {
+			agentsList, err := a.app.AgentCoordinator.ListAgents(context.Background())
+			if err != nil {
+				return util.ReportError(err)
+			}
+			workflowsList := a.extractWorkflows(agentsList)
+			weaverAgent := a.findWeaverAgent(agentsList)
+			return dialogs.OpenDialogMsg{
+				Model: workflows.NewWorkflowsDialog(workflowsList, weaverAgent),
+			}
+		}
 	case commands.OpenBrowseAppsMsg:
 		if a.app.Client() == nil {
 			return a, util.ReportInfo("Not connected to server")
@@ -615,8 +650,9 @@ func (a *appModel) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 			// Extract workflows from agent list
 			workflowsList := a.extractWorkflows(agentsList)
+			weaverAgent := a.findWeaverAgent(agentsList)
 			return dialogs.OpenDialogMsg{
-				Model: workflows.NewWorkflowsDialog(workflowsList),
+				Model: workflows.NewWorkflowsDialog(workflowsList, weaverAgent),
 			}
 		}
 	case key.Matches(msg, a.keyMap.Suspend):
@@ -798,6 +834,20 @@ func (a *appModel) filterRegularAgents(agentsList []agent.AgentInfo) []agents.Ag
 	}
 
 	return regularAgents
+}
+
+// findWeaverAgent finds the weaver agent from the agent list and returns its info, or nil.
+func (a *appModel) findWeaverAgent(agentsList []agent.AgentInfo) *workflows.WeaverInfo {
+	for _, ag := range agentsList {
+		if ag.Name == "weaver" {
+			return &workflows.WeaverInfo{
+				ID:     ag.ID,
+				Name:   ag.Name,
+				Status: ag.Status,
+			}
+		}
+	}
+	return nil
 }
 
 // extractWorkflows extracts workflow information from the agent list.
