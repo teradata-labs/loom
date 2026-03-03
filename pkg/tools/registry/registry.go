@@ -401,7 +401,7 @@ func (r *Registry) ftsSearch(ctx context.Context, query string, expandedTerms []
 			placeholders[i] = "?"
 			args = append(args, int(s))
 		}
-		sql += " AND t.source IN (" + strings.Join(placeholders, ",") + ")"
+		sql += " AND t.source IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- placeholders are literal "?" strings, values are parameterized
 	}
 
 	// Add capability filters (check if any capability matches)
@@ -669,7 +669,7 @@ func (r *Registry) GetToolsByCapability(ctx context.Context, capability string, 
 			placeholders[i] = "?"
 			args = append(args, int(s))
 		}
-		sql += " AND source IN (" + strings.Join(placeholders, ",") + ")"
+		sql += " AND source IN (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- placeholders are literal "?" strings, values are parameterized
 	}
 
 	sql += " LIMIT ?"

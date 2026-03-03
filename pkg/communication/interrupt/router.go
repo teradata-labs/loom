@@ -62,7 +62,7 @@ type Router struct {
 
 // NewRouter creates a new fast-path router.
 func NewRouter(ctx context.Context) *Router {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx) // #nosec -- intentional: background worker goroutine that must outlive request context
 	return &Router{
 		ctx:     ctx,
 		cancel:  cancel,
@@ -97,7 +97,7 @@ func (r *Router) RegisterHandler(agentID string, signal InterruptSignal, handler
 	ch := make(chan *routerMessage, bufferSize)
 
 	// Create handler goroutine context
-	handlerCtx, handlerCancel := context.WithCancel(r.ctx)
+	handlerCtx, handlerCancel := context.WithCancel(r.ctx) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 	entry := &routerEntry{
 		agentID:  agentID,

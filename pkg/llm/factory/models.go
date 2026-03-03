@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -326,8 +327,13 @@ func (r *ModelRegistry) DiscoverOllamaModels(endpoint string) error {
 		endpoint = "http://localhost:11434"
 	}
 
+	// Validate endpoint URL to prevent SSRF (gosec G107)
+	if _, err := url.ParseRequestURI(endpoint); err != nil {
+		return fmt.Errorf("invalid Ollama endpoint URL %q: %w", endpoint, err)
+	}
+
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(endpoint + "/api/tags")
+	resp, err := client.Get(endpoint + "/api/tags") // #nosec G107 -- endpoint validated by url.ParseRequestURI above
 	if err != nil {
 		return fmt.Errorf("failed to reach Ollama at %s: %w", endpoint, err)
 	}

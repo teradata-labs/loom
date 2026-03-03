@@ -375,7 +375,7 @@ func (s *Scheduler) TriggerNow(ctx context.Context, scheduleID string, skipIfRun
 
 	// Execute workflow
 	executionID := uuid.New().String()
-	go s.executeWorkflow(context.Background(), schedule, executionID, mergedVars)
+	go s.executeWorkflow(context.Background(), schedule, executionID, mergedVars) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 	return executionID, nil
 }

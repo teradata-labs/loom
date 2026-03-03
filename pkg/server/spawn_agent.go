@@ -164,8 +164,8 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		zap.String("workflow_name", spawnCommCtx.WorkflowName))
 
 	// Create contexts for lifecycle management
-	subCtx, cancel := context.WithCancel(context.Background())      // For session monitoring
-	loopCtx, loopCancel := context.WithCancel(context.Background()) // For background message loop
+	subCtx, cancel := context.WithCancel(context.Background())      // #nosec -- intentional: background worker goroutine that must outlive request context
+	loopCtx, loopCancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 	// Determine auto-despawn timeout (default: 15 minutes of inactivity)
 	autoDespawnTimeout := 15 * time.Minute

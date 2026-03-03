@@ -355,8 +355,7 @@ func gitCommit(repoRoot string, version versionmgr.Version) error {
 	}
 
 	commitMsg := fmt.Sprintf("Bump version to %s\n\nCo-Authored-By: Loom Version Manager <noreply@teradata.com>", version.WithV())
-	// #nosec G204 -- version is validated by Version struct, not arbitrary user input
-	cmd = exec.Command("git", "commit", "-m", commitMsg)
+	cmd = exec.Command("git", "commit", "-m", commitMsg) // #nosec G204 -- version string is validated by Version struct
 	cmd.Dir = repoRoot
 	return cmd.Run()
 }
