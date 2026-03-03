@@ -314,7 +314,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "bedrock":
-		client, err := bedrock.NewSDKClient(bedrock.Config{
+		client, err := bedrock.NewClient(bedrock.Config{
 			Region:            cfg.BedrockRegion,
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,

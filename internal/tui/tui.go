@@ -44,6 +44,7 @@ import (
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/agents"
 	appsDialog "github.com/teradata-labs/loom/internal/tui/components/dialogs/apps"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/commands"
+	"github.com/teradata-labs/loom/internal/tui/components/dialogs/errordetail"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/filepicker"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/permissions"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs/quit"
@@ -246,7 +247,24 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.moveToPage(msg.ID)
 
 	// Status Messages
-	case util.InfoMsg, util.ClearStatusMsg:
+	case util.InfoMsg:
+		s, statusCmd := a.status.Update(msg)
+		a.status = s.(status.StatusCmp)
+		cmds = append(cmds, statusCmd)
+		// For errors, also open a detail dialog so the full message is visible
+		if msg.Type == util.InfoTypeError {
+			text := msg.Msg
+			if text == "" {
+				text = msg.Text
+			}
+			if text != "" {
+				cmds = append(cmds, util.CmdHandler(dialogs.OpenDialogMsg{
+					Model: errordetail.New(text),
+				}))
+			}
+		}
+		return a, tea.Batch(cmds...)
+	case util.ClearStatusMsg:
 		s, statusCmd := a.status.Update(msg)
 		a.status = s.(status.StatusCmp)
 		cmds = append(cmds, statusCmd)
