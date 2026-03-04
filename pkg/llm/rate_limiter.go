@@ -498,7 +498,7 @@ func (rl *RateLimiter) reportMetrics() {
 			metrics := rl.GetMetrics()
 			tokenUsage := rl.GetTokenUsageLastMinute()
 
-			rl.config.Logger.Info("Rate limiter metrics",
+			rl.config.Logger.Debug("Rate limiter metrics",
 				zap.Int64("total_requests", metrics.TotalRequests),
 				zap.Int64("throttled_requests", metrics.ThrottledRequests),
 				zap.Int64("queued_requests", metrics.QueuedRequests),
