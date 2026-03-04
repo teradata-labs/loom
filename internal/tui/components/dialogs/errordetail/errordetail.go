@@ -109,7 +109,9 @@ func (d *errorDetailDialog) recalcLayout() {
 	vpHeight := max(d.height-6, 2) // title + padding + help line; at least 2 rows
 	d.viewport.SetWidth(vpWidth)
 	d.viewport.SetHeight(vpHeight)
-	d.viewport.SetContent(d.errText)
+	// Word-wrap the text to the viewport width so long lines don't scroll off-screen
+	wrapped := lipgloss.NewStyle().Width(vpWidth).Render(d.errText)
+	d.viewport.SetContent(wrapped)
 }
 
 func (d *errorDetailDialog) View() string {

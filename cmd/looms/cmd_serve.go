@@ -2442,37 +2442,31 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// --- Preflight health check: validate all LLM providers before accepting connections ---
-	logger.Info("Running LLM provider preflight health check...")
+	// Providers are deduplicated across agents and checked concurrently, so startup time is
+	// O(slowest_provider) rather than O(agents × latency). Critical for large deployments.
+	logger.Info("Running LLM provider preflight health check...",
+		zap.Int("agents", len(agents)))
 	{
-		preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer preflightCancel()
-
+		// Log all configured providers before pinging them
 		for agentID, ag := range agents {
 			agentName := ag.GetName()
 			if agentName == "" {
 				agentName = agentID
 			}
-
-			// Log each configured role LLM provider for this agent
-			roleLLMs := ag.GetAllRoleLLMs()
-			for role, llmProv := range roleLLMs {
-				roleName := llmRoleDisplayName(role)
+			for role, llmProv := range ag.GetAllRoleLLMs() {
 				logger.Info("LLM provider configured",
 					zap.String("agent", agentName),
-					zap.String("role", roleName),
+					zap.String("role", llmRoleDisplayName(role)),
 					zap.String("provider", llmProv.Name()),
 					zap.String("model", llmProv.Model()))
 			}
+		}
 
-			// Validate providers (sends ping to each)
-			if err := server.ValidateProviders(preflightCtx, ag); err != nil {
-				logger.Fatal("LLM provider preflight check failed",
-					zap.String("agent", agentName),
-					zap.Error(err))
-			}
-			logger.Info("LLM provider preflight check passed",
-				zap.String("agent", agentName),
-				zap.Int("providers_checked", len(roleLLMs)))
+		preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer preflightCancel()
+
+		if err := server.ValidateProviders(preflightCtx, agents); err != nil {
+			logger.Fatal("LLM provider preflight check failed", zap.Error(err))
 		}
 		logger.Info("All LLM provider preflight checks passed",
 			zap.Int("agents_checked", len(agents)))
