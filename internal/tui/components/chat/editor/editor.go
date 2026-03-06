@@ -33,6 +33,7 @@ import (
 	"github.com/teradata-labs/loom/internal/message"
 	"github.com/teradata-labs/loom/internal/session"
 	"github.com/teradata-labs/loom/internal/tui/components/chat"
+	"github.com/teradata-labs/loom/internal/tui/components/chat/sidebar"
 	"github.com/teradata-labs/loom/internal/tui/components/completions"
 	"github.com/teradata-labs/loom/internal/tui/components/core/layout"
 	"github.com/teradata-labs/loom/internal/tui/components/dialogs"
@@ -151,6 +152,9 @@ func (m *editorCmp) Init() tea.Cmd {
 	return nil
 }
 
+// ShowSlashHelpMsg is sent when the user types /help
+type ShowSlashHelpMsg struct{}
+
 func (m *editorCmp) send() tea.Cmd {
 	value := m.textarea.Value()
 	value = strings.TrimSpace(value)
@@ -163,6 +167,36 @@ func (m *editorCmp) send() tea.Cmd {
 		// User wants to clear the current session and start fresh
 		m.textarea.Reset()
 		return util.CmdHandler(ClearCurrentSessionMsg{})
+	case "/quit", "/exit":
+		m.textarea.Reset()
+		return util.CmdHandler(dialogs.OpenDialogMsg{Model: quit.NewQuitDialog()})
+	case "/sessions":
+		m.textarea.Reset()
+		return util.CmdHandler(commands.SwitchSessionsMsg{})
+	case "/model":
+		m.textarea.Reset()
+		return util.CmdHandler(commands.SwitchModelMsg{})
+	case "/agents":
+		m.textarea.Reset()
+		return util.CmdHandler(commands.OpenAgentsDialogMsg{})
+	case "/workflows":
+		m.textarea.Reset()
+		return util.CmdHandler(commands.OpenWorkflowsDialogMsg{})
+	case "/sidebar":
+		m.textarea.Reset()
+		return util.CmdHandler(commands.ToggleCompactModeMsg{})
+	case "/apps":
+		m.textarea.Reset()
+		return util.CmdHandler(commands.OpenBrowseAppsMsg{})
+	case "/mcp":
+		m.textarea.Reset()
+		return util.CmdHandler(sidebar.AddMCPServerActionMsg{})
+	case "/patterns":
+		m.textarea.Reset()
+		return util.CmdHandler(sidebar.OpenPatternBrowserMsg{})
+	case "/help":
+		m.textarea.Reset()
+		return util.CmdHandler(ShowSlashHelpMsg{})
 	}
 
 	m.textarea.Reset()
@@ -290,11 +324,6 @@ func (m *editorCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		cur := m.textarea.Cursor()
 		curIdx := m.textarea.Width()*cur.Y + cur.X
 		switch {
-		// Open command palette when "/" is pressed on empty prompt
-		case msg.String() == "/" && m.IsEmpty():
-			return m, util.CmdHandler(dialogs.OpenDialogMsg{
-				Model: commands.NewCommandDialog(m.session.ID),
-			})
 		// Completions
 		case msg.String() == "@" && !m.isCompletionsOpen &&
 			// only show if beginning of prompt, or if previous char is a space or newline:

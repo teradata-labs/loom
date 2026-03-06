@@ -143,8 +143,10 @@ const (
 	SectionNone SidebarSection = iota
 	SectionWeaver
 	SectionMCP
-	SectionPatterns
 )
+
+// OpenPatternBrowserMsg is sent when user wants to open the pattern browser dialog
+type OpenPatternBrowserMsg struct{}
 
 type Sidebar interface {
 	util.Model
@@ -189,7 +191,6 @@ type sidebarCmp struct {
 
 	// Mouse support - track Y positions of clickable items
 	weaverYStart  int
-	patternYStart int
 	contentYStart int // Where sidebar content begins (after logo/header)
 }
 
@@ -415,27 +416,27 @@ func (m *sidebarCmp) View() string {
 		if weaverContent != "" {
 			parts = append(parts, "", weaverContent)
 			m.weaverYStart = currentY + 1 // +1 for empty line
-			currentY += strings.Count(weaverContent, "\n") + 2
 		}
 
 		// Show MCP servers (after weaver, before patterns)
 		mcpContent := m.mcpServersBlock()
 		if mcpContent != "" {
 			parts = append(parts, "", mcpContent)
-			currentY += strings.Count(mcpContent, "\n") + 2
 		}
 
 		lspContent := m.lspBlock()
 		if lspContent != "" {
 			parts = append(parts, "", lspContent)
-			currentY += strings.Count(lspContent, "\n") + 2
 		}
 
-		// Show patterns library at the bottom
-		patternsContent := m.patternsBlock()
-		if patternsContent != "" {
-			parts = append(parts, "", patternsContent)
-			m.patternYStart = currentY + 1 // +1 for empty line
+		agentInfoContent := m.agentInfoBlock()
+		if agentInfoContent != "" {
+			parts = append(parts, "", agentInfoContent)
+		}
+
+		hintsContent := m.keyboardHintsBlock()
+		if hintsContent != "" {
+			parts = append(parts, "", hintsContent)
 		}
 	}
 
@@ -734,8 +735,8 @@ func (m *sidebarCmp) IsFocused() bool {
 
 // updateCachedItems updates the cached lists for navigation
 func (m *sidebarCmp) updateCachedItems() {
-	// Cache pattern categories
-	m.patternCategories = listPatternCategories()
+	// Cache pattern categories (used by pattern browser dialog)
+	m.patternCategories = ListPatternCategories()
 }
 
 // resetSelectionIfNeeded resets selection if current selection is invalid
@@ -749,11 +750,6 @@ func (m *sidebarCmp) resetSelectionIfNeeded() {
 		if m.selectedIndex >= maxMCPItems {
 			m.selectedIndex = max(0, maxMCPItems-1)
 		}
-	case SectionPatterns:
-		maxPatternItems := m.getPatternNavigableItemCount()
-		if m.selectedIndex >= maxPatternItems {
-			m.selectedIndex = max(0, maxPatternItems-1)
-		}
 	}
 }
 
@@ -765,12 +761,8 @@ func (m *sidebarCmp) navigateUp() tea.Cmd {
 		return nil
 	}
 
-	// Move to previous section (going up: patterns -> mcp -> weaver)
+	// Move to previous section (going up: mcp -> weaver)
 	switch m.selectedSection {
-	case SectionPatterns:
-		// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
-		m.selectedSection = SectionMCP
-		m.selectedIndex = max(0, len(m.mcpServers)-1)
 	case SectionMCP:
 		m.selectedSection = SectionWeaver
 		m.selectedIndex = 0
@@ -782,7 +774,7 @@ func (m *sidebarCmp) navigateUp() tea.Cmd {
 }
 
 // navigateDown moves selection down, crossing section boundaries
-// Order: Weaver (top) -> MCP -> Patterns (bottom)
+// Order: Weaver (top) -> MCP (bottom)
 func (m *sidebarCmp) navigateDown() tea.Cmd {
 	maxIndex := 0
 	switch m.selectedSection {
@@ -791,8 +783,6 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 		maxIndex = 0
 	case SectionMCP:
 		maxIndex = max(0, m.getMCPNavigableItemCount()-1)
-	case SectionPatterns:
-		maxIndex = max(0, m.getPatternNavigableItemCount()-1)
 	}
 
 	if m.selectedIndex < maxIndex {
@@ -800,18 +790,13 @@ func (m *sidebarCmp) navigateDown() tea.Cmd {
 		return nil
 	}
 
-	// Move to next section (going down: weaver -> mcp -> patterns)
+	// Move to next section (going down: weaver -> mcp)
 	switch m.selectedSection {
 	case SectionWeaver:
 		// Always allow navigation to MCP section (even if empty, user can press 'a' to add)
 		m.selectedSection = SectionMCP
 		m.selectedIndex = 0
 	case SectionMCP:
-		if len(m.patternCategories) > 0 {
-			m.selectedSection = SectionPatterns
-			m.selectedIndex = 0
-		}
-	case SectionPatterns:
 		// Already at bottom
 	}
 
@@ -831,21 +816,8 @@ func (m *sidebarCmp) getMCPNavigableItemCount() int {
 	return count
 }
 
-// getPatternNavigableItemCount returns the number of navigable items in patterns section
-// (categories + visible files from expanded categories)
-func (m *sidebarCmp) getPatternNavigableItemCount() int {
-	count := 0
-	for _, cat := range m.patternCategories {
-		count++ // Category
-		if m.expandedCategories[cat.Name] {
-			count += len(cat.Files) // Pattern files
-		}
-	}
-	return count
-}
-
 // navigateToNextSection cycles to the next section
-// Order: Weaver -> MCP -> Patterns -> Weaver (cycles)
+// Order: Weaver -> MCP -> Weaver (cycles)
 //
 //nolint:unused // Reserved for future keyboard navigation enhancement
 func (m *sidebarCmp) navigateToNextSection() tea.Cmd {
@@ -855,16 +827,7 @@ func (m *sidebarCmp) navigateToNextSection() tea.Cmd {
 		m.selectedSection = SectionMCP
 		m.selectedIndex = 0
 	case SectionMCP:
-		if len(m.patternCategories) > 0 {
-			m.selectedSection = SectionPatterns
-			m.selectedIndex = 0
-		} else {
-			// Wrap around to Weaver
-			m.selectedSection = SectionWeaver
-			m.selectedIndex = 0
-		}
-	case SectionPatterns:
-		// Wrap around to top
+		// Wrap around to Weaver
 		m.selectedSection = SectionWeaver
 		m.selectedIndex = 0
 	}
@@ -879,38 +842,6 @@ func (m *sidebarCmp) selectCurrentItem() tea.Cmd {
 		return util.CmdHandler(AgentSelectedMsg{
 			AgentID: "weaver",
 		})
-	case SectionPatterns:
-		// Map selectedIndex to category or pattern file
-		// Show all patterns - we have a scrollbar now
-		maxItems := len(m.patternCategories)
-		itemIndex := 0
-
-		for i := 0; i < maxItems; i++ {
-			cat := m.patternCategories[i]
-			isExpanded := m.expandedCategories[cat.Name]
-
-			// Check if selecting the category line
-			if itemIndex == m.selectedIndex {
-				// Toggle expansion
-				m.expandedCategories[cat.Name] = !isExpanded
-				return nil
-			}
-			itemIndex++
-
-			// If expanded, check pattern files
-			if isExpanded {
-				for _, filePath := range cat.Files {
-					if itemIndex == m.selectedIndex {
-						// Selected a pattern file - open it
-						return util.CmdHandler(PatternFileSelectedMsg{
-							FilePath: filePath,
-						})
-					}
-					itemIndex++
-				}
-			}
-		}
-
 	case SectionMCP:
 		// Map selectedIndex to server or tool
 		itemIndex := 0
@@ -982,51 +913,6 @@ func (m *sidebarCmp) handleMouseClick(x, y int) tea.Cmd {
 		}
 	}
 
-	// Check patterns section
-	if len(m.patternCategories) > 0 && clickY >= m.patternYStart {
-		relativeY := clickY - m.patternYStart
-		// First line is section header
-		if relativeY > 0 {
-			// Map relativeY to itemIndex, accounting for expanded categories
-			itemIndex := 0
-			currentLine := 1 // Line 0 is section header, start at 1
-
-			for i := 0; i < len(m.patternCategories) && currentLine < relativeY; i++ {
-				cat := m.patternCategories[i]
-				isExpanded := m.expandedCategories[cat.Name]
-
-				// Check if we clicked on this category header
-				if currentLine == relativeY {
-					m.selectedSection = SectionPatterns
-					m.selectedIndex = itemIndex
-					return m.selectCurrentItem()
-				}
-				currentLine++
-				itemIndex++
-
-				// If expanded, check pattern files
-				if isExpanded {
-					for range cat.Files {
-						if currentLine == relativeY {
-							m.selectedSection = SectionPatterns
-							m.selectedIndex = itemIndex
-							return m.selectCurrentItem()
-						}
-						currentLine++
-						itemIndex++
-					}
-				}
-			}
-
-			// Check if we landed exactly on an item
-			if currentLine == relativeY && itemIndex < m.getPatternNavigableItemCount() {
-				m.selectedSection = SectionPatterns
-				m.selectedIndex = itemIndex
-				return m.selectCurrentItem()
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -1043,8 +929,8 @@ type PatternCategory struct {
 	Files []string // List of pattern file paths in this category
 }
 
-// listPatternCategories scans $LOOM_DATA_DIR/patterns and returns categories.
-func listPatternCategories() []PatternCategory {
+// ListPatternCategories scans $LOOM_DATA_DIR/patterns and returns categories.
+func ListPatternCategories() []PatternCategory {
 	loomDir, err := home.Dir()
 	if err != nil {
 		return nil
@@ -1217,94 +1103,113 @@ func (m *sidebarCmp) mcpServersBlock() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-func (m *sidebarCmp) patternsBlock() string {
-	t := styles.CurrentTheme()
-	categories := listPatternCategories()
-	if len(categories) == 0 {
+// agentInfoBlock renders a brief info block about the current agent.
+func (m *sidebarCmp) agentInfoBlock() string {
+	if m.currentAgent == "" {
 		return ""
 	}
 
-	// Section header with focus indicator
-	sectionHeader := "Pattern Library"
-	if m.focused && m.selectedSection == SectionPatterns {
-		sectionHeader = t.S().Base.Foreground(t.Primary).Render(sectionHeader)
-	} else {
-		sectionHeader = core.Section(sectionHeader, m.getMaxWidth())
+	// Find the current agent in the agent list
+	var currentAgent *AgentInfo
+	for i := range m.agents {
+		if m.agents[i].ID == m.currentAgent {
+			currentAgent = &m.agents[i]
+			break
+		}
 	}
-	parts := []string{sectionHeader}
+	if currentAgent == nil {
+		return ""
+	}
 
-	// Show all patterns - we have a scrollbar now
-	maxItems := len(categories)
+	t := styles.CurrentTheme()
+	header := core.Section("Agent", m.getMaxWidth())
+	parts := []string{header}
 
-	// Render categories and their files
-	itemIndex := 0 // Track overall item index for selection
-	for i := 0; i < maxItems; i++ {
-		cat := categories[i]
-		isExpanded := m.expandedCategories[cat.Name]
-		isSelected := m.focused && m.selectedSection == SectionPatterns && itemIndex == m.selectedIndex
+	// Status dot + agent name
+	statusDot := "●"
+	dotColor := t.FgSubtle
+	switch currentAgent.Status {
+	case "active", "ready":
+		dotColor = t.Success
+	case "busy", "working":
+		dotColor = t.Warning
+	case "error":
+		dotColor = t.Error
+	}
+	dot := t.S().Base.Foreground(dotColor).Render(statusDot)
+	name := t.S().Text.Render(currentAgent.Name)
+	parts = append(parts, fmt.Sprintf("%s %s", dot, name))
 
-		// Single icon logic for categories:
-		// - If selected: ⏺ (record button)
-		// - Else if expanded: ▼ (down triangle)
-		// - Else: ▶ (right triangle)
-		var icon string
-		if isSelected {
-			icon = "⏺"
-		} else if isExpanded {
-			icon = "▼"
-		} else {
-			icon = "▶"
-		}
+	// Model info if non-empty
+	if currentAgent.ModelInfo != "" {
+		modelLine := t.S().Muted.PaddingLeft(2).Render(currentAgent.ModelInfo)
+		parts = append(parts, modelLine)
+	}
 
-		// Icon color: primary if selected, subtle otherwise
-		iconColor := t.FgSubtle
-		if isSelected {
-			iconColor = t.Primary
-		}
-		iconStyled := t.S().Base.Foreground(iconColor).Render(icon)
-
-		// Highlight selected category
-		nameStyle := t.S().Text
-		nameText := cat.Name
-		if isSelected {
-			nameStyle = t.S().Text.Foreground(t.Primary)
-			nameText = "> " + nameText
-		}
-		name := nameStyle.Render(nameText)
-		count := t.S().Muted.Render(fmt.Sprintf("(%d)", cat.Count))
-		parts = append(parts, fmt.Sprintf("%s %s %s", iconStyled, name, count))
-		itemIndex++
-
-		// If expanded, show pattern files
-		if isExpanded {
-			for _, filePath := range cat.Files {
-				fileName := filepath.Base(filePath)
-				// Remove extension
-				fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
-
-				// Pattern file icon: record button for both selected and unselected
-				fileIcon := "⏺"
-				fileIconColor := t.FgSubtle
-				if m.focused && m.selectedSection == SectionPatterns && itemIndex == m.selectedIndex {
-					fileIconColor = t.Primary
-				}
-				fileIconStyled := t.S().Base.Foreground(fileIconColor).Render(fileIcon)
-
-				// Highlight selected pattern file
-				fileStyle := t.S().Subtle
-				fileText := fileName
-				if m.focused && m.selectedSection == SectionPatterns && itemIndex == m.selectedIndex {
-					fileStyle = t.S().Text.Foreground(t.Primary)
-					fileText = "> " + fileText
-				}
-
-				parts = append(parts, fmt.Sprintf("  %s %s", fileIconStyled, fileStyle.Render(fileText)))
-				itemIndex++
-			}
-		}
+	// Role LLM count if > 0
+	if currentAgent.RoleLLMCount > 0 {
+		roleLine := t.S().Subtle.PaddingLeft(2).Render(fmt.Sprintf("%d role model(s)", currentAgent.RoleLLMCount))
+		parts = append(parts, roleLine)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// keyboardHintsBlock renders contextual keyboard shortcuts and slash command reference.
+func (m *sidebarCmp) keyboardHintsBlock() string {
+	t := styles.CurrentTheme()
+
+	type hint struct {
+		key  string
+		desc string
+	}
+
+	// --- keyboard shortcuts ---
+	keyHints := []hint{
+		{"tab", "cycle focus"},
+		{"↑/↓", "navigate"},
+		{"enter", "select"},
+		{"ctrl+n", "new session"},
+		{"ctrl+e", "agents"},
+		{"ctrl+w", "workflows"},
+	}
+
+	// --- slash commands ---
+	slashHints := []hint{
+		{"/clear", "clear chat"},
+		{"/sessions", "sessions"},
+		{"/model", "model"},
+		{"/agents", "agents"},
+		{"/workflows", "workflows"},
+		{"/sidebar", "sidebar"},
+		{"/apps", "apps"},
+		{"/mcp", "add MCP"},
+		{"/patterns", "patterns"},
+		{"/quit", "exit"},
+		{"/help", "help"},
+	}
+
+	renderHints := func(hints []hint) []string {
+		var lines []string
+		// Fixed column width for the key (command) side; use lipgloss Width so
+		// ANSI codes don't break alignment.
+		const colW = 12
+		for _, h := range hints {
+			keyRendered := t.S().Base.Foreground(t.FgMuted).Width(colW).Render(h.key)
+			descRendered := t.S().Base.Foreground(t.FgSubtle).Render(h.desc)
+			lines = append(lines, "  "+keyRendered+descRendered)
+		}
+		return lines
+	}
+
+	var lines []string
+	lines = append(lines, core.Section("Keys", m.getMaxWidth()))
+	lines = append(lines, renderHints(keyHints)...)
+	lines = append(lines, "")
+	lines = append(lines, core.Section("Slash", m.getMaxWidth()))
+	lines = append(lines, renderHints(slashHints)...)
+
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 // scrollUp scrolls the sidebar content up by the specified number of lines

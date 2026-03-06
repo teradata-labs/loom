@@ -74,16 +74,18 @@ type commandDialogCmp struct {
 }
 
 type (
-	SwitchSessionsMsg     struct{}
-	NewSessionsMsg        struct{}
-	SwitchModelMsg        struct{}
-	QuitMsg               struct{}
-	OpenFilePickerMsg     struct{}
-	ToggleHelpMsg         struct{}
-	ToggleCompactModeMsg  struct{}
-	OpenExternalEditorMsg struct{}
-	ToggleYoloModeMsg     struct{}
-	OpenBrowseAppsMsg     struct{}
+	SwitchSessionsMsg      struct{}
+	NewSessionsMsg         struct{}
+	SwitchModelMsg         struct{}
+	QuitMsg                struct{}
+	OpenFilePickerMsg      struct{}
+	ToggleHelpMsg          struct{}
+	ToggleCompactModeMsg   struct{}
+	OpenExternalEditorMsg  struct{}
+	ToggleYoloModeMsg      struct{}
+	OpenBrowseAppsMsg      struct{}
+	OpenAgentsDialogMsg    struct{}
+	OpenWorkflowsDialogMsg struct{}
 )
 
 func NewCommandDialog(sessionID string) CommandsDialog {

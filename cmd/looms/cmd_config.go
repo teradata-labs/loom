@@ -249,8 +249,8 @@ func runConfigSetKey(cmd *cobra.Command, args []string) {
 
 	// Read secret from stdin (without echo)
 	fmt.Printf("Enter %s (input hidden): ", keyName)
-	secretBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Println() // New line after hidden input
+	secretBytes, err := term.ReadPassword(int(os.Stdin.Fd())) // #nosec G115 -- os.Stdin.Fd() returns a valid file descriptor that fits in int on all supported platforms
+	fmt.Println()                                             // New line after hidden input
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 		os.Exit(1)

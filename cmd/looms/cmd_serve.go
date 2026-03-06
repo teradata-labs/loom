@@ -314,7 +314,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		}), nil
 
 	case "bedrock":
-		client, err := bedrock.NewSDKClient(bedrock.Config{
+		client, err := bedrock.NewClient(bedrock.Config{
 			Region:            cfg.BedrockRegion,
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,
@@ -860,7 +860,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		filepath.Join(filepath.Dir(os.Args[0]), "..", "examples"),
 	}
 	for _, path := range possibleExamplesPaths {
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
+		if info, err := os.Stat(path); err == nil && info.IsDir() { // #nosec -- paths constructed from hardcoded filepath.Join patterns
 			examplesSourceDir = path
 			break
 		}
@@ -2442,37 +2442,31 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	// --- Preflight health check: validate all LLM providers before accepting connections ---
-	logger.Info("Running LLM provider preflight health check...")
+	// Providers are deduplicated across agents and checked concurrently, so startup time is
+	// O(slowest_provider) rather than O(agents × latency). Critical for large deployments.
+	logger.Info("Running LLM provider preflight health check...",
+		zap.Int("agents", len(agents)))
 	{
-		preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer preflightCancel()
-
+		// Log all configured providers before pinging them
 		for agentID, ag := range agents {
 			agentName := ag.GetName()
 			if agentName == "" {
 				agentName = agentID
 			}
-
-			// Log each configured role LLM provider for this agent
-			roleLLMs := ag.GetAllRoleLLMs()
-			for role, llmProv := range roleLLMs {
-				roleName := llmRoleDisplayName(role)
+			for role, llmProv := range ag.GetAllRoleLLMs() {
 				logger.Info("LLM provider configured",
 					zap.String("agent", agentName),
-					zap.String("role", roleName),
+					zap.String("role", llmRoleDisplayName(role)),
 					zap.String("provider", llmProv.Name()),
 					zap.String("model", llmProv.Model()))
 			}
+		}
 
-			// Validate providers (sends ping to each)
-			if err := server.ValidateProviders(preflightCtx, ag); err != nil {
-				logger.Fatal("LLM provider preflight check failed",
-					zap.String("agent", agentName),
-					zap.Error(err))
-			}
-			logger.Info("LLM provider preflight check passed",
-				zap.String("agent", agentName),
-				zap.Int("providers_checked", len(roleLLMs)))
+		preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer preflightCancel()
+
+		if err := server.ValidateProviders(preflightCtx, agents); err != nil {
+			logger.Fatal("LLM provider preflight check failed", zap.Error(err))
 		}
 		logger.Info("All LLM provider preflight checks passed",
 			zap.Int("agents_checked", len(agents)))
@@ -2861,13 +2855,13 @@ func (a *mcpManagerAdapter) GetClient(serverName string) (interface{}, error) {
 // copyDir recursively copies a directory tree from src to dst.
 func copyDir(src, dst string) error {
 	// Get source directory info
-	srcInfo, err := os.Stat(src)
+	srcInfo, err := os.Stat(src) // #nosec -- src is from controlled internal directory copy
 	if err != nil {
 		return fmt.Errorf("failed to stat source: %w", err)
 	}
 
 	// Create destination directory
-	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil {
+	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil { // #nosec -- permissions inherited from source directory
 		return fmt.Errorf("failed to create destination: %w", err)
 	}
 
@@ -2901,20 +2895,19 @@ func copyDir(src, dst string) error {
 // copyFile copies a single file from src to dst.
 func copyFile(src, dst string) error {
 	// Read source file
-	// #nosec G304 -- internal path construction from hardcoded pattern directories
-	data, err := os.ReadFile(src)
+	data, err := os.ReadFile(src) // #nosec -- src is from controlled internal directory copy
 	if err != nil {
 		return fmt.Errorf("failed to read source file: %w", err)
 	}
 
 	// Get source file info for permissions
-	srcInfo, err := os.Stat(src)
+	srcInfo, err := os.Stat(src) // #nosec -- src path from controlled internal directory copy
 	if err != nil {
 		return fmt.Errorf("failed to stat source file: %w", err)
 	}
 
 	// Write destination file
-	if err := os.WriteFile(dst, data, srcInfo.Mode()); err != nil {
+	if err := os.WriteFile(dst, data, srcInfo.Mode()); err != nil { // #nosec -- dst path and permissions from controlled internal copy operation
 		return fmt.Errorf("failed to write destination file: %w", err)
 	}
 

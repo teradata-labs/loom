@@ -569,7 +569,7 @@ func (s *Store) ListABTests(ctx context.Context, sessionID string, limit int) ([
 	}
 	query += ` ORDER BY run_at DESC`
 	if limit > 0 {
-		query += fmt.Sprintf(` LIMIT %d`, limit)
+		query += fmt.Sprintf(` LIMIT %d`, limit) // #nosec G202 -- integer value, not SQL injectable
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
