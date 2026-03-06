@@ -1191,7 +1191,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Info("Registered coordinator for event-driven message notifications (monitor-based)",
 		zap.String("coordinator", coordinatorID))
 
-	go func() {
+	go func() { // #nosec G118 -- intentional: background worker goroutine that must outlive request context
 		defer func() {
 			s.logger.Info("Coordinator notification handler stopped",
 				zap.String("coordinator", coordinatorID))
