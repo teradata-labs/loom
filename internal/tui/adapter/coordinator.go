@@ -104,7 +104,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 	}
 
 	// Mark THIS agent as busy and track session-to-agent mapping
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(ctx) // #nosec G118 -- cancel is stored in agentCancelFunc map and called on agent completion
 	c.busyAgents[agentID] = true
 	c.agentCancelFunc[agentID] = cancel
 	c.sessionToAgent[sessionID] = agentID
