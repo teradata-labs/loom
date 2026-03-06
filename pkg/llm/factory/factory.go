@@ -175,8 +175,7 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 		region = "us-east-1"
 	}
 
-	// Use the new Anthropic SDK-based client for better reliability
-	return bedrock.NewSDKClient(bedrock.Config{
+	return bedrock.NewClient(bedrock.Config{
 		Region:          region,
 		AccessKeyID:     f.config.BedrockAccessKeyID,
 		SecretAccessKey: f.config.BedrockSecretAccessKey,

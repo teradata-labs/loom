@@ -16,6 +16,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,6 +162,11 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 	}
 	if config.QueueTimeout == 0 {
 		config.QueueTimeout = defaults.QueueTimeout
+	}
+
+	// Guard against overflow in queue capacity calculation (CodeQL: allocation size overflow)
+	if config.BurstCapacity > math.MaxInt32/2 {
+		config.BurstCapacity = math.MaxInt32 / 2
 	}
 
 	rl := &RateLimiter{
@@ -492,7 +498,7 @@ func (rl *RateLimiter) reportMetrics() {
 			metrics := rl.GetMetrics()
 			tokenUsage := rl.GetTokenUsageLastMinute()
 
-			rl.config.Logger.Info("Rate limiter metrics",
+			rl.config.Logger.Debug("Rate limiter metrics",
 				zap.Int64("total_requests", metrics.TotalRequests),
 				zap.Int64("throttled_requests", metrics.ThrottledRequests),
 				zap.Int64("queued_requests", metrics.QueuedRequests),

@@ -30,8 +30,7 @@ func OpenInEditor(path string) error {
 	if editor == "" {
 		editor = "vi"
 	}
-	// #nosec G204 -- Intentional: CLI tool uses $EDITOR env var (standard Unix practice)
-	cmd := exec.Command(editor, path)
+	cmd := exec.Command(editor, path) // #nosec -- intentional: CLI tool uses $EDITOR env var (standard Unix practice)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -43,11 +42,11 @@ func OpenURL(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", url) // #nosec G204 -- intentional: opening URL in system browser (macOS)
 	case "linux":
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", url) // #nosec G204 -- intentional: opening URL in system browser (Linux)
 	default:
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", url) // #nosec G204 -- intentional: opening URL in system browser (fallback)
 	}
 	return cmd.Run()
 }
@@ -55,7 +54,7 @@ func OpenURL(url string) error {
 // ExecShell executes a command in the shell.
 func ExecShell(ctx context.Context, cmdStr string, callback tea.ExecCallback) tea.Cmd {
 	return func() tea.Msg {
-		cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+		cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr) // #nosec G204 -- intentional: TUI shell command execution for user-defined commands
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

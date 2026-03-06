@@ -54,11 +54,11 @@ func hexToDec(hex string) uint32 {
 		result *= 16
 		switch {
 		case c >= '0' && c <= '9':
-			result += uint32(c - '0')
+			result += uint32(c - '0') // #nosec G115 -- hex digit characters 0-9 produce values 0-9, always fit in uint32
 		case c >= 'a' && c <= 'f':
-			result += uint32(c - 'a' + 10)
+			result += uint32(c - 'a' + 10) // #nosec G115 -- hex digit characters a-f produce values 10-15, always fit in uint32
 		case c >= 'A' && c <= 'F':
-			result += uint32(c - 'A' + 10)
+			result += uint32(c - 'A' + 10) // #nosec G115 -- hex digit characters A-F produce values 10-15, always fit in uint32
 		}
 	}
 	return result

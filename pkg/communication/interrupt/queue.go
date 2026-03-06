@@ -108,7 +108,7 @@ func NewPersistentQueue(ctx context.Context, dbPath string, router *Router) (*Pe
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx) // #nosec -- intentional: background worker goroutine that must outlive request context
 	pq := &PersistentQueue{
 		ctx:           ctx,
 		cancel:        cancel,

@@ -1010,7 +1010,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 
 	// Extract workflow topic for auto-subscribe
 	var workflowTopic string
-	if _, statErr := os.Stat(workflowPath); statErr == nil {
+	if _, statErr := os.Stat(workflowPath); statErr == nil { // #nosec -- workflowPath is filepath.Join(homeDir, ".loom", "workflows", name+".yaml")
 		s.logger.Info("Loading workflow definition for auto-subscribe",
 			zap.String("path", workflowPath))
 
@@ -1167,7 +1167,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	coordinatorNotifyChan := make(chan struct{}, 10)
 
 	// Create context for coordinator notification handler lifecycle
-	coordinatorCtx, coordinatorCancel := context.WithCancel(context.Background())
+	coordinatorCtx, coordinatorCancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 	// Use composite key: sessionID:agentID to allow multiple concurrent workflow sessions
 	coordinatorKey := fmt.Sprintf("%s:%s", sessionID, coordinatorID)
@@ -1206,7 +1206,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				// This makes sub-agent responses visible in the session and triggers coordinator to process them
 
 				// Dequeue message to get actual content
-				queueMsg, err := s.messageQueue.Dequeue(context.Background(), coordinatorID)
+				queueMsg, err := s.messageQueue.Dequeue(context.Background(), coordinatorID) // #nosec -- intentional: background worker goroutine that must outlive request context
 				if err != nil {
 					s.logger.Warn("Failed to dequeue message for coordinator",
 						zap.String("coordinator", coordinatorID),
@@ -1255,7 +1255,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				// This triggers the coordinator to process the sub-agent's response and generate a synthesis
 				s.logger.Info("Coordinator calling Chat() for sub-agent response",
 					zap.String("coordinator", coordinatorID))
-				_, err = coordinatorAgent.Chat(context.Background(), sessionID, injectedPrompt)
+				_, err = coordinatorAgent.Chat(context.Background(), sessionID, injectedPrompt) // #nosec -- intentional: background worker goroutine that must outlive request context
 				s.logger.Info("Coordinator Chat() completed",
 					zap.String("coordinator", coordinatorID),
 					zap.Bool("has_error", err != nil))
@@ -1273,7 +1273,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				}
 
 				// Acknowledge the message
-				if ackErr := s.messageQueue.Acknowledge(context.Background(), queueMsg.ID); ackErr != nil {
+				if ackErr := s.messageQueue.Acknowledge(context.Background(), queueMsg.ID); ackErr != nil { // #nosec -- intentional: background worker goroutine that must outlive request context
 					s.logger.Warn("Failed to acknowledge message",
 						zap.String("message_id", queueMsg.ID),
 						zap.Error(ackErr))
@@ -1296,7 +1296,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		subAgentSessionID := GenerateSessionID()
 
 		// Create context for sub-agent lifecycle
-		subAgentCtx, cancel := context.WithCancel(context.Background())
+		subAgentCtx, cancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 		// Create notification channel for event-driven message handling
 		notifyChan := make(chan struct{}, 10) // Buffered to avoid blocking monitor
@@ -1420,7 +1420,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				ctx.notifyChannels = notifyChannels
 
 				var broadcastCancel context.CancelFunc
-				broadcastCtx, broadcastCancel = context.WithCancel(context.Background())
+				broadcastCtx, broadcastCancel = context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
 				ctx.broadcastCancelFunc = broadcastCancel
 				ctx.broadcastNotifyChan = make(chan struct{}, 10)
 			}
@@ -1902,7 +1902,7 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 	notifyChan := make(chan struct{}, 10)
 
 	// Create context for sub-agent lifecycle
-	subAgentCtx, cancel := context.WithCancel(context.Background())
+	subAgentCtx, cancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
 
 	// Use special composite key for auto-spawned agents: "auto:agentID"
 	// This allows us to track them separately from coordinator-spawned agents

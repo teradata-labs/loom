@@ -44,6 +44,13 @@ type WorkflowInfo struct {
 	SubAgentCount   int
 }
 
+// WeaverInfo represents the weaver agent shown at the top of the workflows dialog.
+type WeaverInfo struct {
+	ID     string
+	Name   string
+	Status string
+}
+
 // WorkflowsDialog represents the workflow selection dialog.
 type WorkflowsDialog interface {
 	dialogs.DialogModel
@@ -58,9 +65,10 @@ type workflowsDialogCmp struct {
 	keyMap       WorkflowsDialogKeyMap
 	help         help.Model
 	workflows    []WorkflowInfo
+	weaver       *WeaverInfo // Optional weaver agent shown at top
 }
 
-func NewWorkflowsDialog(workflows []WorkflowInfo) WorkflowsDialog {
+func NewWorkflowsDialog(workflows []WorkflowInfo, weaver *WeaverInfo) WorkflowsDialog {
 	keyMap := DefaultWorkflowsDialogKeyMap()
 	listKeyMap := list.DefaultKeyMap()
 	listKeyMap.Down.SetEnabled(false)
@@ -87,11 +95,27 @@ func NewWorkflowsDialog(workflows []WorkflowInfo) WorkflowsDialog {
 		keyMap:       keyMap,
 		help:         help,
 		workflows:    workflows,
+		weaver:       weaver,
 	}
 }
 
+const weaverSentinelID = "__weaver__"
+
 func (d *workflowsDialogCmp) Init() tea.Cmd {
 	workflowItems := []list.CompletionItem[WorkflowInfo]{}
+
+	// Weaver appears first, as its own selectable item
+	if d.weaver != nil {
+		workflowItems = append(workflowItems, list.NewCompletionItem(
+			"✨ Weaver  [create & manage agents]",
+			WorkflowInfo{
+				CoordinatorID:   weaverSentinelID,
+				CoordinatorName: "weaver",
+			},
+			list.WithCompletionID(weaverSentinelID),
+		))
+	}
+
 	for _, workflow := range d.workflows {
 		displayName := fmt.Sprintf("%s (%d agents)", workflow.CoordinatorName, workflow.SubAgentCount)
 		workflowItems = append(workflowItems, list.NewCompletionItem(
@@ -117,11 +141,14 @@ func (d *workflowsDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 				return d, nil // No item selected, do nothing
 			}
 			workflow := (*selectedItem).Value()
+			agentID := workflow.CoordinatorID
+			// If weaver sentinel is selected, use the real weaver agent ID
+			if agentID == weaverSentinelID && d.weaver != nil {
+				agentID = d.weaver.ID
+			}
 			return d, tea.Sequence(
 				util.CmdHandler(dialogs.CloseDialogMsg{}),
-				util.CmdHandler(sidebar.AgentSelectedMsg{
-					AgentID: workflow.CoordinatorID,
-				}),
+				util.CmdHandler(sidebar.AgentSelectedMsg{AgentID: agentID}),
 			)
 		case key.Matches(msg, d.keyMap.Close):
 			return d, util.CmdHandler(dialogs.CloseDialogMsg{})
@@ -136,13 +163,12 @@ func (d *workflowsDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 
 func (d *workflowsDialogCmp) View() string {
 	t := styles.CurrentTheme()
-	listView := d.workflowList
 
 	header := t.S().Base.Padding(0, 1, 1, 1).Render(core.Title("Select Workflow", d.width-4))
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
-		listView.View(),
+		d.workflowList.View(),
 		"",
 		t.S().Base.Width(d.width-2).PaddingLeft(1).AlignHorizontal(lipgloss.Left).Render(d.help.View(d.keyMap)),
 	)

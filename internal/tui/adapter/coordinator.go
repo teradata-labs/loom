@@ -115,7 +115,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 	isCoordinator := strings.HasSuffix(strings.ToLower(agentID), "-coordinator")
 	if isCoordinator {
 		if _, exists := c.sessionSubscriptions[sessionID]; !exists {
-			subscribeCtx, subscribeCancel := context.WithCancel(context.Background())
+			subscribeCtx, subscribeCancel := context.WithCancel(context.Background()) // #nosec -- intentional: background worker goroutine that must outlive request context
 			c.sessionSubscriptions[sessionID] = subscribeCancel
 
 			// Start subscription in background goroutine
