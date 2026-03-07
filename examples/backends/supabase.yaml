@@ -1,0 +1,67 @@
+# Example backend configuration for Supabase (Postgres-compatible)
+# Usage: Reference this file in your looms.yaml agent configuration
+#
+# Supabase provides a hosted Postgres database with built-in auth,
+# Row Level Security (RLS), and connection pooling via Supavisor.
+#
+# Prerequisites:
+#   1. A Supabase project (https://supabase.com/dashboard)
+#   2. Set the following environment variables:
+#      - SUPABASE_PROJECT_REF: Your project reference (e.g., "abcdefghijklmnop")
+#      - SUPABASE_DB_PASSWORD: Your database password
+#      - SUPABASE_ANON_KEY: Your anon/public API key (optional, for RLS)
+
+apiVersion: loom/v1
+kind: Backend
+name: supabase-backend
+type: supabase
+description: Supabase database backend with RLS and connection pooling
+
+supabase:
+  # Required: Supabase project reference (found in project settings)
+  project_ref: ${SUPABASE_PROJECT_REF}
+
+  # Optional: Supabase anon key (used for RLS context)
+  api_key: ${SUPABASE_ANON_KEY}
+
+  # Required: Database password (set during project creation)
+  database_password: ${SUPABASE_DB_PASSWORD}
+
+  # Pooler mode: "session" or "transaction"
+  #   - session (port 5432): Supports prepared statements, LISTEN/NOTIFY
+  #   - transaction (port 6543): Higher throughput, no prepared statements
+  pooler_mode: transaction
+
+  # Enable Row Level Security context injection
+  # When true, JWT claims can be passed via WithJWT() to scope queries
+  enable_rls: true
+
+  # Database name (default: "postgres")
+  database: postgres
+
+  # Maximum connection pool size (default: 10)
+  max_pool_size: 15
+
+  # Supabase region (must match your project's region)
+  region: us-east-1
+
+  # Pooler hostname from Supabase dashboard (Project Settings > Database > Connection string).
+  # The aws-N prefix varies per project (e.g., aws-0, aws-1).
+  # If omitted, defaults to "aws-0-{region}.pooler.supabase.com".
+  # pooler_host: aws-0-us-east-1.pooler.supabase.com
+
+# Schema discovery configuration
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 1800
+  # Supabase internal schemas (auth, storage, realtime, etc.)
+  # are automatically excluded from resource listing
+  exclude_tables:
+    - _migration_*
+
+# Health check configuration
+health_check:
+  enabled: true
+  interval_seconds: 60
+  timeout_seconds: 5
+  query: "SELECT 1"

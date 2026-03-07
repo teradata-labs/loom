@@ -34,7 +34,6 @@ require (
 	github.com/jhump/protoreflect v1.18.0
 	github.com/klauspost/compress v1.18.4
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
-	github.com/lib/pq v1.11.2
 	github.com/lucasb-eyer/go-colorful v1.3.0
 	github.com/muesli/termenv v0.16.0
 	github.com/mutecomm/go-sqlcipher/v4 v4.4.2

@@ -25,6 +25,7 @@ message BackendConfig {
     GraphQLConnection graphql = 6;
     GRPCConnection grpc = 7;
     MCPConnection mcp = 11;
+    SupabaseConnection supabase = 12;
   }
 
   // Schema discovery (for SQL backends)
@@ -93,6 +94,46 @@ message MCPConnection {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 8;
+}
+
+// PoolerMode specifies the Supabase connection pooler mode
+enum PoolerMode {
+  POOLER_MODE_UNSPECIFIED = 0;
+  POOLER_MODE_SESSION = 1;
+  POOLER_MODE_TRANSACTION = 2;
+}
+
+// SupabaseConnection configures a connection to a Supabase project.
+// Fields marked SENSITIVE should never be logged or exposed in error messages.
+message SupabaseConnection {
+  // Supabase project reference (e.g., "abcdefghijklmnop")
+  string project_ref = 1;
+
+  // SENSITIVE: Supabase API key (anon or service_role). Use env vars in config.
+  string api_key = 2;
+
+  // SENSITIVE: Database password for direct connection. Use env vars in config.
+  string database_password = 3;
+
+  // Pooler mode: session (port 5432) or transaction (port 6543)
+  PoolerMode pooler_mode = 4;
+
+  // Enable Row Level Security context injection
+  bool enable_rls = 5;
+
+  // Database name (default: "postgres")
+  string database = 6;
+
+  // Maximum pool size (default: 10)
+  int32 max_pool_size = 7;
+
+  // Supabase region (e.g., "us-east-1")
+  string region = 8;
+
+  // Pooler hostname (e.g., "aws-1-us-east-1.pooler.supabase.com").
+  // Found in Project Settings > Database > Connection string.
+  // If empty, auto-constructed as "aws-0-{region}.pooler.supabase.com".
+  string pooler_host = 9;
 }
 
 message AuthConfig {

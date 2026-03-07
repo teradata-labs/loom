@@ -483,6 +483,36 @@ func TestNewMCPBackend_ValidatesTransport(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported transport")
 }
 
+func TestNewBackend_Supabase_MissingConfig(t *testing.T) {
+	config := &loomv1.BackendConfig{
+		Name: "test-supabase",
+		Type: "supabase",
+		// Missing Supabase connection config
+	}
+
+	backend, err := NewBackend(config)
+	assert.Error(t, err)
+	assert.Nil(t, backend)
+	assert.Contains(t, err.Error(), "supabase connection config is required")
+}
+
+func TestNewBackend_Supabase_InvalidConfig(t *testing.T) {
+	config := &loomv1.BackendConfig{
+		Name: "test-supabase",
+		Type: "supabase",
+		Connection: &loomv1.BackendConfig_Supabase{
+			Supabase: &loomv1.SupabaseConnection{
+				// Missing required fields
+			},
+		},
+	}
+
+	backend, err := NewBackend(config)
+	assert.Error(t, err)
+	assert.Nil(t, backend)
+	assert.Contains(t, err.Error(), "project_ref is required")
+}
+
 func TestNewMCPBackend_HTTPRequiresURL(t *testing.T) {
 	config := &loomv1.BackendConfig{
 		Name: "test-mcp",

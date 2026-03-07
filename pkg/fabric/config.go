@@ -28,6 +28,7 @@ type BackendYAML struct {
 	GraphQL         *GraphQLConnectionYAML  `yaml:"graphql"`
 	GRPC            *GRPCConnectionYAML     `yaml:"grpc"`
 	MCP             *MCPConnectionYAML      `yaml:"mcp"`
+	Supabase        *SupabaseConnectionYAML `yaml:"supabase"`
 	SchemaDiscovery *SchemaDiscoveryYAML    `yaml:"schema_discovery"`
 	ToolGeneration  *ToolGenerationYAML     `yaml:"tool_generation"`
 	HealthCheck     *HealthCheckYAML        `yaml:"health_check"`
@@ -72,6 +73,18 @@ type MCPConnectionYAML struct {
 	Transport  string            `yaml:"transport"`
 	URL        string            `yaml:"url"`
 	WorkingDir string            `yaml:"working_dir"`
+}
+
+type SupabaseConnectionYAML struct {
+	ProjectRef       string `yaml:"project_ref"`
+	APIKey           string `yaml:"api_key"`
+	DatabasePassword string `yaml:"database_password"`
+	PoolerMode       string `yaml:"pooler_mode"`
+	EnableRLS        bool   `yaml:"enable_rls"`
+	Database         string `yaml:"database"`
+	MaxPoolSize      int    `yaml:"max_pool_size"`
+	Region           string `yaml:"region"`
+	PoolerHost       string `yaml:"pooler_host"`
 }
 
 type AuthConfigYAML struct {
@@ -163,9 +176,10 @@ func validateBackendYAML(yaml *BackendYAML) error {
 		"graphql":  true,
 		"grpc":     true,
 		"mcp":      true,
+		"supabase": true,
 	}
 	if !validTypes[strings.ToLower(yaml.Type)] {
-		return fmt.Errorf("invalid backend type: %s (must be: postgres, mysql, sqlite, file, rest, graphql, grpc, mcp)", yaml.Type)
+		return fmt.Errorf("invalid backend type: %s (must be: postgres, mysql, sqlite, file, rest, graphql, grpc, mcp, supabase)", yaml.Type)
 	}
 
 	// Validate connection config is provided for the specified type
@@ -220,6 +234,19 @@ func validateBackendYAML(yaml *BackendYAML) error {
 		}
 		if yaml.GRPC.Address == "" {
 			return fmt.Errorf("grpc.address is required")
+		}
+	case "supabase":
+		if yaml.Supabase == nil {
+			return fmt.Errorf("supabase connection config is required for type: supabase")
+		}
+		if yaml.Supabase.ProjectRef == "" {
+			return fmt.Errorf("supabase.project_ref is required")
+		}
+		if yaml.Supabase.DatabasePassword == "" {
+			return fmt.Errorf("supabase.database_password is required")
+		}
+		if yaml.Supabase.Region == "" {
+			return fmt.Errorf("supabase.region is required")
 		}
 	}
 
@@ -334,6 +361,40 @@ func yamlToProtoBackend(yaml *BackendYAML) *loomv1.BackendConfig {
 				Transport:  yaml.MCP.Transport,
 				Url:        yaml.MCP.URL,
 				WorkingDir: yaml.MCP.WorkingDir,
+			},
+		}
+	}
+
+	if yaml.Supabase != nil {
+		poolerMode := loomv1.PoolerMode_POOLER_MODE_UNSPECIFIED
+		switch strings.ToLower(yaml.Supabase.PoolerMode) {
+		case "session":
+			poolerMode = loomv1.PoolerMode_POOLER_MODE_SESSION
+		case "transaction":
+			poolerMode = loomv1.PoolerMode_POOLER_MODE_TRANSACTION
+		}
+
+		maxPoolSize := types.SafeInt32(yaml.Supabase.MaxPoolSize)
+		if maxPoolSize == 0 {
+			maxPoolSize = 10
+		}
+
+		database := yaml.Supabase.Database
+		if database == "" {
+			database = "postgres"
+		}
+
+		backend.Connection = &loomv1.BackendConfig_Supabase{
+			Supabase: &loomv1.SupabaseConnection{
+				ProjectRef:       yaml.Supabase.ProjectRef,
+				ApiKey:           yaml.Supabase.APIKey,
+				DatabasePassword: yaml.Supabase.DatabasePassword,
+				PoolerMode:       poolerMode,
+				EnableRls:        yaml.Supabase.EnableRLS,
+				Database:         database,
+				MaxPoolSize:      maxPoolSize,
+				Region:           yaml.Supabase.Region,
+				PoolerHost:       yaml.Supabase.PoolerHost,
 			},
 		}
 	}
