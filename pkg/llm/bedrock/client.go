@@ -676,7 +676,11 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 	result := make(map[string]interface{})
 	for key, schema := range props {
 		propMap := make(map[string]interface{})
-		propMap["type"] = schema.Type
+		propType := schema.Type
+		if propType == "" {
+			propType = "string" // MCP tools may omit type; default to string
+		}
+		propMap["type"] = propType
 
 		if schema.Description != "" {
 			propMap["description"] = schema.Description
@@ -689,9 +693,15 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 		}
 		if schema.Properties != nil {
 			propMap["properties"] = convertSchemaProperties(schema.Properties)
+			if propType == "string" {
+				propMap["type"] = "object"
+			}
 		}
 		if schema.Items != nil {
 			propMap["items"] = convertSchemaItem(schema.Items)
+			if propType == "string" {
+				propMap["type"] = "array"
+			}
 		}
 
 		result[key] = propMap
@@ -702,7 +712,11 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 // convertSchemaItem converts a JSONSchema item for arrays.
 func convertSchemaItem(item *shuttle.JSONSchema) map[string]interface{} {
 	itemMap := make(map[string]interface{})
-	itemMap["type"] = item.Type
+	itemType := item.Type
+	if itemType == "" {
+		itemType = "string" // MCP tools may omit type; default to string
+	}
+	itemMap["type"] = itemType
 
 	if item.Description != "" {
 		itemMap["description"] = item.Description
@@ -712,6 +726,9 @@ func convertSchemaItem(item *shuttle.JSONSchema) map[string]interface{} {
 	}
 	if item.Properties != nil {
 		itemMap["properties"] = convertSchemaProperties(item.Properties)
+		if itemType == "string" {
+			itemMap["type"] = "object"
+		}
 	}
 
 	return itemMap

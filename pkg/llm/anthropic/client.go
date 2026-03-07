@@ -396,7 +396,11 @@ func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) m
 	result := make(map[string]map[string]interface{})
 	for key, schema := range props {
 		propMap := make(map[string]interface{})
-		propMap["type"] = schema.Type
+		propType := schema.Type
+		if propType == "" {
+			propType = "string" // MCP tools may omit type; default to string
+		}
+		propMap["type"] = propType
 
 		if schema.Description != "" {
 			propMap["description"] = schema.Description
@@ -409,10 +413,20 @@ func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) m
 		}
 		if schema.Properties != nil {
 			propMap["properties"] = c.convertSchemaProperties(schema.Properties)
+			if propType == "string" {
+				propMap["type"] = "object"
+			}
 		}
 		if schema.Items != nil {
+			itemType := schema.Items.Type
+			if itemType == "" {
+				itemType = "string"
+			}
 			propMap["items"] = map[string]interface{}{
-				"type": schema.Items.Type,
+				"type": itemType,
+			}
+			if propType == "string" {
+				propMap["type"] = "array"
 			}
 		}
 

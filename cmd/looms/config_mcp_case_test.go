@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFixMCPEnvCase(t *testing.T) {
@@ -136,4 +139,96 @@ func TestFixMCPEnvCase_SecurityValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFixMCPEnabledDefault(t *testing.T) {
+	tests := []struct {
+		name            string
+		yaml            string
+		initialEnabled  bool
+		expectedEnabled bool
+	}{
+		{
+			name: "enabled not set in YAML defaults to true",
+			yaml: `
+mcp:
+  servers:
+    my-server:
+      command: /bin/test
+      transport: stdio
+`,
+			initialEnabled:  false, // Go zero-value after Viper unmarshal
+			expectedEnabled: true,
+		},
+		{
+			name: "enabled explicitly set to false stays false",
+			yaml: `
+mcp:
+  servers:
+    my-server:
+      command: /bin/test
+      transport: stdio
+      enabled: false
+`,
+			initialEnabled:  false,
+			expectedEnabled: false,
+		},
+		{
+			name: "enabled explicitly set to true stays true",
+			yaml: `
+mcp:
+  servers:
+    my-server:
+      command: /bin/test
+      transport: stdio
+      enabled: true
+`,
+			initialEnabled:  true,
+			expectedEnabled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpFile, err := os.CreateTemp("", "test-mcp-enabled-*.yaml")
+			require.NoError(t, err)
+			defer func() { _ = os.Remove(tmpFile.Name()) }()
+
+			_, err = tmpFile.WriteString(tt.yaml)
+			require.NoError(t, err)
+			_ = tmpFile.Close()
+
+			config := &Config{
+				MCP: MCPConfig{
+					Servers: map[string]MCPServerConfig{
+						"my-server": {
+							Command:   "/bin/test",
+							Transport: "stdio",
+							Enabled:   tt.initialEnabled,
+						},
+					},
+				},
+			}
+
+			err = fixMCPEnabledDefault(config, tmpFile.Name())
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.expectedEnabled, config.MCP.Servers["my-server"].Enabled,
+				"Enabled should be %v", tt.expectedEnabled)
+		})
+	}
+}
+
+func TestFixMCPEnabledDefault_NoMCPSection(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-no-mcp-*.yaml")
+	require.NoError(t, err)
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+
+	_, err = tmpFile.WriteString("server:\n  port: 8080\n")
+	require.NoError(t, err)
+	_ = tmpFile.Close()
+
+	config := &Config{}
+	err = fixMCPEnabledDefault(config, tmpFile.Name())
+	assert.NoError(t, err)
 }

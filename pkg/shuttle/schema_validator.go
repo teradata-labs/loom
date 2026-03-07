@@ -64,5 +64,20 @@ func NormalizeSchema(schema *JSONSchema) *JSONSchema {
 		}
 	}
 
+	// Recursively normalize composite schema keywords (anyOf, oneOf, allOf, not)
+	// These are used by MCP servers for nullable types: anyOf: [{type: "string"}, {type: "null"}]
+	for i, sub := range schema.AnyOf {
+		schema.AnyOf[i] = NormalizeSchema(sub)
+	}
+	for i, sub := range schema.OneOf {
+		schema.OneOf[i] = NormalizeSchema(sub)
+	}
+	for i, sub := range schema.AllOf {
+		schema.AllOf[i] = NormalizeSchema(sub)
+	}
+	if schema.Not != nil {
+		schema.Not = NormalizeSchema(schema.Not)
+	}
+
 	return schema
 }

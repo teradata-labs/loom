@@ -105,6 +105,12 @@ type JSONSchema struct {
 	Maximum     *float64               `json:"maximum,omitempty"`
 	MinLength   *int                   `json:"minLength,omitempty"`
 	MaxLength   *int                   `json:"maxLength,omitempty"`
+	// Composite schema keywords (JSON Schema §10.2.1)
+	// Required for MCP tools that use nullable types like anyOf: [{type: "string"}, {type: "null"}]
+	AnyOf []*JSONSchema `json:"anyOf,omitempty"`
+	OneOf []*JSONSchema `json:"oneOf,omitempty"`
+	AllOf []*JSONSchema `json:"allOf,omitempty"`
+	Not   *JSONSchema   `json:"not,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling to ensure Bedrock compliance.
@@ -158,6 +164,18 @@ func (s *JSONSchema) MarshalJSON() ([]byte, error) {
 		}
 		if s.MaxLength != nil {
 			result["maxLength"] = s.MaxLength
+		}
+		if len(s.AnyOf) > 0 {
+			result["anyOf"] = s.AnyOf
+		}
+		if len(s.OneOf) > 0 {
+			result["oneOf"] = s.OneOf
+		}
+		if len(s.AllOf) > 0 {
+			result["allOf"] = s.AllOf
+		}
+		if s.Not != nil {
+			result["not"] = s.Not
 		}
 
 		return json.Marshal(result)

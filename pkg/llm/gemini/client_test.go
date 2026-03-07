@@ -752,6 +752,54 @@ func TestConvertTools(t *testing.T) {
 	assert.Contains(t, declarations[0].Parameters.Required, "location")
 }
 
+func TestConvertTools_EmptyPropertyTypes(t *testing.T) {
+	// MCP tools may have properties with empty type fields.
+	// All providers must handle this gracefully.
+	mockTool := &mockShuttleTool{
+		name:        "mcp_tool",
+		description: "MCP tool with missing types",
+		schema: &shuttle.JSONSchema{
+			Type: "object",
+			Properties: map[string]*shuttle.JSONSchema{
+				"query": {
+					Type:        "", // empty type
+					Description: "Search query",
+				},
+				"nested": {
+					Type: "", // empty type but has properties → should become "object"
+					Properties: map[string]*shuttle.JSONSchema{
+						"field": {Type: "string"},
+					},
+				},
+				"tags": {
+					Type: "", // empty type but has items → should become "array"
+					Items: &shuttle.JSONSchema{
+						Type: "", // empty item type
+					},
+				},
+			},
+			Required: []string{"query"},
+		},
+	}
+
+	tools := []shuttle.Tool{mockTool}
+	nameMap := make(map[string]string)
+	declarations := convertTools(tools, nameMap)
+
+	require.Len(t, declarations, 1)
+	props := declarations[0].Parameters.Properties
+
+	// Empty type defaults to "string"
+	assert.Equal(t, "string", props["query"].Type, "empty type should default to string")
+
+	// Empty type with properties defaults to "object"
+	assert.Equal(t, "object", props["nested"].Type, "empty type with properties should become object")
+
+	// Empty type with items defaults to "array"
+	assert.Equal(t, "array", props["tags"].Type, "empty type with items should become array")
+	assert.Equal(t, "string", props["tags"].Items.Type, "empty item type should default to string")
+}
+
 // Mock implementations for testing
 
 type mockContext struct {
