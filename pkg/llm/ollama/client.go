@@ -298,16 +298,41 @@ func (c *Client) convertTools(tools []shuttle.Tool) []ollamaTool {
 		if c.toolNameMap != nil {
 			c.toolNameMap[sanitizedName] = originalName
 		}
+		schema := tool.InputSchema()
+		sanitizeSchemaTypes(schema)
 		ollamaTools[i] = ollamaTool{
 			Type: "function",
 			Function: ollamaFunction{
 				Name:        sanitizedName,
 				Description: tool.Description(),
-				Parameters:  tool.InputSchema(),
+				Parameters:  schema,
 			},
 		}
 	}
 	return ollamaTools
+}
+
+// sanitizeSchemaTypes ensures all type fields in a JSONSchema are non-empty.
+// MCP tools may omit type fields which causes errors with some providers.
+func sanitizeSchemaTypes(schema *shuttle.JSONSchema) {
+	if schema == nil {
+		return
+	}
+	if schema.Type == "" {
+		if schema.Properties != nil {
+			schema.Type = "object"
+		} else if schema.Items != nil {
+			schema.Type = "array"
+		} else {
+			schema.Type = "string"
+		}
+	}
+	for _, prop := range schema.Properties {
+		sanitizeSchemaTypes(prop)
+	}
+	if schema.Items != nil {
+		sanitizeSchemaTypes(schema.Items)
+	}
 }
 
 // convertMessages converts agent messages to Ollama format.

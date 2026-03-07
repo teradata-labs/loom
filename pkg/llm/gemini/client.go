@@ -496,20 +496,35 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]Sc
 
 	result := make(map[string]Schema)
 	for key, schema := range props {
+		propType := schema.Type
+		if propType == "" {
+			propType = "string" // Gemini requires a non-empty type for every property
+		}
+
 		s := Schema{
-			Type:        schema.Type,
+			Type:        propType,
 			Description: schema.Description,
 			Enum:        schema.Enum,
 		}
 
 		if schema.Properties != nil {
 			s.Properties = convertSchemaProperties(schema.Properties)
+			if s.Type == "string" && len(s.Properties) > 0 {
+				s.Type = "object" // properties imply object type
+			}
 		}
 
 		if schema.Items != nil {
+			itemType := schema.Items.Type
+			if itemType == "" {
+				itemType = "string"
+			}
 			s.Items = &Schema{
-				Type:        schema.Items.Type,
+				Type:        itemType,
 				Description: schema.Items.Description,
+			}
+			if s.Type == "string" && s.Items != nil {
+				s.Type = "array" // items implies array type
 			}
 		}
 

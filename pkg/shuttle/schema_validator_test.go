@@ -156,6 +156,161 @@ func TestNormalizeSchema_JSONMarshaling(t *testing.T) {
 	}
 }
 
+func TestNormalizeSchema_AnyOfPreserved(t *testing.T) {
+	// Test case: MCP servers use anyOf for nullable types: anyOf: [{type: "string"}, {type: "null"}]
+	// This must survive round-trip through JSONSchema marshal/unmarshal
+	schema := &JSONSchema{
+		Type: "object",
+		Properties: map[string]*JSONSchema{
+			"query": {
+				Type:        "string",
+				Description: "SQL query to execute",
+			},
+			"database_name": {
+				Description: "Optional database name",
+				AnyOf: []*JSONSchema{
+					{Type: "string"},
+					{Type: "null"},
+				},
+			},
+		},
+		Required: []string{"query"},
+	}
+
+	normalized := NormalizeSchema(schema)
+
+	// anyOf must survive normalization
+	dbName := normalized.Properties["database_name"]
+	if len(dbName.AnyOf) != 2 {
+		t.Fatalf("Expected 2 anyOf entries, got %d", len(dbName.AnyOf))
+	}
+	if dbName.AnyOf[0].Type != "string" {
+		t.Errorf("Expected anyOf[0].type = 'string', got '%s'", dbName.AnyOf[0].Type)
+	}
+	if dbName.AnyOf[1].Type != "null" {
+		t.Errorf("Expected anyOf[1].type = 'null', got '%s'", dbName.AnyOf[1].Type)
+	}
+
+	// anyOf must survive JSON round-trip
+	jsonBytes, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &raw); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	props := raw["properties"].(map[string]interface{})
+	dbNameRaw := props["database_name"].(map[string]interface{})
+	anyOf, ok := dbNameRaw["anyOf"].([]interface{})
+	if !ok {
+		t.Fatalf("anyOf missing from serialized JSON, got keys: %v", dbNameRaw)
+	}
+	if len(anyOf) != 2 {
+		t.Errorf("Expected 2 anyOf entries in JSON, got %d", len(anyOf))
+	}
+}
+
+func TestNormalizeSchema_OneOfAllOfNotPreserved(t *testing.T) {
+	schema := &JSONSchema{
+		Type: "object",
+		Properties: map[string]*JSONSchema{
+			"with_one_of": {
+				OneOf: []*JSONSchema{
+					{Type: "string"},
+					{Type: "integer"},
+				},
+			},
+			"with_all_of": {
+				AllOf: []*JSONSchema{
+					{Type: "object", Properties: map[string]*JSONSchema{
+						"a": {Type: "string"},
+					}},
+				},
+			},
+			"with_not": {
+				Not: &JSONSchema{Type: "null"},
+			},
+		},
+	}
+
+	normalized := NormalizeSchema(schema)
+
+	if len(normalized.Properties["with_one_of"].OneOf) != 2 {
+		t.Errorf("Expected 2 oneOf entries, got %d", len(normalized.Properties["with_one_of"].OneOf))
+	}
+	if len(normalized.Properties["with_all_of"].AllOf) != 1 {
+		t.Errorf("Expected 1 allOf entry, got %d", len(normalized.Properties["with_all_of"].AllOf))
+	}
+	// allOf[0] is an object — its properties should be normalized
+	allOfObj := normalized.Properties["with_all_of"].AllOf[0]
+	if allOfObj.Properties == nil {
+		t.Error("Expected allOf[0].properties to be non-nil after normalization")
+	}
+	if normalized.Properties["with_not"].Not == nil {
+		t.Error("Expected not to be preserved")
+	}
+}
+
+func TestNormalizeSchema_MCPNullableRoundTrip(t *testing.T) {
+	// Simulate exact schema from teradata-mcp-server's base_readQuery tool
+	// This is the real-world schema that was being corrupted
+	inputJSON := `{
+		"type": "object",
+		"properties": {
+			"query": {
+				"type": "string",
+				"description": "SQL query to execute"
+			},
+			"databaseName": {
+				"anyOf": [{"type": "string"}, {"type": "null"}],
+				"description": "Optional database context",
+				"default": null
+			}
+		},
+		"required": ["query"]
+	}`
+
+	var schema JSONSchema
+	if err := json.Unmarshal([]byte(inputJSON), &schema); err != nil {
+		t.Fatalf("Failed to unmarshal MCP schema: %v", err)
+	}
+
+	normalized := NormalizeSchema(&schema)
+
+	// Re-serialize
+	outputJSON, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("Failed to marshal normalized schema: %v", err)
+	}
+
+	// Verify anyOf survived
+	var result map[string]interface{}
+	if err := json.Unmarshal(outputJSON, &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	props := result["properties"].(map[string]interface{})
+	dbName := props["databaseName"].(map[string]interface{})
+
+	anyOf, ok := dbName["anyOf"].([]interface{})
+	if !ok {
+		t.Fatalf("anyOf was dropped during normalization! Keys present: %v", dbName)
+	}
+	if len(anyOf) != 2 {
+		t.Errorf("Expected 2 anyOf entries, got %d", len(anyOf))
+	}
+
+	// Verify the types
+	first := anyOf[0].(map[string]interface{})
+	second := anyOf[1].(map[string]interface{})
+	if first["type"] != "string" || second["type"] != "null" {
+		t.Errorf("anyOf types corrupted: got [%v, %v]", first["type"], second["type"])
+	}
+}
+
 func TestNormalizeSchema_BedrockCompliance(t *testing.T) {
 	// Test case: Simulate the exact issue that caused Bedrock validation error
 	// This is what happened with the working memory feature
