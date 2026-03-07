@@ -849,6 +849,57 @@ func fixMCPEnvCase(config *Config, configFile string) error {
 	return nil
 }
 
+// fixMCPEnabledDefault reads the raw YAML to determine whether each MCP server
+// explicitly sets enabled: false. If the field is absent, it defaults to true,
+// since listing a server in config implies the user wants it running.
+// This works around Go's bool zero-value (false) conflating "unset" with "disabled".
+func fixMCPEnabledDefault(config *Config, configFile string) error {
+	if configFile == "" {
+		return nil
+	}
+
+	cleanPath := filepath.Clean(configFile)
+	if !filepath.IsAbs(cleanPath) {
+		return fmt.Errorf("config file path must be absolute: %s", cleanPath)
+	}
+
+	// #nosec G304 -- same justification as fixMCPEnvCase
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var rawConfig map[string]interface{}
+	if err := yaml.Unmarshal(data, &rawConfig); err != nil {
+		return fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	mcpSection, ok := rawConfig["mcp"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	serversSection, ok := mcpSection["servers"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	for serverName, serverConfig := range config.MCP.Servers {
+		rawServer, ok := serversSection[serverName].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// If "enabled" is not explicitly present in the YAML, default to true
+		if _, hasEnabled := rawServer["enabled"]; !hasEnabled {
+			serverConfig.Enabled = true
+			config.MCP.Servers[serverName] = serverConfig
+		}
+	}
+
+	return nil
+}
+
 // LoadConfig loads configuration from multiple sources with proper priority:
 // 1. Command line flags (highest priority)
 // 2. Config file
@@ -911,6 +962,15 @@ func LoadConfig(cfgFile string) (*Config, error) {
 		if err := fixMCPEnvCase(&config, configFile); err != nil {
 			// Non-fatal: log warning but don't fail
 			fmt.Fprintf(os.Stderr, "Warning: failed to restore MCP env var case: %v\n", err)
+		}
+	}
+
+	// Fix MCP server enabled defaults: Go's bool zero-value is false, but servers
+	// listed in config should default to enabled unless explicitly set to false.
+	if configFile != "" {
+		if err := fixMCPEnabledDefault(&config, configFile); err != nil {
+			// Non-fatal: log warning but don't fail
+			fmt.Fprintf(os.Stderr, "Warning: failed to fix MCP enabled defaults: %v\n", err)
 		}
 	}
 

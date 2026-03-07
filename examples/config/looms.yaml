@@ -107,6 +107,7 @@ agents:
       enable_tracing: true
 
 # MCP server configuration (optional - for Python tools)
+# Servers listed here default to enabled: true unless explicitly set to false.
 mcp:
   servers:
     # Example: Python-based data analysis tools

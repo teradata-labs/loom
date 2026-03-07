@@ -2809,14 +2809,9 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 			transport = "stdio"
 		}
 
-		// Default to enabled if not explicitly set in config
 		enabled := serverConfig.Enabled
-		// In Go, bool defaults to false, so we treat unset as true
-		// Only disable if explicitly set to false in config
-		// Since we can't distinguish between unset and false in bool,
-		// we just use the value as-is (true = enabled, false = disabled)
-		// For backwards compatibility, servers without "enabled" field will be false
-		// but the config loader should set defaults
+		// Enabled defaults are handled by fixMCPEnabledDefault in config loading:
+		// servers without explicit "enabled: false" in YAML default to true.
 
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
 			Command:          serverConfig.Command,

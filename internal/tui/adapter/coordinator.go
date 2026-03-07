@@ -267,6 +267,26 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 
 	if err != nil {
 		result.Error = err
+
+		// Emit a finished error message so the TUI displays something useful
+		// instead of silently showing nothing after many tool calls.
+		if c.events != nil {
+			errMsg := message.NewMessage(messageID, sessionID, message.Assistant)
+			errMsg.AgentID = agentID
+			errMsg.CreatedAt = startTimestamp
+			errMsg.AddPart(message.ContentText{Text: fmt.Sprintf("Error: %v", err)})
+			errMsg.AddPart(message.FinishPart{Reason: message.FinishReasonError})
+
+			eventType := pubsub.UpdatedEvent
+			if firstMessage {
+				eventType = pubsub.CreatedEvent
+			}
+			c.events <- pubsub.Event[message.Message]{
+				Type:    eventType,
+				Payload: errMsg,
+			}
+		}
+
 		// Best-effort: if we accumulated cost before the error, still update the session metrics.
 		// This covers cancellation mid-stream where COMPLETED was never sent.
 		if result.Cost != nil && c.events != nil {

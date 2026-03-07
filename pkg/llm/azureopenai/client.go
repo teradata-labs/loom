@@ -597,7 +597,11 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 	result := make(map[string]interface{})
 	for key, schema := range props {
 		propMap := make(map[string]interface{})
-		propMap["type"] = schema.Type
+		propType := schema.Type
+		if propType == "" {
+			propType = "string" // MCP tools may omit type; default to string
+		}
+		propMap["type"] = propType
 
 		if schema.Description != "" {
 			propMap["description"] = schema.Description
@@ -608,17 +612,26 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 		if schema.Default != nil {
 			propMap["default"] = schema.Default
 		}
-		// Add properties/items only if they exist (same as regular OpenAI)
 		if schema.Properties != nil {
 			propMap["properties"] = convertSchemaProperties(schema.Properties)
+			if propType == "string" {
+				propMap["type"] = "object"
+			}
 		}
 		if schema.Items != nil {
 			itemMap := make(map[string]interface{})
-			itemMap["type"] = schema.Items.Type
+			itemType := schema.Items.Type
+			if itemType == "" {
+				itemType = "string"
+			}
+			itemMap["type"] = itemType
 			if schema.Items.Description != "" {
 				itemMap["description"] = schema.Items.Description
 			}
 			propMap["items"] = itemMap
+			if propType == "string" {
+				propMap["type"] = "array"
+			}
 		}
 
 		result[key] = propMap

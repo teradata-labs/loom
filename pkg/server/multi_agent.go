@@ -916,6 +916,23 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	}
 
 	if finalResult.err != nil {
+		// Send a FAILED progress event so the TUI can display the error message
+		// before we return the gRPC error. Without this, the client stream ends
+		// abruptly and the user sees zero content after many tool calls.
+		errContent := fmt.Sprintf("Agent execution failed: %v", finalResult.err)
+		failedProgress := &loomv1.WeaveProgress{
+			Stage:          loomv1.ExecutionStage_EXECUTION_STAGE_FAILED,
+			Progress:       100,
+			Message:        errContent,
+			Timestamp:      time.Now().Unix(),
+			PartialContent: errContent,
+		}
+		// Best-effort: if resp has partial content from synthesis fallback, include it
+		if finalResult.resp != nil && finalResult.resp.Content != "" {
+			failedProgress.PartialContent = finalResult.resp.Content
+			failedProgress.Message = "Agent completed with errors"
+		}
+		_ = stream.Send(failedProgress)
 		return status.Errorf(codes.Internal, "agent execution failed: %v", finalResult.err)
 	}
 
