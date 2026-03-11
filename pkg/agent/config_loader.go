@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"gopkg.in/yaml.v3"
 )
 
@@ -211,7 +212,19 @@ type BehaviorConfigYAML struct {
 	MaxTurns               int                `yaml:"max_turns"`
 	MaxToolExecutions      int                `yaml:"max_tool_executions"`
 	Patterns               *PatternConfigYAML `yaml:"patterns"`
+	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
+}
+
+// SkillsConfigYAML represents skills configuration in YAML
+type SkillsConfigYAML struct {
+	Enabled              *bool    `yaml:"enabled"`
+	EnabledSkills        []string `yaml:"enabled_skills"`
+	DisabledSkills       []string `yaml:"disabled_skills"`
+	MinAutoConfidence    *float64 `yaml:"min_auto_confidence"`
+	MaxConcurrentSkills  *int     `yaml:"max_concurrent_skills"`
+	SkillsDir            string   `yaml:"skills_dir"`
+	ContextBudgetPercent *int     `yaml:"context_budget_percent"`
 }
 
 // PatternConfigYAML represents pattern configuration in YAML
@@ -632,6 +645,38 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		}
 	}
 
+	// Build SkillsConfig from YAML and stash as JSON in metadata.
+	// Only serialize when the user explicitly configured skills (sc.Enabled != nil).
+	{
+		sc := yaml.Agent.Behavior.Skills
+		if sc.Enabled != nil {
+			skillsConfig := skills.DefaultSkillsConfig()
+			skillsConfig.Enabled = *sc.Enabled
+			if sc.MinAutoConfidence != nil {
+				skillsConfig.MinAutoConfidence = *sc.MinAutoConfidence
+			}
+			if sc.MaxConcurrentSkills != nil {
+				skillsConfig.MaxConcurrentSkills = *sc.MaxConcurrentSkills
+			}
+			if sc.SkillsDir != "" {
+				skillsConfig.SkillsDir = sc.SkillsDir
+			}
+			if sc.ContextBudgetPercent != nil {
+				skillsConfig.ContextBudgetPercent = *sc.ContextBudgetPercent
+			}
+			skillsConfig.EnabledSkills = sc.EnabledSkills
+			skillsConfig.DisabledSkills = sc.DisabledSkills
+
+			skillsJSON, err := json.Marshal(skillsConfig)
+			if err == nil {
+				if config.Metadata == nil {
+					config.Metadata = make(map[string]string)
+				}
+				config.Metadata["_skills_config"] = string(skillsJSON)
+			}
+		}
+	}
+
 	// Set defaults for behavior
 	if config.Behavior.MaxIterations == 0 {
 		config.Behavior.MaxIterations = 10
@@ -878,6 +923,23 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	}
 
 	return yaml
+}
+
+// ExtractSkillsConfig extracts a SkillsConfig from proto metadata.
+// Returns nil if no skills config is present in metadata.
+func ExtractSkillsConfig(metadata map[string]string) *skills.SkillsConfig {
+	if metadata == nil {
+		return nil
+	}
+	raw, ok := metadata["_skills_config"]
+	if !ok || raw == "" {
+		return nil
+	}
+	var sc skills.SkillsConfig
+	if err := json.Unmarshal([]byte(raw), &sc); err != nil {
+		return nil
+	}
+	return &sc
 }
 
 // LoadWorkflowAgents loads a workflow file and extracts ALL agent configs (coordinator + sub-agents).

@@ -48,6 +48,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/server"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -86,6 +87,21 @@ func main() {
 			zap.String("cert_file", *tlsCert),
 			zap.Bool("skip_verify", *tlsSkipVerify),
 		)
+	}
+
+	// Initialize skills library and orchestrator for MCP skill tools
+	skillsDir := os.Getenv("LOOM_SKILLS_DIR")
+	if skillsDir == "" {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			skillsDir = home + "/.loom/skills"
+		}
+	}
+	if skillsDir != "" {
+		skillLib := skills.NewLibrary(skills.WithSearchPaths(skillsDir))
+		skillOrch := skills.NewOrchestrator(skillLib)
+		bridgeOpts = append(bridgeOpts, server.WithSkillOrchestrator(skillOrch))
+		logger.Info("skills orchestrator initialized", zap.String("skills_dir", skillsDir))
 	}
 
 	// Connect to running looms via gRPC

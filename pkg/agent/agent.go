@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -405,6 +406,13 @@ func WithPatternInjection(enabled bool) Option {
 			a.config.PatternConfig = DefaultPatternConfig()
 		}
 		a.config.PatternConfig.Enabled = enabled
+	}
+}
+
+// WithSkillOrchestrator sets the skill orchestrator for skill activation and injection.
+func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
+	return func(a *Agent) {
+		a.skillOrchestrator = orch
 	}
 }
 
@@ -1198,6 +1206,79 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Get available tools
 	tools := a.tools.ListTools()
+
+	// --- Skill activation ---
+	if a.skillOrchestrator != nil && session != nil {
+		sessionID := session.ID
+		if sessionID == "" {
+			sessionID = a.id
+		}
+
+		// Get skills config (use defaults if not set)
+		skillsConfig := a.config.SkillsConfig
+		if skillsConfig == nil {
+			skillsConfig = skills.DefaultSkillsConfig()
+		}
+
+		if skillsConfig.Enabled {
+			// Match skills from user message
+			msgs := session.GetMessages()
+			lastMsg := ""
+			if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
+				lastMsg = msgs[len(msgs)-1].Content
+			}
+
+			if lastMsg != "" {
+				matches, matchErr := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig)
+				if matchErr == nil {
+					for _, match := range matches {
+						a.skillOrchestrator.ActivateSkill(sessionID, match.Skill, match.TriggerType, match.TriggerValue, match.Confidence)
+					}
+				}
+			}
+
+			// Deactivate non-sticky skills from previous turns
+			activeSkills := a.skillOrchestrator.GetActiveSkills(sessionID)
+			for _, as := range activeSkills {
+				if !as.Skill.Sticky {
+					// Non-sticky skills only last one turn -- deactivate if they were activated before this message
+					// (Simplification; more sophisticated turn tracking could be added)
+					_ = as
+				}
+			}
+
+			// Build combined skill prompt and inject
+			maxTokens := 1500 // default
+			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
+				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
+			}
+
+			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
+			if skillContent != "" {
+				activeNames := make([]string, 0)
+				for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+					activeNames = append(activeNames, as.Skill.Name)
+				}
+				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+					segMem.InjectSkills(skillContent, activeNames)
+				}
+			}
+
+			// Co-inject pattern refs from active skills
+			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+				for _, ref := range as.Skill.PatternRefs {
+					if a.orchestrator != nil {
+						if pattern, err := a.orchestrator.GetLibrary().Load(ref); err == nil {
+							formatted := pattern.FormatForLLM()
+							if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+								segMem.InjectPattern(formatted, ref)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")

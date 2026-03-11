@@ -79,6 +79,13 @@ func (b *LoomBridge) buildToolHandlers() map[string]toolHandler {
 		"loom_delete_app":           b.handleDeleteUIApp,
 		"loom_list_component_types": b.handleListComponentTypes,
 
+		// Skills
+		"loom_list_skills":      b.handleListSkills,
+		"loom_get_skill":        b.handleGetSkill,
+		"loom_create_skill":     b.handleCreateSkill,
+		"loom_activate_skill":   b.handleActivateSkill,
+		"loom_deactivate_skill": b.handleDeactivateSkill,
+
 		// Artifacts
 		"loom_list_artifacts":       b.handleListArtifacts,
 		"loom_get_artifact":         b.handleGetArtifact,
@@ -324,6 +331,34 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 			reqProp("name", "string", "App name to delete"),
 		), "", mv, del),
 		tool("loom_list_component_types", "List available UI component types for building dynamic MCP apps. Returns type names, descriptions, prop schemas, and examples.", objectSchema(), "", mv, ro),
+
+		// Skills
+		tool("loom_list_skills", "List available skills with optional domain filtering.", objectSchema(
+			prop("domain", "string", "Filter by domain (optional)"),
+		), "", mv, ro),
+		tool("loom_get_skill", "Get a specific skill by name.", objectSchema(
+			reqProp("name", "string", "Skill name"),
+		), "", mv, ro),
+		tool("loom_create_skill", "Create a new skill and persist it as YAML.", objectSchema(
+			reqProp("name", "string", "Skill name (URL-safe, lowercase)"),
+			reqProp("domain", "string", "Skill domain (e.g. sql, api, code-review)"),
+			reqProp("instructions", "string", "Main prompt instructions for the skill"),
+			prop("title", "string", "Human-readable title (optional)"),
+			prop("description", "string", "Description of what this skill does (optional)"),
+			prop("slash_commands", "array", "Slash commands that trigger this skill (e.g. [\"/review\"])"),
+			prop("keywords", "array", "Keywords for auto-detection from user messages"),
+			prop("mode", "string", "Activation mode: MANUAL, AUTO, HYBRID, or ALWAYS (default: MANUAL)"),
+			prop("sticky", "boolean", "Persist across turns once activated (default: false)"),
+			prop("pattern_refs", "array", "Co-inject these patterns when skill is active"),
+		), "", mv, mut),
+		tool("loom_activate_skill", "Activate a skill for a session.", objectSchema(
+			reqProp("name", "string", "Skill name to activate"),
+			reqProp("session_id", "string", "Session ID"),
+		), "", mv, mut),
+		tool("loom_deactivate_skill", "Deactivate a skill for a session.", objectSchema(
+			reqProp("name", "string", "Skill name to deactivate"),
+			reqProp("session_id", "string", "Session ID"),
+		), "", mv, mut),
 
 		// Artifacts
 		tool("loom_list_artifacts", "List artifacts with optional filtering.", objectSchema(

@@ -396,10 +396,14 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}
 	}()
 
-	// Wait for command completion in a goroutine
+	// Wait for pipe scanners to finish, then call cmd.Wait() to get the exit code.
+	// IMPORTANT: Per Go docs, all reads from StdoutPipe/StderrPipe must complete
+	// BEFORE calling cmd.Wait(), because Wait closes the pipes. Calling Wait first
+	// can cause scanners to see early EOF and miss buffered output.
 	waitDone := make(chan error, 1)
 	go func() {
-		waitDone <- cmd.Wait()
+		wg.Wait()              // Scanners finish when pipes close at process exit
+		waitDone <- cmd.Wait() // Then collect exit status
 	}()
 
 	// Wait for either completion or timeout
@@ -411,8 +415,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 	select {
 	case waitErr = <-waitDone:
-		// Command completed before timeout
-		wg.Wait() // Wait for output streams to finish
+		// Command completed — scanners already finished above
 	case <-timer.C:
 		// Timeout - kill the process forcefully
 		timedOut = true

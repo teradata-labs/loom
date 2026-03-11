@@ -1,0 +1,69 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: code-review
+  title: Code Review
+  description: Analyze code for bugs, style issues, and improvements
+  version: "1.0.0"
+  domain: code
+  author: loom
+  labels:
+    category: development
+trigger:
+  slash_commands:
+    - /review
+    - /code-review
+  keywords:
+    - review this code
+    - code review
+    - review my changes
+    - check this code
+  intent_categories:
+    - code_review
+  mode: HYBRID
+  min_confidence: 0.7
+prompt:
+  instructions: |
+    Analyze the provided code for:
+    1. Bugs and potential runtime errors
+    2. Security vulnerabilities (OWASP top 10)
+    3. Performance issues and inefficiencies
+    4. Style and readability improvements
+    5. Missing error handling
+
+    Structure your review by severity: critical > warning > suggestion.
+    Reference specific line numbers when possible.
+  constraints:
+    - Do not suggest changes that alter the code's intended behavior
+    - Focus on actionable feedback, not stylistic preferences
+    - Flag security issues with explicit severity ratings
+  output_format: |
+    ## Code Review Summary
+    **Files reviewed**: [list]
+    **Critical issues**: [count]
+    **Warnings**: [count]
+
+    ### Critical
+    - [issue with line reference]
+
+    ### Warnings
+    - [issue with line reference]
+
+    ### Suggestions
+    - [improvement with rationale]
+  examples:
+    - user_input: "Review this Go function for issues"
+      expected_output: "Found 2 critical issues: unhandled error at line 15, SQL injection at line 23"
+      explanation: "Prioritize security and error handling issues"
+tools:
+  required_tools:
+    - file_read
+  preferred_order:
+    - file_read
+    - shell_execute
+  excluded_tools: []
+pattern_refs: []
+skill_refs: []
+max_prompt_tokens: 0
+sticky: true
+backend: ""

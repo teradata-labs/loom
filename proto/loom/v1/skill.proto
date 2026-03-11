@@ -1,0 +1,162 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// Skill represents an activatable behavior that combines prompt injection,
+// tool preferences, trigger conditions, and optional persistence across turns.
+// Skills are LLM-agnostic and work across all providers.
+message Skill {
+  // Skill metadata (name, description, version, domain)
+  SkillMetadata metadata = 1;
+  // Trigger configuration (slash commands, keywords, activation mode)
+  SkillTrigger trigger = 2;
+  // Prompt instructions, constraints, and examples
+  SkillPrompt prompt = 3;
+  // Tool requirements and preferences
+  SkillToolConfig tools = 4;
+  // Co-inject these patterns when skill is active
+  repeated string pattern_refs = 5;
+  // Compose with sub-skills (max depth: 2)
+  repeated string skill_refs = 6;
+  // Token budget for this skill's prompt (0 = use default 1500)
+  int32 max_prompt_tokens = 7;
+  // Persist across turns once activated
+  bool sticky = 8;
+  // Target backend (empty = agnostic)
+  string backend = 9;
+}
+
+// SkillMetadata contains identifying information about a skill.
+message SkillMetadata {
+  // Unique kebab-case name: "code-review", "sql-optimize"
+  string name = 1;
+  // Human-readable title
+  string title = 2;
+  // Description of what this skill does
+  string description = 3;
+  // Semantic version
+  string version = 4;
+  // Domain category: "sql", "code", "data", "ops", "general"
+  string domain = 5;
+  // Arbitrary labels for filtering
+  map<string, string> labels = 6;
+  // Author of the skill
+  string author = 7;
+}
+
+// SkillTrigger defines how a skill gets activated.
+message SkillTrigger {
+  // Slash commands that activate this skill: ["/review", "/code-review"]
+  repeated string slash_commands = 1;
+  // Keywords for auto-detection from user messages
+  repeated string keywords = 2;
+  // Maps to patterns.IntentCategory for intent-based activation
+  repeated string intent_categories = 3;
+  // How this skill can be activated
+  SkillActivationMode mode = 4;
+  // Minimum confidence for AUTO/HYBRID activation (default: 0.7)
+  float min_confidence = 5;
+}
+
+// SkillActivationMode controls how a skill can be triggered.
+enum SkillActivationMode {
+  SKILL_ACTIVATION_MODE_UNSPECIFIED = 0;
+  // Slash command or API only
+  SKILL_ACTIVATION_MODE_MANUAL = 1;
+  // Auto-detect from user message content
+  SKILL_ACTIVATION_MODE_AUTO = 2;
+  // Both manual and auto-detect
+  SKILL_ACTIVATION_MODE_HYBRID = 3;
+  // Always active when configured
+  SKILL_ACTIVATION_MODE_ALWAYS = 4;
+}
+
+// SkillPrompt defines the instructions injected when a skill is active.
+message SkillPrompt {
+  // Main prompt instructions (supports {{.var}} interpolation)
+  string instructions = 1;
+  // Rules and constraints to enforce
+  repeated string constraints = 2;
+  // Expected output structure description
+  string output_format = 3;
+  // Few-shot examples
+  repeated SkillExample examples = 4;
+}
+
+// SkillExample provides a few-shot example for the skill.
+message SkillExample {
+  string user_input = 1;
+  string expected_output = 2;
+  string explanation = 3;
+}
+
+// SkillToolConfig defines tool requirements and preferences for a skill.
+message SkillToolConfig {
+  // Ensure these tools are registered when skill is active
+  repeated string required_tools = 1;
+  // Suggested tool execution ordering
+  repeated string preferred_order = 2;
+  // Tools to hide when skill is active
+  repeated string excluded_tools = 3;
+  // MCP servers to enable when skill is active
+  repeated string mcp_servers = 4;
+}
+
+// SkillLibrary is a collection of related skills.
+message SkillLibrary {
+  SkillLibraryMetadata metadata = 1;
+  repeated Skill skills = 2;
+}
+
+// SkillLibraryMetadata contains information about a skill library.
+message SkillLibraryMetadata {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+  map<string, string> labels = 4;
+}
+
+// SkillActivation records a skill activation event.
+message SkillActivation {
+  // Name of the activated skill
+  string skill_name = 1;
+  // How it was triggered: "slash_command", "auto", "api", "always"
+  string trigger_type = 2;
+  // The actual trigger value (e.g., "/review" or matched keyword)
+  string trigger_value = 3;
+  // Confidence score for auto-detected activations
+  float confidence = 4;
+  // Timestamp of activation in milliseconds
+  int64 activated_at_ms = 5;
+  // Agent that activated the skill
+  string agent_id = 6;
+  // Session in which the skill was activated
+  string session_id = 7;
+}
+
+// SkillsConfig configures the skills system for an agent.
+message SkillsConfig {
+  // Whether skills are enabled (default: true)
+  bool enabled = 1;
+  // Specific skills to enable (empty = all discovered)
+  repeated string enabled_skills = 2;
+  // Skills to explicitly disable
+  repeated string disabled_skills = 3;
+  // Override per-skill auto-detection confidence threshold
+  float min_auto_confidence = 4;
+  // Maximum skills active simultaneously (default: 3)
+  int32 max_concurrent_skills = 5;
+  // Custom skills directory path
+  string skills_dir = 6;
+  // Percentage of max_context_tokens reserved for skills+patterns injection.
+  // Default: 5 (i.e., 5%). Skills get priority; patterns fill remainder.
+  // E.g., Claude 200K context -> 10K tokens for skills+patterns.
+  int32 context_budget_percent = 7;
+}

@@ -271,8 +271,10 @@ type AgentConfig struct {
 	// Restrict this agent to only use providers in this list (subset of global pool).
 	// Empty means all pool providers are allowed.
 	AllowedProviders []string `protobuf:"bytes,19,rep,name=allowed_providers,json=allowedProviders,proto3" json:"allowed_providers,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Skills configuration for this agent
+	Skills        *SkillsConfig `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AgentConfig) Reset() {
@@ -434,6 +436,13 @@ func (x *AgentConfig) GetActiveProvider() string {
 func (x *AgentConfig) GetAllowedProviders() []string {
 	if x != nil {
 		return x.AllowedProviders
+	}
+	return nil
+}
+
+func (x *AgentConfig) GetSkills() *SkillsConfig {
+	if x != nil {
+		return x.Skills
 	}
 	return nil
 }
@@ -1801,7 +1810,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\"\xc1\a\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\"\xf0\a\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1822,7 +1831,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x0eclassifier_llm\x18\x10 \x01(\v2\x12.loom.v1.LLMConfigR\rclassifierLlm\x129\n" +
 	"\x0ecompressor_llm\x18\x11 \x01(\v2\x12.loom.v1.LLMConfigR\rcompressorLlm\x12'\n" +
 	"\x0factive_provider\x18\x12 \x01(\tR\x0eactiveProvider\x12+\n" +
-	"\x11allowed_providers\x18\x13 \x03(\tR\x10allowedProviders\x1a;\n" +
+	"\x11allowed_providers\x18\x13 \x03(\tR\x10allowedProviders\x12-\n" +
+	"\x06skills\x18\x14 \x01(\v2\x15.loom.v1.SkillsConfigR\x06skills\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
@@ -1993,6 +2003,7 @@ var file_loom_v1_agent_config_proto_goTypes = []any{
 	(*SpawnTrigger)(nil),                // 20: loom.v1.SpawnTrigger
 	nil,                                 // 21: loom.v1.AgentConfig.MetadataEntry
 	nil,                                 // 22: loom.v1.AgentProfile.OverridesEntry
+	(*SkillsConfig)(nil),                // 23: loom.v1.SkillsConfig
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
@@ -2005,28 +2016,29 @@ var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	6,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
 	6,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
 	6,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
-	6,  // 10: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
-	4,  // 11: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
-	7,  // 12: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
-	9,  // 13: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
-	10, // 14: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	13, // 15: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
-	1,  // 16: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	12, // 17: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	15, // 18: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	17, // 19: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 20: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 21: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	22, // 22: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	20, // 23: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 24: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 25: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 26: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	23, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
+	6,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
+	4,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
+	7,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
+	9,  // 14: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
+	10, // 15: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
+	13, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	1,  // 17: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	12, // 18: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	15, // 19: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	17, // 20: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	3,  // 21: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	3,  // 22: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	22, // 23: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	20, // 24: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	3,  // 25: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	2,  // 26: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	3,  // 27: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2034,6 +2046,7 @@ func file_loom_v1_agent_config_proto_init() {
 	if File_loom_v1_agent_config_proto != nil {
 		return
 	}
+	file_loom_v1_skill_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

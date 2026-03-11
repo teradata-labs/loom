@@ -25,6 +25,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -95,6 +96,9 @@ type Agent struct {
 
 	// Pattern orchestration
 	orchestrator *patterns.Orchestrator
+
+	// Skill orchestration
+	skillOrchestrator *skills.Orchestrator
 
 	// Inter-agent communication (optional)
 	refStore     communication.ReferenceStore // Reference storage for agent-to-agent communication
@@ -195,6 +199,9 @@ type Config struct {
 
 	// PatternConfig controls pattern injection (nil = use defaults)
 	PatternConfig *PatternConfig
+
+	// SkillsConfig controls skill activation and injection (nil = use defaults)
+	SkillsConfig *skills.SkillsConfig
 
 	// Automatic finding extraction configuration
 	EnableFindingExtraction bool // Whether to enable automatic finding extraction (default: true)
