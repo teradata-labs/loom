@@ -1056,7 +1056,15 @@ func (r *Registry) buildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig) llm.
 		cfg.TokensPerMinute = proto.TokensPerMinute
 	}
 	if proto.BurstCapacity > 0 {
-		cfg.BurstCapacity = int(proto.BurstCapacity)
+		// Clamp BurstCapacity so that later calculations (e.g., queueCap = BurstCapacity*2)
+		// cannot overflow an int on any supported platform.
+		maxInt := int64(int(^uint(0) >> 1))
+		maxSafeBurst := maxInt / 2
+		burst := int64(proto.BurstCapacity)
+		if burst > maxSafeBurst {
+			burst = maxSafeBurst
+		}
+		cfg.BurstCapacity = int(burst)
 	}
 	if proto.MinDelayMs > 0 {
 		cfg.MinDelay = time.Duration(proto.MinDelayMs) * time.Millisecond
