@@ -164,10 +164,14 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 		config.QueueTimeout = defaults.QueueTimeout
 	}
 
-	// Guard against overflow in queue capacity calculation (CodeQL: allocation size overflow)
-	if config.BurstCapacity > math.MaxInt32/2 {
-		config.BurstCapacity = math.MaxInt32 / 2
+	// Compute queue capacity with overflow-safe bounds check.
+	// Cap BurstCapacity so that queueCap = BurstCapacity*2 fits in an int
+	// without overflow on any platform (including 32-bit).
+	const maxBurst = math.MaxInt/2 - 1
+	if config.BurstCapacity < 0 || config.BurstCapacity > maxBurst {
+		config.BurstCapacity = maxBurst
 	}
+	queueCap := config.BurstCapacity * 2
 
 	rl := &RateLimiter{
 		config:      config,
@@ -176,7 +180,7 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 		refillRate:  config.RequestsPerSecond,
 		lastRefill:  time.Now(),
 		tokenWindow: make([]tokenUsage, 0, 100),
-		queue:       make(chan *rateLimitedRequest, config.BurstCapacity*2),
+		queue:       make(chan *rateLimitedRequest, queueCap),
 		stopCh:      make(chan struct{}),
 	}
 

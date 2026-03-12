@@ -37,6 +37,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -207,6 +208,9 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 				protoProgress.HitlRequest = convertHITLRequestToProto(event.HITLRequest)
 			}
 
+			// Include tool lifecycle fields if present
+			applyToolLifecycleFields(protoProgress, event)
+
 			// Send to client
 			if err := stream.Send(protoProgress); err != nil {
 				return err
@@ -298,6 +302,35 @@ func convertHITLRequestToProto(info *agent.HITLRequestInfo) *loomv1.HITLRequestI
 		Priority:       info.Priority,
 		TimeoutSeconds: types.SafeInt32(int(info.Timeout.Seconds())),
 		ContextJson:    contextJSON,
+	}
+}
+
+// applyToolLifecycleFields populates tool lifecycle fields on a WeaveProgress proto
+// if the source event is a tool-started or tool-completed event.
+func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
+	if !event.IsToolStarted && !event.IsToolCompleted {
+		return
+	}
+
+	proto.IsToolStarted = event.IsToolStarted
+	proto.IsToolCompleted = event.IsToolCompleted
+	proto.ToolCallId = event.ToolCallID
+	proto.ToolError = event.ToolError
+	proto.ToolSuccess = event.ToolSuccess
+	proto.ToolDurationMs = event.ToolDurationMs
+
+	// Convert ToolInput map to proto Struct
+	if event.ToolInput != nil {
+		if s, err := structpb.NewStruct(event.ToolInput); err == nil {
+			proto.ToolInput = s
+		}
+	}
+
+	// Convert ToolResult to proto Value
+	if event.ToolResult != nil {
+		if v, err := structpb.NewValue(event.ToolResult); err == nil {
+			proto.ToolResult = v
+		}
 	}
 }
 

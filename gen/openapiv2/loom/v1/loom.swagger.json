@@ -9150,6 +9150,38 @@
         "cost": {
           "$ref": "#/definitions/v1CostInfo",
           "title": "Cost information (included in completion event)"
+        },
+        "isToolStarted": {
+          "type": "boolean",
+          "title": "True if this is a tool-execution-started event"
+        },
+        "isToolCompleted": {
+          "type": "boolean",
+          "title": "True if this is a tool-execution-completed event"
+        },
+        "toolInput": {
+          "type": "object",
+          "title": "Tool input parameters (populated when is_tool_started)"
+        },
+        "toolResult": {
+          "title": "Tool output data (populated when is_tool_completed)"
+        },
+        "toolError": {
+          "type": "string",
+          "title": "Error message if tool execution failed (when is_tool_completed)"
+        },
+        "toolSuccess": {
+          "type": "boolean",
+          "title": "Whether the tool execution succeeded (when is_tool_completed)"
+        },
+        "toolDurationMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Tool execution duration in milliseconds (when is_tool_completed)"
+        },
+        "toolCallId": {
+          "type": "string",
+          "title": "Unique identifier correlating started/completed events for the same tool call"
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

@@ -409,6 +409,32 @@ type ProgressEvent struct {
 
 	// TTFT is the time to first token in milliseconds (0 if not applicable)
 	TTFT int64
+
+	// Tool execution lifecycle fields (for real-time tool event rendering)
+
+	// IsToolStarted indicates this event is a tool-execution-started update
+	IsToolStarted bool
+
+	// IsToolCompleted indicates this event is a tool-execution-completed update
+	IsToolCompleted bool
+
+	// ToolInput contains the tool's input parameters (populated when IsToolStarted)
+	ToolInput map[string]interface{}
+
+	// ToolResult contains the tool's output data (populated when IsToolCompleted)
+	ToolResult interface{}
+
+	// ToolError contains the error message if tool execution failed (when IsToolCompleted)
+	ToolError string
+
+	// ToolSuccess indicates whether the tool execution succeeded (when IsToolCompleted)
+	ToolSuccess bool
+
+	// ToolDurationMs is the tool execution duration in milliseconds (when IsToolCompleted)
+	ToolDurationMs int64
+
+	// ToolCallID is a unique identifier correlating started/completed events for the same tool call
+	ToolCallID string
 }
 
 // ProgressCallback is called when agent execution progress occurs.

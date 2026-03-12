@@ -1126,6 +1126,56 @@ func emitProgressWithHITL(ctx Context, stage ExecutionStage, progress int32, mes
 	}
 }
 
+// emitToolStarted sends a tool-started progress event.
+func emitToolStarted(ctx Context, progress int32, toolCall ToolCall) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		callback(ProgressEvent{
+			Stage:         StageToolExecution,
+			Progress:      progress,
+			Message:       fmt.Sprintf("Executing tool: %s", toolCall.Name),
+			ToolName:      toolCall.Name,
+			Timestamp:     time.Now(),
+			IsToolStarted: true,
+			ToolInput:     toolCall.Input,
+			ToolCallID:    toolCall.ID,
+		})
+	}
+}
+
+// emitToolCompleted sends a tool-completed progress event.
+func emitToolCompleted(ctx Context, progress int32, toolCall ToolCall, result *shuttle.Result, execErr error) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		var toolErr string
+		toolSuccess := execErr == nil && (result == nil || result.Success)
+		if execErr != nil {
+			toolErr = execErr.Error()
+		} else if result != nil && !result.Success && result.Error != nil {
+			toolErr = result.Error.Message
+		}
+
+		var durationMs int64
+		var data interface{}
+		if result != nil {
+			durationMs = result.ExecutionTimeMs
+			data = result.Data
+		}
+
+		callback(ProgressEvent{
+			Stage:           StageToolExecution,
+			Progress:        progress,
+			Message:         fmt.Sprintf("Tool completed: %s", toolCall.Name),
+			ToolName:        toolCall.Name,
+			Timestamp:       time.Now(),
+			IsToolCompleted: true,
+			ToolResult:      data,
+			ToolError:       toolErr,
+			ToolSuccess:     toolSuccess,
+			ToolDurationMs:  durationMs,
+			ToolCallID:      toolCall.ID,
+		})
+	}
+}
+
 // extractHITLInfo extracts HITL request details from contact_human tool input.
 // Returns partial info even if some fields are missing (graceful degradation).
 func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
@@ -1625,8 +1675,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// Emit HITL-specific progress event
 				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
 			} else {
-				// Emit standard tool execution progress
-				emitProgress(ctx, StageToolExecution, 50+clampInt32(toolExecutionCount*5), fmt.Sprintf("Executing tool: %s", toolCall.Name), toolCall.Name)
+				// Emit tool-started progress event
+				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
 			}
 
 			// Execute tool with tracing
@@ -1692,6 +1742,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Error:    err,
 			}
 			allToolExecutions = append(allToolExecutions, execution)
+
+			// Emit tool-completed progress event
+			emitToolCompleted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall, result, err)
 
 			// Persist tool execution
 			if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
