@@ -262,6 +262,14 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 					if m.llmProvider != nil {
 						segMem.SetLLMProvider(m.llmProvider)
 					}
+
+					// Replay loaded messages into SegmentedMem to restore LLM context after
+					// server restart. session.Messages has the full DB-loaded history, but
+					// SegmentedMem was just initialized empty. Without this, GetMessagesForLLM()
+					// returns only the system prompt (no history).
+					for _, msg := range session.Messages {
+						segMem.AddMessage(ctx, msg)
+					}
 				}
 			}
 
