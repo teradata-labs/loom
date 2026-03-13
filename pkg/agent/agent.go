@@ -537,6 +537,54 @@ func (a *Agent) GetConfig() *Config {
 	return &configCopy
 }
 
+// ContextState holds a snapshot of the agent's memory and context window state.
+// Used to populate the proto ContextState message in WeaveResponse.
+type ContextState struct {
+	ActivePattern     string
+	ContextTokensUsed int64
+	ContextTokensMax  int64
+	Rom               string
+	ToolsLoaded       []string
+}
+
+// GetContextState returns a snapshot of the agent's memory and context window state
+// for the given session. Returns nil if the session has no SegmentedMemory.
+func (a *Agent) GetContextState(sessionID string) *ContextState {
+	sess, ok := a.memory.GetSession(sessionID)
+	if !ok || sess == nil {
+		return nil
+	}
+
+	state := &ContextState{
+		Rom:         a.config.Rom,
+		ToolsLoaded: a.ListTools(),
+	}
+
+	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		state.ActivePattern = segMem.GetActivePattern()
+		state.ContextTokensUsed = int64(segMem.GetTokenCount())
+		state.ContextTokensMax = int64(segMem.GetTokenBudgetMax())
+	}
+
+	return state
+}
+
+// ResetSessionContext clears the context window for a session, preserving ROM and
+// registered tools. Returns true if the session was found and reset, false otherwise.
+func (a *Agent) ResetSessionContext(sessionID string) bool {
+	sess, ok := a.memory.GetSession(sessionID)
+	if !ok || sess == nil {
+		return false
+	}
+
+	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		segMem.ResetContext()
+		return true
+	}
+
+	return false
+}
+
 // getSystemPrompt loads the system prompt from config or PromptRegistry.
 // Priority: ROM + Config.SystemPrompt (if explicitly set) > ROM + PromptRegistry > Default
 // ROM (Read-Only Memory) provides domain-specific knowledge loaded based on config.Rom

@@ -1036,6 +1036,59 @@ func (sm *SegmentedMemory) GetTokenCount() int {
 	return sm.tokenCount
 }
 
+// GetActivePattern returns the name of the currently injected pattern (empty if none).
+func (sm *SegmentedMemory) GetActivePattern() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.patternName
+}
+
+// GetTokenBudgetMax returns the total token budget (context window size).
+func (sm *SegmentedMemory) GetTokenBudgetMax() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	_, _, total := sm.tokenBudget.GetUsage()
+	return total
+}
+
+// ResetContext clears the entire context window: L1 messages, L2 summary, promoted context,
+// findings cache, schema cache, and tool results. ROM and kernel (tools list) are preserved
+// since they are structural, not conversational. Pattern and skill injections are also cleared
+// so the next turn can re-evaluate them fresh.
+func (sm *SegmentedMemory) ResetContext() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Clear conversational layers
+	sm.l1Messages = sm.l1Messages[:0]
+	sm.l2Summary = ""
+	sm.promotedContext = sm.promotedContext[:0]
+
+	// Clear caches (they're per-conversation artifacts)
+	sm.findingsCache = make(map[string]Finding)
+	sm.schemaCache = make(map[string]string)
+	sm.schemaAccessLog = make(map[string]time.Time)
+	sm.toolResults = sm.toolResults[:0]
+
+	// Clear pattern and skill injections so next turn re-evaluates
+	sm.patternContent = ""
+	sm.patternName = ""
+	sm.skillContent = ""
+	sm.skillNames = nil
+
+	// Reset swap counters
+	sm.swapEvictionCount = 0
+	sm.swapRetrievalCount = 0
+
+	// Recalculate token count (should be just ROM + kernel overhead now)
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+
+	if sm.tracer != nil {
+		sm.tracer.RecordMetric("memory.context_reset", 1.0, nil)
+	}
+}
+
 // GetL1MessageCount returns number of messages in L1 cache.
 func (sm *SegmentedMemory) GetL1MessageCount() int {
 	sm.mu.RLock()
