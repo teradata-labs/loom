@@ -114,6 +114,10 @@ type SegmentedMemory struct {
 	patternContent string // Formatted pattern content for LLM context
 	patternName    string // Pattern name for tracking
 
+	// Skill injection (optional)
+	skillContent string   // Formatted skills for LLM
+	skillNames   []string // Names of injected skills
+
 	// Configuration
 	maxL1Tokens        int                // Max tokens in L1 before compression (token-based, not message-based)
 	minL1Messages      int                // Minimum messages to keep in L1 (for recency)
@@ -844,6 +848,12 @@ func (sm *SegmentedMemory) updateTokenCount() {
 	// L2 layer (summary)
 	count += sm.tokenCounter.CountTokens(sm.l2Summary)
 
+	// Pattern content
+	count += sm.tokenCounter.CountTokens(sm.patternContent)
+
+	// Skill content
+	count += sm.tokenCounter.CountTokens(sm.skillContent)
+
 	// Promoted context (from swap layer)
 	if len(sm.promotedContext) > 0 {
 		count += sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
@@ -872,6 +882,16 @@ func (sm *SegmentedMemory) InjectPattern(patternContent string, patternName stri
 			"pattern": patternName,
 		})
 	}
+}
+
+// InjectSkills injects formatted skill content into the message stream.
+// Skills are added as a system message after pattern content.
+func (sm *SegmentedMemory) InjectSkills(content string, names []string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.skillContent = content
+	sm.skillNames = names
+	sm.tokenCountDirty = true
 }
 
 // GetMessagesForLLM builds the full message list for the LLM call.
@@ -904,6 +924,14 @@ func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: fmt.Sprintf("# Relevant Pattern Guidance\n\n%s\n\nUse this pattern as guidance for tool selection and parameter construction.", sm.patternContent),
+		})
+	}
+
+	// Add skills as system message (if injected)
+	if sm.skillContent != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: fmt.Sprintf("# Active Skills\n\n%s\n\nFollow these skill instructions for this interaction.", sm.skillContent),
 		})
 	}
 

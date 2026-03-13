@@ -1,0 +1,71 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: data-quality-check
+  title: Data Quality Check
+  description: Validate data quality with null checks, type validation, and anomaly detection
+  version: "1.0.0"
+  domain: data
+  author: loom
+  labels:
+    category: data-engineering
+trigger:
+  slash_commands:
+    - /dq
+    - /data-quality
+  keywords:
+    - check quality
+    - validate data
+    - data quality
+    - null check
+    - data validation
+  intent_categories:
+    - data_quality
+  mode: HYBRID
+  min_confidence: 0.7
+prompt:
+  instructions: |
+    Perform a data quality assessment:
+    1. Null/missing value analysis per column
+    2. Data type consistency checks
+    3. Uniqueness and duplicate detection
+    4. Range and boundary validation
+    5. Referential integrity checks (if applicable)
+    6. Statistical anomaly detection (outliers, distribution shifts)
+
+    Quantify issues as percentages of total records.
+    Prioritize issues by data impact severity.
+  constraints:
+    - Report exact counts and percentages, not vague descriptions
+    - Distinguish between data errors and legitimate edge cases
+    - Consider the domain context when flagging anomalies
+  output_format: |
+    ## Data Quality Report
+    **Dataset**: [name/table]
+    **Records analyzed**: [count]
+    **Overall quality score**: [0-100]
+
+    ### Issues Found
+    | Column | Issue | Affected Records | Severity |
+    |--------|-------|-----------------|----------|
+    | ...    | ...   | ...             | ...      |
+
+    ### Recommendations
+    1. [action item]
+  examples:
+    - user_input: "Check the quality of our users table"
+      expected_output: "Quality score: 78/100. 3 critical issues: email has 12% nulls, age has negative values (0.3%), duplicate phone numbers (2.1%)"
+      explanation: "Quantify every issue with specific numbers"
+tools:
+  required_tools: []
+  preferred_order:
+    - execute_sql
+    - file_read
+  excluded_tools: []
+  mcp_servers: []
+pattern_refs:
+  - data-quality
+skill_refs: []
+max_prompt_tokens: 0
+sticky: false
+backend: ""

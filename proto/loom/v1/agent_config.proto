@@ -7,6 +7,8 @@ syntax = "proto3";
 
 package loom.v1;
 
+import "loom/v1/skill.proto";
+
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
 // AgentConfig defines a complete agent configuration.
@@ -85,6 +87,9 @@ message AgentConfig {
   // Restrict this agent to only use providers in this list (subset of global pool).
   // Empty means all pool providers are allowed.
   repeated string allowed_providers = 19;
+
+  // Skills configuration for this agent
+  SkillsConfig skills = 20;
 }
 
 // ProviderEntry is a named LLM configuration in the global provider pool.

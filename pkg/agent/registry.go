@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/skills"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"go.uber.org/zap"
 )
@@ -579,12 +580,52 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		if agentConfig.OutputTokenCBThreshold == 0 {
 			agentConfig.OutputTokenCBThreshold = 8
 		}
+		// Extract skills config from metadata and attach to Go config
+		if sc := ExtractSkillsConfig(config.Metadata); sc != nil {
+			agentConfig.SkillsConfig = sc
+		}
 		opts = append(opts, WithConfig(agentConfig))
 	}
 
 	// Set tracer if provided
 	if r.tracer != nil {
 		opts = append(opts, WithTracer(r.tracer))
+	}
+
+	// Create skills orchestrator if configured.
+	// Check both proto field (gRPC API) and metadata (YAML config).
+	var skillsConfig *skills.SkillsConfig
+	if sc := ExtractSkillsConfig(config.Metadata); sc != nil {
+		skillsConfig = sc
+		r.logger.Debug("skills config extracted from metadata",
+			zap.Bool("enabled", sc.Enabled),
+			zap.String("skills_dir", sc.SkillsDir),
+			zap.Int("max_concurrent", sc.MaxConcurrentSkills))
+	} else if config.Skills != nil && config.Skills.Enabled {
+		skillsConfig = &skills.SkillsConfig{
+			Enabled:              config.Skills.Enabled,
+			EnabledSkills:        config.Skills.EnabledSkills,
+			DisabledSkills:       config.Skills.DisabledSkills,
+			MinAutoConfidence:    float64(config.Skills.MinAutoConfidence),
+			MaxConcurrentSkills:  int(config.Skills.MaxConcurrentSkills),
+			SkillsDir:            config.Skills.SkillsDir,
+			ContextBudgetPercent: int(config.Skills.ContextBudgetPercent),
+		}
+	}
+	if skillsConfig != nil && skillsConfig.Enabled {
+		r.logger.Info("Creating skills orchestrator",
+			zap.String("skills_dir", skillsConfig.SkillsDir),
+			zap.Int("max_concurrent", skillsConfig.MaxConcurrentSkills))
+		libOpts := []skills.LibraryOption{}
+		if skillsConfig.SkillsDir != "" {
+			libOpts = append(libOpts, skills.WithSearchPaths(skillsConfig.SkillsDir))
+		}
+		if r.tracer != nil {
+			libOpts = append(libOpts, skills.WithTracer(r.tracer))
+		}
+		skillLib := skills.NewLibrary(libOpts...)
+		skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(r.tracer))
+		opts = append(opts, WithSkillOrchestrator(skillOrch))
 	}
 
 	// Create memory with session storage for trace persistence
@@ -1015,7 +1056,15 @@ func (r *Registry) buildRateLimiterConfig(proto *loomv1.LLMRateLimitConfig) llm.
 		cfg.TokensPerMinute = proto.TokensPerMinute
 	}
 	if proto.BurstCapacity > 0 {
-		cfg.BurstCapacity = int(proto.BurstCapacity)
+		// Clamp BurstCapacity so that later calculations (e.g., queueCap = BurstCapacity*2)
+		// cannot overflow an int on any supported platform.
+		maxInt := int64(int(^uint(0) >> 1))
+		maxSafeBurst := maxInt / 2
+		burst := int64(proto.BurstCapacity)
+		if burst > maxSafeBurst {
+			burst = maxSafeBurst
+		}
+		cfg.BurstCapacity = int(burst)
 	}
 	if proto.MinDelayMs > 0 {
 		cfg.MinDelay = time.Duration(proto.MinDelayMs) * time.Millisecond

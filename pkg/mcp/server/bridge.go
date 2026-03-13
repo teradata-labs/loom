@@ -26,6 +26,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -46,17 +47,18 @@ const WeaveRequestTimeout = 5 * time.Minute
 // It connects to a running looms server and exposes its capabilities
 // as MCP tools for clients like Claude Desktop.
 type LoomBridge struct {
-	conn           *grpc.ClientConn
-	client         loomv1.LoomServiceClient
-	uiRegistry     *apps.UIResourceRegistry
-	mcpServer      *MCPServer // for sending resource notifications after app mutations
-	logger         *zap.Logger
-	requestTimeout time.Duration          // per-RPC timeout for gRPC calls
-	tlsCertFile    string                 // optional path to CA certificate for TLS
-	tlsSkipVerify  bool                   // skip server certificate verification (insecure)
-	tlsEnabled     bool                   // whether TLS is explicitly enabled
-	tools          []protocol.Tool        // cached tool definitions
-	handlers       map[string]toolHandler // cached tool handlers (built once)
+	conn              *grpc.ClientConn
+	client            loomv1.LoomServiceClient
+	uiRegistry        *apps.UIResourceRegistry
+	mcpServer         *MCPServer // for sending resource notifications after app mutations
+	logger            *zap.Logger
+	requestTimeout    time.Duration          // per-RPC timeout for gRPC calls
+	tlsCertFile       string                 // optional path to CA certificate for TLS
+	tlsSkipVerify     bool                   // skip server certificate verification (insecure)
+	tlsEnabled        bool                   // whether TLS is explicitly enabled
+	skillOrchestrator *skills.Orchestrator   // optional skills orchestrator (nil = skills tools disabled)
+	tools             []protocol.Tool        // cached tool definitions
+	handlers          map[string]toolHandler // cached tool handlers (built once)
 }
 
 // BridgeOption configures a LoomBridge.
@@ -81,6 +83,15 @@ func WithMCPServer(s *MCPServer) BridgeOption {
 // when the MCPServer is created after the bridge (common in main.go wiring).
 func (b *LoomBridge) SetMCPServer(s *MCPServer) {
 	b.mcpServer = s
+}
+
+// WithSkillOrchestrator sets the skill orchestrator for local skill management tools.
+// When set, the bridge exposes loom_list_skills, loom_get_skill, loom_create_skill,
+// loom_activate_skill, and loom_deactivate_skill tools.
+func WithSkillOrchestrator(o *skills.Orchestrator) BridgeOption {
+	return func(b *LoomBridge) {
+		b.skillOrchestrator = o
+	}
 }
 
 // WithTLS configures TLS for the gRPC connection to the looms server.

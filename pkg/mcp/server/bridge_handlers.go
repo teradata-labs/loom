@@ -17,9 +17,13 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/skills"
 )
 
 // ============================================================================
@@ -414,4 +418,191 @@ func (b *LoomBridge) handleGetArtifactStats(ctx context.Context, args map[string
 		func() *loomv1.GetArtifactStatsRequest { return &loomv1.GetArtifactStatsRequest{} },
 		b.client.GetArtifactStats,
 	)
+}
+
+// ============================================================================
+// Tool handlers - Skills
+// ============================================================================
+
+// errorResult returns a CallToolResult with IsError=true and the given message.
+func errorResult(msg string) *protocol.CallToolResult {
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: msg}},
+		IsError: true,
+	}
+}
+
+// jsonResult marshals v to JSON and returns it as a successful CallToolResult.
+func jsonResult(v interface{}) (*protocol.CallToolResult, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshal result: %w", err)
+	}
+	return &protocol.CallToolResult{
+		Content: []protocol.Content{{Type: "text", Text: string(data)}},
+	}, nil
+}
+
+func (b *LoomBridge) handleListSkills(_ context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if b.skillOrchestrator == nil {
+		return errorResult("skills not configured"), nil
+	}
+
+	domain, _ := args["domain"].(string)
+
+	var skillList []*skills.Skill
+	if domain != "" {
+		skillList = b.skillOrchestrator.GetLibrary().ListByDomain(domain)
+	} else {
+		skillList = b.skillOrchestrator.GetLibrary().List()
+	}
+
+	summaries := make([]skills.SkillSummary, 0, len(skillList))
+	for _, s := range skillList {
+		summaries = append(summaries, s.Summary())
+	}
+
+	return jsonResult(summaries)
+}
+
+func (b *LoomBridge) handleGetSkill(_ context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if b.skillOrchestrator == nil {
+		return errorResult("skills not configured"), nil
+	}
+
+	name, _ := args["name"].(string)
+	if name == "" {
+		return errorResult("name is required"), nil
+	}
+
+	skill, err := b.skillOrchestrator.GetLibrary().Load(name)
+	if err != nil {
+		return errorResult(fmt.Sprintf("skill not found: %s", name)), nil
+	}
+
+	return jsonResult(skill)
+}
+
+func (b *LoomBridge) handleCreateSkill(_ context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if b.skillOrchestrator == nil {
+		return errorResult("skills not configured"), nil
+	}
+
+	name, _ := args["name"].(string)
+	if name == "" {
+		return errorResult("name is required"), nil
+	}
+	domain, _ := args["domain"].(string)
+	if domain == "" {
+		return errorResult("domain is required"), nil
+	}
+	instructions, _ := args["instructions"].(string)
+	if instructions == "" {
+		return errorResult("instructions is required"), nil
+	}
+
+	skill := &skills.Skill{
+		Name:   name,
+		Domain: domain,
+		Prompt: skills.SkillPrompt{
+			Instructions: instructions,
+		},
+	}
+
+	// Optional fields.
+	if v, ok := args["title"].(string); ok {
+		skill.Title = v
+	}
+	if v, ok := args["description"].(string); ok {
+		skill.Description = v
+	}
+	if v, ok := args["sticky"].(bool); ok {
+		skill.Sticky = v
+	}
+	if v, ok := args["mode"].(string); ok {
+		skill.Trigger.Mode = skills.SkillActivationMode(strings.ToUpper(v))
+	}
+	if v, ok := args["slash_commands"].([]interface{}); ok {
+		for _, cmd := range v {
+			if s, ok := cmd.(string); ok {
+				skill.Trigger.SlashCommands = append(skill.Trigger.SlashCommands, s)
+			}
+		}
+	}
+	if v, ok := args["keywords"].([]interface{}); ok {
+		for _, kw := range v {
+			if s, ok := kw.(string); ok {
+				skill.Trigger.Keywords = append(skill.Trigger.Keywords, s)
+			}
+		}
+	}
+	if v, ok := args["pattern_refs"].([]interface{}); ok {
+		for _, ref := range v {
+			if s, ok := ref.(string); ok {
+				skill.PatternRefs = append(skill.PatternRefs, s)
+			}
+		}
+	}
+
+	if err := b.skillOrchestrator.GetLibrary().WriteSkill(skill); err != nil {
+		return errorResult(fmt.Sprintf("failed to create skill: %v", err)), nil
+	}
+
+	return jsonResult(map[string]interface{}{
+		"status": "created",
+		"skill":  skill.Summary(),
+	})
+}
+
+func (b *LoomBridge) handleActivateSkill(_ context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if b.skillOrchestrator == nil {
+		return errorResult("skills not configured"), nil
+	}
+
+	name, _ := args["name"].(string)
+	if name == "" {
+		return errorResult("name is required"), nil
+	}
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return errorResult("session_id is required"), nil
+	}
+
+	skill, err := b.skillOrchestrator.GetLibrary().Load(name)
+	if err != nil {
+		return errorResult(fmt.Sprintf("skill not found: %s", name)), nil
+	}
+
+	active := b.skillOrchestrator.ActivateSkill(sessionID, skill, "api", name, 1.0)
+
+	return jsonResult(map[string]interface{}{
+		"status":       "activated",
+		"skill":        active.Skill.Name,
+		"session_id":   active.SessionID,
+		"trigger_type": active.TriggerType,
+		"activated_at": active.ActivatedAt,
+	})
+}
+
+func (b *LoomBridge) handleDeactivateSkill(_ context.Context, args map[string]interface{}) (*protocol.CallToolResult, error) {
+	if b.skillOrchestrator == nil {
+		return errorResult("skills not configured"), nil
+	}
+
+	name, _ := args["name"].(string)
+	if name == "" {
+		return errorResult("name is required"), nil
+	}
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return errorResult("session_id is required"), nil
+	}
+
+	b.skillOrchestrator.DeactivateSkill(sessionID, name)
+
+	return jsonResult(map[string]interface{}{
+		"status":     "deactivated",
+		"skill":      name,
+		"session_id": sessionID,
+	})
 }

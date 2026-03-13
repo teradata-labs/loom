@@ -3733,6 +3733,10 @@
             "type": "string"
           },
           "description": "Restrict this agent to only use providers in this list (subset of global pool).\nEmpty means all pool providers are allowed."
+        },
+        "skills": {
+          "$ref": "#/definitions/v1SkillsConfig",
+          "title": "Skills configuration for this agent"
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -7693,6 +7697,49 @@
       },
       "description": "SharedMemoryValue represents a versioned value in shared memory.\nSupports optimistic concurrency control via version field."
     },
+    "v1SkillsConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Whether skills are enabled (default: true)"
+        },
+        "enabledSkills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Specific skills to enable (empty = all discovered)"
+        },
+        "disabledSkills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Skills to explicitly disable"
+        },
+        "minAutoConfidence": {
+          "type": "number",
+          "format": "float",
+          "title": "Override per-skill auto-detection confidence threshold"
+        },
+        "maxConcurrentSkills": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum skills active simultaneously (default: 3)"
+        },
+        "skillsDir": {
+          "type": "string",
+          "title": "Custom skills directory path"
+        },
+        "contextBudgetPercent": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Percentage of max_context_tokens reserved for skills+patterns injection.\nDefault: 5 (i.e., 5%). Skills get priority; patterns fill remainder.\nE.g., Claude 200K context -\u003e 10K tokens for skills+patterns."
+        }
+      },
+      "description": "SkillsConfig configures the skills system for an agent."
+    },
     "v1SoftDeleteConfig": {
       "type": "object",
       "properties": {
@@ -9103,6 +9150,38 @@
         "cost": {
           "$ref": "#/definitions/v1CostInfo",
           "title": "Cost information (included in completion event)"
+        },
+        "isToolStarted": {
+          "type": "boolean",
+          "title": "True if this is a tool-execution-started event"
+        },
+        "isToolCompleted": {
+          "type": "boolean",
+          "title": "True if this is a tool-execution-completed event"
+        },
+        "toolInput": {
+          "type": "object",
+          "title": "Tool input parameters (populated when is_tool_started)"
+        },
+        "toolResult": {
+          "title": "Tool output data (populated when is_tool_completed)"
+        },
+        "toolError": {
+          "type": "string",
+          "title": "Error message if tool execution failed (when is_tool_completed)"
+        },
+        "toolSuccess": {
+          "type": "boolean",
+          "title": "Whether the tool execution succeeded (when is_tool_completed)"
+        },
+        "toolDurationMs": {
+          "type": "string",
+          "format": "int64",
+          "title": "Tool execution duration in milliseconds (when is_tool_completed)"
+        },
+        "toolCallId": {
+          "type": "string",
+          "title": "Unique identifier correlating started/completed events for the same tool call"
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

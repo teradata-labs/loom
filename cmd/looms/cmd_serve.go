@@ -57,6 +57,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/server"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/tls"
@@ -1267,6 +1268,24 @@ func runServe(cmd *cobra.Command, args []string) {
 						EnableTracking:     cfg.Behavior.Patterns.EnableTracking,
 						UseLLMClassifier:   cfg.Behavior.Patterns.UseLlmClassifier,
 					}
+				}
+
+				// Transfer skills configuration from metadata
+				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
+					agentCfg.SkillsConfig = sc
+					libOpts := []skills.LibraryOption{}
+					if sc.SkillsDir != "" {
+						libOpts = append(libOpts, skills.WithSearchPaths(sc.SkillsDir))
+					}
+					if tracer != nil {
+						libOpts = append(libOpts, skills.WithTracer(tracer))
+					}
+					skillLib := skills.NewLibrary(libOpts...)
+					skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(tracer))
+					agentOpts = append(agentOpts, agent.WithSkillOrchestrator(skillOrch))
+					logger.Info("    Skills orchestrator created",
+						zap.String("skills_dir", sc.SkillsDir),
+						zap.Int("max_concurrent", sc.MaxConcurrentSkills))
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))

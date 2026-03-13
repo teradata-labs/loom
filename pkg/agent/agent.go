@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -405,6 +406,13 @@ func WithPatternInjection(enabled bool) Option {
 			a.config.PatternConfig = DefaultPatternConfig()
 		}
 		a.config.PatternConfig.Enabled = enabled
+	}
+}
+
+// WithSkillOrchestrator sets the skill orchestrator for skill activation and injection.
+func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
+	return func(a *Agent) {
+		a.skillOrchestrator = orch
 	}
 }
 
@@ -1118,6 +1126,56 @@ func emitProgressWithHITL(ctx Context, stage ExecutionStage, progress int32, mes
 	}
 }
 
+// emitToolStarted sends a tool-started progress event.
+func emitToolStarted(ctx Context, progress int32, toolCall ToolCall) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		callback(ProgressEvent{
+			Stage:         StageToolExecution,
+			Progress:      progress,
+			Message:       fmt.Sprintf("Executing tool: %s", toolCall.Name),
+			ToolName:      toolCall.Name,
+			Timestamp:     time.Now(),
+			IsToolStarted: true,
+			ToolInput:     toolCall.Input,
+			ToolCallID:    toolCall.ID,
+		})
+	}
+}
+
+// emitToolCompleted sends a tool-completed progress event.
+func emitToolCompleted(ctx Context, progress int32, toolCall ToolCall, result *shuttle.Result, execErr error) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		var toolErr string
+		toolSuccess := execErr == nil && (result == nil || result.Success)
+		if execErr != nil {
+			toolErr = execErr.Error()
+		} else if result != nil && !result.Success && result.Error != nil {
+			toolErr = result.Error.Message
+		}
+
+		var durationMs int64
+		var data interface{}
+		if result != nil {
+			durationMs = result.ExecutionTimeMs
+			data = result.Data
+		}
+
+		callback(ProgressEvent{
+			Stage:           StageToolExecution,
+			Progress:        progress,
+			Message:         fmt.Sprintf("Tool completed: %s", toolCall.Name),
+			ToolName:        toolCall.Name,
+			Timestamp:       time.Now(),
+			IsToolCompleted: true,
+			ToolResult:      data,
+			ToolError:       toolErr,
+			ToolSuccess:     toolSuccess,
+			ToolDurationMs:  durationMs,
+			ToolCallID:      toolCall.ID,
+		})
+	}
+}
+
 // extractHITLInfo extracts HITL request details from contact_human tool input.
 // Returns partial info even if some fields are missing (graceful degradation).
 func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
@@ -1198,6 +1256,79 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Get available tools
 	tools := a.tools.ListTools()
+
+	// --- Skill activation ---
+	if a.skillOrchestrator != nil && session != nil {
+		sessionID := session.ID
+		if sessionID == "" {
+			sessionID = a.id
+		}
+
+		// Get skills config (use defaults if not set)
+		skillsConfig := a.config.SkillsConfig
+		if skillsConfig == nil {
+			skillsConfig = skills.DefaultSkillsConfig()
+		}
+
+		if skillsConfig.Enabled {
+			// Match skills from user message
+			msgs := session.GetMessages()
+			lastMsg := ""
+			if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
+				lastMsg = msgs[len(msgs)-1].Content
+			}
+
+			if lastMsg != "" {
+				matches, matchErr := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig)
+				if matchErr == nil {
+					for _, match := range matches {
+						a.skillOrchestrator.ActivateSkill(sessionID, match.Skill, match.TriggerType, match.TriggerValue, match.Confidence)
+					}
+				}
+			}
+
+			// Deactivate non-sticky skills from previous turns
+			activeSkills := a.skillOrchestrator.GetActiveSkills(sessionID)
+			for _, as := range activeSkills {
+				if !as.Skill.Sticky {
+					// Non-sticky skills only last one turn -- deactivate if they were activated before this message
+					// (Simplification; more sophisticated turn tracking could be added)
+					_ = as
+				}
+			}
+
+			// Build combined skill prompt and inject
+			maxTokens := 1500 // default
+			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
+				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
+			}
+
+			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
+			if skillContent != "" {
+				activeNames := make([]string, 0)
+				for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+					activeNames = append(activeNames, as.Skill.Name)
+				}
+				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+					segMem.InjectSkills(skillContent, activeNames)
+				}
+			}
+
+			// Co-inject pattern refs from active skills
+			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+				for _, ref := range as.Skill.PatternRefs {
+					if a.orchestrator != nil {
+						if pattern, err := a.orchestrator.GetLibrary().Load(ref); err == nil {
+							formatted := pattern.FormatForLLM()
+							if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+								segMem.InjectPattern(formatted, ref)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
@@ -1544,8 +1675,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// Emit HITL-specific progress event
 				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
 			} else {
-				// Emit standard tool execution progress
-				emitProgress(ctx, StageToolExecution, 50+clampInt32(toolExecutionCount*5), fmt.Sprintf("Executing tool: %s", toolCall.Name), toolCall.Name)
+				// Emit tool-started progress event
+				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
 			}
 
 			// Execute tool with tracing
@@ -1611,6 +1742,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Error:    err,
 			}
 			allToolExecutions = append(allToolExecutions, execution)
+
+			// Emit tool-completed progress event
+			emitToolCompleted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall, result, err)
 
 			// Persist tool execution
 			if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {

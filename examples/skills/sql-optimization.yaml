@@ -1,0 +1,68 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: sql-optimization
+  title: SQL Query Optimization
+  description: Analyze and optimize SQL queries for performance
+  version: "1.0.0"
+  domain: sql
+  author: loom
+  labels:
+    category: database
+    backend: any
+trigger:
+  slash_commands:
+    - /optimize
+    - /sql-optimize
+  keywords:
+    - optimize query
+    - slow query
+    - query performance
+    - explain plan
+    - query tuning
+  intent_categories:
+    - analytics
+    - query_generation
+  mode: HYBRID
+  min_confidence: 0.7
+prompt:
+  instructions: |
+    Analyze the SQL query and provide optimization recommendations:
+    1. Check for missing indexes on filtered/joined columns
+    2. Identify unnecessary full table scans
+    3. Look for N+1 query patterns
+    4. Suggest query rewrites for better execution plans
+    5. Check join order and type appropriateness
+
+    Always explain WHY each optimization helps, not just WHAT to change.
+  constraints:
+    - Preserve query correctness — optimized query must return identical results
+    - Consider the target database dialect when suggesting syntax
+    - Account for data volume when recommending index strategies
+  output_format: |
+    ## Query Analysis
+    **Estimated complexity**: [O(n), O(n log n), etc.]
+    **Key bottlenecks**: [list]
+
+    ### Optimizations
+    1. [optimization with before/after SQL]
+
+    ### Recommended Indexes
+    - [index definition with rationale]
+  examples:
+    - user_input: "This query takes 30 seconds on a 10M row table"
+      expected_output: "Add index on (user_id, created_at); rewrite subquery as JOIN"
+      explanation: "Identify the most impactful changes first"
+tools:
+  required_tools: []
+  preferred_order:
+    - execute_sql
+    - file_read
+  excluded_tools: []
+  mcp_servers: []
+pattern_refs:
+  - sql-optimization
+skill_refs: []
+max_prompt_tokens: 0
+sticky: true
+backend: ""

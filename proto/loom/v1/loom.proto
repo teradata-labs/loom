@@ -17,6 +17,7 @@ package loom.v1;
 
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
 import "loom/v1/agent_config.proto";
 import "loom/v1/apps.proto";
 import "loom/v1/bus.proto";
@@ -709,6 +710,32 @@ message WeaveProgress {
 
   // Cost information (included in completion event)
   CostInfo cost = 12;
+
+  // Tool execution lifecycle fields (for real-time tool event rendering)
+
+  // True if this is a tool-execution-started event
+  bool is_tool_started = 13;
+
+  // True if this is a tool-execution-completed event
+  bool is_tool_completed = 14;
+
+  // Tool input parameters (populated when is_tool_started)
+  google.protobuf.Struct tool_input = 15;
+
+  // Tool output data (populated when is_tool_completed)
+  google.protobuf.Value tool_result = 16;
+
+  // Error message if tool execution failed (when is_tool_completed)
+  string tool_error = 17;
+
+  // Whether the tool execution succeeded (when is_tool_completed)
+  bool tool_success = 18;
+
+  // Tool execution duration in milliseconds (when is_tool_completed)
+  int64 tool_duration_ms = 19;
+
+  // Unique identifier correlating started/completed events for the same tool call
+  string tool_call_id = 20;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.

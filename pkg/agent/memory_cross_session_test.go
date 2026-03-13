@@ -406,3 +406,67 @@ func TestMemory_SegmentedMemoryReattachment(t *testing.T) {
 	// Verify FailureTracker was also reattached
 	require.NotNil(t, session2.FailureTracker, "Session loaded from DB MUST have FailureTracker reattached")
 }
+
+// TestMemory_SessionHistorySurvivesRestart verifies that LLM context (conversation history)
+// is restored after a server restart. Before the fix, sessions loaded from DB would have an
+// empty SegmentedMem because loaded messages were never replayed into it, causing the agent
+// to return only the system prompt with no prior conversation history.
+func TestMemory_SessionHistorySurvivesRestart(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "loom-restart-test-*.db")
+	require.NoError(t, err)
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
+
+	store, err := NewSessionStore(tmpFile.Name(), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+
+	// --- Phase 1: Simulate pre-restart session with messages ---
+	memory1 := NewMemoryWithStore(store)
+	memory1.SetSystemPromptFunc(func(_ context.Context) string { return "System prompt" })
+
+	session := memory1.GetOrCreateSessionWithAgent(ctx, "sess-restart", "agent-1", "")
+	require.NotNil(t, session)
+
+	msgs := []Message{
+		{Role: "user", Content: "Hello, remember this: the sky is blue.", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Got it. The sky is blue.", Timestamp: time.Now()},
+		{Role: "user", Content: "What did I just tell you?", Timestamp: time.Now()},
+	}
+	for _, msg := range msgs {
+		memory1.AddMessage(ctx, "sess-restart", msg)
+	}
+
+	// --- Phase 2: Simulate restart — new Memory with same store ---
+	memory2 := NewMemoryWithStore(store)
+	memory2.SetSystemPromptFunc(func(_ context.Context) string { return "System prompt" })
+
+	restored := memory2.GetOrCreateSessionWithAgent(ctx, "sess-restart", "agent-1", "")
+	require.NotNil(t, restored)
+
+	segMem, ok := restored.SegmentedMem.(*SegmentedMemory)
+	require.True(t, ok, "SegmentedMem should be *SegmentedMemory after reload")
+
+	// The core assertion: LLM context must contain the prior conversation.
+	llmMsgs := segMem.GetMessagesForLLM()
+	// GetMessagesForLLM returns system prompt + history; we need at least the 3 messages.
+	require.GreaterOrEqual(t, len(llmMsgs), len(msgs),
+		"LLM context must contain prior conversation history after restart")
+
+	// Verify the actual content is present.
+	var contents []string
+	for _, m := range llmMsgs {
+		contents = append(contents, m.Content)
+	}
+	assert.Contains(t, contents, msgs[0].Content, "first user message must be in LLM context")
+	assert.Contains(t, contents, msgs[1].Content, "assistant reply must be in LLM context")
+	assert.Contains(t, contents, msgs[2].Content, "second user message must be in LLM context")
+
+	// Also verify a new message can be appended after restore.
+	newMsg := Message{Role: "assistant", Content: "The sky is still blue.", Timestamp: time.Now()}
+	restored.AddMessage(ctx, newMsg)
+	llmMsgsAfter := segMem.GetMessagesForLLM()
+	require.Greater(t, len(llmMsgsAfter), len(llmMsgs), "New message should increase LLM context size")
+}

@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 func TestConsecutiveFailureTracker(t *testing.T) {
@@ -394,4 +396,198 @@ func TestDefaultSoftReminderConfig(t *testing.T) {
 	assert.Equal(t, 10, config.ToolExecutionThreshold)
 	assert.Equal(t, 20, config.StopThreshold)
 	assert.True(t, config.Enabled)
+}
+
+// newTestContextWithProgress creates an agentContext with a progress callback for testing.
+func newTestContextWithProgress(callback ProgressCallback) Context {
+	return &agentContext{
+		Context:          context.Background(),
+		tracer:           observability.NewNoOpTracer(),
+		progressCallback: callback,
+	}
+}
+
+func TestEmitToolStarted(t *testing.T) {
+	var captured ProgressEvent
+	ctx := newTestContextWithProgress(func(e ProgressEvent) {
+		captured = e
+	})
+
+	tc := ToolCall{
+		ID:    "call-123",
+		Name:  "query_tool",
+		Input: map[string]interface{}{"sql": "SELECT 1"},
+	}
+
+	emitToolStarted(ctx, 55, tc)
+
+	assert.True(t, captured.IsToolStarted)
+	assert.False(t, captured.IsToolCompleted)
+	assert.Equal(t, StageToolExecution, captured.Stage)
+	assert.Equal(t, "query_tool", captured.ToolName)
+	assert.Equal(t, "call-123", captured.ToolCallID)
+	assert.Equal(t, int32(55), captured.Progress)
+	assert.Contains(t, captured.Message, "Executing tool: query_tool")
+	assert.Equal(t, map[string]interface{}{"sql": "SELECT 1"}, captured.ToolInput)
+	assert.False(t, captured.Timestamp.IsZero())
+}
+
+func TestEmitToolCompleted_Success(t *testing.T) {
+	var captured ProgressEvent
+	ctx := newTestContextWithProgress(func(e ProgressEvent) {
+		captured = e
+	})
+
+	tc := ToolCall{
+		ID:   "call-456",
+		Name: "query_tool",
+	}
+	result := &shuttle.Result{
+		Success:         true,
+		Data:            map[string]interface{}{"rows": 42},
+		ExecutionTimeMs: 150,
+	}
+
+	emitToolCompleted(ctx, 60, tc, result, nil)
+
+	assert.True(t, captured.IsToolCompleted)
+	assert.False(t, captured.IsToolStarted)
+	assert.Equal(t, StageToolExecution, captured.Stage)
+	assert.Equal(t, "query_tool", captured.ToolName)
+	assert.Equal(t, "call-456", captured.ToolCallID)
+	assert.True(t, captured.ToolSuccess)
+	assert.Empty(t, captured.ToolError)
+	assert.Equal(t, int64(150), captured.ToolDurationMs)
+	assert.Equal(t, map[string]interface{}{"rows": 42}, captured.ToolResult)
+	assert.Contains(t, captured.Message, "Tool completed: query_tool")
+}
+
+func TestEmitToolCompleted_GoError(t *testing.T) {
+	var captured ProgressEvent
+	ctx := newTestContextWithProgress(func(e ProgressEvent) {
+		captured = e
+	})
+
+	tc := ToolCall{
+		ID:   "call-789",
+		Name: "file_read",
+	}
+
+	emitToolCompleted(ctx, 55, tc, nil, fmt.Errorf("file not found"))
+
+	assert.True(t, captured.IsToolCompleted)
+	assert.False(t, captured.ToolSuccess)
+	assert.Equal(t, "file not found", captured.ToolError)
+	assert.Equal(t, "call-789", captured.ToolCallID)
+	// result is nil so these should be zero-value
+	assert.Equal(t, int64(0), captured.ToolDurationMs)
+	assert.Nil(t, captured.ToolResult)
+}
+
+func TestEmitToolCompleted_ResultError(t *testing.T) {
+	var captured ProgressEvent
+	ctx := newTestContextWithProgress(func(e ProgressEvent) {
+		captured = e
+	})
+
+	tc := ToolCall{
+		ID:   "call-abc",
+		Name: "query_tool",
+	}
+	result := &shuttle.Result{
+		Success:         false,
+		ExecutionTimeMs: 50,
+		Error: &shuttle.Error{
+			Code:    "SYNTAX_ERROR",
+			Message: "invalid SQL syntax",
+		},
+	}
+
+	emitToolCompleted(ctx, 55, tc, result, nil)
+
+	assert.True(t, captured.IsToolCompleted)
+	assert.False(t, captured.ToolSuccess)
+	assert.Equal(t, "invalid SQL syntax", captured.ToolError)
+	assert.Equal(t, int64(50), captured.ToolDurationMs)
+}
+
+func TestToolCallID_Correlation(t *testing.T) {
+	var events []ProgressEvent
+	ctx := newTestContextWithProgress(func(e ProgressEvent) {
+		events = append(events, e)
+	})
+
+	tc := ToolCall{
+		ID:    "call-corr-001",
+		Name:  "web_search",
+		Input: map[string]interface{}{"query": "loom framework"},
+	}
+	result := &shuttle.Result{
+		Success:         true,
+		Data:            "search results",
+		ExecutionTimeMs: 200,
+	}
+
+	emitToolStarted(ctx, 50, tc)
+	emitToolCompleted(ctx, 50, tc, result, nil)
+
+	require.Len(t, events, 2)
+	assert.True(t, events[0].IsToolStarted)
+	assert.True(t, events[1].IsToolCompleted)
+	assert.Equal(t, "call-corr-001", events[0].ToolCallID)
+	assert.Equal(t, events[0].ToolCallID, events[1].ToolCallID)
+}
+
+func TestEmitToolCompleted_NilResult(t *testing.T) {
+	var captured ProgressEvent
+	ctx := newTestContextWithProgress(func(e ProgressEvent) {
+		captured = e
+	})
+
+	tc := ToolCall{ID: "call-nil", Name: "broken_tool"}
+
+	// nil result with error — should not panic
+	emitToolCompleted(ctx, 50, tc, nil, fmt.Errorf("timeout"))
+
+	assert.True(t, captured.IsToolCompleted)
+	assert.False(t, captured.ToolSuccess)
+	assert.Equal(t, "timeout", captured.ToolError)
+	assert.Equal(t, int64(0), captured.ToolDurationMs)
+	assert.Nil(t, captured.ToolResult)
+
+	// nil result with nil error — edge case
+	emitToolCompleted(ctx, 50, tc, nil, nil)
+	// result==nil && err==nil => toolSuccess = true (vacuously)
+	assert.True(t, captured.ToolSuccess)
+}
+
+func TestEmitToolStarted_NilCallback(t *testing.T) {
+	ctx := &agentContext{
+		Context:          context.Background(),
+		tracer:           observability.NewNoOpTracer(),
+		progressCallback: nil,
+	}
+
+	tc := ToolCall{ID: "call-nil-cb", Name: "test_tool"}
+
+	// Should not panic
+	assert.NotPanics(t, func() {
+		emitToolStarted(ctx, 50, tc)
+	})
+}
+
+func TestEmitToolCompleted_NilCallback(t *testing.T) {
+	ctx := &agentContext{
+		Context:          context.Background(),
+		tracer:           observability.NewNoOpTracer(),
+		progressCallback: nil,
+	}
+
+	tc := ToolCall{ID: "call-nil-cb2", Name: "test_tool"}
+	result := &shuttle.Result{Success: true}
+
+	// Should not panic
+	assert.NotPanics(t, func() {
+		emitToolCompleted(ctx, 50, tc, result, nil)
+	})
 }

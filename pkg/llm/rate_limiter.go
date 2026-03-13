@@ -16,7 +16,6 @@ package llm
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -164,10 +163,22 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 		config.QueueTimeout = defaults.QueueTimeout
 	}
 
-	// Guard against overflow in queue capacity calculation (CodeQL: allocation size overflow)
-	if config.BurstCapacity > math.MaxInt32/2 {
-		config.BurstCapacity = math.MaxInt32 / 2
+	// Compute queue capacity with overflow-safe bounds check.
+	// We compute using int64 and clamp to a sane maximum to avoid overflow
+	// when converting back to int for channel allocation on any platform.
+	const maxQueueCap int64 = 1_000_000 // hard upper bound to prevent abuse
+	burst64 := int64(config.BurstCapacity)
+	if burst64 < 0 {
+		burst64 = 0
 	}
+	queueCap64 := burst64 * 2
+	if queueCap64 > maxQueueCap {
+		queueCap64 = maxQueueCap
+		config.Logger.Warn("RateLimiter BurstCapacity too large; clamping queue capacity",
+			zap.Int("original_burst", config.BurstCapacity),
+			zap.Int64("max_queue_cap", maxQueueCap))
+	}
+	queueCap := int(queueCap64)
 
 	rl := &RateLimiter{
 		config:      config,
@@ -176,7 +187,7 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 		refillRate:  config.RequestsPerSecond,
 		lastRefill:  time.Now(),
 		tokenWindow: make([]tokenUsage, 0, 100),
-		queue:       make(chan *rateLimitedRequest, config.BurstCapacity*2),
+		queue:       make(chan *rateLimitedRequest, queueCap),
 		stopCh:      make(chan struct{}),
 	}
 

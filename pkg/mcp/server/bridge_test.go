@@ -33,6 +33,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -617,6 +618,7 @@ func TestLoomBridge_ToolAnnotations(t *testing.T) {
 		"loom_list_artifacts", "loom_get_artifact", "loom_get_artifact_content",
 		"loom_get_artifact_stats", "loom_search_artifacts",
 		"loom_list_component_types",
+		"loom_list_skills", "loom_get_skill",
 	}
 	for _, name := range readOnlyTools {
 		tool, ok := toolMap[name]
@@ -671,6 +673,7 @@ func TestLoomBridge_ToolAnnotations(t *testing.T) {
 		"loom_trigger_scheduled_workflow", "loom_pause_schedule", "loom_resume_schedule",
 		"loom_upload_artifact",
 		"loom_create_app", "loom_update_app",
+		"loom_create_skill", "loom_activate_skill", "loom_deactivate_skill",
 	}
 	for _, name := range mutatingTools {
 		tool, ok := toolMap[name]
@@ -1101,6 +1104,358 @@ func TestLoomBridge_CallTool_UploadArtifact_Base64EncodesContent(t *testing.T) {
 	assert.Equal(t, "SELECT * FROM users;", string(capturedReq.Content))
 	assert.Equal(t, "user", capturedReq.Source)
 	assert.Equal(t, "testing", capturedReq.Purpose)
+}
+
+// ============================================================================
+// Skill handler tests
+// ============================================================================
+
+func TestLoomBridge_CallTool_ListSkills_NoOrchestrator(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger)
+
+	result, err := bridge.CallTool(context.Background(), "loom_list_skills", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "skills not configured")
+}
+
+func TestLoomBridge_CallTool_ListSkills_All(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	lib.Register(&skills.Skill{
+		Name:   "code-review",
+		Title:  "Code Review",
+		Domain: "engineering",
+	})
+	lib.Register(&skills.Skill{
+		Name:   "sql-optimize",
+		Title:  "SQL Optimizer",
+		Domain: "sql",
+	})
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_list_skills", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "code-review")
+	assert.Contains(t, result.Content[0].Text, "sql-optimize")
+}
+
+func TestLoomBridge_CallTool_ListSkills_ByDomain(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	lib.Register(&skills.Skill{
+		Name:   "code-review",
+		Title:  "Code Review",
+		Domain: "engineering",
+	})
+	lib.Register(&skills.Skill{
+		Name:   "sql-optimize",
+		Title:  "SQL Optimizer",
+		Domain: "sql",
+	})
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_list_skills", map[string]interface{}{
+		"domain": "sql",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "sql-optimize")
+	assert.NotContains(t, result.Content[0].Text, "code-review")
+}
+
+func TestLoomBridge_CallTool_GetSkill(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	lib.Register(&skills.Skill{
+		Name:        "code-review",
+		Title:       "Code Review",
+		Domain:      "engineering",
+		Description: "Reviews code for quality",
+	})
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_get_skill", map[string]interface{}{
+		"name": "code-review",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "code-review")
+	assert.Contains(t, result.Content[0].Text, "Reviews code for quality")
+}
+
+func TestLoomBridge_CallTool_GetSkill_NotFound(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_get_skill", map[string]interface{}{
+		"name": "nonexistent",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "skill not found")
+}
+
+func TestLoomBridge_CallTool_GetSkill_MissingName(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_get_skill", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "name is required")
+}
+
+func TestLoomBridge_CallTool_CreateSkill(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	tmpDir := t.TempDir()
+	lib := skills.NewLibrary(skills.WithSearchPaths(tmpDir))
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_create_skill", map[string]interface{}{
+		"name":           "test-skill",
+		"domain":         "testing",
+		"instructions":   "Run tests thoroughly.",
+		"title":          "Test Runner",
+		"description":    "Runs all tests",
+		"slash_commands": []interface{}{"/test"},
+		"keywords":       []interface{}{"test", "unit"},
+		"mode":           "hybrid",
+		"sticky":         true,
+		"pattern_refs":   []interface{}{"pattern-a"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "created")
+	assert.Contains(t, result.Content[0].Text, "test-skill")
+
+	// Verify the skill was persisted and is loadable.
+	skill, loadErr := lib.Load("test-skill")
+	require.NoError(t, loadErr)
+	assert.Equal(t, "test-skill", skill.Name)
+	assert.Equal(t, "testing", skill.Domain)
+	assert.Equal(t, "Run tests thoroughly.", skill.Prompt.Instructions)
+	assert.Equal(t, "Test Runner", skill.Title)
+	assert.True(t, skill.Sticky)
+	assert.Equal(t, skills.ActivationHybrid, skill.Trigger.Mode)
+	assert.Contains(t, skill.Trigger.SlashCommands, "/test")
+	assert.Contains(t, skill.Trigger.Keywords, "unit")
+	assert.Contains(t, skill.PatternRefs, "pattern-a")
+}
+
+func TestLoomBridge_CallTool_CreateSkill_MissingRequired(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{
+			name: "missing name",
+			args: map[string]interface{}{"domain": "x", "instructions": "y"},
+			want: "name is required",
+		},
+		{
+			name: "missing domain",
+			args: map[string]interface{}{"name": "x", "instructions": "y"},
+			want: "domain is required",
+		},
+		{
+			name: "missing instructions",
+			args: map[string]interface{}{"name": "x", "domain": "y"},
+			want: "instructions is required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := bridge.CallTool(context.Background(), "loom_create_skill", tc.args)
+			require.NoError(t, err)
+			assert.True(t, result.IsError)
+			assert.Contains(t, result.Content[0].Text, tc.want)
+		})
+	}
+}
+
+func TestLoomBridge_CallTool_ActivateSkill(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	lib.Register(&skills.Skill{
+		Name:   "code-review",
+		Title:  "Code Review",
+		Domain: "engineering",
+	})
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_activate_skill", map[string]interface{}{
+		"name":       "code-review",
+		"session_id": "sess-123",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "activated")
+	assert.Contains(t, result.Content[0].Text, "code-review")
+
+	// Verify the skill is active in the orchestrator.
+	active := orch.GetActiveSkills("sess-123")
+	require.Len(t, active, 1)
+	assert.Equal(t, "code-review", active[0].Skill.Name)
+}
+
+func TestLoomBridge_CallTool_ActivateSkill_NotFound(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, err := bridge.CallTool(context.Background(), "loom_activate_skill", map[string]interface{}{
+		"name":       "nonexistent",
+		"session_id": "sess-123",
+	})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "skill not found")
+}
+
+func TestLoomBridge_CallTool_DeactivateSkill(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	lib.Register(&skills.Skill{
+		Name:   "code-review",
+		Title:  "Code Review",
+		Domain: "engineering",
+	})
+	orch := skills.NewOrchestrator(lib)
+
+	// First activate the skill.
+	skill, err := lib.Load("code-review")
+	require.NoError(t, err)
+	orch.ActivateSkill("sess-123", skill, "api", "code-review", 1.0)
+	require.Len(t, orch.GetActiveSkills("sess-123"), 1)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	result, callErr := bridge.CallTool(context.Background(), "loom_deactivate_skill", map[string]interface{}{
+		"name":       "code-review",
+		"session_id": "sess-123",
+	})
+	require.NoError(t, callErr)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].Text, "deactivated")
+
+	// Verify the skill is no longer active.
+	assert.Empty(t, orch.GetActiveSkills("sess-123"))
+}
+
+func TestLoomBridge_CallTool_DeactivateSkill_MissingArgs(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	lib := skills.NewLibrary(skills.WithSearchPaths(t.TempDir()))
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := NewLoomBridgeFromClient(&mockLoomClient{}, nil, logger,
+		WithSkillOrchestrator(orch),
+	)
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{
+			name: "missing name",
+			args: map[string]interface{}{"session_id": "sess-1"},
+			want: "name is required",
+		},
+		{
+			name: "missing session_id",
+			args: map[string]interface{}{"name": "x"},
+			want: "session_id is required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := bridge.CallTool(context.Background(), "loom_deactivate_skill", tc.args)
+			require.NoError(t, err)
+			assert.True(t, result.IsError)
+			assert.Contains(t, result.Content[0].Text, tc.want)
+		})
+	}
+}
+
+func TestWithSkillOrchestrator_Option(t *testing.T) {
+	lib := skills.NewLibrary()
+	orch := skills.NewOrchestrator(lib)
+
+	bridge := &LoomBridge{}
+	opt := WithSkillOrchestrator(orch)
+	opt(bridge)
+
+	assert.Same(t, orch, bridge.skillOrchestrator)
 }
 
 // generateSelfSignedCACert creates a minimal self-signed CA certificate in PEM
