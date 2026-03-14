@@ -2193,6 +2193,15 @@ message ModelInfo {
 
   // Whether model is currently available
   bool available = 8;
+
+  // Maximum output tokens supported by this model
+  int32 max_output_tokens = 9;
+
+  // Whether this model supports extended thinking / reasoning
+  bool is_reasoning = 10;
+
+  // Whether this model should appear in UI dropdowns (false = API-only or deprecated)
+  bool show_in_dropdown = 11;
 }
 
 // Tool Permission Messages

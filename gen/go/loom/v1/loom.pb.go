@@ -7647,9 +7647,15 @@ type ModelInfo struct {
 	// Cost per 1M output tokens (USD)
 	CostPer_1MOutputUsd float64 `protobuf:"fixed64,7,opt,name=cost_per_1m_output_usd,json=costPer1mOutputUsd,proto3" json:"cost_per_1m_output_usd,omitempty"`
 	// Whether model is currently available
-	Available     bool `protobuf:"varint,8,opt,name=available,proto3" json:"available,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Available bool `protobuf:"varint,8,opt,name=available,proto3" json:"available,omitempty"`
+	// Maximum output tokens supported by this model
+	MaxOutputTokens int32 `protobuf:"varint,9,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
+	// Whether this model supports extended thinking / reasoning
+	IsReasoning bool `protobuf:"varint,10,opt,name=is_reasoning,json=isReasoning,proto3" json:"is_reasoning,omitempty"`
+	// Whether this model should appear in UI dropdowns (false = API-only or deprecated)
+	ShowInDropdown bool `protobuf:"varint,11,opt,name=show_in_dropdown,json=showInDropdown,proto3" json:"show_in_dropdown,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ModelInfo) Reset() {
@@ -7734,6 +7740,27 @@ func (x *ModelInfo) GetCostPer_1MOutputUsd() float64 {
 func (x *ModelInfo) GetAvailable() bool {
 	if x != nil {
 		return x.Available
+	}
+	return false
+}
+
+func (x *ModelInfo) GetMaxOutputTokens() int32 {
+	if x != nil {
+		return x.MaxOutputTokens
+	}
+	return 0
+}
+
+func (x *ModelInfo) GetIsReasoning() bool {
+	if x != nil {
+		return x.IsReasoning
+	}
+	return false
+}
+
+func (x *ModelInfo) GetShowInDropdown() bool {
+	if x != nil {
+		return x.ShowInDropdown
 	}
 	return false
 }
@@ -11206,7 +11233,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\bcost_usd\x18\x06 \x01(\x02R\acostUsd\x12\x16\n" +
 	"\x06winner\x18\a \x01(\tR\x06winner\x12\x1c\n" +
 	"\n" +
-	"ab_test_id\x18\b \x01(\tR\babTestId\"\x9a\x02\n" +
+	"ab_test_id\x18\b \x01(\tR\babTestId\"\x93\x03\n" +
 	"\tModelInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -11215,7 +11242,11 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x0econtext_window\x18\x05 \x01(\x05R\rcontextWindow\x120\n" +
 	"\x15cost_per_1m_input_usd\x18\x06 \x01(\x01R\x11costPer1mInputUsd\x122\n" +
 	"\x16cost_per_1m_output_usd\x18\a \x01(\x01R\x12costPer1mOutputUsd\x12\x1c\n" +
-	"\tavailable\x18\b \x01(\bR\tavailable\"\xda\x01\n" +
+	"\tavailable\x18\b \x01(\bR\tavailable\x12*\n" +
+	"\x11max_output_tokens\x18\t \x01(\x05R\x0fmaxOutputTokens\x12!\n" +
+	"\fis_reasoning\x18\n" +
+	" \x01(\bR\visReasoning\x12(\n" +
+	"\x10show_in_dropdown\x18\v \x01(\bR\x0eshowInDropdown\"\xda\x01\n" +
 	"\x15ToolPermissionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1b\n" +

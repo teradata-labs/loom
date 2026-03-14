@@ -80,6 +80,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		tokenCounter: GetTokenCounter(),
 	}
 
+	// Default shared memory threshold: -1 means use storage.DefaultSharedMemoryThreshold
+	a.sharedMemoryThreshold = -1
+
 	// Enable self-correction by default (guardrails + circuit breakers)
 	// Users can opt-out via WithoutSelfCorrection() or provide custom implementations
 	a.guardrails = fabric.NewGuardrailEngine()
@@ -173,7 +176,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Set shared memory on executor so large tool results are stored in the same store
 	// that GetToolResultTool retrieves from (fixes tool reference loop bug)
 	if a.executor != nil && a.sharedMemory != nil {
-		a.executor.SetSharedMemory(a.sharedMemory, storage.DefaultSharedMemoryThreshold)
+		threshold := int64(storage.DefaultSharedMemoryThreshold)
+		if a.sharedMemoryThreshold >= 0 {
+			threshold = a.sharedMemoryThreshold
+		}
+		a.executor.SetSharedMemory(a.sharedMemory, threshold)
 	}
 
 	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
@@ -2802,6 +2809,12 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 	return result
 }
 
+// SetSharedMemoryThreshold configures the byte threshold for storing large tool results in shared memory.
+// -1 = use storage.DefaultSharedMemoryThreshold, 0 = always reference, >0 = reference only if result exceeds N bytes.
+func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
+	a.sharedMemoryThreshold = threshold
+}
+
 // SetSharedMemory configures shared memory for this agent.
 // This injects the shared memory store into:
 // - The agent itself (for formatToolResult to store large results)
@@ -2815,7 +2828,11 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 
 	// Inject into tool executor
 	if a.executor != nil {
-		a.executor.SetSharedMemory(sharedMemory, storage.DefaultSharedMemoryThreshold)
+		threshold := int64(storage.DefaultSharedMemoryThreshold)
+		if a.sharedMemoryThreshold >= 0 {
+			threshold = a.sharedMemoryThreshold
+		}
+		a.executor.SetSharedMemory(sharedMemory, threshold)
 	}
 
 	// Inject into memory manager (which handles all sessions)

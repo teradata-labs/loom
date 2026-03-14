@@ -6012,6 +6012,11 @@
         "memoryCompression": {
           "$ref": "#/definitions/v1MemoryCompressionConfig",
           "title": "Memory compression configuration (conversation history compression)"
+        },
+        "sharedMemoryThresholdBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Shared memory threshold in bytes for large tool results.\n0 = always reference (default), -1 = never reference (inline everything), \u003e0 = reference only if result exceeds N bytes."
         }
       },
       "title": "MemoryConfig defines agent memory and session storage"
@@ -6162,6 +6167,19 @@
         "available": {
           "type": "boolean",
           "title": "Whether model is currently available"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum output tokens supported by this model"
+        },
+        "isReasoning": {
+          "type": "boolean",
+          "title": "Whether this model supports extended thinking / reasoning"
+        },
+        "showInDropdown": {
+          "type": "boolean",
+          "title": "Whether this model should appear in UI dropdowns (false = API-only or deprecated)"
         }
       },
       "description": "ModelInfo provides information about an LLM model."

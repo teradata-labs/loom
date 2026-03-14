@@ -999,8 +999,11 @@ type MemoryConfig struct {
 	MaxHistory int32 `protobuf:"varint,4,opt,name=max_history,json=maxHistory,proto3" json:"max_history,omitempty"`
 	// Memory compression configuration (conversation history compression)
 	MemoryCompression *MemoryCompressionConfig `protobuf:"bytes,5,opt,name=memory_compression,json=memoryCompression,proto3" json:"memory_compression,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Shared memory threshold in bytes for large tool results.
+	// 0 = always reference (default), -1 = never reference (inline everything), >0 = reference only if result exceeds N bytes.
+	SharedMemoryThresholdBytes int64 `protobuf:"varint,6,opt,name=shared_memory_threshold_bytes,json=sharedMemoryThresholdBytes,proto3" json:"shared_memory_threshold_bytes,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *MemoryConfig) Reset() {
@@ -1066,6 +1069,13 @@ func (x *MemoryConfig) GetMemoryCompression() *MemoryCompressionConfig {
 		return x.MemoryCompression
 	}
 	return nil
+}
+
+func (x *MemoryConfig) GetSharedMemoryThresholdBytes() int64 {
+	if x != nil {
+		return x.SharedMemoryThresholdBytes
+	}
+	return 0
 }
 
 // MemoryCompressionBatchSizes defines how many messages to compress in each batch
@@ -1876,14 +1886,15 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x05tools\x18\x02 \x03(\tR\x05tools\"N\n" +
 	"\x10CustomToolConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12&\n" +
-	"\x0eimplementation\x18\x02 \x01(\tR\x0eimplementation\"\xba\x01\n" +
+	"\x0eimplementation\x18\x02 \x01(\tR\x0eimplementation\"\xfd\x01\n" +
 	"\fMemoryConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x10\n" +
 	"\x03dsn\x18\x03 \x01(\tR\x03dsn\x12\x1f\n" +
 	"\vmax_history\x18\x04 \x01(\x05R\n" +
 	"maxHistory\x12O\n" +
-	"\x12memory_compression\x18\x05 \x01(\v2 .loom.v1.MemoryCompressionConfigR\x11memoryCompression\"k\n" +
+	"\x12memory_compression\x18\x05 \x01(\v2 .loom.v1.MemoryCompressionConfigR\x11memoryCompression\x12A\n" +
+	"\x1dshared_memory_threshold_bytes\x18\x06 \x01(\x03R\x1asharedMemoryThresholdBytes\"k\n" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
