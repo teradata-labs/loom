@@ -2,9 +2,10 @@
 
 ## Overview
 
-The weaver meta-agent has been enhanced with two major features:
+The weaver meta-agent has been enhanced with three major features:
 1. **Guided /agent-plan mode** - Structured requirement gathering through conversation
 2. **Skills-based recommendations** - Intelligent skill suggestions based on user needs
+3. **Skill creation capability** - Weaver can now create custom skills for agents
 
 ## Branch
 
@@ -195,17 +196,68 @@ spec:
     - send_message  # Required for coordination
 ```
 
+### 3. Skill Creation Capability
+
+Weaver can now create custom skills using the agent_management tool.
+
+#### New agent_management Actions
+- `create_skill` - Create a new skill YAML file
+- `update_skill` - Update an existing skill YAML file
+
+#### Skill Creation Flow
+```
+User: "Create an agent for analyzing Python code performance"
+
+Weaver: [Detects need for python-performance-analysis skill]
+        [Checks if skill exists]
+        [Skill doesn't exist - creates it]
+
+agent_management({
+  action: "create_skill",
+  config: {
+    apiVersion: "loom/v1",
+    kind: "Skill",
+    metadata: {
+      name: "python-performance-analysis",
+      description: "Analyzes Python code for performance bottlenecks"
+    },
+    spec: {
+      trigger: {
+        activation_mode: "HYBRID",
+        slash_command: "/perf",
+        keywords: ["slow python", "performance", "bottleneck"]
+      },
+      prompt: "...",
+      tools: ["file_read", "shell_execute"]
+    }
+  }
+})
+```
+
+#### Skill File Output
+Skills are written to `$LOOM_DATA_DIR/skills/` directory:
+```bash
+~/.loom/skills/python-performance-analysis.yaml
+```
+
+With validation before writing:
+- YAML syntax validation
+- Required fields check (metadata.name, spec.trigger, spec.prompt)
+- Activation mode validation (MANUAL, AUTO, HYBRID, ALWAYS)
+
 ## Implementation Details
 
 ### Files Modified
-- `embedded/weaver.yaml` - Added /agent-plan mode prompt and skills recommendations to system_prompt
+- `embedded/weaver.yaml.tmpl` - Added /agent-plan mode, skills recommendations, and skill creation to system_prompt
 - `internal/tui/components/chat/sidebar/sidebar.go` - Added /agent-plan hint to weaver section and keyboard hints
 - `internal/tui/components/dialogs/commands/slash_help_dialog.go` - Added /agent-plan to help dialog
 - `internal/tui/components/chat/splash/splash.go` - Updated weaver welcome screen with /agent-plan info
+- `pkg/shuttle/builtin/agent_management.go` - Added create_skill and update_skill action routing
 
 ### Files Created
 - `prompts/metaagent/agent_plan_mode.yaml` - Conversation flow guide (247 lines)
 - `prompts/metaagent/skills_catalog.yaml` - Skill matching decision tree (226 lines)
+- `pkg/shuttle/builtin/agent_management_skill.go` - Skill CRUD operations (248 lines)
 - `WEAVER_ENHANCEMENTS.md` - Complete documentation (this file)
 
 ### Weaver Workflow Updates
@@ -213,14 +265,15 @@ spec:
 The weaver's YOUR Workflow section now includes:
 1. **On first interaction**: Offer /agent-plan mode vs quick start
 2. **Assess intent**: AND recommend relevant skills from catalog
-3. **If multi-agent**: Determine workflow type
-4. **Find tools**: Using tool_search
-5. **Create agents**: With agent_management
-6. **Configure skills**: In agent's spec.skills section (NEW)
-7. **Create workflow**: If multi-agent
-8. **Document**: Including skill activation commands (UPDATED)
-9. **Verify**: With agent_management list
-10. **Show commands**: Via loom --help
+3. **Create skills if needed**: Use agent_management(action="create_skill") for custom skills (NEW)
+4. **If multi-agent**: Determine workflow type
+5. **Find tools**: Using tool_search
+6. **Create agents**: With agent_management
+7. **Configure skills**: In agent's spec.skills section
+8. **Create workflow**: If multi-agent
+9. **Document**: Including skill activation commands
+10. **Verify**: With agent_management list (agents/workflows/skills)
+11. **Show commands**: Via loom --help
 
 ## Benefits
 
@@ -268,6 +321,20 @@ loom
 # Test code review skill recommendation
 "I need an agent for security code reviews"
 # Should recommend: code-review
+```
+
+### Test Skill Creation
+
+```bash
+# Test creating a custom skill
+"Create an agent for analyzing Python performance"
+# Weaver should:
+# 1. Detect need for python-performance-analysis skill
+# 2. Create the skill using agent_management
+# 3. Configure the skill in the agent's spec.skills section
+
+# Verify skill was created
+cat ~/.loom/skills/python-performance-analysis.yaml
 ```
 
 ### Verify Created Agent Config
@@ -385,17 +452,18 @@ Total: 473 lines of guidance added
 ## Commits
 
 ```bash
-git log --oneline -3
+git log --oneline -4
 
-# fec199c feat(tui): Update weaver splash screen with /agent-plan mode
+# 470f475 feat(weaver): Enable skill creation and recommendations
+# d9470b0 feat(tui): Update weaver splash screen with /agent-plan mode
 # 1f9aa02 feat(tui): Show /agent-plan command in sidebar and help
 # acf3b35 feat(weaver): Add /agent-plan mode and skills-based recommendations
 ```
 
 **Total changes:**
-- 6 files modified
-- 2 files created
-- 817 lines added
+- 7 files modified
+- 3 files created
+- 1105+ lines added
 
 ## Visual Changes
 
