@@ -598,6 +598,12 @@ func (m *sidebarCmp) weaverBlock() string {
 		),
 	)
 
+	// Add /agent-plan command hint when weaver is active
+	if isActive {
+		cmdHint := t.S().Base.Foreground(t.FgSubtle).PaddingLeft(2).Render("/agent-plan  guided planning")
+		lines = append(lines, cmdHint)
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
@@ -1181,6 +1187,7 @@ func (m *sidebarCmp) keyboardHintsBlock() string {
 		{"/model", "model"},
 		{"/agents", "agents"},
 		{"/workflows", "workflows"},
+		{"/agent-plan", "plan agent"},
 		{"/sidebar", "sidebar"},
 		{"/apps", "apps"},
 		{"/mcp", "add MCP"},
