@@ -49,6 +49,7 @@ var slashHelpEntries = []slashHelpEntry{
 	{"/model", "switch LLM model/provider", "ctrl+l"},
 	{"/agents", "open agents dialog", "ctrl+e"},
 	{"/workflows", "open workflows dialog", "ctrl+w"},
+	{"/agent-plan", "guided agent planning (weaver)", ""},
 	{"/sidebar", "toggle sidebar", ""},
 	{"/apps", "browse UI apps", ""},
 	{"/mcp", "add MCP server", ""},

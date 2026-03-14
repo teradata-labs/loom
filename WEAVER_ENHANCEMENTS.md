@@ -12,7 +12,41 @@ Created on: `weaver-agent-plan-mode`
 
 ## What Changed
 
-### 1. Updated Weaver System Prompt (`embedded/weaver.yaml`)
+### 1. TUI Integration: /agent-plan Command Visibility
+
+**Files Modified:**
+- `internal/tui/components/chat/sidebar/sidebar.go`
+- `internal/tui/components/dialogs/commands/slash_help_dialog.go`
+
+The `/agent-plan` command is now discoverable in three places:
+
+#### A. Weaver Sidebar Section (When Active)
+When weaver is the active agent, the sidebar shows:
+```
+Weaver
+✨ weaver
+  /agent-plan  guided planning
+```
+
+#### B. Slash Commands Help (/help)
+Added to the global slash commands dialog:
+```
+/agent-plan    guided agent planning (weaver)
+```
+
+#### C. Keyboard Hints Block
+Added to the sidebar's slash commands reference at the bottom:
+```
+/agent-plan    plan agent
+```
+
+**User Benefit:**
+- ✅ Users can discover /agent-plan without needing to know about it beforehand
+- ✅ Visible when weaver is active (contextual help)
+- ✅ Available in global help (/help)
+- ✅ Listed with other slash commands in sidebar
+
+### 2. Updated Weaver System Prompt (`embedded/weaver.yaml`)
 
 The weaver now:
 - **Offers /agent-plan mode** on first interaction
@@ -141,10 +175,13 @@ spec:
 
 ### Files Modified
 - `embedded/weaver.yaml` - Added /agent-plan mode prompt and skills recommendations to system_prompt
+- `internal/tui/components/chat/sidebar/sidebar.go` - Added /agent-plan hint to weaver section and keyboard hints
+- `internal/tui/components/dialogs/commands/slash_help_dialog.go` - Added /agent-plan to help dialog
 
 ### Files Created
 - `prompts/metaagent/agent_plan_mode.yaml` - Conversation flow guide (247 lines)
 - `prompts/metaagent/skills_catalog.yaml` - Skill matching decision tree (226 lines)
+- `WEAVER_ENHANCEMENTS.md` - Complete documentation (this file)
 
 ### Weaver Workflow Updates
 
@@ -320,9 +357,51 @@ prompts/metaagent/skills_catalog.yaml     - Skill recommendation catalog (new)
 
 Total: 473 lines of guidance added
 
-## Commit
+## Commits
 
 ```bash
-git log -1 --oneline
-# faaeceb feat(weaver): Add /agent-plan mode and skills-based recommendations
+git log --oneline -2
+
+# 9ce83df feat(tui): Show /agent-plan command in sidebar and help
+# acf3b35 feat(weaver): Add /agent-plan mode and skills-based recommendations
+```
+
+**Total changes:**
+- 5 files modified
+- 2 files created
+- 809 lines added
+
+## Visual Changes
+
+### Weaver Section (Active Agent)
+```
+┌─ Sidebar ─────────────────┐
+│                           │
+│ Weaver                    │
+│ ✨ weaver                 │
+│   /agent-plan  guided...  │  ← NEW
+│                           │
+└───────────────────────────┘
+```
+
+### Slash Commands Help (/help)
+```
+┌─ Slash Commands ──────────────────┐
+│                                   │
+│ /agents         agents    ctrl+e  │
+│ /workflows      workflows ctrl+w  │
+│ /agent-plan     guided...         │  ← NEW
+│ /sidebar        sidebar           │
+│                                   │
+└───────────────────────────────────┘
+```
+
+### Keyboard Hints (Bottom of Sidebar)
+```
+Slash Commands:
+  /clear       clear chat
+  /agents      agents
+  /workflows   workflows
+  /agent-plan  plan agent        ← NEW
+  /help        help
 ```
