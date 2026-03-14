@@ -40,11 +40,35 @@ Added to the sidebar's slash commands reference at the bottom:
 /agent-plan    plan agent
 ```
 
+#### D. Weaver Splash/Welcome Screen
+Updated the weaver's welcome screen to prominently feature /agent-plan mode:
+```
+✨ Weaver
+
+The weaver creates custom agents and workflows from natural language.
+
+Two Ways to Create:
+  1. Quick Start - Describe what you need, weaver creates it immediately
+  2. /agent-plan - Guided planning with structured questions
+
+Weaver also recommends skills to enhance your agents:
+  • sql-optimization for database performance
+  • code-review for security and quality
+  • multi-agent-coordinator for orchestration
+  • And more based on your use case
+
+Examples:
+  • "Create a SQL query analyzer for PostgreSQL"
+  • "Build a multi-agent workflow for data processing"
+  • "/agent-plan" (for guided planning mode)
+```
+
 **User Benefit:**
 - ✅ Users can discover /agent-plan without needing to know about it beforehand
-- ✅ Visible when weaver is active (contextual help)
+- ✅ Visible when weaver is active (contextual help in sidebar)
 - ✅ Available in global help (/help)
 - ✅ Listed with other slash commands in sidebar
+- ✅ Prominently featured in weaver's welcome screen (first thing users see!)
 
 ### 2. Updated Weaver System Prompt (`embedded/weaver.yaml`)
 
@@ -177,6 +201,7 @@ spec:
 - `embedded/weaver.yaml` - Added /agent-plan mode prompt and skills recommendations to system_prompt
 - `internal/tui/components/chat/sidebar/sidebar.go` - Added /agent-plan hint to weaver section and keyboard hints
 - `internal/tui/components/dialogs/commands/slash_help_dialog.go` - Added /agent-plan to help dialog
+- `internal/tui/components/chat/splash/splash.go` - Updated weaver welcome screen with /agent-plan info
 
 ### Files Created
 - `prompts/metaagent/agent_plan_mode.yaml` - Conversation flow guide (247 lines)
@@ -360,16 +385,17 @@ Total: 473 lines of guidance added
 ## Commits
 
 ```bash
-git log --oneline -2
+git log --oneline -3
 
-# 9ce83df feat(tui): Show /agent-plan command in sidebar and help
+# fec199c feat(tui): Update weaver splash screen with /agent-plan mode
+# 1f9aa02 feat(tui): Show /agent-plan command in sidebar and help
 # acf3b35 feat(weaver): Add /agent-plan mode and skills-based recommendations
 ```
 
 **Total changes:**
-- 5 files modified
+- 6 files modified
 - 2 files created
-- 809 lines added
+- 817 lines added
 
 ## Visual Changes
 
