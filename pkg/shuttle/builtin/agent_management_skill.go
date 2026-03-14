@@ -215,9 +215,8 @@ func (t *AgentManagementTool) writeSkillFile(name, yamlContent string, isUpdate 
 		}, nil
 	}
 
-	// Write file (0644 = owner: rw, group: r, other: r)
-	// nosec G306 - File permissions 0644 are intentional for config files
-	if err := os.WriteFile(filePath, []byte(yamlContent), 0644); err != nil {
+	// Write file (0600 = owner: rw only)
+	if err := os.WriteFile(filePath, []byte(yamlContent), 0600); err != nil {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
