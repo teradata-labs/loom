@@ -13,10 +13,113 @@ import (
 func TestModelRegistry_GetModelsForProvider(t *testing.T) {
 	reg := NewModelRegistry()
 
-	// Static Ollama models should be present
-	models := reg.GetModelsForProvider("ollama")
-	require.NotNil(t, models)
-	assert.Len(t, models, 3) // llama3.1, llama3.2, qwen2.5
+	tests := []struct {
+		provider      string
+		expectedCount int
+	}{
+		{"anthropic", 6},
+		{"openai", 8},
+		{"gemini", 3},
+		{"bedrock", 6},
+		{"ollama", 10},
+		{"mistral", 6},
+		{"azure-openai", 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			models := reg.GetModelsForProvider(tt.provider)
+			require.NotNil(t, models, "provider %s should have models", tt.provider)
+			assert.Len(t, models, tt.expectedCount, "provider %s model count", tt.provider)
+
+			// Verify all models have the correct provider set
+			for _, m := range models {
+				assert.Equal(t, tt.provider, m.Provider)
+				assert.NotEmpty(t, m.Id)
+				assert.NotEmpty(t, m.Name)
+				assert.Greater(t, m.ContextWindow, int32(0))
+			}
+		})
+	}
+}
+
+func TestModelRegistry_GetModelsForProvider_HuggingFaceRemoved(t *testing.T) {
+	reg := NewModelRegistry()
+	models := reg.GetModelsForProvider("huggingface")
+	assert.Nil(t, models, "huggingface provider should not exist in registry")
+}
+
+func TestModelRegistry_GetAllModels_TotalCount(t *testing.T) {
+	reg := NewModelRegistry()
+	all := reg.GetAllModels()
+	// anthropic(6) + openai(8) + gemini(3) + bedrock(6) + ollama(10) + mistral(6) + azure-openai(5) = 44
+	assert.Len(t, all, 44)
+}
+
+func TestModelRegistry_NewFields(t *testing.T) {
+	reg := NewModelRegistry()
+
+	t.Run("claude-opus-4-6 has expected new fields", func(t *testing.T) {
+		models := reg.GetModelsForProvider("anthropic")
+		require.NotEmpty(t, models)
+
+		var found bool
+		for _, m := range models {
+			if m.Id == "claude-opus-4-6" {
+				found = true
+				assert.Equal(t, int32(128_000), m.MaxOutputTokens)
+				assert.True(t, m.IsReasoning)
+				assert.True(t, m.ShowInDropdown)
+				break
+			}
+		}
+		require.True(t, found, "claude-opus-4-6 should exist in anthropic models")
+	})
+
+	t.Run("claude-haiku-4-5 has expected new fields", func(t *testing.T) {
+		models := reg.GetModelsForProvider("anthropic")
+		for _, m := range models {
+			if m.Id == "claude-haiku-4-5-20251001" {
+				assert.True(t, m.IsReasoning)
+				assert.True(t, m.ShowInDropdown)
+				assert.Equal(t, int32(64_000), m.MaxOutputTokens)
+				return
+			}
+		}
+		t.Fatal("claude-haiku-4-5-20251001 not found")
+	})
+
+	t.Run("bedrock and azure models have ShowInDropdown=false", func(t *testing.T) {
+		for _, provider := range []string{"bedrock", "azure-openai"} {
+			models := reg.GetModelsForProvider(provider)
+			require.NotEmpty(t, models, "provider %s should have models", provider)
+			for _, m := range models {
+				assert.False(t, m.ShowInDropdown,
+					"model %s (%s) should have ShowInDropdown=false", m.Id, provider)
+			}
+		}
+	})
+
+	t.Run("openai reasoning models", func(t *testing.T) {
+		models := reg.GetModelsForProvider("openai")
+		reasoningIDs := map[string]bool{
+			"o3": true, "o3-mini": true, "o4-mini": true,
+		}
+		for _, m := range models {
+			if reasoningIDs[m.Id] {
+				assert.True(t, m.IsReasoning, "model %s should be reasoning", m.Id)
+				assert.Greater(t, m.MaxOutputTokens, int32(0), "model %s should have MaxOutputTokens", m.Id)
+			}
+		}
+	})
+
+	t.Run("all models have MaxOutputTokens set", func(t *testing.T) {
+		all := reg.GetAllModels()
+		for _, m := range all {
+			assert.Greater(t, m.MaxOutputTokens, int32(0),
+				"model %s (%s) should have MaxOutputTokens > 0", m.Id, m.Provider)
+		}
+	})
 }
 
 func TestModelRegistry_DiscoverOllamaModels(t *testing.T) {
@@ -65,7 +168,7 @@ func TestModelRegistry_DiscoverOllamaModels_Unreachable(t *testing.T) {
 
 	// Static models should remain intact
 	models := reg.GetModelsForProvider("ollama")
-	assert.Len(t, models, 3)
+	assert.Len(t, models, 10)
 }
 
 func TestModelRegistry_DiscoverOllamaModels_EmptyResponse(t *testing.T) {
@@ -83,7 +186,7 @@ func TestModelRegistry_DiscoverOllamaModels_EmptyResponse(t *testing.T) {
 
 	// Should keep static defaults when no models discovered
 	models := reg.GetModelsForProvider("ollama")
-	assert.Len(t, models, 3)
+	assert.Len(t, models, 10)
 }
 
 func TestFormatOllamaDisplayName(t *testing.T) {

@@ -246,6 +246,10 @@ message MemoryConfig {
 
   // Memory compression configuration (conversation history compression)
   MemoryCompressionConfig memory_compression = 5;
+
+  // Shared memory threshold in bytes for large tool results.
+  // 0 = always reference (default), -1 = never reference (inline everything), >0 = reference only if result exceeds N bytes.
+  int64 shared_memory_threshold_bytes = 6;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases

@@ -112,16 +112,34 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		sessionID = GenerateSessionID()
 	}
 
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		s.agent.ResetSessionContext(sessionID)
+	}
+
 	// Execute agent chat
 	resp, err := s.agent.Chat(ctx, sessionID, req.Query)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
 	}
 
+	// Build context state snapshot (after response, reflects post-conversation state)
+	var contextState *loomv1.ContextState
+	if cs := s.agent.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	// Convert response to proto format
 	return &loomv1.WeaveResponse{
-		Text:      resp.Content,
-		SessionId: sessionID,
+		Text:         resp.Content,
+		SessionId:    sessionID,
+		ContextState: contextState,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
 				Provider:                 s.agent.GetLLMProviderName(),
@@ -148,6 +166,11 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
+	}
+
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		s.agent.ResetSessionContext(sessionID)
 	}
 
 	// Channel to receive agent result
@@ -238,8 +261,21 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		return status.Errorf(codes.Internal, "agent error: %v", finalResult.err)
 	}
 
-	// Send final completion event with result
+	// Send final completion event with result and context state
 	resp := finalResult.resp
+
+	// Build context state snapshot
+	var contextState *loomv1.ContextState
+	if cs := s.agent.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	completionProgress := &loomv1.WeaveProgress{
 		Stage:     loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED,
 		Progress:  100,
@@ -249,6 +285,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 			Type:     "text",
 			DataJson: resp.Content,
 		},
+		ContextState: contextState,
 	}
 
 	return stream.Send(completionProgress)

@@ -706,6 +706,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts...,
 	)
 
+	// Configure shared memory threshold from config
+	if config.Memory != nil && config.Memory.SharedMemoryThresholdBytes != 0 {
+		agent.SetSharedMemoryThreshold(config.Memory.SharedMemoryThresholdBytes)
+	}
+
 	// Register workspace tool if artifactStore is available
 	if r.artifactStore != nil {
 		// Type assert to artifacts.ArtifactStore
