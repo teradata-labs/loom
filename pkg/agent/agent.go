@@ -80,6 +80,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		tokenCounter: GetTokenCounter(),
 	}
 
+	// Default shared memory threshold: -1 means use storage.DefaultSharedMemoryThreshold
+	a.sharedMemoryThreshold = -1
+
 	// Enable self-correction by default (guardrails + circuit breakers)
 	// Users can opt-out via WithoutSelfCorrection() or provide custom implementations
 	a.guardrails = fabric.NewGuardrailEngine()
@@ -173,7 +176,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Set shared memory on executor so large tool results are stored in the same store
 	// that GetToolResultTool retrieves from (fixes tool reference loop bug)
 	if a.executor != nil && a.sharedMemory != nil {
-		a.executor.SetSharedMemory(a.sharedMemory, storage.DefaultSharedMemoryThreshold)
+		threshold := int64(storage.DefaultSharedMemoryThreshold)
+		if a.sharedMemoryThreshold >= 0 {
+			threshold = a.sharedMemoryThreshold
+		}
+		a.executor.SetSharedMemory(a.sharedMemory, threshold)
 	}
 
 	// PROGRESSIVE DISCLOSURE: get_error_details tool is registered dynamically after first error
@@ -535,6 +542,54 @@ func (a *Agent) GetConfig() *Config {
 	// Return a copy to prevent external modification
 	configCopy := *a.config
 	return &configCopy
+}
+
+// ContextState holds a snapshot of the agent's memory and context window state.
+// Used to populate the proto ContextState message in WeaveResponse.
+type ContextState struct {
+	ActivePattern     string
+	ContextTokensUsed int64
+	ContextTokensMax  int64
+	Rom               string
+	ToolsLoaded       []string
+}
+
+// GetContextState returns a snapshot of the agent's memory and context window state
+// for the given session. Returns nil if the session has no SegmentedMemory.
+func (a *Agent) GetContextState(sessionID string) *ContextState {
+	sess, ok := a.memory.GetSession(sessionID)
+	if !ok || sess == nil {
+		return nil
+	}
+
+	state := &ContextState{
+		Rom:         a.config.Rom,
+		ToolsLoaded: a.ListTools(),
+	}
+
+	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		state.ActivePattern = segMem.GetActivePattern()
+		state.ContextTokensUsed = int64(segMem.GetTokenCount())
+		state.ContextTokensMax = int64(segMem.GetTokenBudgetMax())
+	}
+
+	return state
+}
+
+// ResetSessionContext clears the context window for a session, preserving ROM and
+// registered tools. Returns true if the session was found and reset, false otherwise.
+func (a *Agent) ResetSessionContext(sessionID string) bool {
+	sess, ok := a.memory.GetSession(sessionID)
+	if !ok || sess == nil {
+		return false
+	}
+
+	if segMem, ok := sess.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		segMem.ResetContext()
+		return true
+	}
+
+	return false
 }
 
 // getSystemPrompt loads the system prompt from config or PromptRegistry.
@@ -2754,6 +2809,12 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 	return result
 }
 
+// SetSharedMemoryThreshold configures the byte threshold for storing large tool results in shared memory.
+// -1 = use storage.DefaultSharedMemoryThreshold, 0 = always reference, >0 = reference only if result exceeds N bytes.
+func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
+	a.sharedMemoryThreshold = threshold
+}
+
 // SetSharedMemory configures shared memory for this agent.
 // This injects the shared memory store into:
 // - The agent itself (for formatToolResult to store large results)
@@ -2767,7 +2828,11 @@ func (a *Agent) SetSharedMemory(sharedMemory *storage.SharedMemoryStore) {
 
 	// Inject into tool executor
 	if a.executor != nil {
-		a.executor.SetSharedMemory(sharedMemory, storage.DefaultSharedMemoryThreshold)
+		threshold := int64(storage.DefaultSharedMemoryThreshold)
+		if a.sharedMemoryThreshold >= 0 {
+			threshold = a.sharedMemoryThreshold
+		}
+		a.executor.SetSharedMemory(sharedMemory, threshold)
 	}
 
 	// Inject into memory manager (which handles all sessions)

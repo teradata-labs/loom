@@ -179,11 +179,12 @@ type CustomToolConfigYAML struct {
 
 // MemoryConfigYAML represents memory configuration in YAML
 type MemoryConfigYAML struct {
-	Type              string                       `yaml:"type"`
-	Path              string                       `yaml:"path"`
-	DSN               string                       `yaml:"dsn"`
-	MaxHistory        int                          `yaml:"max_history"`
-	MemoryCompression *MemoryCompressionConfigYAML `yaml:"memory_compression"`
+	Type                       string                       `yaml:"type"`
+	Path                       string                       `yaml:"path"`
+	DSN                        string                       `yaml:"dsn"`
+	MaxHistory                 int                          `yaml:"max_history"`
+	SharedMemoryThresholdBytes int64                        `yaml:"shared_memory_threshold_bytes"`
+	MemoryCompression          *MemoryCompressionConfigYAML `yaml:"memory_compression"`
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -563,10 +564,11 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 
 	config.Memory = &loomv1.MemoryConfig{
-		Type:       yaml.Agent.Memory.Type,
-		Path:       yaml.Agent.Memory.Path,
-		Dsn:        yaml.Agent.Memory.DSN,
-		MaxHistory: maxHistory,
+		Type:                       yaml.Agent.Memory.Type,
+		Path:                       yaml.Agent.Memory.Path,
+		Dsn:                        yaml.Agent.Memory.DSN,
+		MaxHistory:                 maxHistory,
+		SharedMemoryThresholdBytes: yaml.Agent.Memory.SharedMemoryThresholdBytes,
 	}
 
 	// Set defaults for memory

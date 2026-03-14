@@ -783,3 +783,87 @@ func TestConcurrentFindingsAccess(t *testing.T) {
 	allFindings := sm.GetAllFindings()
 	assert.Greater(t, len(allFindings), 0, "Should have recorded some findings")
 }
+
+func TestSegmentedMemory_GetActivePattern(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 0, 0)
+
+	// No pattern initially
+	assert.Empty(t, sm.GetActivePattern())
+
+	// Inject pattern
+	sm.InjectPattern("SELECT * FROM ...", "sql_basics")
+	assert.Equal(t, "sql_basics", sm.GetActivePattern())
+
+	// Inject a different pattern
+	sm.InjectPattern("EXPLAIN ...", "query_tuning")
+	assert.Equal(t, "query_tuning", sm.GetActivePattern())
+}
+
+func TestSegmentedMemory_GetTokenBudgetMax(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 200000, 0)
+
+	max := sm.GetTokenBudgetMax()
+	assert.Greater(t, max, 0, "Token budget max should be positive")
+}
+
+func TestSegmentedMemory_ResetContext(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM content", 200000, 0)
+
+	// Populate all layers
+	sm.AddMessage(ctx, Message{Role: "user", Content: "hello"})
+	sm.AddMessage(ctx, Message{Role: "assistant", Content: "hi there"})
+	sm.InjectPattern("pattern content", "test_pattern")
+	sm.InjectSkills("skill content", []string{"skill1"})
+	sm.CacheSchema("table1", "CREATE TABLE ...")
+	sm.RecordFinding("/test", "finding", "observation", "", "")
+
+	// Verify everything is populated
+	assert.Equal(t, 2, sm.GetL1MessageCount())
+	assert.Equal(t, "test_pattern", sm.GetActivePattern())
+	stats := sm.GetMemoryStats()
+	assert.Greater(t, stats["schema_cache_count"], 0)
+
+	tokensBefore := sm.GetTokenCount()
+
+	// Reset
+	sm.ResetContext()
+
+	// Verify all conversational data is cleared
+	assert.Equal(t, 0, sm.GetL1MessageCount(), "L1 messages should be cleared")
+	assert.Empty(t, sm.GetActivePattern(), "Pattern should be cleared")
+
+	tokensAfter := sm.GetTokenCount()
+	assert.Less(t, tokensAfter, tokensBefore, "Token count should decrease after reset")
+
+	// ROM should be preserved
+	assert.Equal(t, "ROM content", sm.romContent, "ROM should be preserved")
+}
+
+func TestSegmentedMemory_ResetContext_ConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 0)
+
+	// Populate some data
+	sm.AddMessage(ctx, Message{Role: "user", Content: "hello"})
+
+	var wg sync.WaitGroup
+	numGoroutines := 20
+
+	// Concurrent resets and reads
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			sm.ResetContext()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = sm.GetTokenCount()
+			_ = sm.GetActivePattern()
+			_ = sm.GetTokenBudgetMax()
+		}()
+	}
+
+	wg.Wait()
+}

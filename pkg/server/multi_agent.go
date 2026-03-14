@@ -720,6 +720,16 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		)
 	}
 
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		ag.ResetSessionContext(sessionID)
+		if s.logger != nil {
+			s.logger.Info("Context window reset before processing",
+				zap.String("session_id", sessionID),
+				zap.String("agent_id", agentID))
+		}
+	}
+
 	// Execute agent chat
 	resp, err := ag.Chat(ctx, sessionID, req.Query)
 	if err != nil {
@@ -740,11 +750,24 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		s.RecordTraceSpan(span)
 	}
 
+	// Build context state snapshot (after response, reflects post-conversation state)
+	var contextState *loomv1.ContextState
+	if cs := ag.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	// Convert response to proto format
 	return &loomv1.WeaveResponse{
-		Text:      resp.Content,
-		SessionId: sessionID,
-		AgentId:   agentID,
+		Text:         resp.Content,
+		SessionId:    sessionID,
+		AgentId:      agentID,
+		ContextState: contextState,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{
 				Provider:                 ag.GetLLMProviderName(),
@@ -832,6 +855,16 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// The coordinator's lifecycle is tied to the session, not to a single StreamWeave call.
 	// This allows asynchronous workflow responses to trigger coordinator notifications
 	// even after the coordinator has returned an initial response to the user.
+
+	// Reset context window if requested (before processing the message)
+	if req.ResetContext {
+		ag.ResetSessionContext(sessionID)
+		if s.logger != nil {
+			s.logger.Info("Context window reset before streaming",
+				zap.String("session_id", sessionID),
+				zap.String("agent_id", resolvedAgentID))
+		}
+	}
 
 	// Channel to receive agent result
 	type agentResult struct {
@@ -939,8 +972,21 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		return status.Errorf(codes.Internal, "agent execution failed: %v", finalResult.err)
 	}
 
-	// Send final completion event with result and cost
+	// Send final completion event with result, cost, and context state
 	resp := finalResult.resp
+
+	// Build context state snapshot
+	var contextState *loomv1.ContextState
+	if cs := ag.GetContextState(sessionID); cs != nil {
+		contextState = &loomv1.ContextState{
+			ActivePattern:     cs.ActivePattern,
+			ContextTokensUsed: cs.ContextTokensUsed,
+			ContextTokensMax:  cs.ContextTokensMax,
+			Rom:               cs.Rom,
+			ToolsLoaded:       cs.ToolsLoaded,
+		}
+	}
+
 	completionProgress := &loomv1.WeaveProgress{
 		Stage:     loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED,
 		Progress:  100,
@@ -951,6 +997,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			DataJson: resp.Content,
 		},
 		PartialContent: resp.Content,
+		ContextState:   contextState,
 		Cost: &loomv1.CostInfo{
 			TotalCostUsd: resp.Usage.CostUSD,
 			LlmCost: &loomv1.LLMCost{

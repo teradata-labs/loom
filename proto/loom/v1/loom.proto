@@ -643,6 +643,11 @@ message WeaveRequest {
 
   // Agent ID to route request to (optional, uses default if not specified)
   string agent_id = 9;
+
+  // Clear context window before processing this message.
+  // When true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)
+  // before the query is processed, giving a fresh context window.
+  bool reset_context = 10;
 }
 
 // WeaveResponse contains the execution result.
@@ -670,6 +675,9 @@ message WeaveResponse {
 
   // Agent ID that handled this request
   string agent_id = 8;
+
+  // Context window state after this response
+  ContextState context_state = 9;
 }
 
 // WeaveProgress streams incremental updates during execution.
@@ -736,6 +744,9 @@ message WeaveProgress {
 
   // Unique identifier correlating started/completed events for the same tool call
   string tool_call_id = 20;
+
+  // Context window state (included in completion event)
+  ContextState context_state = 21;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.
@@ -933,6 +944,26 @@ message LLMCost {
 
   // Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
   int32 cache_creation_input_tokens = 8;
+}
+
+// ContextState reports the agent's memory and context window state after a response.
+// This is a per-session cumulative view (how full is the window, what's loaded),
+// distinct from ExecutionMetadata which is per-turn (tokens, cost, duration).
+message ContextState {
+  // Active pattern name (empty if none)
+  string active_pattern = 1;
+
+  // Context tokens currently used
+  int64 context_tokens_used = 2;
+
+  // Context token budget (max context window)
+  int64 context_tokens_max = 3;
+
+  // ROM identifier loaded (empty if none)
+  string rom = 4;
+
+  // Tool names currently registered on the agent
+  repeated string tools_loaded = 5;
 }
 
 // ExecutionMetadata contains execution metadata.
@@ -2162,6 +2193,15 @@ message ModelInfo {
 
   // Whether model is currently available
   bool available = 8;
+
+  // Maximum output tokens supported by this model
+  int32 max_output_tokens = 9;
+
+  // Whether this model supports extended thinking / reasoning
+  bool is_reasoning = 10;
+
+  // Whether this model should appear in UI dropdowns (false = API-only or deprecated)
+  bool show_in_dropdown = 11;
 }
 
 // Tool Permission Messages

@@ -120,6 +120,10 @@ type Agent struct {
 	// SQL result store for queryable large SQL results
 	sqlResultStore storage.ResultStore
 
+	// Configurable shared memory threshold for large tool results.
+	// -1 = use storage.DefaultSharedMemoryThreshold; 0 = always reference; >0 = byte threshold
+	sharedMemoryThreshold int64
+
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
