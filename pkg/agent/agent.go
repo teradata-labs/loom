@@ -1940,7 +1940,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
-	synthesisPrompt := "Based on all the tool executions and data you've gathered above, provide your complete response now. Follow the exact output format specified in your system instructions."
+	synthesisPrompt := "You have reached the tool execution limit. Summarize what you accomplished: what actions were taken, what results were produced, and any remaining steps the user should know about. You MUST respond with text — do not return an empty response."
 	synthesisMsg := Message{
 		Role:      "user",
 		Content:   synthesisPrompt,
@@ -1980,9 +1980,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}, nil
 	}
 
-	// Return synthesized response
+	// Return synthesized response — fall back to a brief summary if LLM returned empty
+	content := finalResp.Content
+	if strings.TrimSpace(content) == "" {
+		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+	}
+
 	return &Response{
-		Content:        finalResp.Content,
+		Content:        content,
 		Usage:          finalResp.Usage,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
