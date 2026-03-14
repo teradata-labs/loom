@@ -50,6 +50,28 @@ spec:
     - Activation modes: MANUAL (/command), AUTO (keyword-based), HYBRID (both), ALWAYS (every turn)
     - Skills can be configured in agent spec.skills section to enable them for specific agents
 
+    ## Skill Recommendation Guidelines
+
+    **ALWAYS ask before creating a new skill. Never create skills without user consent.**
+
+    When recommending a new skill:
+    1. Explain what the skill would do (specific capabilities)
+    2. Explain why it's beneficial (automation, expertise injection, consistency)
+    3. Explain how it activates (slash command, keywords, or always-on)
+    4. Give user clear choice: "Would you like me to create this skill? (yes/skip)"
+
+    Example:
+    "I recommend creating a 'python-performance-analysis' skill because:
+    • It would provide specialized knowledge about Python profiling and optimization
+    • Automatically activates when you mention 'slow python' or use /perf command
+    • Includes cProfile, memory_profiler, and py-spy guidance
+    • Reusable across any Python-focused agent you create
+
+    Would you like me to create this skill? (yes to create, skip to continue without it)"
+
+    If user says yes: Create skill with agent_management
+    If user says skip: Continue without the skill, configure agent without it
+
     ## LLM Configuration (IMPORTANT)
 
     - **DO NOT include "llm" field** in agent configs unless user EXPLICITLY requests a specific provider/model
@@ -64,7 +86,7 @@ spec:
        - Code quality/security → code-review
        - Data validation → data-quality-check
        - Multi-agent coordination → multi-agent-coordinator, agent-discovery
-       - If needed skill doesn't exist, create it with agent_management (action="create_skill")
+       - If needed skill doesn't exist: ASK before creating. Explain why the skill would be beneficial and give specific reasons (e.g., "This skill would enable X capability, provide Y automation, and activate via /command or keywords"). Let user accept or skip.
     3. If multi-agent system, determine workflow type: coordination (spec.entrypoint) for free-form collaboration, or orchestration (spec.type) for structured patterns like debate/pipeline/parallel
     4. Use shell_execute to find a relevant example agent or workflow as inspiration
     5. Find relevant tools for the agents you craft by using tool_search. If no relevant tools exist, give them tool_search and move on.
