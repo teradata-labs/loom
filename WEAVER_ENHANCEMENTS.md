@@ -196,42 +196,76 @@ spec:
     - send_message  # Required for coordination
 ```
 
-### 3. Skill Creation Capability
+### 3. Skill Creation Capability (Opt-In)
 
 Weaver can now create custom skills using the agent_management tool.
+
+**Key Design Decision**: Skill creation is opt-in, not automatic.
+- Weaver detects when a useful skill doesn't exist
+- Explains why the skill would be beneficial
+- Asks user permission: "yes" to create, "skip" to continue without
+- Never creates skills without explicit user consent
 
 #### New agent_management Actions
 - `create_skill` - Create a new skill YAML file
 - `update_skill` - Update an existing skill YAML file
 
-#### Skill Creation Flow
+#### Skill Recommendation Format
+
+When weaver recommends a new skill, it follows this template:
+
+1. **What**: Specific capabilities the skill provides
+2. **Why**: Benefits (automation, expertise injection, consistency)
+3. **How**: Activation method (slash command, keywords, always-on)
+4. **Reusability**: How the skill can be used beyond this agent
+5. **Choice**: Clear yes/skip option
+
+This ensures users understand the value before consenting to skill creation.
+
+#### Skill Creation Flow (Opt-In with Reasoning)
+
+**IMPORTANT**: Weaver always asks before creating skills, never creates automatically.
+
 ```
 User: "Create an agent for analyzing Python code performance"
 
 Weaver: [Detects need for python-performance-analysis skill]
         [Checks if skill exists]
-        [Skill doesn't exist - creates it]
+        [Skill doesn't exist - ASK USER FIRST]
 
-agent_management({
-  action: "create_skill",
-  config: {
-    apiVersion: "loom/v1",
-    kind: "Skill",
-    metadata: {
-      name: "python-performance-analysis",
-      description: "Analyzes Python code for performance bottlenecks"
-    },
-    spec: {
-      trigger: {
-        activation_mode: "HYBRID",
-        slash_command: "/perf",
-        keywords: ["slow python", "performance", "bottleneck"]
-      },
-      prompt: "...",
-      tools: ["file_read", "shell_execute"]
-    }
-  }
-})
+        "I recommend creating a 'python-performance-analysis' skill because:
+        • It would provide specialized knowledge about Python profiling and optimization
+        • Automatically activates when you mention 'slow python' or use /perf command
+        • Includes cProfile, memory_profiler, and py-spy guidance
+        • Reusable across any Python-focused agent you create
+
+        Would you like me to create this skill? (yes to create, skip to continue without it)"
+
+User: "yes"
+
+Weaver: [Creates skill]
+        agent_management({
+          action: "create_skill",
+          config: {
+            apiVersion: "loom/v1",
+            kind: "Skill",
+            metadata: {
+              name: "python-performance-analysis",
+              description: "Analyzes Python code for performance bottlenecks"
+            },
+            spec: {
+              trigger: {
+                activation_mode: "HYBRID",
+                slash_command: "/perf",
+                keywords: ["slow python", "performance", "bottleneck"]
+              },
+              prompt: "...",
+              tools: ["file_read", "shell_execute"]
+            }
+          }
+        })
+
+        [If user says "skip", continues without creating the skill]
 ```
 
 #### Skill File Output
@@ -282,6 +316,8 @@ The weaver's YOUR Workflow section now includes:
 - ✅ Discover skills they didn't know existed
 - ✅ Get skill activation commands upfront (/optimize, /review, etc.)
 - ✅ Better agent configurations with recommended skills
+- ✅ Full control over skill creation (opt-in with clear reasoning)
+- ✅ Understand skill benefits before consenting to creation
 
 ### For Weaver
 - ✅ Systematic requirement gathering process
