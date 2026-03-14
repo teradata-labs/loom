@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -313,6 +314,204 @@ func TestAgent_MaxToolExecutionsLimit(t *testing.T) {
 	if len(resp.ToolExecutions) != 3 {
 		t.Errorf("Expected 3 tool executions (max limit), got: %d", len(resp.ToolExecutions))
 	}
+}
+
+func TestAgent_EmptyResponseRetry(t *testing.T) {
+	// LLM returns tool calls first, then an empty response, then a non-empty
+	// response after the retry nudge.
+	mockLLM := &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{
+				content:   "",
+				toolCalls: []llmtypes.ToolCall{{ID: "call_1", Name: "calculator", Input: map[string]interface{}{"expression": "1+1"}}},
+			},
+			{content: ""},                               // empty response — should trigger retry
+			{content: "The answer is 2 based on my work"}, // retry response
+		},
+	}
+
+	patternCfg := DefaultPatternConfig()
+	patternCfg.UseLLMClassifier = false
+
+	ag := NewAgent(&mockBackend{}, mockLLM, WithConfig(&Config{
+		MaxTurns:          25,
+		MaxToolExecutions: 50,
+		PatternConfig:     patternCfg,
+	}))
+	ag.RegisterTool(&mockCalculatorTool{})
+
+	resp, err := ag.Chat(context.Background(), "empty_retry_test", "Calculate 1+1")
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	// Should have retried and gotten the non-empty response.
+	if resp.Content == "" {
+		t.Error("Expected non-empty response after retry")
+	}
+	if resp.Content != "The answer is 2 based on my work" {
+		t.Errorf("Expected retried response, got: %q", resp.Content)
+	}
+	// Verify the metadata flag
+	if retried, ok := resp.Metadata["empty_retried"].(bool); !ok || !retried {
+		t.Error("Expected empty_retried=true in metadata")
+	}
+}
+
+func TestAgent_EmptyResponseFallback(t *testing.T) {
+	// LLM returns empty response twice — should use fallback after retry.
+	mockLLM := &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{content: ""}, // empty
+			{content: ""}, // still empty after retry
+		},
+	}
+
+	patternCfg := DefaultPatternConfig()
+	patternCfg.UseLLMClassifier = false
+
+	ag := NewAgent(&mockBackend{}, mockLLM, WithConfig(&Config{
+		MaxTurns:          25,
+		MaxToolExecutions: 50,
+		PatternConfig:     patternCfg,
+	}))
+
+	resp, err := ag.Chat(context.Background(), "empty_fallback_test", "Do something")
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	// Should have the fallback message.
+	if resp.Content == "" {
+		t.Error("Expected non-empty fallback response")
+	}
+	if !strings.Contains(resp.Content, "Completed") {
+		t.Errorf("Expected fallback message, got: %q", resp.Content)
+	}
+}
+
+func TestAgent_MaxIterationsPerTurnCap(t *testing.T) {
+	// LLM emits 10 tool calls in a single response. MaxIterations=3 should
+	// execute only 3 and skip the rest with turn_limit_exceeded errors.
+	toolCalls := make([]llmtypes.ToolCall, 10)
+	for i := range toolCalls {
+		toolCalls[i] = llmtypes.ToolCall{
+			ID:    fmt.Sprintf("call_%d", i+1),
+			Name:  "calculator",
+			Input: map[string]interface{}{"expression": fmt.Sprintf("%d", i+1)},
+		}
+	}
+
+	mockLLM := &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{content: "", toolCalls: toolCalls},
+			{content: "Done with 3 results"},
+		},
+	}
+
+	patternCfg := DefaultPatternConfig()
+	patternCfg.UseLLMClassifier = false
+
+	ag := NewAgent(&mockBackend{}, mockLLM, WithConfig(&Config{
+		MaxTurns:          25,
+		MaxToolExecutions: 50,
+		MaxIterations:     3,
+		PatternConfig:     patternCfg,
+	}))
+	ag.RegisterTool(&mockCalculatorTool{})
+
+	resp, err := ag.Chat(context.Background(), "max_iter_test", "Execute 10 calculations")
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	// Only 3 should actually execute (via ToolExecutions).
+	// The 7 skipped calls are added as tool-result messages in the session
+	// but NOT in resp.ToolExecutions (they're tool results, not tool executions).
+	if len(resp.ToolExecutions) != 3 {
+		t.Errorf("Expected 3 tool executions (per-turn cap), got %d", len(resp.ToolExecutions))
+	}
+}
+
+func TestAgent_ToolCallDeduplication(t *testing.T) {
+	// LLM emits 5 identical tool calls. Only 1 should execute; 4 should be deduped.
+	identicalCall := llmtypes.ToolCall{
+		Name:  "calculator",
+		Input: map[string]interface{}{"expression": "2+2"},
+	}
+	toolCalls := make([]llmtypes.ToolCall, 5)
+	for i := range toolCalls {
+		tc := identicalCall
+		tc.ID = fmt.Sprintf("call_%d", i+1)
+		toolCalls[i] = tc
+	}
+
+	executionCount := 0
+	var mu sync.Mutex
+
+	mockLLM := &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{content: "", toolCalls: toolCalls},
+			{content: "All done"},
+		},
+	}
+
+	patternCfg := DefaultPatternConfig()
+	patternCfg.UseLLMClassifier = false
+
+	ag := NewAgent(&mockBackend{}, mockLLM, WithConfig(&Config{
+		MaxTurns:          25,
+		MaxToolExecutions: 50,
+		MaxIterations:     10,
+		PatternConfig:     patternCfg,
+	}))
+
+	// Use a counting calculator to verify execution count
+	ag.RegisterTool(&mockCountingCalculatorTool{mu: &mu, count: &executionCount})
+
+	resp, err := ag.Chat(context.Background(), "dedup_test", "Execute 5 identical calculations")
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	mu.Lock()
+	actualExecs := executionCount
+	mu.Unlock()
+
+	if actualExecs != 1 {
+		t.Errorf("Expected 1 actual tool execution (dedup), got %d", actualExecs)
+	}
+
+	// All 5 should still appear in tool executions (1 real + 4 deduped)
+	if len(resp.ToolExecutions) != 5 {
+		t.Errorf("Expected 5 tool executions total (including deduped), got %d", len(resp.ToolExecutions))
+	}
+}
+
+// mockCountingCalculatorTool counts actual executions for dedup testing.
+type mockCountingCalculatorTool struct {
+	mu    *sync.Mutex
+	count *int
+}
+
+func (m *mockCountingCalculatorTool) Name() string        { return "calculator" }
+func (m *mockCountingCalculatorTool) Description() string  { return "Counting calculator" }
+func (m *mockCountingCalculatorTool) Backend() string      { return "" }
+func (m *mockCountingCalculatorTool) InputSchema() *shuttle.JSONSchema {
+	return &shuttle.JSONSchema{
+		Type:       "object",
+		Properties: map[string]*shuttle.JSONSchema{"expression": {Type: "string"}},
+	}
+}
+func (m *mockCountingCalculatorTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	m.mu.Lock()
+	*m.count++
+	m.mu.Unlock()
+	return &shuttle.Result{
+		Success:         true,
+		Data:            "42",
+		ExecutionTimeMs: 10,
+	}, nil
 }
 
 func TestAgent_NoToolsAvailable(t *testing.T) {

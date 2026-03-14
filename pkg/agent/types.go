@@ -171,6 +171,12 @@ type Config struct {
 	// MaxToolExecutions is the maximum number of tool executions per conversation
 	MaxToolExecutions int
 
+	// MaxIterations caps tool calls executed per single LLM response (per-turn).
+	// When the LLM emits more tool calls than this limit in one response, only
+	// MaxIterations are executed; the rest receive "turn_limit_exceeded" errors.
+	// 0 = use default (10).
+	MaxIterations int
+
 	// SystemPrompt is the direct system prompt text (takes precedence over SystemPromptKey)
 	SystemPrompt string
 
@@ -259,6 +265,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		MaxTurns:          25,
 		MaxToolExecutions: 50,
+		MaxIterations:     10,
 		SystemPromptKey:   "agent.system.base",
 		EnableTracing:     true,
 		BackendConfig:     make(map[string]interface{}),
