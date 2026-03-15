@@ -1814,6 +1814,39 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Emit plan created progress event
 			emitPlanCreated(ctx, plan)
 
+			// CRITICAL: Add tool_result messages for each deferred tool call
+			// This prevents conversation state corruption - LLM APIs require every tool_use
+			// to have a corresponding tool_result in the next message.
+			for _, toolCall := range llmResp.ToolCalls {
+				deferredResult := Message{
+					Role:      "tool",
+					Content:   fmt.Sprintf("Tool execution deferred to execution plan %s. Please approve the plan to execute this tool.", plan.PlanId),
+					ToolUseID: toolCall.ID,
+					ToolResult: &shuttle.Result{
+						Success: true,
+						Data: map[string]interface{}{
+							"status":  "deferred",
+							"plan_id": plan.PlanId,
+							"message": "Tool execution deferred - pending plan approval",
+						},
+					},
+					AgentID:   a.id,
+					Timestamp: time.Now(),
+				}
+				session.AddMessage(ctx, deferredResult)
+
+				// Persist the deferred result message
+				if persistErr := a.memory.PersistMessage(ctx, session.ID, deferredResult); persistErr != nil {
+					zap.L().Warn("Failed to persist deferred tool result message",
+						zap.String("session_id", session.ID),
+						zap.String("tool_call_id", toolCall.ID),
+						zap.Error(persistErr))
+					if span != nil {
+						span.RecordError(persistErr)
+					}
+				}
+			}
+
 			// Add system message explaining the plan
 			planMsg := Message{
 				Role:    "assistant",
