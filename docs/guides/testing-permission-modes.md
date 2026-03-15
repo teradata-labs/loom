@@ -9,6 +9,33 @@ Permission modes control how the agent handles tool execution:
 - **ASK_BEFORE**: Request approval before each tool (callback required)
 - **PLAN**: Create execution plan, wait for approval, then execute
 
+## Quick Test Workflow
+
+Copy-paste this entire block to test the complete workflow:
+
+```bash
+# 1. Start server (in separate terminal)
+./bin/looms serve --port=50051
+
+# 2. Create session and capture ID
+SESSION_ID=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave | jq -r '.sessionId')
+echo "Session: $SESSION_ID"
+
+# 3. Create a plan (PLAN mode)
+grpcurl -plaintext -d "{\"query\": \"List files\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 3}" localhost:50051 loom.v1.LoomService/Weave
+
+# 4. Get plan ID
+PLAN_ID=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans | jq -r '.plans[0].planId')
+echo "Plan: $PLAN_ID"
+
+# 5. Approve and execute plan
+grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" localhost:50051 loom.v1.LoomService/ApprovePlan
+grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\"}" localhost:50051 loom.v1.LoomService/ExecutePlan
+
+# 6. Switch back to AUTO_ACCEPT
+grpcurl -plaintext -d "{\"query\": \"echo done\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave
+```
+
 ## 1. Run Unit Tests
 
 The implementation includes comprehensive unit tests:
@@ -28,7 +55,7 @@ All tests should pass ✅
 
 ## 2. Manual Testing with gRPC
 
-### Setup: Start the loom-server
+### Setup: Start the Server
 
 ```bash
 # Build the server
@@ -41,14 +68,36 @@ just build
   --port=50051
 ```
 
+### Setup: Create a Session
+
+First, create a session and capture the session_id for use in all examples:
+
+```bash
+# Create initial session with AUTO_ACCEPT mode
+RESPONSE=$(grpcurl -plaintext \
+  -d '{
+    "query": "List files in current directory",
+    "permission_mode": 2
+  }' \
+  localhost:50051 loom.v1.LoomService/Weave)
+
+# Extract and save session ID
+SESSION_ID=$(echo "$RESPONSE" | jq -r '.sessionId')
+echo "Session ID: $SESSION_ID"
+```
+
+Expected output: Tools execute immediately, session_id displayed.
+
+**Save this SESSION_ID** - we'll use it in the examples below.
+
 ### Test AUTO_ACCEPT Mode
 
-Use `grpcurl` to send a request with `AUTO_ACCEPT` mode:
+Verify AUTO_ACCEPT mode executes tools immediately:
 
 ```bash
 grpcurl -plaintext \
   -d '{
-    "query": "List files in current directory",
+    "query": "Show current directory",
     "permission_mode": 2
   }' \
   localhost:50051 loom.v1.LoomService/Weave
@@ -58,83 +107,137 @@ Expected: Tools execute immediately without approval.
 
 ### Test PLAN Mode
 
+Now test PLAN mode using the same session:
+
 ```bash
-# 1. Create a plan by sending a query with PLAN mode
+# 1. Create a plan using the same session (switches mode to PLAN)
 grpcurl -plaintext \
-  -d '{
-    "query": "Read the README.md file and summarize it",
-    "permission_mode": 3
-  }' \
+  -d "{
+    \"query\": \"Count how many files are in the current directory\",
+    \"session_id\": \"$SESSION_ID\",
+    \"permission_mode\": 3
+  }" \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Save the `session_id` from the response.
+Expected: Returns plan created message (no tool execution).
 
 ```bash
 # 2. List plans for the session
-grpcurl -plaintext \
-  -d '{
-    "session_id": "sess_abc123"
-  }' \
-  localhost:50051 loom.v1.LoomService/ListPlans
-```
+PLANS=$(grpcurl -plaintext \
+  -d "{
+    \"session_id\": \"$SESSION_ID\"
+  }" \
+  localhost:50051 loom.v1.LoomService/ListPlans)
 
-Save the `plan_id` from the response.
+# Extract plan ID
+PLAN_ID=$(echo "$PLANS" | jq -r '.plans[0].planId')
+echo "Plan ID: $PLAN_ID"
+```
 
 ```bash
 # 3. Get plan details
 grpcurl -plaintext \
-  -d '{
-    "plan_id": "plan_xyz789"
-  }' \
+  -d "{
+    \"plan_id\": \"$PLAN_ID\"
+  }" \
   localhost:50051 loom.v1.LoomService/GetPlan
 ```
+
+Expected: Shows full plan with tool details and PENDING status.
 
 ```bash
 # 4. Approve the plan
 grpcurl -plaintext \
-  -d '{
-    "plan_id": "plan_xyz789",
-    "approved": true,
-    "feedback": "Looks good!"
-  }' \
+  -d "{
+    \"plan_id\": \"$PLAN_ID\",
+    \"approved\": true,
+    \"feedback\": \"Approved\"
+  }" \
   localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
+Expected: Plan status changes to APPROVED.
+
 ```bash
-# 5. Reject a plan (alternative)
+# 5. Execute the approved plan
 grpcurl -plaintext \
-  -d '{
-    "plan_id": "plan_xyz789",
-    "approved": false,
-    "feedback": "Not what I wanted"
-  }' \
+  -d "{
+    \"plan_id\": \"$PLAN_ID\"
+  }" \
+  localhost:50051 loom.v1.LoomService/ExecutePlan
+```
+
+Expected: Tools execute, plan status becomes COMPLETED, results stored in plan.
+
+```bash
+# 6. Reject a plan (alternative - create another plan first)
+# Create new plan
+grpcurl -plaintext \
+  -d "{
+    \"query\": \"Delete all files\",
+    \"session_id\": \"$SESSION_ID\",
+    \"permission_mode\": 3
+  }" \
+  localhost:50051 loom.v1.LoomService/Weave
+
+# Get new plan ID
+PLAN_ID_2=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans | jq -r '.plans[-1].planId')
+
+# Reject it
+grpcurl -plaintext \
+  -d "{
+    \"plan_id\": \"$PLAN_ID_2\",
+    \"approved\": false,
+    \"feedback\": \"Too dangerous\"
+  }" \
   localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
+
+Expected: Plan status changes to REJECTED.
 
 ### Test Mode Switching
 
-```bash
-# First request with AUTO_ACCEPT
-grpcurl -plaintext \
-  -d '{
-    "query": "Show current directory",
-    "permission_mode": 2
-  }' \
-  localhost:50051 loom.v1.LoomService/Weave
+Test that permission mode can be switched mid-session:
 
-# Second request on same session with PLAN mode
-# (use session_id from first response)
+```bash
+# First request with AUTO_ACCEPT (tools execute)
 grpcurl -plaintext \
-  -d '{
-    "query": "List all Python files",
-    "session_id": "sess_abc123",
-    "permission_mode": 3
-  }' \
+  -d "{
+    \"query\": \"List current directory\",
+    \"session_id\": \"$SESSION_ID\",
+    \"permission_mode\": 2
+  }" \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Expected: Mode switches from AUTO_ACCEPT to PLAN within the same session.
+Expected: Tools execute immediately.
+
+```bash
+# Second request on same session with PLAN mode (creates plan)
+grpcurl -plaintext \
+  -d "{
+    \"query\": \"Count files in directory\",
+    \"session_id\": \"$SESSION_ID\",
+    \"permission_mode\": 3
+  }" \
+  localhost:50051 loom.v1.LoomService/Weave
+```
+
+Expected: Creates plan, no tool execution (mode successfully switched).
+
+```bash
+# Verify we can switch back to AUTO_ACCEPT
+grpcurl -plaintext \
+  -d "{
+    \"query\": \"Show disk usage\",
+    \"session_id\": \"$SESSION_ID\",
+    \"permission_mode\": 2
+  }" \
+  localhost:50051 loom.v1.LoomService/Weave
+```
+
+Expected: Tools execute immediately again (mode switched back).
 
 ## 3. Testing with StreamWeave (Real-time Events)
 
