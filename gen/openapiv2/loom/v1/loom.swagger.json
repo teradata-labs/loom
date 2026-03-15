@@ -1754,6 +1754,46 @@
         ]
       }
     },
+    "/v1/plans/{planId}/execute": {
+      "post": {
+        "summary": "ExecutePlan executes an approved plan by running its tools.",
+        "operationId": "LoomService_ExecutePlan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ExecutePlanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "planId",
+            "description": "Plan ID to execute",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceExecutePlanBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/providers": {
       "get": {
         "summary": "ListProviders lists named providers in the global pool with their active state.",
@@ -3378,6 +3418,10 @@
       },
       "description": "ApprovePlanRequest requests approval of an execution plan."
     },
+    "LoomServiceExecutePlanBody": {
+      "type": "object",
+      "description": "ExecutePlanRequest executes an approved plan."
+    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -4973,6 +5017,20 @@
         }
       },
       "description": "EphemeralAgentPolicy defines when and how to spawn ephemeral agents.\nAgents declare these policies to dynamically create other agents based on runtime conditions."
+    },
+    "v1ExecutePlanResponse": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "$ref": "#/definitions/v1ExecutionPlan",
+          "title": "Updated plan with execution results"
+        },
+        "summary": {
+          "type": "string",
+          "title": "Execution summary"
+        }
+      },
+      "description": "ExecutePlanResponse contains the result of plan execution."
     },
     "v1ExecuteWorkflowRequest": {
       "type": "object",
