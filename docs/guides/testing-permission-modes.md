@@ -27,19 +27,19 @@ Copy-paste this entire block to test the complete workflow including mode switch
 # 2. Test AUTO_ACCEPT mode (tools execute immediately)
 echo "Testing AUTO_ACCEPT mode..."
 AUTO_RESPONSE=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
-AUTO_SESSION=$(echo "$AUTO_RESPONSE" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
+AUTO_SESSION=$(echo "$AUTO_RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
 echo "✅ AUTO_ACCEPT session: $AUTO_SESSION"
 
 # 3. Test PLAN mode (create plan, approve, execute)
 echo ""
 echo "Testing PLAN mode..."
 PLAN_RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
-PLAN_SESSION=$(echo "$PLAN_RESPONSE" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
+PLAN_SESSION=$(echo "$PLAN_RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
 echo "✅ PLAN session: $PLAN_SESSION"
 
 # 4. Get plan ID
 LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$PLAN_SESSION\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
-PLAN_ID=$(echo "$LIST_RESPONSE" | grep -o '"planId":"[^"]*"' | head -1 | cut -d'"' -f4)
+PLAN_ID=$(echo "$LIST_RESPONSE" | grep planId | head -1 | sed 's/.*"planId"[^"]*"\([^"]*\)".*/\1/')
 echo "✅ Plan created: $PLAN_ID"
 
 # 5. Approve and execute plan
@@ -53,7 +53,7 @@ echo "✅ Plan executed"
 echo ""
 echo "Testing mode switching (PLAN → AUTO_ACCEPT in same session)..."
 SWITCH_RESPONSE=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$PLAN_SESSION\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave 2>&1)
-SWITCH_RESULT=$(echo "$SWITCH_RESPONSE" | grep -o '"text":"[^"]*"' | cut -d'"' -f4 | head -c 50)
+SWITCH_RESULT=$(echo "$SWITCH_RESPONSE" | grep '"text"' | sed 's/.*"text"[^"]*"\([^"]*\)".*/\1/' | head -c 50)
 echo "✅ Mode switch successful: $SWITCH_RESULT..."
 
 echo ""
@@ -105,7 +105,7 @@ RESPONSE=$(grpcurl -plaintext \
   }' \
   localhost:50051 loom.v1.LoomService/Weave 2>&1)
 
-SESSION_ID=$(echo "$RESPONSE" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
+SESSION_ID=$(echo "$RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
 echo "Session ID: $SESSION_ID"
 ```
 
@@ -153,7 +153,7 @@ LIST_RESPONSE=$(grpcurl -plaintext \
   }" \
   localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
 
-PLAN_ID=$(echo "$LIST_RESPONSE" | grep -o '"planId":"[^"]*"' | head -1 | cut -d'"' -f4)
+PLAN_ID=$(echo "$LIST_RESPONSE" | grep planId | head -1 | sed 's/.*"planId"[^"]*"\([^"]*\)".*/\1/')
 echo "Plan ID: $PLAN_ID"
 ```
 
