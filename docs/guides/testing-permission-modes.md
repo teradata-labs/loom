@@ -37,7 +37,7 @@ just build
 # Start with a simple backend
 ./bin/looms serve \
   --llm-provider=anthropic \
-  --llm-model=claude-sonnet-4-5-20250929 \
+  --anthropic-model=claude-sonnet-4-5-20250929 \
   --port=50051
 ```
 
