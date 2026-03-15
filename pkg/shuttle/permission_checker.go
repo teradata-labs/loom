@@ -28,20 +28,18 @@ var (
 
 // PermissionChecker checks if a tool can be executed based on configuration.
 type PermissionChecker struct {
-	mode            loomv1.PermissionMode // Current permission mode (runtime configurable)
-	requireApproval bool                  // Legacy flag (overridden by mode when mode != UNSPECIFIED)
-	yolo            bool                  // Legacy flag (overridden by mode when mode != UNSPECIFIED)
-	allowedTools    map[string]bool       // Set of tool names that are always allowed
-	disabledTools   map[string]bool       // Set of tool names that are never allowed
-	defaultAction   string                // "allow" or "deny" - default action on timeout/no response
-	timeoutSeconds  int                   // How long to wait for user response
+	mode           loomv1.PermissionMode // Current permission mode (runtime configurable)
+	allowedTools   map[string]bool       // Set of tool names that are always allowed
+	disabledTools  map[string]bool       // Set of tool names that are never allowed
+	defaultAction  string                // "allow" or "deny" - default action on timeout/no response
+	timeoutSeconds int                   // How long to wait for user response
 }
 
 // PermissionConfig holds permission configuration.
 type PermissionConfig struct {
-	Mode            loomv1.PermissionMode // Permission mode (optional, UNSPECIFIED uses legacy flags)
-	RequireApproval bool                  // Legacy flag (use Mode instead for new code)
-	YOLO            bool                  // Legacy flag (use Mode instead for new code)
+	Mode            loomv1.PermissionMode // Permission mode (optional, UNSPECIFIED uses legacy flags for backward compat)
+	RequireApproval bool                  // Deprecated: Mapped to ASK_BEFORE mode if Mode is UNSPECIFIED
+	YOLO            bool                  // Deprecated: Mapped to AUTO_ACCEPT mode if Mode is UNSPECIFIED
 	AllowedTools    []string
 	DisabledTools   []string
 	DefaultAction   string // "allow" or "deny"
@@ -84,13 +82,11 @@ func NewPermissionChecker(config PermissionConfig) *PermissionChecker {
 	}
 
 	return &PermissionChecker{
-		mode:            mode,
-		requireApproval: config.RequireApproval, // Keep for backward compat
-		yolo:            config.YOLO,            // Keep for backward compat
-		allowedTools:    allowedMap,
-		disabledTools:   disabledMap,
-		defaultAction:   config.DefaultAction,
-		timeoutSeconds:  config.TimeoutSeconds,
+		mode:           mode,
+		allowedTools:   allowedMap,
+		disabledTools:  disabledMap,
+		defaultAction:  config.DefaultAction,
+		timeoutSeconds: config.TimeoutSeconds,
 	}
 }
 
@@ -137,9 +133,16 @@ func (pc *PermissionChecker) CheckPermission(ctx context.Context, toolName strin
 	}
 }
 
-// IsYOLOMode returns true if YOLO mode is enabled.
+// IsYOLOMode returns true if in AUTO_ACCEPT mode.
+// Deprecated: Use InAutoAcceptMode() or check GetMode() == PERMISSION_MODE_AUTO_ACCEPT instead.
 func (pc *PermissionChecker) IsYOLOMode() bool {
-	return pc.yolo
+	return pc.mode == loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT
+}
+
+// RequiresApproval returns true if in ASK_BEFORE mode.
+// Deprecated: Use InAskBeforeMode() or check GetMode() == PERMISSION_MODE_ASK_BEFORE instead.
+func (pc *PermissionChecker) RequiresApproval() bool {
+	return pc.mode == loomv1.PermissionMode_PERMISSION_MODE_ASK_BEFORE
 }
 
 // IsToolAllowed returns true if a tool is explicitly allowed (whitelist).
@@ -150,12 +153,6 @@ func (pc *PermissionChecker) IsToolAllowed(toolName string) bool {
 // IsToolDisabled returns true if a tool is explicitly disabled (blacklist).
 func (pc *PermissionChecker) IsToolDisabled(toolName string) bool {
 	return pc.disabledTools[toolName]
-}
-
-// RequiresApproval returns true if user approval is required for tools.
-// Deprecated: Use GetMode() instead to check permission mode.
-func (pc *PermissionChecker) RequiresApproval() bool {
-	return pc.requireApproval
 }
 
 // SetMode updates the permission mode at runtime.

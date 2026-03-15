@@ -337,22 +337,61 @@ func TestPermissionChecker_CheckPermission_DefaultAction(t *testing.T) {
 }
 
 func TestPermissionChecker_LegacyMethods(t *testing.T) {
-	// Test backward compatibility methods
-	pc := NewPermissionChecker(PermissionConfig{
-		YOLO: true,
+	// Test that legacy methods delegate to mode-based system
+	t.Run("IsYOLOMode delegates to AUTO_ACCEPT mode", func(t *testing.T) {
+		pc := NewPermissionChecker(PermissionConfig{
+			YOLO: true,
+		})
+
+		if !pc.IsYOLOMode() {
+			t.Error("IsYOLOMode() should return true when in AUTO_ACCEPT mode")
+		}
+
+		if !pc.InAutoAcceptMode() {
+			t.Error("InAutoAcceptMode() should return true when YOLO flag set")
+		}
 	})
 
-	if !pc.IsYOLOMode() {
-		t.Error("IsYOLOMode() should return true when YOLO flag is set")
-	}
+	t.Run("RequiresApproval delegates to ASK_BEFORE mode", func(t *testing.T) {
+		pc := NewPermissionChecker(PermissionConfig{
+			RequireApproval: true,
+		})
 
-	pc2 := NewPermissionChecker(PermissionConfig{
-		RequireApproval: true,
+		if !pc.RequiresApproval() {
+			t.Error("RequiresApproval() should return true when in ASK_BEFORE mode")
+		}
+
+		if !pc.InAskBeforeMode() {
+			t.Error("InAskBeforeMode() should return true when RequireApproval flag set")
+		}
 	})
 
-	if !pc2.RequiresApproval() {
-		t.Error("RequiresApproval() should return true when RequireApproval flag is set")
-	}
+	t.Run("Legacy methods respond to runtime mode switching", func(t *testing.T) {
+		pc := NewPermissionChecker(PermissionConfig{})
+
+		// Start in AUTO_ACCEPT
+		if !pc.IsYOLOMode() {
+			t.Error("Should start in YOLO mode (AUTO_ACCEPT)")
+		}
+
+		// Switch to ASK_BEFORE
+		pc.SetMode(loomv1.PermissionMode_PERMISSION_MODE_ASK_BEFORE)
+		if pc.IsYOLOMode() {
+			t.Error("IsYOLOMode() should return false after switching to ASK_BEFORE")
+		}
+		if !pc.RequiresApproval() {
+			t.Error("RequiresApproval() should return true after switching to ASK_BEFORE")
+		}
+
+		// Switch to PLAN
+		pc.SetMode(loomv1.PermissionMode_PERMISSION_MODE_PLAN)
+		if pc.IsYOLOMode() {
+			t.Error("IsYOLOMode() should return false in PLAN mode")
+		}
+		if pc.RequiresApproval() {
+			t.Error("RequiresApproval() should return false in PLAN mode")
+		}
+	})
 }
 
 func TestPermissionChecker_IsToolAllowed(t *testing.T) {
