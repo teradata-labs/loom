@@ -1,6 +1,6 @@
 # Permission Modes Implementation Progress
 
-## Status: Phase 1-3 Complete ✅ | Phase 4 In Progress (50%) 🚧
+## Status: Phase 1-4 Complete ✅ | Phase 5-7 Ready
 
 ## Completed Work
 
@@ -119,11 +119,10 @@
 
 **Commit:** `369f2f5` - feat(storage): add permission_mode to session state persistence
 
-### Phase 4: Plan Mode Execution Flow 🚧
-**Status:** In Progress (Part 1 Complete)
+### Phase 4: Plan Mode Execution Flow ✅
+**Completed:** 2026-03-15
 
 #### Part 1: ExecutionPlanner Infrastructure ✅
-**Completed:** 2026-03-15
 
 1. ✅ Created `pkg/agent/planner.go`:
    - `ExecutionPlanner` manages plans per session
@@ -158,26 +157,37 @@
 
 **Commit:** `b1947d0` - feat(agent): implement ExecutionPlanner for plan mode workflow
 
-#### Part 2: Agent Integration 📋
-**Status:** Pending
+#### Part 2: Agent Integration ✅
 
-**Remaining tasks:**
-1. Add `planner *ExecutionPlanner` field to Agent struct
-2. Initialize planner in NewAgent when session created
-3. Update agent execution loop to detect PLAN mode
-4. When in PLAN mode and tool calls received:
-   - Call `planner.CreatePlan()` instead of executing tools
+1. ✅ Added `planner *ExecutionPlanner` field to Agent struct
+2. ✅ Added agent methods for plan management:
+   - `SetPermissionMode`: Update mode, persist to session
+   - `GetPermissionMode`: Retrieve from session
+   - `ensurePlannerForSession`: Initialize per-session planner
+   - `ApprovePlan/GetPlan/ListPlans`: Delegate to planner
+3. ✅ Modified execution loop to detect PLAN mode:
+   - Check `permissionChecker.InPlanMode()` before tool execution
+   - Extract user query from session messages
+   - Call `planner.CreatePlan()` with tool calls and LLM reasoning
    - Emit `plan_created` progress event
-   - Wait for plan approval (blocking or async)
-5. Implement plan execution trigger:
-   - When plan approved, call `planner.ExecutePlan()`
-   - Pass agent's tool executor function
-   - Emit progress events during execution
-6. Update Weave RPC to check permission_mode and switch agent mode
+   - Add assistant message explaining plan
+   - Return response with plan metadata (ID, status, tool count)
+   - Skip normal tool execution loop
+4. ✅ Added progress event helpers:
+   - `emitPlanCreated`: Emit when plan created
+   - `emitPlanApproved`: Emit when user approves
+   - `emitPlanRejected`: Emit when user rejects
+5. ✅ Updated ProgressEvent struct:
+   - Added `IsPlanCreated`, `IsPlanApproved`, `IsPlanRejected` bool fields
+   - Added `Plan *loomv1.ExecutionPlan` field
+   - Enables streaming plan events to clients
 
-**Files to modify:**
-- `pkg/agent/agent.go` - Add planner field, wire into execution loop
-- `pkg/agent/types.go` - Add planner to Agent struct
+**Files modified:**
+- `pkg/agent/types.go` - Added planner field to Agent struct
+- `pkg/agent/agent.go` - Agent methods + execution loop integration (205 lines)
+- `pkg/types/types.go` - ProgressEvent plan fields
+
+**Commit:** `67b4444` - feat(agent): wire ExecutionPlanner into agent execution loop for PLAN mode
 
 ## Next Steps
 
