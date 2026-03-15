@@ -112,6 +112,13 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		sessionID = GenerateSessionID()
 	}
 
+	// Set permission mode if specified in request
+	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
+		if err := s.agent.SetPermissionMode(ctx, sessionID, req.PermissionMode); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
+		}
+	}
+
 	// Reset context window if requested (before processing the message)
 	if req.ResetContext {
 		s.agent.ResetSessionContext(sessionID)
@@ -166,6 +173,13 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
+	}
+
+	// Set permission mode if specified in request
+	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
+		if err := s.agent.SetPermissionMode(stream.Context(), sessionID, req.PermissionMode); err != nil {
+			return status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
+		}
 	}
 
 	// Reset context window if requested (before processing the message)
@@ -233,6 +247,9 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 
 			// Include tool lifecycle fields if present
 			applyToolLifecycleFields(protoProgress, event)
+
+			// Include plan event fields if present
+			applyPlanEventFields(protoProgress, event)
 
 			// Send to client
 			if err := stream.Send(protoProgress); err != nil {
@@ -383,6 +400,23 @@ func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressE
 		if v, err := structpb.NewValue(event.ToolResult); err == nil {
 			proto.ToolResult = v
 		}
+	}
+}
+
+// applyPlanEventFields populates plan event fields on a WeaveProgress proto
+// if the source event is a plan-created, plan-approved, or plan-rejected event.
+func applyPlanEventFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
+	if !event.IsPlanCreated && !event.IsPlanApproved && !event.IsPlanRejected {
+		return
+	}
+
+	proto.IsPlanCreated = event.IsPlanCreated
+	proto.IsPlanApproved = event.IsPlanApproved
+	proto.IsPlanRejected = event.IsPlanRejected
+
+	// Include execution plan if present
+	if event.Plan != nil {
+		proto.Plan = event.Plan
 	}
 }
 
@@ -1343,6 +1377,74 @@ func (s *Server) RequestToolPermission(ctx context.Context, req *loomv1.ToolPerm
 	// 3. Wait for user response with timeout
 	// 4. Return the user's decision
 	return nil, status.Error(codes.Unimplemented, "tool permission requests not yet implemented")
+}
+
+// ApprovePlan approves or rejects an execution plan created in PLAN mode.
+func (s *Server) ApprovePlan(ctx context.Context, req *loomv1.ApprovePlanRequest) (*loomv1.ApprovePlanResponse, error) {
+	if req.PlanId == "" {
+		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
+	}
+
+	// Call agent's ApprovePlan method
+	plan, err := s.agent.ApprovePlan(req.PlanId, req.Approved, req.Feedback)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to approve plan: %v", err)
+	}
+
+	return &loomv1.ApprovePlanResponse{
+		Plan: plan,
+	}, nil
+}
+
+// GetPlan retrieves a specific execution plan.
+func (s *Server) GetPlan(ctx context.Context, req *loomv1.GetPlanRequest) (*loomv1.ExecutionPlan, error) {
+	if req.PlanId == "" {
+		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
+	}
+
+	// Call agent's GetPlan method
+	plan, err := s.agent.GetPlan(req.PlanId)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "plan not found: %v", err)
+	}
+
+	return plan, nil
+}
+
+// ListPlans lists execution plans for a session.
+func (s *Server) ListPlans(ctx context.Context, req *loomv1.ListPlansRequest) (*loomv1.ListPlansResponse, error) {
+	if req.SessionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	// Call agent's ListPlans method
+	plans, err := s.agent.ListPlans(req.SessionId, req.StatusFilter)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list plans: %v", err)
+	}
+
+	// Apply pagination if specified
+	totalCount := len(plans)
+	if req.PageSize > 0 {
+		offset := int(req.PageOffset)
+		pageSize := int(req.PageSize)
+
+		// Validate pagination bounds
+		if offset >= totalCount {
+			plans = []*loomv1.ExecutionPlan{}
+		} else {
+			end := offset + pageSize
+			if end > totalCount {
+				end = totalCount
+			}
+			plans = plans[offset:end]
+		}
+	}
+
+	return &loomv1.ListPlansResponse{
+		Plans:      plans,
+		TotalCount: types.SafeInt32(totalCount),
+	}, nil
 }
 
 // Helper functions
