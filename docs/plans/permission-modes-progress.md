@@ -1,6 +1,6 @@
 # Permission Modes Implementation Progress
 
-## Status: Phase 1-2 Complete ✅ | Phase 3+ Ready
+## Status: Phase 1-3 Complete ✅ | Phase 4+ Ready
 
 ## Completed Work
 
@@ -82,9 +82,46 @@
 
 **Commit:** `52e61ee` - feat(shuttle): implement runtime permission mode switching
 
+### Phase 3: Session State Management ✅
+**Completed:** 2026-03-15
+
+1. ✅ Added `PermissionMode` field to `Session` struct in `pkg/types/types.go`:
+   - Stores runtime permission mode per session
+   - Persists across requests
+   - Defaults to UNSPECIFIED (0)
+
+2. ✅ SQLite persistence:
+   - Migration 000002: `ALTER TABLE sessions ADD COLUMN permission_mode INTEGER DEFAULT 0`
+   - Index on permission_mode for filtering
+   - Updated `SaveSession` to persist field
+   - Updated `LoadSession` to retrieve field
+   - Down migration recreates table without column
+
+3. ✅ Postgres persistence:
+   - Migration 000010: `ALTER TABLE sessions ADD COLUMN permission_mode INTEGER DEFAULT 0`
+   - Index and column comment
+   - Updated `SaveSession` to persist field ($11 parameter)
+   - Updated `LoadSession` to retrieve field
+   - Down migration drops column cleanly
+
+4. ✅ Session storage layer updates:
+   - `pkg/agent/session_store.go`: INSERT/UPDATE/SELECT with permission_mode
+   - `pkg/storage/postgres/session_store.go`: INSERT/UPDATE/SELECT with permission_mode
+   - Proper int32 <-> PermissionMode enum conversion
+   - Added loomv1 imports
+
+**Files modified:**
+- `pkg/types/types.go` - Added PermissionMode field
+- `pkg/agent/session_store.go` - SQLite persistence
+- `pkg/storage/postgres/session_store.go` - Postgres persistence
+- `pkg/storage/sqlite/migrations/000002_*.sql` - SQLite migration
+- `pkg/storage/postgres/migrations/000010_*.sql` - Postgres migration
+
+**Commit:** `369f2f5` - feat(storage): add permission_mode to session state persistence
+
 ## Next Steps
 
-### Phase 3: Session State Management
+### Phase 4: Plan Mode Execution Flow
 **Status:** Ready to start
 
 **Tasks:**
