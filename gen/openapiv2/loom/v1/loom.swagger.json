@@ -1682,6 +1682,78 @@
         ]
       }
     },
+    "/v1/plans/{planId}": {
+      "get": {
+        "summary": "GetPlan retrieves a specific execution plan.",
+        "operationId": "LoomService_GetPlan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ExecutionPlan"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "planId",
+            "description": "Plan ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/plans/{planId}/approve": {
+      "post": {
+        "summary": "ApprovePlan approves or rejects an execution plan created in PLAN mode.",
+        "operationId": "LoomService_ApprovePlan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ApprovePlanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "planId",
+            "description": "Plan ID to approve/reject",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceApprovePlanBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/providers": {
       "get": {
         "summary": "ListProviders lists named providers in the global pool with their active state.",
@@ -2086,6 +2158,70 @@
           {
             "name": "offset",
             "description": "Offset for pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/sessions/{sessionId}/plans": {
+      "get": {
+        "summary": "ListPlans lists execution plans for a session.",
+        "operationId": "LoomService_ListPlans",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListPlansResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "statusFilter",
+            "description": "Optional status filter\n\n - PLAN_STATUS_UNSPECIFIED: Unspecified status\n - PLAN_STATUS_PENDING: Pending approval\n - PLAN_STATUS_APPROVED: User approved, ready to execute\n - PLAN_STATUS_REJECTED: User rejected\n - PLAN_STATUS_EXECUTING: Currently executing\n - PLAN_STATUS_COMPLETED: Successfully completed\n - PLAN_STATUS_FAILED: Execution failed",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "PLAN_STATUS_UNSPECIFIED",
+              "PLAN_STATUS_PENDING",
+              "PLAN_STATUS_APPROVED",
+              "PLAN_STATUS_REJECTED",
+              "PLAN_STATUS_EXECUTING",
+              "PLAN_STATUS_COMPLETED",
+              "PLAN_STATUS_FAILED"
+            ],
+            "default": "PLAN_STATUS_UNSPECIFIED"
+          },
+          {
+            "name": "pageSize",
+            "description": "Pagination",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "pageOffset",
             "in": "query",
             "required": false,
             "type": "integer",
@@ -3228,6 +3364,20 @@
       },
       "description": "AnswerClarificationRequest provides an answer to a clarification question."
     },
+    "LoomServiceApprovePlanBody": {
+      "type": "object",
+      "properties": {
+        "approved": {
+          "type": "boolean",
+          "title": "Whether to approve or reject"
+        },
+        "feedback": {
+          "type": "string",
+          "title": "Optional user feedback/modifications"
+        }
+      },
+      "description": "ApprovePlanRequest requests approval of an execution plan."
+    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -3446,6 +3596,19 @@
         }
       },
       "description": "UpdateUIAppRequest updates an existing dynamic app's spec."
+    },
+    "PlannedToolExecutionStepStatus": {
+      "type": "string",
+      "enum": [
+        "STEP_STATUS_UNSPECIFIED",
+        "STEP_STATUS_PENDING",
+        "STEP_STATUS_EXECUTING",
+        "STEP_STATUS_COMPLETED",
+        "STEP_STATUS_FAILED",
+        "STEP_STATUS_SKIPPED"
+      ],
+      "default": "STEP_STATUS_UNSPECIFIED",
+      "title": "Execution status"
     },
     "PolicyOverrideOverrideType": {
       "type": "string",
@@ -3963,6 +4126,16 @@
         }
       },
       "description": "AnswerClarificationResponse acknowledges the answer."
+    },
+    "v1ApprovePlanResponse": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "$ref": "#/definitions/v1ExecutionPlan",
+          "title": "Updated plan"
+        }
+      },
+      "description": "ApprovePlanResponse contains the result of plan approval."
     },
     "v1Artifact": {
       "type": "object",
@@ -4882,6 +5055,58 @@
       },
       "description": "ExecutionMetadata contains execution metadata."
     },
+    "v1ExecutionPlan": {
+      "type": "object",
+      "properties": {
+        "planId": {
+          "type": "string",
+          "title": "Unique plan ID"
+        },
+        "sessionId": {
+          "type": "string",
+          "title": "Session ID this plan belongs to"
+        },
+        "query": {
+          "type": "string",
+          "title": "User query that generated this plan"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1PlannedToolExecution"
+          },
+          "title": "Planned tool executions"
+        },
+        "reasoning": {
+          "type": "string",
+          "title": "Agent's reasoning for the plan"
+        },
+        "status": {
+          "$ref": "#/definitions/v1PlanStatus",
+          "title": "Status of the plan"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Created timestamp (Unix seconds)"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Updated timestamp (Unix seconds)"
+        },
+        "result": {
+          "$ref": "#/definitions/v1ExecutionResult",
+          "title": "Execution result (populated after execution)"
+        },
+        "errorMessage": {
+          "type": "string",
+          "title": "Error message (if status is FAILED)"
+        }
+      },
+      "description": "ExecutionPlan represents a plan created in PLAN mode.\nThe agent generates this plan and waits for user approval before execution."
+    },
     "v1ExecutionResult": {
       "type": "object",
       "properties": {
@@ -5581,6 +5806,25 @@
         }
       },
       "description": "ListPatternsResponse returns patterns."
+    },
+    "v1ListPlansResponse": {
+      "type": "object",
+      "properties": {
+        "plans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ExecutionPlan"
+          },
+          "title": "Plans"
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Total count (for pagination)"
+        }
+      },
+      "description": "ListPlansResponse contains a list of plans."
     },
     "v1ListProvidersResponse": {
       "type": "object",
@@ -6480,6 +6724,17 @@
       },
       "description": "PayloadMetadata provides information about the payload."
     },
+    "v1PermissionMode": {
+      "type": "string",
+      "enum": [
+        "PERMISSION_MODE_UNSPECIFIED",
+        "PERMISSION_MODE_ASK_BEFORE",
+        "PERMISSION_MODE_AUTO_ACCEPT",
+        "PERMISSION_MODE_PLAN"
+      ],
+      "default": "PERMISSION_MODE_UNSPECIFIED",
+      "description": "PermissionMode controls how the agent handles tool execution permissions.\nThis can be set per-request to dynamically control agent behavior.\n\n - PERMISSION_MODE_UNSPECIFIED: Unspecified - use agent's default configuration\n - PERMISSION_MODE_ASK_BEFORE: Ask before executing each tool (default behavior)\n - PERMISSION_MODE_AUTO_ACCEPT: Automatically execute all tools without asking (YOLO mode)\n - PERMISSION_MODE_PLAN: Create execution plan and wait for approval before executing"
+    },
     "v1PipelinePattern": {
       "type": "object",
       "properties": {
@@ -6519,6 +6774,62 @@
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
+    },
+    "v1PlanStatus": {
+      "type": "string",
+      "enum": [
+        "PLAN_STATUS_UNSPECIFIED",
+        "PLAN_STATUS_PENDING",
+        "PLAN_STATUS_APPROVED",
+        "PLAN_STATUS_REJECTED",
+        "PLAN_STATUS_EXECUTING",
+        "PLAN_STATUS_COMPLETED",
+        "PLAN_STATUS_FAILED"
+      ],
+      "default": "PLAN_STATUS_UNSPECIFIED",
+      "description": "PlanStatus represents the status of an execution plan.\n\n - PLAN_STATUS_UNSPECIFIED: Unspecified status\n - PLAN_STATUS_PENDING: Pending approval\n - PLAN_STATUS_APPROVED: User approved, ready to execute\n - PLAN_STATUS_REJECTED: User rejected\n - PLAN_STATUS_EXECUTING: Currently executing\n - PLAN_STATUS_COMPLETED: Successfully completed\n - PLAN_STATUS_FAILED: Execution failed"
+    },
+    "v1PlannedToolExecution": {
+      "type": "object",
+      "properties": {
+        "step": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Step number in the plan (1-indexed)"
+        },
+        "toolName": {
+          "type": "string",
+          "title": "Tool name"
+        },
+        "paramsJson": {
+          "type": "string",
+          "title": "Tool parameters (JSON)"
+        },
+        "rationale": {
+          "type": "string",
+          "title": "Rationale for this step"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": "Dependencies (step numbers that must complete first)"
+        },
+        "result": {
+          "type": "string",
+          "title": "Actual execution result (populated after execution)"
+        },
+        "error": {
+          "type": "string",
+          "title": "Error (if execution failed)"
+        },
+        "status": {
+          "$ref": "#/definitions/PlannedToolExecutionStepStatus"
+        }
+      },
+      "description": "PlannedToolExecution represents a single tool call in a plan."
     },
     "v1PolicyOverride": {
       "type": "object",
@@ -9182,6 +9493,22 @@
         "toolCallId": {
           "type": "string",
           "title": "Unique identifier correlating started/completed events for the same tool call"
+        },
+        "isPlanCreated": {
+          "type": "boolean",
+          "title": "True if this is a plan-created event"
+        },
+        "isPlanApproved": {
+          "type": "boolean",
+          "title": "True if this is a plan-approved event"
+        },
+        "isPlanRejected": {
+          "type": "boolean",
+          "title": "True if this is a plan-rejected event"
+        },
+        "plan": {
+          "$ref": "#/definitions/v1ExecutionPlan",
+          "title": "Execution plan (populated when is_plan_created/approved/rejected)"
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."
@@ -9232,6 +9559,10 @@
         "agentId": {
           "type": "string",
           "title": "Agent ID to route request to (optional, uses default if not specified)"
+        },
+        "permissionMode": {
+          "$ref": "#/definitions/v1PermissionMode",
+          "title": "Permission mode for this request/session (optional)\nIf not set, uses agent's default configuration\nAllows Canvas AI and other clients to switch modes dynamically"
         }
       },
       "description": "WeaveRequest initiates a query execution."

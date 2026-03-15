@@ -593,6 +593,26 @@ service LoomService {
   rpc ListComponentTypes(ListComponentTypesRequest) returns (ListComponentTypesResponse) {
     option (google.api.http) = {get: "/v1/apps/component-types"};
   }
+
+  // Plan Management RPCs (for PERMISSION_MODE_PLAN)
+
+  // ApprovePlan approves or rejects an execution plan created in PLAN mode.
+  rpc ApprovePlan(ApprovePlanRequest) returns (ApprovePlanResponse) {
+    option (google.api.http) = {
+      post: "/v1/plans/{plan_id}/approve"
+      body: "*"
+    };
+  }
+
+  // GetPlan retrieves a specific execution plan.
+  rpc GetPlan(GetPlanRequest) returns (ExecutionPlan) {
+    option (google.api.http) = {get: "/v1/plans/{plan_id}"};
+  }
+
+  // ListPlans lists execution plans for a session.
+  rpc ListPlans(ListPlansRequest) returns (ListPlansResponse) {
+    option (google.api.http) = {get: "/v1/sessions/{session_id}/plans"};
+  }
 }
 
 // AdminService provides administrative operations that bypass RLS.
@@ -613,6 +633,22 @@ service AdminService {
   rpc GetSystemStats(GetSystemStatsRequest) returns (GetSystemStatsResponse) {
     option (google.api.http) = {get: "/v1/admin/stats"};
   }
+}
+
+// PermissionMode controls how the agent handles tool execution permissions.
+// This can be set per-request to dynamically control agent behavior.
+enum PermissionMode {
+  // Unspecified - use agent's default configuration
+  PERMISSION_MODE_UNSPECIFIED = 0;
+
+  // Ask before executing each tool (default behavior)
+  PERMISSION_MODE_ASK_BEFORE = 1;
+
+  // Automatically execute all tools without asking (YOLO mode)
+  PERMISSION_MODE_AUTO_ACCEPT = 2;
+
+  // Create execution plan and wait for approval before executing
+  PERMISSION_MODE_PLAN = 3;
 }
 
 // WeaveRequest initiates a query execution.
@@ -643,6 +679,11 @@ message WeaveRequest {
 
   // Agent ID to route request to (optional, uses default if not specified)
   string agent_id = 9;
+
+  // Permission mode for this request/session (optional)
+  // If not set, uses agent's default configuration
+  // Allows Canvas AI and other clients to switch modes dynamically
+  PermissionMode permission_mode = 10;
 }
 
 // WeaveResponse contains the execution result.
@@ -736,6 +777,20 @@ message WeaveProgress {
 
   // Unique identifier correlating started/completed events for the same tool call
   string tool_call_id = 20;
+
+  // Plan-related fields (for PERMISSION_MODE_PLAN)
+
+  // True if this is a plan-created event
+  bool is_plan_created = 21;
+
+  // True if this is a plan-approved event
+  bool is_plan_approved = 22;
+
+  // True if this is a plan-rejected event
+  bool is_plan_rejected = 23;
+
+  // Execution plan (populated when is_plan_created/approved/rejected)
+  ExecutionPlan plan = 24;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.
@@ -972,6 +1027,148 @@ message SelfCorrectionAttempt {
 
   // Token cost of correction
   LLMCost cost = 5;
+}
+
+// PlanStatus represents the status of an execution plan.
+enum PlanStatus {
+  // Unspecified status
+  PLAN_STATUS_UNSPECIFIED = 0;
+
+  // Pending approval
+  PLAN_STATUS_PENDING = 1;
+
+  // User approved, ready to execute
+  PLAN_STATUS_APPROVED = 2;
+
+  // User rejected
+  PLAN_STATUS_REJECTED = 3;
+
+  // Currently executing
+  PLAN_STATUS_EXECUTING = 4;
+
+  // Successfully completed
+  PLAN_STATUS_COMPLETED = 5;
+
+  // Execution failed
+  PLAN_STATUS_FAILED = 6;
+}
+
+// ExecutionPlan represents a plan created in PLAN mode.
+// The agent generates this plan and waits for user approval before execution.
+message ExecutionPlan {
+  // Unique plan ID
+  string plan_id = 1;
+
+  // Session ID this plan belongs to
+  string session_id = 2;
+
+  // User query that generated this plan
+  string query = 3;
+
+  // Planned tool executions
+  repeated PlannedToolExecution tools = 4;
+
+  // Agent's reasoning for the plan
+  string reasoning = 5;
+
+  // Status of the plan
+  PlanStatus status = 6;
+
+  // Created timestamp (Unix seconds)
+  int64 created_at = 7;
+
+  // Updated timestamp (Unix seconds)
+  int64 updated_at = 8;
+
+  // Execution result (populated after execution)
+  ExecutionResult result = 9;
+
+  // Error message (if status is FAILED)
+  string error_message = 10;
+}
+
+// PlannedToolExecution represents a single tool call in a plan.
+message PlannedToolExecution {
+  // Step number in the plan (1-indexed)
+  int32 step = 1;
+
+  // Tool name
+  string tool_name = 2;
+
+  // Tool parameters (JSON)
+  string params_json = 3;
+
+  // Rationale for this step
+  string rationale = 4;
+
+  // Dependencies (step numbers that must complete first)
+  repeated int32 depends_on = 5;
+
+  // Actual execution result (populated after execution)
+  string result = 6;
+
+  // Error (if execution failed)
+  string error = 7;
+
+  // Execution status
+  enum StepStatus {
+    STEP_STATUS_UNSPECIFIED = 0;
+    STEP_STATUS_PENDING = 1;
+    STEP_STATUS_EXECUTING = 2;
+    STEP_STATUS_COMPLETED = 3;
+    STEP_STATUS_FAILED = 4;
+    STEP_STATUS_SKIPPED = 5;
+  }
+  StepStatus status = 8;
+}
+
+// ApprovePlanRequest requests approval of an execution plan.
+message ApprovePlanRequest {
+  // Plan ID to approve/reject
+  string plan_id = 1;
+
+  // Whether to approve or reject
+  bool approved = 2;
+
+  // Optional user feedback/modifications
+  string feedback = 3;
+}
+
+// ApprovePlanResponse contains the result of plan approval.
+message ApprovePlanResponse {
+  // Updated plan
+  ExecutionPlan plan = 1;
+
+  // If approved, the plan will be executed and results streamed
+  // via StreamWeave progress events
+}
+
+// GetPlanRequest requests a specific plan.
+message GetPlanRequest {
+  // Plan ID
+  string plan_id = 1;
+}
+
+// ListPlansRequest lists plans for a session.
+message ListPlansRequest {
+  // Session ID
+  string session_id = 1;
+
+  // Optional status filter
+  PlanStatus status_filter = 2;
+
+  // Pagination
+  int32 page_size = 3;
+  int32 page_offset = 4;
+}
+
+// ListPlansResponse contains a list of plans.
+message ListPlansResponse {
+  // Plans
+  repeated ExecutionPlan plans = 1;
+
+  // Total count (for pagination)
+  int32 total_count = 2;
 }
 
 // LoadPatternsRequest loads patterns.
