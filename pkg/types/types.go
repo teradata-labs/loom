@@ -444,6 +444,20 @@ type ProgressEvent struct {
 
 	// ToolCallID is a unique identifier correlating started/completed events for the same tool call
 	ToolCallID string
+
+	// Plan execution fields (for PERMISSION_MODE_PLAN)
+
+	// IsPlanCreated indicates this event is a plan-created update
+	IsPlanCreated bool
+
+	// IsPlanApproved indicates this event is a plan-approved update
+	IsPlanApproved bool
+
+	// IsPlanRejected indicates this event is a plan-rejected update
+	IsPlanRejected bool
+
+	// Plan contains the execution plan (populated when IsPlanCreated/Approved/Rejected)
+	Plan *loomv1.ExecutionPlan
 }
 
 // ProgressCallback is called when agent execution progress occurs.

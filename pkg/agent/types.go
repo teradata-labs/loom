@@ -66,6 +66,11 @@ type Agent struct {
 	// Permission checker for tool execution
 	permissionChecker *shuttle.PermissionChecker
 
+	// Execution planner for PLAN permission mode
+	// When permission mode is PLAN, tool calls are collected into plans
+	// that require user approval before execution
+	planner *ExecutionPlanner
+
 	// Memory manager for conversation history
 	memory *Memory
 
