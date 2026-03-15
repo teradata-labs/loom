@@ -126,7 +126,24 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Expected: Tools execute immediately without approval.
+**Example output:**
+```json
+{
+  "text": "The current directory is:\n\n**`/Users/josh.schoen/.loom`**\n\nWould you like me to list the contents?",
+  "sessionId": "sess_cf03b782",
+  "cost": {
+    "totalCostUsd": 0.018552,
+    "llmCost": {
+      "inputTokens": 5919,
+      "outputTokens": 53,
+      "costUsd": 0.018552
+    }
+  },
+  "agentId": "26ea9480-678b-4f57-8684-fe0c77f13a86"
+}
+```
+
+✅ Tools executed immediately, result returned in `text` field.
 
 ### Test PLAN Mode
 
@@ -143,7 +160,18 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Expected: Returns plan created message (no tool execution).
+**Example output:**
+```json
+{
+  "text": "I've created an execution plan with 1 steps. Please review and approve the plan to proceed.",
+  "sessionId": "sess_1430f463",
+  "cost": {
+    "totalCostUsd": 0.019146
+  }
+}
+```
+
+✅ Plan created, no tools executed yet. Note the message asking for approval.
 
 ```bash
 # 2. List plans for the session and extract plan ID
@@ -166,7 +194,29 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/GetPlan
 ```
 
-Expected: Shows full plan with tool details and PENDING status.
+**Example output:**
+```json
+{
+  "planId": "d3689098-4e88-44b8-947f-1076c2a98e5c",
+  "sessionId": "sess_1430f463",
+  "query": "Count how many files are in the current directory",
+  "tools": [
+    {
+      "step": 1,
+      "toolName": "shell_execute",
+      "paramsJson": "{\"command\":\"ls -1 | wc -l\"}",
+      "rationale": "Execute shell_execute",
+      "status": "STEP_STATUS_PENDING"
+    }
+  ],
+  "reasoning": "I'll check how many files are in the current directory using a shell command.",
+  "status": "PLAN_STATUS_PENDING",
+  "createdAt": "1773609724",
+  "updatedAt": "1773609724"
+}
+```
+
+✅ Full plan details showing tool name, parameters, and PENDING status.
 
 ```bash
 # 4. Approve the plan
@@ -174,12 +224,34 @@ grpcurl -plaintext \
   -d "{
     \"plan_id\": \"$PLAN_ID\",
     \"approved\": true,
-    \"feedback\": \"Approved\"
+    \"feedback\": \"Looks good\"
   }" \
   localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
-Expected: Plan status changes to APPROVED.
+**Example output:**
+```json
+{
+  "plan": {
+    "planId": "d3689098-4e88-44b8-947f-1076c2a98e5c",
+    "sessionId": "sess_1430f463",
+    "query": "Count how many files are in the current directory",
+    "tools": [
+      {
+        "step": 1,
+        "toolName": "shell_execute",
+        "paramsJson": "{\"command\":\"ls -1 | wc -l\"}",
+        "status": "STEP_STATUS_PENDING"
+      }
+    ],
+    "status": "PLAN_STATUS_APPROVED",
+    "createdAt": "1773609724",
+    "updatedAt": "1773609745"
+  }
+}
+```
+
+✅ Status changed to `PLAN_STATUS_APPROVED`.
 
 ```bash
 # 5. Execute the approved plan
@@ -190,7 +262,31 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/ExecutePlan
 ```
 
-Expected: Tools execute, plan status becomes COMPLETED, results stored in plan.
+**Example output:**
+```json
+{
+  "plan": {
+    "planId": "d3689098-4e88-44b8-947f-1076c2a98e5c",
+    "sessionId": "sess_1430f463",
+    "query": "Count how many files are in the current directory",
+    "tools": [
+      {
+        "step": 1,
+        "toolName": "shell_execute",
+        "paramsJson": "{\"command\":\"ls -1 | wc -l\"}",
+        "result": "\"✓ Large json_object stored... stdout: \\\"20\\\"...\"",
+        "status": "STEP_STATUS_COMPLETED"
+      }
+    ],
+    "status": "PLAN_STATUS_COMPLETED",
+    "createdAt": "1773609724",
+    "updatedAt": "1773609750"
+  },
+  "summary": "Successfully executed 1 tool(s)"
+}
+```
+
+✅ Tools executed, results stored in `result` field, status `PLAN_STATUS_COMPLETED`.
 
 ```bash
 # 6. Reject a plan (alternative - create another plan first)
@@ -216,7 +312,28 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
-Expected: Plan status changes to REJECTED.
+**Example output:**
+```json
+{
+  "plan": {
+    "planId": "0f3ff94b-1b46-4ae4-b31d-fd017fda9853",
+    "sessionId": "sess_465b8cd8",
+    "query": "Delete all files",
+    "tools": [
+      {
+        "step": 1,
+        "toolName": "workspace",
+        "paramsJson": "{\"action\":\"list\",\"scope\":\"artifact\"}"
+      }
+    ],
+    "status": "PLAN_STATUS_REJECTED",
+    "createdAt": "1773609879",
+    "updatedAt": "1773609879"
+  }
+}
+```
+
+✅ Status changed to `PLAN_STATUS_REJECTED`, tools not executed.
 
 ### Test Mode Switching
 
@@ -244,7 +361,7 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/ExecutePlan
 ```
 
-Expected: Plan created, approved, and executed successfully.
+✅ Plan created, approved, and executed successfully. Status: `PLAN_STATUS_COMPLETED`.
 
 ```bash
 # Switch to AUTO_ACCEPT mode in same session (this works now!)
@@ -257,7 +374,18 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Expected: Conversation continues successfully, text response returned (mode switched successfully).
+**Example output:**
+```json
+{
+  "text": "2 + 2 = 4",
+  "sessionId": "sess_xxx",
+  "cost": {
+    "totalCostUsd": 0.012
+  }
+}
+```
+
+✅ **Conversation continued successfully!** Mode switched from PLAN to AUTO_ACCEPT within same session. This demonstrates that the conversation state preservation fix is working.
 
 ## 3. Testing with StreamWeave (Real-time Events)
 
@@ -421,7 +549,12 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/GetPlan
 ```
 
-Expected: `NotFound` error
+**Example error:**
+```
+ERROR:
+  Code: NotFound
+  Message: plan not found: nonexistent
+```
 
 ### Approve Non-Pending Plan
 
@@ -437,7 +570,12 @@ grpcurl -plaintext \
   localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
-Expected: Error "plan is not pending"
+**Example error:**
+```
+ERROR:
+  Code: Internal
+  Message: failed to approve plan: plan xxx is not pending (status: PLAN_STATUS_APPROVED)
+```
 
 ## 9. Performance Testing
 
