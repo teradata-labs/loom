@@ -191,49 +191,44 @@ Expected: Plan status changes to REJECTED.
 
 ### Test Mode Switching
 
-⚠️ **Known Limitation:** After creating a plan in PLAN mode, you cannot continue the conversation in the same session because PLAN mode leaves tool_use blocks without tool_result blocks in the conversation history. See "Known Limitations" section below.
-
-Test mode switching works for text-only queries (no tool execution):
+Test that permission mode can be switched mid-session, including after plan execution:
 
 ```bash
-# Create new session with AUTO_ACCEPT
+# Create session with PLAN mode
 SESSION_ID=$(grpcurl -plaintext \
-  -d '{"query": "What is 2+2?", "permission_mode": 2}' \
+  -d '{"query": "List files", "permission_mode": 3}' \
   localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
 
 echo "Session: $SESSION_ID"
+
+# Get plan ID and execute it
+PLAN_ID=$(grpcurl -plaintext \
+  -d "{\"session_id\": \"$SESSION_ID\"}" \
+  localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | jq -r '.plans[0].planId')
+
+grpcurl -plaintext \
+  -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" \
+  localhost:50051 loom.v1.LoomService/ApprovePlan
+
+grpcurl -plaintext \
+  -d "{\"plan_id\": \"$PLAN_ID\"}" \
+  localhost:50051 loom.v1.LoomService/ExecutePlan
 ```
 
-Expected: Text response, no tools executed.
+Expected: Plan created, approved, and executed successfully.
 
 ```bash
-# Switch to PLAN mode (text query, no tools triggered)
+# Switch to AUTO_ACCEPT mode in same session (this works now!)
 grpcurl -plaintext \
   -d "{
-    \"query\": \"What is 3+3?\",
+    \"query\": \"What is 2+2?\",
     \"session_id\": \"$SESSION_ID\",
-    \"permission_mode\": 3
+    \"permission_mode\": 2
   }" \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Expected: Text response (mode switched successfully, no plan created since no tools needed).
-
-**For testing mode switching with tool execution, use separate sessions:**
-
-```bash
-# AUTO_ACCEPT session
-AUTO_SESSION=$(grpcurl -plaintext \
-  -d '{"query": "List files", "permission_mode": 2}' \
-  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
-
-# PLAN mode session
-PLAN_SESSION=$(grpcurl -plaintext \
-  -d '{"query": "List files", "permission_mode": 3}' \
-  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
-```
-
-Expected: First executes tools immediately, second creates plan.
+Expected: Conversation continues successfully, text response returned (mode switched successfully).
 
 ## 3. Testing with StreamWeave (Real-time Events)
 
@@ -457,41 +452,6 @@ When Canvas AI is ready, test from the UI:
 ✅ Invalid requests return proper errors
 ✅ Concurrent mode switches are thread-safe
 
-## Known Limitations
-
-### Conversation State After PLAN Mode
-
-⚠️ **PLAN mode leaves conversation in invalid state for continued interaction**
-
-**Issue:** When PLAN mode creates a plan, the LLM's tool_use blocks are added to conversation history but tool_result blocks are never added (because tools are deferred). This violates Anthropic/Bedrock's requirement that every tool_use must have a corresponding tool_result in the next message.
-
-**Impact:** You cannot continue the conversation after creating a plan in the same session:
-
-```bash
-# This sequence will FAIL:
-1. Create plan in PLAN mode (adds tool_use blocks to conversation)
-2. Approve and execute plan
-3. Send another query in AUTO_ACCEPT mode ← FAILS with validation error
-```
-
-**Error message:**
-```
-ValidationException: messages.N: `tool_use` ids were found without `tool_result` blocks
-```
-
-**Workaround:** Use separate sessions for PLAN mode and AUTO_ACCEPT mode testing:
-
-```bash
-# Good: Separate sessions
-SESSION_1=$(grpcurl ... permission_mode: 3 ...)  # PLAN mode
-SESSION_2=$(grpcurl ... permission_mode: 2 ...)  # AUTO_ACCEPT mode
-
-# Bad: Mode switching in same session after tool execution
-grpcurl ... session_id: $SESSION_1, permission_mode: 2 ...  # FAILS
-```
-
-**Fix needed:** Agent code should add synthetic tool_result blocks when deferring tool execution in PLAN mode. This is tracked as a bug for the maintainer to address.
-
 ## Next Steps
 
 Once basic testing is complete:
@@ -500,7 +460,6 @@ Once basic testing is complete:
 - [ ] Test Canvas AI integration end-to-end
 - [ ] Performance test with large numbers of concurrent sessions
 - [ ] Test migration path for existing sessions
-- [ ] Fix conversation state bug (add synthetic tool_result blocks in PLAN mode)
 
 ## Troubleshooting
 
