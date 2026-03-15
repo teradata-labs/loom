@@ -35,11 +35,10 @@ All tests should pass ✅
 just build
 
 # Start with a simple backend
-./bin/loom-server \
-  --backend=file \
+./bin/looms serve \
   --llm-provider=anthropic \
   --llm-model=claude-sonnet-4-5-20250929 \
-  --port=8080
+  --port=50051
 ```
 
 ### Test AUTO_ACCEPT Mode
@@ -52,7 +51,7 @@ grpcurl -plaintext \
     "query": "List files in current directory",
     "permission_mode": 2
   }' \
-  localhost:8080 loom.v1.LoomService/Weave
+  localhost:50051 loom.v1.LoomService/Weave
 ```
 
 Expected: Tools execute immediately without approval.
@@ -66,7 +65,7 @@ grpcurl -plaintext \
     "query": "Read the README.md file and summarize it",
     "permission_mode": 3
   }' \
-  localhost:8080 loom.v1.LoomService/Weave
+  localhost:50051 loom.v1.LoomService/Weave
 ```
 
 Save the `session_id` from the response.
@@ -77,7 +76,7 @@ grpcurl -plaintext \
   -d '{
     "session_id": "sess_abc123"
   }' \
-  localhost:8080 loom.v1.LoomService/ListPlans
+  localhost:50051 loom.v1.LoomService/ListPlans
 ```
 
 Save the `plan_id` from the response.
@@ -88,7 +87,7 @@ grpcurl -plaintext \
   -d '{
     "plan_id": "plan_xyz789"
   }' \
-  localhost:8080 loom.v1.LoomService/GetPlan
+  localhost:50051 loom.v1.LoomService/GetPlan
 ```
 
 ```bash
@@ -99,7 +98,7 @@ grpcurl -plaintext \
     "approved": true,
     "feedback": "Looks good!"
   }' \
-  localhost:8080 loom.v1.LoomService/ApprovePlan
+  localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
 ```bash
@@ -110,7 +109,7 @@ grpcurl -plaintext \
     "approved": false,
     "feedback": "Not what I wanted"
   }' \
-  localhost:8080 loom.v1.LoomService/ApprovePlan
+  localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
 ### Test Mode Switching
@@ -122,7 +121,7 @@ grpcurl -plaintext \
     "query": "Show current directory",
     "permission_mode": 2
   }' \
-  localhost:8080 loom.v1.LoomService/Weave
+  localhost:50051 loom.v1.LoomService/Weave
 
 # Second request on same session with PLAN mode
 # (use session_id from first response)
@@ -132,7 +131,7 @@ grpcurl -plaintext \
     "session_id": "sess_abc123",
     "permission_mode": 3
   }' \
-  localhost:8080 loom.v1.LoomService/Weave
+  localhost:50051 loom.v1.LoomService/Weave
 ```
 
 Expected: Mode switches from AUTO_ACCEPT to PLAN within the same session.
@@ -147,7 +146,7 @@ grpcurl -plaintext \
     "query": "Find all TODO comments in the codebase",
     "permission_mode": 3
   }' \
-  localhost:8080 loom.v1.LoomService/StreamWeave
+  localhost:50051 loom.v1.LoomService/StreamWeave
 ```
 
 You should see progress events with `is_plan_created: true` and the full plan details.
@@ -171,7 +170,7 @@ import (
 
 func main() {
 	// Connect to server
-	conn, err := grpc.Dial("localhost:8080", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -228,12 +227,12 @@ Test that permission mode persists across requests:
 # Create session with AUTO_ACCEPT mode
 SESSION_ID=$(grpcurl -plaintext \
   -d '{"query": "test", "permission_mode": 2}' \
-  localhost:8080 loom.v1.LoomService/Weave | jq -r '.session_id')
+  localhost:50051 loom.v1.LoomService/Weave | jq -r '.session_id')
 
 # Get session details (should show permission_mode persisted)
 grpcurl -plaintext \
   -d "{\"session_id\": \"$SESSION_ID\"}" \
-  localhost:8080 loom.v1.LoomService/GetSession
+  localhost:50051 loom.v1.LoomService/GetSession
 ```
 
 ## 6. Database Verification
@@ -265,28 +264,28 @@ Full workflow test:
 ```bash
 # 1. Create session + plan
 RESPONSE=$(grpcurl -plaintext -d '{"query": "test", "permission_mode": 3}' \
-  localhost:8080 loom.v1.LoomService/Weave)
+  localhost:50051 loom.v1.LoomService/Weave)
 
 SESSION_ID=$(echo "$RESPONSE" | jq -r '.session_id')
 
 # 2. List plans (should be PENDING)
 PLANS=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" \
-  localhost:8080 loom.v1.LoomService/ListPlans)
+  localhost:50051 loom.v1.LoomService/ListPlans)
 
 PLAN_ID=$(echo "$PLANS" | jq -r '.plans[0].plan_id')
 echo "Plan ID: $PLAN_ID"
 
 # 3. Get plan details
 grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\"}" \
-  localhost:8080 loom.v1.LoomService/GetPlan
+  localhost:50051 loom.v1.LoomService/GetPlan
 
 # 4. Approve plan
 grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" \
-  localhost:8080 loom.v1.LoomService/ApprovePlan
+  localhost:50051 loom.v1.LoomService/ApprovePlan
 
 # 5. List again (should be APPROVED)
 grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" \
-  localhost:8080 loom.v1.LoomService/ListPlans
+  localhost:50051 loom.v1.LoomService/ListPlans
 ```
 
 ## 8. Error Cases to Test
@@ -296,7 +295,7 @@ grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" \
 ```bash
 grpcurl -plaintext \
   -d '{"plan_id": "nonexistent"}' \
-  localhost:8080 loom.v1.LoomService/GetPlan
+  localhost:50051 loom.v1.LoomService/GetPlan
 ```
 
 Expected: `NotFound` error
@@ -307,12 +306,12 @@ Expected: `NotFound` error
 # Approve a plan twice
 grpcurl -plaintext \
   -d '{"plan_id": "PLAN_ID", "approved": true}' \
-  localhost:8080 loom.v1.LoomService/ApprovePlan
+  localhost:50051 loom.v1.LoomService/ApprovePlan
 
 # Try again
 grpcurl -plaintext \
   -d '{"plan_id": "PLAN_ID", "approved": true}' \
-  localhost:8080 loom.v1.LoomService/ApprovePlan
+  localhost:50051 loom.v1.LoomService/ApprovePlan
 ```
 
 Expected: Error "plan is not pending"
