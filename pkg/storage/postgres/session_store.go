@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -73,8 +74,8 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 		}
 
 		_, err = tx.Exec(ctx, `
-		INSERT INTO sessions (id, name, agent_id, user_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO sessions (id, name, agent_id, user_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, permission_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			agent_id = EXCLUDED.agent_id,
@@ -82,7 +83,8 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 			context_json = EXCLUDED.context_json,
 			updated_at = EXCLUDED.updated_at,
 			total_cost_usd = EXCLUDED.total_cost_usd,
-			total_tokens = EXCLUDED.total_tokens`,
+			total_tokens = EXCLUDED.total_tokens,
+			permission_mode = EXCLUDED.permission_mode`,
 			session.ID,
 			nullableString(session.Name),
 			nullableString(session.AgentID),
@@ -93,6 +95,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 			session.UpdatedAt,
 			session.TotalCostUSD,
 			session.TotalTokens,
+			int32(session.PermissionMode),
 		)
 		if err != nil {
 			span.RecordError(err)
@@ -122,13 +125,14 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 			updatedAt       time.Time
 			totalCost       float64
 			totalTokens     int
+			permissionMode  int32
 		)
 
 		scanErr := tx.QueryRow(ctx, `
-		SELECT name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, permission_mode
 		FROM sessions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
 			sessionID, userID,
-		).Scan(&sessionName, &agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens)
+		).Scan(&sessionName, &agentID, &parentSessionID, &contextJSON, &createdAt, &updatedAt, &totalCost, &totalTokens, &permissionMode)
 		if scanErr != nil {
 			if scanErr == pgx.ErrNoRows {
 				s.logger.Warn("session not found (possible RLS denial)",
@@ -142,12 +146,13 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 		}
 
 		sess := &agent.Session{
-			ID:           sessionID,
-			UserID:       userID,
-			CreatedAt:    createdAt,
-			UpdatedAt:    updatedAt,
-			TotalCostUSD: totalCost,
-			TotalTokens:  totalTokens,
+			ID:             sessionID,
+			UserID:         userID,
+			CreatedAt:      createdAt,
+			UpdatedAt:      updatedAt,
+			TotalCostUSD:   totalCost,
+			TotalTokens:    totalTokens,
+			PermissionMode: loomv1.PermissionMode(permissionMode),
 		}
 		if sessionName != nil {
 			sess.Name = *sessionName
