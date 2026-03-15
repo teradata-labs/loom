@@ -325,7 +325,7 @@ func TestAgent_EmptyResponseRetry(t *testing.T) {
 				content:   "",
 				toolCalls: []llmtypes.ToolCall{{ID: "call_1", Name: "calculator", Input: map[string]interface{}{"expression": "1+1"}}},
 			},
-			{content: ""},                               // empty response — should trigger retry
+			{content: ""}, // empty response — should trigger retry
 			{content: "The answer is 2 based on my work"}, // retry response
 		},
 	}
@@ -495,8 +495,8 @@ type mockCountingCalculatorTool struct {
 }
 
 func (m *mockCountingCalculatorTool) Name() string        { return "calculator" }
-func (m *mockCountingCalculatorTool) Description() string  { return "Counting calculator" }
-func (m *mockCountingCalculatorTool) Backend() string      { return "" }
+func (m *mockCountingCalculatorTool) Description() string { return "Counting calculator" }
+func (m *mockCountingCalculatorTool) Backend() string     { return "" }
 func (m *mockCountingCalculatorTool) InputSchema() *shuttle.JSONSchema {
 	return &shuttle.JSONSchema{
 		Type:       "object",
