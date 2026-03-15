@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -405,8 +406,8 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	}
 
 	query := `
-		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, permission_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			agent_id = excluded.agent_id,
@@ -414,7 +415,8 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 			context_json = excluded.context_json,
 			updated_at = excluded.updated_at,
 			total_cost_usd = excluded.total_cost_usd,
-			total_tokens = excluded.total_tokens
+			total_tokens = excluded.total_tokens,
+			permission_mode = excluded.permission_mode
 	`
 
 	// Handle NULL for empty optional fields (SQLite compatibility)
@@ -439,6 +441,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		session.UpdatedAt.Unix(),
 		session.TotalCostUSD,
 		session.TotalTokens,
+		int32(session.PermissionMode), // Store as INTEGER
 	)
 
 	if err != nil {
@@ -461,7 +464,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens
+		SELECT id, name, agent_id, parent_session_id, context_json, created_at, updated_at, total_cost_usd, total_tokens, permission_mode
 		FROM sessions
 		WHERE id = ?
 	`
@@ -472,6 +475,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	var contextJSON string
 	var createdAt, updatedAt int64
 	var sessionName, agentID, parentSessionID sql.NullString
+	var permissionMode int32
 
 	err := row.Scan(
 		&session.ID,
@@ -483,7 +487,11 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 		&updatedAt,
 		&session.TotalCostUSD,
 		&session.TotalTokens,
+		&permissionMode,
 	)
+
+	// Convert permission_mode from INTEGER to enum
+	session.PermissionMode = loomv1.PermissionMode(permissionMode)
 
 	// Populate optional fields from nullable database values
 	if sessionName.Valid {

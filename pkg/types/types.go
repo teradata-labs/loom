@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -273,6 +274,14 @@ type Session struct {
 
 	// TotalTokens is the accumulated token usage
 	TotalTokens int
+
+	// PermissionMode controls tool execution permissions for this session
+	// Can be updated dynamically via WeaveRequest to switch between:
+	// - ASK_BEFORE: Request approval before each tool
+	// - AUTO_ACCEPT: Execute tools automatically (YOLO mode)
+	// - PLAN: Create execution plan, wait for approval
+	// Defaults to UNSPECIFIED (uses agent configuration)
+	PermissionMode loomv1.PermissionMode
 }
 
 // SegmentedMemoryInterface defines the interface for segmented memory.
