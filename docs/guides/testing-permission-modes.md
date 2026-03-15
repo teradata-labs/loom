@@ -27,12 +27,29 @@ Copy-paste this entire block to test the complete workflow including mode switch
 # 2. Create session in PLAN mode
 echo "Creating session in PLAN mode..."
 RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
+
+# Extract session ID
 SESSION_ID=$(echo "$RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
+
+# Check if extraction succeeded
+if [ -z "$SESSION_ID" ]; then
+    echo "❌ Failed to create session. Is the server running on port 50051?"
+    echo "Response was:"
+    echo "$RESPONSE"
+    exit 1
+fi
+
 echo "✅ Session created: $SESSION_ID"
 
 # 3. Get plan ID
 LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
 PLAN_ID=$(echo "$LIST_RESPONSE" | grep planId | head -1 | sed 's/.*"planId"[^"]*"\([^"]*\)".*/\1/')
+
+if [ -z "$PLAN_ID" ]; then
+    echo "❌ Failed to get plan ID"
+    exit 1
+fi
+
 echo "✅ Plan created: $PLAN_ID"
 
 # 4. Approve plan
