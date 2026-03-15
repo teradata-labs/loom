@@ -1,6 +1,6 @@
 # Permission Modes Implementation Progress
 
-## Status: Phase 1-3 Complete ✅ | Phase 4+ Ready
+## Status: Phase 1-3 Complete ✅ | Phase 4 In Progress (50%) 🚧
 
 ## Completed Work
 
@@ -119,10 +119,70 @@
 
 **Commit:** `369f2f5` - feat(storage): add permission_mode to session state persistence
 
+### Phase 4: Plan Mode Execution Flow 🚧
+**Status:** In Progress (Part 1 Complete)
+
+#### Part 1: ExecutionPlanner Infrastructure ✅
+**Completed:** 2026-03-15
+
+1. ✅ Created `pkg/agent/planner.go`:
+   - `ExecutionPlanner` manages plans per session
+   - `CreatePlan`: Converts LLM tool calls → ExecutionPlan (PENDING)
+   - `ApprovePlan`: User decision → APPROVED/REJECTED
+   - `ExecutePlan`: Runs approved plan tools sequentially
+   - `GetPlan`/`ListPlans`: Retrieve by ID or filter by status
+   - `ClearPlans`: Session cleanup
+   - Thread-safe with RWMutex
+
+2. ✅ Plan lifecycle implemented:
+   - PENDING → user reviews
+   - APPROVED/REJECTED → user decision
+   - EXECUTING → tools running
+   - COMPLETED/FAILED → final status
+
+3. ✅ Step tracking:
+   - PlannedToolExecution per tool with step number
+   - Status per step (PENDING → EXECUTING → COMPLETED/FAILED)
+   - Captures results and errors
+
+4. ✅ Comprehensive tests (`pkg/agent/planner_test.go`):
+   - 13 test suites, all passing
+   - Full lifecycle coverage
+   - Approve/reject workflows
+   - Execution success and failure scenarios
+   - Edge cases (double approval, unapproved execution, etc.)
+
+**Files created:**
+- `pkg/agent/planner.go` - Core planner (294 lines)
+- `pkg/agent/planner_test.go` - Tests (412 lines)
+
+**Commit:** `b1947d0` - feat(agent): implement ExecutionPlanner for plan mode workflow
+
+#### Part 2: Agent Integration 📋
+**Status:** Pending
+
+**Remaining tasks:**
+1. Add `planner *ExecutionPlanner` field to Agent struct
+2. Initialize planner in NewAgent when session created
+3. Update agent execution loop to detect PLAN mode
+4. When in PLAN mode and tool calls received:
+   - Call `planner.CreatePlan()` instead of executing tools
+   - Emit `plan_created` progress event
+   - Wait for plan approval (blocking or async)
+5. Implement plan execution trigger:
+   - When plan approved, call `planner.ExecutePlan()`
+   - Pass agent's tool executor function
+   - Emit progress events during execution
+6. Update Weave RPC to check permission_mode and switch agent mode
+
+**Files to modify:**
+- `pkg/agent/agent.go` - Add planner field, wire into execution loop
+- `pkg/agent/types.go` - Add planner to Agent struct
+
 ## Next Steps
 
-### Phase 4: Plan Mode Execution Flow
-**Status:** Ready to start
+### Phase 5: Server Implementation
+**Status:** Pending Phase 4 Part 2
 
 **Tasks:**
 1. Update `pkg/shuttle/permission_checker.go`:
