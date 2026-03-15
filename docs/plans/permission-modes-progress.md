@@ -1,6 +1,6 @@
 # Permission Modes Implementation Progress
 
-## Status: Phase 1 Complete ✅
+## Status: Phase 1-2 Complete ✅ | Phase 3+ Ready
 
 ## Completed Work
 
@@ -52,9 +52,39 @@
 - `gen/go/loom/v1/loom.pb.go` - Auto-generated Go bindings
 - `gen/go/loom/v1/loom_grpc.pb.go` - Auto-generated gRPC server/client
 
+### Phase 2: Permission Checker Updates ✅
+**Completed:** 2026-03-15
+
+1. ✅ Updated `pkg/shuttle/permission_checker.go`:
+   - Added `mode loomv1.PermissionMode` field
+   - Added `SetMode(mode)`, `GetMode()`, `InPlanMode()`, `InAskBeforeMode()`, `InAutoAcceptMode()` methods
+   - Updated `CheckPermission()` to handle three modes with mode-specific logic
+   - Plan mode returns `ErrToolExecutionDeferred` for plan creation
+   - Maintained backward compatibility with legacy YOLO/RequireApproval flags
+   - Explicit mode takes precedence over legacy flags
+   - Disabled tools blocked across all modes
+   - Allowed tools (whitelist) work across all modes
+
+2. ✅ Wrote comprehensive unit tests in `pkg/shuttle/permission_checker_test.go`:
+   - 13 test suites covering all scenarios
+   - Mode initialization (explicit vs legacy flags)
+   - Runtime mode switching
+   - Permission checking in all three modes
+   - Disabled/allowed tool interaction
+   - Default action behavior
+   - Concurrent mode switching
+   - 100% coverage of new code paths
+   - All tests pass
+
+**Files modified:**
+- `pkg/shuttle/permission_checker.go` - Core implementation
+- `pkg/shuttle/permission_checker_test.go` - Comprehensive tests (543 lines)
+
+**Commit:** `52e61ee` - feat(shuttle): implement runtime permission mode switching
+
 ## Next Steps
 
-### Phase 2: Permission Checker Updates
+### Phase 3: Session State Management
 **Status:** Ready to start
 
 **Tasks:**
