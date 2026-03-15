@@ -117,6 +117,9 @@ const (
 	LoomService_UpdateUIApp_FullMethodName                 = "/loom.v1.LoomService/UpdateUIApp"
 	LoomService_DeleteUIApp_FullMethodName                 = "/loom.v1.LoomService/DeleteUIApp"
 	LoomService_ListComponentTypes_FullMethodName          = "/loom.v1.LoomService/ListComponentTypes"
+	LoomService_ApprovePlan_FullMethodName                 = "/loom.v1.LoomService/ApprovePlan"
+	LoomService_GetPlan_FullMethodName                     = "/loom.v1.LoomService/GetPlan"
+	LoomService_ListPlans_FullMethodName                   = "/loom.v1.LoomService/ListPlans"
 )
 
 // LoomServiceClient is the client API for LoomService service.
@@ -301,6 +304,12 @@ type LoomServiceClient interface {
 	// ListComponentTypes returns the catalog of available component types
 	// for building dynamic UI apps.
 	ListComponentTypes(ctx context.Context, in *ListComponentTypesRequest, opts ...grpc.CallOption) (*ListComponentTypesResponse, error)
+	// ApprovePlan approves or rejects an execution plan created in PLAN mode.
+	ApprovePlan(ctx context.Context, in *ApprovePlanRequest, opts ...grpc.CallOption) (*ApprovePlanResponse, error)
+	// GetPlan retrieves a specific execution plan.
+	GetPlan(ctx context.Context, in *GetPlanRequest, opts ...grpc.CallOption) (*ExecutionPlan, error)
+	// ListPlans lists execution plans for a session.
+	ListPlans(ctx context.Context, in *ListPlansRequest, opts ...grpc.CallOption) (*ListPlansResponse, error)
 }
 
 type loomServiceClient struct {
@@ -1204,6 +1213,36 @@ func (c *loomServiceClient) ListComponentTypes(ctx context.Context, in *ListComp
 	return out, nil
 }
 
+func (c *loomServiceClient) ApprovePlan(ctx context.Context, in *ApprovePlanRequest, opts ...grpc.CallOption) (*ApprovePlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApprovePlanResponse)
+	err := c.cc.Invoke(ctx, LoomService_ApprovePlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) GetPlan(ctx context.Context, in *GetPlanRequest, opts ...grpc.CallOption) (*ExecutionPlan, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecutionPlan)
+	err := c.cc.Invoke(ctx, LoomService_GetPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) ListPlans(ctx context.Context, in *ListPlansRequest, opts ...grpc.CallOption) (*ListPlansResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPlansResponse)
+	err := c.cc.Invoke(ctx, LoomService_ListPlans_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomServiceServer is the server API for LoomService service.
 // All implementations must embed UnimplementedLoomServiceServer
 // for forward compatibility.
@@ -1386,6 +1425,12 @@ type LoomServiceServer interface {
 	// ListComponentTypes returns the catalog of available component types
 	// for building dynamic UI apps.
 	ListComponentTypes(context.Context, *ListComponentTypesRequest) (*ListComponentTypesResponse, error)
+	// ApprovePlan approves or rejects an execution plan created in PLAN mode.
+	ApprovePlan(context.Context, *ApprovePlanRequest) (*ApprovePlanResponse, error)
+	// GetPlan retrieves a specific execution plan.
+	GetPlan(context.Context, *GetPlanRequest) (*ExecutionPlan, error)
+	// ListPlans lists execution plans for a session.
+	ListPlans(context.Context, *ListPlansRequest) (*ListPlansResponse, error)
 	mustEmbedUnimplementedLoomServiceServer()
 }
 
@@ -1644,6 +1689,15 @@ func (UnimplementedLoomServiceServer) DeleteUIApp(context.Context, *DeleteUIAppR
 }
 func (UnimplementedLoomServiceServer) ListComponentTypes(context.Context, *ListComponentTypesRequest) (*ListComponentTypesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListComponentTypes not implemented")
+}
+func (UnimplementedLoomServiceServer) ApprovePlan(context.Context, *ApprovePlanRequest) (*ApprovePlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApprovePlan not implemented")
+}
+func (UnimplementedLoomServiceServer) GetPlan(context.Context, *GetPlanRequest) (*ExecutionPlan, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPlan not implemented")
+}
+func (UnimplementedLoomServiceServer) ListPlans(context.Context, *ListPlansRequest) (*ListPlansResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPlans not implemented")
 }
 func (UnimplementedLoomServiceServer) mustEmbedUnimplementedLoomServiceServer() {}
 func (UnimplementedLoomServiceServer) testEmbeddedByValue()                     {}
@@ -3111,6 +3165,60 @@ func _LoomService_ListComponentTypes_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_ApprovePlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApprovePlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ApprovePlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ApprovePlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ApprovePlan(ctx, req.(*ApprovePlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_GetPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).GetPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_GetPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).GetPlan(ctx, req.(*GetPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_ListPlans_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPlansRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ListPlans(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ListPlans_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ListPlans(ctx, req.(*ListPlansRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LoomService_ServiceDesc is the grpc.ServiceDesc for LoomService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3421,6 +3529,18 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListComponentTypes",
 			Handler:    _LoomService_ListComponentTypes_Handler,
+		},
+		{
+			MethodName: "ApprovePlan",
+			Handler:    _LoomService_ApprovePlan_Handler,
+		},
+		{
+			MethodName: "GetPlan",
+			Handler:    _LoomService_GetPlan_Handler,
+		},
+		{
+			MethodName: "ListPlans",
+			Handler:    _LoomService_ListPlans_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
