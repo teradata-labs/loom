@@ -1232,6 +1232,48 @@ func emitToolCompleted(ctx Context, progress int32, toolCall ToolCall, result *s
 	}
 }
 
+// emitPlanCreated sends a plan-created progress event.
+func emitPlanCreated(ctx Context, plan *loomv1.ExecutionPlan) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		callback(ProgressEvent{
+			Stage:         StageToolExecution, // Plan creation is part of tool execution stage
+			Progress:      25,                 // Early in process
+			Message:       fmt.Sprintf("Created execution plan with %d steps", len(plan.Tools)),
+			Timestamp:     time.Now(),
+			IsPlanCreated: true,
+			Plan:          plan,
+		})
+	}
+}
+
+// emitPlanApproved sends a plan-approved progress event.
+func emitPlanApproved(ctx Context, plan *loomv1.ExecutionPlan) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		callback(ProgressEvent{
+			Stage:          StageToolExecution,
+			Progress:       30,
+			Message:        fmt.Sprintf("Execution plan approved, proceeding with %d steps", len(plan.Tools)),
+			Timestamp:      time.Now(),
+			IsPlanApproved: true,
+			Plan:           plan,
+		})
+	}
+}
+
+// emitPlanRejected sends a plan-rejected progress event.
+func emitPlanRejected(ctx Context, plan *loomv1.ExecutionPlan) {
+	if callback := ctx.ProgressCallback(); callback != nil {
+		callback(ProgressEvent{
+			Stage:          StageToolExecution,
+			Progress:       0,
+			Message:        "Execution plan rejected by user",
+			Timestamp:      time.Now(),
+			IsPlanRejected: true,
+			Plan:           plan,
+		})
+	}
+}
+
 // extractHITLInfo extracts HITL request details from contact_human tool input.
 // Returns partial info even if some fields are missing (graceful degradation).
 func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
@@ -1743,6 +1785,52 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if span != nil {
 				span.RecordError(err)
 			}
+		}
+
+		// Check if in PLAN permission mode - if so, create plan instead of executing
+		if len(llmResp.ToolCalls) > 0 && a.permissionChecker != nil && a.permissionChecker.InPlanMode() {
+			// Initialize planner for this session
+			a.ensurePlannerForSession(session.ID)
+
+			// Get the user's query from the last user message
+			userQuery := ""
+			msgs := session.GetMessages()
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == "user" {
+					userQuery = msgs[i].Content
+					break
+				}
+			}
+
+			// Create execution plan from tool calls
+			plan, err := a.planner.CreatePlan(userQuery, llmResp.ToolCalls, llmResp.Content)
+			if err != nil {
+				if span != nil {
+					span.RecordError(err)
+				}
+				return nil, fmt.Errorf("failed to create execution plan: %w", err)
+			}
+
+			// Emit plan created progress event
+			emitPlanCreated(ctx, plan)
+
+			// Add system message explaining the plan
+			planMsg := Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("I've created an execution plan with %d steps. Please review and approve the plan to proceed.", len(plan.Tools)),
+				AgentID: a.id,
+			}
+			session.AddMessage(ctx, planMsg)
+
+			// Return response with plan info (actual execution happens after approval)
+			return &Response{
+				Content: planMsg.Content,
+				Metadata: map[string]interface{}{
+					"plan_id":     plan.PlanId,
+					"plan_status": plan.Status.String(),
+					"tool_count":  len(plan.Tools),
+				},
+			}, nil
 		}
 
 		// Execute tool calls with per-turn cap and deduplication.
@@ -3152,4 +3240,101 @@ func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allo
 		return a.SetActiveProvider(active)
 	}
 	return nil
+}
+
+// SetPermissionMode updates the permission mode at runtime.
+// This updates both the permission checker and the session state.
+// Used by server to set mode from WeaveRequest.permission_mode.
+func (a *Agent) SetPermissionMode(ctx context.Context, sessionID string, mode loomv1.PermissionMode) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Update permission checker mode
+	if a.permissionChecker != nil {
+		a.permissionChecker.SetMode(mode)
+	}
+
+	// Update session state to persist mode
+	session, exists := a.memory.GetSession(sessionID)
+	if exists && session != nil {
+		session.PermissionMode = mode
+
+		// Persist session to save permission_mode
+		if a.memory.store != nil {
+			if err := a.memory.store.SaveSession(ctx, session); err != nil {
+				return fmt.Errorf("failed to save session permission mode: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetPermissionMode returns the current permission mode for a session.
+func (a *Agent) GetPermissionMode(sessionID string) loomv1.PermissionMode {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	session, exists := a.memory.GetSession(sessionID)
+	if exists && session != nil {
+		return session.PermissionMode
+	}
+
+	return loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED
+}
+
+// ensurePlannerForSession initializes the planner for a session if needed.
+// Planner is session-scoped since plans are tied to specific conversations.
+func (a *Agent) ensurePlannerForSession(sessionID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Initialize planner if not already set
+	// Note: In the future, we could have per-session planners in a map
+	// For now, we use a single planner and rely on sessionID in plans
+	if a.planner == nil || a.planner.sessionID != sessionID {
+		a.planner = NewExecutionPlanner(sessionID)
+	}
+}
+
+// ApprovePlan approves or rejects an execution plan.
+// Called by server RPC when user makes approval decision.
+func (a *Agent) ApprovePlan(planID string, approved bool, feedback string) (*loomv1.ExecutionPlan, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.planner == nil {
+		return nil, fmt.Errorf("no planner initialized")
+	}
+
+	return a.planner.ApprovePlan(planID, approved, feedback)
+}
+
+// GetPlan retrieves a specific execution plan by ID.
+func (a *Agent) GetPlan(planID string) (*loomv1.ExecutionPlan, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.planner == nil {
+		return nil, fmt.Errorf("no planner initialized")
+	}
+
+	return a.planner.GetPlan(planID)
+}
+
+// ListPlans lists execution plans for the current session.
+func (a *Agent) ListPlans(sessionID string, statusFilter loomv1.PlanStatus) ([]*loomv1.ExecutionPlan, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.planner == nil {
+		return nil, nil // No plans yet
+	}
+
+	// Verify planner is for this session
+	if a.planner.sessionID != sessionID {
+		return nil, nil // Wrong session, no plans
+	}
+
+	return a.planner.ListPlans(statusFilter), nil
 }
