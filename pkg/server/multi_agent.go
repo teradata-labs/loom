@@ -686,6 +686,13 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		sessionID = GenerateSessionID()
 	}
 
+	// Set permission mode if specified in request
+	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
+		if err := ag.SetPermissionMode(ctx, sessionID, req.PermissionMode); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
+		}
+	}
+
 	// Add progress multiplexer to context if available for this agent
 	s.mu.RLock()
 	if pm, ok := s.progressMultiplexers[agentID]; ok {
@@ -831,6 +838,13 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
+	}
+
+	// Set permission mode if specified in request
+	if req.PermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
+		if err := ag.SetPermissionMode(stream.Context(), sessionID, req.PermissionMode); err != nil {
+			return status.Errorf(codes.Internal, "failed to set permission mode: %v", err)
+		}
 	}
 
 	// Register manage_ephemeral_agents tool if not already registered
@@ -4190,4 +4204,99 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 			lastMessageCount = len(messages)
 		}
 	}
+}
+
+// ApprovePlan approves or rejects an execution plan created in PLAN mode.
+func (s *MultiAgentServer) ApprovePlan(ctx context.Context, req *loomv1.ApprovePlanRequest) (*loomv1.ApprovePlanResponse, error) {
+	if req.PlanId == "" {
+		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
+	}
+
+	// Plans are managed per-agent, so we need to find which agent owns this plan
+	// For now, iterate through all agents to find the plan
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, ag := range s.agents {
+		plan, err := ag.GetPlan(req.PlanId)
+		if err == nil && plan != nil {
+			// Found the agent that owns this plan
+			approvedPlan, err := ag.ApprovePlan(req.PlanId, req.Approved, req.Feedback)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to approve plan: %v", err)
+			}
+			return &loomv1.ApprovePlanResponse{
+				Plan: approvedPlan,
+			}, nil
+		}
+	}
+
+	return nil, status.Errorf(codes.NotFound, "plan not found: %s", req.PlanId)
+}
+
+// GetPlan retrieves a specific execution plan.
+func (s *MultiAgentServer) GetPlan(ctx context.Context, req *loomv1.GetPlanRequest) (*loomv1.ExecutionPlan, error) {
+	if req.PlanId == "" {
+		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
+	}
+
+	// Plans are managed per-agent, so we need to find which agent owns this plan
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, ag := range s.agents {
+		plan, err := ag.GetPlan(req.PlanId)
+		if err == nil && plan != nil {
+			return plan, nil
+		}
+	}
+
+	return nil, status.Errorf(codes.NotFound, "plan not found: %s", req.PlanId)
+}
+
+// ListPlans lists execution plans for a session.
+func (s *MultiAgentServer) ListPlans(ctx context.Context, req *loomv1.ListPlansRequest) (*loomv1.ListPlansResponse, error) {
+	if req.SessionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	// Find which agent owns the session
+	ag, _, ok := s.findAgentBySession(req.SessionId)
+	if !ok {
+		// Session not found, try default agent
+		var err error
+		ag, _, err = s.getAgent("")
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "session not found: %s", req.SessionId)
+		}
+	}
+
+	// Call agent's ListPlans method
+	plans, err := ag.ListPlans(req.SessionId, req.StatusFilter)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list plans: %v", err)
+	}
+
+	// Apply pagination if specified
+	totalCount := len(plans)
+	if req.PageSize > 0 {
+		offset := int(req.PageOffset)
+		pageSize := int(req.PageSize)
+
+		// Validate pagination bounds
+		if offset >= totalCount {
+			plans = []*loomv1.ExecutionPlan{}
+		} else {
+			end := offset + pageSize
+			if end > totalCount {
+				end = totalCount
+			}
+			plans = plans[offset:end]
+		}
+	}
+
+	return &loomv1.ListPlansResponse{
+		Plans:      plans,
+		TotalCount: types.SafeInt32(totalCount),
+	}, nil
 }
