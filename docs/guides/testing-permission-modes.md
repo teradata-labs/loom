@@ -24,16 +24,19 @@ Copy-paste this entire block to test the complete workflow including mode switch
 # 1. Start server (in separate terminal)
 ./bin/looms serve --port=50051
 
-# 2. Create session in PLAN mode
+# 2. Set port (change if using different port)
+PORT=50051
+
+# 3. Create session in PLAN mode
 echo "Creating session in PLAN mode..."
-RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
+RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:$PORT loom.v1.LoomService/Weave 2>&1)
 
 # Extract session ID
 SESSION_ID=$(echo "$RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
 
 # Check if extraction succeeded
 if [ -z "$SESSION_ID" ]; then
-    echo "❌ Failed to create session. Is the server running on port 50051?"
+    echo "❌ Failed to create session. Is the server running on port $PORT?"
     echo "Response was:"
     echo "$RESPONSE"
     exit 1
@@ -41,8 +44,8 @@ fi
 
 echo "✅ Session created: $SESSION_ID"
 
-# 3. Get plan ID
-LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
+# 4. Get plan ID
+LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:$PORT loom.v1.LoomService/ListPlans 2>&1)
 PLAN_ID=$(echo "$LIST_RESPONSE" | grep planId | head -1 | sed 's/.*"planId"[^"]*"\([^"]*\)".*/\1/')
 
 if [ -z "$PLAN_ID" ]; then
@@ -52,18 +55,18 @@ fi
 
 echo "✅ Plan created: $PLAN_ID"
 
-# 4. Approve plan
-grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" localhost:50051 loom.v1.LoomService/ApprovePlan > /dev/null 2>&1
+# 5. Approve plan
+grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" localhost:$PORT loom.v1.LoomService/ApprovePlan > /dev/null 2>&1
 echo "✅ Plan approved"
 
-# 5. Execute plan
-grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\"}" localhost:50051 loom.v1.LoomService/ExecutePlan > /dev/null 2>&1
+# 6. Execute plan
+grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\"}" localhost:$PORT loom.v1.LoomService/ExecutePlan > /dev/null 2>&1
 echo "✅ Plan executed"
 
-# 6. Test mode switching (PLAN → AUTO_ACCEPT in same session)
+# 7. Test mode switching (PLAN → AUTO_ACCEPT in same session)
 echo ""
 echo "Testing mode switching to AUTO_ACCEPT..."
-SWITCH_RESPONSE=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave 2>&1)
+SWITCH_RESPONSE=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 2}" localhost:$PORT loom.v1.LoomService/Weave 2>&1)
 SWITCH_RESULT=$(echo "$SWITCH_RESPONSE" | grep '"text"' | sed 's/.*"text"[^"]*"\([^"]*\)".*/\1/' | head -c 50)
 echo "✅ Mode switched: $SWITCH_RESULT..."
 
