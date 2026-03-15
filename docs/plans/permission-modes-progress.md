@@ -1,6 +1,6 @@
 # Permission Modes Implementation Progress
 
-## Status: Phase 1-4 Complete ✅ | Phase 5-7 Ready
+## Status: Phase 1-5 Complete ✅ | Phase 6-7 Ready
 
 ## Completed Work
 
@@ -189,112 +189,62 @@
 
 **Commit:** `67b4444` - feat(agent): wire ExecutionPlanner into agent execution loop for PLAN mode
 
+### Phase 5: Server Implementation ✅
+**Completed:** 2026-03-15
+
+1. ✅ Updated `Weave` RPC to handle permission mode:
+   - Extract `req.PermissionMode` from WeaveRequest
+   - Call `agent.SetPermissionMode(ctx, sessionID, mode)` before executing chat
+   - Persists permission mode to session for subsequent requests
+
+2. ✅ Updated `StreamWeave` RPC to handle permission mode:
+   - Extract `req.PermissionMode` from WeaveRequest
+   - Call `agent.SetPermissionMode(ctx, sessionID, mode)` before streaming
+   - Added `applyPlanEventFields` to stream plan events
+
+3. ✅ Implemented `ApprovePlan` RPC:
+   - Validates plan_id parameter
+   - Calls `agent.ApprovePlan(planID, approved, feedback)`
+   - Returns updated ExecutionPlan with new status
+
+4. ✅ Implemented `GetPlan` RPC:
+   - Validates plan_id parameter
+   - Calls `agent.GetPlan(planID)`
+   - Returns NotFound error if plan doesn't exist
+
+5. ✅ Implemented `ListPlans` RPC:
+   - Validates session_id parameter
+   - Calls `agent.ListPlans(sessionID, statusFilter)`
+   - Supports pagination (page_size, page_offset)
+   - Returns total count for pagination UI
+
+6. ✅ Added `applyPlanEventFields` helper:
+   - Populates is_plan_created/approved/rejected fields
+   - Includes ExecutionPlan in progress events
+   - Enables real-time plan event streaming to clients
+
+**Files modified:**
+- `pkg/server/server.go` - Added permission mode handling + 3 plan RPCs (96 lines)
+
+**Commit:** TBD
+
 ## Next Steps
 
-### Phase 5: Server Implementation
-**Status:** Pending Phase 4 Part 2
+### Phase 6: Progress Events ⚠️ Partially Complete
+**Status:** Infrastructure complete, TUI pending
 
-**Tasks:**
-1. Update `pkg/shuttle/permission_checker.go`:
-   - Add `mode loomv1.PermissionMode` field
-   - Add `SetMode(mode PermissionMode)` method
-   - Add `GetMode()` and `InPlanMode()` methods
-   - Update `CheckPermission()` to handle three modes
-   - Plan mode should return special error indicating deferral
+**Completed:**
+- ✅ Plan event emission in agent execution (Phase 4)
+- ✅ Progress event fields added to types.ProgressEvent (Phase 4)
+- ✅ Server streaming wired to emit plan events (Phase 5)
 
-2. Write unit tests in `pkg/shuttle/permission_checker_test.go`:
-   - Test mode switching
-   - Test behavior in each mode (ASK_BEFORE, AUTO_ACCEPT, PLAN)
-   - Test disabled tools across all modes
-   - Test allowed tools (whitelist)
-
-**Files to modify:**
-- `pkg/shuttle/permission_checker.go`
-- `pkg/shuttle/permission_checker_test.go` (new tests)
-
-### Phase 3: Session State Management
-**Status:** Pending Phase 2
-
-**Tasks:**
-1. Add `PermissionMode` field to `Session` struct in `pkg/types/types.go`
-2. Update session storage to persist permission_mode
-3. Add database migration for SQLite/Postgres backends
-4. Update `CreateSession` and `UpdateSession` to handle permission_mode
-
-**Files to modify:**
-- `pkg/types/types.go`
-- `pkg/storage/sqlite/*.go`
-- `pkg/storage/postgres/*.go` (if applicable)
-- Migration files
-
-### Phase 4: Plan Mode Execution Flow
-**Status:** Pending Phase 2-3
-
-**Tasks:**
-1. Create `pkg/agent/planner.go`:
-   - `ExecutionPlanner` struct
-   - `CreatePlan()` - Convert tool calls to plan
-   - `ApprovePlan()` - Mark plan approved/rejected
-   - `ExecutePlan()` - Execute approved plan
-   - `GetPlan()`, `ListPlans()` - Retrieval methods
-
-2. Update `pkg/agent/agent.go`:
-   - Add `planner *ExecutionPlanner` field
-   - Modify `executeTurn()` to check permission mode
-   - If PLAN mode + tool calls → create plan, emit event, wait for approval
-   - Add `waitForPlanApproval()` method (blocks until approved/rejected)
-   - Add `SetPermissionMode()` method to update runtime mode
-
-3. Wire plan execution:
-   - When plan approved → execute tools sequentially/parallel based on dependencies
-   - Update progress events (tool started/completed)
-   - Update plan status as execution progresses
-
-**Files to modify:**
-- `pkg/agent/planner.go` (new file)
-- `pkg/agent/agent.go`
-- `pkg/agent/types.go` (add planner field)
-
-### Phase 5: Server Implementation
-**Status:** Pending Phase 2-4
-
-**Tasks:**
-1. Update `pkg/server/server.go` Weave RPC:
-   - Extract `req.PermissionMode` from request
-   - Set on session if provided
-   - Call `agent.SetPermissionMode()` to update runtime behavior
-
-2. Implement new plan RPCs:
-   - `ApprovePlan()` - Call agent method, return updated plan
-   - `GetPlan()` - Retrieve plan by ID
-   - `ListPlans()` - List plans for session
-
-3. Add plan storage:
-   - In-memory plan cache or database table
-   - Thread-safe access
-   - Session cleanup on session delete
-
-**Files to modify:**
-- `pkg/server/server.go`
-- Plan storage backend (TBD - in-memory vs DB)
-
-### Phase 6: Progress Events
-**Status:** Pending Phase 4-5
-
-**Tasks:**
-1. Emit plan events in agent execution:
-   - `is_plan_created` when plan created
-   - `is_plan_approved` when user approves
-   - `is_plan_rejected` when user rejects
-   - Include full `ExecutionPlan` in event
-
-2. Update TUI to handle plan events:
+**Remaining:**
+1. Update TUI to handle plan events:
    - Display plan details
    - Show approval UI
    - Stream plan execution progress
 
 **Files to modify:**
-- `pkg/agent/agent.go` (emit events)
 - `pkg/tui/*.go` (handle events, if applicable)
 
 ### Phase 7: Canvas AI Integration
