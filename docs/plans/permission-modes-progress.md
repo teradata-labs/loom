@@ -226,7 +226,7 @@
 **Files modified:**
 - `pkg/server/server.go` - Added permission mode handling + 3 plan RPCs (96 lines)
 
-**Commit:** TBD
+**Commit:** `d7a8b3a` - feat(server): implement permission mode handling and plan approval RPCs
 
 ## Next Steps
 
