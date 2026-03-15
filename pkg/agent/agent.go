@@ -2416,6 +2416,22 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 			}
 		}
 
+		// Respect the configured byte-based threshold from SetSharedMemoryThreshold.
+		// The executor's handleLargeResult already checks the byte threshold and
+		// stores large results in shared memory. If the executor kept the result
+		// inline (bytes <= threshold), we must not override that decision with the
+		// hardcoded token-based check below. This ensures the admin-configured
+		// threshold (e.g. 40KB) is authoritative — not the 1000-token heuristic.
+		byteThreshold := int64(storage.DefaultSharedMemoryThreshold) // 0 = always reference
+		if a.sharedMemoryThreshold >= 0 {
+			byteThreshold = a.sharedMemoryThreshold
+		}
+		dataBytes := int64(len(dataStr))
+		if byteThreshold > 0 && dataBytes <= byteThreshold {
+			// Result fits within the configured byte threshold — keep inline
+			return dataStr
+		}
+
 		// CRITICAL: Don't wrap progressive disclosure tool outputs - they already retrieve data from shared memory
 		// Wrapping them again creates infinite recursion: query_tool_result → DataRef A → query_tool_result(A) → DataRef B → ...
 		// Excluded tools: get_tool_result (metadata), query_tool_result (actual data retrieval)
