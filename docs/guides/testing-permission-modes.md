@@ -17,23 +17,20 @@ Copy-paste this entire block to test the complete workflow:
 # 1. Start server (in separate terminal)
 ./bin/looms serve --port=50051
 
-# 2. Create session and capture ID (grep filters progress output)
-SESSION_ID=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1 | grep -E '^\{' | jq -r '.sessionId')
+# 2. Create session and capture ID
+SESSION_ID=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
 echo "Session: $SESSION_ID"
 
 # 3. Create a plan (PLAN mode)
 grpcurl -plaintext -d "{\"query\": \"List files\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 3}" localhost:50051 loom.v1.LoomService/Weave
 
 # 4. Get plan ID
-PLAN_ID=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | grep -E '^\{' | jq -r '.plans[0].planId')
+PLAN_ID=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | jq -r '.plans[0].planId')
 echo "Plan: $PLAN_ID"
 
 # 5. Approve and execute plan
 grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" localhost:50051 loom.v1.LoomService/ApprovePlan
 grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\"}" localhost:50051 loom.v1.LoomService/ExecutePlan
-
-# 6. Switch back to AUTO_ACCEPT
-grpcurl -plaintext -d "{\"query\": \"echo done\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave
 ```
 
 ## 1. Run Unit Tests
@@ -74,14 +71,12 @@ First, create a session and capture the session_id for use in all examples:
 
 ```bash
 # Create initial session with AUTO_ACCEPT mode
-# Note: grep filters out progress lines to get clean JSON for jq
 SESSION_ID=$(grpcurl -plaintext \
   -d '{
     "query": "List files in current directory",
     "permission_mode": 2
   }' \
-  localhost:50051 loom.v1.LoomService/Weave 2>&1 | \
-  grep -E '^\{' | jq -r '.sessionId')
+  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
 
 echo "Session ID: $SESSION_ID"
 ```
@@ -89,8 +84,6 @@ echo "Session ID: $SESSION_ID"
 Expected output: Tools execute immediately, session_id displayed.
 
 **Save this SESSION_ID** - we'll use it in the examples below.
-
-> **Note:** The `grep -E '^\{'` filters progress output to extract only the final JSON response.
 
 ### Test AUTO_ACCEPT Mode
 
@@ -198,46 +191,49 @@ Expected: Plan status changes to REJECTED.
 
 ### Test Mode Switching
 
-Test that permission mode can be switched mid-session:
+⚠️ **Known Limitation:** After creating a plan in PLAN mode, you cannot continue the conversation in the same session because PLAN mode leaves tool_use blocks without tool_result blocks in the conversation history. See "Known Limitations" section below.
+
+Test mode switching works for text-only queries (no tool execution):
 
 ```bash
-# First request with AUTO_ACCEPT (tools execute)
-grpcurl -plaintext \
-  -d "{
-    \"query\": \"List current directory\",
-    \"session_id\": \"$SESSION_ID\",
-    \"permission_mode\": 2
-  }" \
-  localhost:50051 loom.v1.LoomService/Weave
+# Create new session with AUTO_ACCEPT
+SESSION_ID=$(grpcurl -plaintext \
+  -d '{"query": "What is 2+2?", "permission_mode": 2}' \
+  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
+
+echo "Session: $SESSION_ID"
 ```
 
-Expected: Tools execute immediately.
+Expected: Text response, no tools executed.
 
 ```bash
-# Second request on same session with PLAN mode (creates plan)
+# Switch to PLAN mode (text query, no tools triggered)
 grpcurl -plaintext \
   -d "{
-    \"query\": \"Count files in directory\",
+    \"query\": \"What is 3+3?\",
     \"session_id\": \"$SESSION_ID\",
     \"permission_mode\": 3
   }" \
   localhost:50051 loom.v1.LoomService/Weave
 ```
 
-Expected: Creates plan, no tool execution (mode successfully switched).
+Expected: Text response (mode switched successfully, no plan created since no tools needed).
+
+**For testing mode switching with tool execution, use separate sessions:**
 
 ```bash
-# Verify we can switch back to AUTO_ACCEPT
-grpcurl -plaintext \
-  -d "{
-    \"query\": \"Show disk usage\",
-    \"session_id\": \"$SESSION_ID\",
-    \"permission_mode\": 2
-  }" \
-  localhost:50051 loom.v1.LoomService/Weave
+# AUTO_ACCEPT session
+AUTO_SESSION=$(grpcurl -plaintext \
+  -d '{"query": "List files", "permission_mode": 2}' \
+  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
+
+# PLAN mode session
+PLAN_SESSION=$(grpcurl -plaintext \
+  -d '{"query": "List files", "permission_mode": 3}' \
+  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
 ```
 
-Expected: Tools execute immediately again (mode switched back).
+Expected: First executes tools immediately, second creates plan.
 
 ## 3. Testing with StreamWeave (Real-time Events)
 
@@ -461,6 +457,41 @@ When Canvas AI is ready, test from the UI:
 ✅ Invalid requests return proper errors
 ✅ Concurrent mode switches are thread-safe
 
+## Known Limitations
+
+### Conversation State After PLAN Mode
+
+⚠️ **PLAN mode leaves conversation in invalid state for continued interaction**
+
+**Issue:** When PLAN mode creates a plan, the LLM's tool_use blocks are added to conversation history but tool_result blocks are never added (because tools are deferred). This violates Anthropic/Bedrock's requirement that every tool_use must have a corresponding tool_result in the next message.
+
+**Impact:** You cannot continue the conversation after creating a plan in the same session:
+
+```bash
+# This sequence will FAIL:
+1. Create plan in PLAN mode (adds tool_use blocks to conversation)
+2. Approve and execute plan
+3. Send another query in AUTO_ACCEPT mode ← FAILS with validation error
+```
+
+**Error message:**
+```
+ValidationException: messages.N: `tool_use` ids were found without `tool_result` blocks
+```
+
+**Workaround:** Use separate sessions for PLAN mode and AUTO_ACCEPT mode testing:
+
+```bash
+# Good: Separate sessions
+SESSION_1=$(grpcurl ... permission_mode: 3 ...)  # PLAN mode
+SESSION_2=$(grpcurl ... permission_mode: 2 ...)  # AUTO_ACCEPT mode
+
+# Bad: Mode switching in same session after tool execution
+grpcurl ... session_id: $SESSION_1, permission_mode: 2 ...  # FAILS
+```
+
+**Fix needed:** Agent code should add synthetic tool_result blocks when deferring tool execution in PLAN mode. This is tracked as a bug for the maintainer to address.
+
 ## Next Steps
 
 Once basic testing is complete:
@@ -469,6 +500,7 @@ Once basic testing is complete:
 - [ ] Test Canvas AI integration end-to-end
 - [ ] Performance test with large numbers of concurrent sessions
 - [ ] Test migration path for existing sessions
+- [ ] Fix conversation state bug (add synthetic tool_result blocks in PLAN mode)
 
 ## Troubleshooting
 
