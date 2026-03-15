@@ -120,6 +120,7 @@ const (
 	LoomService_ApprovePlan_FullMethodName                 = "/loom.v1.LoomService/ApprovePlan"
 	LoomService_GetPlan_FullMethodName                     = "/loom.v1.LoomService/GetPlan"
 	LoomService_ListPlans_FullMethodName                   = "/loom.v1.LoomService/ListPlans"
+	LoomService_ExecutePlan_FullMethodName                 = "/loom.v1.LoomService/ExecutePlan"
 )
 
 // LoomServiceClient is the client API for LoomService service.
@@ -310,6 +311,8 @@ type LoomServiceClient interface {
 	GetPlan(ctx context.Context, in *GetPlanRequest, opts ...grpc.CallOption) (*ExecutionPlan, error)
 	// ListPlans lists execution plans for a session.
 	ListPlans(ctx context.Context, in *ListPlansRequest, opts ...grpc.CallOption) (*ListPlansResponse, error)
+	// ExecutePlan executes an approved plan by running its tools.
+	ExecutePlan(ctx context.Context, in *ExecutePlanRequest, opts ...grpc.CallOption) (*ExecutePlanResponse, error)
 }
 
 type loomServiceClient struct {
@@ -1243,6 +1246,16 @@ func (c *loomServiceClient) ListPlans(ctx context.Context, in *ListPlansRequest,
 	return out, nil
 }
 
+func (c *loomServiceClient) ExecutePlan(ctx context.Context, in *ExecutePlanRequest, opts ...grpc.CallOption) (*ExecutePlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecutePlanResponse)
+	err := c.cc.Invoke(ctx, LoomService_ExecutePlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomServiceServer is the server API for LoomService service.
 // All implementations must embed UnimplementedLoomServiceServer
 // for forward compatibility.
@@ -1431,6 +1444,8 @@ type LoomServiceServer interface {
 	GetPlan(context.Context, *GetPlanRequest) (*ExecutionPlan, error)
 	// ListPlans lists execution plans for a session.
 	ListPlans(context.Context, *ListPlansRequest) (*ListPlansResponse, error)
+	// ExecutePlan executes an approved plan by running its tools.
+	ExecutePlan(context.Context, *ExecutePlanRequest) (*ExecutePlanResponse, error)
 	mustEmbedUnimplementedLoomServiceServer()
 }
 
@@ -1698,6 +1713,9 @@ func (UnimplementedLoomServiceServer) GetPlan(context.Context, *GetPlanRequest) 
 }
 func (UnimplementedLoomServiceServer) ListPlans(context.Context, *ListPlansRequest) (*ListPlansResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListPlans not implemented")
+}
+func (UnimplementedLoomServiceServer) ExecutePlan(context.Context, *ExecutePlanRequest) (*ExecutePlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecutePlan not implemented")
 }
 func (UnimplementedLoomServiceServer) mustEmbedUnimplementedLoomServiceServer() {}
 func (UnimplementedLoomServiceServer) testEmbeddedByValue()                     {}
@@ -3219,6 +3237,24 @@ func _LoomService_ListPlans_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_ExecutePlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecutePlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ExecutePlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ExecutePlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ExecutePlan(ctx, req.(*ExecutePlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LoomService_ServiceDesc is the grpc.ServiceDesc for LoomService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3541,6 +3577,10 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListPlans",
 			Handler:    _LoomService_ListPlans_Handler,
+		},
+		{
+			MethodName: "ExecutePlan",
+			Handler:    _LoomService_ExecutePlan_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

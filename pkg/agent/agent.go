@@ -3342,3 +3342,58 @@ func (a *Agent) ListPlans(sessionID string, statusFilter loomv1.PlanStatus) ([]*
 
 	return a.planner.ListPlans(statusFilter), nil
 }
+
+// ExecutePlan executes an approved plan by running its tools through the agent's executor.
+// This method provides the executor function that bridges the planner and tool execution.
+func (a *Agent) ExecutePlan(ctx context.Context, planID string) (*loomv1.ExecutionPlan, error) {
+	a.mu.RLock()
+	if a.planner == nil {
+		a.mu.RUnlock()
+		return nil, fmt.Errorf("no planner initialized")
+	}
+	a.mu.RUnlock()
+
+	// Temporarily switch permission mode to AUTO_ACCEPT for plan execution
+	// The plan has already been approved by the user, so we can auto-execute tools
+	var originalMode loomv1.PermissionMode
+	if a.permissionChecker != nil {
+		originalMode = a.permissionChecker.GetMode()
+		a.permissionChecker.SetMode(loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT)
+		// Restore original mode when done
+		defer a.permissionChecker.SetMode(originalMode)
+	}
+
+	// Create executor function that uses agent's executor to run tools
+	executorFunc := func(execCtx context.Context, toolName string, params map[string]interface{}) (string, error) {
+		if a.executor == nil {
+			return "", fmt.Errorf("executor not initialized")
+		}
+
+		// Execute tool through executor
+		result, err := a.executor.Execute(execCtx, toolName, params)
+		if err != nil {
+			return "", err
+		}
+
+		// Check if execution succeeded
+		if !result.Success {
+			return "", fmt.Errorf("tool execution failed: %s", result.Error.Message)
+		}
+
+		// Convert result to string for storage in plan
+		resultJSON, err := json.Marshal(result.Data)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal tool result: %w", err)
+		}
+
+		return string(resultJSON), nil
+	}
+
+	// Execute the plan using planner's ExecutePlan
+	if err := a.planner.ExecutePlan(ctx, planID, executorFunc); err != nil {
+		return nil, err
+	}
+
+	// Return updated plan
+	return a.planner.GetPlan(planID)
+}

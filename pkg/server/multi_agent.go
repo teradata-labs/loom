@@ -4300,3 +4300,49 @@ func (s *MultiAgentServer) ListPlans(ctx context.Context, req *loomv1.ListPlansR
 		TotalCount: types.SafeInt32(totalCount),
 	}, nil
 }
+
+// ExecutePlan executes an approved plan by running its tools.
+func (s *MultiAgentServer) ExecutePlan(ctx context.Context, req *loomv1.ExecutePlanRequest) (*loomv1.ExecutePlanResponse, error) {
+	if req.PlanId == "" {
+		return nil, status.Error(codes.InvalidArgument, "plan_id is required")
+	}
+
+	// Find which agent owns the plan by iterating through all agents
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var targetAgent *agent.Agent
+	for _, ag := range s.agents {
+		// Try to get the plan from this agent
+		plan, err := ag.GetPlan(req.PlanId)
+		if err == nil && plan != nil {
+			targetAgent = ag
+			break
+		}
+	}
+
+	if targetAgent == nil {
+		return nil, status.Errorf(codes.NotFound, "plan not found: %s", req.PlanId)
+	}
+
+	// Execute the plan
+	plan, err := targetAgent.ExecutePlan(ctx, req.PlanId)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to execute plan: %v", err)
+	}
+
+	// Build summary based on plan status
+	var summary string
+	if plan.Status == loomv1.PlanStatus_PLAN_STATUS_COMPLETED {
+		summary = fmt.Sprintf("Successfully executed %d tool(s)", len(plan.Tools))
+	} else if plan.Status == loomv1.PlanStatus_PLAN_STATUS_FAILED {
+		summary = fmt.Sprintf("Plan execution failed: %s", plan.ErrorMessage)
+	} else {
+		summary = fmt.Sprintf("Plan status: %v", plan.Status)
+	}
+
+	return &loomv1.ExecutePlanResponse{
+		Plan:    plan,
+		Summary: summary,
+	}, nil
+}

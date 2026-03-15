@@ -613,6 +613,14 @@ service LoomService {
   rpc ListPlans(ListPlansRequest) returns (ListPlansResponse) {
     option (google.api.http) = {get: "/v1/sessions/{session_id}/plans"};
   }
+
+  // ExecutePlan executes an approved plan by running its tools.
+  rpc ExecutePlan(ExecutePlanRequest) returns (ExecutePlanResponse) {
+    option (google.api.http) = {
+      post: "/v1/plans/{plan_id}/execute"
+      body: "*"
+    };
+  }
 }
 
 // AdminService provides administrative operations that bypass RLS.
@@ -1200,6 +1208,21 @@ message ListPlansResponse {
 
   // Total count (for pagination)
   int32 total_count = 2;
+}
+
+// ExecutePlanRequest executes an approved plan.
+message ExecutePlanRequest {
+  // Plan ID to execute
+  string plan_id = 1;
+}
+
+// ExecutePlanResponse contains the result of plan execution.
+message ExecutePlanResponse {
+  // Updated plan with execution results
+  ExecutionPlan plan = 1;
+
+  // Execution summary
+  string summary = 2;
 }
 
 // LoadPatternsRequest loads patterns.
