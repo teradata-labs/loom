@@ -1726,10 +1726,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Return response with plan info (actual execution happens after approval)
 			return &Response{
 				Content: planMsg.Content,
+				Usage:   llmResp.Usage,
 				Metadata: map[string]interface{}{
-					"plan_id":     plan.PlanId,
-					"plan_status": plan.Status.String(),
-					"tool_count":  len(plan.Tools),
+					"plan_id":         plan.PlanId,
+					"plan_status":     plan.Status.String(),
+					"tool_count":      len(plan.Tools),
+					"turns":           turnCount,
+					"tool_executions": toolExecutionCount,
+					"stop_reason":     "plan_created",
 				},
 			}, nil
 		}
