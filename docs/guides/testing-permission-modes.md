@@ -17,15 +17,15 @@ Copy-paste this entire block to test the complete workflow:
 # 1. Start server (in separate terminal)
 ./bin/looms serve --port=50051
 
-# 2. Create session and capture ID
-SESSION_ID=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave | jq -r '.sessionId')
+# 2. Create session and capture ID (grep filters progress output)
+SESSION_ID=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1 | grep -E '^\{' | jq -r '.sessionId')
 echo "Session: $SESSION_ID"
 
 # 3. Create a plan (PLAN mode)
 grpcurl -plaintext -d "{\"query\": \"List files\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 3}" localhost:50051 loom.v1.LoomService/Weave
 
 # 4. Get plan ID
-PLAN_ID=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans | jq -r '.plans[0].planId')
+PLAN_ID=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | grep -E '^\{' | jq -r '.plans[0].planId')
 echo "Plan: $PLAN_ID"
 
 # 5. Approve and execute plan
@@ -74,21 +74,23 @@ First, create a session and capture the session_id for use in all examples:
 
 ```bash
 # Create initial session with AUTO_ACCEPT mode
-RESPONSE=$(grpcurl -plaintext \
+# Note: grep filters out progress lines to get clean JSON for jq
+SESSION_ID=$(grpcurl -plaintext \
   -d '{
     "query": "List files in current directory",
     "permission_mode": 2
   }' \
-  localhost:50051 loom.v1.LoomService/Weave)
+  localhost:50051 loom.v1.LoomService/Weave 2>&1 | \
+  grep -E '^\{' | jq -r '.sessionId')
 
-# Extract and save session ID
-SESSION_ID=$(echo "$RESPONSE" | jq -r '.sessionId')
 echo "Session ID: $SESSION_ID"
 ```
 
 Expected output: Tools execute immediately, session_id displayed.
 
 **Save this SESSION_ID** - we'll use it in the examples below.
+
+> **Note:** The `grep -E '^\{'` filters progress output to extract only the final JSON response.
 
 ### Test AUTO_ACCEPT Mode
 
@@ -123,15 +125,13 @@ grpcurl -plaintext \
 Expected: Returns plan created message (no tool execution).
 
 ```bash
-# 2. List plans for the session
-PLANS=$(grpcurl -plaintext \
+# 2. List plans for the session and extract plan ID
+PLAN_ID=$(grpcurl -plaintext \
   -d "{
     \"session_id\": \"$SESSION_ID\"
   }" \
-  localhost:50051 loom.v1.LoomService/ListPlans)
-
-# Extract plan ID
-PLAN_ID=$(echo "$PLANS" | jq -r '.plans[0].planId')
+  localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | \
+  grep -E '^\{' | jq -r '.plans[0].planId')
 echo "Plan ID: $PLAN_ID"
 ```
 
@@ -181,8 +181,8 @@ grpcurl -plaintext \
   }" \
   localhost:50051 loom.v1.LoomService/Weave
 
-# Get new plan ID
-PLAN_ID_2=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans | jq -r '.plans[-1].planId')
+# Get new plan ID (last plan in list)
+PLAN_ID_2=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | grep -E '^\{' | jq -r '.plans[-1].planId')
 
 # Reject it
 grpcurl -plaintext \
