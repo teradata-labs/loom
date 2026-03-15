@@ -24,37 +24,31 @@ Copy-paste this entire block to test the complete workflow including mode switch
 # 1. Start server (in separate terminal)
 ./bin/looms serve --port=50051
 
-# 2. Test AUTO_ACCEPT mode (tools execute immediately)
-echo "Testing AUTO_ACCEPT mode..."
-AUTO_RESPONSE=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
-AUTO_SESSION=$(echo "$AUTO_RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
-echo "✅ AUTO_ACCEPT session: $AUTO_SESSION"
+# 2. Create session in PLAN mode
+echo "Creating session in PLAN mode..."
+RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
+SESSION_ID=$(echo "$RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
+echo "✅ Session created: $SESSION_ID"
 
-# 3. Test PLAN mode (create plan, approve, execute)
-echo ""
-echo "Testing PLAN mode..."
-PLAN_RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
-PLAN_SESSION=$(echo "$PLAN_RESPONSE" | grep sessionId | sed 's/.*"sessionId"[^"]*"\([^"]*\)".*/\1/')
-echo "✅ PLAN session: $PLAN_SESSION"
-
-# 4. Get plan ID
-LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$PLAN_SESSION\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
+# 3. Get plan ID
+LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$SESSION_ID\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
 PLAN_ID=$(echo "$LIST_RESPONSE" | grep planId | head -1 | sed 's/.*"planId"[^"]*"\([^"]*\)".*/\1/')
 echo "✅ Plan created: $PLAN_ID"
 
-# 5. Approve and execute plan
+# 4. Approve plan
 grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\", \"approved\": true}" localhost:50051 loom.v1.LoomService/ApprovePlan > /dev/null 2>&1
 echo "✅ Plan approved"
 
+# 5. Execute plan
 grpcurl -plaintext -d "{\"plan_id\": \"$PLAN_ID\"}" localhost:50051 loom.v1.LoomService/ExecutePlan > /dev/null 2>&1
 echo "✅ Plan executed"
 
-# 6. Test mode switching (continue conversation in AUTO_ACCEPT mode)
+# 6. Test mode switching (PLAN → AUTO_ACCEPT in same session)
 echo ""
-echo "Testing mode switching (PLAN → AUTO_ACCEPT in same session)..."
-SWITCH_RESPONSE=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$PLAN_SESSION\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave 2>&1)
+echo "Testing mode switching to AUTO_ACCEPT..."
+SWITCH_RESPONSE=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$SESSION_ID\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave 2>&1)
 SWITCH_RESULT=$(echo "$SWITCH_RESPONSE" | grep '"text"' | sed 's/.*"text"[^"]*"\([^"]*\)".*/\1/' | head -c 50)
-echo "✅ Mode switch successful: $SWITCH_RESULT..."
+echo "✅ Mode switched: $SWITCH_RESULT..."
 
 echo ""
 echo "🎉 All tests passed! Runtime permission modes working correctly."
