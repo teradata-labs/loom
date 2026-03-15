@@ -308,6 +308,8 @@ func convertAgentStageToProto(stage agent.ExecutionStage) loomv1.ExecutionStage 
 		return loomv1.ExecutionStage_EXECUTION_STAGE_GUARDRAIL_CHECK
 	case agent.StageSelfCorrection:
 		return loomv1.ExecutionStage_EXECUTION_STAGE_SELF_CORRECTION
+	case agent.StageSynthesis:
+		return loomv1.ExecutionStage_EXECUTION_STAGE_LLM_GENERATION
 	case agent.StageCompleted:
 		return loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED
 	case agent.StageFailed:

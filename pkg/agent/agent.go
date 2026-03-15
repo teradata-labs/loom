@@ -1289,6 +1289,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
+	emptyRetried := false // one-shot retry flag for empty LLM responses
 
 	// Debug: Print config values
 	if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
@@ -1662,10 +1663,35 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// If LLM returned text (no tool calls), we're done
+		// If LLM returned text (no tool calls), we're done — unless the response
+		// is empty, in which case we retry once with a nudge message.
 		if len(llmResp.ToolCalls) == 0 {
+			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
+				// One-shot retry: nudge the LLM to produce a response.
+				emptyRetried = true
+				nudgeMsg := Message{
+					Role:      "user",
+					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
+					AgentID:   a.id,
+					Timestamp: time.Now(),
+				}
+				session.AddMessage(ctx, nudgeMsg)
+				if err := a.memory.PersistMessage(ctx, session.ID, nudgeMsg); err != nil {
+					zap.L().Warn("Failed to persist empty-response nudge",
+						zap.String("session_id", session.ID),
+						zap.Error(err))
+				}
+				continue // re-enter conversation loop for one more LLM call
+			}
+
+			content := llmResp.Content
+			if strings.TrimSpace(content) == "" {
+				// Already retried and still empty — use fallback.
+				content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+			}
+
 			return &Response{
-				Content:        llmResp.Content,
+				Content:        content,
 				Usage:          llmResp.Usage,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
@@ -1673,6 +1699,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"turns":           turnCount,
 					"tool_executions": toolExecutionCount,
 					"stop_reason":     llmResp.StopReason,
+					"empty_retried":   emptyRetried,
 				},
 			}, nil
 		}
@@ -1701,11 +1728,76 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// Execute tool calls
-		for _, toolCall := range llmResp.ToolCalls {
+		// Execute tool calls with per-turn cap and deduplication.
+		// MaxIterations limits how many tool calls are executed from a single
+		// LLM response. Excess calls get "turn_limit_exceeded" error results.
+		// Identical calls (same name + input) within a turn reuse the first result.
+		maxPerTurn := a.config.MaxIterations
+		if maxPerTurn <= 0 {
+			maxPerTurn = 10 // default
+		}
+		turnToolCount := 0
+		turnDedup := make(map[string]*shuttle.Result) // dedup key → result
+
+		for i, toolCall := range llmResp.ToolCalls {
 			if toolExecutionCount >= a.config.MaxToolExecutions {
 				break
 			}
+
+			// Per-turn cap: skip remaining calls with an error result
+			if turnToolCount >= maxPerTurn {
+				skipMsg := Message{
+					Role:      "tool",
+					Content:   fmt.Sprintf("turn_limit_exceeded — per-turn tool call limit (%d) reached. Synthesize a response from the results you have.", maxPerTurn),
+					ToolUseID: toolCall.ID,
+					ToolResult: &shuttle.Result{
+						Success: false,
+						Error: &shuttle.Error{
+							Code:    "turn_limit_exceeded",
+							Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", maxPerTurn, i+1, len(llmResp.ToolCalls)),
+						},
+					},
+					AgentID:   a.id,
+					Timestamp: time.Now(),
+				}
+				session.AddMessage(ctx, skipMsg)
+				if persistErr := a.memory.PersistMessage(ctx, session.ID, skipMsg); persistErr != nil {
+					zap.L().Warn("Failed to persist turn-limit skip message",
+						zap.String("session_id", session.ID),
+						zap.Error(persistErr))
+				}
+				toolExecutionCount++
+				continue
+			}
+
+			// Deduplication: compute canonical key from tool name + sorted JSON input
+			dedupKey := toolCall.Name + "|" + canonicalJSON(toolCall.Input)
+			if cachedResult, ok := turnDedup[dedupKey]; ok {
+				dedupMsg := Message{
+					Role:       "tool",
+					Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
+					ToolUseID:  toolCall.ID,
+					ToolResult: cachedResult,
+					AgentID:    a.id,
+					Timestamp:  time.Now(),
+				}
+				session.AddMessage(ctx, dedupMsg)
+				if persistErr := a.memory.PersistMessage(ctx, session.ID, dedupMsg); persistErr != nil {
+					zap.L().Warn("Failed to persist dedup message",
+						zap.String("session_id", session.ID),
+						zap.Error(persistErr))
+				}
+				allToolExecutions = append(allToolExecutions, ToolExecution{
+					ToolName: toolCall.Name,
+					Input:    toolCall.Input,
+					Result:   cachedResult,
+				})
+				toolExecutionCount++
+				turnToolCount++
+				continue
+			}
+
+			turnToolCount++
 			toolExecutionCount++
 
 			// Check if this is a HITL request (contact_human tool)
@@ -1797,6 +1889,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Error:    err,
 			}
 			allToolExecutions = append(allToolExecutions, execution)
+
+			// Cache result for dedup (only cache successful results or tool errors —
+			// not Go-level errors which may be transient).
+			if result != nil {
+				turnDedup[dedupKey] = result
+			}
 
 			// Emit tool-completed progress event
 			emitToolCompleted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall, result, err)
@@ -1940,7 +2038,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
-	synthesisPrompt := "Based on all the tool executions and data you've gathered above, provide your complete response now. Follow the exact output format specified in your system instructions."
+	synthesisPrompt := "You have reached the tool execution limit. Summarize what you accomplished: what actions were taken, what results were produced, and any remaining steps the user should know about. You MUST respond with text — do not return an empty response."
 	synthesisMsg := Message{
 		Role:      "user",
 		Content:   synthesisPrompt,
@@ -1980,9 +2078,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}, nil
 	}
 
-	// Return synthesized response
+	// Return synthesized response — fall back to a brief summary if LLM returned empty
+	content := finalResp.Content
+	if strings.TrimSpace(content) == "" {
+		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+	}
+
 	return &Response{
-		Content:        finalResp.Content,
+		Content:        content,
 		Usage:          finalResp.Usage,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
@@ -1994,6 +2097,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			"synthesized":     true,
 		},
 	}, nil
+}
+
+// canonicalJSON serializes a map to a deterministic JSON string for deduplication.
+// Go's encoding/json.Marshal sorts map keys, making the output canonical.
+func canonicalJSON(input map[string]interface{}) string {
+	b, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Sprintf("%v", input) // fallback
+	}
+	return string(b)
 }
 
 // contextWithValue wraps a Context to add a key-value pair while preserving the Context interface.
@@ -2301,6 +2414,22 @@ func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string,
 				// MCP tool already handled truncation - return as-is
 				return dataStr
 			}
+		}
+
+		// Respect the configured byte-based threshold from SetSharedMemoryThreshold.
+		// The executor's handleLargeResult already checks the byte threshold and
+		// stores large results in shared memory. If the executor kept the result
+		// inline (bytes <= threshold), we must not override that decision with the
+		// hardcoded token-based check below. This ensures the admin-configured
+		// threshold (e.g. 40KB) is authoritative — not the 1000-token heuristic.
+		byteThreshold := int64(storage.DefaultSharedMemoryThreshold) // 0 = always reference
+		if a.sharedMemoryThreshold >= 0 {
+			byteThreshold = a.sharedMemoryThreshold
+		}
+		dataBytes := int64(len(dataStr))
+		if byteThreshold > 0 && dataBytes <= byteThreshold {
+			// Result fits within the configured byte threshold — keep inline
+			return dataStr
 		}
 
 		// CRITICAL: Don't wrap progressive disclosure tool outputs - they already retrieve data from shared memory

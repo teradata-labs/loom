@@ -914,6 +914,9 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				ToolName:       event.ToolName,
 				Timestamp:      event.Timestamp.Unix(),
 				PartialContent: event.PartialContent, // Stream partial content to TUI
+				IsTokenStream:  event.IsTokenStream,
+				TokenCount:     event.TokenCount,
+				TtftMs:         event.TTFT,
 			}
 
 			// Include HITL request if present
