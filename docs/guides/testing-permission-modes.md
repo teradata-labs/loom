@@ -26,17 +26,20 @@ Copy-paste this entire block to test the complete workflow including mode switch
 
 # 2. Test AUTO_ACCEPT mode (tools execute immediately)
 echo "Testing AUTO_ACCEPT mode..."
-AUTO_SESSION=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
+AUTO_RESPONSE=$(grpcurl -plaintext -d '{"query": "pwd", "permission_mode": 2}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
+AUTO_SESSION=$(echo "$AUTO_RESPONSE" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
 echo "✅ AUTO_ACCEPT session: $AUTO_SESSION"
 
 # 3. Test PLAN mode (create plan, approve, execute)
 echo ""
 echo "Testing PLAN mode..."
-PLAN_SESSION=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
+PLAN_RESPONSE=$(grpcurl -plaintext -d '{"query": "List files in current directory", "permission_mode": 3}' localhost:50051 loom.v1.LoomService/Weave 2>&1)
+PLAN_SESSION=$(echo "$PLAN_RESPONSE" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
 echo "✅ PLAN session: $PLAN_SESSION"
 
 # 4. Get plan ID
-PLAN_ID=$(grpcurl -plaintext -d "{\"session_id\": \"$PLAN_SESSION\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | jq -r '.plans[0].planId')
+LIST_RESPONSE=$(grpcurl -plaintext -d "{\"session_id\": \"$PLAN_SESSION\"}" localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
+PLAN_ID=$(echo "$LIST_RESPONSE" | grep -o '"planId":"[^"]*"' | head -1 | cut -d'"' -f4)
 echo "✅ Plan created: $PLAN_ID"
 
 # 5. Approve and execute plan
@@ -49,8 +52,9 @@ echo "✅ Plan executed"
 # 6. Test mode switching (continue conversation in AUTO_ACCEPT mode)
 echo ""
 echo "Testing mode switching (PLAN → AUTO_ACCEPT in same session)..."
-SWITCH_RESULT=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$PLAN_SESSION\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.text')
-echo "✅ Mode switch successful: $SWITCH_RESULT"
+SWITCH_RESPONSE=$(grpcurl -plaintext -d "{\"query\": \"What is 2+2?\", \"session_id\": \"$PLAN_SESSION\", \"permission_mode\": 2}" localhost:50051 loom.v1.LoomService/Weave 2>&1)
+SWITCH_RESULT=$(echo "$SWITCH_RESPONSE" | grep -o '"text":"[^"]*"' | cut -d'"' -f4 | head -c 50)
+echo "✅ Mode switch successful: $SWITCH_RESULT..."
 
 echo ""
 echo "🎉 All tests passed! Runtime permission modes working correctly."
@@ -94,13 +98,14 @@ First, create a session and capture the session_id for use in all examples:
 
 ```bash
 # Create initial session with AUTO_ACCEPT mode
-SESSION_ID=$(grpcurl -plaintext \
+RESPONSE=$(grpcurl -plaintext \
   -d '{
     "query": "List files in current directory",
     "permission_mode": 2
   }' \
-  localhost:50051 loom.v1.LoomService/Weave 2>&1 | jq -r '.sessionId')
+  localhost:50051 loom.v1.LoomService/Weave 2>&1)
 
+SESSION_ID=$(echo "$RESPONSE" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
 echo "Session ID: $SESSION_ID"
 ```
 
@@ -142,12 +147,13 @@ Expected: Returns plan created message (no tool execution).
 
 ```bash
 # 2. List plans for the session and extract plan ID
-PLAN_ID=$(grpcurl -plaintext \
+LIST_RESPONSE=$(grpcurl -plaintext \
   -d "{
     \"session_id\": \"$SESSION_ID\"
   }" \
-  localhost:50051 loom.v1.LoomService/ListPlans 2>&1 | \
-  grep -E '^\{' | jq -r '.plans[0].planId')
+  localhost:50051 loom.v1.LoomService/ListPlans 2>&1)
+
+PLAN_ID=$(echo "$LIST_RESPONSE" | grep -o '"planId":"[^"]*"' | head -1 | cut -d'"' -f4)
 echo "Plan ID: $PLAN_ID"
 ```
 
