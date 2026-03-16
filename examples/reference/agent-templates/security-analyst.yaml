@@ -52,9 +52,8 @@ spec:
   # No LLM specification - inherits from server defaults
 
   tools:
-    builtin:
-      - shell_execute
-      - tool_search
+    - shell_execute
+    - tool_search
 
   config:
     max_turns: 15  # Security analysis may need multiple rounds

@@ -50,9 +50,8 @@ spec:
     temperature: 0.3  # Lower temperature for more precise SQL generation
 
   tools:
-    builtin:
-      - shell_execute
-      - tool_search
+    - shell_execute
+    - tool_search
 
   memory:
     type: sqlite

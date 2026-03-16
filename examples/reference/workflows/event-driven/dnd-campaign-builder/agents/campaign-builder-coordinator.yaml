@@ -94,7 +94,7 @@ spec:
   tools:
     - shell_execute
     - tool_search
-    - get_error_detail
+    - get_error_details
     - query_tool_result
     - send_message
 
