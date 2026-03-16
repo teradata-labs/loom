@@ -86,7 +86,7 @@ DM: You enter a vast stone chamber. Three doors lead out:
     What do you do?
 
 [DM publishes to "party-chat"]
-[All player agents receive the scene via receive_broadcast]
+[All player agents receive the scene automatically (event-driven)]
 
 Fighter (Grog): Me check north door! Sound like treasure room with gears!
 
@@ -110,7 +110,7 @@ DM: As you debate, you notice the whispers from the west door are growing
 - Facilitates the adventure with vivid scene descriptions
 - Responds to player actions with consequences and drama
 - Asks "What do you do?" to drive player engagement
-- Publishes to "party-chat" and receives via `receive_broadcast()`
+- Publishes to "party-chat" and receives auto-delivered messages from subscribers
 - **Memory**: SQLite with conversational profile (max_history: 2000)
 - **Config**: max_turns: 100, max_tool_executions: 200, timeout: 600s
 - **Tools**: publish, tool_search
@@ -300,7 +300,7 @@ Benefits:
 
 The broadcast bus delivers messages in the order they were published. When multiple agents publish simultaneously:
 - Messages are queued and delivered sequentially
-- Each agent's `receive_broadcast()` call gets messages in publish order
+- Each agent receives auto-delivered messages in publish order
 - No race conditions or message loss
 
 ### Character Consistency

@@ -38,7 +38,7 @@ This workflow orchestrates seven specialized agents to create comprehensive D&D 
 This workflow demonstrates an **emergent communication pattern** rather than an enforced workflow pattern. Unlike Loom's formal workflow patterns (`debate`, `pipeline`, `swarm`, etc.), hub-and-spoke is not implemented as runtime enforcement. Instead, it emerges naturally through:
 
 **Loom's Tri-Modal Communication System:**
-- **Message Queue**: Direct agent-to-agent messaging via `send_message`/`receive_message` tools
+- **Message Queue**: Direct agent-to-agent messaging via `send_message` (responses auto-delivered)
 - **Broadcast Bus**: Topic-based pub/sub via `publish`/`subscribe` tools (not used in this workflow)
 - **Shared Memory**: Shared state via `shared_memory_write`/`shared_memory_read` tools (not used in this workflow)
 
@@ -46,10 +46,10 @@ This workflow demonstrates an **emergent communication pattern** rather than an 
 1. **Entrypoint designation**: Users interact with the coordinator first
 2. **Event-driven architecture**: Coordinator uses event-driven messaging (responses automatically injected, no polling)
 3. **System prompt instructions**: Coordinator's prompt tells it to delegate to specialists via `send_message`
-4. **Specialist agent prompts**: All specialists call `receive_message` once, then respond via `send_message`
+4. **Specialist agent prompts**: All specialists receive messages automatically, then respond via `send_message`
 
 **Key Architectural Detail - Event-Driven Coordinator:**
-The coordinator is fully event-driven. It does NOT call `receive_message` - instead, specialist responses are automatically injected into its conversation. This eliminates polling and ensures instant notification when sub-agents complete their work.
+All agents are fully event-driven. There is no `receive_message` tool -- the Loom runtime automatically injects incoming messages into each agent's conversation context. This eliminates polling and ensures instant notification when sub-agents complete their work.
 
 The `communication` field in the workflow YAML is **advisory documentation only** - it communicates intent to humans but is not parsed or enforced by the runtime. This flexibility allows you to implement various communication topologies (hub-and-spoke, peer-to-peer, hierarchical) simply by configuring agent prompts and tool usage.
 
@@ -121,10 +121,10 @@ Coordinator: Campaign Creation Summary:
 - Saves final overview to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/overview.md`
 - **Memory**: SQLite with conversational profile (max_history: 1000)
 - **Config**: max_turns: 100, max_tool_executions: 200, timeout: 900s
-- **Tools**: shell_execute, tool_search, send_message (NO receive_message - fully event-driven)
+- **Tools**: shell_execute, tool_search, send_message
 
 ### World Builder Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
+- **Communication Model**: Request-response (messages arrive automatically, responds via `send_message`)
 - Creates fantasy world settings with detailed geography, cultures, and history
 - Designs political systems, economies, and social structures
 - Develops pantheons, magic systems, and supernatural elements
@@ -132,10 +132,10 @@ Coordinator: Campaign Creation Summary:
 - Saves world data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/world.json`
 - **Memory**: SQLite with data_intensive profile (max_history: 2000)
 - **Config**: max_turns: 80, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
+- **Tools**: shell_execute, tool_search, send_message
 
 ### Storyline Designer Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
+- **Communication Model**: Request-response (messages arrive automatically, responds via `send_message`)
 - Designs multi-act story arcs with compelling hooks, twists, and climaxes
 - Creates main questlines and meaningful side quests
 - Develops dramatic tension, pacing, and emotional beats
@@ -144,10 +144,10 @@ Coordinator: Campaign Creation Summary:
 - Saves story data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/story.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
+- **Tools**: shell_execute, tool_search, send_message
 
 ### Encounter Designer Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
+- **Communication Model**: Request-response (messages arrive automatically, responds via `send_message`)
 - Creates combat encounters with appropriate challenge ratings
 - Designs environmental hazards and tactical scenarios
 - Balances encounter difficulty for party composition
@@ -156,10 +156,10 @@ Coordinator: Campaign Creation Summary:
 - Saves encounter data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/encounters.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
+- **Tools**: shell_execute, tool_search, send_message
 
 ### NPC Creator Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
+- **Communication Model**: Request-response (messages arrive automatically, responds via `send_message`)
 - Generates NPCs with distinct personalities, motivations, and backgrounds
 - Creates stat blocks appropriate for NPC roles (ally, enemy, neutral)
 - Designs memorable quirks, secrets, and relationships
@@ -168,10 +168,10 @@ Coordinator: Campaign Creation Summary:
 - Saves NPC data to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/npcs.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
+- **Tools**: shell_execute, tool_search, send_message
 
 ### Session Planner Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
+- **Communication Model**: Request-response (messages arrive automatically, responds via `send_message`)
 - Plans session-by-session breakdown with clear objectives
 - Organizes story beats, encounters, and roleplay scenes
 - Provides pacing guidance and estimated session length
@@ -180,10 +180,10 @@ Coordinator: Campaign Creation Summary:
 - Saves session plans to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/sessions.json`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 70, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
+- **Tools**: shell_execute, tool_search, send_message
 
 ### Campaign Publisher Agent
-- **Communication Model**: Request-response (calls `receive_message` once, then responds)
+- **Communication Model**: Request-response (messages arrive automatically, responds via `send_message`)
 - Compiles all campaign content into organized final document
 - Formats content with proper headers, tables, and stat blocks
 - Creates table of contents and index
@@ -192,7 +192,7 @@ Coordinator: Campaign Creation Summary:
 - Saves final document to `$LOOM_DATA_DIR/artifacts/dnd-campaigns/{campaign_id}/campaign.pdf`
 - **Memory**: SQLite with balanced profile (max_history: 1500)
 - **Config**: max_turns: 60, max_tool_executions: 150, timeout: 600s
-- **Tools**: shell_execute, tool_search, send_message, receive_message
+- **Tools**: shell_execute, tool_search, send_message
 
 ## Configuration
 
@@ -208,7 +208,7 @@ Each agent uses a different memory compression profile optimized for its workloa
 
 All agents use dynamic tool discovery via `tool_search`:
 - Coordinator discovers `send_message` tool
-- All specialists discover `send_message` and `receive_message` tools
+- All specialists discover `send_message` tool (messages arrive automatically, no receive tool needed)
 
 ### Self-Correction and Observability
 
@@ -308,12 +308,12 @@ This eliminates polling delays and ensures instant coordination.
 
 Traditional hub-and-spoke patterns require the hub to poll for responses:
 ```
-send_message → poll receive_message → timeout/retry logic
+send_message → poll for response → timeout/retry logic
 ```
 
-This workflow's coordinator is event-driven:
+This workflow is fully event-driven:
 ```
-send_message → system injects responses automatically → coordinator sees responses
+send_message → system injects responses automatically → agent sees responses
 ```
 
 Benefits:
@@ -325,12 +325,11 @@ Benefits:
 ### Specialist Agent Pattern
 
 All specialist agents follow a simple request-response pattern:
-1. Wait for notification of pending message
-2. Call `receive_message` ONCE to get the request
-3. Process the request (generate world/story/encounters/NPCs/sessions/compilation)
-4. Save results to artifact file
-5. Call `send_message` to send complete response with artifact path
-6. Wait for next notification
+1. Receive the coordinator's request (auto-delivered into their conversation)
+2. Process the request (generate world/story/encounters/NPCs/sessions/compilation)
+3. Save results to artifact file
+4. Call `send_message` to send complete response with artifact path
+5. Wait for next auto-delivered message
 
 This pattern ensures specialists don't poll and waste resources.
 

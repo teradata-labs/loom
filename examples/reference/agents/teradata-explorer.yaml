@@ -11,13 +11,9 @@ spec:
     max_tokens: 8000
   
   tools:
-    builtin:
-      - shell_execute
-      - tool_search
-    mcp:
-      - server: vantage-mcp
-        tools:
-          - teradata_execute_sql
+    - shell_execute
+    - tool_search
+    # MCP tools from vantage-mcp are discovered via tool_search at runtime
 
   config:
     max_turns: 25
