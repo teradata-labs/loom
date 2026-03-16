@@ -18,8 +18,8 @@ rm -rf ~/.loom/skills/
 
 # 3. Copy updated examples to loom config directory
 #    (server copies examples/ on startup via copyDir, but only from CWD)
-#    Run from project root so server finds the source:
-cd ~/Projects/loom
+#    Run from the loom project root so server finds the source:
+cd /path/to/loom
 
 # 4. Copy patterns to loom config directory
 #    Patterns are NOT auto-deployed — must be copied manually
@@ -58,7 +58,7 @@ These tests verify the foundation — the validator catches mistakes before the 
 
 ### T1.2 — Deprecated tools produce warnings
 
-Create `/tmp/test-deprecated-tools.yaml`:
+Create `test-fixtures/test-deprecated-tools.yaml`:
 ```yaml
 apiVersion: loom/v1
 kind: Agent
@@ -74,14 +74,14 @@ spec:
 ```
 
 ```bash
-./bin/looms validate file /tmp/test-deprecated-tools.yaml
+./bin/looms validate file test-fixtures/test-deprecated-tools.yaml
 ```
 
 **Expected**: Unknown tool errors with suggestions → "Did you mean 'conversation_memory'?"
 
 ### T1.3 — Auto-registered tools produce warnings
 
-Create `/tmp/test-auto-registered.yaml`:
+Create `test-fixtures/test-auto-registered.yaml`:
 ```yaml
 apiVersion: loom/v1
 kind: Agent
@@ -97,14 +97,14 @@ spec:
 ```
 
 ```bash
-./bin/looms validate file /tmp/test-auto-registered.yaml
+./bin/looms validate file test-fixtures/test-auto-registered.yaml
 ```
 
 **Expected**: Warnings that workspace, conversation_memory, get_error_details are auto-registered and should not be listed
 
 ### T1.4 — Workflow-injected tools produce warnings
 
-Create `/tmp/test-workflow-tools.yaml`:
+Create `test-fixtures/test-workflow-tools.yaml`:
 ```yaml
 apiVersion: loom/v1
 kind: Agent
@@ -120,14 +120,14 @@ spec:
 ```
 
 ```bash
-./bin/looms validate file /tmp/test-workflow-tools.yaml
+./bin/looms validate file test-fixtures/test-workflow-tools.yaml
 ```
 
 **Expected**: Warnings that send_message, publish, shared_memory_read are workflow-injected
 
 ### T1.5 — Nested tools format rejected
 
-Create `/tmp/test-nested-tools.yaml`:
+Create `test-fixtures/test-nested-tools.yaml`:
 ```yaml
 apiVersion: loom/v1
 kind: Agent
@@ -143,7 +143,7 @@ spec:
 ```
 
 ```bash
-./bin/looms validate file /tmp/test-nested-tools.yaml
+./bin/looms validate file test-fixtures/test-nested-tools.yaml
 ```
 
 **Expected**: Error — "Invalid tools format", expects flat array
