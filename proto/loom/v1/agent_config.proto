@@ -250,6 +250,10 @@ message MemoryConfig {
   // Shared memory threshold in bytes for large tool results.
   // 0 = always reference (default), -1 = never reference (inline everything), >0 = reference only if result exceeds N bytes.
   int64 shared_memory_threshold_bytes = 6;
+
+  // Maximum number of tool results to keep in the conversation kernel.
+  // 0 = use default (5). Higher values give the LLM more context from recent tool calls.
+  int32 max_tool_results = 7;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases

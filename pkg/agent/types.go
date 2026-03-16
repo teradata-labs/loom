@@ -124,6 +124,9 @@ type Agent struct {
 	// -1 = use storage.DefaultSharedMemoryThreshold; 0 = always reference; >0 = byte threshold
 	sharedMemoryThreshold int64
 
+	// Maximum tool results to keep in conversation kernel. 0 = use default (5).
+	maxToolResults int
+
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 

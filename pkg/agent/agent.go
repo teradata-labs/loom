@@ -2944,6 +2944,15 @@ func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	a.sharedMemoryThreshold = threshold
 }
 
+// SetMaxToolResults configures how many tool results to keep in the conversation kernel.
+// 0 = use default (5). Propagates to the memory manager for new sessions.
+func (a *Agent) SetMaxToolResults(n int) {
+	a.maxToolResults = n
+	if a.memory != nil {
+		a.memory.SetMaxToolResults(n)
+	}
+}
+
 // SetSharedMemory configures shared memory for this agent.
 // This injects the shared memory store into:
 // - The agent itself (for formatToolResult to store large results)
