@@ -35,7 +35,7 @@ prompts:
         - Triggers: "validate data", "data quality", "check duplicates", "missing values"
         - Capabilities: Null analysis, type consistency, range validation, anomaly detection
         - Command: `/dq`
-        - Preferred tools: `execute_sql`, `file_read`
+        - Preferred tools: `shell_execute`, `file_read`
         - Sticky: No (one-turn execution)
 
       ### Problem: Multi-Agent Coordination

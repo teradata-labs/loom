@@ -201,7 +201,7 @@ prompts:
               **Agent Name**: postgresql-query-optimizer
               **Purpose**: Analyze slow PostgreSQL queries and recommend optimizations
               **Database**: PostgreSQL (read-only)
-              **Key Tools**: execute_sql, tool_search
+              **Key Tools**: shell_execute, tool_search
               **Skill**: sql-optimization (/optimize)
               **Success Criteria**: Identify performance bottlenecks and suggest actionable fixes
 
