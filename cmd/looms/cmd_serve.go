@@ -931,6 +931,25 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
 	}
 
+	// Deploy weaver-creation skill (if not exists)
+	skillsDir := filepath.Join(loomDataDir, "skills")
+	weaverSkillPath := filepath.Join(skillsDir, "weaver-creation.yaml")
+	if _, err := os.Stat(weaverSkillPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(skillsDir, 0750); err != nil {
+			logger.Warn("Failed to create skills directory", zap.Error(err))
+		}
+		skillData := embedded.GetWeaverCreationSkill()
+		if err := os.WriteFile(weaverSkillPath, skillData, 0600); err != nil {
+			logger.Warn("Failed to deploy weaver-creation skill", zap.Error(err))
+		} else {
+			logger.Info("Weaver creation skill installed",
+				zap.String("dest", weaverSkillPath),
+				zap.Int("size", len(skillData)))
+		}
+	} else {
+		logger.Debug("Weaver creation skill already exists", zap.String("path", weaverSkillPath))
+	}
+
 	// Create agent guide in loom data directory (visible to agents)
 	agentGuidePath := filepath.Join(loomDataDir, "START_HERE.md")
 	if _, err := os.Stat(agentGuidePath); os.IsNotExist(err) {

@@ -90,7 +90,7 @@ spec:
     - Search for available tools using tool_search
     - Read tool documentation before using unfamiliar tools
     - Handle errors gracefully and provide useful feedback
-    - Use context management (search/recall conversation) for long interactions
+    - Use conversation_memory for context management in long interactions
 
     BEST PRACTICES:
     - Start complex tasks by breaking them into steps
@@ -131,6 +131,18 @@ spec:
         implementation: /path/to/validator.so
 
     # --- Built-in Tools ---
+    # Tool Categories:
+    # ═══════════════════════════════════════════════════════════════
+    # CONFIGURABLE (list in spec.tools):
+    #   http_request, web_search, file_read, file_write, analyze_image,
+    #   parse_document, grpc_call, shell_execute, contact_human, tool_search
+    #
+    # AUTO-REGISTERED (do NOT list — always available):
+    #   workspace, get_error_details, conversation_memory, session_memory, query_tool_result
+    #
+    # WORKFLOW-INJECTED (do NOT list — auto-added for workflow agents):
+    #   send_message, publish, shared_memory_read, shared_memory_write
+    # ═══════════════════════════════════════════════════════════════
     builtin:                           # OPTIONAL: Built-in Loom tools
       # Core builtin tools (pkg/shuttle/builtin/)
       - http_request                   # HTTP client (GET/POST/PUT/DELETE/PATCH)
@@ -142,31 +154,7 @@ spec:
       - grpc_call                      # gRPC client
       - shell_execute                  # Execute shell commands
       - contact_human                  # Human-in-the-loop escalation
-
-      # Communication tools (multi-agent workflows)
-      - send_message                   # Send message to another agent
-      - receive_message                # Receive messages from agents
-      - publish                        # Publish to topic (pub-sub)
-      - subscribe                      # Subscribe to topic
-      - receive_broadcast              # Receive broadcast messages
-      - shared_memory_write            # Write to shared memory
-      - shared_memory_read             # Read from shared memory
-
-      # Discovery and introspection
       - tool_search                    # Search available tools
-      - get_error_detail               # Get detailed error info
-    - query_tool_result
-
-      # Memory and context management
-      - search_conversation            # Search conversation history
-      - recall_conversation            # Recall specific conversation segments
-      - clear_recalled_context         # Clear recalled context
-
-      # Presentation and visualization (advanced)
-      - top_n_query                    # Query shared memory (top N results)
-      - group_by_query                 # Group shared memory results
-      - generate_workflow_visualization # Visualize workflow execution
-      - generate_visualization         # Generate data visualizations
 
   # Alternative: Simple tool list (no categorization)
   # tools:

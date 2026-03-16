@@ -253,15 +253,15 @@ The workflow saves detailed artifacts to `$LOOM_DATA_DIR/artifacts/dnd-campaigns
 All agents have access to:
 - `shell_execute` - Execute shell commands
 - `tool_search` - Discover available tools dynamically
-- `get_error_detail` - Get detailed error information
-- `search_conversation` - Search conversation history
-- `recall_conversation` - Recall specific conversation segments
-- `clear_recalled_context` - Clear recalled context
+
+Auto-registered tools (always available, do not list):
+- `get_error_details` - Get detailed error information
+- `conversation_memory` - Conversation history search and recall
+- `query_tool_result` - Query previous tool results
 
 ### Communication Tools
 
-- **Coordinator**: `send_message` only (event-driven, no receive)
-- **Specialists**: `send_message` and `receive_message`
+- **All agents**: `send_message` (messages are event-driven and auto-delivered, no receive tool needed)
 - **Note**: This workflow does NOT use broadcast bus or shared_memory tools
 
 ## Development

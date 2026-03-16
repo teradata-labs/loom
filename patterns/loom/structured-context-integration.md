@@ -207,7 +207,7 @@ targetTable, err := ctx.GetTargetTable(sourceStageKey)
 // Prevent agents claiming they executed tools without actually doing so
 err := ctx.ValidateToolExecutions(
     "stage-10",
-    []string{"generate_visualization", "group_by_query"}
+    []string{"shared_memory_read", "shared_memory_read"}
 )
 // Error if zero tools executed or required tools missing
 

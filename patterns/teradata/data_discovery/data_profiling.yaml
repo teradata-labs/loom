@@ -441,7 +441,7 @@ best_practices: |
   - **Kernel Layer**: Cache signature function results and data quality thresholds
   - **L1 Cache**: Keep recent profiling results (last 5-8 tables) for quick reference
   - **L2 Compressed**: Archive historical profiles showing data quality trends
-  - **Swap Layer**: Store complete profiling history; use recall_conversation to compare current data quality against baseline from months ago when data was initially loaded
+  - **Swap Layer**: Store complete profiling history; use conversation_memory to compare current data quality against baseline from months ago when data was initially loaded
   This enables tracking data quality degradation and identifying when columns become more sparse or lose uniqueness.
 # === BEST_PRACTICES END ===
 

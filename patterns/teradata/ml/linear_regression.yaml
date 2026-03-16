@@ -395,7 +395,7 @@ best_practices: |
   - **Kernel Layer**: Cache feature definitions and transformation logic for consistency across training runs
   - **L1 Cache**: Keep model coefficients and recent predictions (last 3-5 models) for comparison
   - **L2 Compressed**: Archive model performance summaries from earlier in the conversation
-  - **Swap Layer**: Store complete experiment history for long-running ML projects; use recall_conversation to retrieve baseline model metrics from previous sessions when comparing new approaches
+  - **Swap Layer**: Store complete experiment history for long-running ML projects; use conversation_memory to retrieve baseline model metrics from previous sessions when comparing new approaches
   This enables efficient model comparison and reproducible experiments across multi-week ML development cycles.
 # === BEST_PRACTICES END ===
 

@@ -1,0 +1,110 @@
+name: hub_spoke_workflow
+title: Hub-and-Spoke Coordination Pattern
+description: Event-driven coordination where a central coordinator delegates tasks to specialist agents via direct messaging.
+category: weaver
+difficulty: advanced
+backend_type: workflow
+
+use_cases:
+  - "coordinator with specialists"
+  - "hub and spoke"
+  - "delegate to specialists"
+  - "orchestrate agents"
+  - "central coordinator"
+  - "manager and workers"
+
+parameters:
+  - name: coordinator_name
+    type: string
+    description: Name of the hub/coordinator agent
+    required: true
+    example: "coordinator"
+  - name: specialist_count
+    type: integer
+    description: Number of specialist agents
+    required: false
+    example: "3"
+
+templates:
+  workflow:
+    description: Hub-and-spoke coordination workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-coordination
+      spec:
+        entrypoint: coordinator
+        agents:
+          - name: coordinator
+            agent: coordinator
+          - name: specialist-1
+            agent: specialist-1
+          - name: specialist-2
+            agent: specialist-2
+        communication:
+          pattern: hub-and-spoke
+          hub: coordinator
+  coordinator_agent:
+    description: Coordinator agent template
+    sql: |
+      apiVersion: loom/v1
+      kind: Agent
+      metadata:
+        name: coordinator
+      spec:
+        system_prompt: |
+          Coordinate work by delegating tasks to specialist agents.
+          Use send_message to assign tasks to specialists.
+          Agent addressing: use "{workflow-name}:{agent-name}" format.
+          Collect and synthesize specialist responses.
+          Use shared_memory_write to persist important findings.
+        tools:
+          - shell_execute
+          - file_read
+  specialist_agent:
+    description: Specialist agent template
+    sql: |
+      apiVersion: loom/v1
+      kind: Agent
+      metadata:
+        name: specialist
+      spec:
+        system_prompt: |
+          Complete assigned tasks from the coordinator.
+          Use send_message to report results back to the coordinator.
+          Agent addressing: use "{workflow-name}:coordinator" to reply.
+        tools:
+          - shell_execute
+          - file_read
+
+examples:
+  - name: project_planning
+    description: Coordinator delegates project planning to specialists
+    input: "Create a multi-agent system with a coordinator and specialists"
+    expected_output: |
+      Coordination workflow with entrypoint, hub-and-spoke pattern,
+      coordinator + specialist agents, all created before workflow.
+
+common_errors:
+  - error: "Wrong agent namespacing in send_message"
+    cause: "Agents must use {workflow-name}:{agent-name} format"
+    fix: "Document namespacing in agent system prompts"
+  - error: "Creating workflow before agents"
+    cause: "Workflow references agents that must exist first"
+    fix: "Always create all agent .yaml files BEFORE creating the workflow"
+  - error: "Listing communication tools in agent config"
+    cause: "send_message, publish, shared_memory_* are auto-injected"
+    fix: "Never list communication tools in agent spec.tools"
+  - error: "Using manage_ephemeral_agents"
+    cause: "Sub-agents auto-spawn when they receive messages"
+    fix: "Remove manage_ephemeral_agents — not needed for coordination"
+
+best_practices: |
+  - Create ALL agent .yaml files before creating the workflow
+  - Coordinator should summarize specialist responses
+  - Use shared_memory for persistent state across agents
+  - Document agent namespacing ({workflow-name}:{agent-name}) in system prompts
+  - Communication tools (send_message, publish, shared_memory_*) are auto-injected
+  - Do NOT list communication tools in agent spec.tools
+  - Sub-agents auto-spawn on first message — no manual spawning needed

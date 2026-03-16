@@ -324,7 +324,7 @@ func TestPatternCategorization(t *testing.T) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			// Skip special themed directories that don't follow backend_type convention
 			actualDir := filepath.Dir(path)
-			specialDirs := []string{"fun", "nasa"}
+			specialDirs := []string{"fun", "nasa", "weaver"}
 			for _, specialDir := range specialDirs {
 				if strings.Contains(actualDir, "/"+specialDir) || strings.HasSuffix(actualDir, "/"+specialDir) {
 					t.Skipf("Skipping pattern in themed directory '%s'", specialDir)

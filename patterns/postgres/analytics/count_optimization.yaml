@@ -526,7 +526,7 @@ best_practices: |
   - **Kernel Layer**: Cache table row estimates and statistics metadata for quick lookups during count analysis
   - **L1 Cache**: Keep recent COUNT query plans (last 8-10) showing execution times and optimization strategies applied
   - **L2 Compressed**: Archive count optimization patterns (estimate vs exact trade-offs) from earlier in conversation
-  - **Swap Layer**: Store complete count optimization history across sessions; use recall_conversation to reference similar table size and cardinality patterns from previous projects
+  - **Swap Layer**: Store complete count optimization history across sessions; use conversation_memory to reference similar table size and cardinality patterns from previous projects
   This enables quickly recognizing when to use estimates vs exact counts based on historical performance data.
 # === BEST_PRACTICES END ===
 

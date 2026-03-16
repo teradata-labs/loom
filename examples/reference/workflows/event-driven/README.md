@@ -60,7 +60,7 @@ spec:
 **How it works:**
 - All agents subscribe to shared topic (e.g., "party-chat")
 - Agents use `publish(topic, message)` to broadcast
-- All subscribed agents receive via `receive_broadcast()`
+- Messages are event-driven and auto-delivered to all subscribers (no receive tool needed)
 - No hierarchy - all agents are equal peers
 
 ## Example Workflows
@@ -161,7 +161,8 @@ Point-to-point messaging between agents.
 
 **Tools:**
 - `send_message(agent_id, message)` - Send to specific agent
-- `receive_message()` - Receive from inbox (event-driven)
+
+Messages are event-driven and auto-delivered into the recipient's conversation (no receive tool needed).
 
 **Use for:** Hub-and-spoke patterns, direct requests
 
@@ -172,8 +173,8 @@ Topic-based broadcast messaging.
 
 **Tools:**
 - `publish(topic, message)` - Broadcast to topic
-- `subscribe(topic)` - Subscribe to topic
-- `receive_broadcast()` - Receive broadcasts (event-driven)
+
+Messages are event-driven and auto-delivered to all subscribers (no receive tool needed).
 
 **Use for:** Peer-to-peer collaboration, group discussions
 
@@ -193,7 +194,7 @@ Shared key-value state.
 Agents in event-driven workflows are configured with:
 
 1. **System Prompt** - Defines role and communication behavior
-2. **Communication Tools** - send_message, publish, subscribe, etc.
+2. **Communication Tools** - send_message, publish (messages are auto-delivered, no receive tool needed)
 3. **Standard Tools** - tool_search, shell_execute, etc.
 
 ### Example Agent System Prompt (Coordinator)
@@ -224,10 +225,9 @@ spec:
     You are participating in a party adventure via pub-sub.
 
     Communication:
-    1. Subscribe to "party-chat" topic at start
-    2. Use publish(topic="party-chat", message="...") to share
-    3. Read broadcasts using receive_broadcast()
-    4. All participants are equals - collaborate freely
+    1. Use publish(topic="party-chat", message="...") to share
+    2. Messages from other agents are auto-delivered to your conversation
+    3. All participants are equals - collaborate freely
 ```
 
 ## Comparison with Orchestration Patterns

@@ -1,0 +1,47 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: weaver-creation
+  title: Agent & Workflow Creation
+  description: Behavioral constraints and best practices for creating agent and workflow YAML configurations
+  domain: meta-agent
+  version: "1.0.0"
+trigger:
+  mode: ALWAYS
+prompt:
+  instructions: |
+    When creating agent/workflow YAML, follow these rules strictly:
+    1. Use FLAT tool arrays (never nested builtin:/mcp:/custom: subsections)
+    2. Never include llm: section unless user explicitly requests a provider
+    3. Never list auto-registered tools (workspace, get_error_details,
+       conversation_memory, session_memory, query_tool_result)
+    4. Never list workflow-injected tools (send_message, publish,
+       shared_memory_read, shared_memory_write) in agent configs
+    5. Always create agents BEFORE workflows that reference them
+    6. Use tool_search to discover domain tools - never guess tool names
+    7. Agent names in workflows must match .yaml filenames in agents/ dir
+    8. Use action="create_agent" not action="create" with type="agent"
+    9. Use action="create_workflow" not action="create" with type="workflow"
+    10. For event-driven workflows: sub-agents auto-spawn on message receipt.
+        Do NOT use manage_ephemeral_agents. Do NOT create receive_message tools.
+  constraints:
+    - Validate all YAML before writing
+    - Fix validation errors before retrying
+    - Do not hallucinate tool names
+    - Ask user before assuming backend type
+    - For orchestration workflows, use spec.type (not spec.entrypoint)
+    - For coordination workflows, use spec.entrypoint (not spec.type)
+  output_format: |
+    After creation, always provide:
+    1. Summary of what was created (agents, workflow, skills)
+    2. Exact loom commands to run the agent/workflow
+    3. Skill activation commands if skills were configured
+    4. Reminder that user can return for modifications
+tools:
+  required_tools:
+    - agent_management
+  preferred_order:
+    - shell_execute
+    - tool_search
+    - agent_management
+sticky: true

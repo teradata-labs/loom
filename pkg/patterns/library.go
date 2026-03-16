@@ -92,6 +92,7 @@ func NewLibrary(embeddedFS *embed.FS, patternsDir string) *Library {
 			"sql/timeseries",
 			"sql/data_quality",
 			"sql/text",
+			"weaver",
 		},
 		tracer: observability.NewNoOpTracer(),
 	}

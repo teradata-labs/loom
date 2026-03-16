@@ -373,7 +373,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas and column metadata for quick reference during analysis
   - **L1 Cache**: Keep recent data type analysis results (last 5-8 tables) showing actual ranges and recommendations
   - **L2 Compressed**: Archive schema optimization patterns and storage savings from earlier tables
-  - **Swap Layer**: Store complete schema evolution history; use recall_conversation to reference similar type optimization decisions from previous projects
+  - **Swap Layer**: Store complete schema evolution history; use conversation_memory to reference similar type optimization decisions from previous projects
   This enables consistent type selection patterns and tracking cumulative storage savings across database optimization efforts.
 # === BEST_PRACTICES END ===
 

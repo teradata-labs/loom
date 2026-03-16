@@ -353,7 +353,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas and index definitions needed for FastLoad prep
   - **L1 Cache**: Keep recent FastLoad scripts (last 5-8 tables) to reuse patterns
   - **L2 Compressed**: Archive FastLoad performance metrics (rows/min, durations)
-  - **Swap Layer**: Store complete load history; use recall_conversation to reference similar bulk loads from previous ETL cycles
+  - **Swap Layer**: Store complete load history; use conversation_memory to reference similar bulk loads from previous ETL cycles
   This enables optimizing checkpoint intervals and parallelism based on historical throughput.
 # === BEST_PRACTICES END ===
 

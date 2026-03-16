@@ -14,11 +14,6 @@ spec:
     builtin:
       - shell_execute
       - tool_search
-      - get_error_detail
-      - query_tool_result
-      - search_conversation
-      - recall_conversation
-      - clear_recalled_context
     mcp:
       - server: vantage-mcp
         tools:

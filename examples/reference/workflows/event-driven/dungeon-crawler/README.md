@@ -46,19 +46,18 @@ The workflow includes four agents:
 This workflow demonstrates the **broadcast bus** communication mode from Loom's tri-modal system. Unlike hub-and-spoke patterns using message queues, pub-sub enables group communication where all agents see all messages.
 
 **Loom's Tri-Modal Communication System:**
-- **Message Queue**: Direct agent-to-agent messaging via `send_message`/`receive_message` (not used in this workflow)
-- **Broadcast Bus**: Topic-based pub/sub via `publish`/`subscribe`/`receive_broadcast` tools (USED HERE)
+- **Message Queue**: Direct agent-to-agent messaging via `send_message` (not used in this workflow). Messages are event-driven and auto-delivered (no receive tool needed).
+- **Broadcast Bus**: Topic-based pub/sub via `publish` (USED HERE). Broadcasts are event-driven and auto-delivered to all subscribers (no receive tool needed).
 - **Shared Memory**: Shared state via `shared_memory_write`/`shared_memory_read` (not used in this workflow)
 
 **Why All Agents Are Peers:**
 1. **No coordinator**: All agents communicate via the shared "party-chat" topic
-2. **Subscribe pattern**: Each agent subscribes to "party-chat" on startup
-3. **Broadcast publication**: Agents publish messages visible to all subscribers
-4. **Event-driven reception**: Agents use `receive_broadcast()` to hear messages
-5. **Group dynamics**: Party members react to each other, creating emergent roleplay
+2. **Broadcast publication**: Agents publish messages visible to all subscribers
+3. **Event-driven delivery**: Messages are automatically injected into each agent's conversation (no receive tool needed)
+4. **Group dynamics**: Party members react to each other, creating emergent roleplay
 
-**Key Architectural Detail - Event-Driven via receive_broadcast:**
-All agents (DM and players) use `receive_broadcast(timeout_seconds=30)` to listen for messages. This is event-driven from the agent's perspective - they specify a timeout and receive whatever messages arrived during that period. The broadcast bus automatically delivers messages to all subscribed agents.
+**Key Architectural Detail - Event-Driven Auto-Delivery:**
+All messages published to topics are automatically delivered to subscribed agents. There is no `receive_broadcast` tool -- the Loom runtime injects incoming messages into each agent's conversation context as they arrive. Agents simply use `publish()` to send and wait for auto-delivered responses.
 
 The `communication` field in the workflow YAML is **advisory documentation only** - it communicates intent to humans but is not parsed or enforced by the runtime. This flexibility allows you to implement various communication topologies simply by configuring agent prompts and tool usage.
 
@@ -114,7 +113,7 @@ DM: As you debate, you notice the whispers from the west door are growing
 - Publishes to "party-chat" and receives via `receive_broadcast()`
 - **Memory**: SQLite with conversational profile (max_history: 2000)
 - **Config**: max_turns: 100, max_tool_executions: 200, timeout: 600s
-- **Tools**: subscribe, publish, receive_broadcast, tool_search
+- **Tools**: publish, tool_search
 
 ### Fighter Agent (Grog)
 - **Communication Model**: Peer-to-peer via broadcast bus (subscribes to "party-chat")
@@ -124,7 +123,7 @@ DM: As you debate, you notice the whispers from the west door are growing
 - Publishes short, action-oriented responses (1-2 sentences)
 - **Memory**: SQLite with conversational profile (max_history: 1500)
 - **Config**: max_turns: 80, max_tool_executions: 150, timeout: 600s
-- **Tools**: subscribe, publish, receive_broadcast, tool_search
+- **Tools**: publish, tool_search
 
 ### Wizard Agent (Elara)
 - **Communication Model**: Peer-to-peer via broadcast bus (subscribes to "party-chat")
@@ -134,7 +133,7 @@ DM: As you debate, you notice the whispers from the west door are growing
 - Publishes thoughtful analysis (1-2 sentences)
 - **Memory**: SQLite with conversational profile (max_history: 1500)
 - **Config**: max_turns: 80, max_tool_executions: 150, timeout: 600s
-- **Tools**: subscribe, publish, receive_broadcast, tool_search
+- **Tools**: publish, tool_search
 
 ### Rogue Agent (Whisper)
 - **Communication Model**: Peer-to-peer via broadcast bus (subscribes to "party-chat")
@@ -144,7 +143,7 @@ DM: As you debate, you notice the whispers from the west door are growing
 - Publishes observations with humor (1-2 sentences)
 - **Memory**: SQLite with conversational profile (max_history: 1500)
 - **Config**: max_turns: 80, max_tool_executions: 150, timeout: 600s
-- **Tools**: subscribe, publish, receive_broadcast, tool_search
+- **Tools**: publish, tool_search
 
 ## Configuration
 
@@ -158,9 +157,9 @@ All agents use the **conversational** memory compression profile optimized for b
 ### Tool Discovery
 
 All agents use dynamic tool discovery via `tool_search`:
-- DM discovers `subscribe`, `publish`, `receive_broadcast` tools
+- DM discovers `publish` tool for broadcasting to the party
 - All player characters discover the same communication tools
-- No need for `send_message`/`receive_message` - this is pub-sub, not message queue
+- Messages are event-driven and auto-delivered -- no receive tool needed
 
 ### Self-Correction and Observability
 
@@ -184,27 +183,27 @@ All agents subscribe to this topic and publish their messages to it. This create
 ### Message Flow
 
 1. **DM publishes scene**: `publish(topic="party-chat", message="You enter a chamber...")`
-2. **All players receive**: Each player calls `receive_broadcast(timeout_seconds=30)`
+2. **All players receive**: Messages are auto-delivered into each player's conversation
 3. **Players respond**: Each player publishes their character's reaction
-4. **DM receives responses**: DM calls `receive_broadcast()` to hear all player actions
+4. **DM receives responses**: Player responses are auto-delivered to the DM
 5. **DM responds**: DM publishes consequences and next scene
 6. **Cycle repeats**: Continuous back-and-forth creates emergent storytelling
 
-### Event-Driven Reception
+### Event-Driven Auto-Delivery
 
-Agents use `receive_broadcast(timeout_seconds=N)` which:
-- Waits up to N seconds for messages on subscribed topics
-- Returns all messages that arrived during that period
-- Is event-driven from the agent's perspective (blocks until timeout or messages arrive)
-- Automatically handles message delivery from the broadcast bus
+Messages are delivered automatically by the Loom runtime:
+- Published messages are injected into each subscriber's conversation context
+- No explicit receive tool is needed -- delivery is event-driven
+- The broadcast bus handles routing to all subscribed agents
+- Agents simply `publish()` and respond to auto-delivered messages
 
 ## Troubleshooting
 
 ### Agents not seeing messages
-- Verify all agents successfully subscribed to "party-chat"
-- Check that agents are using `receive_broadcast()` with sufficient timeout
+- Verify all agents are part of the workflow and subscribed to "party-chat"
 - Ensure agents are publishing to the correct topic name
 - Check looms server logs for broadcast bus issues
+- Messages are auto-delivered -- if agents are not receiving, check the server logs
 
 ### Characters breaking character
 - Review agent system prompts for personality consistency
@@ -225,19 +224,20 @@ Agents use `receive_broadcast(timeout_seconds=N)` which:
 All agents have access to:
 - `shell_execute` - Execute shell commands
 - `tool_search` - Discover available tools dynamically
-- `get_error_detail` - Get detailed error information
-- `search_conversation` - Search conversation history
-- `recall_conversation` - Recall specific conversation segments
-- `clear_recalled_context` - Clear recalled context
+
+Auto-registered tools (always available, do not list):
+- `get_error_details` - Get detailed error information
+- `conversation_memory` - Conversation history search and recall
+- `query_tool_result` - Query previous tool results
 
 ### Communication Tools (Broadcast Bus)
 
 All agents use:
-- `subscribe` - Subscribe to "party-chat" topic
 - `publish` - Publish messages to "party-chat" topic
-- `receive_broadcast` - Receive messages from subscribed topics (event-driven)
 
-**Note**: This workflow does NOT use message queue tools (`send_message`/`receive_message`) or shared memory tools.
+Messages are event-driven and auto-delivered to all subscribers -- no receive tool needed.
+
+**Note**: This workflow does NOT use message queue tools (`send_message`) or shared memory tools.
 
 ## Development
 
@@ -260,10 +260,9 @@ loom --thread rogue
 ### Understanding Pub-Sub Communication
 
 The broadcast bus enables group communication:
-1. **Subscribe**: Agent joins the "party-chat" topic
-2. **Publish**: Agent sends message to all subscribers
-3. **Receive Broadcast**: Agent gets all messages published to subscribed topics
-4. **No polling**: `receive_broadcast()` blocks until messages arrive or timeout
+1. **Publish**: Agent sends message to all subscribers on a topic
+2. **Auto-delivery**: Messages are automatically injected into each subscriber's conversation
+3. **No receive tool**: There is no explicit receive tool -- delivery is event-driven
 
 This differs from message queue patterns where:
 - Messages are sent to specific agents (point-to-point)
