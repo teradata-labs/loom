@@ -119,8 +119,22 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		}
 	}
 
-	// Execute agent chat
-	resp, err := s.agent.Chat(ctx, sessionID, req.Query)
+	// Convert context from map[string]string to map[string]interface{} for interpolation
+	requestContext := make(map[string]interface{})
+	if req.Context != nil {
+		for k, v := range req.Context {
+			requestContext[k] = v
+		}
+	}
+
+	// Log context variables for debugging if needed
+	zap.L().Debug("Weave: context variables for interpolation",
+		zap.String("session_id", sessionID),
+		zap.String("agent_id", req.AgentId),
+		zap.Int("context_len", len(requestContext)))
+
+	// Execute agent chat with context for variable interpolation
+	resp, err := s.agent.ChatWithProgressAndContext(ctx, sessionID, req.Query, requestContext, nil)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "agent execution failed: %v", err)
 	}
@@ -183,9 +197,25 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		}
 	}
 
-	// Execute agent with progress callback
+	// Convert context from map[string]string to map[string]interface{}
+	requestContext := make(map[string]interface{})
+	if req.Context != nil {
+		for k, v := range req.Context {
+			requestContext[k] = v
+		}
+	}
+
+	// Log context variables for debugging
+	if len(requestContext) > 0 {
+		zap.L().Debug("StreamWeave: context variables for interpolation",
+			zap.String("session_id", sessionID),
+			zap.String("agent_id", req.AgentId),
+			zap.Int("context_len", len(requestContext)))
+	}
+
+	// Execute agent with progress callback and context variables for interpolation
 	go func() {
-		resp, err := s.agent.ChatWithProgress(stream.Context(), sessionID, req.Query, progressCallback)
+		resp, err := s.agent.ChatWithProgressAndContext(stream.Context(), sessionID, req.Query, requestContext, progressCallback)
 		resultChan <- agentResult{resp: resp, err: err}
 		close(progressChan) // Signal no more progress events
 	}()

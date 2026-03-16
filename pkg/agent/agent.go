@@ -14,11 +14,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,10 +135,31 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	}
 
 	// Set up system prompt function for memory
-	// This allows dynamic prompt loading from PromptRegistry
+	// This allows dynamic prompt loading from PromptRegistry and context variable interpolation.
 	// Context is threaded through for proper RLS user_id propagation in PostgreSQL.
 	a.memory.SetSystemPromptFunc(func(ctx context.Context) string {
-		return a.getSystemPrompt(ctx)
+		// Get base system prompt
+		basePrompt := a.getSystemPrompt(ctx)
+
+		// Get context variables from Go context (passed via WithContextVariables)
+		// This avoids needing to access memory/session during prompt generation,
+		// which would cause deadlock when called from GetOrCreateSessionWithAgent
+		contextData := getContextVariablesFromContext(ctx)
+
+		if contextData == nil || len(contextData) == 0 {
+			// No context variables - return prompt as-is
+			return basePrompt
+		}
+
+		// Interpolate context variables ({{.project_path}}, {{.workspace_id}}, etc.)
+		interpolated := interpolateContextVariables(basePrompt, contextData)
+
+		// Log interpolation for debugging
+		zap.L().Debug("Interpolated system prompt with context variables",
+			zap.String("agent", a.config.Name),
+			zap.Int("original_len", len(basePrompt)),
+			zap.Int("interpolated_len", len(interpolated)))
+		return interpolated
 	})
 
 	// Set context limits for memory (if configured)
@@ -572,6 +595,54 @@ func formatSystemPromptWithDatetime(prompt string, workflowCtx *WorkflowCommunic
 	return header + workflowInstructions + prompt
 }
 
+// Context key for storing context variables in Go context
+type contextVarsKey struct{}
+
+// WithContextVariables stores context variables in the Go context for system prompt interpolation.
+// This avoids needing to access memory/session locks during prompt generation.
+func WithContextVariables(ctx context.Context, vars map[string]interface{}) context.Context {
+	if vars == nil || len(vars) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, contextVarsKey{}, vars)
+}
+
+// getContextVariablesFromContext retrieves context variables from the Go context.
+func getContextVariablesFromContext(ctx context.Context) map[string]interface{} {
+	if vars, ok := ctx.Value(contextVarsKey{}).(map[string]interface{}); ok {
+		return vars
+	}
+	return nil
+}
+
+// interpolateContextVariables replaces {{.variable}} placeholders in the system prompt
+// with actual values from the session context (e.g., {{.project_path}} -> "/path/to/project").
+// Returns the original prompt if interpolation fails (no error propagation).
+func interpolateContextVariables(prompt string, contextData map[string]interface{}) string {
+	// If no context data or no template markers, return as-is
+	if len(contextData) == 0 || !strings.Contains(prompt, "{{.") {
+		return prompt
+	}
+
+	// Parse template
+	tmpl, err := template.New("system_prompt").Parse(prompt)
+	if err != nil {
+		// Template parsing failed - log warning and return original
+		zap.L().Warn("Failed to parse system prompt template", zap.Error(err))
+		return prompt
+	}
+
+	// Execute template with context data
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, contextData); err != nil {
+		// Template execution failed - log warning and return original
+		zap.L().Warn("Failed to interpolate context variables", zap.Error(err))
+		return prompt
+	}
+
+	return buf.String()
+}
+
 func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Load ROM content first (if configured)
 	var romContent string
@@ -964,6 +1035,18 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 // The progressCallback will be called at key execution stages to report progress.
 // This is used by StreamWeave to provide real-time feedback to clients.
 func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMessage string, progressCallback ProgressCallback) (*Response, error) {
+	return a.ChatWithProgressAndContext(ctx, sessionID, userMessage, nil, progressCallback)
+}
+
+// ChatWithProgressAndContext is the internal implementation that accepts a context map for variable interpolation.
+// Context variables (e.g., project_path, workspace_id) are interpolated into the system prompt using {{.variable}} syntax.
+func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string, userMessage string, requestContext map[string]interface{}, progressCallback ProgressCallback) (*Response, error) {
+	// Log context for debugging
+	zap.L().Debug("ChatWithProgressAndContext called",
+		zap.String("agent", a.config.Name),
+		zap.String("session_id", sessionID),
+		zap.Int("context_len", len(requestContext)))
+
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
@@ -976,8 +1059,20 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 		span.SetAttribute("message_length", fmt.Sprintf("%d", len(userMessage)))
 	}
 
+	// Inject context variables into Go context BEFORE creating session
+	// This allows system prompt interpolation to access variables without deadlock
+	if requestContext != nil && len(requestContext) > 0 {
+		ctx = WithContextVariables(ctx, requestContext)
+	}
+
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
-	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+
+	// Store request context in session for persistence and future access
+	if requestContext != nil && len(requestContext) > 0 {
+		// Use thread-safe method to merge context
+		sess.SetContext(requestContext)
+	}
 
 	// Add user message to history
 	userMsg := Message{
@@ -986,7 +1081,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 		AgentID:   a.id, // Track which agent received this message
 		Timestamp: time.Now(),
 	}
-	session.AddMessage(ctx, userMsg)
+	sess.AddMessage(ctx, userMsg)
 
 	// Persist message if storage configured
 	if err := a.memory.PersistMessage(ctx, sessionID, userMsg); err != nil {
@@ -1009,7 +1104,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// Create agent context with progress callback
 	agentCtx := &agentContext{
 		Context:          ctx, // Now contains progressCallback
-		session:          session,
+		session:          sess,
 		tracer:           a.tracer,
 		progressCallback: progressCallback,
 	}
@@ -1044,7 +1139,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}
-	session.AddMessage(ctx, assistantMsg)
+	sess.AddMessage(ctx, assistantMsg)
 
 	// Persist final message and session
 	if err := a.memory.PersistMessage(ctx, sessionID, assistantMsg); err != nil {
@@ -1056,7 +1151,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 			span.RecordError(err)
 		}
 	}
-	if err := a.memory.PersistSession(ctx, session); err != nil {
+	if err := a.memory.PersistSession(ctx, sess); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
@@ -1690,6 +1785,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Check if in PLAN permission mode - if so, create plan instead of executing
 		if len(llmResp.ToolCalls) > 0 && a.permissionChecker != nil && a.permissionChecker.InPlanMode() {
+			zap.L().Debug("In PLAN mode - creating execution plan instead of executing tools",
+				zap.String("session_id", session.ID),
+				zap.Int("tool_count", len(llmResp.ToolCalls)))
+
 			// Initialize planner for this session
 			a.ensurePlannerForSession(session.ID)
 
@@ -1772,6 +1871,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// Execute tool calls (normal AUTO_ACCEPT or ASK_BEFORE mode)
+		if len(llmResp.ToolCalls) > 0 {
+			var modeName string
+			if a.permissionChecker != nil {
+				modeName = a.permissionChecker.GetMode().String()
+			} else {
+				modeName = "UNSPECIFIED"
+			}
+			zap.L().Debug("Executing tools immediately",
+				zap.String("session_id", session.ID),
+				zap.String("permission_mode", modeName),
+				zap.Int("tool_count", len(llmResp.ToolCalls)))
+		}
+
 		for _, toolCall := range llmResp.ToolCalls {
 			if toolExecutionCount >= a.config.MaxToolExecutions {
 				break
@@ -3055,6 +3167,12 @@ func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allo
 func (a *Agent) SetPermissionMode(ctx context.Context, sessionID string, mode loomv1.PermissionMode) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	// Log permission mode change for debugging
+	zap.L().Debug("Setting permission mode",
+		zap.String("agent", a.config.Name),
+		zap.String("session_id", sessionID),
+		zap.String("mode", mode.String()))
 
 	// Update permission checker mode
 	if a.permissionChecker != nil {

@@ -169,7 +169,11 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 
 		// DEFENSIVE FIX: Ensure SegmentedMemory exists even for cached sessions
 		// Protects against edge cases where session might have lost SegmentedMem
-		if session.SegmentedMem == nil {
+		// ALSO: Regenerate if context variables are present (for prompt interpolation)
+		// ALSO: Regenerate if context variables are present (for prompt interpolation)
+		contextVars := getContextVariablesFromContext(ctx)
+		hasContextVars := contextVars != nil && len(contextVars) > 0
+		if session.SegmentedMem == nil || hasContextVars {
 			romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
 			if m.systemPromptFunc != nil {
 				romContent = m.systemPromptFunc(ctx)
@@ -234,7 +238,9 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			// CRITICAL FIX: Re-initialize SegmentedMemory for loaded sessions
 			// Sessions loaded from DB don't have SegmentedMem/FailureTracker (not persisted)
 			// We MUST recreate these for compression and error tracking to work
-			if session.SegmentedMem == nil {
+			// ALSO: Regenerate if context variables are present (for prompt interpolation)
+			hasContextVars := getContextVariablesFromContext(ctx) != nil && len(getContextVariablesFromContext(ctx)) > 0
+			if session.SegmentedMem == nil || hasContextVars {
 				// Initialize ROM content
 				romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
 				if m.systemPromptFunc != nil {
