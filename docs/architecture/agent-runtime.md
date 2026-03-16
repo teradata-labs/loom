@@ -42,11 +42,11 @@ Comprehensive architecture of Loom's agent runtime system with Error Submission 
 
 The Agent Runtime system provides **lifecycle management, error handling, and built-in tool registration** for Loom agents. The centerpiece is the **Error Submission Channel**, a progressive disclosure system that stores verbose errors (3,000+ characters with stack traces) in SQLite while sending lightweight summaries (100 characters) to LLMs.
 
-**Key Innovation**: Progressive error disclosure with automatic fallback - store full errors locally, send summaries to LLM, provide on-demand retrieval via built-in `get_error_detail` tool.
+**Key Innovation**: Progressive error disclosure with automatic fallback - store full errors locally, send summaries to LLM, provide on-demand retrieval via built-in `get_error_details` tool.
 
 **Problem Solved**: Tool execution errors can be extremely verbose (3,000+ character stack traces), wasting thousands of tokens and potentially crashing LLM providers with oversized context windows. Traditional truncation loses critical debugging information.
 
-**Solution**: Store full errors in SQLite with unique IDs (e.g., `err_20241121_230334_abc123`), send 100-character summaries to LLM with error references, auto-register `get_error_detail` tool for on-demand retrieval.
+**Solution**: Store full errors in SQLite with unique IDs (e.g., `err_20241121_230334_abc123`), send 100-character summaries to LLM with error references, auto-register `get_error_details` tool for on-demand retrieval.
 
 
 ## Design Goals
@@ -80,7 +80,7 @@ graph TB
     subgraph AgentSystem["Agent Runtime System"]
         Core[Agent Runtime Core<br/>• NewAgent initialization<br/>• Option pattern config<br/>• Built-in tool registration<br/>• Lifecycle management]
         ErrorChannel[Error Submission Channel<br/>• SQLiteErrorStore persistence<br/>• extractErrorSummary 100-char<br/>• Error ID generation<br/>• GetErrorDetailsTool retrieval]
-        ToolRegistry[Built-in Tool Registry<br/>• get_error_detail<br/>• get_tool_result<br/>• Auto-registration]
+        ToolRegistry[Built-in Tool Registry<br/>• get_error_details<br/>• get_tool_result<br/>• Auto-registration]
     end
 
     AgentRT --> Core
@@ -94,7 +94,7 @@ graph TB
 
 **External Dependencies**:
 - **SQLite**: Error persistence (agent_errors table)
-- **LLM Provider**: Receives error summaries, calls get_error_detail
+- **LLM Provider**: Receives error summaries, calls get_error_details
 - **Hawk**: Observability tracing for all error operations
 - **Tool Executor**: Generates tool execution errors
 
@@ -131,7 +131,7 @@ flowchart TD
 
     ExtractSummary --> StoreSQLite[Step 2: Store in SQLite<br/>errorStore.Store ctx, StoredError<br/>Returns: errorID err_YYYYMMDD_HHMMSS_abc123]
 
-    StoreSQLite --> FormatLLM[Step 3: Format for LLM<br/>Tool X failed: 100-char summary<br/>Error ID: err_YYYYMMDD_abc123<br/>Use get_error_detail errorID]
+    StoreSQLite --> FormatLLM[Step 3: Format for LLM<br/>Tool X failed: 100-char summary<br/>Error ID: err_YYYYMMDD_abc123<br/>Use get_error_details errorID]
 
     StoreSQLite -->|If storage fails| Fallback[Fallback: Truncate to 500 chars]
 
@@ -145,7 +145,7 @@ flowchart TD
 
     Indexes --> Ops[Operations:<br/>Store, Get, List]
 
-    Ops --> GetTool[GetErrorDetailsTool<br/>Name: get_error_detail<br/>Fetches complete error info]
+    Ops --> GetTool[GetErrorDetailsTool<br/>Name: get_error_details<br/>Fetches complete error info]
 
     GetTool --> ToolFlow[Execute Flow:<br/>1. Parse error_id<br/>2. errorStore.Get ctx, errorID<br/>3. Return formatted output]
 ```
@@ -215,7 +215,7 @@ func WithSessionStore(store *SessionStore) Option
 func WithErrorStore(store ErrorStore) Option {
     return func(a *Agent) {
         a.errorStore = store
-        // get_error_detail tool auto-registered in NewAgent()
+        // get_error_details tool auto-registered in NewAgent()
     }
 }
 
@@ -400,7 +400,7 @@ func (a *Agent) formatToolResult(ctx context.Context, sessionID, toolName string
                 // Return summary + reference
                 return fmt.Sprintf(`Tool '%s' failed: %s
 [Error ID: %s]
-📋 Use get_error_detail("%s") for complete error information`,
+📋 Use get_error_details("%s") for complete error information`,
                     toolName, summary, errorID, errorID)
             }
         }
@@ -425,7 +425,7 @@ func (a *Agent) formatToolResult(ctx context.Context, sessionID, toolName string
             if storeErr == nil {
                 return fmt.Sprintf(`Tool '%s' failed: %s
 [Error ID: %s]
-📋 Use get_error_detail tool with error_id="%s" for complete error information`,
+📋 Use get_error_details tool with error_id="%s" for complete error information`,
                     toolName, summary, errorID, errorID)
             }
         }
@@ -450,7 +450,7 @@ func (a *Agent) formatToolResult(ctx context.Context, sessionID, toolName string
 
 ### Built-in Tool Registry
 
-**Responsibility**: Automatic registration of system tools (get_error_detail, get_tool_result) when dependencies are configured.
+**Responsibility**: Automatic registration of system tools (get_error_details, get_tool_result) when dependencies are configured.
 
 **GetErrorDetailsTool** (`pkg/agent/builtin_tools.go:22`):
 ```go
@@ -463,7 +463,7 @@ func NewGetErrorDetailsTool(store ErrorStore) *GetErrorDetailsTool {
 }
 
 func (t *GetErrorDetailsTool) Name() string {
-    return "get_error_detail"
+    return "get_error_details"
 }
 
 func (t *GetErrorDetailsTool) Description() string {
@@ -485,7 +485,7 @@ Output:
 
 Example:
 If a tool fails with message "[Error ID: err_20241121_abc123]",
-you can call: get_error_detail(error_id="err_20241121_abc123") to get the full stack trace.`
+you can call: get_error_details(error_id="err_20241121_abc123") to get the full stack trace.`
 }
 
 func (t *GetErrorDetailsTool) InputSchema() *shuttle.JSONSchema {
@@ -534,7 +534,7 @@ func (t *GetErrorDetailsTool) Execute(ctx context.Context, input map[string]inte
 func NewAgent(backend fabric.ExecutionBackend, llm LLMProvider, opts ...Option) *Agent {
     // ... agent initialization ...
 
-    // Register built-in get_error_detail tool if error store is configured
+    // Register built-in get_error_details tool if error store is configured
     if agent.errorStore != nil {
         agent.tools.Register(NewGetErrorDetailsTool(agent.errorStore))
     }
@@ -550,7 +550,7 @@ func NewAgent(backend fabric.ExecutionBackend, llm LLMProvider, opts ...Option) 
 
 **Rationale**:
 - **Conditional registration**: Built-in tools only registered when dependencies available
-- **Zero configuration**: LLM automatically has access to get_error_detail when error store configured
+- **Zero configuration**: LLM automatically has access to get_error_details when error store configured
 - **Separation of concerns**: Built-in tools separate from user-defined tools
 - **Consistent interface**: Built-in tools use same shuttle.Tool interface as user tools
 
@@ -640,7 +640,7 @@ fullAgent := agent.NewAgent(backend, llm,
     agent.WithSharedMemory(sharedMem),
     agent.WithTracer(tracer),
 )
-// Result: get_error_detail and get_tool_result auto-registered
+// Result: get_error_details and get_tool_result auto-registered
 ```
 
 
@@ -667,7 +667,7 @@ sequenceDiagram
         Store-->>Format: Return errorID<br/>err_20241121_abc123
     end
 
-    Format->>Format: Format message:<br/>"Tool 'X' failed: [100-char summary]<br/>[Error ID: err_20241121_abc123]<br/>Use get_error_detail(...)"
+    Format->>Format: Format message:<br/>"Tool 'X' failed: [100-char summary]<br/>[Error ID: err_20241121_abc123]<br/>Use get_error_details(...)"
     Format-->>Tool: Formatted message (150 chars)
     Tool->>LLM: Send to LLM (150 chars)
 ```
@@ -677,7 +677,7 @@ sequenceDiagram
 | Approach | Full Error | Sent to LLM | Information Loss | Retrievability |
 |----------|------------|-------------|------------------|----------------|
 | **Before (Truncation)** | 3,000 chars | 500 chars | 83% | None |
-| **After (Error Channel)** | 3,000 chars (stored) | 100 chars | 0% | Via get_error_detail |
+| **After (Error Channel)** | 3,000 chars (stored) | 100 chars | 0% | Via get_error_details |
 
 **Savings**: 96.7% token reduction with 0% information loss
 
@@ -687,11 +687,11 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant LLM as LLM
-    participant Tool as get_error_detail
+    participant Tool as get_error_details
     participant Store as ErrorStore
     participant DB as SQLite
 
-    LLM->>Tool: tool_use get_error_detail<br/>error_id="err_20241121_abc123"
+    LLM->>Tool: tool_use get_error_details<br/>error_id="err_20241121_abc123"
     Tool->>Tool: Parse input error_id
     Tool->>Store: Get(error_id)
     Store->>DB: SELECT * FROM agent_errors<br/>WHERE id = ?
@@ -708,10 +708,10 @@ sequenceDiagram
 
 2. **LLM analysis (most common case)**
    - Summary sufficient: "Connection timeout suggests network issue, retrying..."
-   - No `get_error_detail` call
+   - No `get_error_details` call
 
 3. **Complex debugging scenario**
-   - LLM calls: `get_error_detail(error_id="err_20241121_abc123")`
+   - LLM calls: `get_error_details(error_id="err_20241121_abc123")`
    - Receives: Full 3,000-character stack trace with TCP error codes, timeouts, retry attempts
    - Analysis: "TCP handshake failed at 192.168.1.5:1025, firewall blocking port?"
 
@@ -937,7 +937,7 @@ err_20241121_230335_789xyz  (Next second)
 **Consequences**:
 - ✅ Predictable token usage (25 tokens per error summary)
 - ✅ Simple implementation (substring, no configuration)
-- ❌ Fixed length may truncate important context (mitigated by get_error_detail)
+- ❌ Fixed length may truncate important context (mitigated by get_error_details)
 
 
 ### Decision 3: Automatic Fallback vs. Strict Enforcement
@@ -1000,7 +1000,7 @@ DELETE FROM agent_errors WHERE timestamp < unixepoch() - 2592000; -- 30 days
 
 **Impact**: Complex errors may lose critical context in summary.
 
-**Workaround**: LLM calls get_error_detail for full information.
+**Workaround**: LLM calls get_error_details for full information.
 
 
 ## Performance Characteristics
@@ -1014,7 +1014,7 @@ DELETE FROM agent_errors WHERE timestamp < unixepoch() - 2592000; -- 30 days
 | ErrorStore.Store | 5ms | 15ms | SQLite INSERT with 3 indexes |
 | ErrorStore.Get | 3ms | 10ms | SQLite SELECT by primary key |
 | ErrorStore.List | 10ms | 50ms | SQLite SELECT with filters (session, tool, time) |
-| get_error_detail Execute | 5ms | 20ms | ErrorStore.Get + JSON formatting |
+| get_error_details Execute | 5ms | 20ms | ErrorStore.Get + JSON formatting |
 
 ### Memory Usage
 
@@ -1106,7 +1106,7 @@ flowchart LR
 - Disk full → Log error, fallback to truncation
 - Invalid JSON → Wrap in `{"message": "..."}`, retry
 
-**Retrieval Failures** (get_error_detail):
+**Retrieval Failures** (get_error_details):
 - Error ID not found → Return tool error: "ERROR_NOT_FOUND"
 - SQLite error → Return tool error: "DATABASE_ERROR"
 

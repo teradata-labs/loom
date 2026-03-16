@@ -447,20 +447,20 @@ memory.ClearPromotedContext()
 
 Agents automatically receive three built-in tools for swap layer access:
 
-1. **`recall_conversation`**: Retrieve older conversation history from swap (offset-based)
+1. **`conversation_memory`**: Retrieve older conversation history from swap (offset-based)
    - Parameters: `offset` (int), `limit` (int, max 50)
    - Returns: Message previews and promotes messages to context
    - Use case: "Show me messages 20-30"
    - Latency: 12-28ms (database pagination query)
 
-2. **`search_conversation`**: Semantic search over conversation history (BM25 + LLM reranking)
+2. **`conversation_memory`** (semantic search mode): Semantic search over conversation history (BM25 + LLM reranking)
    - Parameters: `query` (string), `limit` (int, max 20), `promote` (bool, default true)
    - Returns: Most relevant messages ranked by semantic similarity
    - Use case: "What did we discuss about database optimization?"
    - Latency: 80-150ms (p50-p99, BM25 20-30ms + reranking 50-100ms)
    - Algorithm: BM25 top-50 candidates → LLM reranks to top-N
 
-3. **`clear_recalled_context`**: Remove promoted messages from context
+3. **`conversation_memory`** (clear mode): Remove promoted messages from context
    - Parameters: None
    - Returns: Count of cleared messages
    - Use case: Free up token budget after using recalled context
@@ -472,7 +472,7 @@ These tools are automatically registered when swap is enabled (opt-out design).
 
 **Status**: ✅ Implemented (v1.0.0-beta.2)
 
-**Problem**: Offset-based retrieval (`recall_conversation`) requires knowing the approximate position of relevant messages. Agents often need to find conceptually related messages without knowing their chronological position.
+**Problem**: Offset-based retrieval (`conversation_memory`) requires knowing the approximate position of relevant messages. Agents often need to find conceptually related messages without knowing their chronological position.
 
 **Solution**: Two-stage semantic search pipeline:
 

@@ -387,7 +387,7 @@ best_practices: |
   - **Kernel Layer**: Cache table constraints and index definitions for quick lookup during analysis
   - **L1 Cache**: Keep recent query plans (last 5-10 queries) showing DISTINCT usage and alternatives tested
   - **L2 Compressed**: Archive optimization decisions and performance improvements from earlier in conversation
-  - **Swap Layer**: Store complete query optimization history for long-running projects; use recall_conversation to reference DISTINCT patterns analyzed weeks ago
+  - **Swap Layer**: Store complete query optimization history for long-running projects; use conversation_memory to reference DISTINCT patterns analyzed weeks ago
   This enables consistent optimization patterns and avoids re-analyzing similar queries.
 # === BEST_PRACTICES END ===
 

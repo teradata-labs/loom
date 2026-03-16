@@ -517,7 +517,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas, indexes, and statistics for query analysis
   - **L1 Cache**: Keep recent query plans (original and rewritten) for the last 8-10 optimization cases
   - **L2 Compressed**: Archive successful rewrite patterns and their performance improvements
-  - **Swap Layer**: Store complete query optimization history across sessions; use recall_conversation to reference similar optimization patterns from previous projects
+  - **Swap Layer**: Store complete query optimization history across sessions; use conversation_memory to reference similar optimization patterns from previous projects
   This enables recognizing rewrite opportunities quickly and building a library of proven transformations.
 # === BEST_PRACTICES END ===
 

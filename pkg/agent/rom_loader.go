@@ -25,6 +25,9 @@ var baseROM string
 //go:embed roms/TD.rom
 var teradataROM string
 
+//go:embed roms/WEAVER.rom
+var weaverROM string
+
 // LoadROMContent loads ROM (Read-Only Memory) content based on configuration.
 // ROM provides operational guidance and optional domain-specific knowledge.
 //
@@ -71,6 +74,8 @@ func LoadROMContent(romID string, backendPath string) string {
 	switch romLower {
 	case "td", "teradata":
 		domainROM = teradataROM
+	case "weaver":
+		domainROM = weaverROM
 	case "auto":
 		// Auto-detect from backend path
 		domainROM = detectDomainROM(backendPath)
@@ -123,6 +128,7 @@ func GetAvailableROMs() []string {
 		"",         // Base ROM only (~5KB operational guidance)
 		"TD",       // Base + Teradata SQL guidance (~16KB total)
 		"teradata", // Alias for TD
+		"weaver",   // Base + Weaver agent/workflow creation guidance
 		"auto",     // Base + auto-detected domain ROM
 		"none",     // No ROM at all (explicit opt-out)
 	}
@@ -147,6 +153,9 @@ func GetROMSize(romID string) int {
 		totalSize += len(teradataROM)
 		// Add separator overhead (~150 bytes)
 		totalSize += 150
+	case "weaver":
+		totalSize += len(weaverROM)
+		totalSize += 150
 	}
 
 	return totalSize
@@ -164,6 +173,8 @@ func GetDomainROMSize(romID string) int {
 	switch romLower {
 	case "td", "teradata":
 		return len(teradataROM)
+	case "weaver":
+		return len(weaverROM)
 	default:
 		return 0
 	}

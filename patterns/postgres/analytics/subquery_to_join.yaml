@@ -512,7 +512,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas, foreign keys, and index definitions for join planning
   - **L1 Cache**: Keep recent query plans (last 8-10) showing SubPlan execution costs and JOIN alternatives
   - **L2 Compressed**: Archive successful subquery-to-join conversions and performance metrics
-  - **Swap Layer**: Store complete optimization history across sessions; use recall_conversation to reference similar conversion patterns from earlier projects
+  - **Swap Layer**: Store complete optimization history across sessions; use conversation_memory to reference similar conversion patterns from earlier projects
   This enables quickly identifying subquery patterns and applying proven conversion strategies.
 # === BEST_PRACTICES END ===
 
