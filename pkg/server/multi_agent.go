@@ -1034,7 +1034,21 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		return nil // No registry available
 	}
 
+	// coordinatorID may be a GUID (from getAgent resolution) — resolve to name for config lookup
 	protoConfig := s.registry.GetConfig(coordinatorID)
+	if protoConfig == nil {
+		// Try using the agent's actual name (GetName) since coordinatorID might be a GUID
+		agentName := coordinatorAgent.GetName()
+		if agentName != coordinatorID {
+			protoConfig = s.registry.GetConfig(agentName)
+			if protoConfig != nil {
+				s.logger.Info("spawnWorkflowSubAgents: resolved GUID to agent name for config lookup",
+					zap.String("guid", coordinatorID),
+					zap.String("agent_name", agentName))
+				coordinatorID = agentName // Use the name from here on
+			}
+		}
+	}
 	if protoConfig == nil {
 		s.logger.Debug("spawnWorkflowSubAgents: protoConfig is nil",
 			zap.String("coordinator_id", coordinatorID))
@@ -1052,14 +1066,14 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Debug("spawnWorkflowSubAgents: checking role/workflow",
 		zap.String("coordinator_id", coordinatorID),
 		zap.Bool("has_role", hasRole),
-		zap.Any("role", role),
+		zap.String("role", role),
 		zap.Bool("has_workflow", hasWorkflow),
-		zap.Any("workflow_name", workflowName))
+		zap.String("workflow_name", workflowName))
 
 	if !hasRole || role != "coordinator" || !hasWorkflow {
 		s.logger.Debug("spawnWorkflowSubAgents: not a coordinator",
 			zap.Bool("has_role", hasRole),
-			zap.Any("role", role),
+			zap.String("role", role),
 			zap.Bool("has_workflow", hasWorkflow))
 		return nil // Not a workflow coordinator
 	}
@@ -1140,15 +1154,21 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 								continue
 							}
 
-							// Construct workflow-prefixed agent ID
-							subAgentID := fmt.Sprintf("%s:%s", workflowName, agentName)
+							// Construct workflow-prefixed agent ID using role name (not agent config name)
+							// This ensures IDs match what coordinator sends to: "workflow:role-name"
+							nameForID := roleName
+							if nameForID == "" {
+								nameForID = agentName // fallback to agent config name
+							}
+							subAgentID := fmt.Sprintf("%s:%s", workflowName, nameForID)
 
 							s.logger.Info("Spawning workflow sub-agent",
 								zap.String("sub_agent_id", subAgentID),
-								zap.String("agent_name", agentName))
+								zap.String("agent_name", agentName),
+								zap.String("role_name", roleName))
 
-							// Spawn the sub-agent (will auto-register with message queue if it exists)
-							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID); err != nil {
+							// Spawn the sub-agent, passing base agent name for registry lookup
+							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID, agentName); err != nil {
 								s.logger.Warn("Failed to spawn workflow sub-agent",
 									zap.String("sub_agent_id", subAgentID),
 									zap.Error(err))
@@ -1937,18 +1957,26 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
 // pending messages for it. This handles the case where workflows are registered post-startup
 // (e.g., by weaver) and messages arrive before the coordinator connects.
-func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentID string) error {
-	// Parse workflow name from agent ID (format: "workflow-name:agent-id")
+func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentID string, baseAgentNames ...string) error {
+	// Parse workflow name from agent ID (format: "workflow-name:role-name")
 	parts := strings.SplitN(agentID, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid workflow agent ID format: %s", agentID)
 	}
 	workflowName := parts[0]
-	baseAgentName := parts[1]
+	roleName := parts[1]
+
+	// Determine base agent name for registry lookup
+	// If explicit base agent name provided, use it; otherwise fall back to role name
+	baseAgentName := roleName
+	if len(baseAgentNames) > 0 && baseAgentNames[0] != "" {
+		baseAgentName = baseAgentNames[0]
+	}
 
 	s.logger.Info("Auto-spawning workflow sub-agent",
 		zap.String("agent", agentID),
 		zap.String("workflow", workflowName),
+		zap.String("role_name", roleName),
 		zap.String("base_agent", baseAgentName))
 
 	// Try to get the agent from registry using the workflow-prefixed ID first
@@ -1961,7 +1989,29 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 
 		subAgent, _, err = s.getAgent(baseAgentName)
 		if err != nil {
-			return fmt.Errorf("failed to get agent (tried both '%s' and '%s'): %w", agentID, baseAgentName, err)
+			// Last resort: search registry for agent with matching workflow metadata
+			// This handles the case where the monitor auto-spawns without knowing the base agent name
+			if s.registry != nil {
+				configs := s.registry.ListConfigs()
+				for _, config := range configs {
+					if config.Metadata["workflow"] == workflowName && config.Metadata["role"] != "coordinator" {
+						// Check if this agent's name matches the role name pattern
+						// e.g., "dnd-world-builder" might be the agent for role "world-builder"
+						if strings.HasSuffix(config.Name, roleName) || strings.Contains(config.Name, roleName) {
+							s.logger.Info("Found matching agent in registry via workflow metadata search",
+								zap.String("role_name", roleName),
+								zap.String("found_agent", config.Name))
+							subAgent, _, err = s.getAgent(config.Name)
+							if err == nil {
+								break
+							}
+						}
+					}
+				}
+			}
+			if subAgent == nil {
+				return fmt.Errorf("failed to get agent (tried '%s', '%s', and registry search): %w", agentID, baseAgentName, err)
+			}
 		}
 	}
 

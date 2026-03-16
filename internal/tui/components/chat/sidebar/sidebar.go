@@ -688,11 +688,23 @@ func (s *sidebarCmp) currentModelBlock() string {
 	}
 
 	if s.session.ID != "" {
+		// Use server-reported context window when available, otherwise fall back to default
+		ctxWindow := int64(contextWindow)
+		if s.session.ContextTokensMax > 0 {
+			ctxWindow = s.session.ContextTokensMax
+		}
+
+		// Use server-reported context fill when available, otherwise sum tokens
+		ctxUsed := int64(s.session.CompletionTokens + s.session.PromptTokens)
+		if s.session.ContextTokensUsed > 0 {
+			ctxUsed = s.session.ContextTokensUsed
+		}
+
 		parts = append(
 			parts,
 			"  "+formatTokensAndCost(
-				int64(s.session.CompletionTokens+s.session.PromptTokens),
-				int64(contextWindow),
+				ctxUsed,
+				ctxWindow,
 				s.session.Cost,
 			),
 		)

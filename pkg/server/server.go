@@ -285,7 +285,20 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 			Type:     "text",
 			DataJson: resp.Content,
 		},
-		ContextState: contextState,
+		PartialContent: resp.Content,
+		ContextState:   contextState,
+		Cost: &loomv1.CostInfo{
+			TotalCostUsd: resp.Usage.CostUSD,
+			LlmCost: &loomv1.LLMCost{
+				Provider:                 s.agent.GetLLMProviderName(),
+				Model:                    s.agent.GetLLMModel(),
+				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
+				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
+				CostUsd:                  resp.Usage.CostUSD,
+				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
+				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+			},
+		},
 	}
 
 	return stream.Send(completionProgress)
