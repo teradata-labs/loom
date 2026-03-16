@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
+	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -138,6 +139,9 @@ type MultiAgentServer struct {
 
 	// judgeServer holds the registered judge configurations for ABTest judge_id resolution.
 	judgeServer *JudgeServer
+
+	// patternTracker is wired into every agent's orchestrator for effectiveness metrics.
+	patternTracker *learning.PatternEffectivenessTracker
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -518,6 +522,11 @@ func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
 
 	// Note: MessageBus, MessageQueue, and SharedMemoryComm are server-level singletons
 	// accessed via gRPC RPCs, not directly injected into agents
+
+	// Wire pattern effectiveness tracker so every pattern-guided turn records metrics
+	if s.patternTracker != nil {
+		ag.SetPatternTracker(s.patternTracker)
+	}
 }
 
 // UpdateAgent replaces an existing agent with a new instance (for hot-reload).
@@ -553,6 +562,11 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 				zap.String("agent_name", ag.GetName()),
 				zap.Int("num_tools", len(commTools)))
 		}
+	}
+
+	// Wire pattern effectiveness tracker for metrics collection
+	if s.patternTracker != nil {
+		ag.SetPatternTracker(s.patternTracker)
 	}
 
 	// Now acquire lock ONLY for the agent swap (minimal critical section)
@@ -3069,6 +3083,20 @@ func (s *MultiAgentServer) SetArtifactStore(store artifacts.ArtifactStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.artifactStore = store
+}
+
+// SetPatternTracker sets the pattern effectiveness tracker on the server.
+// All existing and future agents (via AddAgent) will have their orchestrators
+// wired to record metrics automatically.
+func (s *MultiAgentServer) SetPatternTracker(tracker *learning.PatternEffectivenessTracker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.patternTracker = tracker
+
+	// Wire tracker into all existing agents
+	for _, ag := range s.agents {
+		ag.SetPatternTracker(tracker)
+	}
 }
 
 // AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.

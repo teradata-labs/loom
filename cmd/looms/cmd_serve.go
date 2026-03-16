@@ -1289,6 +1289,14 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
+				// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns.
+				// Patterns are enabled by default (DefaultPatternConfig), so all agents
+				// need a patterns directory to find filesystem patterns.
+				if pd, ok := cfg.Metadata["patterns_dir"]; ok && pd != "" {
+					agentCfg.PatternsDir = pd
+				} else {
+					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
+				}
 				// Transfer skills configuration from metadata
 				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
 					agentCfg.SkillsConfig = sc
@@ -1886,6 +1894,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("Initializing LearningAgent (self-improvement system)")
 	var learningAgent *learning.LearningAgent
 	var learningService *server.LearningService
+	var patternTracker *learning.PatternEffectivenessTracker
 	{
 		// 1. Open database connection for learning agent
 		learningDBPath := config.Database.Path
@@ -1925,7 +1934,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			1*time.Hour,   // windowSize
 			5*time.Minute, // flushInterval
 		)
-		logger.Info("  Pattern effectiveness tracker created")
+		patternTracker = tracker // hoist for agent wiring below
+		if err := tracker.Start(ctx); err != nil {
+			logger.Fatal("Failed to start pattern effectiveness tracker", zap.Error(err))
+		}
+		logger.Info("  Pattern effectiveness tracker created and started")
 
 		// 6. Create learning agent
 		// Check for YAML config file first (declarative preferred)
@@ -2021,6 +2034,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("  LearningAgent analysis loop started")
 	}
 	logger.Info("LearningAgent initialization complete")
+
+	// Wire pattern effectiveness tracker into the multi-agent server.
+	// This wires the tracker into all existing agents' orchestrators and ensures
+	// any agent added later (via hot-reload or CreateAgent RPC) also gets it.
+	if patternTracker != nil {
+		loomService.SetPatternTracker(patternTracker)
+		logger.Info("Pattern effectiveness tracking enabled for all agents",
+			zap.Int("agents", len(agents)))
+	}
 
 	// Initialize workflow scheduler
 	var workflowScheduler *scheduler.Scheduler
@@ -2273,6 +2295,24 @@ func runServe(cmd *cobra.Command, args []string) {
 				EnableTracing:     config.Observability.Enabled,
 			}
 
+			// Transfer pattern configuration from proto if present
+			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
+				cfg.PatternConfig = &agent.PatternConfig{
+					Enabled:            agentConfig.Behavior.Patterns.Enabled,
+					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
+					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
+					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
+					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
+				}
+			}
+
+			// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns
+			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
+				cfg.PatternsDir = pd
+			} else {
+				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
+			}
+
 			// Set context limits if specified in LLM config
 			if agentConfig.Llm != nil {
 				if agentConfig.Llm.MaxContextTokens > 0 {
@@ -2334,6 +2374,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 			// Create new agent
 			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
+
+			// Wire pattern effectiveness tracker for metrics collection
+			if patternTracker != nil {
+				newAgent.SetPatternTracker(patternTracker)
+			}
 
 			// Set stable GUID from registry if provided
 			// This ensures the agent maintains the same ID across hot-reloads
@@ -2680,6 +2725,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Warn("Error closing tool registry", zap.Error(err))
 			} else {
 				logger.Info("Tool registry closed")
+			}
+		}
+
+		// Stop pattern tracker (flushes remaining buffered metrics)
+		if patternTracker != nil {
+			ctx := context.Background()
+			if err := patternTracker.Stop(ctx); err != nil {
+				logger.Warn("Error stopping pattern tracker", zap.Error(err))
+			} else {
+				logger.Info("Pattern effectiveness tracker stopped (final flush complete)")
 			}
 		}
 

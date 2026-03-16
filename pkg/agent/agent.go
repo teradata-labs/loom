@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
@@ -1982,21 +1983,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// === PATTERN EFFECTIVENESS TRACKING ===
-		// Track pattern usage after tool execution completes
-		if selectedPattern != nil && patternConfig.EnableTracking && len(allToolExecutions) > 0 {
-			// Get the most recent tool execution for this turn
-			lastExecution := allToolExecutions[len(allToolExecutions)-1]
-
-			// Determine success based on execution result
-			success := lastExecution.Error == nil && (lastExecution.Result == nil || lastExecution.Result.Success)
-
-			// Extract error type if failed
+		// Track pattern usage after each turn (with or without tool execution).
+		// A pattern was selected and injected into the prompt — record its effectiveness.
+		if selectedPattern != nil && patternConfig.EnableTracking {
+			// Determine success and error type from tool executions if any ran;
+			// otherwise treat a pure-LLM response as successful.
+			success := true
 			errorType := ""
-			if !success {
-				if lastExecution.Error != nil {
-					errorType = "execution_error"
-				} else if lastExecution.Result != nil && lastExecution.Result.Error != nil {
-					errorType = lastExecution.Result.Error.Code
+			if len(allToolExecutions) > 0 {
+				lastExecution := allToolExecutions[len(allToolExecutions)-1]
+				success = lastExecution.Error == nil && (lastExecution.Result == nil || lastExecution.Result.Success)
+				if !success {
+					if lastExecution.Error != nil {
+						errorType = "execution_error"
+					} else if lastExecution.Result != nil && lastExecution.Result.Error != nil {
+						errorType = lastExecution.Result.Error.Code
+					}
 				}
 			}
 
@@ -2793,6 +2795,15 @@ func (a *Agent) GetCircuitBreakers() *fabric.CircuitBreakerManager {
 // GetOrchestrator returns the pattern orchestrator for intent classification.
 func (a *Agent) GetOrchestrator() *patterns.Orchestrator {
 	return a.orchestrator
+}
+
+// SetPatternTracker wires a PatternEffectivenessTracker into this agent's
+// orchestrator so that every pattern-guided turn records metrics to the
+// pattern_effectiveness table. Safe to call with nil (no-op).
+func (a *Agent) SetPatternTracker(tracker *learning.PatternEffectivenessTracker) {
+	if a.orchestrator != nil && tracker != nil {
+		a.orchestrator.WithTracker(tracker)
+	}
 }
 
 // GetLLMProviderName returns the name of the LLM provider (e.g., "anthropic", "bedrock", "ollama").
