@@ -90,19 +90,88 @@ or `subscribe`. These do NOT exist. Messages are event-driven and auto-delivered
 ## Orchestration Workflows (spec.type)
 Deterministic, executor-driven patterns. Use `spec.type` field.
 
-7 types: `debate`, `fork-join`, `pipeline`, `parallel`, `conditional`, `iterative`, `swarm`
+7 types with REQUIRED fields (do NOT mix fields between types):
 
+### debate
 ```yaml
-apiVersion: loom/v1
-kind: Workflow
-metadata:
-  name: my-workflow
 spec:
-  type: debate           # One of the 7 types above
-  topic: "..."
-  agent_ids: [agent-a, agent-b]
-  # ... type-specific fields
+  type: debate
+  topic: "The debate question"           # REQUIRED for debate
+  agent_ids: [agent-a, agent-b, agent-c] # REQUIRED: 2+ agents
+  rounds: 3                              # REQUIRED
+  merge_strategy: synthesis              # REQUIRED: synthesis, concatenate, etc.
 ```
+
+### fork-join
+```yaml
+spec:
+  type: fork-join
+  prompt: "Same prompt sent to all agents" # REQUIRED for fork-join (NOT topic!)
+  agent_ids: [agent-a, agent-b, agent-c]   # REQUIRED
+  merge_strategy: concatenate              # REQUIRED
+```
+
+### pipeline
+```yaml
+spec:
+  type: pipeline
+  initial_prompt: "Starting input"         # REQUIRED for pipeline
+  stages:                                  # REQUIRED: array of stages
+    - agent_id: stage-1-agent
+      prompt_template: "Process: {{previous}}"  # Use {{previous}} for prior stage output
+    - agent_id: stage-2-agent
+      prompt_template: "Review: {{previous}}"
+```
+
+### parallel
+```yaml
+spec:
+  type: parallel
+  tasks:                                   # REQUIRED for parallel (NOT agent_ids!)
+    - agent_id: agent-a
+      prompt: "Unique task for agent A"    # Each task has its OWN prompt
+    - agent_id: agent-b
+      prompt: "Different task for agent B"
+  merge_strategy: concatenate              # Optional
+```
+
+### swarm
+```yaml
+spec:
+  type: swarm
+  question: "Should we deploy the release?" # REQUIRED for swarm (NOT topic!)
+  agent_ids: [voter-1, voter-2, voter-3]    # REQUIRED: 3+ agents
+  strategy: majority                        # REQUIRED: majority, supermajority, unanimous
+  confidence_threshold: 0.7                 # Optional
+```
+
+### conditional
+```yaml
+spec:
+  type: conditional
+  classifier_agent: classifier             # REQUIRED
+  branches:                                # REQUIRED: map of branch → sub-workflow
+    positive: {type: pipeline, ...}
+    negative: {type: pipeline, ...}
+  default_branch: negative                 # REQUIRED
+```
+
+### iterative
+```yaml
+spec:
+  type: iterative
+  max_iterations: 5                        # REQUIRED
+  stages: [...]                            # Same as pipeline stages
+  restart_policy: from_stage               # Optional
+```
+
+**CRITICAL — DO NOT CONFUSE THESE FIELDS:**
+- `topic:` is ONLY for debate
+- `prompt:` is ONLY for fork-join (shared prompt to all agents)
+- `question:` is ONLY for swarm
+- `tasks:` is ONLY for parallel (each task has unique prompt)
+- `agent_ids:` is for debate, fork-join, swarm (NOT parallel)
+- `stages:` is for pipeline and iterative (NOT other types)
 
 ## Event-Driven Coordination Workflows (spec.entrypoint)
 Asynchronous, agent-autonomous. Use `spec.entrypoint` field.
@@ -201,7 +270,7 @@ spec:
     hub: coordinator
 ```
 
-## Minimal Orchestration Workflow (Debate)
+## Minimal Debate
 ```yaml
 apiVersion: loom/v1
 kind: Workflow
@@ -210,14 +279,25 @@ metadata:
 spec:
   type: debate
   topic: "Should we use microservices vs monolith?"
-  agent_ids:
-    - advocate
-    - skeptic
+  agent_ids: [advocate, skeptic]
   rounds: 3
   merge_strategy: synthesis
 ```
 
-## Minimal Orchestration Workflow (Pipeline)
+## Minimal Fork-Join
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-review
+spec:
+  type: fork-join
+  prompt: "Review this code for quality issues"
+  agent_ids: [security-reviewer, perf-reviewer, style-reviewer]
+  merge_strategy: concatenate
+```
+
+## Minimal Pipeline
 ```yaml
 apiVersion: loom/v1
 kind: Workflow
@@ -231,6 +311,33 @@ spec:
       prompt_template: "Create high-level design for: {{previous}}"
     - agent_id: implementer
       prompt_template: "Implement the design: {{previous}}"
-    - agent_id: reviewer
-      prompt_template: "Review the implementation: {{previous}}"
+```
+
+## Minimal Parallel
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-parallel
+spec:
+  type: parallel
+  tasks:
+    - agent_id: log-analyzer
+      prompt: "Analyze application logs for errors"
+    - agent_id: metrics-analyzer
+      prompt: "Analyze system metrics for anomalies"
+```
+
+## Minimal Swarm
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-vote
+spec:
+  type: swarm
+  question: "Should we deploy the release?"
+  agent_ids: [sre-voter, qa-voter, security-voter]
+  strategy: majority
+  confidence_threshold: 0.7
 ```

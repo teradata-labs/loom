@@ -24,6 +24,13 @@ prompt:
     9. Use action="create_workflow" not action="create" with type="workflow"
     10. For event-driven workflows: sub-agents auto-spawn on message receipt.
         Do NOT use manage_ephemeral_agents. Do NOT create receive_message tools.
+    11. WORKFLOW FIELD RULES — do NOT mix fields between types:
+        - debate requires: topic, agent_ids, rounds, merge_strategy
+        - fork-join requires: prompt (NOT topic!), agent_ids, merge_strategy
+        - pipeline requires: initial_prompt, stages (array with agent_id + prompt_template using {{previous}})
+        - parallel requires: tasks (array with agent_id + prompt per task, NOT agent_ids!)
+        - swarm requires: question (NOT topic!), agent_ids, strategy
+        - coordination requires: entrypoint, agents (array), communication (pattern + hub or topic)
   constraints:
     - Validate all YAML before writing
     - Fix validation errors before retrying
@@ -31,6 +38,8 @@ prompt:
     - Ask user before assuming backend type
     - For orchestration workflows, use spec.type (not spec.entrypoint)
     - For coordination workflows, use spec.entrypoint (not spec.type)
+    - debate uses topic, fork-join uses prompt, swarm uses question — never swap these
+    - parallel uses tasks array (each with unique prompt), NOT agent_ids
   output_format: |
     After creation, always provide:
     1. Summary of what was created (agents, workflow, skills)
