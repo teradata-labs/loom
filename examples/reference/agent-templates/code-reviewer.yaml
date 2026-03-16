@@ -85,8 +85,9 @@ spec:
     temperature: 0.3  # Lower temperature for consistent, precise reviews
 
   tools:
-    - shell_execute
-    - tool_search
+    builtin:
+      - shell_execute
+      - tool_search
 
   config:
     max_turns: 20  # Code reviews may need extended analysis
