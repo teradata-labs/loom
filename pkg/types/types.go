@@ -348,6 +348,40 @@ func (s *Session) MessageCount() int32 {
 	return int32(count)
 }
 
+// GetContext returns a copy of the session context map.
+// Thread-safe via RLock.
+func (s *Session) GetContext() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.Context == nil {
+		return nil
+	}
+
+	// Return a deep copy to prevent external modifications
+	contextCopy := make(map[string]interface{}, len(s.Context))
+	for k, v := range s.Context {
+		contextCopy[k] = v
+	}
+	return contextCopy
+}
+
+// SetContext merges the provided context map into the session context.
+// Thread-safe via Lock.
+func (s *Session) SetContext(ctx map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.Context == nil {
+		s.Context = make(map[string]interface{})
+	}
+
+	// Merge provided context into session context
+	for k, v := range ctx {
+		s.Context[k] = v
+	}
+}
+
 // ExecutionStage represents the current stage of agent execution.
 type ExecutionStage string
 
