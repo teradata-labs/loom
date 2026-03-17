@@ -1691,6 +1691,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
 			}
 
+			// Record pattern usage for text-only responses (no tool calls).
+			// Pattern was selected and injected — track effectiveness even without tools.
+			if selectedPattern != nil && patternConfig.EnableTracking {
+				latency := time.Since(turnStartTime)
+				costUSD := 0.0
+				if llmResp.Usage.InputTokens > 0 {
+					costUSD = float64(llmResp.Usage.InputTokens)*0.000003 +
+						float64(llmResp.Usage.OutputTokens)*0.000015
+				}
+				a.orchestrator.RecordPatternUsage(
+					ctx, selectedPattern.Name, a.config.Name,
+					true, costUSD, latency, "",
+					"anthropic", "claude-sonnet-4-5",
+				)
+			}
+
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
