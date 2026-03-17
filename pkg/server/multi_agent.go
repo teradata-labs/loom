@@ -2807,13 +2807,11 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check by pinging each configured LLM provider across all agents.
-// Returns per-component status in the components map with keys like "agent-id.llm.role".
-// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
+// GetHealth performs a health check by pinging each unique LLM provider.
+// Providers are deduplicated across agents (many agents share the same provider)
+// and checked concurrently, so latency is O(slowest_provider) not O(agents × latency).
+// Returns per-provider status in the components map.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
-	components := make(map[string]*loomv1.ComponentHealth)
-	overallHealthy := true
-
 	s.mu.RLock()
 	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
 	for id, ag := range s.agents {
@@ -2821,35 +2819,64 @@ func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthR
 	}
 	s.mu.RUnlock()
 
+	// Deduplicate providers across all agents (56 agents may share 1-2 providers)
+	type providerInfo struct {
+		provider types.LLMProvider
+		agents   []string
+	}
+	unique := make(map[string]*providerInfo)
 	for agentID, ag := range agentsCopy {
-		roleLLMs := ag.GetAllRoleLLMs()
-		for role, llmProvider := range roleLLMs {
-			componentName := agentID + ".llm." + llmRoleToString(role)
-			start := time.Now()
+		for _, llmProvider := range ag.GetAllRoleLLMs() {
+			key := llmProvider.Name() + "/" + llmProvider.Model()
+			if unique[key] == nil {
+				unique[key] = &providerInfo{provider: llmProvider}
+			}
+			unique[key].agents = append(unique[key].agents, agentID)
+		}
+	}
 
-			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err := llmProvider.Chat(checkCtx, []types.Message{
+	// Ping all unique providers concurrently
+	type result struct {
+		key     string
+		healthy bool
+		latency int64
+		err     string
+	}
+	results := make(chan result, len(unique))
+
+	for key, info := range unique {
+		go func() {
+			start := time.Now()
+			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, err := info.provider.Chat(checkCtx, []types.Message{
 				{Role: "user", Content: "ping"},
 			}, nil)
 			cancel()
-
 			latency := time.Since(start).Milliseconds()
 
+			r := result{key: key, latency: latency, healthy: err == nil}
 			if err != nil {
-				components[componentName] = &loomv1.ComponentHealth{
-					Status:    "unhealthy",
-					LastCheck: time.Now().Unix(),
-					Error:     err.Error(),
-					LatencyMs: latency,
-				}
-				overallHealthy = false
-			} else {
-				components[componentName] = &loomv1.ComponentHealth{
-					Status:    "healthy",
-					LastCheck: time.Now().Unix(),
-					LatencyMs: latency,
-				}
+				r.err = err.Error()
 			}
+			results <- r
+		}()
+	}
+
+	// Collect results
+	components := make(map[string]*loomv1.ComponentHealth, len(unique))
+	overallHealthy := true
+	for range unique {
+		r := <-results
+		status := "healthy"
+		if !r.healthy {
+			status = "unhealthy"
+			overallHealthy = false
+		}
+		components[r.key] = &loomv1.ComponentHealth{
+			Status:    status,
+			LastCheck: time.Now().Unix(),
+			Error:     r.err,
+			LatencyMs: r.latency,
 		}
 	}
 
