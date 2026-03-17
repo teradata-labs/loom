@@ -874,6 +874,15 @@ func (lib *Library) ClearCache() {
 	})
 }
 
+// Register adds a dynamically-created pattern directly to the library cache.
+// This enables programmatic registration without requiring a file on disk.
+// If a pattern with the same name already exists it is overwritten.
+func (lib *Library) Register(pattern *Pattern) {
+	lib.mu.Lock()
+	defer lib.mu.Unlock()
+	lib.patternCache[pattern.Name] = pattern
+}
+
 // AddSearchPath adds a custom search path for pattern discovery.
 func (lib *Library) AddSearchPath(path string) {
 	lib.mu.Lock()
