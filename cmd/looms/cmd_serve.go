@@ -823,6 +823,19 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Scratchpad directory initialized", zap.String("path", scratchpadDir))
 
+	// Initialize shared HITL (Human-in-the-Loop) request store
+	// This SQLite store is shared between the server (contact_human tool) and the CLI (hitl list/respond)
+	hitlDBPath := filepath.Join(loomDataDir, "hitl.db")
+	hitlStore, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
+		Path:   hitlDBPath,
+		Tracer: tracer,
+	})
+	if err != nil {
+		logger.Fatal("Failed to create HITL request store", zap.Error(err))
+	}
+	defer func() { _ = hitlStore.Close() }()
+	logger.Info("HITL request store initialized", zap.String("path", hitlDBPath))
+
 	// Copy documentation from docs to loom data directory
 	docsDestDir := filepath.Join(loomDataDir, "documentation")
 	// Try to find the docs source directory (might be in current dir or parent dir)
@@ -1394,6 +1407,7 @@ func runServe(cmd *cobra.Command, args []string) {
 							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"contact_human":                   true, // HITL tool (registered with shared SQLite store)
 						}
 						if skipTools[toolName] {
 							continue
@@ -1406,6 +1420,23 @@ func runServe(cmd *cobra.Command, args []string) {
 							logger.Info("      Tool registered", zap.String("name", toolName))
 						} else {
 							logger.Warn("      Unknown builtin tool", zap.String("name", toolName))
+						}
+					}
+				}
+
+				// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+				if cfg.Tools != nil {
+					for _, toolName := range cfg.Tools.Builtin {
+						if toolName == "contact_human" {
+							humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+								Store:  hitlStore,
+								Tracer: tracer,
+								Logger: logger,
+							})
+							ag.RegisterTool(humanTool)
+							logger.Info("    Auto-registered contact_human tool (shared SQLite store)",
+								zap.String("db_path", hitlDBPath))
+							break
 						}
 					}
 				}
@@ -2409,8 +2440,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {
 				logger.Info("  Registering builtin tools", zap.Int("count", len(agentConfig.Tools.Builtin)))
 				for _, toolName := range agentConfig.Tools.Builtin {
-					// Skip shell_execute since it's already registered
-					if toolName == "shell_execute" {
+					// Skip tools that are registered separately
+					if toolName == "shell_execute" || toolName == "contact_human" {
 						continue
 					}
 					// spawn_agent removed
@@ -2419,6 +2450,23 @@ func runServe(cmd *cobra.Command, args []string) {
 					if tool != nil {
 						newAgent.RegisterTool(tool)
 						logger.Info("    Tool registered", zap.String("name", toolName))
+					}
+				}
+			}
+
+			// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+			if agentConfig.Tools != nil {
+				for _, toolName := range agentConfig.Tools.Builtin {
+					if toolName == "contact_human" {
+						humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+							Store:  hitlStore,
+							Tracer: tracer,
+							Logger: logger,
+						})
+						newAgent.RegisterTool(humanTool)
+						logger.Info("  Auto-registered contact_human tool (shared SQLite store)",
+							zap.String("db_path", hitlDBPath))
+						break
 					}
 				}
 			}
