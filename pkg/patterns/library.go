@@ -445,6 +445,32 @@ func (lib *Library) ListAll() []PatternSummary {
 		}
 	}
 
+	// Include dynamically registered patterns (via Register()) that aren't
+	// already covered by embedded/filesystem indexing.
+	lib.mu.RLock()
+	for name, p := range lib.patternCache {
+		alreadyIndexed := false
+		for _, s := range summaries {
+			if s.Name == name {
+				alreadyIndexed = true
+				break
+			}
+		}
+		if !alreadyIndexed {
+			summaries = append(summaries, PatternSummary{
+				Name:            p.Name,
+				Title:           p.Title,
+				Description:     p.Description,
+				Category:        p.Category,
+				Difficulty:      p.Difficulty,
+				BackendType:     p.BackendType,
+				BackendFunction: p.BackendFunction,
+				UseCases:        p.UseCases,
+			})
+		}
+	}
+	lib.mu.RUnlock()
+
 	// Cache the index
 	lib.mu.Lock()
 	lib.patternIndex = summaries
@@ -881,6 +907,7 @@ func (lib *Library) Register(pattern *Pattern) {
 	lib.mu.Lock()
 	defer lib.mu.Unlock()
 	lib.patternCache[pattern.Name] = pattern
+	lib.indexInitialized = false // invalidate cached index so ListAll() re-scans
 }
 
 // AddSearchPath adds a custom search path for pattern discovery.
