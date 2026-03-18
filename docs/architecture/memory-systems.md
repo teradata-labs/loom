@@ -1,7 +1,7 @@
 
 # Memory System Architecture
 
-Comprehensive architecture of Loom's 5-layer segmented memory system with adaptive compression, tiered storage, and optional learned layer for DSPy optimization results.
+Architecture of Loom's 5-layer segmented memory system with adaptive compression, tiered storage, and optional learned layer for DSPy optimization results.
 
 **Target Audience**: Architects, academics, and advanced developers
 

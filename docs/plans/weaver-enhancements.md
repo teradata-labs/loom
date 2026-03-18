@@ -303,7 +303,7 @@ go test -tags fts5 ./pkg/shuttle/builtin/... -v -run TestAgentManagement
 **Test Coverage:**
 - agent_management.go: Access control, create/update/read/list/validate/delete for agents and workflows
 - Skill creation functions follow same validation patterns
-- No new test coverage needed (uses existing validation.ValidateYAMLContent)
+- Skill CRUD logic in agent_management_skill.go (248 lines) needs unit tests (create/update/validation paths)
 
 ## Commits
 

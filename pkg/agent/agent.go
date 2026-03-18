@@ -1290,7 +1290,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
-	emptyRetried := false // one-shot retry flag for empty LLM responses
+	emptyRetried := false // one-shot flag: retry empty LLM response at most once per conversation
 
 	// Debug: Print config values
 	if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {

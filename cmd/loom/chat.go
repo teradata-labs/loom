@@ -127,6 +127,7 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 	var totalTokens int32
 	// Track streamed content length so we only print new tokens incrementally
 	var streamedLen int
+	var lastStreamedContent string // last PartialContent we streamed, for dedup at COMPLETED
 
 	err := c.StreamWeave(ctx, message, sessionID, agentID, func(progress *loomv1.WeaveProgress) {
 		// Capture running token count
@@ -150,6 +151,7 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 					if len(content) > streamedLen {
 						fmt.Print(content[streamedLen:])
 						streamedLen = len(content)
+						lastStreamedContent = content
 					}
 				} else if progress.Message != "" {
 					fmt.Fprintf(os.Stderr, "[LLM: %s]\n", progress.Message)
@@ -210,15 +212,14 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 	// If we already streamed tokens, only print if the final message differs
 	// (e.g., the agent produced a final summary after tool calls).
 	if lastMessage != "" {
-		if chatStream && streamedLen > 0 {
-			// We already streamed content — add a newline if needed, then
-			// only print the completion result if it wasn't already streamed.
-			if lastMessage != "" && len(lastMessage) > streamedLen {
-				// Final result has more content than what was streamed
+		if chatStream && lastStreamedContent != "" {
+			// We already streamed content. Only print the final message
+			// if it differs from what was streamed (e.g., a post-tool summary).
+			if lastMessage != lastStreamedContent {
 				fmt.Println()
 				fmt.Println(lastMessage)
 			} else {
-				// Already streamed — just ensure trailing newline
+				// Already streamed this content — just ensure trailing newline
 				fmt.Println()
 			}
 		} else {

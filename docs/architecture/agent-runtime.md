@@ -1,7 +1,7 @@
 
 # Agent Runtime Architecture
 
-Comprehensive architecture of Loom's agent runtime system with Error Submission Channel, built-in tool registration, and runtime lifecycle management.
+Architecture of Loom's agent runtime system with Error Submission Channel, built-in tool registration, and runtime lifecycle management.
 
 **Target Audience**: Architects, academics, and advanced developers
 

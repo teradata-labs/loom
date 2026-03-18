@@ -9,7 +9,7 @@
 > - ✨ Skills recommendations - Intelligent skill suggestions based on problem domain
 > - ✨ Custom skill creation - Weaver can create skills with user consent
 
-*Note: This guide is maintained separately. For the comprehensive weaver documentation that includes architecture details and the full 9-stage pipeline description, see [Meta-Agent Usage Guide](./meta-agent-usage.md).*
+*Note: This guide is maintained separately. For the full weaver documentation that includes architecture details and the 9-stage pipeline description, see [Meta-Agent Usage Guide](./meta-agent-usage.md).*
 
 ## Table of Contents
 
@@ -46,7 +46,7 @@ The Weaver creates complete agent configurations from natural language requireme
 - Backend connections (SQL, REST API, files)
 - Hot-reloaded configurations (available immediately)
 
-**What makes Weaver special:**
+**Key characteristics:**
 - **Intelligent**: Uses LLM-powered analysis (not keyword matching)
 - **Metadata-Driven**: Reads self-describing tool and pattern metadata
 - **Conflict Detection**: Catches contradictions before generating config
@@ -306,7 +306,7 @@ Weaver generates:
 
 **Expected response time:** 20-30 seconds
 
-**Token cost:** $0.02-0.04 (Claude Sonnet 4)
+**Approximate token cost:** ~$0.02-0.04 (Claude Sonnet 4, varies by model and prompt length)
 
 **Be specific for better results:**
 
@@ -338,7 +338,7 @@ Weaver generates:
 
 **Expected response time:** 45-60 seconds (longer for workflow design)
 
-**Token cost:** $0.06-0.10
+**Approximate token cost:** ~$0.06-0.10 (varies by model and workflow complexity)
 
 ### With Artifact Context
 
@@ -444,8 +444,8 @@ patterns:
   - sql_optimization
   - missing_index_detection
 system_prompt: |
-  You are a PostgreSQL query optimizer. Analyze queries for performance
-  issues, suggest index improvements, and explain query plans.
+  Analyze PostgreSQL queries for performance issues. Suggest index
+  improvements and explain query plans.
 
 Next Steps:
 1. Configuration saved to: $LOOM_DATA_DIR/agents/postgres-optimizer.yaml
@@ -831,7 +831,7 @@ bin/loom --thread postgres-optimizer
 ## Next Steps
 
 - **Architecture Details**: See [Weaver Architecture](../architecture/weaver.md) for 6-stage pipeline and sub-agent design
-- **Advanced Features**: See [Meta-Agent Usage Guide](./meta-agent-usage.md) for comprehensive documentation
+- **Advanced Features**: See [Meta-Agent Usage Guide](./meta-agent-usage.md) for full documentation
 - **Pattern Library**: See [Pattern Library Guide](./pattern-library-guide.md) for available patterns
 
 **Related Guides**:

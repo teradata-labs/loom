@@ -2,6 +2,7 @@
 
 **Branch**: `weaver-accuracy`
 **Prerequisite**: Build from branch (`just build`) to get ROM, patterns, and skill deployed
+**Dependencies**: Python 3 with PyYAML (`pip install pyyaml`) for T1.7 pattern validation (or use `go run` alternative noted inline)
 **Goal**: Verify that the weaver produces correct YAML without hallucinated tools, wrong formats, or deprecated references
 
 ---
