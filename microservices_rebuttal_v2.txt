@@ -1,0 +1,7 @@
+The 'Modular Monolith' is a noble ideal, but in practice, it is 'modularity by request.' In a monolith, any developer can bypass your boundaries with a single import statement or an opportunistic SQL join. In microservices, boundaries are enforced by the network—it is 'modularity by law.'
+
+Regarding the 'Deployment Train': In a large organization, it isn't just about merge conflicts. It's about the blast radius of testing. In a monolith, any change requires running the *entire* test suite because of hidden side effects. In microservices, if I change the 'Tax Calculation' service, I only need to test that service. 
+
+And as for 'Network Partitions' vs. 'Merge Conflicts'—I can automate a retry policy for a network call. I cannot automate the human frustration of 200 developers waiting for a single CI pipeline to turn green because someone broke a 'modular' boundary in an unrelated module. 
+
+Microservices trade human coordination for technical coordination. And in 2026, silicon is cheaper than engineers.

@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 
 $packageName = 'loom'
 $toolsDir = "$(Split-Path -parent $MyInvocation.MyCommand.Definition)"
-$version = '1.1.0'
+$version = '1.2.0'
 
 # SECURITY: Download official loom TUI binary from GitHub releases
 # Checksum verified against official release artifacts

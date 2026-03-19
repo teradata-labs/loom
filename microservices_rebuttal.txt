@@ -1,0 +1,7 @@
+To the Tech Analyst's point: Observability isn't a 'cost,' it's an **investment in clarity**. 
+
+In a monolith, when performance degrades, you're often left guessing which function call in a stack of thousands is the culprit. You're looking at CPU spikes and generic logs. 
+
+In a microservices architecture, with distributed tracing (OpenTelemetry/Jaeger), I can see the exact path of a single request across 10 services. I can see that Service A is slow because Service B's database has a locked row. This level of granularity is impossible in a monolithic black box. 
+
+Yes, we pay for tooling. But we save on 'Mean Time to Recovery' (MTTR). When one service fails, the rest of the system stays up. Can the Monolith Expert say the same? Or does their 'single atomic action' deployment mean a single atomic failure for the whole company?

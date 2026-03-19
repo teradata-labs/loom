@@ -8,7 +8,7 @@ An LLM agent framework for Go. Create agents from natural language, orchestrate 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11888/badge)](https://www.bestpractices.dev/projects/11888)
 [![Release](https://img.shields.io/github/v/release/teradata-labs/loom)](https://github.com/teradata-labs/loom/releases/latest)
 
-**Version**: v1.1.0
+**Version**: v1.2.0
 
 ![Loom TUI](docs/images/tui-screenshot.png)
 

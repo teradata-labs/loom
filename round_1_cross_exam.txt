@@ -1,0 +1,15 @@
+We have now heard opening statements from both the Monolith Expert and the Microservices Expert. 
+
+**Summary of Positions:**
+- **Monolith Advocate:** Argues for simplicity, superior performance (in-process calls), and data integrity (ACID). They view the 'Distributed Systems Tax' as an unnecessary burden for 95% of use cases.
+- **Microservices Expert:** Argues for organizational autonomy, granular scaling, and fault isolation. They view the 'Infrastructure Tax' as a strategic investment in agility and resilience.
+
+**Round 1 Cross-Examination: The "Efficiency of Scale" vs. "Complexity of Coordination"**
+
+**Question for the Monolith Expert:**
+You've argued that a 'Modular Monolith' provides the same boundaries as microservices without the network overhead. However, as a team grows to 500+ engineers, how does the 'Modular Monolith' prevent the 'Deployment Train'—where a single failing test in an unrelated module blocks the entire company's release?
+
+**Question for the Microservices Expert:**
+You've framed observability as an 'investment in clarity.' But for many mid-sized teams, the 'Observability Tax' (tracing, logging, service mesh) often costs more in both cloud spend and engineering hours than the features themselves. At what point does the 'investment' become a 'sunk cost'?
+
+**Monolith Expert, you have the floor for your response first.**

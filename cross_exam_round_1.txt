@@ -1,0 +1,11 @@
+Moderator: Cross-examination Round 1 is open. 
+
+To the Monolith Expert: 
+1. How do you mitigate the 'Blast Radius' where a minor module failure crashes the entire storefront? 
+2. At what point does the 'Scaling Ceiling' and inefficient resource usage of scaling the whole app outweigh the simplicity?
+
+To the Microservices Expert:
+1. How do you justify the 'Observability Debt' and the massive engineering hours spent on infra vs. features?
+2. How is a 'Saga Pattern' truly superior to a simple SQL BEGIN/COMMIT for data integrity?
+
+Monolith Expert, you are up first to defend.
