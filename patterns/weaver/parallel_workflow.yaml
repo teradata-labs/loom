@@ -1,0 +1,62 @@
+name: parallel_workflow
+title: Parallel Workflow Pattern
+description: Run independent tasks concurrently with different agents and different prompts. Each agent works on a unique task.
+category: weaver
+difficulty: beginner
+backend_type: workflow
+
+use_cases:
+  - "parallel independent tasks"
+  - "concurrent analysis"
+  - "simultaneously process different things"
+  - "multiple independent tasks"
+  - "batch processing"
+
+parameters:
+  - name: task_count
+    type: integer
+    description: Number of parallel tasks
+    required: false
+    example: "3"
+
+templates:
+  workflow:
+    description: Parallel workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-parallel
+      spec:
+        type: parallel
+        tasks:
+          - agent_id: task-1-agent
+            prompt: "First independent task description"
+          - agent_id: task-2-agent
+            prompt: "Second independent task description"
+          - agent_id: task-3-agent
+            prompt: "Third independent task description"
+        merge_strategy: concatenate
+
+examples:
+  - name: multi_analysis
+    description: Parallel analysis of different data sources
+    input: "Analyze logs, metrics, and traces simultaneously"
+    expected_output: |
+      Parallel workflow with 3 tasks, each with unique agent_id and prompt,
+      concatenate merge strategy.
+
+common_errors:
+  - error: "Confusing parallel with fork-join"
+    cause: "Parallel sends DIFFERENT prompts per task. Fork-join sends SAME prompt to all."
+    fix: "Use parallel when each agent has a unique task. Use fork-join when all agents get the same input."
+  - error: "Empty tasks array"
+    cause: "Parallel requires at least one task"
+    fix: "Add tasks with agent_id and prompt to the tasks array"
+
+best_practices: |
+  - Parallel = different prompts to different agents (independent tasks)
+  - Fork-join = same prompt to multiple agents (fan-out, fan-in)
+  - Each task must have both agent_id and prompt fields
+  - Use concatenate merge to collect all results
+  - Use synthesis merge to summarize across tasks

@@ -337,7 +337,7 @@ best_practices: |
   - **Kernel Layer**: Cache PI column definitions and current AMP count for hash calculations
   - **L1 Cache**: Keep recent skew analysis results (last 5-8 tables) to track trends
   - **L2 Compressed**: Archive historical skew measurements showing degradation over time
-  - **Swap Layer**: Store complete skew history; use recall_conversation to compare current skew against baseline from months ago when table was first created
+  - **Swap Layer**: Store complete skew history; use conversation_memory to compare current skew against baseline from months ago when table was first created
   This enables identifying when skew develops and correlating with data load patterns.
 # === BEST_PRACTICES END ===
 

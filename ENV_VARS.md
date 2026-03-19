@@ -442,7 +442,7 @@ export AWS_DEFAULT_REGION=us-west-2
 AWS access key ID for authentication.
 
 ```bash
-export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+export AWS_ACCESS_KEY_ID=your-access-key-id
 ```
 
 ⚠️ **Security Note:** Prefer using AWS profiles or IAM roles over explicit credentials.
@@ -453,7 +453,7 @@ export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 AWS secret access key for authentication.
 
 ```bash
-export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+export AWS_SECRET_ACCESS_KEY=your-secret-access-key
 ```
 
 ⚠️ **Security Note:** Never commit this to version control. Use keyring or AWS profiles.

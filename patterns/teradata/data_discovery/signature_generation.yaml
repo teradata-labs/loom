@@ -320,7 +320,7 @@ best_practices: |
   - **Kernel Layer**: Cache SIGNATURES table schema and commonly-used signature functions
   - **L1 Cache**: Keep recent signature queries (last 5-8 tables profiled) for pattern reuse
   - **L2 Compressed**: Archive signature metadata showing keyness trends over time
-  - **Swap Layer**: Store complete signature history; use recall_conversation to compare current column profiles against baseline from months ago
+  - **Swap Layer**: Store complete signature history; use conversation_memory to compare current column profiles against baseline from months ago
   This enables tracking data drift and identifying when column characteristics change.
 # === BEST_PRACTICES END ===
 

@@ -407,7 +407,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas, statistics, and current index list for quick reference
   - **L1 Cache**: Keep recent EXPLAIN results (last 10-15 queries) showing sequential scans and their patterns
   - **L2 Compressed**: Archive index recommendations and performance improvements from earlier in conversation
-  - **Swap Layer**: Store complete query performance history for long-running optimization projects; use recall_conversation to compare current scan patterns against baseline from weeks ago
+  - **Swap Layer**: Store complete query performance history for long-running optimization projects; use conversation_memory to compare current scan patterns against baseline from weeks ago
   This enables identifying recurring sequential scan patterns and tracking cumulative optimization impact.
 # === BEST_PRACTICES END ===
 

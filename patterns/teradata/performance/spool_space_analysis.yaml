@@ -276,7 +276,7 @@ best_practices: |
   - **Kernel Layer**: Cache current spool limits (user limits, system limits) from DBC.DBCInfoV
   - **L1 Cache**: Keep recent high-spool queries (last 5-8 queries) to identify patterns
   - **L2 Compressed**: Archive daily spool trends showing usage growth over time
-  - **Swap Layer**: Store complete spool history; use recall_conversation to compare current spool patterns against baseline from weeks ago
+  - **Swap Layer**: Store complete spool history; use conversation_memory to compare current spool patterns against baseline from weeks ago
   This enables identifying when spool usage degrades and correlating with query changes or data growth.
 # === BEST_PRACTICES END ===
 
