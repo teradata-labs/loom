@@ -1,0 +1,68 @@
+communication:
+    store:
+        backend: sqlite
+        path: /Users/ilsun.park/.loom/loom.db
+database:
+    path: /Users/ilsun.park/.loom/loom.db
+llm:
+    provider: gemini
+
+# Named provider pool - switch at runtime with /Switch Model in TUI or `loom switch-model`
+providers:
+  - name: gemini-flash
+    provider: gemini
+    gemini_model: gemini-2.0-flash
+  - name: gemini-3-flash
+    provider: gemini
+    gemini_model: gemini-3-flash-preview
+  - name: gemini-3.1-pro
+    provider: gemini
+    gemini_model: gemini-3.1-pro-preview
+  - name: gemini-thinking
+    provider: gemini
+    gemini_model: gemini-2.5-flash
+  - name: gemini-pro
+    provider: gemini
+    gemini_model: gemini-2.5-pro
+  - name: gpt-5.2
+    provider: openai
+    openai_model: gpt-5.2
+  - name: gpt-4.1-mini
+    provider: openai
+    openai_model: gpt-4.1-mini
+  - name: o4-mini
+    provider: openai
+    openai_model: o4-mini
+  - name: claude-sonnet
+    provider: anthropic
+    anthropic_model: claude-sonnet-4-6
+  - name: claude-opus
+    provider: anthropic
+    anthropic_model: claude-opus-4-6
+  - name: claude-haiku
+    provider: anthropic
+    anthropic_model: claude-haiku-4-5-20251001
+  - name: bedrock-anthropic
+    provider: bedrock
+    bedrock_model: global.anthropic.claude-opus-4-6-v1
+active_provider: gemini-flash
+observability:
+    enabled: true
+    mode: embedded
+    sqlite_path: /Users/ilsun.park/.loom/observability.db
+    storage_type: sqlite
+scheduler:
+    enabled: true
+    hot_reload: true
+    workflow_dir: /Users/ilsun.park/.loom/workflows
+server:
+    host: 0.0.0.0
+    port: 60051
+mcp:
+  servers:
+    teradata_mcp_streamable:
+      url: "http://127.0.0.1:8001/mcp/"
+      transport: streamable-http
+      enabled: true
+      enable_sessions: true
+      enable_resumption: true    

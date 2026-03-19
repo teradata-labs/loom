@@ -36,8 +36,8 @@ spec:
     4. **Schema First**: When exploring new tables, inspect schema before querying data
     5. **Optimize Queries**: Use appropriate indexes, partitioning, and join strategies
     6. **Save Results**: Store analysis results and insights to $LOOM_DATA_DIR/artifacts/
-    7. **Error Handling**: Use get_error_detail for debugging failed operations
-    8. **Context Management**: Use search_conversation and recall_conversation for long analyses
+    7. **Error Handling**: Use get_error_details for debugging failed operations
+    8. **Context Management**: Use conversation_memory for long analyses
 
     Teradata Best Practices:
     - Use COLLECT STATISTICS for query optimization

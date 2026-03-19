@@ -29,6 +29,9 @@ func validateSemantics(content, kind, filePath string) ([]ValidationError, []Val
 		workflowErrors, workflowWarnings := validateWorkflowSemantics(content, filePath)
 		errors = append(errors, workflowErrors...)
 		warnings = append(warnings, workflowWarnings...)
+	case "Skill":
+		// Skill validation is handled by pkg/skills/loader.go
+		// No additional semantic validation needed here
 	}
 
 	return errors, warnings
@@ -346,13 +349,12 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 
 	// Add framework tools (auto-registered, not in builtin.Names())
 	frameworkTools := []string{
-		"workspace",              // Session-scoped file management (auto-registered)
-		"tool_search",            // Tool discovery via FTS (conditionally registered)
-		"get_error_details",      // Progressive disclosure (conditionally registered)
-		"query_tool_result",      // Progressive disclosure (conditionally registered)
-		"search_conversation",    // Memory tool (deprecated)
-		"recall_conversation",    // Memory tool (deprecated)
-		"clear_recalled_context", // Memory tool (deprecated)
+		"workspace",           // Session-scoped file management (auto-registered)
+		"tool_search",         // Tool discovery via FTS (conditionally registered)
+		"get_error_details",   // Progressive disclosure (conditionally registered)
+		"query_tool_result",   // Progressive disclosure (conditionally registered)
+		"conversation_memory", // Memory tool (auto-registered)
+		"session_memory",      // Session memory tool (auto-registered)
 	}
 	for _, name := range frameworkTools {
 		knownTools[name] = true
@@ -364,10 +366,17 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 		"publish",
 		"shared_memory_read",
 		"shared_memory_write",
+	}
+
+	// Add presentation/visualization tools (registered separately from builtins)
+	presentationTools := []string{
 		"top_n_query",
 		"group_by_query",
-		"generate_workflow_visualization",
 		"generate_visualization",
+		"generate_workflow_visualization",
+	}
+	for _, name := range presentationTools {
+		knownTools[name] = true
 	}
 	for _, name := range communicationTools {
 		knownTools[name] = true
@@ -376,6 +385,34 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 	for _, tool := range tools {
 		toolName, ok := tool.(string)
 		if !ok {
+			continue
+		}
+
+		// Warn about auto-registered tools that should NOT be listed
+		autoRegistered := map[string]bool{
+			"workspace": true, "get_error_details": true, "conversation_memory": true,
+			"session_memory": true, "query_tool_result": true,
+		}
+		if autoRegistered[toolName] {
+			warnings = append(warnings, ValidationWarning{
+				Field:   "spec.tools",
+				Message: fmt.Sprintf("Tool '%s' is auto-registered and should not be listed in spec.tools", toolName),
+				Fix:     "Remove this tool from the tools list — it is automatically available",
+			})
+			continue
+		}
+
+		// Warn about workflow-injected tools that should NOT be listed in agent configs
+		workflowInjected := map[string]bool{
+			"send_message": true, "publish": true,
+			"shared_memory_read": true, "shared_memory_write": true,
+		}
+		if workflowInjected[toolName] {
+			warnings = append(warnings, ValidationWarning{
+				Field:   "spec.tools",
+				Message: fmt.Sprintf("Tool '%s' is auto-injected for workflow agents and should not be listed in spec.tools", toolName),
+				Fix:     "Remove this tool from the tools list — it is automatically available for workflow agents",
+			})
 			continue
 		}
 
@@ -635,6 +672,17 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		"message":      "send_message",
 		"read_memory":  "shared_memory_read",
 		"write_memory": "shared_memory_write",
+
+		// Deprecated tool names → correct replacements
+		"search_conversation":    "conversation_memory",
+		"recall_conversation":    "conversation_memory",
+		"clear_recalled_context": "conversation_memory",
+		"receive_message":        "send_message",
+		"receive_broadcast":      "publish",
+		"subscribe":              "publish",
+		"generate_agent":         "agent_management",
+		"list_agents":            "agent_management",
+		"get_agent":              "agent_management",
 	}
 
 	if suggestion, ok := typos[tool]; ok {

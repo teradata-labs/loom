@@ -131,6 +131,42 @@ func TestSessionMerge(t *testing.T) {
 				Title: "New Title",
 			},
 		},
+		{
+			name: "updates ContextState fields when non-zero",
+			existing: Session{
+				ID:    "s1",
+				Title: "My Session",
+			},
+			update: Session{
+				ID:                "s1",
+				ContextTokensUsed: 50000,
+				ContextTokensMax:  200000,
+			},
+			want: Session{
+				ID:                "s1",
+				Title:             "My Session",
+				ContextTokensUsed: 50000,
+				ContextTokensMax:  200000,
+			},
+		},
+		{
+			name: "preserves ContextState when update has zero values",
+			existing: Session{
+				ID:                "s1",
+				ContextTokensUsed: 50000,
+				ContextTokensMax:  200000,
+			},
+			update: Session{
+				ID:   "s1",
+				Cost: 1.0,
+			},
+			want: Session{
+				ID:                "s1",
+				Cost:              1.0,
+				ContextTokensUsed: 50000,
+				ContextTokensMax:  200000,
+			},
+		},
 	}
 
 	for _, tc := range tests {

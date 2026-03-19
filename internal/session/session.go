@@ -22,16 +22,18 @@ import (
 
 // Session represents a chat session.
 type Session struct {
-	ID               string
-	Title            string
-	CreatedAt        int64
-	UpdatedAt        int64
-	CompletionTokens int
-	PromptTokens     int
-	Cost             float64
-	Todos            []Todo
-	Model            string // Model used in this session (e.g., "claude-sonnet-4-6")
-	Provider         string // Provider used in this session (e.g., "anthropic")
+	ID                string
+	Title             string
+	CreatedAt         int64
+	UpdatedAt         int64
+	CompletionTokens  int
+	PromptTokens      int
+	Cost              float64
+	Todos             []Todo
+	Model             string // Model used in this session (e.g., "claude-sonnet-4-6")
+	Provider          string // Provider used in this session (e.g., "anthropic")
+	ContextTokensUsed int64  // Actual context window fill (from server ContextState)
+	ContextTokensMax  int64  // Context window capacity (from server ContextState)
 }
 
 // Merge returns a copy of s with non-zero fields from update applied.
@@ -62,6 +64,12 @@ func (s Session) Merge(update Session) Session {
 	}
 	if len(update.Todos) > 0 {
 		result.Todos = update.Todos
+	}
+	if update.ContextTokensUsed > 0 {
+		result.ContextTokensUsed = update.ContextTokensUsed
+	}
+	if update.ContextTokensMax > 0 {
+		result.ContextTokensMax = update.ContextTokensMax
 	}
 	return result
 }

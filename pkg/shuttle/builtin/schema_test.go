@@ -99,7 +99,7 @@ func TestToolSchemaSize(t *testing.T) {
 		{
 			name:           "agent_management",
 			tool:           NewAgentManagementTool(),
-			maxSchemaBytes: 471, // baseline=421
+			maxSchemaBytes: 535, // baseline=421, grew with skill actions from PR #120
 			maxDescChars:   615, // baseline=565
 			minDescWords:   50,
 		},

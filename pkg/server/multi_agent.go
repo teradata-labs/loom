@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
+	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -138,6 +139,9 @@ type MultiAgentServer struct {
 
 	// judgeServer holds the registered judge configurations for ABTest judge_id resolution.
 	judgeServer *JudgeServer
+
+	// patternTracker is wired into every agent's orchestrator for effectiveness metrics.
+	patternTracker *learning.PatternEffectivenessTracker
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -518,6 +522,11 @@ func (s *MultiAgentServer) AddAgent(id string, ag *agent.Agent) {
 
 	// Note: MessageBus, MessageQueue, and SharedMemoryComm are server-level singletons
 	// accessed via gRPC RPCs, not directly injected into agents
+
+	// Wire pattern effectiveness tracker so every pattern-guided turn records metrics
+	if s.patternTracker != nil {
+		ag.SetPatternTracker(s.patternTracker)
+	}
 }
 
 // UpdateAgent replaces an existing agent with a new instance (for hot-reload).
@@ -553,6 +562,11 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 				zap.String("agent_name", ag.GetName()),
 				zap.Int("num_tools", len(commTools)))
 		}
+	}
+
+	// Wire pattern effectiveness tracker for metrics collection
+	if s.patternTracker != nil {
+		ag.SetPatternTracker(s.patternTracker)
 	}
 
 	// Now acquire lock ONLY for the agent swap (minimal critical section)
@@ -914,6 +928,9 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				ToolName:       event.ToolName,
 				Timestamp:      event.Timestamp.Unix(),
 				PartialContent: event.PartialContent, // Stream partial content to TUI
+				IsTokenStream:  event.IsTokenStream,
+				TokenCount:     event.TokenCount,
+				TtftMs:         event.TTFT,
 			}
 
 			// Include HITL request if present
@@ -1031,7 +1048,21 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		return nil // No registry available
 	}
 
+	// coordinatorID may be a GUID (from getAgent resolution) — resolve to name for config lookup
 	protoConfig := s.registry.GetConfig(coordinatorID)
+	if protoConfig == nil {
+		// Try using the agent's actual name (GetName) since coordinatorID might be a GUID
+		agentName := coordinatorAgent.GetName()
+		if agentName != coordinatorID {
+			protoConfig = s.registry.GetConfig(agentName)
+			if protoConfig != nil {
+				s.logger.Info("spawnWorkflowSubAgents: resolved GUID to agent name for config lookup",
+					zap.String("guid", coordinatorID),
+					zap.String("agent_name", agentName))
+				coordinatorID = agentName // Use the name from here on
+			}
+		}
+	}
 	if protoConfig == nil {
 		s.logger.Debug("spawnWorkflowSubAgents: protoConfig is nil",
 			zap.String("coordinator_id", coordinatorID))
@@ -1049,14 +1080,14 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	s.logger.Debug("spawnWorkflowSubAgents: checking role/workflow",
 		zap.String("coordinator_id", coordinatorID),
 		zap.Bool("has_role", hasRole),
-		zap.Any("role", role),
+		zap.String("role", role),
 		zap.Bool("has_workflow", hasWorkflow),
-		zap.Any("workflow_name", workflowName))
+		zap.String("workflow_name", workflowName))
 
 	if !hasRole || role != "coordinator" || !hasWorkflow {
 		s.logger.Debug("spawnWorkflowSubAgents: not a coordinator",
 			zap.Bool("has_role", hasRole),
-			zap.Any("role", role),
+			zap.String("role", role),
 			zap.Bool("has_workflow", hasWorkflow))
 		return nil // Not a workflow coordinator
 	}
@@ -1137,15 +1168,21 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 								continue
 							}
 
-							// Construct workflow-prefixed agent ID
-							subAgentID := fmt.Sprintf("%s:%s", workflowName, agentName)
+							// Construct workflow-prefixed agent ID using role name (not agent config name)
+							// This ensures IDs match what coordinator sends to: "workflow:role-name"
+							nameForID := roleName
+							if nameForID == "" {
+								nameForID = agentName // fallback to agent config name
+							}
+							subAgentID := fmt.Sprintf("%s:%s", workflowName, nameForID)
 
 							s.logger.Info("Spawning workflow sub-agent",
 								zap.String("sub_agent_id", subAgentID),
-								zap.String("agent_name", agentName))
+								zap.String("agent_name", agentName),
+								zap.String("role_name", roleName))
 
-							// Spawn the sub-agent (will auto-register with message queue if it exists)
-							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID); err != nil {
+							// Spawn the sub-agent, passing base agent name for registry lookup
+							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID, agentName); err != nil {
 								s.logger.Warn("Failed to spawn workflow sub-agent",
 									zap.String("sub_agent_id", subAgentID),
 									zap.Error(err))
@@ -1934,18 +1971,26 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
 // pending messages for it. This handles the case where workflows are registered post-startup
 // (e.g., by weaver) and messages arrive before the coordinator connects.
-func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentID string) error {
-	// Parse workflow name from agent ID (format: "workflow-name:agent-id")
+func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentID string, baseAgentNames ...string) error {
+	// Parse workflow name from agent ID (format: "workflow-name:role-name")
 	parts := strings.SplitN(agentID, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid workflow agent ID format: %s", agentID)
 	}
 	workflowName := parts[0]
-	baseAgentName := parts[1]
+	roleName := parts[1]
+
+	// Determine base agent name for registry lookup
+	// If explicit base agent name provided, use it; otherwise fall back to role name
+	baseAgentName := roleName
+	if len(baseAgentNames) > 0 && baseAgentNames[0] != "" {
+		baseAgentName = baseAgentNames[0]
+	}
 
 	s.logger.Info("Auto-spawning workflow sub-agent",
 		zap.String("agent", agentID),
 		zap.String("workflow", workflowName),
+		zap.String("role_name", roleName),
 		zap.String("base_agent", baseAgentName))
 
 	// Try to get the agent from registry using the workflow-prefixed ID first
@@ -1958,7 +2003,29 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 
 		subAgent, _, err = s.getAgent(baseAgentName)
 		if err != nil {
-			return fmt.Errorf("failed to get agent (tried both '%s' and '%s'): %w", agentID, baseAgentName, err)
+			// Last resort: search registry for agent with matching workflow metadata
+			// This handles the case where the monitor auto-spawns without knowing the base agent name
+			if s.registry != nil {
+				configs := s.registry.ListConfigs()
+				for _, config := range configs {
+					if config.Metadata["workflow"] == workflowName && config.Metadata["role"] != "coordinator" {
+						// Check if this agent's name matches the role name pattern
+						// e.g., "dnd-world-builder" might be the agent for role "world-builder"
+						if strings.HasSuffix(config.Name, roleName) || strings.Contains(config.Name, roleName) {
+							s.logger.Info("Found matching agent in registry via workflow metadata search",
+								zap.String("role_name", roleName),
+								zap.String("found_agent", config.Name))
+							subAgent, _, err = s.getAgent(config.Name)
+							if err == nil {
+								break
+							}
+						}
+					}
+				}
+			}
+			if subAgent == nil {
+				return fmt.Errorf("failed to get agent (tried '%s', '%s', and registry search): %w", agentID, baseAgentName, err)
+			}
 		}
 	}
 
@@ -2740,13 +2807,11 @@ func (s *MultiAgentServer) ListTools(ctx context.Context, req *loomv1.ListToolsR
 	}, nil
 }
 
-// GetHealth performs a health check by pinging each configured LLM provider across all agents.
-// Returns per-component status in the components map with keys like "agent-id.llm.role".
-// Overall status is "healthy" if all pass, "degraded" if some fail, "unhealthy" if all fail.
+// GetHealth performs a health check by pinging each unique LLM provider.
+// Providers are deduplicated across agents (many agents share the same provider)
+// and checked concurrently, so latency is O(slowest_provider) not O(agents × latency).
+// Returns per-provider status in the components map.
 func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthRequest) (*loomv1.HealthStatus, error) {
-	components := make(map[string]*loomv1.ComponentHealth)
-	overallHealthy := true
-
 	s.mu.RLock()
 	agentsCopy := make(map[string]*agent.Agent, len(s.agents))
 	for id, ag := range s.agents {
@@ -2754,35 +2819,64 @@ func (s *MultiAgentServer) GetHealth(ctx context.Context, req *loomv1.GetHealthR
 	}
 	s.mu.RUnlock()
 
+	// Deduplicate providers across all agents (56 agents may share 1-2 providers)
+	type providerInfo struct {
+		provider types.LLMProvider
+		agents   []string
+	}
+	unique := make(map[string]*providerInfo)
 	for agentID, ag := range agentsCopy {
-		roleLLMs := ag.GetAllRoleLLMs()
-		for role, llmProvider := range roleLLMs {
-			componentName := agentID + ".llm." + llmRoleToString(role)
-			start := time.Now()
+		for _, llmProvider := range ag.GetAllRoleLLMs() {
+			key := llmProvider.Name() + "/" + llmProvider.Model()
+			if unique[key] == nil {
+				unique[key] = &providerInfo{provider: llmProvider}
+			}
+			unique[key].agents = append(unique[key].agents, agentID)
+		}
+	}
 
-			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err := llmProvider.Chat(checkCtx, []types.Message{
+	// Ping all unique providers concurrently
+	type result struct {
+		key     string
+		healthy bool
+		latency int64
+		err     string
+	}
+	results := make(chan result, len(unique))
+
+	for key, info := range unique {
+		go func() {
+			start := time.Now()
+			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, err := info.provider.Chat(checkCtx, []types.Message{
 				{Role: "user", Content: "ping"},
 			}, nil)
 			cancel()
-
 			latency := time.Since(start).Milliseconds()
 
+			r := result{key: key, latency: latency, healthy: err == nil}
 			if err != nil {
-				components[componentName] = &loomv1.ComponentHealth{
-					Status:    "unhealthy",
-					LastCheck: time.Now().Unix(),
-					Error:     err.Error(),
-					LatencyMs: latency,
-				}
-				overallHealthy = false
-			} else {
-				components[componentName] = &loomv1.ComponentHealth{
-					Status:    "healthy",
-					LastCheck: time.Now().Unix(),
-					LatencyMs: latency,
-				}
+				r.err = err.Error()
 			}
+			results <- r
+		}()
+	}
+
+	// Collect results
+	components := make(map[string]*loomv1.ComponentHealth, len(unique))
+	overallHealthy := true
+	for range unique {
+		r := <-results
+		status := "healthy"
+		if !r.healthy {
+			status = "unhealthy"
+			overallHealthy = false
+		}
+		components[r.key] = &loomv1.ComponentHealth{
+			Status:    status,
+			LastCheck: time.Now().Unix(),
+			Error:     r.err,
+			LatencyMs: r.latency,
 		}
 	}
 
@@ -3016,6 +3110,20 @@ func (s *MultiAgentServer) SetArtifactStore(store artifacts.ArtifactStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.artifactStore = store
+}
+
+// SetPatternTracker sets the pattern effectiveness tracker on the server.
+// All existing and future agents (via AddAgent) will have their orchestrators
+// wired to record metrics automatically.
+func (s *MultiAgentServer) SetPatternTracker(tracker *learning.PatternEffectivenessTracker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.patternTracker = tracker
+
+	// Wire tracker into all existing agents
+	for _, ag := range s.agents {
+		ag.SetPatternTracker(tracker)
+	}
 }
 
 // AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.

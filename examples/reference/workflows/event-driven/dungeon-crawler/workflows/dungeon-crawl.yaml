@@ -31,15 +31,14 @@ spec:
   # Communication pattern documentation (advisory only - not enforced by runtime)
   #
   # The "peer-to-peer pub-sub" pattern emerges through Loom's tri-modal communication:
-  # - Message Queue: send_message/receive_message for direct communication (not used here)
-  # - Broadcast Bus: publish/subscribe for topic-based messaging (USED IN THIS WORKFLOW)
+  # - Message Queue: send_message for direct communication (not used here). Messages auto-delivered.
+  # - Broadcast Bus: publish for topic-based messaging (USED IN THIS WORKFLOW). Messages auto-delivered.
   # - Shared Memory: shared_memory_write/read for shared state (not used here)
   #
   # All agents (DM and players) communicate as peers via the "party-chat" topic:
-  # 1. Each agent subscribes to "party-chat" topic
-  # 2. Agents publish messages to "party-chat" using publish()
-  # 3. Agents receive messages using receive_broadcast() which is event-driven
-  # 4. No hierarchy - all agents are equal participants in the conversation
+  # 1. Agents publish messages to "party-chat" using publish()
+  # 2. Messages are event-driven and auto-delivered to all subscribers (no receive tool needed)
+  # 3. No hierarchy - all agents are equal participants in the conversation
   #
   # The DM is the entrypoint (users chat with the DM first) but all agents
   # communicate as peers through the broadcast bus.

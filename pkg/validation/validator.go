@@ -108,11 +108,13 @@ func validateStructure(content, kind string) []ValidationError {
 	case "Workflow":
 		// Validate workflow structure
 		errors = append(errors, validateWorkflowStructure(content)...)
+	case "Skill":
+		errors = append(errors, validateSkillStructure(content)...)
 	case "":
 		errors = append(errors, ValidationError{
 			Level:    LevelStructure,
-			Message:  "Unable to determine file kind (Agent or Workflow)",
-			Expected: "File must have 'kind: Agent' or 'kind: Workflow'",
+			Message:  "Unable to determine file kind (Agent, Workflow, or Skill)",
+			Expected: "File must have 'kind: Agent', 'kind: Workflow', or 'kind: Skill'",
 			Fix:      "Add 'kind: Agent' or 'kind: Workflow' under metadata",
 		})
 	}
@@ -654,6 +656,98 @@ func validateMultiAgentWorkflowStructure(spec map[string]interface{}) []Validati
 			Expected: "Array of agent definitions",
 			Fix:      "Add 'agents:' array with at least one agent under spec",
 		})
+	}
+
+	return errors
+}
+
+// validateSkillStructure validates Skill YAML structure.
+func validateSkillStructure(content string) []ValidationError {
+	var errors []ValidationError
+	var data map[string]interface{}
+
+	if err := yaml.Unmarshal([]byte(content), &data); err != nil {
+		return errors // Syntax error already caught
+	}
+
+	// Check required fields
+	if apiVersion, ok := data["apiVersion"].(string); !ok || apiVersion == "" {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "apiVersion",
+			Message:  "Missing required field",
+			Expected: "apiVersion: loom/v1",
+			Fix:      "Add 'apiVersion: loom/v1' at the top of the file",
+		})
+	} else if apiVersion != "loom/v1" {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "apiVersion",
+			Message:  "Invalid apiVersion",
+			Got:      apiVersion,
+			Expected: "loom/v1",
+		})
+	}
+
+	if kind, ok := data["kind"].(string); !ok || kind != "Skill" {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "kind",
+			Message:  "Missing or invalid kind",
+			Expected: "kind: Skill",
+		})
+	}
+
+	// Check metadata
+	metadata, hasMetadata := data["metadata"].(map[string]interface{})
+	if !hasMetadata {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "metadata",
+			Message:  "Missing required metadata section",
+			Expected: "metadata with name and domain",
+			Fix:      "Add metadata section with 'name' and 'domain' fields",
+		})
+	} else {
+		if name, ok := metadata["name"].(string); !ok || name == "" {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "metadata.name",
+				Message:  "Missing required field",
+				Expected: "Non-empty kebab-case string",
+				Fix:      "Add 'name: your-skill-name' under metadata",
+			})
+		}
+		if domain, ok := metadata["domain"].(string); !ok || domain == "" {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "metadata.domain",
+				Message:  "Missing required field",
+				Expected: "Valid domain (sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document, meta-agent)",
+				Fix:      "Add 'domain: general' under metadata",
+			})
+		}
+	}
+
+	// Check for trigger or prompt (at least prompt.instructions is required)
+	if prompt, ok := data["prompt"].(map[string]interface{}); !ok {
+		errors = append(errors, ValidationError{
+			Level:    LevelStructure,
+			Field:    "prompt",
+			Message:  "Missing required prompt section",
+			Expected: "prompt with instructions",
+			Fix:      "Add prompt section with 'instructions' field",
+		})
+	} else {
+		if instructions, ok := prompt["instructions"].(string); !ok || instructions == "" {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "prompt.instructions",
+				Message:  "Missing required field",
+				Expected: "Non-empty instructions string",
+				Fix:      "Add 'instructions: |' under prompt with skill instructions",
+			})
+		}
 	}
 
 	return errors
