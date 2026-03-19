@@ -57,21 +57,45 @@ func DefaultEmbeddedConfig() *EmbeddedConfig {
 	}
 }
 
-// EmbeddedTracer implements Tracer interface using embedded storage
-type EmbeddedTracer struct {
-	storage       storage.Storage
-	config        *EmbeddedConfig
-	logger        *zap.Logger
-	mu            sync.RWMutex
-	activeSpans   map[string]*Span
-	closed        bool
-	flushTicker   *time.Ticker
-	flushDone     chan struct{}
-	currentEvalID string // Current evaluation session
+// EmbeddedTracerOption configures an EmbeddedTracer.
+type EmbeddedTracerOption func(*EmbeddedTracer)
+
+// WithSpanExporter attaches a SpanExporter to the EmbeddedTracer.
+// The exporter receives completed spans on EndSpan in addition to the
+// embedded storage. This enables exporting spans to external systems
+// (e.g., PostgreSQL via CloudSpanExporter) while keeping local storage.
+func WithSpanExporter(exporter SpanExporter) EmbeddedTracerOption {
+	return func(t *EmbeddedTracer) {
+		t.spanExporter = exporter
+	}
 }
 
-// NewEmbeddedTracer creates a new embedded tracer with in-process storage
-func NewEmbeddedTracer(config *EmbeddedConfig) (*EmbeddedTracer, error) {
+// WithDefaultResourceAttributes sets resource attributes that are
+// automatically applied to every span created by this tracer.
+func WithDefaultResourceAttributes(attrs map[string]string) EmbeddedTracerOption {
+	return func(t *EmbeddedTracer) {
+		t.defaultResourceAttrs = attrs
+	}
+}
+
+// EmbeddedTracer implements Tracer interface using embedded storage
+type EmbeddedTracer struct {
+	storage              storage.Storage
+	config               *EmbeddedConfig
+	logger               *zap.Logger
+	mu                   sync.RWMutex
+	activeSpans          map[string]*Span
+	closed               bool
+	flushTicker          *time.Ticker
+	flushDone            chan struct{}
+	currentEvalID        string // Current evaluation session
+	spanExporter         SpanExporter
+	defaultResourceAttrs map[string]string
+}
+
+// NewEmbeddedTracer creates a new embedded tracer with in-process storage.
+// Options can be used to attach a SpanExporter or set default resource attributes.
+func NewEmbeddedTracer(config *EmbeddedConfig, opts ...EmbeddedTracerOption) (*EmbeddedTracer, error) {
 	if config == nil {
 		config = DefaultEmbeddedConfig()
 	}
@@ -112,6 +136,11 @@ func NewEmbeddedTracer(config *EmbeddedConfig) (*EmbeddedTracer, error) {
 		flushDone:   make(chan struct{}),
 	}
 
+	// Apply options
+	for _, opt := range opts {
+		opt(tracer)
+	}
+
 	// Start flush ticker for periodic metrics updates
 	if config.FlushInterval > 0 {
 		tracer.flushTicker = time.NewTicker(config.FlushInterval)
@@ -121,6 +150,7 @@ func NewEmbeddedTracer(config *EmbeddedConfig) (*EmbeddedTracer, error) {
 	logger.Info("embedded tracer initialized",
 		zap.String("storage_type", config.StorageType),
 		zap.String("sqlite_path", config.SQLitePath),
+		zap.Bool("has_span_exporter", tracer.spanExporter != nil),
 	)
 
 	return tracer, nil
@@ -142,21 +172,35 @@ func (t *EmbeddedTracer) StartSpan(ctx context.Context, name string, opts ...Spa
 		return NewNoOpTracer().StartSpan(ctx, name, opts...)
 	}
 
+	// Determine trace ID: parent > context override > new UUID
+	traceID := uuid.New().String()
+	if override := traceIDFromContextOverride(ctx); override != "" {
+		traceID = override
+	}
+
 	// Create span
 	span := &Span{
-		TraceID:    uuid.New().String(),
+		TraceID:    traceID,
 		SpanID:     uuid.New().String(),
 		Name:       name,
 		StartTime:  time.Now(),
 		Attributes: make(map[string]interface{}),
 	}
 
-	// Apply options
+	// Apply default resource attributes
+	if len(t.defaultResourceAttrs) > 0 {
+		span.ResourceAttributes = make(map[string]string, len(t.defaultResourceAttrs))
+		for k, v := range t.defaultResourceAttrs {
+			span.ResourceAttributes[k] = v
+		}
+	}
+
+	// Apply options (may override resource attributes)
 	for _, opt := range opts {
 		opt(span)
 	}
 
-	// Link to parent if exists
+	// Link to parent if exists (parent trace ID takes priority)
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
@@ -191,17 +235,26 @@ func (t *EmbeddedTracer) EndSpan(span *Span) {
 	// Remove from active spans
 	delete(t.activeSpans, span.SpanID)
 
-	// Convert to storage EvalRun format
+	// Convert to storage EvalRun format for embedded storage
 	evalRun := t.spanToEvalRun(span)
 
-	// Store in storage
+	// Store in embedded storage
 	ctx := context.Background()
 	if err := t.storage.CreateEvalRun(ctx, evalRun); err != nil {
 		t.logger.Error("failed to store eval run",
 			zap.String("span_id", span.SpanID),
 			zap.Error(err),
 		)
-		return
+	}
+
+	// Export to external exporter if configured
+	if t.spanExporter != nil {
+		if err := t.spanExporter.ExportSpans(ctx, []*Span{span}); err != nil {
+			t.logger.Error("failed to export span",
+				zap.String("span_id", span.SpanID),
+				zap.Error(err),
+			)
+		}
 	}
 
 	t.logger.Debug("span completed",
@@ -384,6 +437,14 @@ func (t *EmbeddedTracer) Close() error {
 		// Mark eval as completed
 		if err := t.storage.UpdateEvalStatus(ctx, evalID, "completed"); err != nil {
 			t.logger.Error("failed to update eval status", zap.Error(err))
+		}
+	}
+
+	// Shutdown span exporter if configured
+	if t.spanExporter != nil {
+		shutdownCtx := context.Background()
+		if err := t.spanExporter.Shutdown(shutdownCtx); err != nil {
+			t.logger.Error("failed to shutdown span exporter", zap.Error(err))
 		}
 	}
 

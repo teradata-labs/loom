@@ -31,8 +31,14 @@ func NewNoOpTracer() *NoOpTracer {
 
 // StartSpan creates a minimal span but doesn't export it.
 func (t *NoOpTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
+	// Determine trace ID: parent > context override > new UUID
+	traceID := uuid.New().String()
+	if override := traceIDFromContextOverride(ctx); override != "" {
+		traceID = override
+	}
+
 	span := &Span{
-		TraceID:    uuid.New().String(),
+		TraceID:    traceID,
 		SpanID:     uuid.New().String(),
 		Name:       name,
 		StartTime:  time.Now(),
@@ -44,7 +50,7 @@ func (t *NoOpTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		opt(span)
 	}
 
-	// Link to parent if exists
+	// Link to parent if exists (parent trace ID takes priority)
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
