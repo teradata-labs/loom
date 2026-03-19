@@ -31,6 +31,16 @@ func GetGuide() []byte {
 	return GuideYAML
 }
 
+// WeaverCreationSkillYAML contains the weaver-creation skill configuration.
+//
+//go:embed skills/weaver-creation.yaml
+var WeaverCreationSkillYAML []byte
+
+// GetWeaverCreationSkill returns the embedded weaver-creation.yaml skill content.
+func GetWeaverCreationSkill() []byte {
+	return WeaverCreationSkillYAML
+}
+
 // GetStartHere returns the base ROM (START_HERE.md) content.
 // This delegates to pkg/agent/rom_loader.go which is the single source of truth for ROM files.
 // The ROM is embedded from pkg/agent/roms/START_HERE.md at compile time.

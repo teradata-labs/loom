@@ -518,9 +518,13 @@ func (la *LearningAgent) AnalyzePatternEffectiveness(
 			llm_provider, llm_model
 		FROM pattern_effectiveness
 		WHERE window_start >= ?
-			AND domain = ?
 	`
-	args := []interface{}{windowStart, req.Domain}
+	args := []interface{}{windowStart}
+
+	if req.Domain != "" {
+		query += " AND domain = ?"
+		args = append(args, req.Domain)
+	}
 
 	if req.AgentId != "" {
 		query += " AND agent_id = ?"

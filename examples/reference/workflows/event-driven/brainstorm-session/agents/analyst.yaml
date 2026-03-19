@@ -43,7 +43,7 @@ spec:
   tools:
     - publish
     - query_tool_result
-    - get_error_detail
+    - get_error_details
 
   memory:
     type: sqlite

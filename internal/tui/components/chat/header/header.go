@@ -59,7 +59,7 @@ func (h *header) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent {
 			if h.session.ID == msg.Payload.ID {
-				h.session = msg.Payload
+				h.session = h.session.Merge(msg.Payload)
 			}
 		}
 	}
@@ -118,9 +118,12 @@ func (h *header) details(availWidth int) string {
 	// LSP diagnostics - not available in Loom
 	// (LSP is handled server-side)
 
-	// Token usage percentage
-	model := config.Get().GetModelByType(config.SelectedModelTypeLarge)
-	if model != nil && model.ContextWindow > 0 {
+	// Token usage percentage - prefer server-reported context state
+	if h.session.ContextTokensMax > 0 {
+		percentage := (float64(h.session.ContextTokensUsed) / float64(h.session.ContextTokensMax)) * 100
+		formattedPercentage := s.Muted.Render(fmt.Sprintf("%d%%", int(percentage)))
+		parts = append(parts, formattedPercentage)
+	} else if model := config.Get().GetModelByType(config.SelectedModelTypeLarge); model != nil && model.ContextWindow > 0 {
 		totalTokens := h.session.CompletionTokens + h.session.PromptTokens
 		percentage := (float64(totalTokens) / float64(model.ContextWindow)) * 100
 		formattedPercentage := s.Muted.Render(fmt.Sprintf("%d%%", int(percentage)))

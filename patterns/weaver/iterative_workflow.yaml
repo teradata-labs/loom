@@ -1,0 +1,74 @@
+name: iterative_workflow
+title: Iterative Workflow Pattern
+description: Loop a pipeline with refinement — agents iterate until quality criteria are met or max iterations reached.
+category: weaver
+difficulty: advanced
+backend_type: workflow
+
+use_cases:
+  - "iterative refinement"
+  - "refine until good enough"
+  - "loop and improve"
+  - "retry with feedback"
+  - "quality improvement loop"
+
+parameters:
+  - name: max_iterations
+    type: integer
+    description: Maximum number of iterations before stopping
+    required: true
+    example: "5"
+  - name: stage_count
+    type: integer
+    description: Number of stages in the iterative pipeline
+    required: false
+    example: "2"
+
+templates:
+  workflow:
+    description: Iterative workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-iterative
+      spec:
+        type: iterative
+        max_iterations: {{max_iterations}}
+        restart_topic: "{{restart_topic}}"
+        restart_policy: on_failure
+        restart_triggers:
+          - "needs improvement"
+          - "retry"
+          - "not good enough"
+        pipeline:
+          initial_prompt: "{{initial_prompt}}"
+          stages:
+            - agent_id: creator
+              prompt_template: "Create or improve: {{previous}}"
+            - agent_id: reviewer
+              prompt_template: "Review quality of: {{previous}}"
+              validation_prompt: "Is this output acceptable? Reply PASS or FAIL with reason."
+
+examples:
+  - name: code_quality_loop
+    description: Iterative code improvement
+    input: "Create an iterative workflow that improves code quality"
+    expected_output: |
+      Iterative pipeline with creator and reviewer stages,
+      max_iterations: 5, restart on quality failure.
+
+common_errors:
+  - error: "Missing restart_topic"
+    cause: "Iterative workflows need a topic to restart from"
+    fix: "Add 'restart_topic' with the topic text for restart context"
+  - error: "Infinite loop potential"
+    cause: "No max_iterations set"
+    fix: "Always set max_iterations (recommended: 3-10)"
+
+best_practices: |
+  - Always set max_iterations to prevent infinite loops
+  - Use validation_prompt in review stages for quality gates
+  - restart_policy: on_failure restarts when validation fails
+  - restart_triggers are keywords that trigger a restart
+  - Keep iterations focused on incremental improvement

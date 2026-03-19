@@ -1,0 +1,343 @@
+# WEAVER ROM — Agent & Workflow Creation Reference
+# This ROM provides ground-truth knowledge for the weaver meta-agent.
+# All content verified against source code, not examples or LLM training data.
+
+═══════════════════════════════════════════════════════════════════════
+# SECTION 1: AGENT YAML SCHEMA
+═══════════════════════════════════════════════════════════════════════
+
+Agent configs use k8s-style declarative YAML:
+
+```yaml
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: my-agent          # Required: kebab-case
+  version: "1.0.0"        # Optional
+  description: "..."      # Optional
+  labels:                  # Optional
+    domain: sql
+spec:
+  system_prompt: |         # Required: agent instructions
+    Direct task instructions. No role prompting.
+  tools:                   # Required: FLAT ARRAY of strings
+    - shell_execute
+    - file_read
+  memory:                  # Optional
+    type: sqlite           # sqlite or memory
+    max_history: 1000
+  rom: "TD"                # Optional: domain ROM (TD, auto, none)
+  config:                  # Optional
+    max_turns: 1000
+    max_tool_executions: 50
+    enable_self_correction: true
+    patterns:
+      enabled: true
+  backend:                 # Optional: execution backend
+    type: teradata
+    connection_string: "..."
+  llm:                     # OMIT unless user explicitly requests provider
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+```
+
+**CRITICAL RULES:**
+- Tools MUST be a flat array of strings: `tools: [shell_execute, file_read]`
+- NEVER use nested format like `tools: {builtin: [...], mcp: [...]}`
+- NEVER include `llm:` section unless user explicitly requests a specific provider/model
+- Agents inherit the global LLM provider from server config by default
+
+═══════════════════════════════════════════════════════════════════════
+# SECTION 2: TOOL AVAILABILITY MATRIX
+═══════════════════════════════════════════════════════════════════════
+
+## Configurable Tools (list in spec.tools)
+These are the ONLY tools you should put in an agent's tools array:
+- `http_request`     — HTTP requests to external APIs
+- `web_search`       — Web search via search engine
+- `file_read`        — Read files from workspace
+- `file_write`       — Write files to workspace
+- `analyze_image`    — Image analysis
+- `parse_document`   — Document parsing (PDF, DOCX, etc.)
+- `grpc_call`        — gRPC service calls
+- `shell_execute`    — Shell command execution
+- `contact_human`    — Escalate to human
+- `tool_search`      — Discover available tools via FTS search
+- `agent_management` — Create/update/list/validate agents and workflows
+
+## Auto-Registered Tools (do NOT list in spec.tools)
+These are ALWAYS available — listing them is wrong and produces warnings:
+- `workspace`           — Session-scoped file management
+- `get_error_details`   — Progressive error detail disclosure
+- `conversation_memory` — Conversation search and recall
+- `session_memory`      — Cross-session memory persistence
+- `query_tool_result`   — Query previous tool results
+
+## Workflow-Injected Tools (do NOT list in agent configs)
+These are auto-injected when agents participate in workflows:
+- `send_message`        — Send message to specific agent
+- `publish`             — Publish message to topic subscribers
+- `shared_memory_read`  — Read from shared workflow memory
+- `shared_memory_write` — Write to shared workflow memory
+
+**IMPORTANT:** Never create tools named `receive_message`, `receive_broadcast`,
+or `subscribe`. These do NOT exist. Messages are event-driven and auto-delivered.
+
+═══════════════════════════════════════════════════════════════════════
+# SECTION 3: WORKFLOW TYPES
+═══════════════════════════════════════════════════════════════════════
+
+## Orchestration Workflows (spec.type)
+Deterministic, executor-driven patterns. Use `spec.type` field.
+
+7 types with REQUIRED fields (do NOT mix fields between types):
+
+### debate
+```yaml
+spec:
+  type: debate
+  topic: "The debate question"           # REQUIRED for debate
+  agent_ids: [agent-a, agent-b, agent-c] # REQUIRED: 2+ agents
+  rounds: 3                              # REQUIRED
+  merge_strategy: synthesis              # REQUIRED: synthesis, concatenate, etc.
+```
+
+### fork-join
+```yaml
+spec:
+  type: fork-join
+  prompt: "Same prompt sent to all agents" # REQUIRED for fork-join (NOT topic!)
+  agent_ids: [agent-a, agent-b, agent-c]   # REQUIRED
+  merge_strategy: concatenate              # REQUIRED
+```
+
+### pipeline
+```yaml
+spec:
+  type: pipeline
+  initial_prompt: "Starting input"         # REQUIRED for pipeline
+  stages:                                  # REQUIRED: array of stages
+    - agent_id: stage-1-agent
+      prompt_template: "Process: {{previous}}"  # Use {{previous}} for prior stage output
+    - agent_id: stage-2-agent
+      prompt_template: "Review: {{previous}}"
+```
+
+### parallel
+```yaml
+spec:
+  type: parallel
+  tasks:                                   # REQUIRED for parallel (NOT agent_ids!)
+    - agent_id: agent-a
+      prompt: "Unique task for agent A"    # Each task has its OWN prompt
+    - agent_id: agent-b
+      prompt: "Different task for agent B"
+  merge_strategy: concatenate              # Optional
+```
+
+### swarm
+```yaml
+spec:
+  type: swarm
+  question: "Should we deploy the release?" # REQUIRED for swarm (NOT topic!)
+  agent_ids: [voter-1, voter-2, voter-3]    # REQUIRED: 3+ agents
+  strategy: majority                        # REQUIRED: majority, supermajority, unanimous
+  confidence_threshold: 0.7                 # Optional
+```
+
+### conditional
+```yaml
+spec:
+  type: conditional
+  classifier_agent: classifier             # REQUIRED
+  branches:                                # REQUIRED: map of branch → sub-workflow
+    positive: {type: pipeline, ...}
+    negative: {type: pipeline, ...}
+  default_branch: negative                 # REQUIRED
+```
+
+### iterative
+```yaml
+spec:
+  type: iterative
+  max_iterations: 5                        # REQUIRED
+  stages: [...]                            # Same as pipeline stages
+  restart_policy: from_stage               # Optional
+```
+
+**CRITICAL — DO NOT CONFUSE THESE FIELDS:**
+- `topic:` is ONLY for debate
+- `prompt:` is ONLY for fork-join (shared prompt to all agents)
+- `question:` is ONLY for swarm
+- `tasks:` is ONLY for parallel (each task has unique prompt)
+- `agent_ids:` is for debate, fork-join, swarm (NOT parallel)
+- `stages:` is for pipeline and iterative (NOT other types)
+
+## Event-Driven Coordination Workflows (spec.entrypoint)
+Asynchronous, agent-autonomous. Use `spec.entrypoint` field.
+
+2 communication patterns: `hub-and-spoke`, `peer-to-peer-pub-sub`
+
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-coordination
+spec:
+  entrypoint: coordinator
+  agents:
+    - name: coordinator
+      agent: coordinator
+    - name: worker-1
+      agent: worker
+  communication:
+    pattern: hub-and-spoke   # or peer-to-peer-pub-sub
+    hub: coordinator         # Required for hub-and-spoke
+    topic: my-topic          # Required for peer-to-peer-pub-sub
+```
+
+**KEY DISTINCTION:**
+- Orchestration (`spec.type`): Same prompt to multiple agents OR structured flow
+- Coordination (`spec.entrypoint`): Agents communicate freely, event-driven
+
+═══════════════════════════════════════════════════════════════════════
+# SECTION 4: COMMUNICATION RULES
+═══════════════════════════════════════════════════════════════════════
+
+1. Messages are EVENT-DRIVEN — auto-delivered to agents, no polling needed
+2. Sub-agents AUTO-SPAWN when they receive messages (no manage_ephemeral_agents)
+3. Communication tools (`send_message`, `publish`, `shared_memory_read`, `shared_memory_write`)
+   are AUTO-INJECTED for workflow agents — never list them in agent configs
+4. Agent namespacing in workflows:
+   - Entrypoint agent: `{workflow-name}`
+   - Sub-agents: `{workflow-name}:{agent-name}`
+5. The ONLY tools agents use to communicate:
+   - `send_message` — direct message to a specific agent (hub-and-spoke)
+   - `publish` — broadcast to topic subscribers (peer-to-peer-pub-sub)
+6. There is NO `receive_message`, `receive_broadcast`, or `subscribe` tool
+7. Agents receive messages as injected context in their conversation
+
+═══════════════════════════════════════════════════════════════════════
+# SECTION 5: COMMON MISTAKES (NEVER DO THESE)
+═══════════════════════════════════════════════════════════════════════
+
+1. ❌ Nested tools format → ✅ Use flat array: `tools: [shell_execute, file_read]`
+2. ❌ Including `llm:` by default → ✅ Only add when user explicitly requests provider
+3. ❌ Listing auto-registered tools → ✅ Never list workspace, get_error_details, conversation_memory, session_memory, query_tool_result
+4. ❌ Listing workflow tools in agent configs → ✅ Never list send_message, publish, shared_memory_read/write
+5. ❌ Creating receive_message/subscribe tools → ✅ Messages are event-driven, auto-delivered
+6. ❌ Creating workflow before agents → ✅ Always create agents FIRST, then workflows
+7. ❌ Guessing tool names → ✅ Use `tool_search` to discover available tools
+8. ❌ Using action="create" with type="agent" → ✅ Use action="create_agent"
+9. ❌ Using action="create" with type="workflow" → ✅ Use action="create_workflow"
+10. ❌ Agent name mismatch → ✅ Agent names in workflows must match .yaml filenames
+11. ❌ Using manage_ephemeral_agents → ✅ Sub-agents auto-spawn on message receipt
+12. ❌ Role prompting ("You are a SQL expert...") → ✅ Direct instructions ("Analyze SQL for...")
+
+═══════════════════════════════════════════════════════════════════════
+# SECTION 6: MINIMAL TEMPLATES
+═══════════════════════════════════════════════════════════════════════
+
+## Minimal Agent (10 lines)
+```yaml
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: my-agent
+spec:
+  system_prompt: |
+    Analyze user requests and provide actionable recommendations.
+  tools:
+    - shell_execute
+    - file_read
+```
+
+## Minimal Coordination Workflow
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-coordination
+spec:
+  entrypoint: coordinator
+  agents:
+    - name: coordinator
+      agent: coordinator
+    - name: worker
+      agent: worker
+  communication:
+    pattern: hub-and-spoke
+    hub: coordinator
+```
+
+## Minimal Debate
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-debate
+spec:
+  type: debate
+  topic: "Should we use microservices vs monolith?"
+  agent_ids: [advocate, skeptic]
+  rounds: 3
+  merge_strategy: synthesis
+```
+
+## Minimal Fork-Join
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-review
+spec:
+  type: fork-join
+  prompt: "Review this code for quality issues"
+  agent_ids: [security-reviewer, perf-reviewer, style-reviewer]
+  merge_strategy: concatenate
+```
+
+## Minimal Pipeline
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-pipeline
+spec:
+  type: pipeline
+  initial_prompt: "Design an authentication system"
+  stages:
+    - agent_id: architect
+      prompt_template: "Create high-level design for: {{previous}}"
+    - agent_id: implementer
+      prompt_template: "Implement the design: {{previous}}"
+```
+
+## Minimal Parallel
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-parallel
+spec:
+  type: parallel
+  tasks:
+    - agent_id: log-analyzer
+      prompt: "Analyze application logs for errors"
+    - agent_id: metrics-analyzer
+      prompt: "Analyze system metrics for anomalies"
+```
+
+## Minimal Swarm
+```yaml
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: my-vote
+spec:
+  type: swarm
+  question: "Should we deploy the release?"
+  agent_ids: [sre-voter, qa-voter, security-voter]
+  strategy: majority
+  confidence_threshold: 0.7
+```

@@ -576,7 +576,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas and column metadata from get_tables() for quick reference
   - **L1 Cache**: Keep recent nPath query results (last 5-10 queries) for comparison
   - **L2 Compressed**: Archive pattern analysis summaries from earlier in the conversation
-  - **Swap Layer**: Store complete historical analysis for multi-day sessions; use recall_conversation tool to retrieve earlier pattern findings when user references previous work
+  - **Swap Layer**: Store complete historical analysis for multi-day sessions; use conversation_memory tool to retrieve earlier pattern findings when user references previous work
   This reduces redundant schema lookups and enables pattern comparison across long-running analysis sessions.
 # === BEST_PRACTICES END ===
 

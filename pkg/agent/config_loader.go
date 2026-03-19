@@ -184,6 +184,7 @@ type MemoryConfigYAML struct {
 	DSN                        string                       `yaml:"dsn"`
 	MaxHistory                 int                          `yaml:"max_history"`
 	SharedMemoryThresholdBytes int64                        `yaml:"shared_memory_threshold_bytes"`
+	MaxToolResults             int                          `yaml:"max_tool_results"`
 	MemoryCompression          *MemoryCompressionConfigYAML `yaml:"memory_compression"`
 }
 
@@ -569,6 +570,7 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		Dsn:                        yaml.Agent.Memory.DSN,
 		MaxHistory:                 maxHistory,
 		SharedMemoryThresholdBytes: yaml.Agent.Memory.SharedMemoryThresholdBytes,
+		MaxToolResults:             int32(yaml.Agent.Memory.MaxToolResults),
 	}
 
 	// Set defaults for memory

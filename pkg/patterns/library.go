@@ -92,6 +92,7 @@ func NewLibrary(embeddedFS *embed.FS, patternsDir string) *Library {
 			"sql/timeseries",
 			"sql/data_quality",
 			"sql/text",
+			"weaver",
 		},
 		tracer: observability.NewNoOpTracer(),
 	}
@@ -443,6 +444,32 @@ func (lib *Library) ListAll() []PatternSummary {
 			span.SetAttribute("index.filesystem_count", fmt.Sprintf("%d", len(fsSummaries)))
 		}
 	}
+
+	// Include dynamically registered patterns (via Register()) that aren't
+	// already covered by embedded/filesystem indexing.
+	lib.mu.RLock()
+	for name, p := range lib.patternCache {
+		alreadyIndexed := false
+		for _, s := range summaries {
+			if s.Name == name {
+				alreadyIndexed = true
+				break
+			}
+		}
+		if !alreadyIndexed {
+			summaries = append(summaries, PatternSummary{
+				Name:            p.Name,
+				Title:           p.Title,
+				Description:     p.Description,
+				Category:        p.Category,
+				Difficulty:      p.Difficulty,
+				BackendType:     p.BackendType,
+				BackendFunction: p.BackendFunction,
+				UseCases:        p.UseCases,
+			})
+		}
+	}
+	lib.mu.RUnlock()
 
 	// Cache the index
 	lib.mu.Lock()
@@ -871,6 +898,16 @@ func (lib *Library) ClearCache() {
 		"patterns_cleared": fmt.Sprintf("%d", cacheSize),
 		"index_cleared":    fmt.Sprintf("%d", indexSize),
 	})
+}
+
+// Register adds a dynamically-created pattern directly to the library cache.
+// This enables programmatic registration without requiring a file on disk.
+// If a pattern with the same name already exists it is overwritten.
+func (lib *Library) Register(pattern *Pattern) {
+	lib.mu.Lock()
+	defer lib.mu.Unlock()
+	lib.patternCache[pattern.Name] = pattern
+	lib.indexInitialized = false // invalidate cached index so ListAll() re-scans
 }
 
 // AddSearchPath adds a custom search path for pattern discovery.

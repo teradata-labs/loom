@@ -408,7 +408,7 @@ best_practices: |
   - **Kernel Layer**: Cache temporal table schemas and PERIOD definitions
   - **L1 Cache**: Keep recent point-in-time queries (last 5-8 snapshots) for performance
   - **L2 Compressed**: Archive temporal query patterns and historical snapshots
-  - **Swap Layer**: Store complete temporal history; use recall_conversation to reference similar SCD implementations from earlier projects
+  - **Swap Layer**: Store complete temporal history; use conversation_memory to reference similar SCD implementations from earlier projects
   This enables efficient temporal queries and consistent historical data management patterns.
 # === BEST_PRACTICES END ===
 

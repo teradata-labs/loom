@@ -598,6 +598,12 @@ func (m *sidebarCmp) weaverBlock() string {
 		),
 	)
 
+	// Add /agent-plan command hint when weaver is active
+	if isActive {
+		cmdHint := t.S().Base.Foreground(t.FgSubtle).PaddingLeft(2).Render("/agent-plan  guided planning")
+		lines = append(lines, cmdHint)
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
@@ -688,11 +694,23 @@ func (s *sidebarCmp) currentModelBlock() string {
 	}
 
 	if s.session.ID != "" {
+		// Use server-reported context window when available, otherwise fall back to default
+		ctxWindow := int64(contextWindow)
+		if s.session.ContextTokensMax > 0 {
+			ctxWindow = s.session.ContextTokensMax
+		}
+
+		// Use server-reported context fill when available, otherwise sum tokens
+		ctxUsed := int64(s.session.CompletionTokens + s.session.PromptTokens)
+		if s.session.ContextTokensUsed > 0 {
+			ctxUsed = s.session.ContextTokensUsed
+		}
+
 		parts = append(
 			parts,
 			"  "+formatTokensAndCost(
-				int64(s.session.CompletionTokens+s.session.PromptTokens),
-				int64(contextWindow),
+				ctxUsed,
+				ctxWindow,
 				s.session.Cost,
 			),
 		)
@@ -1181,6 +1199,7 @@ func (m *sidebarCmp) keyboardHintsBlock() string {
 		{"/model", "model"},
 		{"/agents", "agents"},
 		{"/workflows", "workflows"},
+		{"/agent-plan", "plan agent"},
 		{"/sidebar", "sidebar"},
 		{"/apps", "apps"},
 		{"/mcp", "add MCP"},

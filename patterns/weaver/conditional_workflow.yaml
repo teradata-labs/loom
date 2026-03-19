@@ -1,0 +1,78 @@
+name: conditional_workflow
+title: Conditional Workflow Pattern
+description: Route work to different branches based on a classifier agent's decision. Enables if-then-else logic in workflows.
+category: weaver
+difficulty: advanced
+backend_type: workflow
+
+use_cases:
+  - "conditional routing"
+  - "if then else workflow"
+  - "classify and branch"
+  - "route to different agents"
+  - "decision-based workflow"
+
+parameters:
+  - name: condition_prompt
+    type: string
+    description: The prompt for the classifier agent to evaluate
+    required: true
+    example: "Classify this request as bug, feature, or question"
+  - name: branch_count
+    type: integer
+    description: Number of conditional branches
+    required: false
+    example: "3"
+
+templates:
+  workflow:
+    description: Conditional workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-conditional
+      spec:
+        type: conditional
+        condition_agent_id: classifier
+        condition_prompt: "{{condition_prompt}}"
+        branches:
+          bug:
+            type: pipeline
+            initial_prompt: "Fix this bug: {{previous}}"
+            stages:
+              - agent_id: debugger
+                prompt_template: "Debug: {{previous}}"
+          feature:
+            type: pipeline
+            initial_prompt: "Implement feature: {{previous}}"
+            stages:
+              - agent_id: developer
+                prompt_template: "Develop: {{previous}}"
+          question:
+            type: fork-join
+            prompt: "Answer: {{previous}}"
+            agent_ids: [expert-1, expert-2]
+        default_branch: question
+
+examples:
+  - name: support_router
+    description: Route support requests to appropriate handlers
+    input: "Create a workflow that routes support tickets"
+    expected_output: |
+      Conditional with classifier agent, branches for different ticket types,
+      default_branch for unclassified requests.
+
+common_errors:
+  - error: "Missing default_branch"
+    cause: "Conditional needs a fallback for unmatched conditions"
+    fix: "Add 'default_branch: branch-name' pointing to an existing branch"
+  - error: "Invalid branch structure"
+    cause: "Each branch must be a valid nested workflow definition"
+    fix: "Each branch value should be a complete workflow spec (type + fields)"
+
+best_practices: |
+  - Always include a default_branch for unmatched conditions
+  - Classifier agent should return ONLY the branch key name
+  - Branches can be any workflow type (pipeline, fork-join, parallel, etc.)
+  - Keep branch names simple and descriptive

@@ -960,14 +960,14 @@ time.AfterFunc(30*time.Second, func() {
 
 ### Integration with Event-Driven Sub-Agents
 
-Sub-agents use `receive_message` tool with notification channels. `SubscribeToSession` extends same pattern to clients:
+Sub-agents receive messages via event-driven auto-delivery (messages are injected into the agent's context automatically when enqueued). `SubscribeToSession` extends the same pattern to clients:
 
 ```
 Sub-Agent Flow:                      Client Flow:
 MessageQueue.Enqueue()               MessageQueue.Enqueue()
   ├─▶ NotifyChannel                    ├─▶ NotifyChannel
   │   (agent receives via               │   (agent receives)
-  │    receive_message)                 │
+  │    auto-delivery)                   │
   └─▶ NotifyListeners                   └─▶ NotifyListeners
       (stream.Send update)                  (stream.Send update)
 ```
@@ -1007,7 +1007,7 @@ Streaming recommended for all async workflow use cases.
 ### See Also
 
 - [Multi-Agent Architecture](../architecture/multi-agent.md) - Async workflow design
-- [Communication Tools Reference](./tools.md#send_message) - send_message/receive_message tools
+- [Communication Tools Reference](./tools.md#send_message) - send_message tool (messages are auto-delivered to recipients)
 - [Session Management](./sessions.md) - Session lifecycle
 
 

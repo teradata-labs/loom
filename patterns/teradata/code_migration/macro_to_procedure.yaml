@@ -398,7 +398,7 @@ best_practices: |
   - **Kernel Layer**: Cache MACRO definitions and conversion patterns
   - **L1 Cache**: Keep recent conversions (last 5-8 MACROs) to reuse patterns
   - **L2 Compressed**: Archive conversion history and testing results
-  - **Swap Layer**: Store complete migration documentation; use recall_conversation to reference similar MACRO migrations from earlier modernization projects
+  - **Swap Layer**: Store complete migration documentation; use conversation_memory to reference similar MACRO migrations from earlier modernization projects
   This enables consistent conversion patterns and tracking migration progress across legacy codebase modernization.
 # === BEST_PRACTICES END ===
 
