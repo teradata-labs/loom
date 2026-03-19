@@ -467,7 +467,7 @@ best_practices: |
   - **Kernel Layer**: Cache current statistics metadata (CollectTimeStamp, UniqueValueCount) from DBC.StatsV
   - **L1 Cache**: Keep recent statistics recommendations (last 5-8 tables analyzed) to avoid redundant analysis
   - **L2 Compressed**: Archive statistics collection history showing before/after query performance improvements
-  - **Swap Layer**: Store complete statistics management history across optimization cycles; use recall_conversation to reference baseline cardinality estimates from weeks ago when comparing optimizer behavior
+  - **Swap Layer**: Store complete statistics management history across optimization cycles; use conversation_memory to reference baseline cardinality estimates from weeks ago when comparing optimizer behavior
   This enables tracking statistics impact on query performance and identifying patterns in stale statistics.
 # === BEST_PRACTICES END ===
 

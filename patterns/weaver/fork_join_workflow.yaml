@@ -1,0 +1,71 @@
+name: fork_join_workflow
+title: Fork-Join Workflow Pattern
+description: Send the same prompt to multiple agents in parallel, then merge their responses. Each agent applies different expertise to the same question.
+category: weaver
+difficulty: intermediate
+backend_type: workflow
+
+use_cases:
+  - "fork and join analysis"
+  - "parallel analysis of same question"
+  - "multiple perspectives on same input"
+  - "same question to different experts"
+  - "code review from multiple angles"
+
+parameters:
+  - name: prompt
+    type: string
+    description: The shared prompt sent to all agents
+    required: true
+    example: "Review this code for issues"
+  - name: agent_count
+    type: integer
+    description: Number of parallel agents
+    required: false
+    example: "3"
+  - name: merge_strategy
+    type: string
+    description: How to combine results (concatenate, synthesis, ranked)
+    required: false
+    example: "concatenate"
+
+templates:
+  workflow:
+    description: Fork-join workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-fork-join
+      spec:
+        type: fork-join
+        prompt: "{{prompt}}"
+        agent_ids:
+          - analyst-1
+          - analyst-2
+          - analyst-3
+        merge_strategy: concatenate
+
+examples:
+  - name: code_review
+    description: Multi-perspective code review
+    input: "Review code from security, performance, and maintainability angles"
+    expected_output: |
+      Fork-join with shared code review prompt,
+      3 agents (security-reviewer, perf-reviewer, maintainability-reviewer),
+      concatenate merge strategy.
+
+common_errors:
+  - error: "Confusing fork-join with parallel"
+    cause: "Fork-join sends SAME prompt to all agents. Parallel sends DIFFERENT prompts."
+    fix: "Use fork-join when all agents get the same input. Use parallel when each agent has a unique task."
+  - error: "Empty agent_ids"
+    cause: "Fork-join requires at least one agent"
+    fix: "Add agent IDs to the agent_ids array"
+
+best_practices: |
+  - Fork-join = same prompt to multiple agents (fan-out, fan-in)
+  - Parallel = different prompts to different agents (independent tasks)
+  - Use concatenate merge for comprehensive coverage
+  - Use synthesis merge when you need a unified summary
+  - Each agent should have different expertise in their system_prompt

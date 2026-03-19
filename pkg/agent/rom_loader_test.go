@@ -190,6 +190,70 @@ func TestGetDomainROMSize(t *testing.T) {
 	t.Logf("TD domain ROM size: %d bytes", size)
 }
 
+func TestLoadROMContent_Weaver(t *testing.T) {
+	content := LoadROMContent("weaver", "")
+	if len(content) == 0 {
+		t.Fatal("Weaver ROM should not be empty")
+	}
+	// Base ROM + Weaver ROM should be substantial
+	if len(content) < 5000 {
+		t.Fatalf("Base + Weaver ROM should be >5KB, got %d bytes", len(content))
+	}
+	// Should contain base ROM
+	if !strings.Contains(content, "START HERE") {
+		t.Fatal("Weaver ROM should contain base content")
+	}
+	// Should contain domain separator
+	if !strings.Contains(content, "DOMAIN-SPECIFIC KNOWLEDGE") {
+		t.Fatal("Weaver ROM should contain domain separator")
+	}
+	// Should contain key weaver sections
+	if !strings.Contains(content, "TOOL AVAILABILITY MATRIX") {
+		t.Fatal("Weaver ROM should contain tool availability matrix")
+	}
+	if !strings.Contains(content, "AGENT YAML SCHEMA") {
+		t.Fatal("Weaver ROM should contain agent YAML schema")
+	}
+	if !strings.Contains(content, "COMMON MISTAKES") {
+		t.Fatal("Weaver ROM should contain common mistakes section")
+	}
+	if !strings.Contains(content, "WORKFLOW TYPES") {
+		t.Fatal("Weaver ROM should contain workflow types section")
+	}
+	// Should contain warnings AGAINST deprecated tool names (not endorsing them)
+	if !strings.Contains(content, "NO `receive_message`") && !strings.Contains(content, "NO receive_message") {
+		t.Fatal("Weaver ROM should warn against receive_message")
+	}
+	// Should not list receive_message as a valid configurable tool
+	if strings.Contains(content, "- `receive_message`") {
+		t.Fatal("Weaver ROM should not list receive_message as a tool")
+	}
+	t.Logf("Weaver ROM loaded: %d bytes", len(content))
+}
+
+func TestGetROMSize_Weaver(t *testing.T) {
+	size := GetROMSize("weaver")
+	if size == 0 {
+		t.Fatal("Weaver ROM size should not be 0")
+	}
+	if size < 5000 {
+		t.Fatalf("Base + Weaver ROM should be >5KB, got %d bytes", size)
+	}
+	t.Logf("Weaver ROM size: %d bytes", size)
+}
+
+func TestGetDomainROMSize_Weaver(t *testing.T) {
+	size := GetDomainROMSize("weaver")
+	if size == 0 {
+		t.Fatal("Weaver domain ROM size should not be 0")
+	}
+	// Weaver ROM is ~8-12KB
+	if size < 4000 {
+		t.Fatalf("Weaver domain ROM should be >4KB, got %d bytes", size)
+	}
+	t.Logf("Weaver domain ROM size: %d bytes", size)
+}
+
 func TestROMSeparatorFormat(t *testing.T) {
 	separator := formatROMSeparator("TEST SECTION")
 	if !strings.Contains(separator, "TEST SECTION") {

@@ -1,0 +1,87 @@
+name: debate_workflow
+title: Debate Workflow Pattern
+description: Create a debate orchestration workflow where multiple agents argue different sides of a topic and reach synthesis or consensus.
+category: weaver
+difficulty: intermediate
+backend_type: workflow
+
+use_cases:
+  - "debate between agents"
+  - "argue different perspectives"
+  - "discuss opposing viewpoints"
+  - "reach consensus through discussion"
+  - "pro vs con analysis"
+
+parameters:
+  - name: topic
+    type: string
+    description: The debate topic or question
+    required: true
+    example: "Should we adopt microservices architecture?"
+  - name: agent_count
+    type: integer
+    description: Number of debating agents (minimum 2)
+    required: false
+    example: "3"
+  - name: rounds
+    type: integer
+    description: Number of debate rounds
+    required: false
+    example: "3"
+
+templates:
+  workflow:
+    description: Complete debate workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-debate
+        description: "Debate: {{topic}}"
+      spec:
+        type: debate
+        topic: "{{topic}}"
+        agent_ids:
+          - advocate
+          - skeptic
+        rounds: {{rounds}}
+        merge_strategy: synthesis
+  agent:
+    description: Debate agent template
+    sql: |
+      apiVersion: loom/v1
+      kind: Agent
+      metadata:
+        name: {{name}}
+      spec:
+        system_prompt: |
+          Argue the {{perspective}} perspective on the given topic.
+          Support your position with evidence and reasoning.
+          Respond to counterarguments constructively.
+        tools:
+          - web_search
+          - file_read
+
+examples:
+  - name: microservices_debate
+    description: Debate about microservices vs monolith architecture
+    input: "Create a debate about microservices"
+    expected_output: |
+      Workflow with type: debate, topic about microservices,
+      at least 2 agents (advocate, skeptic), 3 rounds, synthesis merge.
+
+common_errors:
+  - error: "Less than 2 agents in debate"
+    cause: "Debate requires at least 2 agents with different viewpoints"
+    fix: "Add at least 2 agent_ids to the debate workflow"
+  - error: "Missing topic field"
+    cause: "Debate workflows require a topic"
+    fix: "Add 'topic: \"Your debate question\"' under spec"
+
+best_practices: |
+  - Give each agent a distinct viewpoint in their system_prompt
+  - Use 3 rounds for thorough debate, fewer for quick decisions
+  - Use merge_strategy: synthesis for balanced outcomes
+  - Use merge_strategy: consensus for decision-making
+  - Optional: add moderator_agent_id for structured debates
+  - Use conversation_memory to track debate progression

@@ -1,0 +1,106 @@
+name: pubsub_workflow
+title: Peer-to-Peer Pub-Sub Coordination Pattern
+description: Event-driven coordination where agents communicate freely via topic-based publish/subscribe. All agents can broadcast to the group.
+category: weaver
+difficulty: advanced
+backend_type: workflow
+
+use_cases:
+  - "peer to peer communication"
+  - "broadcast to all agents"
+  - "group chat between agents"
+  - "brainstorm session"
+  - "pub sub workflow"
+  - "collaborative agents"
+
+parameters:
+  - name: topic
+    type: string
+    description: The pub-sub topic for agent communication
+    required: true
+    example: "brainstorm-ideas"
+  - name: agent_count
+    type: integer
+    description: Number of participating agents
+    required: false
+    example: "4"
+
+templates:
+  workflow:
+    description: Peer-to-peer pub-sub workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-pubsub
+      spec:
+        entrypoint: facilitator
+        agents:
+          - name: facilitator
+            agent: facilitator
+          - name: participant-1
+            agent: participant-1
+          - name: participant-2
+            agent: participant-2
+        communication:
+          pattern: peer-to-peer-pub-sub
+          topic: {{topic}}
+  facilitator_agent:
+    description: Facilitator agent template
+    sql: |
+      apiVersion: loom/v1
+      kind: Agent
+      metadata:
+        name: facilitator
+      spec:
+        system_prompt: |
+          Facilitate the group discussion on the given topic.
+          Use publish to broadcast questions and prompts to all participants.
+          Synthesize contributions and guide the conversation.
+          Use shared_memory_write to persist key decisions.
+        tools:
+          - shell_execute
+          - file_read
+  participant_agent:
+    description: Participant agent template
+    sql: |
+      apiVersion: loom/v1
+      kind: Agent
+      metadata:
+        name: participant
+      spec:
+        system_prompt: |
+          Contribute to the group discussion with your expertise.
+          Use publish to share ideas with all participants.
+          Build on others' contributions constructively.
+        tools:
+          - shell_execute
+          - file_read
+
+examples:
+  - name: brainstorm
+    description: Group brainstorming session
+    input: "Create a brainstorm workflow with peer-to-peer communication"
+    expected_output: |
+      Coordination workflow with peer-to-peer-pub-sub pattern,
+      facilitator + participants, topic for pub-sub.
+
+common_errors:
+  - error: "Missing communication.topic"
+    cause: "Peer-to-peer-pub-sub requires a topic for message routing"
+    fix: "Add 'topic: your-topic-name' under communication"
+  - error: "Using receive_broadcast tool"
+    cause: "receive_broadcast does NOT exist — messages are auto-delivered"
+    fix: "Remove receive_broadcast — agents automatically receive published messages"
+  - error: "Wrong agent IDs in publish"
+    cause: "Publish goes to topic subscribers, not specific agents"
+    fix: "Use publish for broadcast, send_message for direct messaging"
+
+best_practices: |
+  - Set communication.topic for the pub-sub channel
+  - Facilitator should publish first to kick off the discussion
+  - Messages published are auto-delivered to ALL subscribed agents
+  - There is NO receive_broadcast or subscribe tool — delivery is automatic
+  - Use shared_memory for persistent state visible to all agents
+  - Communication tools are auto-injected — do NOT list in agent spec.tools
+  - Use topic naming convention: lowercase, hyphens (e.g., "brainstorm-ideas")

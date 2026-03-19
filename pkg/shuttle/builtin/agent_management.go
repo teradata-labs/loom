@@ -83,14 +83,14 @@ func (t *AgentManagementTool) InputSchema() *shuttle.JSONSchema {
 	// while preserving simple string-based read/list/validate/delete actions
 	return &shuttle.JSONSchema{
 		Type:        "object",
-		Description: "Parameters for agent/workflow management - supports both structured (create_agent, create_workflow, update_agent, update_workflow) and simple actions (read, list, validate, delete)",
+		Description: "Parameters for agent/workflow/skill management - supports both structured (create_agent, create_workflow, create_skill, update_agent, update_workflow, update_skill) and simple actions (read, list, validate, delete)",
 		Properties: map[string]*shuttle.JSONSchema{
 			"action": shuttle.NewStringSchema("Action to perform").
-				WithEnum("create_agent", "create_workflow", "update_agent", "update_workflow", "read", "list", "validate", "delete"),
+				WithEnum("create_agent", "create_workflow", "create_skill", "update_agent", "update_workflow", "update_skill", "read", "list", "validate", "delete"),
 		},
 		Required: []string{"action"},
 		// Note: Use discriminator pattern - specific fields depend on action value
-		// For structured actions (create_agent, etc.), use "config" field
+		// For structured actions (create_agent, create_skill, etc.), use "config" field
 		// For simple actions (read, list, etc.), use "type", "name", "content" fields
 	}
 }
@@ -142,10 +142,14 @@ func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]int
 		return t.executeCreateAgent(ctx, params, start)
 	case "create_workflow":
 		return t.executeCreateWorkflow(ctx, params, start)
+	case "create_skill":
+		return t.executeCreateSkill(ctx, params, start)
 	case "update_agent":
 		return t.executeUpdateAgent(ctx, params, start)
 	case "update_workflow":
 		return t.executeUpdateWorkflow(ctx, params, start)
+	case "update_skill":
+		return t.executeUpdateSkill(ctx, params, start)
 	case "read", "list", "validate", "delete":
 		// These actions require "type" parameter for backward compatibility
 		configType, ok := params["type"].(string)
@@ -161,12 +165,12 @@ func (t *AgentManagementTool) Execute(ctx context.Context, params map[string]int
 		}
 
 		// Validate type
-		if configType != "agent" && configType != "workflow" {
+		if configType != "agent" && configType != "workflow" && configType != "skill" {
 			return &shuttle.Result{
 				Success: false,
 				Error: &shuttle.Error{
 					Code:    "INVALID_PARAMS",
-					Message: fmt.Sprintf("invalid type: %s (must be 'agent' or 'workflow')", configType),
+					Message: fmt.Sprintf("invalid type: %s (must be 'agent', 'workflow', or 'skill')", configType),
 				},
 				ExecutionTimeMs: time.Since(start).Milliseconds(),
 			}, nil

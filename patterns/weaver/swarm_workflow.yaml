@@ -1,0 +1,73 @@
+name: swarm_workflow
+title: Swarm Voting Workflow Pattern
+description: Multiple agents vote on a question using configurable voting strategies. Use for decision-making, polling, and consensus.
+category: weaver
+difficulty: intermediate
+backend_type: workflow
+
+use_cases:
+  - "swarm voting"
+  - "agent voting"
+  - "poll agents"
+  - "decision by majority"
+  - "collective decision making"
+  - "consensus vote"
+
+parameters:
+  - name: question
+    type: string
+    description: The question to vote on
+    required: true
+    example: "Should we deploy to production?"
+  - name: agent_count
+    type: integer
+    description: Number of voting agents
+    required: false
+    example: "5"
+  - name: strategy
+    type: string
+    description: Voting strategy (majority, supermajority, unanimous, weighted, ranked_choice)
+    required: false
+    example: "majority"
+
+templates:
+  workflow:
+    description: Swarm voting workflow YAML
+    sql: |
+      apiVersion: loom/v1
+      kind: Workflow
+      metadata:
+        name: {{name}}-swarm
+      spec:
+        type: swarm
+        question: "{{question}}"
+        agent_ids:
+          - voter-1
+          - voter-2
+          - voter-3
+        strategy: majority
+        confidence_threshold: 0.7
+
+examples:
+  - name: deploy_decision
+    description: Collective deployment decision
+    input: "Create a swarm vote on whether to deploy"
+    expected_output: |
+      Swarm with question about deployment, 3+ voter agents,
+      majority strategy, confidence threshold.
+
+common_errors:
+  - error: "Too few voters"
+    cause: "Meaningful votes need at least 3 agents"
+    fix: "Add at least 3 agent_ids for meaningful voting"
+  - error: "Invalid strategy"
+    cause: "Strategy must be one of: majority, supermajority, unanimous, weighted, ranked_choice"
+    fix: "Use a valid voting strategy"
+
+best_practices: |
+  - Voting strategies: majority, supermajority, unanimous, weighted, ranked_choice
+  - Use odd number of agents to avoid ties in majority voting
+  - Set confidence_threshold for minimum agreement level
+  - Optional: share_votes: true to let agents see each other's votes
+  - Optional: judge_agent_id for a final arbiter
+  - Give each voter agent different expertise in their system_prompt

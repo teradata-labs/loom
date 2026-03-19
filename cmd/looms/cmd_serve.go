@@ -823,6 +823,19 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	logger.Info("Scratchpad directory initialized", zap.String("path", scratchpadDir))
 
+	// Initialize shared HITL (Human-in-the-Loop) request store
+	// This SQLite store is shared between the server (contact_human tool) and the CLI (hitl list/respond)
+	hitlDBPath := filepath.Join(loomDataDir, "hitl.db")
+	hitlStore, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
+		Path:   hitlDBPath,
+		Tracer: tracer,
+	})
+	if err != nil {
+		logger.Fatal("Failed to create HITL request store", zap.Error(err))
+	}
+	defer func() { _ = hitlStore.Close() }()
+	logger.Info("HITL request store initialized", zap.String("path", hitlDBPath))
+
 	// Copy documentation from docs to loom data directory
 	docsDestDir := filepath.Join(loomDataDir, "documentation")
 	// Try to find the docs source directory (might be in current dir or parent dir)
@@ -929,6 +942,25 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 	} else {
 		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
+	}
+
+	// Deploy weaver-creation skill (if not exists)
+	skillsDir := filepath.Join(loomDataDir, "skills")
+	weaverSkillPath := filepath.Join(skillsDir, "weaver-creation.yaml")
+	if _, err := os.Stat(weaverSkillPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(skillsDir, 0750); err != nil {
+			logger.Warn("Failed to create skills directory", zap.Error(err))
+		}
+		skillData := embedded.GetWeaverCreationSkill()
+		if err := os.WriteFile(weaverSkillPath, skillData, 0600); err != nil {
+			logger.Warn("Failed to deploy weaver-creation skill", zap.Error(err))
+		} else {
+			logger.Info("Weaver creation skill installed",
+				zap.String("dest", weaverSkillPath),
+				zap.Int("size", len(skillData)))
+		}
+	} else {
+		logger.Debug("Weaver creation skill already exists", zap.String("path", weaverSkillPath))
 	}
 
 	// Create agent guide in loom data directory (visible to agents)
@@ -1270,6 +1302,14 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
+				// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns.
+				// Patterns are enabled by default (DefaultPatternConfig), so all agents
+				// need a patterns directory to find filesystem patterns.
+				if pd, ok := cfg.Metadata["patterns_dir"]; ok && pd != "" {
+					agentCfg.PatternsDir = pd
+				} else {
+					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
+				}
 				// Transfer skills configuration from metadata
 				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
 					agentCfg.SkillsConfig = sc
@@ -1367,6 +1407,7 @@ func runServe(cmd *cobra.Command, args []string) {
 							"list_component_types":            true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 							"update_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
 							"delete_ui_app":                   true, // UI app tool (auto-registered with AppCompiler/AppProvider)
+							"contact_human":                   true, // HITL tool (registered with shared SQLite store)
 						}
 						if skipTools[toolName] {
 							continue
@@ -1379,6 +1420,23 @@ func runServe(cmd *cobra.Command, args []string) {
 							logger.Info("      Tool registered", zap.String("name", toolName))
 						} else {
 							logger.Warn("      Unknown builtin tool", zap.String("name", toolName))
+						}
+					}
+				}
+
+				// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+				if cfg.Tools != nil {
+					for _, toolName := range cfg.Tools.Builtin {
+						if toolName == "contact_human" {
+							humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+								Store:  hitlStore,
+								Tracer: tracer,
+								Logger: logger,
+							})
+							ag.RegisterTool(humanTool)
+							logger.Info("    Auto-registered contact_human tool (shared SQLite store)",
+								zap.String("db_path", hitlDBPath))
+							break
 						}
 					}
 				}
@@ -1867,6 +1925,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	logger.Info("Initializing LearningAgent (self-improvement system)")
 	var learningAgent *learning.LearningAgent
 	var learningService *server.LearningService
+	var patternTracker *learning.PatternEffectivenessTracker
 	{
 		// 1. Open database connection for learning agent
 		learningDBPath := config.Database.Path
@@ -1906,7 +1965,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			1*time.Hour,   // windowSize
 			5*time.Minute, // flushInterval
 		)
-		logger.Info("  Pattern effectiveness tracker created")
+		patternTracker = tracker // hoist for agent wiring below
+		if err := tracker.Start(ctx); err != nil {
+			logger.Fatal("Failed to start pattern effectiveness tracker", zap.Error(err))
+		}
+		logger.Info("  Pattern effectiveness tracker created and started")
 
 		// 6. Create learning agent
 		// Check for YAML config file first (declarative preferred)
@@ -2002,6 +2065,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("  LearningAgent analysis loop started")
 	}
 	logger.Info("LearningAgent initialization complete")
+
+	// Wire pattern effectiveness tracker into the multi-agent server.
+	// This wires the tracker into all existing agents' orchestrators and ensures
+	// any agent added later (via hot-reload or CreateAgent RPC) also gets it.
+	if patternTracker != nil {
+		loomService.SetPatternTracker(patternTracker)
+		logger.Info("Pattern effectiveness tracking enabled for all agents",
+			zap.Int("agents", len(agents)))
+	}
 
 	// Initialize workflow scheduler
 	var workflowScheduler *scheduler.Scheduler
@@ -2254,6 +2326,24 @@ func runServe(cmd *cobra.Command, args []string) {
 				EnableTracing:     config.Observability.Enabled,
 			}
 
+			// Transfer pattern configuration from proto if present
+			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
+				cfg.PatternConfig = &agent.PatternConfig{
+					Enabled:            agentConfig.Behavior.Patterns.Enabled,
+					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
+					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
+					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
+					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
+				}
+			}
+
+			// Set PatternsDir from metadata or default to $LOOM_DATA_DIR/patterns
+			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
+				cfg.PatternsDir = pd
+			} else {
+				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
+			}
+
 			// Set context limits if specified in LLM config
 			if agentConfig.Llm != nil {
 				if agentConfig.Llm.MaxContextTokens > 0 {
@@ -2316,6 +2406,11 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Create new agent
 			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
 
+			// Wire pattern effectiveness tracker for metrics collection
+			if patternTracker != nil {
+				newAgent.SetPatternTracker(patternTracker)
+			}
+
 			// Set stable GUID from registry if provided
 			// This ensures the agent maintains the same ID across hot-reloads
 			if guid != "" {
@@ -2345,8 +2440,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {
 				logger.Info("  Registering builtin tools", zap.Int("count", len(agentConfig.Tools.Builtin)))
 				for _, toolName := range agentConfig.Tools.Builtin {
-					// Skip shell_execute since it's already registered
-					if toolName == "shell_execute" {
+					// Skip tools that are registered separately
+					if toolName == "shell_execute" || toolName == "contact_human" {
 						continue
 					}
 					// spawn_agent removed
@@ -2355,6 +2450,23 @@ func runServe(cmd *cobra.Command, args []string) {
 					if tool != nil {
 						newAgent.RegisterTool(tool)
 						logger.Info("    Tool registered", zap.String("name", toolName))
+					}
+				}
+			}
+
+			// Register contact_human tool with shared SQLite store (if listed in builtin tools)
+			if agentConfig.Tools != nil {
+				for _, toolName := range agentConfig.Tools.Builtin {
+					if toolName == "contact_human" {
+						humanTool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
+							Store:  hitlStore,
+							Tracer: tracer,
+							Logger: logger,
+						})
+						newAgent.RegisterTool(humanTool)
+						logger.Info("  Auto-registered contact_human tool (shared SQLite store)",
+							zap.String("db_path", hitlDBPath))
+						break
 					}
 				}
 			}
@@ -2661,6 +2773,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Warn("Error closing tool registry", zap.Error(err))
 			} else {
 				logger.Info("Tool registry closed")
+			}
+		}
+
+		// Stop pattern tracker (flushes remaining buffered metrics)
+		if patternTracker != nil {
+			ctx := context.Background()
+			if err := patternTracker.Stop(ctx); err != nil {
+				logger.Warn("Error stopping pattern tracker", zap.Error(err))
+			} else {
+				logger.Info("Pattern effectiveness tracker stopped (final flush complete)")
 			}
 		}
 

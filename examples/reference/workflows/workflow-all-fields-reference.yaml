@@ -88,7 +88,8 @@ spec:
     topic: null                          # OPTIONAL: Topic name (for peer-to-peer-pub-sub)
     entrypoint: coordinator              # OPTIONAL: Clarify entrypoint
     # Note: This field is documentation only - the actual pattern emerges from
-    # agent system prompts and tool usage (send_message, publish, subscribe, receive_broadcast)
+    # agent system prompts and tool usage (send_message, publish).
+    # Messages are event-driven and auto-delivered (no receive tool needed).
 
   # Workflow-level configuration
   config:                                # OPTIONAL: Workflow behavior settings
@@ -145,19 +146,18 @@ spec:
       agent: facilitator-agent
       description: "Facilitates group discussion but participates as peer"
       # Agent system prompt should include:
-      # - subscribe(topic="group-chat") to join the conversation
       # - publish(topic="group-chat", message="...") to broadcast messages
-      # - receive_broadcast(timeout_seconds=15) to receive messages from all peers
+      # Messages are event-driven and auto-delivered to all subscribers (no receive tool needed)
 
     - name: participant-1
       agent: participant-agent-1
       description: "First participant - equal peer in conversation"
-      # Same pub-sub tools: subscribe, publish, receive_broadcast
+      # Same pub-sub tool: publish. Messages auto-delivered.
 
     - name: participant-2
       agent: participant-agent-2
       description: "Second participant - equal peer in conversation"
-      # Same pub-sub tools: subscribe, publish, receive_broadcast
+      # Same pub-sub tool: publish. Messages auto-delivered.
 
   # Communication pattern (peer-to-peer pub-sub)
   communication:                         # OPTIONAL: Documents communication topology
@@ -165,9 +165,9 @@ spec:
     topic: "group-chat"                  # REQUIRED: Topic all agents subscribe to
     entrypoint: facilitator              # OPTIONAL: Clarifies which agent user talks to first
     # How it works:
-    # 1. All agents subscribe to the same topic using subscribe(topic="group-chat")
+    # 1. All agents are subscribed to the same topic
     # 2. Agents broadcast messages using publish(topic="group-chat", message="...")
-    # 3. All subscribed agents receive messages via receive_broadcast()
+    # 3. Messages are event-driven and auto-delivered to all subscribers (no receive tool needed)
     # 4. No hierarchy - all agents are equal peers in the conversation
     # 5. The entrypoint agent is just where users start - it's not a "hub"
 
@@ -185,10 +185,10 @@ spec:
       pattern: pub-sub
 
 # CRITICAL TOOLS FOR PUB-SUB PATTERN:
-# Agents must have these tools in their spec.tools:
-# - subscribe: Join a topic to receive broadcasts
+# Agents use these tools for communication:
 # - publish: Send a message to all subscribers on a topic
-# - receive_broadcast: Receive messages from the topic (event-driven)
+# Messages are event-driven and auto-delivered to all subscribers (no receive tool needed).
+# send_message and publish are the only communication tools agents actively call.
 #
 # AUTOMATIC SUB-AGENT SPAWNING:
 # When using spec.entrypoint workflows:
@@ -204,12 +204,10 @@ spec:
 # - workflow:participant-2
 #
 # WORKFLOW:
-# 1. Subscribe to topic using subscribe(topic="group-chat")
-# 2. Publish your message to the topic
-# 3. WAIT using receive_broadcast(timeout_seconds=30, max_messages=10)
-#    - Responses come back automatically from spawned agents
+# 1. Publish your message to the topic
+# 2. Responses are auto-delivered to your conversation (event-driven)
 #    - Be patient - agents need 10-20 seconds to process
-# 4. Respond to ideas and continue the conversation
+# 3. Respond to ideas and continue the conversation
 # """
 #
 # Example participant agent system prompt snippet:
@@ -218,11 +216,10 @@ spec:
 # You are auto-spawned when messages arrive for you.
 #
 # WORKFLOW:
-# 1. Subscribe to topic using subscribe(topic="group-chat")
-# 2. Use receive_broadcast() to get messages from other participants
-# 3. Process the messages and formulate your response
-# 4. Use publish(topic="group-chat", message="...") to broadcast your response
-# 5. Continue participating throughout the session
+# 1. Messages from other participants are auto-delivered to your conversation
+# 2. Process the messages and formulate your response
+# 3. Use publish(topic="group-chat", message="...") to broadcast your response
+# 4. Continue participating throughout the session
 # """
 
 ---
@@ -433,11 +430,11 @@ spec:
 #
 # LOOM PROVIDES TRI-MODAL COMMUNICATION:
 # 1. Message Queue: Direct agent-to-agent messages
-#    - Tools: send_message(to_agent, message), receive_message(timeout_seconds)
+#    - Tools: send_message(to_agent, message). Messages are event-driven and auto-delivered.
 #    - Use case: Private 1:1 communication between specific agents
 #
 # 2. Broadcast Bus: Topic-based pub-sub messaging
-#    - Tools: subscribe(topic), publish(topic, message), receive_broadcast(timeout_seconds)
+#    - Tools: publish(topic, message). Messages are event-driven and auto-delivered to all subscribers.
 #    - Use case: Group communication where all agents see all messages
 #
 # 3. Shared Memory: Key-value store accessible to all agents
@@ -448,7 +445,7 @@ spec:
 #
 # Hub-and-Spoke (using Message Queue):
 #   - Central coordinator agent
-#   - Specialists communicate only with coordinator using send_message/receive_message
+#   - Specialists communicate only with coordinator using send_message (responses auto-delivered)
 #   - Coordinator routes information and delegates tasks
 #   - Example: vacation-planner, customer-health
 #   - communication.pattern: "hub-and-spoke"
@@ -457,7 +454,7 @@ spec:
 # Peer-to-Peer Pub-Sub (using Broadcast Bus):
 #   - All agents subscribe to shared topic using subscribe(topic)
 #   - Any agent publishes to all others using publish(topic, message)
-#   - All agents receive broadcasts using receive_broadcast()
+#   - Messages are auto-delivered to all subscribers (no receive tool needed)
 #   - No hierarchy - all agents are equal peers in group chat
 #   - Example: dungeon-crawl (party-chat), dnd-campaign-builder
 #   - communication.pattern: "peer-to-peer-pub-sub"
@@ -529,10 +526,9 @@ spec:
 #
 # REQUIRED TOOLS FOR COMMUNICATION PATTERNS:
 #   Hub-and-Spoke:
-#     - Coordinator: send_message, receive_message
-#     - Specialists: send_message, receive_message
+#     - All agents: send_message (responses are event-driven and auto-delivered)
 #   Peer-to-Peer Pub-Sub:
-#     - All agents: subscribe, publish, receive_broadcast
+#     - All agents: publish (messages are event-driven and auto-delivered)
 #   Shared State:
 #     - All agents: shared_memory_write, shared_memory_read
 #

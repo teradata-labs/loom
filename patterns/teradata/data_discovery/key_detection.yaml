@@ -348,7 +348,7 @@ best_practices: |
   - **Kernel Layer**: Cache keyness thresholds and IsSurrogate rules
   - **L1 Cache**: Keep recent key detection results (last 5-8 tables) for comparison
   - **L2 Compressed**: Archive detected keys showing keyness trends
-  - **Swap Layer**: Store complete key analysis history; use recall_conversation to compare current key choices against earlier schema designs
+  - **Swap Layer**: Store complete key analysis history; use conversation_memory to compare current key choices against earlier schema designs
   This enables tracking when keys degrade (keyness drops) or validating schema evolution decisions.
 # === BEST_PRACTICES END ===
 

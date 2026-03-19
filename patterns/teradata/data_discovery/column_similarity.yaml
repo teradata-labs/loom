@@ -391,7 +391,7 @@ best_practices: |
   - **Kernel Layer**: Cache similarity metric thresholds and domain classification rules
   - **L1 Cache**: Keep recent similarity queries (last 5-8 column comparisons) for quick re-analysis
   - **L2 Compressed**: Archive discovered domains and similarity clusters
-  - **Swap Layer**: Store complete similarity history; use recall_conversation to reference domain discoveries from earlier schema matching projects
+  - **Swap Layer**: Store complete similarity history; use conversation_memory to reference domain discoveries from earlier schema matching projects
   This enables consistent domain tagging and tracking schema evolution over time.
 # === BEST_PRACTICES END ===
 
