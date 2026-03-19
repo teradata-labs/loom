@@ -6017,6 +6017,11 @@
           "type": "string",
           "format": "int64",
           "description": "Shared memory threshold in bytes for large tool results.\n0 = always reference (default), -1 = never reference (inline everything), \u003e0 = reference only if result exceeds N bytes."
+        },
+        "maxToolResults": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum number of tool results to keep in the conversation kernel.\n0 = use default (5). Higher values give the LLM more context from recent tool calls."
         }
       },
       "title": "MemoryConfig defines agent memory and session storage"

@@ -493,7 +493,7 @@ best_practices: |
   - **Kernel Layer**: Cache view schemas and common query patterns
   - **L1 Cache**: Keep recent graph query results (last 5-8 tables) for instant replay
   - **L2 Compressed**: Archive exported schema graphs showing evolution
-  - **Swap Layer**: Store complete query history; use recall_conversation to reference graph queries from earlier catalog builds
+  - **Swap Layer**: Store complete query history; use conversation_memory to reference graph queries from earlier catalog builds
   This enables fast repeated queries and tracking schema evolution over time.
 # === BEST_PRACTICES END ===
 

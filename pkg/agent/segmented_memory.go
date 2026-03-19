@@ -196,7 +196,7 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		tracer:             observability.NewNoOpTracer(), // Set via SetTracer
 		maxL1Tokens:        profile.MaxL1Tokens,           // Use profile value (token-based)
 		minL1Messages:      profile.MinL1Messages,         // Use profile value (minimum for recency)
-		maxToolResults:     1,                             // Database-backed: keep only immediate previous result
+		maxToolResults:     5,                             // Keep last 5 tool results in kernel for richer context
 		compressionProfile: profile,                       // Store profile for adaptive compression
 	}
 

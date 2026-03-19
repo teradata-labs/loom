@@ -57,6 +57,7 @@ type Memory struct {
 	maxContextTokens     int                        // Context window size for new sessions (0 = use defaults)
 	reservedOutputTokens int                        // Reserved tokens for output (0 = use defaults)
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
+	maxToolResults       int                        // Max tool results in kernel (0 = use default)
 
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
@@ -124,6 +125,14 @@ func (m *Memory) SetCompressionProfile(profile *CompressionProfile) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.compressionProfile = profile
+}
+
+// SetMaxToolResults configures how many tool results to keep in the conversation kernel.
+// 0 = use default (5).
+func (m *Memory) SetMaxToolResults(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxToolResults = n
 }
 
 // GetOrCreateSession gets an existing session or creates a new one.
@@ -194,6 +203,9 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 				if m.llmProvider != nil {
 					segMem.SetLLMProvider(m.llmProvider)
 				}
+				if m.maxToolResults > 0 {
+					segMem.maxToolResults = m.maxToolResults
+				}
 			}
 		}
 
@@ -261,6 +273,9 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 					}
 					if m.llmProvider != nil {
 						segMem.SetLLMProvider(m.llmProvider)
+					}
+					if m.maxToolResults > 0 {
+						segMem.maxToolResults = m.maxToolResults
 					}
 
 					// Replay loaded messages into SegmentedMem to restore LLM context after
@@ -335,6 +350,13 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if m.llmProvider != nil {
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
 			segMem.SetLLMProvider(m.llmProvider)
+		}
+	}
+
+	// Configure max tool results if set
+	if m.maxToolResults > 0 {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
+			segMem.maxToolResults = m.maxToolResults
 		}
 	}
 

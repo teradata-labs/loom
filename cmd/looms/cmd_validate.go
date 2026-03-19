@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/patterns"
+	"github.com/teradata-labs/loom/pkg/validation"
 )
 
 var validateFilesCmd = &cobra.Command{
@@ -40,14 +41,18 @@ var validateFileCmd = &cobra.Command{
 	Long: `Validate a single configuration file.
 
 The command automatically detects the file type by reading the 'kind' field:
+- kind: Agent -> Agent configuration (tools, prompts, schemas)
+- kind: Workflow -> Workflow configuration (orchestration, coordination)
+- kind: Skill -> Skill configuration (behavioral constraints)
 - kind: Project -> Project configuration
 - kind: Backend -> Backend configuration
 - kind: PatternLibrary -> Pattern library configuration
 
 Examples:
-  looms validate file loom.yaml
-  looms validate file backends/postgres.yaml
-  looms validate file patterns/sql-optimization.yaml`,
+  looms validate file agents/my-agent.yaml
+  looms validate file workflows/my-workflow.yaml
+  looms validate file skills/my-skill.yaml
+  looms validate file loom.yaml`,
 	Args: cobra.ExactArgs(1),
 	Run:  runValidateFile,
 }
@@ -176,7 +181,13 @@ func validateSingleFile(path string) error {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "kind:") {
-			kind = strings.TrimSpace(strings.TrimPrefix(trimmed, "kind:"))
+			kindVal := strings.TrimSpace(strings.TrimPrefix(trimmed, "kind:"))
+			// Strip YAML comments and quotes
+			if idx := strings.Index(kindVal, "#"); idx > 0 {
+				kindVal = strings.TrimSpace(kindVal[:idx])
+			}
+			kindVal = strings.Trim(kindVal, "\"'")
+			kind = kindVal
 			break
 		}
 	}
@@ -199,10 +210,45 @@ func validateSingleFile(path string) error {
 		_, err := evals.LoadEvalSuite(path)
 		return err
 
+	case "Agent", "Workflow", "Skill", "AgentTemplate":
+		result := validation.ValidateYAMLContent(content, path)
+		if !result.Valid {
+			var msgs []string
+			for _, e := range result.Errors {
+				msg := e.Message
+				if e.Fix != "" {
+					msg += " → " + e.Fix
+				}
+				msgs = append(msgs, msg)
+			}
+			for _, w := range result.Warnings {
+				msg := "warning: " + w.Message
+				if w.Fix != "" {
+					msg += " → " + w.Fix
+				}
+				msgs = append(msgs, msg)
+			}
+			return fmt.Errorf("%s", strings.Join(msgs, "\n   "))
+		}
+		// Print warnings even when valid
+		for _, w := range result.Warnings {
+			msg := w.Message
+			if w.Fix != "" {
+				msg += " → " + w.Fix
+			}
+			fmt.Printf("⚠️  %s: %s\n", filepath.Base(path), msg)
+		}
+		return nil
+
 	case "":
+		// Check for legacy agent format (agent: instead of kind:)
+		if strings.Contains(content, "\nagent:") || strings.HasPrefix(content, "agent:") {
+			// Legacy format — valid YAML but not k8s-style; skip deep validation
+			return nil
+		}
 		return fmt.Errorf("no 'kind' field found in YAML")
 
 	default:
-		return fmt.Errorf("unknown kind: %s (expected: Project, Backend, PatternLibrary, or EvalSuite)", kind)
+		return fmt.Errorf("unknown kind: %s (expected: Agent, Workflow, Skill, Project, Backend, PatternLibrary, or EvalSuite)", kind)
 	}
 }

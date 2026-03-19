@@ -711,6 +711,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		agent.SetSharedMemoryThreshold(config.Memory.SharedMemoryThresholdBytes)
 	}
 
+	// Configure max tool results from config
+	if config.Memory != nil && config.Memory.MaxToolResults > 0 {
+		agent.SetMaxToolResults(int(config.Memory.MaxToolResults))
+	}
+
 	// Register workspace tool if artifactStore is available
 	if r.artifactStore != nil {
 		// Type assert to artifacts.ArtifactStore

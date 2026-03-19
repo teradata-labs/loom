@@ -56,7 +56,7 @@ func TestNewSegmentedMemory(t *testing.T) {
 	assert.NotNil(t, sm.tokenBudget)
 	assert.Equal(t, 6400, sm.maxL1Tokens, "Should use balanced profile default maxL1Tokens (6400 tokens)")
 	assert.Equal(t, 4, sm.minL1Messages, "Should use balanced profile default minL1Messages")
-	assert.Equal(t, 1, sm.maxToolResults)
+	assert.Equal(t, 5, sm.maxToolResults)
 	assert.Equal(t, 10, sm.maxSchemas)
 	assert.Empty(t, sm.l1Messages)
 	assert.Empty(t, sm.toolResults)
@@ -153,12 +153,12 @@ func TestSegmentedMemory_AddToolResult(t *testing.T) {
 
 	sm.AddToolResult(result)
 
-	// With maxToolResults=1, should only keep the latest result
+	// With maxToolResults=5, adding one result should keep it
 	results := sm.GetCachedToolResults()
 	assert.Len(t, results, 1)
 	assert.Equal(t, "test_tool", results[0].ToolName)
 
-	// Add another result - should replace the first one
+	// Add another result - should keep both (maxToolResults=5)
 	result2 := CachedToolResult{
 		ToolName:  "another_tool",
 		Args:      map[string]interface{}{"param": "value2"},
@@ -169,8 +169,9 @@ func TestSegmentedMemory_AddToolResult(t *testing.T) {
 	sm.AddToolResult(result2)
 
 	results = sm.GetCachedToolResults()
-	assert.Len(t, results, 1)
-	assert.Equal(t, "another_tool", results[0].ToolName)
+	assert.Len(t, results, 2)
+	assert.Equal(t, "test_tool", results[0].ToolName)
+	assert.Equal(t, "another_tool", results[1].ToolName)
 }
 
 func TestSegmentedMemory_AddToolResult_MultipleResults(t *testing.T) {

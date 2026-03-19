@@ -341,7 +341,7 @@ best_practices: |
   - **Kernel Layer**: Cache table schemas and existing indexes for quick reference during analysis
   - **L1 Cache**: Keep recent query plans and EXPLAIN results (last 5-10 queries) for comparison
   - **L2 Compressed**: Archive index recommendations and their impact metrics from earlier in the conversation
-  - **Swap Layer**: Store complete query performance history for long-running optimization projects; use recall_conversation to compare current performance against baseline metrics from weeks ago
+  - **Swap Layer**: Store complete query performance history for long-running optimization projects; use conversation_memory to compare current performance against baseline metrics from weeks ago
   This reduces redundant EXPLAIN operations and enables tracking index impact across iterative optimization cycles.
 # === BEST_PRACTICES END ===
 

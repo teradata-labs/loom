@@ -126,10 +126,7 @@ Demonstrates ephemeral thread spawning with dynamic agent allocation.
 **Tools:**
 - `file_read`: Read data files (JSON, CSV, etc.)
 - `file_write`: Write reports and output files
-- `top_n_query`: Top N aggregation from shared memory
-- `group_by_query`: GROUP BY aggregation
-- `generate_visualization`: Interactive HTML report with ECharts
-- `generate_workflow_visualization`: Workflow pipeline visualization
+- `shared_memory_read`: Read from shared memory for data aggregation
 
 **Usage:**
 ```bash

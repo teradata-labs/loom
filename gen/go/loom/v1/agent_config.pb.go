@@ -1002,8 +1002,11 @@ type MemoryConfig struct {
 	// Shared memory threshold in bytes for large tool results.
 	// 0 = always reference (default), -1 = never reference (inline everything), >0 = reference only if result exceeds N bytes.
 	SharedMemoryThresholdBytes int64 `protobuf:"varint,6,opt,name=shared_memory_threshold_bytes,json=sharedMemoryThresholdBytes,proto3" json:"shared_memory_threshold_bytes,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// Maximum number of tool results to keep in the conversation kernel.
+	// 0 = use default (5). Higher values give the LLM more context from recent tool calls.
+	MaxToolResults int32 `protobuf:"varint,7,opt,name=max_tool_results,json=maxToolResults,proto3" json:"max_tool_results,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MemoryConfig) Reset() {
@@ -1074,6 +1077,13 @@ func (x *MemoryConfig) GetMemoryCompression() *MemoryCompressionConfig {
 func (x *MemoryConfig) GetSharedMemoryThresholdBytes() int64 {
 	if x != nil {
 		return x.SharedMemoryThresholdBytes
+	}
+	return 0
+}
+
+func (x *MemoryConfig) GetMaxToolResults() int32 {
+	if x != nil {
+		return x.MaxToolResults
 	}
 	return 0
 }
@@ -1886,7 +1896,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x05tools\x18\x02 \x03(\tR\x05tools\"N\n" +
 	"\x10CustomToolConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12&\n" +
-	"\x0eimplementation\x18\x02 \x01(\tR\x0eimplementation\"\xfd\x01\n" +
+	"\x0eimplementation\x18\x02 \x01(\tR\x0eimplementation\"\xa7\x02\n" +
 	"\fMemoryConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x10\n" +
@@ -1894,7 +1904,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\vmax_history\x18\x04 \x01(\x05R\n" +
 	"maxHistory\x12O\n" +
 	"\x12memory_compression\x18\x05 \x01(\v2 .loom.v1.MemoryCompressionConfigR\x11memoryCompression\x12A\n" +
-	"\x1dshared_memory_threshold_bytes\x18\x06 \x01(\x03R\x1asharedMemoryThresholdBytes\"k\n" +
+	"\x1dshared_memory_threshold_bytes\x18\x06 \x01(\x03R\x1asharedMemoryThresholdBytes\x12(\n" +
+	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\"k\n" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +

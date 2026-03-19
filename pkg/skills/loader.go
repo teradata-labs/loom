@@ -39,6 +39,7 @@ var validDomains = map[string]bool{
 	"data-quality": true,
 	"rest-api":     true,
 	"document":     true,
+	"meta-agent":   true,
 }
 
 // validModes lists allowed activation mode values.
