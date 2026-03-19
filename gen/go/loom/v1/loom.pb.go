@@ -484,7 +484,7 @@ type WeaveRequest struct {
 	// Permission mode for this request/session (optional)
 	// If not set, uses agent's default configuration
 	// Allows Canvas AI and other clients to switch modes dynamically
-	PermissionMode PermissionMode `protobuf:"varint,10,opt,name=permission_mode,json=permissionMode,proto3,enum=loom.v1.PermissionMode" json:"permission_mode,omitempty"`
+	PermissionMode PermissionMode `protobuf:"varint,11,opt,name=permission_mode,json=permissionMode,proto3,enum=loom.v1.PermissionMode" json:"permission_mode,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -743,13 +743,13 @@ type WeaveProgress struct {
 	// Unique identifier correlating started/completed events for the same tool call
 	ToolCallId string `protobuf:"bytes,20,opt,name=tool_call_id,json=toolCallId,proto3" json:"tool_call_id,omitempty"`
 	// True if this is a plan-created event
-	IsPlanCreated bool `protobuf:"varint,21,opt,name=is_plan_created,json=isPlanCreated,proto3" json:"is_plan_created,omitempty"`
+	IsPlanCreated bool `protobuf:"varint,25,opt,name=is_plan_created,json=isPlanCreated,proto3" json:"is_plan_created,omitempty"`
 	// True if this is a plan-approved event
-	IsPlanApproved bool `protobuf:"varint,22,opt,name=is_plan_approved,json=isPlanApproved,proto3" json:"is_plan_approved,omitempty"`
+	IsPlanApproved bool `protobuf:"varint,26,opt,name=is_plan_approved,json=isPlanApproved,proto3" json:"is_plan_approved,omitempty"`
 	// True if this is a plan-rejected event
-	IsPlanRejected bool `protobuf:"varint,23,opt,name=is_plan_rejected,json=isPlanRejected,proto3" json:"is_plan_rejected,omitempty"`
+	IsPlanRejected bool `protobuf:"varint,27,opt,name=is_plan_rejected,json=isPlanRejected,proto3" json:"is_plan_rejected,omitempty"`
 	// Execution plan (populated when is_plan_created/approved/rejected)
-	Plan          *ExecutionPlan `protobuf:"bytes,24,opt,name=plan,proto3" json:"plan,omitempty"`
+	Plan          *ExecutionPlan `protobuf:"bytes,28,opt,name=plan,proto3" json:"plan,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -11322,7 +11322,7 @@ var File_loom_v1_loom_proto protoreflect.FileDescriptor
 
 const file_loom_v1_loom_proto_rawDesc = "" +
 	"\n" +
-	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x13loom/v1/tools.proto\"\xbd\x04\n" +
+	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x13loom/v1/tools.proto\"\xd2\x04\n" +
 	"\fWeaveRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1d\n" +
 	"\n" +
@@ -11335,14 +11335,14 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\rforce_pattern\x18\a \x01(\tR\fforcePattern\x12!\n" +
 	"\fenable_trace\x18\b \x01(\bR\venableTrace\x12\x19\n" +
 	"\bagent_id\x18\t \x01(\tR\aagentId\x12@\n" +
-	"\x0fpermission_mode\x18\n" +
-	" \x01(\x0e2\x17.loom.v1.PermissionModeR\x0epermissionMode\x1a@\n" +
+	"\x0fpermission_mode\x18\v \x01(\x0e2\x17.loom.v1.PermissionModeR\x0epermissionMode\x1a@\n" +
 	"\x12BackendConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
 	"\fContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\n" +
+	"\x10\vR\rreset_context\"\xe0\x02\n" +
 	"\rWeaveResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x120\n" +
 	"\x06result\x18\x02 \x01(\v2\x18.loom.v1.ExecutionResultR\x06result\x12\x1d\n" +
@@ -11352,7 +11352,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x04cost\x18\x05 \x01(\v2\x11.loom.v1.CostInfoR\x04cost\x126\n" +
 	"\bmetadata\x18\x06 \x01(\v2\x1a.loom.v1.ExecutionMetadataR\bmetadata\x12@\n" +
 	"\vcorrections\x18\a \x03(\v2\x1e.loom.v1.SelfCorrectionAttemptR\vcorrections\x12\x19\n" +
-	"\bagent_id\x18\b \x01(\tR\aagentId\"\xda\a\n" +
+	"\bagent_id\x18\b \x01(\tR\aagentIdJ\x04\b\t\x10\n" +
+	"R\rcontext_state\"\xe0\a\n" +
 	"\rWeaveProgress\x12-\n" +
 	"\x05stage\x18\x01 \x01(\x0e2\x17.loom.v1.ExecutionStageR\x05stage\x12\x1a\n" +
 	"\bprogress\x18\x02 \x01(\x05R\bprogress\x12\x18\n" +
@@ -11380,10 +11381,10 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x10tool_duration_ms\x18\x13 \x01(\x03R\x0etoolDurationMs\x12 \n" +
 	"\ftool_call_id\x18\x14 \x01(\tR\n" +
 	"toolCallId\x12&\n" +
-	"\x0fis_plan_created\x18\x15 \x01(\bR\risPlanCreated\x12(\n" +
-	"\x10is_plan_approved\x18\x16 \x01(\bR\x0eisPlanApproved\x12(\n" +
-	"\x10is_plan_rejected\x18\x17 \x01(\bR\x0eisPlanRejected\x12*\n" +
-	"\x04plan\x18\x18 \x01(\v2\x16.loom.v1.ExecutionPlanR\x04plan\"\x92\x02\n" +
+	"\x0fis_plan_created\x18\x19 \x01(\bR\risPlanCreated\x12(\n" +
+	"\x10is_plan_approved\x18\x1a \x01(\bR\x0eisPlanApproved\x12(\n" +
+	"\x10is_plan_rejected\x18\x1b \x01(\bR\x0eisPlanRejected\x12*\n" +
+	"\x04plan\x18\x1c \x01(\v2\x16.loom.v1.ExecutionPlanR\x04planJ\x04\b\x15\x10\x16\"\x92\x02\n" +
 	"\x0fHITLRequestInfo\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +

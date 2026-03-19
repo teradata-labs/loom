@@ -688,10 +688,14 @@ message WeaveRequest {
   // Agent ID to route request to (optional, uses default if not specified)
   string agent_id = 9;
 
+  // Field 10 was reset_context (bool) - removed, do not reuse
+  reserved 10;
+  reserved "reset_context";
+
   // Permission mode for this request/session (optional)
   // If not set, uses agent's default configuration
   // Allows Canvas AI and other clients to switch modes dynamically
-  PermissionMode permission_mode = 10;
+  PermissionMode permission_mode = 11;
 }
 
 // WeaveResponse contains the execution result.
@@ -719,6 +723,10 @@ message WeaveResponse {
 
   // Agent ID that handled this request
   string agent_id = 8;
+
+  // Field 9 was context_state (ContextState) - removed, do not reuse
+  reserved 9;
+  reserved "context_state";
 }
 
 // WeaveProgress streams incremental updates during execution.
@@ -786,19 +794,22 @@ message WeaveProgress {
   // Unique identifier correlating started/completed events for the same tool call
   string tool_call_id = 20;
 
+  // Field 21 was context_state (ContextState) - removed, do not reuse
+  reserved 21;
+
   // Plan-related fields (for PERMISSION_MODE_PLAN)
 
   // True if this is a plan-created event
-  bool is_plan_created = 21;
+  bool is_plan_created = 25;
 
   // True if this is a plan-approved event
-  bool is_plan_approved = 22;
+  bool is_plan_approved = 26;
 
   // True if this is a plan-rejected event
-  bool is_plan_rejected = 23;
+  bool is_plan_rejected = 27;
 
   // Execution plan (populated when is_plan_created/approved/rejected)
-  ExecutionPlan plan = 24;
+  ExecutionPlan plan = 28;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.
