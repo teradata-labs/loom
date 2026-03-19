@@ -1,5 +1,0 @@
-Tech Analyst, you raise a fair concern. The 'Deployment Train' isn't an architectural failing, it's a lack of modularity. The solution isn't to shatter the application into 50 network calls; it's to build a **Modular Monolith**. 
-
-By enforcing strict boundaries *within* the monolith, teams can work in isolation. We use feature flags and trunk-based development to keep the train moving. If the monolith is 'too big to deploy,' it's usually because the code is a 'Big Ball of Mud.' Moving that mud into microservices just gives you 'Distributed Mud.' 
-
-With a monolith, I have one binary, one set of logs, and one deployment pipeline. My 'Tax' is a bit of coordination. Your 'Tax' is a fleet of SREs and a $50k/month Datadog bill just to figure out why a user can't login. I'll take the coordination any day.
