@@ -64,7 +64,7 @@ func (ep *ExecutionPlanner) CreatePlan(query string, toolCalls []types.ToolCall,
 			ToolName:   tc.Name,
 			ParamsJson: string(paramsJSON),
 			Rationale:  fmt.Sprintf("Execute %s", tc.Name), // TODO: Extract from LLM reasoning
-			DependsOn:  nil,                                 // TODO: Analyze dependencies
+			DependsOn:  nil,                                // TODO: Analyze dependencies
 			Status:     loomv1.PlannedToolExecution_STEP_STATUS_PENDING,
 		})
 	}

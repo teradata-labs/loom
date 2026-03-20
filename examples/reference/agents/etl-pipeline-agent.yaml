@@ -1,0 +1,82 @@
+# ============================================================================
+# ETL Pipeline Agent - Demonstrates Permission Modes
+# Tests the new permission mode features from the rebase
+# ============================================================================
+
+apiVersion: loom/v1
+kind: Agent
+
+metadata:
+  name: etl-pipeline-agent
+  version: "1.0.0"
+  description: "ETL agent for demonstrating permission modes (AUTO_ACCEPT, ASK_BEFORE, PLAN)"
+  labels:
+    backend: file
+    category: etl
+    environment: test
+    feature: permission-modes
+
+spec:
+  # System prompt optimized for ETL operations
+  system_prompt: |
+    You are an ETL (Extract, Transform, Load) pipeline assistant.
+
+    CAPABILITIES:
+    - Extract data from CSV/JSON files
+    - Transform data (clean, normalize, validate)
+    - Load data to target destinations
+    - Monitor pipeline execution and report errors
+
+    WORKFLOW:
+    1. EXTRACT: Read source files using file_read tool
+    2. TRANSFORM: Apply transformations (dedupe, validate, enrich)
+    3. LOAD: Write to destination using file_write tool
+    4. VERIFY: Confirm success and report metrics
+
+    TOOL USAGE:
+    - file_read: Read CSV/JSON source files
+    - file_write: Write transformed data
+    - workspace: Store intermediate results
+    - contact_human: Escalate errors or ask for approval
+
+    BEST PRACTICES:
+    - Validate data before transformations
+    - Handle errors gracefully with clear messages
+    - Provide progress updates for multi-step operations
+    - Use workspace for intermediate storage
+    - Report metrics (rows processed, errors, duration)
+
+    Always explain your steps clearly and ask for confirmation on destructive operations.
+
+  # Tools for ETL operations
+  tools:
+    - file_read        # Read source data files
+    - file_write       # Write transformed data
+    - contact_human    # Human-in-the-loop for approvals
+    - tool_search      # Find additional tools if needed
+
+  # Memory configuration
+  memory:
+    type: memory       # In-memory for testing
+    max_history: 100
+
+  # Behavior configuration
+  config:
+    max_iterations: 8              # Max tool calls per turn
+    max_turns: 20                  # Max conversation turns
+    max_tool_executions: 30        # Total tool execution limit
+    timeout_seconds: 120
+    enable_tracing: true
+    enable_self_correction: true
+
+    # Pattern configuration
+    patterns:
+      enabled: false               # Disable patterns for this test
+
+  # Observability
+  observability:
+    export_traces: true
+    tags:
+      agent: etl-pipeline-agent
+      test: permission-modes
+      version: "1.0.0"

@@ -238,8 +238,8 @@ func TestPermissionChecker_CheckPermission_DisabledTools(t *testing.T) {
 
 func TestPermissionChecker_CheckPermission_AllowedTools(t *testing.T) {
 	pc := NewPermissionChecker(PermissionConfig{
-		Mode:         loomv1.PermissionMode_PERMISSION_MODE_ASK_BEFORE, // Strict mode
-		AllowedTools: []string{"execute_sql", "file_read"},
+		Mode:          loomv1.PermissionMode_PERMISSION_MODE_ASK_BEFORE, // Strict mode
+		AllowedTools:  []string{"execute_sql", "file_read"},
 		DefaultAction: "deny",
 	})
 

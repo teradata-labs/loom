@@ -1,0 +1,9 @@
+customer_id,name,email,signup_date,status
+1001,Alice Smith,alice@example.com,2024-01-15,active
+1002,Bob Jones,bob@example.com,2024-01-20,active
+1003,Charlie Brown,charlie@example.com,2024-02-01,inactive
+1004,Diana Prince,diana@example.com,2024-02-10,active
+1005,Eve Wilson,eve@EXAMPLE.com,2024-02-15,active
+1006,Frank Miller,frank@example.com,2024-03-01,suspended
+1007,Grace Lee,grace@example.com,2024-03-05,active
+1008,Bob Jones,bob@example.com,2024-01-20,active
