@@ -133,10 +133,17 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: Pass instrumented executor via SetExecutor() if you want tool tracing
 	a.executor = shuttle.NewExecutor(a.tools)
 
-	// Set permission checker on executor if provided
-	if a.permissionChecker != nil {
-		a.executor.SetPermissionChecker(a.permissionChecker)
+	// If no permission checker provided, create default one
+	if a.permissionChecker == nil {
+		a.permissionChecker = shuttle.NewPermissionChecker(shuttle.PermissionConfig{
+			Mode:           loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT, // Safe default
+			DefaultAction:  "deny",
+			TimeoutSeconds: 300,
+		})
 	}
+
+	// Set permission checker on executor
+	a.executor.SetPermissionChecker(a.permissionChecker)
 
 	// Set up system prompt function for memory
 	// This allows dynamic prompt loading from PromptRegistry and context variable interpolation.
