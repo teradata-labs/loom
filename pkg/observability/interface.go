@@ -71,10 +71,18 @@ func ContextWithSpan(ctx context.Context, span *Span) context.Context {
 
 // SpanExporter exports completed spans to an external store (e.g., PostgreSQL).
 // Implementations must be goroutine-safe.
+//
+// The tracer calls ExportSpans synchronously on each EndSpan with a single-span
+// batch. Implementations that buffer spans internally should flush on
+// ForceFlush and drain remaining spans on Shutdown.
 type SpanExporter interface {
 	// ExportSpans sends a batch of completed spans to the external store.
 	// Called by the tracer on EndSpan (or on flush for batched exporters).
 	ExportSpans(ctx context.Context, spans []*Span) error
+
+	// ForceFlush requests the exporter to flush any buffered spans immediately.
+	// Returns when the flush completes or the context is cancelled.
+	ForceFlush(ctx context.Context) error
 
 	// Shutdown gracefully shuts down the exporter, flushing any buffered spans.
 	Shutdown(ctx context.Context) error
@@ -97,8 +105,9 @@ const (
 )
 
 // ContextWithTraceID returns a new context with an explicit trace ID.
-// When StartSpan creates a root span, it will use this trace ID instead
-// of generating a new one.
+// When StartSpan creates a root span (no parent span in context), it will
+// use this trace ID instead of generating a new one. If a parent span exists
+// in the context, the parent's trace ID takes priority and this value is ignored.
 func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDContextKey, traceID)
 }

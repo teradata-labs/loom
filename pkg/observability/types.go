@@ -173,10 +173,13 @@ func (s *Span) SetResourceAttribute(key, value string) {
 }
 
 // Resource attribute keys for standard fields.
+// Keys that overlap with span attributes (AttrUserID, AttrSessionID) are
+// aliased here so callers can use the ResourceAttr* prefix consistently
+// when setting resource-level metadata.
 const (
 	ResourceAttrServiceName    = "service.name"
 	ResourceAttrServiceVersion = "service.version"
-	ResourceAttrUserID         = "user.id"
-	ResourceAttrSessionID      = "session.id"
+	ResourceAttrUserID         = AttrUserID    // "user.id" — same key as span attribute
+	ResourceAttrSessionID      = AttrSessionID // "session.id" — same key as span attribute
 	ResourceAttrAgentID        = "agent.id"
 )
