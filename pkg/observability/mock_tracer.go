@@ -59,6 +59,13 @@ func (m *MockTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		// Inherit resource attributes from parent when child has none set
+		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
+			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
+			for k, v := range parent.ResourceAttributes {
+				span.ResourceAttributes[k] = v
+			}
+		}
 	}
 
 	return ContextWithSpan(ctx, span), span
@@ -173,6 +180,11 @@ func (m *MockSpanExporter) ExportSpans(_ context.Context, spans []*Span) error {
 	return nil
 }
 
+// ForceFlush is a no-op for the mock exporter (all exports are synchronous).
+func (m *MockSpanExporter) ForceFlush(_ context.Context) error {
+	return nil
+}
+
 // Shutdown marks the exporter as shut down.
 func (m *MockSpanExporter) Shutdown(_ context.Context) error {
 	m.mu.Lock()
@@ -205,7 +217,7 @@ func (m *MockSpanExporter) SetExportError(err error) {
 }
 
 // Reset clears all captured spans and state (for testing).
-func (m *MockSpanExporter) ResetExporter() {
+func (m *MockSpanExporter) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.spans = make([]*Span, 0)
@@ -213,5 +225,5 @@ func (m *MockSpanExporter) ResetExporter() {
 	m.exportErr = nil
 }
 
-// Ensure MockSpanExporter implements SpanExporter interface
+// Ensure MockSpanExporter implements SpanExporter interface.
 var _ SpanExporter = (*MockSpanExporter)(nil)

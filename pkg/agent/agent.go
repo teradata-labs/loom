@@ -820,32 +820,28 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Start trace span with detailed attributes
-	var span *observability.Span
+	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()
+	ctx, span := a.tracer.StartSpan(ctx, "agent.chat")
+	defer a.tracer.EndSpan(span)
 
-	if a.config.EnableTracing {
-		ctx, span = a.tracer.StartSpan(ctx, observability.SpanAgentConversation)
-		defer a.tracer.EndSpan(span)
+	// Set initial attributes
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	span.SetAttribute("message.length", len(userMessage))
+	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	a.mu.RLock()
+	currentLLM := a.llm
+	a.mu.RUnlock()
+	span.SetAttribute("llm.provider", currentLLM.Name())
+	span.SetAttribute("llm.model", currentLLM.Model())
+	span.SetAttribute("config.max_turns", a.config.MaxTurns)
+	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 
-		// Set initial attributes
-		span.SetAttribute(observability.AttrSessionID, sessionID)
-		span.SetAttribute("message.length", len(userMessage))
-		span.SetAttribute("message.preview", truncateString(userMessage, 100))
-		a.mu.RLock()
-		currentLLM := a.llm
-		a.mu.RUnlock()
-		span.SetAttribute("llm.provider", currentLLM.Name())
-		span.SetAttribute("llm.model", currentLLM.Model())
-		span.SetAttribute("config.max_turns", a.config.MaxTurns)
-		span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
-
-		// Record conversation started event
-		span.AddEvent("conversation.started", map[string]interface{}{
-			"session_id":     sessionID,
-			"message_length": len(userMessage),
-		})
-	}
+	// Record conversation started event
+	span.AddEvent("conversation.started", map[string]interface{}{
+		"session_id":     sessionID,
+		"message_length": len(userMessage),
+	})
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
@@ -866,9 +862,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 			zap.String("session_id", sessionID),
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Create agent context
@@ -891,24 +885,19 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	duration := time.Since(startTime)
 
 	if err != nil {
-		if span != nil {
-			span.Status = observability.Status{
-				Code:    observability.StatusError,
-				Message: err.Error(),
-			}
-			span.SetAttribute(observability.AttrErrorMessage, err.Error())
-			span.AddEvent("conversation.failed", map[string]interface{}{
-				"error":       err.Error(),
-				"duration_ms": duration.Milliseconds(),
-			})
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
 		}
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		span.AddEvent("conversation.failed", map[string]interface{}{
+			"error":       err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		})
 
-		// Emit error metric
-		if a.config.EnableTracing {
-			a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
-				observability.AttrSessionID: sessionID,
-			})
-		}
+		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
+			observability.AttrSessionID: sessionID,
+		})
 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
@@ -930,88 +919,77 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 			zap.String("session_id", sessionID),
 			zap.String("role", assistantMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 	if err := a.memory.PersistSession(ctx, session); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Record success metrics and span attributes
-	if span != nil {
-		span.Status = observability.Status{
-			Code: observability.StatusOK,
-		}
-
-		// Capture conversation metrics
-		turns := response.Metadata["turns"].(int)
-		toolExecs := response.Metadata["tool_executions"].(int)
-
-		span.SetAttribute("conversation.turns", turns)
-		span.SetAttribute("conversation.tool_executions", toolExecs)
-		span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-		span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-		span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-		span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-		span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
-		span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
-		span.SetAttribute("response.length", len(response.Content))
-		span.SetAttribute("response.preview", truncateString(response.Content, 100))
-
-		// Check if we hit limits
-		if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
-			span.SetAttribute("conversation.max_turns_hit", true)
-		}
-		if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
-			span.SetAttribute("conversation.max_executions_hit", true)
-		}
-
-		// Record completion event
-		span.AddEvent("conversation.completed", map[string]interface{}{
-			"duration_ms":     duration.Milliseconds(),
-			"turns":           turns,
-			"tool_executions": toolExecs,
-			"cost_usd":        response.Usage.CostUSD,
-			"tokens":          response.Usage.TotalTokens,
-		})
+	span.Status = observability.Status{
+		Code: observability.StatusOK,
 	}
+
+	// Capture conversation metrics
+	turns := response.Metadata["turns"].(int)
+	toolExecs := response.Metadata["tool_executions"].(int)
+
+	span.SetAttribute("conversation.turns", turns)
+	span.SetAttribute("conversation.tool_executions", toolExecs)
+	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	span.SetAttribute("response.length", len(response.Content))
+	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+
+	// Check if we hit limits
+	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
+		span.SetAttribute("conversation.max_turns_hit", true)
+	}
+	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
+		span.SetAttribute("conversation.max_executions_hit", true)
+	}
+
+	// Record completion event
+	span.AddEvent("conversation.completed", map[string]interface{}{
+		"duration_ms":     duration.Milliseconds(),
+		"turns":           turns,
+		"tool_executions": toolExecs,
+		"cost_usd":        response.Usage.CostUSD,
+		"tokens":          response.Usage.TotalTokens,
+	})
 
 	// Emit metrics
-	if a.config.EnableTracing {
-		a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
-			observability.AttrSessionID: sessionID,
-			"status":                    "success",
-		})
+	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
+		observability.AttrSessionID: sessionID,
+		"status":                    "success",
+	})
 
-		a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		turns := response.Metadata["turns"].(int)
-		toolExecs := response.Metadata["tool_executions"].(int)
+	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-
-		a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-	}
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
 	return response, nil
 }

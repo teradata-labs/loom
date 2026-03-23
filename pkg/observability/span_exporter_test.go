@@ -64,7 +64,7 @@ func TestMockSpanExporter_Reset(t *testing.T) {
 	_ = exporter.ExportSpans(context.Background(), []*Span{{Name: "op"}})
 	_ = exporter.Shutdown(context.Background())
 
-	exporter.ResetExporter()
+	exporter.Reset()
 	assert.Empty(t, exporter.GetExportedSpans())
 	assert.False(t, exporter.IsShutdown())
 }
@@ -103,12 +103,17 @@ func TestEmbeddedTracer_WithSpanExporter(t *testing.T) {
 	)
 	tracer.EndSpan(span)
 
-	// Verify span was exported
+	// Verify span was exported with all lifecycle fields
 	exported := exporter.GetExportedSpans()
 	require.Len(t, exported, 1)
 	assert.Equal(t, "test.operation", exported[0].Name)
 	assert.Equal(t, "value", exported[0].Attributes["key"])
 	assert.NotZero(t, exported[0].Duration)
+	assert.NotEmpty(t, exported[0].TraceID)
+	assert.NotEmpty(t, exported[0].SpanID)
+	assert.Empty(t, exported[0].ParentID, "root span should have no parent")
+	assert.False(t, exported[0].StartTime.IsZero())
+	assert.False(t, exported[0].EndTime.IsZero())
 }
 
 func TestEmbeddedTracer_WithSpanExporter_ParentChild(t *testing.T) {
@@ -314,6 +319,7 @@ func TestNoOpTracer_RespectsContextTraceID(t *testing.T) {
 
 	ctx := ContextWithTraceID(context.Background(), "noop-trace-id")
 	_, span := tracer.StartSpan(ctx, "test.op")
+	tracer.EndSpan(span)
 	assert.Equal(t, "noop-trace-id", span.TraceID)
 }
 
@@ -324,4 +330,262 @@ func TestMockTracer_RespectsContextTraceID(t *testing.T) {
 	_, span := tracer.StartSpan(ctx, "test.op")
 	tracer.EndSpan(span)
 	assert.Equal(t, "mock-trace-id", span.TraceID)
+}
+
+func TestEmbeddedTracer_ConcurrentWithExporter(t *testing.T) {
+	exporter := NewMockSpanExporter()
+	logger := zaptest.NewLogger(t)
+
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	}, WithSpanExporter(exporter))
+	require.NoError(t, err)
+	defer func() { _ = tracer.Close() }()
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := context.Background()
+			ctx, span := tracer.StartSpan(ctx, "concurrent.op")
+			tracer.EndSpan(span)
+		}()
+	}
+	wg.Wait()
+
+	exported := exporter.GetExportedSpans()
+	assert.Len(t, exported, goroutines)
+}
+
+func TestEmbeddedTracer_ExportAfterClose(t *testing.T) {
+	exporter := NewMockSpanExporter()
+	logger := zaptest.NewLogger(t)
+
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	}, WithSpanExporter(exporter))
+	require.NoError(t, err)
+
+	// Start a span before close
+	ctx := context.Background()
+	_, span := tracer.StartSpan(ctx, "pre-close.op")
+
+	// Close the tracer (shuts down exporter)
+	err = tracer.Close()
+	require.NoError(t, err)
+	assert.True(t, exporter.IsShutdown())
+
+	// EndSpan on already-closed tracer should not panic or export
+	tracer.EndSpan(span)
+
+	// Only the close-time flush should have been called; span should not be exported
+	// because the tracer was closed
+	exported := exporter.GetExportedSpans()
+	assert.Empty(t, exported, "span should not be exported after tracer is closed")
+}
+
+func TestEmbeddedTracer_NilSpanExporterOption(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	// Passing nil exporter via option should not panic
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	}, WithSpanExporter(nil))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, span := tracer.StartSpan(ctx, "test.op")
+	tracer.EndSpan(span) // should not panic
+
+	err = tracer.Close()
+	require.NoError(t, err)
+}
+
+func TestEmbeddedTracer_ResourceAttributeKeyConflict(t *testing.T) {
+	exporter := NewMockSpanExporter()
+	logger := zaptest.NewLogger(t)
+
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	}, WithSpanExporter(exporter), WithDefaultResourceAttributes(map[string]string{
+		ResourceAttrServiceName: "default-service",
+		ResourceAttrUserID:      "default-user",
+	}))
+	require.NoError(t, err)
+	defer func() { _ = tracer.Close() }()
+
+	ctx := context.Background()
+	// Span option overrides the same key set by default
+	_, span := tracer.StartSpan(ctx, "test.op",
+		WithResourceAttributes(map[string]string{
+			ResourceAttrServiceName: "override-service",
+		}),
+	)
+	tracer.EndSpan(span)
+
+	exported := exporter.GetExportedSpans()
+	require.Len(t, exported, 1)
+	// Span-level should win for conflicting key
+	assert.Equal(t, "override-service", exported[0].ResourceAttributes[ResourceAttrServiceName])
+	// Non-conflicting default should survive
+	assert.Equal(t, "default-user", exported[0].ResourceAttributes[ResourceAttrUserID])
+}
+
+func TestEmbeddedTracer_ChildInheritsParentResourceAttributes(t *testing.T) {
+	exporter := NewMockSpanExporter()
+	logger := zaptest.NewLogger(t)
+
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	}, WithSpanExporter(exporter), WithDefaultResourceAttributes(map[string]string{
+		ResourceAttrServiceName:    "loom-cloud",
+		ResourceAttrServiceVersion: "1.2.0",
+		ResourceAttrUserID:         "user-42",
+	}))
+	require.NoError(t, err)
+	defer func() { _ = tracer.Close() }()
+
+	ctx := context.Background()
+
+	// Parent gets default resource attributes
+	ctx, parent := tracer.StartSpan(ctx, "parent.op")
+	// Child should inherit from parent
+	_, child := tracer.StartSpan(ctx, "child.op")
+
+	tracer.EndSpan(child)
+	tracer.EndSpan(parent)
+
+	exported := exporter.GetExportedSpans()
+	require.Len(t, exported, 2)
+
+	// Both should have same resource attributes
+	assert.Equal(t, "loom-cloud", parent.ResourceAttributes[ResourceAttrServiceName])
+	assert.Equal(t, "1.2.0", parent.ResourceAttributes[ResourceAttrServiceVersion])
+	assert.Equal(t, "user-42", parent.ResourceAttributes[ResourceAttrUserID])
+
+	assert.Equal(t, "loom-cloud", child.ResourceAttributes[ResourceAttrServiceName])
+	assert.Equal(t, "1.2.0", child.ResourceAttributes[ResourceAttrServiceVersion])
+	assert.Equal(t, "user-42", child.ResourceAttributes[ResourceAttrUserID])
+}
+
+func TestEmbeddedTracer_ChildExplicitResourceAttrsNotOverwritten(t *testing.T) {
+	exporter := NewMockSpanExporter()
+	logger := zaptest.NewLogger(t)
+
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	}, WithSpanExporter(exporter), WithDefaultResourceAttributes(map[string]string{
+		ResourceAttrServiceName: "loom-cloud",
+	}))
+	require.NoError(t, err)
+	defer func() { _ = tracer.Close() }()
+
+	ctx := context.Background()
+
+	// Parent has default resource attrs
+	ctx, parent := tracer.StartSpan(ctx, "parent.op")
+	// Child explicitly sets its own resource attrs — should NOT be overwritten by parent
+	_, child := tracer.StartSpan(ctx, "child.op",
+		WithResourceAttributes(map[string]string{
+			ResourceAttrServiceName: "child-service",
+		}),
+	)
+
+	tracer.EndSpan(child)
+	tracer.EndSpan(parent)
+
+	exported := exporter.GetExportedSpans()
+	require.Len(t, exported, 2)
+
+	assert.Equal(t, "loom-cloud", parent.ResourceAttributes[ResourceAttrServiceName])
+	// Child's explicit value should be preserved
+	assert.Equal(t, "child-service", child.ResourceAttributes[ResourceAttrServiceName])
+}
+
+func TestNoOpTracer_ChildInheritsParentResourceAttributes(t *testing.T) {
+	tracer := NewNoOpTracer()
+
+	ctx := context.Background()
+
+	// Create parent with resource attributes
+	ctx, parent := tracer.StartSpan(ctx, "parent.op",
+		WithResourceAttributes(map[string]string{
+			ResourceAttrServiceName: "test-svc",
+			ResourceAttrAgentID:     "agent-1",
+		}),
+	)
+
+	// Child should inherit
+	_, child := tracer.StartSpan(ctx, "child.op")
+	tracer.EndSpan(child)
+	tracer.EndSpan(parent)
+
+	assert.Equal(t, "test-svc", child.ResourceAttributes[ResourceAttrServiceName])
+	assert.Equal(t, "agent-1", child.ResourceAttributes[ResourceAttrAgentID])
+}
+
+func TestMockTracer_ChildInheritsParentResourceAttributes(t *testing.T) {
+	tracer := NewMockTracer()
+
+	ctx := context.Background()
+
+	ctx, parent := tracer.StartSpan(ctx, "parent.op",
+		WithResourceAttributes(map[string]string{
+			ResourceAttrServiceName: "mock-svc",
+		}),
+	)
+
+	_, child := tracer.StartSpan(ctx, "child.op")
+	tracer.EndSpan(child)
+	tracer.EndSpan(parent)
+
+	assert.Equal(t, "mock-svc", child.ResourceAttributes[ResourceAttrServiceName])
+	assert.Equal(t, parent.SpanID, child.ParentID)
+}
+
+func TestMockSpanExporter_ResetClearsExportError(t *testing.T) {
+	exporter := NewMockSpanExporter()
+	exporter.SetExportError(errors.New("fail"))
+
+	err := exporter.ExportSpans(context.Background(), []*Span{{Name: "op"}})
+	assert.Error(t, err)
+
+	exporter.Reset()
+
+	// After reset, export should succeed
+	err = exporter.ExportSpans(context.Background(), []*Span{{Name: "op2"}})
+	require.NoError(t, err)
+	assert.Len(t, exporter.GetExportedSpans(), 1)
+}
+
+func TestNoOpTracer_EndSpanNil(t *testing.T) {
+	tracer := NewNoOpTracer()
+	tracer.EndSpan(nil) // should not panic
+}
+
+func TestEmbeddedTracer_EndSpanNil(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	tracer, err := NewEmbeddedTracer(&EmbeddedConfig{
+		StorageType:   "memory",
+		FlushInterval: 0,
+		Logger:        logger,
+	})
+	require.NoError(t, err)
+	defer func() { _ = tracer.Close() }()
+
+	tracer.EndSpan(nil) // should not panic
 }

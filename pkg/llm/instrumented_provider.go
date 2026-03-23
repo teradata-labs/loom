@@ -59,8 +59,9 @@ func (p *InstrumentedProvider) Model() string {
 
 // Chat sends a conversation to the LLM and captures detailed observability data.
 func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
-	// Start span
-	_, span := p.tracer.StartSpan(ctx, observability.SpanLLMCompletion)
+	// Start span — propagate context so the LLM span is a proper child
+	// of whatever parent span exists (e.g., agent.conversation).
+	ctx, span := p.tracer.StartSpan(ctx, observability.SpanLLMCompletion)
 	defer p.tracer.EndSpan(span)
 
 	// Start timing
@@ -91,7 +92,7 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 		"tools":    len(tools),
 	})
 
-	// Call the underlying provider (use original ctx, not spanCtx)
+	// Call the underlying provider with span context for trace propagation
 	resp, err := p.provider.Chat(ctx, messages, tools)
 
 	// Calculate duration
@@ -227,8 +228,8 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("provider %s does not support streaming", p.provider.Name())
 	}
 
-	// Start span
-	_, span := p.tracer.StartSpan(ctx, observability.SpanLLMCompletion)
+	// Start span — propagate context so the streaming span is a proper child
+	ctx, span := p.tracer.StartSpan(ctx, observability.SpanLLMCompletion)
 	defer p.tracer.EndSpan(span)
 
 	// Start timing

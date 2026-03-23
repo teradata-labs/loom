@@ -54,6 +54,13 @@ func (t *NoOpTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		// Inherit resource attributes from parent when child has none set
+		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
+			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
+			for k, v := range parent.ResourceAttributes {
+				span.ResourceAttributes[k] = v
+			}
+		}
 	}
 
 	return ContextWithSpan(ctx, span), span
@@ -61,6 +68,9 @@ func (t *NoOpTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 
 // EndSpan does nothing.
 func (t *NoOpTracer) EndSpan(span *Span) {
+	if span == nil {
+		return
+	}
 	span.EndTime = time.Now()
 	span.Duration = span.EndTime.Sub(span.StartTime)
 }

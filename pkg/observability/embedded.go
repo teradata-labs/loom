@@ -204,6 +204,13 @@ func (t *EmbeddedTracer) StartSpan(ctx context.Context, name string, opts ...Spa
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		// Inherit resource attributes from parent when child has none set
+		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
+			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
+			for k, v := range parent.ResourceAttributes {
+				span.ResourceAttributes[k] = v
+			}
+		}
 	}
 
 	// Store active span
@@ -215,16 +222,18 @@ func (t *EmbeddedTracer) StartSpan(ctx context.Context, name string, opts ...Spa
 	return newCtx, span
 }
 
-// EndSpan completes a tracing span and stores it
+// EndSpan completes a tracing span and stores it.
+// The span exporter is called after releasing the lock to avoid blocking
+// concurrent StartSpan/EndSpan calls during potentially slow network I/O.
 func (t *EmbeddedTracer) EndSpan(span *Span) {
 	if span == nil {
 		return
 	}
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	if t.closed {
+		t.mu.Unlock()
 		return
 	}
 
@@ -238,7 +247,12 @@ func (t *EmbeddedTracer) EndSpan(span *Span) {
 	// Convert to storage EvalRun format for embedded storage
 	evalRun := t.spanToEvalRun(span)
 
-	// Store in embedded storage
+	// Capture exporter ref (set once at construction, safe to read under lock)
+	exporter := t.spanExporter
+
+	t.mu.Unlock()
+
+	// Store in embedded storage (outside lock — storage has its own synchronization)
 	ctx := context.Background()
 	if err := t.storage.CreateEvalRun(ctx, evalRun); err != nil {
 		t.logger.Error("failed to store eval run",
@@ -247,9 +261,10 @@ func (t *EmbeddedTracer) EndSpan(span *Span) {
 		)
 	}
 
-	// Export to external exporter if configured
-	if t.spanExporter != nil {
-		if err := t.spanExporter.ExportSpans(ctx, []*Span{span}); err != nil {
+	// Export to external exporter if configured (outside lock to avoid
+	// blocking concurrent spans during potentially slow network I/O)
+	if exporter != nil {
+		if err := exporter.ExportSpans(ctx, []*Span{span}); err != nil {
 			t.logger.Error("failed to export span",
 				zap.String("span_id", span.SpanID),
 				zap.Error(err),
@@ -440,12 +455,16 @@ func (t *EmbeddedTracer) Close() error {
 		}
 	}
 
-	// Shutdown span exporter if configured
+	// Flush and shutdown span exporter if configured (with timeout to avoid hanging)
 	if t.spanExporter != nil {
-		shutdownCtx := context.Background()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := t.spanExporter.ForceFlush(shutdownCtx); err != nil {
+			t.logger.Error("failed to flush span exporter", zap.Error(err))
+		}
 		if err := t.spanExporter.Shutdown(shutdownCtx); err != nil {
 			t.logger.Error("failed to shutdown span exporter", zap.Error(err))
 		}
+		cancel()
 	}
 
 	// Close storage
