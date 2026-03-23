@@ -1555,6 +1555,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		turnCount++
 		turnStartTime := time.Now()
 
+		// Record turn start on conversation_loop span
+		span.AddEvent("turn.started", map[string]interface{}{
+			"turn":                turnCount,
+			"tool_executions":     toolExecutionCount,
+			"max_turns":           a.config.MaxTurns,
+			"max_tool_executions": a.config.MaxToolExecutions,
+		})
+
 		// === FEATURE INTEGRATION: Token Budget Management ===
 		// Check token budget and enforce compression if needed (segmented memory only)
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
@@ -1626,8 +1634,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// Call LLM
 		llmResp, err := a.chatWithRetry(ctx, messages, tools)
 		if err != nil {
+			span.AddEvent("turn.llm_failed", map[string]interface{}{
+				"turn":  turnCount,
+				"error": err.Error(),
+			})
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
+
+		// Record LLM response on conversation_loop span
+		span.AddEvent("turn.llm_response", map[string]interface{}{
+			"turn":          turnCount,
+			"stop_reason":   llmResp.StopReason,
+			"tool_calls":    len(llmResp.ToolCalls),
+			"input_tokens":  llmResp.Usage.InputTokens,
+			"output_tokens": llmResp.Usage.OutputTokens,
+			"total_tokens":  llmResp.Usage.TotalTokens,
+			"cost_usd":      llmResp.Usage.CostUSD,
+			"has_content":   llmResp.Content != "",
+		})
 
 		// === OUTPUT TOKEN CIRCUIT BREAKER ===
 		// Protects against the agent getting stuck in an infinite tool-call loop where
@@ -1745,6 +1769,20 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"anthropic", "claude-sonnet-4-5",
 				)
 			}
+
+			// Record conversation completion on span
+			span.AddEvent("conversation.completed", map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"response_length": len(content),
+				"total_tokens":    llmResp.Usage.TotalTokens,
+				"cost_usd":        llmResp.Usage.CostUSD,
+			})
+			span.SetAttribute("conversation.turns", turnCount)
+			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
+			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
+			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
 
 			return &Response{
 				Content:        content,
@@ -1884,6 +1922,27 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			// Execute with self-correction (circuit breaker + SQL correction)
 			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+
+			// Record tool execution on conversation_loop span
+			{
+				toolSuccess := err == nil && (result == nil || result.Success)
+				toolEvent := map[string]interface{}{
+					"turn":      turnCount,
+					"tool_name": toolCall.Name,
+					"success":   toolSuccess,
+					"index":     i + 1,
+					"total":     len(llmResp.ToolCalls),
+				}
+				if err != nil {
+					toolEvent["error"] = err.Error()
+				} else if result != nil && !result.Success && result.Error != nil {
+					toolEvent["error"] = result.Error.Message
+				}
+				if result != nil {
+					toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+				}
+				span.AddEvent("turn.tool_execution", toolEvent)
+			}
 
 			// Add instrumentation for HITL completion
 			if toolCall.Name == "contact_human" {
