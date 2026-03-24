@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -193,6 +194,10 @@ type Config struct {
 
 	// ROM identifier for domain-specific knowledge ("TD", "teradata", "auto", or "")
 	Rom string
+
+	// DefaultPermissionMode is the default permission mode for this agent
+	// Used when request doesn't specify permission_mode
+	DefaultPermissionMode loomv1.PermissionMode
 
 	// Metadata for agent configuration (includes backend_path for ROM auto-detection)
 	Metadata map[string]string

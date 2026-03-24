@@ -101,12 +101,13 @@ type AgentConfigYAML struct {
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
-		SystemPrompt     string                 `yaml:"system_prompt"`
-		ROM              string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
-		Tools            ToolsConfigYAML        `yaml:"tools"`
-		Memory           MemoryConfigYAML       `yaml:"memory"`
-		Behavior         BehaviorConfigYAML     `yaml:"behavior"`
-		Metadata         map[string]interface{} `yaml:"metadata"`
+		SystemPrompt          string                 `yaml:"system_prompt"`
+		ROM                   string                 `yaml:"rom"`                      // ROM identifier: "TD", "teradata", "auto", or ""
+		DefaultPermissionMode string                 `yaml:"default_permission_mode"`  // Default permission mode
+		Tools                 ToolsConfigYAML        `yaml:"tools"`
+		Memory                MemoryConfigYAML       `yaml:"memory"`
+		Behavior              BehaviorConfigYAML     `yaml:"behavior"`
+		Metadata              map[string]interface{} `yaml:"metadata"`
 	} `yaml:"agent"`
 }
 
@@ -138,10 +139,11 @@ type K8sStyleAgentConfig struct {
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		Tools            interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
 		SystemPrompt     string                 `yaml:"system_prompt"`
-		ROM              string                 `yaml:"rom"` // ROM identifier: "TD", "teradata", "auto", or ""
-		Config           BehaviorConfigYAML     `yaml:"config"`
-		Memory           MemoryConfigYAML       `yaml:"memory"`
-		Observability    map[string]interface{} `yaml:"observability"`
+		ROM                    string                 `yaml:"rom"`                      // ROM identifier: "TD", "teradata", "auto", or ""
+		DefaultPermissionMode  string                 `yaml:"default_permission_mode"`  // Default permission mode (PERMISSION_MODE_AUTO_ACCEPT, PERMISSION_MODE_PLAN, etc.)
+		Config                 BehaviorConfigYAML     `yaml:"config"`
+		Memory                 MemoryConfigYAML       `yaml:"memory"`
+		Observability          map[string]interface{} `yaml:"observability"`
 	} `yaml:"spec"`
 }
 
@@ -352,6 +354,9 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	// ROM identifier
 	legacy.Agent.ROM = k8s.Spec.ROM
 
+	// Default permission mode
+	legacy.Agent.DefaultPermissionMode = k8s.Spec.DefaultPermissionMode
+
 	// Tools - handle both old ToolsConfigYAML and new simplified format
 	switch tools := k8s.Spec.Tools.(type) {
 	case map[string]interface{}:
@@ -480,12 +485,30 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		metadata["backend_path"] = yaml.Agent.BackendPath
 	}
 
+	// Parse default permission mode from string to enum
+	permissionMode := loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT // Default
+	if yaml.Agent.DefaultPermissionMode != "" {
+		switch strings.ToUpper(yaml.Agent.DefaultPermissionMode) {
+		case "PERMISSION_MODE_UNSPECIFIED":
+			permissionMode = loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED
+		case "PERMISSION_MODE_ASK_BEFORE", "ASK_BEFORE":
+			permissionMode = loomv1.PermissionMode_PERMISSION_MODE_ASK_BEFORE
+		case "PERMISSION_MODE_AUTO_ACCEPT", "AUTO_ACCEPT", "YOLO":
+			permissionMode = loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT
+		case "PERMISSION_MODE_PLAN", "PLAN":
+			permissionMode = loomv1.PermissionMode_PERMISSION_MODE_PLAN
+		default:
+			return nil, fmt.Errorf("invalid default_permission_mode: %s (must be PERMISSION_MODE_PLAN, PERMISSION_MODE_AUTO_ACCEPT, or PERMISSION_MODE_ASK_BEFORE)", yaml.Agent.DefaultPermissionMode)
+		}
+	}
+
 	config := &loomv1.AgentConfig{
-		Name:         yaml.Agent.Name,
-		Description:  yaml.Agent.Description,
-		SystemPrompt: yaml.Agent.SystemPrompt,
-		Rom:          yaml.Agent.ROM, // ROM identifier from YAML
-		Metadata:     metadata,
+		Name:                  yaml.Agent.Name,
+		Description:           yaml.Agent.Description,
+		SystemPrompt:          yaml.Agent.SystemPrompt,
+		Rom:                   yaml.Agent.ROM, // ROM identifier from YAML
+		DefaultPermissionMode: permissionMode,
+		Metadata:              metadata,
 	}
 
 	// Convert main LLM config using helper (main LLM is not a pointer, so take its address)

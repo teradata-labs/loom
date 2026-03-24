@@ -569,6 +569,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
 			MaxTurns:               int(config.Behavior.MaxTurns),
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
+			DefaultPermissionMode:  config.DefaultPermissionMode, // Use config's default permission mode
 		}
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {
@@ -584,7 +585,27 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		if sc := ExtractSkillsConfig(config.Metadata); sc != nil {
 			agentConfig.SkillsConfig = sc
 		}
+
+		// Debug log permission mode
+		r.logger.Info("Agent config loaded with permission mode",
+			zap.String("agent", config.Name),
+			zap.String("permission_mode", config.DefaultPermissionMode.String()))
+
 		opts = append(opts, WithConfig(agentConfig))
+	} else {
+		// Even if no behavior config, we need to set default permission mode if specified
+		if config.DefaultPermissionMode != loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
+			agentConfig := &Config{
+				Name:                   config.Name,
+				DefaultPermissionMode:  config.DefaultPermissionMode,
+			}
+
+			r.logger.Info("Agent config loaded with permission mode (no behavior)",
+				zap.String("agent", config.Name),
+				zap.String("permission_mode", config.DefaultPermissionMode.String()))
+
+			opts = append(opts, WithConfig(agentConfig))
+		}
 	}
 
 	// Set tracer if provided
@@ -695,9 +716,12 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, WithErrorStore(r.errorStore))
 	}
 
-	if r.permissionChecker != nil {
-		opts = append(opts, WithPermissionChecker(r.permissionChecker))
-	}
+	// Don't pass registry's global permission checker - let each agent create its own
+	// based on config.DefaultPermissionMode. This allows per-agent permission modes.
+	// The global r.permissionChecker was overriding agent-specific configs.
+	// if r.permissionChecker != nil {
+	// 	opts = append(opts, WithPermissionChecker(r.permissionChecker))
+	// }
 
 	// Create agent with configuration
 	agent := NewAgent(

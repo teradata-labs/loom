@@ -817,6 +817,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
+		Plan: resp.Plan, // Include plan if created in PLAN mode
 	}, nil
 }
 

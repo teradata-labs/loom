@@ -173,6 +173,8 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
+		AgentId: s.agent.GetID(),
+		Plan:    resp.Plan, // Include plan if created in PLAN mode
 	}, nil
 }
 

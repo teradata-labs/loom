@@ -643,22 +643,6 @@ service AdminService {
   }
 }
 
-// PermissionMode controls how the agent handles tool execution permissions.
-// This can be set per-request to dynamically control agent behavior.
-enum PermissionMode {
-  // Unspecified - use agent's default configuration
-  PERMISSION_MODE_UNSPECIFIED = 0;
-
-  // Ask before executing each tool (default behavior)
-  PERMISSION_MODE_ASK_BEFORE = 1;
-
-  // Automatically execute all tools without asking (YOLO mode)
-  PERMISSION_MODE_AUTO_ACCEPT = 2;
-
-  // Create execution plan and wait for approval before executing
-  PERMISSION_MODE_PLAN = 3;
-}
-
 // WeaveRequest initiates a query execution.
 message WeaveRequest {
   // User's natural language query
@@ -727,6 +711,10 @@ message WeaveResponse {
 
   // Context window state after this response
   ContextState context_state = 9;
+
+  // Execution plan (only populated when permission_mode=PLAN)
+  // Contains the plan that was created and is awaiting approval
+  ExecutionPlan plan = 10;
 }
 
 // WeaveProgress streams incremental updates during execution.

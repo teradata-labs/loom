@@ -3944,6 +3944,10 @@
         "skills": {
           "$ref": "#/definitions/v1SkillsConfig",
           "title": "Skills configuration for this agent"
+        },
+        "defaultPermissionMode": {
+          "$ref": "#/definitions/v1PermissionMode",
+          "title": "Default permission mode for this agent (when request doesn't specify permission_mode)\nAllows agents to declare their preferred permission model in config\nOptions: PERMISSION_MODE_AUTO_ACCEPT (default), PERMISSION_MODE_PLAN, PERMISSION_MODE_ASK_BEFORE"
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -9729,6 +9733,10 @@
         "contextState": {
           "$ref": "#/definitions/v1ContextState",
           "title": "Context window state after this response"
+        },
+        "plan": {
+          "$ref": "#/definitions/v1ExecutionPlan",
+          "title": "Execution plan (only populated when permission_mode=PLAN)\nContains the plan that was created and is awaiting approval"
         }
       },
       "description": "WeaveResponse contains the execution result."

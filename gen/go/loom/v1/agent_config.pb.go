@@ -26,6 +26,64 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// PermissionMode controls how the agent handles tool execution permissions.
+// This can be set per-request to dynamically control agent behavior.
+type PermissionMode int32
+
+const (
+	// Unspecified - use agent's default configuration
+	PermissionMode_PERMISSION_MODE_UNSPECIFIED PermissionMode = 0
+	// Ask before executing each tool (default behavior)
+	PermissionMode_PERMISSION_MODE_ASK_BEFORE PermissionMode = 1
+	// Automatically execute all tools without asking (YOLO mode)
+	PermissionMode_PERMISSION_MODE_AUTO_ACCEPT PermissionMode = 2
+	// Create execution plan and wait for approval before executing
+	PermissionMode_PERMISSION_MODE_PLAN PermissionMode = 3
+)
+
+// Enum value maps for PermissionMode.
+var (
+	PermissionMode_name = map[int32]string{
+		0: "PERMISSION_MODE_UNSPECIFIED",
+		1: "PERMISSION_MODE_ASK_BEFORE",
+		2: "PERMISSION_MODE_AUTO_ACCEPT",
+		3: "PERMISSION_MODE_PLAN",
+	}
+	PermissionMode_value = map[string]int32{
+		"PERMISSION_MODE_UNSPECIFIED": 0,
+		"PERMISSION_MODE_ASK_BEFORE":  1,
+		"PERMISSION_MODE_AUTO_ACCEPT": 2,
+		"PERMISSION_MODE_PLAN":        3,
+	}
+)
+
+func (x PermissionMode) Enum() *PermissionMode {
+	p := new(PermissionMode)
+	*p = x
+	return p
+}
+
+func (x PermissionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PermissionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_agent_config_proto_enumTypes[0].Descriptor()
+}
+
+func (PermissionMode) Type() protoreflect.EnumType {
+	return &file_loom_v1_agent_config_proto_enumTypes[0]
+}
+
+func (x PermissionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PermissionMode.Descriptor instead.
+func (PermissionMode) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{0}
+}
+
 // LLMRole identifies the purpose/role of an LLM provider within an agent.
 // Each role can be backed by a different provider/model optimized for its task.
 // Fallback chain: Role-specific LLM -> Agent default LLM -> Server default LLM.
@@ -71,11 +129,11 @@ func (x LLMRole) String() string {
 }
 
 func (LLMRole) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[0].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[1].Descriptor()
 }
 
 func (LLMRole) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[0]
+	return &file_loom_v1_agent_config_proto_enumTypes[1]
 }
 
 func (x LLMRole) Number() protoreflect.EnumNumber {
@@ -84,7 +142,7 @@ func (x LLMRole) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LLMRole.Descriptor instead.
 func (LLMRole) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{0}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases
@@ -130,11 +188,11 @@ func (x WorkloadProfile) String() string {
 }
 
 func (WorkloadProfile) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[1].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[2].Descriptor()
 }
 
 func (WorkloadProfile) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[1]
+	return &file_loom_v1_agent_config_proto_enumTypes[2]
 }
 
 func (x WorkloadProfile) Number() protoreflect.EnumNumber {
@@ -143,7 +201,7 @@ func (x WorkloadProfile) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WorkloadProfile.Descriptor instead.
 func (WorkloadProfile) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
 }
 
 // SpawnTriggerType enumerates trigger conditions
@@ -198,11 +256,11 @@ func (x SpawnTriggerType) String() string {
 }
 
 func (SpawnTriggerType) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_agent_config_proto_enumTypes[2].Descriptor()
+	return file_loom_v1_agent_config_proto_enumTypes[3].Descriptor()
 }
 
 func (SpawnTriggerType) Type() protoreflect.EnumType {
-	return &file_loom_v1_agent_config_proto_enumTypes[2]
+	return &file_loom_v1_agent_config_proto_enumTypes[3]
 }
 
 func (x SpawnTriggerType) Number() protoreflect.EnumNumber {
@@ -211,7 +269,7 @@ func (x SpawnTriggerType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SpawnTriggerType.Descriptor instead.
 func (SpawnTriggerType) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{2}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{3}
 }
 
 // AgentConfig defines a complete agent configuration.
@@ -272,9 +330,13 @@ type AgentConfig struct {
 	// Empty means all pool providers are allowed.
 	AllowedProviders []string `protobuf:"bytes,19,rep,name=allowed_providers,json=allowedProviders,proto3" json:"allowed_providers,omitempty"`
 	// Skills configuration for this agent
-	Skills        *SkillsConfig `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Skills *SkillsConfig `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
+	// Default permission mode for this agent (when request doesn't specify permission_mode)
+	// Allows agents to declare their preferred permission model in config
+	// Options: PERMISSION_MODE_AUTO_ACCEPT (default), PERMISSION_MODE_PLAN, PERMISSION_MODE_ASK_BEFORE
+	DefaultPermissionMode PermissionMode `protobuf:"varint,21,opt,name=default_permission_mode,json=defaultPermissionMode,proto3,enum=loom.v1.PermissionMode" json:"default_permission_mode,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *AgentConfig) Reset() {
@@ -445,6 +507,13 @@ func (x *AgentConfig) GetSkills() *SkillsConfig {
 		return x.Skills
 	}
 	return nil
+}
+
+func (x *AgentConfig) GetDefaultPermissionMode() PermissionMode {
+	if x != nil {
+		return x.DefaultPermissionMode
+	}
+	return PermissionMode_PERMISSION_MODE_UNSPECIFIED
 }
 
 // ProviderEntry is a named LLM configuration in the global provider pool.
@@ -1830,7 +1899,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\"\xf0\a\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\"\xc1\b\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1852,7 +1921,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x0ecompressor_llm\x18\x11 \x01(\v2\x12.loom.v1.LLMConfigR\rcompressorLlm\x12'\n" +
 	"\x0factive_provider\x18\x12 \x01(\tR\x0eactiveProvider\x12+\n" +
 	"\x11allowed_providers\x18\x13 \x03(\tR\x10allowedProviders\x12-\n" +
-	"\x06skills\x18\x14 \x01(\v2\x15.loom.v1.SkillsConfigR\x06skills\x1a;\n" +
+	"\x06skills\x18\x14 \x01(\v2\x15.loom.v1.SkillsConfigR\x06skills\x12O\n" +
+	"\x17default_permission_mode\x18\x15 \x01(\x0e2\x17.loom.v1.PermissionModeR\x15defaultPermissionMode\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
@@ -1963,7 +2033,12 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\fSpawnTrigger\x12-\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x19.loom.v1.SpawnTriggerTypeR\x04type\x12\x1c\n" +
 	"\tthreshold\x18\x02 \x01(\x02R\tthreshold\x12\x1c\n" +
-	"\tcondition\x18\x03 \x01(\tR\tcondition*\x98\x01\n" +
+	"\tcondition\x18\x03 \x01(\tR\tcondition*\x8c\x01\n" +
+	"\x0ePermissionMode\x12\x1f\n" +
+	"\x1bPERMISSION_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aPERMISSION_MODE_ASK_BEFORE\x10\x01\x12\x1f\n" +
+	"\x1bPERMISSION_MODE_AUTO_ACCEPT\x10\x02\x12\x18\n" +
+	"\x14PERMISSION_MODE_PLAN\x10\x03*\x98\x01\n" +
 	"\aLLMRole\x12\x18\n" +
 	"\x14LLM_ROLE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eLLM_ROLE_AGENT\x10\x01\x12\x12\n" +
@@ -1999,68 +2074,70 @@ func file_loom_v1_agent_config_proto_rawDescGZIP() []byte {
 	return file_loom_v1_agent_config_proto_rawDescData
 }
 
-var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_loom_v1_agent_config_proto_goTypes = []any{
-	(LLMRole)(0),                        // 0: loom.v1.LLMRole
-	(WorkloadProfile)(0),                // 1: loom.v1.WorkloadProfile
-	(SpawnTriggerType)(0),               // 2: loom.v1.SpawnTriggerType
-	(*AgentConfig)(nil),                 // 3: loom.v1.AgentConfig
-	(*ProviderEntry)(nil),               // 4: loom.v1.ProviderEntry
-	(*ProviderPool)(nil),                // 5: loom.v1.ProviderPool
-	(*LLMConfig)(nil),                   // 6: loom.v1.LLMConfig
-	(*LLMRateLimitConfig)(nil),          // 7: loom.v1.LLMRateLimitConfig
-	(*ToolsConfig)(nil),                 // 8: loom.v1.ToolsConfig
-	(*MCPToolConfig)(nil),               // 9: loom.v1.MCPToolConfig
-	(*CustomToolConfig)(nil),            // 10: loom.v1.CustomToolConfig
-	(*MemoryConfig)(nil),                // 11: loom.v1.MemoryConfig
-	(*MemoryCompressionBatchSizes)(nil), // 12: loom.v1.MemoryCompressionBatchSizes
-	(*MemoryCompressionConfig)(nil),     // 13: loom.v1.MemoryCompressionConfig
-	(*BehaviorConfig)(nil),              // 14: loom.v1.BehaviorConfig
-	(*PatternConfig)(nil),               // 15: loom.v1.PatternConfig
-	(*AgentTemplate)(nil),               // 16: loom.v1.AgentTemplate
-	(*TemplateParameter)(nil),           // 17: loom.v1.TemplateParameter
-	(*AgentProfile)(nil),                // 18: loom.v1.AgentProfile
-	(*EphemeralAgentPolicy)(nil),        // 19: loom.v1.EphemeralAgentPolicy
-	(*SpawnTrigger)(nil),                // 20: loom.v1.SpawnTrigger
-	nil,                                 // 21: loom.v1.AgentConfig.MetadataEntry
-	nil,                                 // 22: loom.v1.AgentProfile.OverridesEntry
-	(*SkillsConfig)(nil),                // 23: loom.v1.SkillsConfig
+	(PermissionMode)(0),                 // 0: loom.v1.PermissionMode
+	(LLMRole)(0),                        // 1: loom.v1.LLMRole
+	(WorkloadProfile)(0),                // 2: loom.v1.WorkloadProfile
+	(SpawnTriggerType)(0),               // 3: loom.v1.SpawnTriggerType
+	(*AgentConfig)(nil),                 // 4: loom.v1.AgentConfig
+	(*ProviderEntry)(nil),               // 5: loom.v1.ProviderEntry
+	(*ProviderPool)(nil),                // 6: loom.v1.ProviderPool
+	(*LLMConfig)(nil),                   // 7: loom.v1.LLMConfig
+	(*LLMRateLimitConfig)(nil),          // 8: loom.v1.LLMRateLimitConfig
+	(*ToolsConfig)(nil),                 // 9: loom.v1.ToolsConfig
+	(*MCPToolConfig)(nil),               // 10: loom.v1.MCPToolConfig
+	(*CustomToolConfig)(nil),            // 11: loom.v1.CustomToolConfig
+	(*MemoryConfig)(nil),                // 12: loom.v1.MemoryConfig
+	(*MemoryCompressionBatchSizes)(nil), // 13: loom.v1.MemoryCompressionBatchSizes
+	(*MemoryCompressionConfig)(nil),     // 14: loom.v1.MemoryCompressionConfig
+	(*BehaviorConfig)(nil),              // 15: loom.v1.BehaviorConfig
+	(*PatternConfig)(nil),               // 16: loom.v1.PatternConfig
+	(*AgentTemplate)(nil),               // 17: loom.v1.AgentTemplate
+	(*TemplateParameter)(nil),           // 18: loom.v1.TemplateParameter
+	(*AgentProfile)(nil),                // 19: loom.v1.AgentProfile
+	(*EphemeralAgentPolicy)(nil),        // 20: loom.v1.EphemeralAgentPolicy
+	(*SpawnTrigger)(nil),                // 21: loom.v1.SpawnTrigger
+	nil,                                 // 22: loom.v1.AgentConfig.MetadataEntry
+	nil,                                 // 23: loom.v1.AgentProfile.OverridesEntry
+	(*SkillsConfig)(nil),                // 24: loom.v1.SkillsConfig
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
-	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
-	8,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
-	11, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
-	14, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
-	21, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
-	19, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
-	6,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
-	6,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
-	6,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
-	6,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
-	23, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
-	6,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
-	4,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
-	7,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
-	9,  // 14: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
-	10, // 15: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	13, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
-	1,  // 17: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	12, // 18: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	15, // 19: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	17, // 20: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 21: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 22: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	22, // 23: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	20, // 24: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 25: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 26: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 27: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	28, // [28:28] is the sub-list for method output_type
-	28, // [28:28] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	7,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
+	9,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
+	12, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
+	15, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
+	22, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
+	20, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
+	7,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
+	7,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
+	7,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
+	7,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
+	24, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
+	0,  // 11: loom.v1.AgentConfig.default_permission_mode:type_name -> loom.v1.PermissionMode
+	7,  // 12: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
+	5,  // 13: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
+	8,  // 14: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
+	10, // 15: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
+	11, // 16: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
+	14, // 17: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	2,  // 18: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	13, // 19: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	16, // 20: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	18, // 21: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	4,  // 22: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	4,  // 23: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	23, // 24: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	21, // 25: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	4,  // 26: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	3,  // 27: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	4,  // 28: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	29, // [29:29] is the sub-list for method output_type
+	29, // [29:29] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2074,7 +2151,7 @@ func file_loom_v1_agent_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_agent_config_proto_rawDesc), len(file_loom_v1_agent_config_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,

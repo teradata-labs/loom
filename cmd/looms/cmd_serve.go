@@ -1138,8 +1138,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("PromptRegistry created successfully")
 	}
 
-	// Create PermissionChecker (if configured)
-	permissionChecker := createPermissionChecker(config, logger)
+	// Don't create global PermissionChecker - each agent creates its own based on config.DefaultPermissionMode
+	// This allows per-agent permission mode control (PLAN, AUTO_ACCEPT, ASK_BEFORE)
+	// permissionChecker := createPermissionChecker(config, logger)
 
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
@@ -1271,15 +1272,20 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 
 				agentCfg := &agent.Config{
-					Name:              cfg.Name,
-					Description:       cfg.Description,
-					SystemPrompt:      cfg.SystemPrompt,
-					Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
-					Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
-					MaxTurns:          maxTurns,
-					MaxToolExecutions: maxToolExecutions,
-					EnableTracing:     config.Observability.Enabled,
+					Name:                  cfg.Name,
+					Description:           cfg.Description,
+					SystemPrompt:          cfg.SystemPrompt,
+					Rom:                   cfg.Rom,                     // ROM identifier for domain-specific knowledge
+					DefaultPermissionMode: cfg.DefaultPermissionMode,   // Default permission mode from config
+					Metadata:              cfg.Metadata,                // Metadata includes backend_path for ROM auto-detection
+					MaxTurns:              maxTurns,
+					MaxToolExecutions:     maxToolExecutions,
+					EnableTracing:         config.Observability.Enabled,
 				}
+
+				logger.Info("    Agent config created with permission mode",
+					zap.String("agent", cfg.Name),
+					zap.String("permission_mode", cfg.DefaultPermissionMode.String()))
 
 				// Set context limits if specified in LLM config
 				if cfg.Llm != nil {
@@ -1330,10 +1336,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
 
-				// Add PermissionChecker if configured
-				if permissionChecker != nil {
-					agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
-				}
+				// Don't pass global permission checker - let each agent create its own
+				// based on cfg.DefaultPermissionMode. This allows per-agent permission modes.
+				// if permissionChecker != nil {
+				// 	agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
+				// }
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
@@ -2393,10 +2400,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				agent.WithConfig(cfg),
 			}
 
-			// Add PermissionChecker if configured
-			if permissionChecker != nil {
-				agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
-			}
+			// Don't pass global permission checker - let each agent create its own
+			// based on agent config's DefaultPermissionMode for per-agent control.
+			// if permissionChecker != nil {
+			// 	agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
+			// }
 
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {

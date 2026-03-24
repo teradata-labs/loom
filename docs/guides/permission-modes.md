@@ -18,6 +18,8 @@
 
 Permission modes give you runtime control over how agents execute tools. Instead of hardcoding behavior in agent configuration, you can specify the execution strategy per-request.
 
+> **Implementation Note:** Permission modes are enabled by default in all agents (v1.1.0+). Every agent automatically receives a default permission checker with AUTO_ACCEPT mode, which can be switched at runtime via the `permission_mode` field in WeaveRequest. See [Permission Modes Architecture](/docs/architecture/permission-modes.md) for implementation details.
+
 **Use permission modes to:**
 - Get user approval before executing critical operations (PLAN mode)
 - Execute read-only operations immediately (AUTO_ACCEPT mode)
@@ -781,6 +783,7 @@ rpc ExecutePlan(ExecutePlanRequest) returns (ExecutePlanResponse);
 
 ## Next Steps
 
+- **Architecture:** [Permission Modes Architecture](/docs/architecture/permission-modes.md) - Design decisions and implementation details
 - **Context Variables:** [Context Variable Interpolation Guide](/docs/guides/context-variables.md)
 - **Testing:** [Testing Permission Modes](/docs/guides/testing-permission-modes.md)
 - **API Reference:** [LoomService API](/docs/reference/api.md)
@@ -789,4 +792,4 @@ rpc ExecutePlan(ExecutePlanRequest) returns (ExecutePlanResponse);
 ---
 
 **Version:** v1.1.0-beta
-**Last Updated:** 2026-03-15
+**Last Updated:** 2026-03-22

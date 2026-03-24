@@ -11,6 +11,22 @@ import "loom/v1/skill.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
+// PermissionMode controls how the agent handles tool execution permissions.
+// This can be set per-request to dynamically control agent behavior.
+enum PermissionMode {
+  // Unspecified - use agent's default configuration
+  PERMISSION_MODE_UNSPECIFIED = 0;
+
+  // Ask before executing each tool (default behavior)
+  PERMISSION_MODE_ASK_BEFORE = 1;
+
+  // Automatically execute all tools without asking (YOLO mode)
+  PERMISSION_MODE_AUTO_ACCEPT = 2;
+
+  // Create execution plan and wait for approval before executing
+  PERMISSION_MODE_PLAN = 3;
+}
+
 // AgentConfig defines a complete agent configuration.
 // This message represents a declarative agent specification that can be
 // loaded from YAML files or created programmatically.
@@ -90,6 +106,11 @@ message AgentConfig {
 
   // Skills configuration for this agent
   SkillsConfig skills = 20;
+
+  // Default permission mode for this agent (when request doesn't specify permission_mode)
+  // Allows agents to declare their preferred permission model in config
+  // Options: PERMISSION_MODE_AUTO_ACCEPT (default), PERMISSION_MODE_PLAN, PERMISSION_MODE_ASK_BEFORE
+  PermissionMode default_permission_mode = 21;
 }
 
 // ProviderEntry is a named LLM configuration in the global provider pool.

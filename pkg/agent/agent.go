@@ -135,8 +135,18 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 
 	// If no permission checker provided, create default one
 	if a.permissionChecker == nil {
+		// Use agent config's default permission mode, or AUTO_ACCEPT if not specified
+		defaultMode := a.config.DefaultPermissionMode
+		if defaultMode == loomv1.PermissionMode_PERMISSION_MODE_UNSPECIFIED {
+			defaultMode = loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT
+		}
+
+		zap.L().Info("Creating default permission checker",
+			zap.String("agent", a.config.Name),
+			zap.String("mode", defaultMode.String()))
+
 		a.permissionChecker = shuttle.NewPermissionChecker(shuttle.PermissionConfig{
-			Mode:           loomv1.PermissionMode_PERMISSION_MODE_AUTO_ACCEPT, // Safe default
+			Mode:           defaultMode,
 			DefaultAction:  "deny",
 			TimeoutSeconds: 300,
 		})
@@ -1108,7 +1118,17 @@ func (a *Agent) ChatWithProgressAndContext(ctx context.Context, sessionID string
 	zap.L().Debug("ChatWithProgressAndContext called",
 		zap.String("agent", a.config.Name),
 		zap.String("session_id", sessionID),
+		zap.String("default_permission_mode", a.config.DefaultPermissionMode.String()),
 		zap.Int("context_len", len(requestContext)))
+
+	if a.permissionChecker != nil {
+		zap.L().Debug("Permission checker state at Chat start",
+			zap.String("agent", a.config.Name),
+			zap.String("current_mode", a.permissionChecker.GetMode().String()))
+	} else {
+		zap.L().Warn("Permission checker is nil at Chat start",
+			zap.String("agent", a.config.Name))
+	}
 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
@@ -1246,6 +1266,9 @@ type Response struct {
 	// Thinking contains the agent's internal reasoning process
 	// (for models that support extended thinking)
 	Thinking string
+
+	// Plan contains the execution plan (only populated when permission_mode=PLAN)
+	Plan *loomv1.ExecutionPlan
 }
 
 // ToolExecution records a tool execution.
@@ -1890,8 +1913,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// Check if in PLAN permission mode - if so, create plan instead of executing
+		if len(llmResp.ToolCalls) > 0 {
+			// Debug log permission checker state
+			if a.permissionChecker != nil {
+				zap.L().Debug("Checking permission mode",
+					zap.String("agent", a.config.Name),
+					zap.String("session_id", session.ID),
+					zap.String("mode", a.permissionChecker.GetMode().String()),
+					zap.Bool("in_plan_mode", a.permissionChecker.InPlanMode()),
+					zap.Int("tool_count", len(llmResp.ToolCalls)))
+			} else {
+				zap.L().Warn("Permission checker is nil when checking tools",
+					zap.String("agent", a.config.Name),
+					zap.String("session_id", session.ID))
+			}
+		}
+
 		if len(llmResp.ToolCalls) > 0 && a.permissionChecker != nil && a.permissionChecker.InPlanMode() {
-			zap.L().Debug("In PLAN mode - creating execution plan instead of executing tools",
+			zap.L().Info("In PLAN mode - creating execution plan instead of executing tools",
 				zap.String("session_id", session.ID),
 				zap.Int("tool_count", len(llmResp.ToolCalls)))
 
@@ -1973,6 +2012,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"tool_executions": toolExecutionCount,
 					"stop_reason":     "plan_created",
 				},
+				Plan: plan, // Include full plan for UI display
 			}, nil
 		}
 
