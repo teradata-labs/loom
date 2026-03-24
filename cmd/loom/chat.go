@@ -128,11 +128,17 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 	// Track streamed content length so we only print new tokens incrementally
 	var streamedLen int
 	var lastStreamedContent string // last PartialContent we streamed, for dedup at COMPLETED
+	var pendingPlan *loomv1.ExecutionPlan // Store plan if created
 
 	err := c.StreamWeave(ctx, message, sessionID, agentID, func(progress *loomv1.WeaveProgress) {
 		// Capture running token count
 		if progress.TokenCount > 0 {
 			totalTokens = progress.TokenCount
+		}
+
+		// Capture plan if created (display after stream completes)
+		if progress.IsPlanCreated && progress.Plan != nil {
+			pendingPlan = progress.Plan
 		}
 
 		// Only show progress if --stream flag is set
@@ -206,6 +212,48 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 
 	if err != nil {
 		return fmt.Errorf("stream error: %w", err)
+	}
+
+	// Handle plan approval if a plan was created
+	if pendingPlan != nil {
+		fmt.Fprintf(os.Stderr, "\n=== Execution Plan Created ===\n")
+		fmt.Fprintf(os.Stderr, "Plan ID: %s\n", pendingPlan.PlanId)
+		fmt.Fprintf(os.Stderr, "Reasoning: %s\n\n", pendingPlan.Reasoning)
+		fmt.Fprintf(os.Stderr, "Steps:\n")
+		for _, tool := range pendingPlan.Tools {
+			fmt.Fprintf(os.Stderr, "  %d. %s\n", tool.Step, tool.ToolName)
+			fmt.Fprintf(os.Stderr, "     Rationale: %s\n", tool.Rationale)
+			if tool.ParamsJson != "" {
+				fmt.Fprintf(os.Stderr, "     Params: %s\n", tool.ParamsJson)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "\nApprove this plan? (yes/no): ")
+
+		// Read approval from stdin (safe here - outside the stream callback)
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			response := strings.ToLower(strings.TrimSpace(scanner.Text()))
+			approved := response == "yes" || response == "y"
+
+			// Call ApprovePlan RPC
+			approveReq := &loomv1.ApprovePlanRequest{
+				PlanId:   pendingPlan.PlanId,
+				Approved: approved,
+			}
+			if _, err := c.GetLoomClient().ApprovePlan(ctx, approveReq); err != nil {
+				return fmt.Errorf("failed to approve plan: %w", err)
+			}
+
+			if approved {
+				fmt.Fprintf(os.Stderr, "[Plan approved, executing...]\n\n")
+				// Plan execution will happen automatically on the backend
+				// We need to wait for the execution results via another stream
+				// For now, just return - the backend will execute asynchronously
+			} else {
+				fmt.Fprintf(os.Stderr, "[Plan rejected]\n")
+				return nil
+			}
+		}
 	}
 
 	// Print the final message/response.

@@ -133,6 +133,11 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// GetLoomClient returns the underlying LoomServiceClient for direct gRPC calls.
+func (c *Client) GetLoomClient() loomv1.LoomServiceClient {
+	return c.client
+}
+
 // Weave sends a query and returns the response.
 func (c *Client) Weave(ctx context.Context, query string, sessionID string, agentID string) (*loomv1.WeaveResponse, error) {
 	req := &loomv1.WeaveRequest{
