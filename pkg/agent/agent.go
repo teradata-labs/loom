@@ -1642,7 +1642,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		// Record LLM response on conversation_loop span
-		span.AddEvent("turn.llm_response", map[string]interface{}{
+		llmEvent := map[string]interface{}{
 			"turn":          turnCount,
 			"stop_reason":   llmResp.StopReason,
 			"tool_calls":    len(llmResp.ToolCalls),
@@ -1651,7 +1651,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			"total_tokens":  llmResp.Usage.TotalTokens,
 			"cost_usd":      llmResp.Usage.CostUSD,
 			"has_content":   llmResp.Content != "",
-		})
+		}
+		if llmResp.Thinking != "" {
+			llmEvent["has_thinking"] = true
+			llmEvent["thinking_length"] = len(llmResp.Thinking)
+			llmEvent["thinking"] = truncateString(llmResp.Thinking, 2000)
+		}
+		if llmResp.Content != "" {
+			llmEvent["response_preview"] = truncateString(llmResp.Content, 500)
+		}
+		// Include tool call names for quick scan
+		if len(llmResp.ToolCalls) > 0 {
+			toolNames := make([]string, 0, len(llmResp.ToolCalls))
+			for _, tc := range llmResp.ToolCalls {
+				toolNames = append(toolNames, tc.Name)
+			}
+			llmEvent["tool_names"] = strings.Join(toolNames, ", ")
+		}
+		span.AddEvent("turn.llm_response", llmEvent)
 
 		// === OUTPUT TOKEN CIRCUIT BREAKER ===
 		// Protects against the agent getting stuck in an infinite tool-call loop where
