@@ -158,6 +158,14 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	// Capture content length (for analysis)
 	span.SetAttribute("llm.content.length", len(resp.Content))
 
+	// Capture thinking content if present (extended thinking models like Claude)
+	if resp.Thinking != "" {
+		span.SetAttribute("llm.thinking.length", len(resp.Thinking))
+		span.AddEvent("llm.thinking", map[string]interface{}{
+			"content": resp.Thinking,
+		})
+	}
+
 	// Record success event
 	span.AddEvent("llm.call.completed", map[string]interface{}{
 		"duration_ms":           duration.Milliseconds(),
@@ -372,6 +380,14 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 
 	// Capture content length (for analysis)
 	span.SetAttribute("llm.content.length", len(resp.Content))
+
+	// Capture thinking content if present (extended thinking models like Claude)
+	if resp.Thinking != "" {
+		span.SetAttribute("llm.thinking.length", len(resp.Thinking))
+		span.AddEvent("llm.thinking", map[string]interface{}{
+			"content": resp.Thinking,
+		})
+	}
 
 	// Record success event
 	span.AddEvent("stream.completed", map[string]interface{}{

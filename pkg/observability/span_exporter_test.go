@@ -98,7 +98,7 @@ func TestEmbeddedTracer_WithSpanExporter(t *testing.T) {
 	defer func() { _ = tracer.Close() }()
 
 	ctx := context.Background()
-	ctx, span := tracer.StartSpan(ctx, "test.operation",
+	_, span := tracer.StartSpan(ctx, "test.operation",
 		WithAttribute("key", "value"),
 	)
 	tracer.EndSpan(span)
@@ -351,7 +351,7 @@ func TestEmbeddedTracer_ConcurrentWithExporter(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
-			ctx, span := tracer.StartSpan(ctx, "concurrent.op")
+			_, span := tracer.StartSpan(ctx, "concurrent.op")
 			tracer.EndSpan(span)
 		}()
 	}

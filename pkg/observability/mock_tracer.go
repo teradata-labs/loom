@@ -156,10 +156,10 @@ var _ Tracer = (*MockTracer)(nil)
 // MockSpanExporter is a test implementation of SpanExporter that captures exported spans.
 // Thread-safe: All methods can be called concurrently.
 type MockSpanExporter struct {
-	mu           sync.RWMutex
-	spans        []*Span
+	mu             sync.RWMutex
+	spans          []*Span
 	shutdownCalled bool
-	exportErr    error // Set to simulate export errors
+	exportErr      error // Set to simulate export errors
 }
 
 // NewMockSpanExporter creates a new mock span exporter for testing.
