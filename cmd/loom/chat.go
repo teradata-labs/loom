@@ -246,9 +246,31 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 
 			if approved {
 				fmt.Fprintf(os.Stderr, "[Plan approved, executing...]\n\n")
-				// Plan execution will happen automatically on the backend
-				// We need to wait for the execution results via another stream
-				// For now, just return - the backend will execute asynchronously
+
+				// Execute the plan and wait for results
+				execReq := &loomv1.ExecutePlanRequest{
+					PlanId: pendingPlan.PlanId,
+				}
+				execResp, err := c.GetLoomClient().ExecutePlan(ctx, execReq)
+				if err != nil {
+					return fmt.Errorf("failed to execute plan: %w", err)
+				}
+
+				// Print execution result
+				// Print execution result
+				if execResp.Summary != "" {
+					fmt.Println(execResp.Summary)
+				}
+
+				// Print session/token info
+				if sessionID != "" {
+					fmt.Fprintf(os.Stderr, "\n[Session: %s]\n", sessionID)
+				}
+				if totalTokens > 0 {
+					fmt.Fprintf(os.Stderr, "[Cost: $0.000000 | Tokens: %d]\n", totalTokens)
+				}
+
+				return nil
 			} else {
 				fmt.Fprintf(os.Stderr, "[Plan rejected]\n")
 				return nil
