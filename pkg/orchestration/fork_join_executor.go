@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -23,13 +22,15 @@ import (
 type ForkJoinExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ForkJoinPattern
+	workflowID   string
 }
 
 // NewForkJoinExecutor creates a new fork-join executor.
-func NewForkJoinExecutor(orchestrator *Orchestrator, pattern *loomv1.ForkJoinPattern) *ForkJoinExecutor {
+func NewForkJoinExecutor(orchestrator *Orchestrator, pattern *loomv1.ForkJoinPattern, workflowID string) *ForkJoinExecutor {
 	return &ForkJoinExecutor{
 		orchestrator: orchestrator,
 		pattern:      pattern,
+		workflowID:   workflowID,
 	}
 }
 
@@ -37,8 +38,8 @@ func NewForkJoinExecutor(orchestrator *Orchestrator, pattern *loomv1.ForkJoinPat
 func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	startTime := time.Now()
 
-	// Generate unique workflow ID for session tracking
-	workflowID := fmt.Sprintf("fork-join-%s", uuid.New().String()[:8])
+	// Use the workflow ID provided at construction (stable or random)
+	workflowID := e.workflowID
 
 	// Start workflow-level span
 	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.fork_join")

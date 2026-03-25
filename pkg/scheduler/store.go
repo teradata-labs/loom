@@ -105,8 +105,54 @@ func (s *Store) initSchema(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_started_at ON schedule_executions(started_at);
 	`
 
-	_, err := s.db.ExecContext(ctx, schema)
-	return err
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+
+	// Run migrations
+	return s.migrate(ctx)
+}
+
+// migrate applies incremental schema migrations using PRAGMA user_version.
+func (s *Store) migrate(ctx context.Context) error {
+	// Get current schema version
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("failed to get schema version: %w", err)
+	}
+
+	// Migration v1: Add session continuity columns
+	if version < 1 {
+		s.logger.Info("Applying migration v1: session continuity columns")
+
+		migrations := []string{
+			"ALTER TABLE scheduled_workflows ADD COLUMN last_workflow_id TEXT",
+			"ALTER TABLE schedule_executions ADD COLUMN workflow_id TEXT",
+		}
+
+		for _, m := range migrations {
+			if _, err := s.db.ExecContext(ctx, m); err != nil {
+				// Column may already exist if schema was created fresh with these columns
+				// SQLite returns "duplicate column name" in that case — safe to ignore
+				if !isDuplicateColumnError(err) {
+					return fmt.Errorf("migration v1 failed: %w", err)
+				}
+			}
+		}
+
+		if _, err := s.db.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+			return fmt.Errorf("failed to update schema version: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// isDuplicateColumnError checks if an error is a SQLite "duplicate column name" error.
+func isDuplicateColumnError(err error) bool {
+	return err != nil && fmt.Sprintf("%v", err) != "" &&
+		(fmt.Sprintf("%v", err) == "duplicate column name: last_workflow_id" ||
+			fmt.Sprintf("%v", err) == "duplicate column name: workflow_id")
 }
 
 // Create persists a new scheduled workflow.
@@ -176,7 +222,7 @@ func (s *Store) Get(ctx context.Context, id string) (*loomv1.ScheduledWorkflow, 
 		SELECT id, workflow_name, yaml_path, pattern_json, schedule_json,
 		       last_execution_at, next_execution_at, current_execution_id,
 		       total_executions, successful_executions, failed_executions, skipped_executions,
-		       last_status, last_error, created_at, updated_at
+		       last_status, last_error, created_at, updated_at, last_workflow_id
 		FROM scheduled_workflows
 		WHERE id = ?
 	`
@@ -191,6 +237,7 @@ func (s *Store) Get(ctx context.Context, id string) (*loomv1.ScheduledWorkflow, 
 		lastError          sql.NullString
 		currentExecutionID sql.NullString
 		yamlPath           sql.NullString
+		lastWorkflowID     sql.NullString
 		totalExecs         int32
 		successfulExecs    int32
 		failedExecs        int32
@@ -214,6 +261,7 @@ func (s *Store) Get(ctx context.Context, id string) (*loomv1.ScheduledWorkflow, 
 		&lastError,
 		&schedule.CreatedAt,
 		&schedule.UpdatedAt,
+		&lastWorkflowID,
 	)
 
 	if err == sql.ErrNoRows {
@@ -229,6 +277,9 @@ func (s *Store) Get(ctx context.Context, id string) (*loomv1.ScheduledWorkflow, 
 	}
 	if currentExecutionID.Valid {
 		schedule.CurrentExecutionId = currentExecutionID.String
+	}
+	if lastWorkflowID.Valid {
+		schedule.LastWorkflowId = lastWorkflowID.String
 	}
 
 	// Unmarshal pattern
@@ -355,7 +406,7 @@ func (s *Store) List(ctx context.Context) ([]*loomv1.ScheduledWorkflow, error) {
 		SELECT id, workflow_name, yaml_path, pattern_json, schedule_json,
 		       last_execution_at, next_execution_at, current_execution_id,
 		       total_executions, successful_executions, failed_executions, skipped_executions,
-		       last_status, last_error, created_at, updated_at
+		       last_status, last_error, created_at, updated_at, last_workflow_id
 		FROM scheduled_workflows
 		ORDER BY next_execution_at ASC
 	`
@@ -377,6 +428,7 @@ func (s *Store) List(ctx context.Context) ([]*loomv1.ScheduledWorkflow, error) {
 			lastError          sql.NullString
 			currentExecutionID sql.NullString
 			yamlPath           sql.NullString
+			lastWorkflowID     sql.NullString
 			totalExecs         int32
 			successfulExecs    int32
 			failedExecs        int32
@@ -400,6 +452,7 @@ func (s *Store) List(ctx context.Context) ([]*loomv1.ScheduledWorkflow, error) {
 			&lastError,
 			&schedule.CreatedAt,
 			&schedule.UpdatedAt,
+			&lastWorkflowID,
 		)
 
 		if err != nil {
@@ -412,6 +465,9 @@ func (s *Store) List(ctx context.Context) ([]*loomv1.ScheduledWorkflow, error) {
 		}
 		if currentExecutionID.Valid {
 			schedule.CurrentExecutionId = currentExecutionID.String
+		}
+		if lastWorkflowID.Valid {
+			schedule.LastWorkflowId = lastWorkflowID.String
 		}
 
 		// Unmarshal pattern
@@ -459,6 +515,20 @@ func (s *Store) UpdateCurrentExecution(ctx context.Context, scheduleID, executio
 	_, err := s.db.ExecContext(ctx, query, executionID, time.Now().Unix(), scheduleID)
 	if err != nil {
 		return fmt.Errorf("failed to update current execution: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateLastWorkflowID updates the last workflow ID used for a schedule.
+func (s *Store) UpdateLastWorkflowID(ctx context.Context, scheduleID, workflowID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `UPDATE scheduled_workflows SET last_workflow_id = ?, updated_at = ? WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, query, workflowID, time.Now().Unix(), scheduleID)
+	if err != nil {
+		return fmt.Errorf("failed to update last workflow ID: %w", err)
 	}
 
 	return nil
@@ -555,8 +625,8 @@ func (s *Store) RecordExecution(ctx context.Context, exec *loomv1.ScheduleExecut
 	defer s.mu.Unlock()
 
 	query := `
-		INSERT INTO schedule_executions (schedule_id, execution_id, started_at, completed_at, status, error, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO schedule_executions (schedule_id, execution_id, started_at, completed_at, status, error, duration_ms, workflow_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -567,6 +637,7 @@ func (s *Store) RecordExecution(ctx context.Context, exec *loomv1.ScheduleExecut
 		exec.Status,
 		exec.Error,
 		exec.DurationMs,
+		exec.WorkflowId,
 	)
 
 	if err != nil {
@@ -582,7 +653,7 @@ func (s *Store) GetExecutionHistory(ctx context.Context, scheduleID string, limi
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT execution_id, started_at, completed_at, status, error, duration_ms
+		SELECT execution_id, started_at, completed_at, status, error, duration_ms, workflow_id
 		FROM schedule_executions
 		WHERE schedule_id = ?
 		ORDER BY started_at DESC
@@ -600,8 +671,9 @@ func (s *Store) GetExecutionHistory(ctx context.Context, scheduleID string, limi
 
 	for rows.Next() {
 		var (
-			exec     loomv1.ScheduleExecution
-			errorMsg sql.NullString
+			exec       loomv1.ScheduleExecution
+			errorMsg   sql.NullString
+			workflowID sql.NullString
 		)
 
 		err := rows.Scan(
@@ -611,6 +683,7 @@ func (s *Store) GetExecutionHistory(ctx context.Context, scheduleID string, limi
 			&exec.Status,
 			&errorMsg,
 			&exec.DurationMs,
+			&workflowID,
 		)
 
 		if err != nil {
@@ -619,6 +692,9 @@ func (s *Store) GetExecutionHistory(ctx context.Context, scheduleID string, limi
 
 		if errorMsg.Valid {
 			exec.Error = errorMsg.String
+		}
+		if workflowID.Valid {
+			exec.WorkflowId = workflowID.String
 		}
 
 		executions = append(executions, &exec)
@@ -653,7 +729,7 @@ func (s *Store) GetDueSchedules(ctx context.Context, currentTime int64) ([]*loom
 		SELECT id, workflow_name, yaml_path, pattern_json, schedule_json,
 		       last_execution_at, next_execution_at, current_execution_id,
 		       total_executions, successful_executions, failed_executions, skipped_executions,
-		       last_status, last_error, created_at, updated_at
+		       last_status, last_error, created_at, updated_at, last_workflow_id
 		FROM scheduled_workflows
 		WHERE next_execution_at > 0 AND next_execution_at <= ?
 		ORDER BY next_execution_at ASC
@@ -676,6 +752,7 @@ func (s *Store) GetDueSchedules(ctx context.Context, currentTime int64) ([]*loom
 			lastError          sql.NullString
 			currentExecutionID sql.NullString
 			yamlPath           sql.NullString
+			lastWorkflowID     sql.NullString
 			totalExecs         int32
 			successfulExecs    int32
 			failedExecs        int32
@@ -699,6 +776,7 @@ func (s *Store) GetDueSchedules(ctx context.Context, currentTime int64) ([]*loom
 			&lastError,
 			&schedule.CreatedAt,
 			&schedule.UpdatedAt,
+			&lastWorkflowID,
 		)
 
 		if err != nil {
@@ -711,6 +789,9 @@ func (s *Store) GetDueSchedules(ctx context.Context, currentTime int64) ([]*loom
 		}
 		if currentExecutionID.Valid {
 			schedule.CurrentExecutionId = currentExecutionID.String
+		}
+		if lastWorkflowID.Valid {
+			schedule.LastWorkflowId = lastWorkflowID.String
 		}
 
 		// Unmarshal pattern

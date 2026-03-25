@@ -210,7 +210,7 @@ func TestSwarmPattern(t *testing.T) {
 			}
 
 			// Execute
-			executor := NewSwarmExecutor(orchestrator, pattern)
+			executor := NewSwarmExecutor(orchestrator, pattern, "test-workflow-123")
 			result, err := executor.Execute(context.Background())
 
 			// Verify
@@ -376,7 +376,7 @@ func TestSwarmCostTracking(t *testing.T) {
 	}
 
 	// Execute
-	executor := NewSwarmExecutor(orchestrator, pattern)
+	executor := NewSwarmExecutor(orchestrator, pattern, "test-workflow-123")
 	result, err := executor.Execute(context.Background())
 
 	// Verify
@@ -435,7 +435,7 @@ func TestSwarmErrorHandling(t *testing.T) {
 				tt.setupFunc(orchestrator)
 			}
 
-			executor := NewSwarmExecutor(orchestrator, tt.pattern)
+			executor := NewSwarmExecutor(orchestrator, tt.pattern, "test-workflow-123")
 			result, err := executor.Execute(context.Background())
 
 			if tt.wantErr {
@@ -484,7 +484,7 @@ func TestSwarmConcurrentVoting(t *testing.T) {
 	}
 
 	// Execute - should complete quickly if parallel
-	executor := NewSwarmExecutor(orchestrator, pattern)
+	executor := NewSwarmExecutor(orchestrator, pattern, "test-workflow-123")
 	result, err := executor.Execute(context.Background())
 
 	// Verify
@@ -526,7 +526,7 @@ func TestSwarmCollaborativeVoting(t *testing.T) {
 	}
 
 	// Execute
-	executor := NewSwarmExecutor(orchestrator, pattern)
+	executor := NewSwarmExecutor(orchestrator, pattern, "test-workflow-123")
 	result, err := executor.Execute(context.Background())
 
 	// Verify
@@ -578,7 +578,7 @@ func TestSwarmJudgeTieBreaker(t *testing.T) {
 	}
 
 	// Execute
-	executor := NewSwarmExecutor(orchestrator, pattern)
+	executor := NewSwarmExecutor(orchestrator, pattern, "test-workflow-123")
 	result, err := executor.Execute(context.Background())
 
 	// Verify
@@ -618,7 +618,7 @@ func TestSwarmMetadata(t *testing.T) {
 	}
 
 	// Execute
-	executor := NewSwarmExecutor(orchestrator, pattern)
+	executor := NewSwarmExecutor(orchestrator, pattern, "test-workflow-123")
 	result, err := executor.Execute(context.Background())
 
 	// Verify metadata

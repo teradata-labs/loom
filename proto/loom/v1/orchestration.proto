@@ -26,6 +26,13 @@ message WorkflowPattern {
     TeacherStudentPattern teacher_student = 8;
     IterativeWorkflowPattern iterative = 9;
   }
+
+  // Stable workflow ID for session determinism across scheduled executions.
+  // If set, executors use this as the workflowID prefix instead of generating a random UUID.
+  // This makes agent session IDs deterministic (e.g., "{workflow_id}-stage1-{agent_id}"),
+  // enabling conversation continuity across cron ticks.
+  // If empty, executors generate a random UUID (default behavior).
+  string workflow_id = 10;
 }
 
 // DebatePattern orchestrates multiple agents to debate a topic and reach consensus.
@@ -427,6 +434,22 @@ message ScheduleConfig {
 
   // Variables to pass to workflow execution
   map<string, string> variables = 6;
+
+  // Session mode for workflow agents (NEW = fresh each tick, RESUME = continue previous)
+  ScheduledSessionMode session_mode = 7;
+}
+
+// ScheduledSessionMode controls session lifecycle for scheduled workflow executions.
+enum ScheduledSessionMode {
+  // Default: each execution starts fresh (random workflow_id).
+  SCHEDULED_SESSION_MODE_UNSPECIFIED = 0;
+
+  // Each cron tick creates fresh sessions for all agents.
+  SCHEDULED_SESSION_MODE_NEW = 1;
+
+  // Each cron tick resumes agent sessions from the previous execution.
+  // The scheduler sets workflow_id to a stable value derived from the schedule ID.
+  SCHEDULED_SESSION_MODE_RESUME = 2;
 }
 
 // ScheduledWorkflow represents a workflow with automatic execution schedule.
@@ -464,6 +487,9 @@ message ScheduledWorkflow {
 
   // Last updated timestamp (Unix seconds)
   int64 updated_at = 11;
+
+  // Workflow ID used in the last execution (for RESUME mode tracking)
+  string last_workflow_id = 12;
 }
 
 // ScheduleStats tracks execution statistics for a scheduled workflow.

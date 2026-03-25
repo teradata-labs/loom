@@ -147,7 +147,7 @@ func TestIterativePipeline_WithRestartCoordination(t *testing.T) {
 	errChan := make(chan error)
 
 	go func() {
-		executor := NewIterativePipelineExecutor(orchestrator, pattern.GetIterative(), messageBus)
+		executor := NewIterativePipelineExecutor(orchestrator, pattern.GetIterative(), messageBus, "test-workflow-123")
 		result, err := executor.Execute(ctx)
 		if err != nil {
 			errChan <- err
@@ -323,7 +323,7 @@ func TestIterativePipeline_RestartValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			executor := NewIterativePipelineExecutor(orchestrator, tt.pattern, nil)
+			executor := NewIterativePipelineExecutor(orchestrator, tt.pattern, nil, "test-workflow-123")
 			err := executor.validateRestartRequest(tt.request, tt.currentStage)
 
 			if tt.expectValid {
@@ -442,7 +442,7 @@ func TestIterativePipeline_Cooldown(t *testing.T) {
 		},
 	}
 
-	executor := NewIterativePipelineExecutor(orchestrator, pattern, messageBus)
+	executor := NewIterativePipelineExecutor(orchestrator, pattern, messageBus, "test-workflow-123")
 
 	// Verify that restart validation works for valid backward restarts
 	req := &loomv1.RestartRequest{

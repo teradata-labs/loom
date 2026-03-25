@@ -1,0 +1,20 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: morning-briefing
+  description: Fresh daily briefing from specialized agents
+schedule:
+  cron: "0 8 * * *"
+  timezone: "America/New_York"
+  enabled: true
+  session_mode: new       # Fresh session each morning
+spec:
+  type: pipeline
+  initial_prompt: "Prepare the morning briefing"
+  stages:
+    - agent_id: inbox-scanner
+      prompt_template: "Check for new emails and summarize important ones"
+    - agent_id: priority-analyzer
+      prompt_template: "Categorize by urgency and recommend actions based on: {{previous}}"
+    - agent_id: briefing-composer
+      prompt_template: "Write a concise morning briefing from the analysis: {{previous}}"
