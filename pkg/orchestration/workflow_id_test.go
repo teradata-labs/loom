@@ -165,7 +165,7 @@ func (m *sessionCapturingLLMProvider) Chat(ctx context.Context, messages []llmty
 }
 
 func (m *sessionCapturingLLMProvider) Name() string  { return "mock-capture" }
-func (m *sessionCapturingLLMProvider) Model() string  { return "mock-model" }
+func (m *sessionCapturingLLMProvider) Model() string { return "mock-model" }
 
 func (m *sessionCapturingLLMProvider) capturedSessionIDs() []string {
 	m.mu.Lock()
