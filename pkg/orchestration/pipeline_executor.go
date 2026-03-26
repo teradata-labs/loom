@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -22,13 +21,15 @@ import (
 type PipelineExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.PipelinePattern
+	workflowID   string
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
-func NewPipelineExecutor(orchestrator *Orchestrator, pattern *loomv1.PipelinePattern) *PipelineExecutor {
+func NewPipelineExecutor(orchestrator *Orchestrator, pattern *loomv1.PipelinePattern, workflowID string) *PipelineExecutor {
 	return &PipelineExecutor{
 		orchestrator: orchestrator,
 		pattern:      pattern,
+		workflowID:   workflowID,
 	}
 }
 
@@ -36,8 +37,8 @@ func NewPipelineExecutor(orchestrator *Orchestrator, pattern *loomv1.PipelinePat
 func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	startTime := time.Now()
 
-	// Generate unique workflow ID for session tracking
-	workflowID := fmt.Sprintf("pipeline-%s", uuid.New().String()[:8])
+	// Use the workflow ID provided at construction (stable or random)
+	workflowID := e.workflowID
 
 	// Start workflow-level span
 	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.pipeline")

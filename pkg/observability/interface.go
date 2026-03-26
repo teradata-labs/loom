@@ -69,6 +69,53 @@ func ContextWithSpan(ctx context.Context, span *Span) context.Context {
 	return context.WithValue(ctx, spanContextKey, span)
 }
 
+// SpanExporter exports completed spans to an external store (e.g., PostgreSQL).
+// Implementations must be goroutine-safe.
+//
+// The tracer calls ExportSpans synchronously on each EndSpan with a single-span
+// batch. Implementations that buffer spans internally should flush on
+// ForceFlush and drain remaining spans on Shutdown.
+type SpanExporter interface {
+	// ExportSpans sends a batch of completed spans to the external store.
+	// Called by the tracer on EndSpan (or on flush for batched exporters).
+	ExportSpans(ctx context.Context, spans []*Span) error
+
+	// ForceFlush requests the exporter to flush any buffered spans immediately.
+	// Returns when the flush completes or the context is cancelled.
+	ForceFlush(ctx context.Context) error
+
+	// Shutdown gracefully shuts down the exporter, flushing any buffered spans.
+	Shutdown(ctx context.Context) error
+}
+
+// TraceIDFromContext retrieves the current trace ID from context, if any.
+// Returns empty string if no span (and thus no trace) exists in context.
+func TraceIDFromContext(ctx context.Context) string {
+	if span := SpanFromContext(ctx); span != nil {
+		return span.TraceID
+	}
+	return ""
+}
+
 type contextKey string
 
-const spanContextKey contextKey = "loom.span"
+const (
+	spanContextKey    contextKey = "loom.span"
+	traceIDContextKey contextKey = "loom.trace_id"
+)
+
+// ContextWithTraceID returns a new context with an explicit trace ID.
+// When StartSpan creates a root span (no parent span in context), it will
+// use this trace ID instead of generating a new one. If a parent span exists
+// in the context, the parent's trace ID takes priority and this value is ignored.
+func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDContextKey, traceID)
+}
+
+// traceIDFromContextOverride retrieves an explicitly-set trace ID from context.
+func traceIDFromContextOverride(ctx context.Context) string {
+	if id, ok := ctx.Value(traceIDContextKey).(string); ok {
+		return id
+	}
+	return ""
+}

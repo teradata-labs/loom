@@ -142,6 +142,7 @@ func (l *Loader) loadWorkflowFile(ctx context.Context, path string) error {
 			SkipIfRunning:       config.Schedule.SkipIfRunning,
 			MaxExecutionSeconds: config.Schedule.MaxExecutionSeconds,
 			Variables:           config.Schedule.Variables,
+			SessionMode:         parseSessionMode(config.Schedule.SessionMode),
 		},
 	}
 
@@ -202,6 +203,18 @@ func (l *Loader) fileHash(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// parseSessionMode converts a YAML session_mode string to the proto enum.
+func parseSessionMode(mode string) loomv1.ScheduledSessionMode {
+	switch strings.ToLower(mode) {
+	case "new":
+		return loomv1.ScheduledSessionMode_SCHEDULED_SESSION_MODE_NEW
+	case "resume":
+		return loomv1.ScheduledSessionMode_SCHEDULED_SESSION_MODE_RESUME
+	default:
+		return loomv1.ScheduledSessionMode_SCHEDULED_SESSION_MODE_UNSPECIFIED
+	}
 }
 
 // generateScheduleIDFromPath generates a stable schedule ID from a file path.

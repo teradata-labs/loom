@@ -20,13 +20,15 @@ import (
 type ConditionalExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ConditionalPattern
+	workflowID   string
 }
 
 // NewConditionalExecutor creates a new conditional executor.
-func NewConditionalExecutor(orchestrator *Orchestrator, pattern *loomv1.ConditionalPattern) *ConditionalExecutor {
+func NewConditionalExecutor(orchestrator *Orchestrator, pattern *loomv1.ConditionalPattern, workflowID string) *ConditionalExecutor {
 	return &ConditionalExecutor{
 		orchestrator: orchestrator,
 		pattern:      pattern,
+		workflowID:   workflowID,
 	}
 }
 
@@ -140,8 +142,8 @@ func (e *ConditionalExecutor) evaluateConditionWithSpan(ctx context.Context, con
 		agentSpan.SetAttribute("agent.role", "condition_evaluator")
 	}
 
-	// Execute condition agent
-	sessionID := fmt.Sprintf("conditional_%s_%d", e.pattern.ConditionAgentId, time.Now().UnixNano())
+	// Execute condition agent with deterministic session ID
+	sessionID := fmt.Sprintf("%s-condition-%s", e.workflowID, e.pattern.ConditionAgentId)
 	response, err := conditionAgent.Chat(ctx, sessionID, e.pattern.ConditionPrompt)
 	if err != nil {
 		return "", "", fmt.Errorf("condition agent chat failed: %w", err)

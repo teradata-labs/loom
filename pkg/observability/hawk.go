@@ -125,8 +125,14 @@ func NewHawkTracer(config HawkConfig) (*HawkTracer, error) {
 
 // StartSpan creates and starts a new span.
 func (t *HawkTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
+	// Determine trace ID: parent > context override > new UUID
+	traceID := uuid.New().String()
+	if override := traceIDFromContextOverride(ctx); override != "" {
+		traceID = override
+	}
+
 	span := &Span{
-		TraceID:    uuid.New().String(),
+		TraceID:    traceID,
 		SpanID:     uuid.New().String(),
 		Name:       name,
 		StartTime:  time.Now(),
@@ -138,10 +144,17 @@ func (t *HawkTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		opt(span)
 	}
 
-	// Link to parent if exists
+	// Link to parent if exists (parent trace ID takes priority)
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		// Inherit resource attributes from parent when child has none set
+		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
+			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
+			for k, v := range parent.ResourceAttributes {
+				span.ResourceAttributes[k] = v
+			}
+		}
 	}
 
 	return ContextWithSpan(ctx, span), span
@@ -149,6 +162,9 @@ func (t *HawkTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 
 // EndSpan completes a span and buffers it for export.
 func (t *HawkTracer) EndSpan(span *Span) {
+	if span == nil {
+		return
+	}
 	span.EndTime = time.Now()
 	span.Duration = span.EndTime.Sub(span.StartTime)
 

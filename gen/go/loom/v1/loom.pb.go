@@ -6794,7 +6794,9 @@ type ScheduleExecution struct {
 	// Error message (if failed)
 	Error string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
 	// Duration in milliseconds
-	DurationMs    int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// Workflow ID used for this execution
+	WorkflowId    string `protobuf:"bytes,7,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6869,6 +6871,13 @@ func (x *ScheduleExecution) GetDurationMs() int64 {
 		return x.DurationMs
 	}
 	return 0
+}
+
+func (x *ScheduleExecution) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
 }
 
 // GetServerConfigRequest retrieves server configuration.
@@ -11170,7 +11179,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x1aGetScheduleHistoryResponse\x12:\n" +
 	"\n" +
 	"executions\x18\x01 \x03(\v2\x1a.loom.v1.ScheduleExecutionR\n" +
-	"executions\"\xc7\x01\n" +
+	"executions\"\xe8\x01\n" +
 	"\x11ScheduleExecution\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x1d\n" +
 	"\n" +
@@ -11179,7 +11188,9 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x12\x1f\n" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
-	"durationMs\"\x18\n" +
+	"durationMs\x12\x1f\n" +
+	"\vworkflow_id\x18\a \x01(\tR\n" +
+	"workflowId\"\x18\n" +
 	"\x16GetServerConfigRequest\"\x15\n" +
 	"\x13GetTLSStatusRequest\"/\n" +
 	"\x17RenewCertificateRequest\x12\x14\n" +
