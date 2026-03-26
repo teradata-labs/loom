@@ -7167,6 +7167,10 @@
             "type": "string"
           },
           "title": "Variables to pass to workflow execution"
+        },
+        "sessionMode": {
+          "$ref": "#/definitions/v1ScheduledSessionMode",
+          "title": "Session mode for workflow agents (NEW = fresh each tick, RESUME = continue previous)"
         }
       },
       "description": "ScheduleConfig defines when a workflow should execute automatically.\nUsed in workflow YAML files under 'schedule:' section and in RPC calls."
@@ -7200,6 +7204,10 @@
           "type": "string",
           "format": "int64",
           "title": "Duration in milliseconds"
+        },
+        "workflowId": {
+          "type": "string",
+          "title": "Workflow ID used for this execution"
         }
       },
       "description": "ScheduleExecution represents a single execution of a scheduled workflow."
@@ -7277,6 +7285,16 @@
       },
       "description": "ScheduleWorkflowResponse returns the created schedule."
     },
+    "v1ScheduledSessionMode": {
+      "type": "string",
+      "enum": [
+        "SCHEDULED_SESSION_MODE_UNSPECIFIED",
+        "SCHEDULED_SESSION_MODE_NEW",
+        "SCHEDULED_SESSION_MODE_RESUME"
+      ],
+      "default": "SCHEDULED_SESSION_MODE_UNSPECIFIED",
+      "description": "ScheduledSessionMode controls session lifecycle for scheduled workflow executions.\n\n - SCHEDULED_SESSION_MODE_UNSPECIFIED: Default: each execution starts fresh (random workflow_id).\n - SCHEDULED_SESSION_MODE_NEW: Each cron tick creates fresh sessions for all agents.\n - SCHEDULED_SESSION_MODE_RESUME: Each cron tick resumes agent sessions from the previous execution.\nThe scheduler sets workflow_id to a stable value derived from the schedule ID."
+    },
     "v1ScheduledWorkflow": {
       "type": "object",
       "properties": {
@@ -7327,6 +7345,10 @@
           "type": "string",
           "format": "int64",
           "title": "Last updated timestamp (Unix seconds)"
+        },
+        "lastWorkflowId": {
+          "type": "string",
+          "title": "Workflow ID used in the last execution (for RESUME mode tracking)"
         }
       },
       "description": "ScheduledWorkflow represents a workflow with automatic execution schedule.\nSchedules can be created via YAML files or RPC calls."
@@ -9487,6 +9509,10 @@
         },
         "iterative": {
           "$ref": "#/definitions/v1IterativeWorkflowPattern"
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Stable workflow ID for session determinism across scheduled executions.\nIf set, executors use this as the workflowID prefix instead of generating a random UUID.\nThis makes agent session IDs deterministic (e.g., \"{workflow_id}-stage1-{agent_id}\"),\nenabling conversation continuity across cron ticks.\nIf empty, executors generate a random UUID (default behavior)."
         }
       },
       "description": "WorkflowPattern defines orchestration patterns for multi-agent coordination.\nThis message uses a oneof to represent different workflow patterns,\nenabling type-safe pattern selection and composition."

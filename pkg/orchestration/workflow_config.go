@@ -42,6 +42,7 @@ type ScheduleYAML struct {
 	SkipIfRunning       bool              `yaml:"skip_if_running,omitempty"`
 	MaxExecutionSeconds int32             `yaml:"max_execution_seconds,omitempty"`
 	Variables           map[string]string `yaml:"variables,omitempty"`
+	SessionMode         string            `yaml:"session_mode,omitempty"` // "new" or "resume"
 }
 
 // WorkflowMetadata contains workflow identification information

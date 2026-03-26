@@ -821,32 +821,28 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Start trace span with detailed attributes
-	var span *observability.Span
+	// Start trace span — always created; NoOpTracer handles disabled case
 	startTime := time.Now()
+	ctx, span := a.tracer.StartSpan(ctx, "agent.chat")
+	defer a.tracer.EndSpan(span)
 
-	if a.config.EnableTracing {
-		ctx, span = a.tracer.StartSpan(ctx, observability.SpanAgentConversation)
-		defer a.tracer.EndSpan(span)
+	// Set initial attributes
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	span.SetAttribute("message.length", len(userMessage))
+	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	a.mu.RLock()
+	currentLLM := a.llm
+	a.mu.RUnlock()
+	span.SetAttribute("llm.provider", currentLLM.Name())
+	span.SetAttribute("llm.model", currentLLM.Model())
+	span.SetAttribute("config.max_turns", a.config.MaxTurns)
+	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 
-		// Set initial attributes
-		span.SetAttribute(observability.AttrSessionID, sessionID)
-		span.SetAttribute("message.length", len(userMessage))
-		span.SetAttribute("message.preview", truncateString(userMessage, 100))
-		a.mu.RLock()
-		currentLLM := a.llm
-		a.mu.RUnlock()
-		span.SetAttribute("llm.provider", currentLLM.Name())
-		span.SetAttribute("llm.model", currentLLM.Model())
-		span.SetAttribute("config.max_turns", a.config.MaxTurns)
-		span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
-
-		// Record conversation started event
-		span.AddEvent("conversation.started", map[string]interface{}{
-			"session_id":     sessionID,
-			"message_length": len(userMessage),
-		})
-	}
+	// Record conversation started event
+	span.AddEvent("conversation.started", map[string]interface{}{
+		"session_id":     sessionID,
+		"message_length": len(userMessage),
+	})
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
@@ -867,9 +863,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 			zap.String("session_id", sessionID),
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Create agent context
@@ -893,24 +887,19 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	duration := time.Since(startTime)
 
 	if err != nil {
-		if span != nil {
-			span.Status = observability.Status{
-				Code:    observability.StatusError,
-				Message: err.Error(),
-			}
-			span.SetAttribute(observability.AttrErrorMessage, err.Error())
-			span.AddEvent("conversation.failed", map[string]interface{}{
-				"error":       err.Error(),
-				"duration_ms": duration.Milliseconds(),
-			})
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
 		}
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		span.AddEvent("conversation.failed", map[string]interface{}{
+			"error":       err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		})
 
-		// Emit error metric
-		if a.config.EnableTracing {
-			a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
-				observability.AttrSessionID: sessionID,
-			})
-		}
+		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
+			observability.AttrSessionID: sessionID,
+		})
 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
@@ -932,88 +921,77 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 			zap.String("session_id", sessionID),
 			zap.String("role", assistantMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 	if err := a.memory.PersistSession(ctx, session); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Record success metrics and span attributes
-	if span != nil {
-		span.Status = observability.Status{
-			Code: observability.StatusOK,
-		}
-
-		// Capture conversation metrics
-		turns := response.Metadata["turns"].(int)
-		toolExecs := response.Metadata["tool_executions"].(int)
-
-		span.SetAttribute("conversation.turns", turns)
-		span.SetAttribute("conversation.tool_executions", toolExecs)
-		span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-		span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-		span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-		span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-		span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
-		span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
-		span.SetAttribute("response.length", len(response.Content))
-		span.SetAttribute("response.preview", truncateString(response.Content, 100))
-
-		// Check if we hit limits
-		if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
-			span.SetAttribute("conversation.max_turns_hit", true)
-		}
-		if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
-			span.SetAttribute("conversation.max_executions_hit", true)
-		}
-
-		// Record completion event
-		span.AddEvent("conversation.completed", map[string]interface{}{
-			"duration_ms":     duration.Milliseconds(),
-			"turns":           turns,
-			"tool_executions": toolExecs,
-			"cost_usd":        response.Usage.CostUSD,
-			"tokens":          response.Usage.TotalTokens,
-		})
+	span.Status = observability.Status{
+		Code: observability.StatusOK,
 	}
+
+	// Capture conversation metrics
+	turns := response.Metadata["turns"].(int)
+	toolExecs := response.Metadata["tool_executions"].(int)
+
+	span.SetAttribute("conversation.turns", turns)
+	span.SetAttribute("conversation.tool_executions", toolExecs)
+	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	span.SetAttribute("response.length", len(response.Content))
+	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+
+	// Check if we hit limits
+	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
+		span.SetAttribute("conversation.max_turns_hit", true)
+	}
+	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
+		span.SetAttribute("conversation.max_executions_hit", true)
+	}
+
+	// Record completion event
+	span.AddEvent("conversation.completed", map[string]interface{}{
+		"duration_ms":     duration.Milliseconds(),
+		"turns":           turns,
+		"tool_executions": toolExecs,
+		"cost_usd":        response.Usage.CostUSD,
+		"tokens":          response.Usage.TotalTokens,
+	})
 
 	// Emit metrics
-	if a.config.EnableTracing {
-		a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
-			observability.AttrSessionID: sessionID,
-			"status":                    "success",
-		})
+	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
+		observability.AttrSessionID: sessionID,
+		"status":                    "success",
+	})
 
-		a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		turns := response.Metadata["turns"].(int)
-		toolExecs := response.Metadata["tool_executions"].(int)
+	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
+	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
-		a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-
-		a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
-			observability.AttrSessionID: sessionID,
-		})
-	}
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
 	return response, nil
 }
@@ -1025,14 +1003,29 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// Start trace span if enabled
-	var span *observability.Span
-	if a.config.EnableTracing {
-		ctx, span = a.tracer.StartSpan(ctx, "agent.chat_with_progress")
-		defer a.tracer.EndSpan(span)
-		span.SetAttribute("session_id", sessionID)
-		span.SetAttribute("message_length", fmt.Sprintf("%d", len(userMessage)))
-	}
+	// Start trace span — always created; NoOpTracer handles disabled case
+	startTime := time.Now()
+	ctx, span := a.tracer.StartSpan(ctx, "agent.chat_with_progress")
+	defer a.tracer.EndSpan(span)
+
+	// Set initial attributes
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	span.SetAttribute("message.length", len(userMessage))
+	span.SetAttribute("message.preview", truncateString(userMessage, 100))
+	a.mu.RLock()
+	currentLLM := a.llm
+	a.mu.RUnlock()
+	span.SetAttribute("llm.provider", currentLLM.Name())
+	span.SetAttribute("llm.model", currentLLM.Model())
+	span.SetAttribute("config.max_turns", a.config.MaxTurns)
+	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+
+	// Record conversation started event
+	span.AddEvent("conversation.started", map[string]interface{}{
+		"session_id":     sessionID,
+		"message_length": len(userMessage),
+		"has_progress":   true,
+	})
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
@@ -1053,9 +1046,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 			zap.String("session_id", sessionID),
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Store progressCallback in context so nested operations (tools, backends) can access it
@@ -1081,7 +1072,24 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	a.checkAndRegisterSessionMemoryTool(ctx)
 	a.checkAndRegisterGraphMemoryTool()
 
+	// Calculate total duration
+	duration := time.Since(startTime)
+
 	if err != nil {
+		span.Status = observability.Status{
+			Code:    observability.StatusError,
+			Message: err.Error(),
+		}
+		span.SetAttribute(observability.AttrErrorMessage, err.Error())
+		span.AddEvent("conversation.failed", map[string]interface{}{
+			"error":       err.Error(),
+			"duration_ms": duration.Milliseconds(),
+		})
+
+		a.tracer.RecordMetric("agent.conversations.failed", 1, map[string]string{
+			observability.AttrSessionID: sessionID,
+		})
+
 		// Emit failure event
 		if progressCallback != nil {
 			progressCallback(ProgressEvent{
@@ -1111,18 +1119,77 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 			zap.String("session_id", sessionID),
 			zap.String("role", assistantMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 	if err := a.memory.PersistSession(ctx, session); err != nil {
 		zap.L().Warn("Failed to persist session",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
+
+	// Record success metrics and span attributes
+	span.Status = observability.Status{
+		Code: observability.StatusOK,
+	}
+
+	// Capture conversation metrics
+	turns := response.Metadata["turns"].(int)
+	toolExecs := response.Metadata["tool_executions"].(int)
+
+	span.SetAttribute("conversation.turns", turns)
+	span.SetAttribute("conversation.tool_executions", toolExecs)
+	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
+	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	span.SetAttribute("response.length", len(response.Content))
+	span.SetAttribute("response.preview", truncateString(response.Content, 100))
+
+	// Check if we hit limits
+	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
+		span.SetAttribute("conversation.max_turns_hit", true)
+	}
+	if maxExecHit, ok := response.Metadata["max_exec_hit"].(bool); ok && maxExecHit {
+		span.SetAttribute("conversation.max_executions_hit", true)
+	}
+
+	// Record completion event
+	span.AddEvent("conversation.completed", map[string]interface{}{
+		"duration_ms":     duration.Milliseconds(),
+		"turns":           turns,
+		"tool_executions": toolExecs,
+		"cost_usd":        response.Usage.CostUSD,
+		"tokens":          response.Usage.TotalTokens,
+	})
+
+	// Emit metrics
+	a.tracer.RecordMetric(observability.MetricAgentConversations, 1, map[string]string{
+		observability.AttrSessionID: sessionID,
+		"status":                    "success",
+	})
+
+	a.tracer.RecordMetric(observability.MetricAgentConversationDuration, float64(duration.Milliseconds()), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.turns.total", float64(turns), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.tool_executions.total", float64(toolExecs), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
+
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+		observability.AttrSessionID: sessionID,
+	})
 
 	// Note: We don't emit StageCompleted here - the caller (StreamWeave) will
 	// emit it with the full result included in the progress event
@@ -1282,12 +1349,9 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
 func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
-	// Start trace span
-	var span *observability.Span
-	if a.config.EnableTracing {
-		_, span = ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
-		defer ctx.Tracer().EndSpan(span)
-	}
+	// Start trace span — always created; NoOpTracer handles disabled case
+	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
+	defer ctx.Tracer().EndSpan(span)
 
 	session := ctx.Session()
 	turnCount := 0
@@ -1419,12 +1483,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		if lastUserMessage != "" {
-			// Start pattern selection span
-			var patternSpan *observability.Span
-			if a.config.EnableTracing && a.tracer != nil {
-				_, patternSpan = a.tracer.StartSpan(ctx, "agent.pattern_selection")
-				defer a.tracer.EndSpan(patternSpan)
-			}
+			// Start pattern selection span — always created
+			_, patternSpan := a.tracer.StartSpan(ctx, "agent.pattern_selection")
+			defer a.tracer.EndSpan(patternSpan)
 
 			// Build context data
 			backendType := "meta-agent" // Default for agents without backends
@@ -1439,10 +1500,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Step 1: Classify intent
 			intent, intentConf := a.orchestrator.ClassifyIntent(lastUserMessage, contextData)
 
-			if patternSpan != nil {
-				patternSpan.SetAttribute("intent.category", string(intent))
-				patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
-			}
+			patternSpan.SetAttribute("intent.category", string(intent))
+			patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
 
 			// Step 2: Recommend pattern based on keyword matching and intent
 			// Always attempt pattern recommendation regardless of intent classification.
@@ -1454,10 +1513,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				patternName, patternConf := a.orchestrator.RecommendPattern(lastUserMessage, intent)
 				patternConfidence = patternConf
 
-				if patternSpan != nil {
-					patternSpan.SetAttribute("pattern.name", patternName)
-					patternSpan.SetAttribute("pattern.confidence", fmt.Sprintf("%.2f", patternConf))
-				}
+				patternSpan.SetAttribute("pattern.name", patternName)
+				patternSpan.SetAttribute("pattern.confidence", fmt.Sprintf("%.2f", patternConf))
 
 				// Step 3: Load pattern if confidence threshold met
 				if patternName != "" && patternConf >= patternConfig.MinConfidence {
@@ -1472,22 +1529,18 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 							segMem.InjectPattern(formattedPattern, pattern.Name)
 
-							if patternSpan != nil {
-								tokenCount := a.tokenCounter.CountTokens(formattedPattern)
-								patternSpan.SetAttribute("pattern.tokens", tokenCount)
-								patternSpan.SetAttribute("pattern.injected", "true")
-							}
+							tokenCount := a.tokenCounter.CountTokens(formattedPattern)
+							patternSpan.SetAttribute("pattern.tokens", tokenCount)
+							patternSpan.SetAttribute("pattern.injected", "true")
 						}
 
 						// Record metrics
-						if a.config.EnableTracing && a.tracer != nil {
-							a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
-								"pattern":    patternName,
-								"intent":     string(intent),
-								"confidence": fmt.Sprintf("%.0f", patternConf*100),
-							})
-						}
-					} else if patternSpan != nil {
+						a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
+							"pattern":    patternName,
+							"intent":     string(intent),
+							"confidence": fmt.Sprintf("%.0f", patternConf*100),
+						})
+					} else {
 						patternSpan.RecordError(fmt.Errorf("pattern load failed: %w", err))
 					}
 				}
@@ -1508,23 +1561,29 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		turnCount++
 		turnStartTime := time.Now()
 
+		// Record turn start on conversation_loop span
+		span.AddEvent("turn.started", map[string]interface{}{
+			"turn":                turnCount,
+			"tool_executions":     toolExecutionCount,
+			"max_turns":           a.config.MaxTurns,
+			"max_tool_executions": a.config.MaxToolExecutions,
+		})
+
 		// === FEATURE INTEGRATION: Token Budget Management ===
 		// Check token budget and enforce compression if needed (segmented memory only)
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 			budgetInfo := checkTokenBudget(segMem)
 
-			// Log budget status if tracing enabled
-			if a.config.EnableTracing && span != nil {
-				span.SetAttribute("token_budget.current", budgetInfo.currentTokens)
-				span.SetAttribute("token_budget.available", budgetInfo.availableTokens)
-				span.SetAttribute("token_budget.usage_pct", budgetInfo.budgetPct)
-				span.SetAttribute("token_budget.max_output", budgetInfo.maxOutputTokens)
+			// Log budget status
+			span.SetAttribute("token_budget.current", budgetInfo.currentTokens)
+			span.SetAttribute("token_budget.available", budgetInfo.availableTokens)
+			span.SetAttribute("token_budget.usage_pct", budgetInfo.budgetPct)
+			span.SetAttribute("token_budget.max_output", budgetInfo.maxOutputTokens)
 
-				if budgetInfo.budgetPct > 70 {
-					span.AddEvent("token_budget.warning", map[string]interface{}{
-						"usage_pct": budgetInfo.budgetPct,
-					})
-				}
+			if budgetInfo.budgetPct > 70 {
+				span.AddEvent("token_budget.warning", map[string]interface{}{
+					"usage_pct": budgetInfo.budgetPct,
+				})
 			}
 
 			// Force compression at 85% threshold
@@ -1532,7 +1591,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if err != nil {
 				return nil, fmt.Errorf("token budget enforcement failed: %w", err)
 			}
-			if compressed && a.config.EnableTracing && span != nil {
+			if compressed {
 				span.AddEvent("memory.compressed", map[string]interface{}{
 					"trigger": "budget_critical",
 				})
@@ -1562,18 +1621,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					messages[0].Content += combinedReminder
 				}
 
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("soft_reminder.added", map[string]interface{}{
-						"tool_count":        toolExecutionCount,
-						"turn_count":        turnCount,
-						"max_tools":         a.config.MaxToolExecutions,
-						"max_turns":         a.config.MaxTurns,
-						"tool_threshold":    int(float64(a.config.MaxToolExecutions) * 0.75),
-						"turn_threshold":    int(float64(a.config.MaxTurns) * 0.75),
-						"has_tool_reminder": toolReminder != "",
-						"has_turn_reminder": turnReminder != "",
-					})
-				}
+				span.AddEvent("soft_reminder.added", map[string]interface{}{
+					"tool_count":        toolExecutionCount,
+					"turn_count":        turnCount,
+					"max_tools":         a.config.MaxToolExecutions,
+					"max_turns":         a.config.MaxTurns,
+					"tool_threshold":    int(float64(a.config.MaxToolExecutions) * 0.75),
+					"turn_threshold":    int(float64(a.config.MaxTurns) * 0.75),
+					"has_tool_reminder": toolReminder != "",
+					"has_turn_reminder": turnReminder != "",
+				})
 			}
 		}
 
@@ -1583,8 +1640,41 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// Call LLM
 		llmResp, err := a.chatWithRetry(ctx, messages, tools)
 		if err != nil {
+			span.AddEvent("turn.llm_failed", map[string]interface{}{
+				"turn":  turnCount,
+				"error": err.Error(),
+			})
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
+
+		// Record LLM response on conversation_loop span
+		llmEvent := map[string]interface{}{
+			"turn":          turnCount,
+			"stop_reason":   llmResp.StopReason,
+			"tool_calls":    len(llmResp.ToolCalls),
+			"input_tokens":  llmResp.Usage.InputTokens,
+			"output_tokens": llmResp.Usage.OutputTokens,
+			"total_tokens":  llmResp.Usage.TotalTokens,
+			"cost_usd":      llmResp.Usage.CostUSD,
+			"has_content":   llmResp.Content != "",
+		}
+		if llmResp.Thinking != "" {
+			llmEvent["has_thinking"] = true
+			llmEvent["thinking_length"] = len(llmResp.Thinking)
+			llmEvent["thinking"] = truncateString(llmResp.Thinking, 2000)
+		}
+		if llmResp.Content != "" {
+			llmEvent["response_preview"] = truncateString(llmResp.Content, 500)
+		}
+		// Include tool call names for quick scan
+		if len(llmResp.ToolCalls) > 0 {
+			toolNames := make([]string, 0, len(llmResp.ToolCalls))
+			for _, tc := range llmResp.ToolCalls {
+				toolNames = append(toolNames, tc.Name)
+			}
+			llmEvent["tool_names"] = strings.Join(toolNames, ", ")
+		}
+		span.AddEvent("turn.llm_response", llmEvent)
 
 		// === OUTPUT TOKEN CIRCUIT BREAKER ===
 		// Protects against the agent getting stuck in an infinite tool-call loop where
@@ -1612,25 +1702,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// The tool calls cannot be executed because they are incomplete.
 					exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
 
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.exhaustion", map[string]interface{}{
-							"count":              exhaustionCount,
-							"has_empty_toolcall": hasEmptyToolCall,
-							"stop_reason":        llmResp.StopReason,
-							"output_tokens":      llmResp.Usage.OutputTokens,
-							"threshold":          threshold,
-						})
-					}
+					span.AddEvent("output_token.exhaustion", map[string]interface{}{
+						"count":              exhaustionCount,
+						"has_empty_toolcall": hasEmptyToolCall,
+						"stop_reason":        llmResp.StopReason,
+						"output_tokens":      llmResp.Usage.OutputTokens,
+						"threshold":          threshold,
+					})
 
 					if err := failureTracker.checkOutputTokenCircuitBreaker(threshold); err != nil {
-						if a.config.EnableTracing && span != nil {
-							span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
-								"exhaustion_count":   exhaustionCount,
-								"has_empty_toolcall": hasEmptyToolCall,
-								"threshold":          threshold,
-							})
-							span.RecordError(err)
-						}
+						span.AddEvent("output_token.circuit_breaker_triggered", map[string]interface{}{
+							"exhaustion_count":   exhaustionCount,
+							"has_empty_toolcall": hasEmptyToolCall,
+							"threshold":          threshold,
+						})
+						span.RecordError(err)
 						return nil, fmt.Errorf("output token circuit breaker: %w", err)
 					}
 
@@ -1640,33 +1726,27 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// prior verbose turns do not accumulate toward the CB threshold.
 					failureTracker.clearOutputTokenExhaustion()
 
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.text_response_cleared", map[string]interface{}{
-							"stop_reason":   llmResp.StopReason,
-							"output_tokens": llmResp.Usage.OutputTokens,
-						})
-					}
+					span.AddEvent("output_token.text_response_cleared", map[string]interface{}{
+						"stop_reason":   llmResp.StopReason,
+						"output_tokens": llmResp.Usage.OutputTokens,
+					})
 
 				default:
 					// max_tokens with non-truncated tool calls: agent may still make progress
 					// on the next turn. Don't count, don't clear — let it continue.
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
-							"stop_reason":        llmResp.StopReason,
-							"tool_call_count":    len(llmResp.ToolCalls),
-							"has_empty_toolcall": hasEmptyToolCall,
-						})
-					}
+					span.AddEvent("output_token.non_truncated_toolcall", map[string]interface{}{
+						"stop_reason":        llmResp.StopReason,
+						"tool_call_count":    len(llmResp.ToolCalls),
+						"has_empty_toolcall": hasEmptyToolCall,
+					})
 				}
 			} else {
 				// Normal completion (end_turn, stop_sequence, etc.) — clear the counter.
 				failureTracker.clearOutputTokenExhaustion()
 
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("output_token.exhaustion_cleared", map[string]interface{}{
-						"stop_reason": llmResp.StopReason,
-					})
-				}
+				span.AddEvent("output_token.exhaustion_cleared", map[string]interface{}{
+					"stop_reason": llmResp.StopReason,
+				})
 			}
 		}
 
@@ -1713,6 +1793,20 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				)
 			}
 
+			// Record conversation completion on span
+			span.AddEvent("conversation.completed", map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"response_length": len(content),
+				"total_tokens":    llmResp.Usage.TotalTokens,
+				"cost_usd":        llmResp.Usage.CostUSD,
+			})
+			span.SetAttribute("conversation.turns", turnCount)
+			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
+			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
+			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
+
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
@@ -1746,9 +1840,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.String("session_id", session.ID),
 				zap.String("role", assistantMsg.Role),
 				zap.Error(err))
-			if span != nil {
-				span.RecordError(err)
-			}
+			span.RecordError(err)
 		}
 
 		// Execute tool calls with per-turn cap and deduplication.
@@ -1829,18 +1921,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				hitlInfo := extractHITLInfo(toolCall.Input)
 
 				// Add instrumentation for HITL request
-				if a.config.EnableTracing && span != nil {
-					span.AddEvent("hitl.request_detected", map[string]interface{}{
-						"question":     hitlInfo.Question,
-						"request_type": hitlInfo.RequestType,
-						"priority":     hitlInfo.Priority,
-						"timeout":      hitlInfo.Timeout.String(),
-					})
-					span.SetAttribute("hitl.active", true)
-					span.SetAttribute("hitl.question", hitlInfo.Question)
-					span.SetAttribute("hitl.request_type", hitlInfo.RequestType)
-					span.SetAttribute("hitl.priority", hitlInfo.Priority)
-				}
+				span.AddEvent("hitl.request_detected", map[string]interface{}{
+					"question":     hitlInfo.Question,
+					"request_type": hitlInfo.RequestType,
+					"priority":     hitlInfo.Priority,
+					"timeout":      hitlInfo.Timeout.String(),
+				})
+				span.SetAttribute("hitl.active", true)
+				span.SetAttribute("hitl.question", hitlInfo.Question)
+				span.SetAttribute("hitl.request_type", hitlInfo.RequestType)
+				span.SetAttribute("hitl.priority", hitlInfo.Priority)
 
 				// Emit HITL-specific progress event
 				emitProgressWithHITL(ctx, StageHumanInTheLoop, 50, "Waiting for human response", toolCall.Name, hitlInfo)
@@ -1849,18 +1939,36 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				emitToolStarted(ctx, 50+clampInt32(toolExecutionCount*5), toolCall)
 			}
 
-			// Execute tool with tracing
-			var toolSpan *observability.Span
-			if a.config.EnableTracing {
-				_, toolSpan = ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
-				toolSpan.SetAttribute("tool_name", toolCall.Name)
-			}
+			// Execute tool with tracing — always created
+			_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
+			toolSpan.SetAttribute("tool_name", toolCall.Name)
 
 			// Execute with self-correction (circuit breaker + SQL correction)
 			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
 
+			// Record tool execution on conversation_loop span
+			{
+				toolSuccess := err == nil && (result == nil || result.Success)
+				toolEvent := map[string]interface{}{
+					"turn":      turnCount,
+					"tool_name": toolCall.Name,
+					"success":   toolSuccess,
+					"index":     i + 1,
+					"total":     len(llmResp.ToolCalls),
+				}
+				if err != nil {
+					toolEvent["error"] = err.Error()
+				} else if result != nil && !result.Success && result.Error != nil {
+					toolEvent["error"] = result.Error.Message
+				}
+				if result != nil {
+					toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+				}
+				span.AddEvent("turn.tool_execution", toolEvent)
+			}
+
 			// Add instrumentation for HITL completion
-			if toolCall.Name == "contact_human" && a.config.EnableTracing && span != nil {
+			if toolCall.Name == "contact_human" {
 				if err != nil {
 					span.AddEvent("hitl.request_failed", map[string]interface{}{
 						"error": err.Error(),
@@ -1883,15 +1991,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			if a.config.EnableTracing && toolSpan != nil {
-				// Determine success: both err must be nil AND result.Success must be true
+			// Record tool execution results on span
+			{
 				success := err == nil && (result == nil || result.Success)
 
-				// Record errors from both Go error and result.Error
 				if err != nil {
 					toolSpan.RecordError(err)
 				} else if result != nil && !result.Success && result.Error != nil {
-					// MCP tools can fail without Go error - record result.Error
 					toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
 					toolSpan.SetAttribute("error.code", result.Error.Code)
 					toolSpan.SetAttribute("error.message", result.Error.Message)
@@ -1925,9 +2031,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Persist tool execution
 			if persistErr := a.memory.PersistToolExecution(ctx, session.ID, execution); persistErr != nil {
 				// Log but don't fail
-				if toolSpan != nil {
-					toolSpan.RecordError(persistErr)
-				}
+				toolSpan.RecordError(persistErr)
 			}
 
 			// === FEATURE INTEGRATION: Consecutive Failure Tracking ===
@@ -1945,7 +2049,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					failureCount := failureTracker.record(toolCall.Name, toolCall.Input, errorType)
 					escalationMsg = failureTracker.getEscalationMessage(failureCount, 2)
 
-					if escalationMsg != "" && a.config.EnableTracing && span != nil {
+					if escalationMsg != "" {
 						span.AddEvent("failure.escalated", map[string]interface{}{
 							"tool":          toolCall.Name,
 							"failure_count": failureCount,
@@ -1955,11 +2059,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// Clear failures on success
 					failureTracker.clear(toolCall.Name, toolCall.Input)
 
-					if a.config.EnableTracing && span != nil {
-						span.AddEvent("failure.cleared", map[string]interface{}{
-							"tool": toolCall.Name,
-						})
-					}
+					span.AddEvent("failure.cleared", map[string]interface{}{
+						"tool": toolCall.Name,
+					})
 				}
 			}
 
@@ -1987,9 +2089,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					zap.String("session_id", session.ID),
 					zap.String("role", toolMsg.Role),
 					zap.Error(persistErr))
-				if toolSpan != nil {
-					toolSpan.RecordError(persistErr)
-				}
+				toolSpan.RecordError(persistErr)
 			}
 
 			// === AUTOMATIC FINDING EXTRACTION ===
@@ -2078,9 +2178,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			zap.String("session_id", session.ID),
 			zap.String("role", synthesisMsg.Role),
 			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
-		}
+		span.RecordError(err)
 	}
 
 	// Make final LLM call WITHOUT tools to force synthesis

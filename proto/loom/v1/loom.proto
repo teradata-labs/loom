@@ -2030,6 +2030,9 @@ message ScheduleExecution {
 
   // Duration in milliseconds
   int64 duration_ms = 6;
+
+  // Workflow ID used for this execution
+  string workflow_id = 7;
 }
 
 // Server Management Messages

@@ -1,0 +1,21 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: deployment-monitor
+  description: Multi-agent deployment watcher with memory across checks
+schedule:
+  cron: "*/30 * * * *"
+  timezone: "UTC"
+  enabled: true
+  skip_if_running: true
+  session_mode: resume    # Agents remember previous checks
+spec:
+  type: pipeline
+  initial_prompt: "Check deployment status and compare with your previous findings"
+  stages:
+    - agent_id: infra-monitor
+      prompt_template: "Query infrastructure metrics. Note any changes since your last check."
+    - agent_id: risk-assessor
+      prompt_template: "Evaluate the findings from the infrastructure monitor: {{previous}}. Should we escalate?"
+    - agent_id: incident-responder
+      prompt_template: "Based on the risk assessment: {{previous}}. If escalation needed, use contact_human to notify on-call."
