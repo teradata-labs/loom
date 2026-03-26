@@ -160,7 +160,7 @@ func (s *GraphMemoryStore) ListEntities(ctx context.Context, agentID, entityType
 	if err != nil {
 		return nil, 0, fmt.Errorf("list entities: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var entities []*memory.Entity
 	for rows.Next() {
@@ -192,7 +192,7 @@ func (s *GraphMemoryStore) SearchEntities(ctx context.Context, agentID, query st
 	if err != nil {
 		return nil, fmt.Errorf("search entities: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var entities []*memory.Entity
 	for rows.Next() {
@@ -331,7 +331,7 @@ func (s *GraphMemoryStore) Neighbors(ctx context.Context, entityID string, relat
 	if err != nil {
 		return nil, fmt.Errorf("neighbors: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var edges []*memory.Edge
 	seen := make(map[string]bool)
@@ -355,7 +355,7 @@ func (s *GraphMemoryStore) ListEdgesFrom(ctx context.Context, entityID string) (
 	if err != nil {
 		return nil, fmt.Errorf("list edges from: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 	return scanEdgeRows(rows)
 }
 
@@ -366,7 +366,7 @@ func (s *GraphMemoryStore) ListEdgesTo(ctx context.Context, entityID string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("list edges to: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 	return scanEdgeRows(rows)
 }
 
@@ -539,7 +539,7 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 	if err != nil {
 		return nil, fmt.Errorf("recall: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var memories []*memory.Memory
 	for rows.Next() {
@@ -711,7 +711,7 @@ func (s *GraphMemoryStore) GetLineage(ctx context.Context, memoryID string) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("get lineage: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var lineages []*memory.MemoryLineage
 	for rows.Next() {
@@ -882,7 +882,7 @@ func (s *GraphMemoryStore) GetStats(ctx context.Context, agentID string) (*memor
 	if err != nil {
 		return nil, fmt.Errorf("group memories by type: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 	for rows.Next() {
 		var mtype string
 		var count int
@@ -974,7 +974,7 @@ func (s *GraphMemoryStore) loadMemoryEntityIDs(ctx context.Context, memoryID str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var ids []string
 	for rows.Next() {

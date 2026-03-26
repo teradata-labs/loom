@@ -15,10 +15,22 @@
 package memory
 
 import (
+	"math"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
+
+// safeIntToInt32 converts int to int32, clamping to [0, MaxInt32].
+func safeIntToInt32(v int) int32 {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(v) // #nosec G115 -- bounds checked above
+}
 
 // EntityToProto converts a domain Entity to its proto representation.
 func EntityToProto(e *Entity) *loomv1.GraphEntity {
@@ -105,9 +117,9 @@ func MemoryToProto(m *Memory) *loomv1.GraphMemory {
 		MemoryAgentId:     m.MemoryAgentID,
 		Tags:              m.Tags,
 		Salience:          float32(m.Salience),
-		TokenCount:        int32(m.TokenCount),
-		SummaryTokenCount: int32(m.SummaryTokenCount),
-		AccessCount:       int32(m.AccessCount),
+		TokenCount:        safeIntToInt32(m.TokenCount),
+		SummaryTokenCount: safeIntToInt32(m.SummaryTokenCount),
+		AccessCount:       safeIntToInt32(m.AccessCount),
 		EntityIds:         m.EntityIDs,
 		PropertiesJson:    m.PropertiesJSON,
 		CreatedAt:         m.CreatedAt.Unix(),
@@ -231,8 +243,8 @@ func EntityRecallToProto(er *EntityRecall) *loomv1.EntityRecall {
 	}
 	pb := &loomv1.EntityRecall{
 		Entity:          EntityToProto(er.Entity),
-		TotalTokensUsed: int32(er.TotalTokensUsed),
-		TotalCandidates: int32(er.TotalCandidates),
+		TotalTokensUsed: safeIntToInt32(er.TotalTokensUsed),
+		TotalCandidates: safeIntToInt32(er.TotalCandidates),
 	}
 	for _, sm := range er.Memories {
 		pb.Memories = append(pb.Memories, ScoredMemoryToProto(&sm))
@@ -275,14 +287,14 @@ func GraphStatsToProto(gs *GraphStats) *loomv1.GraphStats {
 	}
 	byType := make(map[string]int32, len(gs.MemoriesByType))
 	for k, v := range gs.MemoriesByType {
-		byType[k] = int32(v)
+		byType[k] = safeIntToInt32(v)
 	}
 	return &loomv1.GraphStats{
-		EntityCount:       int32(gs.EntityCount),
-		EdgeCount:         int32(gs.EdgeCount),
-		MemoryCount:       int32(gs.MemoryCount),
-		ActiveMemoryCount: int32(gs.ActiveMemoryCount),
-		TotalMemoryTokens: int32(gs.TotalMemoryTokens),
+		EntityCount:       safeIntToInt32(gs.EntityCount),
+		EdgeCount:         safeIntToInt32(gs.EdgeCount),
+		MemoryCount:       safeIntToInt32(gs.MemoryCount),
+		ActiveMemoryCount: safeIntToInt32(gs.ActiveMemoryCount),
+		TotalMemoryTokens: safeIntToInt32(gs.TotalMemoryTokens),
 		MemoriesByType:    byType,
 	}
 }
