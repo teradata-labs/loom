@@ -35,8 +35,14 @@ func NewMockTracer() *MockTracer {
 
 // StartSpan creates a new span and stores it for inspection.
 func (m *MockTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
+	// Determine trace ID: parent > context override > generated
+	traceID := "trace-" + generateID()
+	if override := traceIDFromContextOverride(ctx); override != "" {
+		traceID = override
+	}
+
 	span := &Span{
-		TraceID:    "trace-" + generateID(),
+		TraceID:    traceID,
 		SpanID:     "span-" + generateID(),
 		Name:       name,
 		StartTime:  time.Now(),
@@ -49,10 +55,17 @@ func (m *MockTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		opt(span)
 	}
 
-	// Link to parent if exists
+	// Link to parent if exists (parent trace ID takes priority)
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		// Inherit resource attributes from parent when child has none set
+		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
+			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
+			for k, v := range parent.ResourceAttributes {
+				span.ResourceAttributes[k] = v
+			}
+		}
 	}
 
 	return ContextWithSpan(ctx, span), span
@@ -139,3 +152,78 @@ func generateID() string {
 
 // Ensure MockTracer implements Tracer interface
 var _ Tracer = (*MockTracer)(nil)
+
+// MockSpanExporter is a test implementation of SpanExporter that captures exported spans.
+// Thread-safe: All methods can be called concurrently.
+type MockSpanExporter struct {
+	mu             sync.RWMutex
+	spans          []*Span
+	shutdownCalled bool
+	exportErr      error // Set to simulate export errors
+}
+
+// NewMockSpanExporter creates a new mock span exporter for testing.
+func NewMockSpanExporter() *MockSpanExporter {
+	return &MockSpanExporter{
+		spans: make([]*Span, 0),
+	}
+}
+
+// ExportSpans captures the spans for inspection.
+func (m *MockSpanExporter) ExportSpans(_ context.Context, spans []*Span) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.exportErr != nil {
+		return m.exportErr
+	}
+	m.spans = append(m.spans, spans...)
+	return nil
+}
+
+// ForceFlush is a no-op for the mock exporter (all exports are synchronous).
+func (m *MockSpanExporter) ForceFlush(_ context.Context) error {
+	return nil
+}
+
+// Shutdown marks the exporter as shut down.
+func (m *MockSpanExporter) Shutdown(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shutdownCalled = true
+	return nil
+}
+
+// GetExportedSpans returns all exported spans (for testing).
+func (m *MockSpanExporter) GetExportedSpans() []*Span {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	spans := make([]*Span, len(m.spans))
+	copy(spans, m.spans)
+	return spans
+}
+
+// IsShutdown returns whether Shutdown was called (for testing).
+func (m *MockSpanExporter) IsShutdown() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.shutdownCalled
+}
+
+// SetExportError sets an error to be returned by ExportSpans (for testing).
+func (m *MockSpanExporter) SetExportError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.exportErr = err
+}
+
+// Reset clears all captured spans and state (for testing).
+func (m *MockSpanExporter) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.spans = make([]*Span, 0)
+	m.shutdownCalled = false
+	m.exportErr = nil
+}
+
+// Ensure MockSpanExporter implements SpanExporter interface.
+var _ SpanExporter = (*MockSpanExporter)(nil)

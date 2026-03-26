@@ -81,6 +81,10 @@ type Span struct {
 	Name       string                 // Operation name (e.g., "llm.completion")
 	Attributes map[string]interface{} // Key-value metadata
 
+	// ResourceAttributes describe the entity producing spans (service.name, user.id, etc.).
+	// These are carried on every span and used by exporters to route/tag data.
+	ResourceAttributes map[string]string
+
 	// Timing
 	StartTime time.Time
 	EndTime   time.Time
@@ -146,3 +150,36 @@ func WithParentSpanID(parentID string) SpanOption {
 		s.ParentID = parentID
 	}
 }
+
+// WithResourceAttributes returns a SpanOption that sets resource attributes on the span.
+// Resource attributes describe the entity producing spans (e.g., service.name, user.id).
+func WithResourceAttributes(attrs map[string]string) SpanOption {
+	return func(s *Span) {
+		if s.ResourceAttributes == nil {
+			s.ResourceAttributes = make(map[string]string)
+		}
+		for k, v := range attrs {
+			s.ResourceAttributes[k] = v
+		}
+	}
+}
+
+// SetResourceAttribute sets a single resource attribute on the span.
+func (s *Span) SetResourceAttribute(key, value string) {
+	if s.ResourceAttributes == nil {
+		s.ResourceAttributes = make(map[string]string)
+	}
+	s.ResourceAttributes[key] = value
+}
+
+// Resource attribute keys for standard fields.
+// Keys that overlap with span attributes (AttrUserID, AttrSessionID) are
+// aliased here so callers can use the ResourceAttr* prefix consistently
+// when setting resource-level metadata.
+const (
+	ResourceAttrServiceName    = "service.name"
+	ResourceAttrServiceVersion = "service.version"
+	ResourceAttrUserID         = AttrUserID    // "user.id" — same key as span attribute
+	ResourceAttrSessionID      = AttrSessionID // "session.id" — same key as span attribute
+	ResourceAttrAgentID        = "agent.id"
+)

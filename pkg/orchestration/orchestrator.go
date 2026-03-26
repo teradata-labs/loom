@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/collaboration"
@@ -324,27 +325,33 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 
 	switch p := pattern.Pattern.(type) {
 	case *loomv1.WorkflowPattern_ForkJoin:
-		executor := NewForkJoinExecutor(o, p.ForkJoin)
+		wfID := o.resolveWorkflowID("fork-join", pattern)
+		executor := NewForkJoinExecutor(o, p.ForkJoin, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Pipeline:
-		executor := NewPipelineExecutor(o, p.Pipeline)
+		wfID := o.resolveWorkflowID("pipeline", pattern)
+		executor := NewPipelineExecutor(o, p.Pipeline, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Parallel:
-		executor := NewParallelExecutor(o, p.Parallel)
+		wfID := o.resolveWorkflowID("parallel", pattern)
+		executor := NewParallelExecutor(o, p.Parallel, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Conditional:
-		executor := NewConditionalExecutor(o, p.Conditional)
+		wfID := o.resolveWorkflowID("conditional", pattern)
+		executor := NewConditionalExecutor(o, p.Conditional, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Iterative:
-		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus)
+		wfID := o.resolveWorkflowID("iterative", pattern)
+		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Swarm:
-		executor := NewSwarmExecutor(o, p.Swarm)
+		wfID := o.resolveWorkflowID("swarm", pattern)
+		executor := NewSwarmExecutor(o, p.Swarm, wfID)
 		result, err = executor.Execute(ctx)
 
 	default:
@@ -424,6 +431,16 @@ func (o *Orchestrator) GetMergeLLM() agent.LLMProvider {
 	}
 
 	return firstLLM
+}
+
+// resolveWorkflowID returns a stable or random workflow ID.
+// If the pattern has a workflow_id set (for scheduled RESUME mode), use it.
+// Otherwise generate a random UUID-based ID with the pattern type prefix.
+func (o *Orchestrator) resolveWorkflowID(patternType string, pattern *loomv1.WorkflowPattern) string {
+	if pattern != nil && pattern.WorkflowId != "" {
+		return pattern.WorkflowId
+	}
+	return fmt.Sprintf("%s-%s", patternType, uuid.New().String()[:8])
 }
 
 // GetPatternType returns a string representation of the pattern type.

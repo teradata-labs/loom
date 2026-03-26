@@ -122,7 +122,7 @@ func TestInstrumentedAgent_EndToEndTracing(t *testing.T) {
 	tracer.mu.Unlock()
 
 	// Should have spans for:
-	// 1. agent.conversation (top-level)
+	// 1. agent.chat (top-level)
 	// 2. llm.completion (first LLM call)
 	// 3. llm.completion (second LLM call)
 	// Note: tool execution spans would be captured if executor is instrumented
@@ -131,7 +131,7 @@ func TestInstrumentedAgent_EndToEndTracing(t *testing.T) {
 	// Verify conversation span
 	var conversationSpan *observability.Span
 	for _, span := range spans {
-		if span.Name == observability.SpanAgentConversation {
+		if span.Name == "agent.chat" {
 			conversationSpan = span
 			break
 		}
@@ -212,7 +212,7 @@ func TestInstrumentedAgent_ErrorTracing(t *testing.T) {
 	// Should have conversation span with error status
 	var conversationSpan *observability.Span
 	for _, span := range spans {
-		if span.Name == observability.SpanAgentConversation {
+		if span.Name == "agent.chat" {
 			conversationSpan = span
 			break
 		}
@@ -276,7 +276,7 @@ func TestInstrumentedAgent_CostTracking(t *testing.T) {
 
 	var conversationSpan *observability.Span
 	for _, span := range spans {
-		if span.Name == observability.SpanAgentConversation {
+		if span.Name == "agent.chat" {
 			conversationSpan = span
 			break
 		}

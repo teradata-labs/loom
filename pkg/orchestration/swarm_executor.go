@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -22,13 +21,15 @@ import (
 type SwarmExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.SwarmPattern
+	workflowID   string
 }
 
 // NewSwarmExecutor creates a new swarm executor.
-func NewSwarmExecutor(orchestrator *Orchestrator, pattern *loomv1.SwarmPattern) *SwarmExecutor {
+func NewSwarmExecutor(orchestrator *Orchestrator, pattern *loomv1.SwarmPattern, workflowID string) *SwarmExecutor {
 	return &SwarmExecutor{
 		orchestrator: orchestrator,
 		pattern:      pattern,
+		workflowID:   workflowID,
 	}
 }
 
@@ -36,8 +37,8 @@ func NewSwarmExecutor(orchestrator *Orchestrator, pattern *loomv1.SwarmPattern) 
 func (e *SwarmExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	startTime := time.Now()
 
-	// Generate unique workflow ID
-	workflowID := fmt.Sprintf("swarm-%s", uuid.New().String()[:8])
+	// Use the workflow ID provided at construction (stable or random)
+	workflowID := e.workflowID
 
 	// Start workflow-level span
 	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.swarm")
@@ -611,7 +612,7 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, votes []*loomv1.SwarmVo
 	sb.WriteString("As the judge, please make the final decision. Respond with only the choice you select, nothing else.\n")
 
 	// Execute judge
-	sessionID := fmt.Sprintf("swarm-judge-%s", uuid.New().String()[:8])
+	sessionID := fmt.Sprintf("%s-judge", e.workflowID)
 	response, err := judge.Chat(ctx, sessionID, sb.String())
 	if err != nil {
 		return "", fmt.Errorf("judge chat failed: %w", err)
