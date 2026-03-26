@@ -342,6 +342,16 @@
       },
       "description": "GraphStats provides entity/memory/token counts."
     },
+    "v1LineageRelationType": {
+      "type": "string",
+      "enum": [
+        "LINEAGE_RELATION_TYPE_UNSPECIFIED",
+        "LINEAGE_RELATION_TYPE_SUPERSEDES",
+        "LINEAGE_RELATION_TYPE_CONSOLIDATES"
+      ],
+      "default": "LINEAGE_RELATION_TYPE_UNSPECIFIED",
+      "description": "LineageRelationType classifies memory lineage relationships."
+    },
     "v1ListEntitiesResponse": {
       "type": "object",
       "properties": {
@@ -368,8 +378,7 @@
           "type": "string"
         },
         "relationType": {
-          "type": "string",
-          "description": "SUPERSEDES or CONSOLIDATES."
+          "$ref": "#/definitions/v1LineageRelationType"
         },
         "createdAt": {
           "type": "string",
@@ -377,6 +386,17 @@
         }
       },
       "description": "MemoryLineage tracks SUPERSEDES and CONSOLIDATES chains."
+    },
+    "v1NeighborDirection": {
+      "type": "string",
+      "enum": [
+        "NEIGHBOR_DIRECTION_UNSPECIFIED",
+        "NEIGHBOR_DIRECTION_OUTBOUND",
+        "NEIGHBOR_DIRECTION_INBOUND",
+        "NEIGHBOR_DIRECTION_BOTH"
+      ],
+      "default": "NEIGHBOR_DIRECTION_UNSPECIFIED",
+      "description": "NeighborDirection specifies the traversal direction for graph neighbor queries."
     },
     "v1NeighborsResponse": {
       "type": "object",

@@ -22,25 +22,28 @@ import (
 
 // Salience engine defaults.
 const (
-	DefaultDecayRate   = 0.995
-	DefaultBoostAmount = 0.05
-	DefaultMinSalience = 0.1
-	DefaultSalience    = 0.5
+	DefaultDecayRate          = 0.995
+	DefaultBoostAmount        = 0.05
+	DefaultMinSalience        = 0.1
+	DefaultSalience           = 0.5
+	DefaultConsolidationDecay = 0.5
 )
 
 // SalienceConfig holds parameters for salience computation.
 type SalienceConfig struct {
-	DecayRate   float64
-	BoostAmount float64
-	MinSalience float64
+	DecayRate          float64
+	BoostAmount        float64
+	MinSalience        float64
+	ConsolidationDecay float64
 }
 
 // DefaultSalienceConfig returns a config with spec defaults.
 func DefaultSalienceConfig() SalienceConfig {
 	return SalienceConfig{
-		DecayRate:   DefaultDecayRate,
-		BoostAmount: DefaultBoostAmount,
-		MinSalience: DefaultMinSalience,
+		DecayRate:          DefaultDecayRate,
+		BoostAmount:        DefaultBoostAmount,
+		MinSalience:        DefaultMinSalience,
+		ConsolidationDecay: DefaultConsolidationDecay,
 	}
 }
 

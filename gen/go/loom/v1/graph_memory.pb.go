@@ -26,6 +26,109 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// NeighborDirection specifies the traversal direction for graph neighbor queries.
+type NeighborDirection int32
+
+const (
+	NeighborDirection_NEIGHBOR_DIRECTION_UNSPECIFIED NeighborDirection = 0
+	NeighborDirection_NEIGHBOR_DIRECTION_OUTBOUND    NeighborDirection = 1
+	NeighborDirection_NEIGHBOR_DIRECTION_INBOUND     NeighborDirection = 2
+	NeighborDirection_NEIGHBOR_DIRECTION_BOTH        NeighborDirection = 3
+)
+
+// Enum value maps for NeighborDirection.
+var (
+	NeighborDirection_name = map[int32]string{
+		0: "NEIGHBOR_DIRECTION_UNSPECIFIED",
+		1: "NEIGHBOR_DIRECTION_OUTBOUND",
+		2: "NEIGHBOR_DIRECTION_INBOUND",
+		3: "NEIGHBOR_DIRECTION_BOTH",
+	}
+	NeighborDirection_value = map[string]int32{
+		"NEIGHBOR_DIRECTION_UNSPECIFIED": 0,
+		"NEIGHBOR_DIRECTION_OUTBOUND":    1,
+		"NEIGHBOR_DIRECTION_INBOUND":     2,
+		"NEIGHBOR_DIRECTION_BOTH":        3,
+	}
+)
+
+func (x NeighborDirection) Enum() *NeighborDirection {
+	p := new(NeighborDirection)
+	*p = x
+	return p
+}
+
+func (x NeighborDirection) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NeighborDirection) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_graph_memory_proto_enumTypes[0].Descriptor()
+}
+
+func (NeighborDirection) Type() protoreflect.EnumType {
+	return &file_loom_v1_graph_memory_proto_enumTypes[0]
+}
+
+func (x NeighborDirection) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NeighborDirection.Descriptor instead.
+func (NeighborDirection) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_graph_memory_proto_rawDescGZIP(), []int{0}
+}
+
+// LineageRelationType classifies memory lineage relationships.
+type LineageRelationType int32
+
+const (
+	LineageRelationType_LINEAGE_RELATION_TYPE_UNSPECIFIED  LineageRelationType = 0
+	LineageRelationType_LINEAGE_RELATION_TYPE_SUPERSEDES   LineageRelationType = 1
+	LineageRelationType_LINEAGE_RELATION_TYPE_CONSOLIDATES LineageRelationType = 2
+)
+
+// Enum value maps for LineageRelationType.
+var (
+	LineageRelationType_name = map[int32]string{
+		0: "LINEAGE_RELATION_TYPE_UNSPECIFIED",
+		1: "LINEAGE_RELATION_TYPE_SUPERSEDES",
+		2: "LINEAGE_RELATION_TYPE_CONSOLIDATES",
+	}
+	LineageRelationType_value = map[string]int32{
+		"LINEAGE_RELATION_TYPE_UNSPECIFIED":  0,
+		"LINEAGE_RELATION_TYPE_SUPERSEDES":   1,
+		"LINEAGE_RELATION_TYPE_CONSOLIDATES": 2,
+	}
+)
+
+func (x LineageRelationType) Enum() *LineageRelationType {
+	p := new(LineageRelationType)
+	*p = x
+	return p
+}
+
+func (x LineageRelationType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LineageRelationType) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_graph_memory_proto_enumTypes[1].Descriptor()
+}
+
+func (LineageRelationType) Type() protoreflect.EnumType {
+	return &file_loom_v1_graph_memory_proto_enumTypes[1]
+}
+
+func (x LineageRelationType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LineageRelationType.Descriptor instead.
+func (LineageRelationType) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_graph_memory_proto_rawDescGZIP(), []int{1}
+}
+
 // GraphEntity is a mutable node representing current state.
 type GraphEntity struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
@@ -448,12 +551,11 @@ func (x *GraphMemory) GetIsSuperseded() bool {
 
 // MemoryLineage tracks SUPERSEDES and CONSOLIDATES chains.
 type MemoryLineage struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	NewMemoryId string                 `protobuf:"bytes,1,opt,name=new_memory_id,json=newMemoryId,proto3" json:"new_memory_id,omitempty"`
-	OldMemoryId string                 `protobuf:"bytes,2,opt,name=old_memory_id,json=oldMemoryId,proto3" json:"old_memory_id,omitempty"`
-	// SUPERSEDES or CONSOLIDATES.
-	RelationType  string `protobuf:"bytes,3,opt,name=relation_type,json=relationType,proto3" json:"relation_type,omitempty"`
-	CreatedAt     int64  `protobuf:"varint,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NewMemoryId   string                 `protobuf:"bytes,1,opt,name=new_memory_id,json=newMemoryId,proto3" json:"new_memory_id,omitempty"`
+	OldMemoryId   string                 `protobuf:"bytes,2,opt,name=old_memory_id,json=oldMemoryId,proto3" json:"old_memory_id,omitempty"`
+	RelationType  LineageRelationType    `protobuf:"varint,3,opt,name=relation_type,json=relationType,proto3,enum=loom.v1.LineageRelationType" json:"relation_type,omitempty"`
+	CreatedAt     int64                  `protobuf:"varint,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -502,11 +604,11 @@ func (x *MemoryLineage) GetOldMemoryId() string {
 	return ""
 }
 
-func (x *MemoryLineage) GetRelationType() string {
+func (x *MemoryLineage) GetRelationType() LineageRelationType {
 	if x != nil {
 		return x.RelationType
 	}
-	return ""
+	return LineageRelationType_LINEAGE_RELATION_TYPE_UNSPECIFIED
 }
 
 func (x *MemoryLineage) GetCreatedAt() int64 {
@@ -1549,8 +1651,8 @@ type NeighborsRequest struct {
 	EntityName string                 `protobuf:"bytes,2,opt,name=entity_name,json=entityName,proto3" json:"entity_name,omitempty"`
 	// Filter by relation type (empty = all).
 	Relation string `protobuf:"bytes,3,opt,name=relation,proto3" json:"relation,omitempty"`
-	// Direction: "outbound", "inbound", "both".
-	Direction string `protobuf:"bytes,4,opt,name=direction,proto3" json:"direction,omitempty"`
+	// Traversal direction (default: outbound).
+	Direction NeighborDirection `protobuf:"varint,4,opt,name=direction,proto3,enum=loom.v1.NeighborDirection" json:"direction,omitempty"`
 	// Max traversal depth (default 1).
 	Depth         int32 `protobuf:"varint,5,opt,name=depth,proto3" json:"depth,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1608,11 +1710,11 @@ func (x *NeighborsRequest) GetRelation() string {
 	return ""
 }
 
-func (x *NeighborsRequest) GetDirection() string {
+func (x *NeighborsRequest) GetDirection() NeighborDirection {
 	if x != nil {
 		return x.Direction
 	}
-	return ""
+	return NeighborDirection_NEIGHBOR_DIRECTION_UNSPECIFIED
 }
 
 func (x *NeighborsRequest) GetDepth() int32 {
@@ -2655,11 +2757,11 @@ const file_loom_v1_graph_memory_proto_rawDesc = "" +
 	"accessedAt\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\x13 \x01(\x03R\texpiresAt\x12#\n" +
-	"\ris_superseded\x18\x14 \x01(\bR\fisSuperseded\"\x9b\x01\n" +
+	"\ris_superseded\x18\x14 \x01(\bR\fisSuperseded\"\xb9\x01\n" +
 	"\rMemoryLineage\x12\"\n" +
 	"\rnew_memory_id\x18\x01 \x01(\tR\vnewMemoryId\x12\"\n" +
-	"\rold_memory_id\x18\x02 \x01(\tR\voldMemoryId\x12#\n" +
-	"\rrelation_type\x18\x03 \x01(\tR\frelationType\x12\x1d\n" +
+	"\rold_memory_id\x18\x02 \x01(\tR\voldMemoryId\x12A\n" +
+	"\rrelation_type\x18\x03 \x01(\x0e2\x1c.loom.v1.LineageRelationTypeR\frelationType\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\x04 \x01(\x03R\tcreatedAt\"\xdc\x01\n" +
 	"\fScoredMemory\x12,\n" +
@@ -2742,13 +2844,13 @@ const file_loom_v1_graph_memory_proto_rawDesc = "" +
 	"targetName\x12\x1a\n" +
 	"\brelation\x18\x04 \x01(\tR\brelation\",\n" +
 	"\x10UnrelateResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x9e\x01\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xba\x01\n" +
 	"\x10NeighborsRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1f\n" +
 	"\ventity_name\x18\x02 \x01(\tR\n" +
 	"entityName\x12\x1a\n" +
-	"\brelation\x18\x03 \x01(\tR\brelation\x12\x1c\n" +
-	"\tdirection\x18\x04 \x01(\tR\tdirection\x12\x14\n" +
+	"\brelation\x18\x03 \x01(\tR\brelation\x128\n" +
+	"\tdirection\x18\x04 \x01(\x0e2\x1a.loom.v1.NeighborDirectionR\tdirection\x12\x14\n" +
 	"\x05depth\x18\x05 \x01(\x05R\x05depth\"o\n" +
 	"\x11NeighborsResponse\x12(\n" +
 	"\x05edges\x18\x01 \x03(\v2\x12.loom.v1.GraphEdgeR\x05edges\x120\n" +
@@ -2830,7 +2932,16 @@ const file_loom_v1_graph_memory_proto_rawDesc = "" +
 	"\x14GetGraphStatsRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\"B\n" +
 	"\x15GetGraphStatsResponse\x12)\n" +
-	"\x05stats\x18\x01 \x01(\v2\x13.loom.v1.GraphStatsR\x05stats2\xa8\b\n" +
+	"\x05stats\x18\x01 \x01(\v2\x13.loom.v1.GraphStatsR\x05stats*\x95\x01\n" +
+	"\x11NeighborDirection\x12\"\n" +
+	"\x1eNEIGHBOR_DIRECTION_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bNEIGHBOR_DIRECTION_OUTBOUND\x10\x01\x12\x1e\n" +
+	"\x1aNEIGHBOR_DIRECTION_INBOUND\x10\x02\x12\x1b\n" +
+	"\x17NEIGHBOR_DIRECTION_BOTH\x10\x03*\x8a\x01\n" +
+	"\x13LineageRelationType\x12%\n" +
+	"!LINEAGE_RELATION_TYPE_UNSPECIFIED\x10\x00\x12$\n" +
+	" LINEAGE_RELATION_TYPE_SUPERSEDES\x10\x01\x12&\n" +
+	"\"LINEAGE_RELATION_TYPE_CONSOLIDATES\x10\x022\xa8\b\n" +
 	"\x12GraphMemoryService\x12K\n" +
 	"\fCreateEntity\x12\x1c.loom.v1.CreateEntityRequest\x1a\x1d.loom.v1.CreateEntityResponse\x12B\n" +
 	"\tGetEntity\x12\x19.loom.v1.GetEntityRequest\x1a\x1a.loom.v1.GetEntityResponse\x12K\n" +
@@ -2861,104 +2972,109 @@ func file_loom_v1_graph_memory_proto_rawDescGZIP() []byte {
 	return file_loom_v1_graph_memory_proto_rawDescData
 }
 
+var file_loom_v1_graph_memory_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_loom_v1_graph_memory_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_loom_v1_graph_memory_proto_goTypes = []any{
-	(*GraphEntity)(nil),           // 0: loom.v1.GraphEntity
-	(*GraphEdge)(nil),             // 1: loom.v1.GraphEdge
-	(*GraphMemory)(nil),           // 2: loom.v1.GraphMemory
-	(*MemoryLineage)(nil),         // 3: loom.v1.MemoryLineage
-	(*ScoredMemory)(nil),          // 4: loom.v1.ScoredMemory
-	(*EntityRecall)(nil),          // 5: loom.v1.EntityRecall
-	(*GraphStats)(nil),            // 6: loom.v1.GraphStats
-	(*CreateEntityRequest)(nil),   // 7: loom.v1.CreateEntityRequest
-	(*CreateEntityResponse)(nil),  // 8: loom.v1.CreateEntityResponse
-	(*GetEntityRequest)(nil),      // 9: loom.v1.GetEntityRequest
-	(*GetEntityResponse)(nil),     // 10: loom.v1.GetEntityResponse
-	(*UpdateEntityRequest)(nil),   // 11: loom.v1.UpdateEntityRequest
-	(*UpdateEntityResponse)(nil),  // 12: loom.v1.UpdateEntityResponse
-	(*ListEntitiesRequest)(nil),   // 13: loom.v1.ListEntitiesRequest
-	(*ListEntitiesResponse)(nil),  // 14: loom.v1.ListEntitiesResponse
-	(*DeleteEntityRequest)(nil),   // 15: loom.v1.DeleteEntityRequest
-	(*DeleteEntityResponse)(nil),  // 16: loom.v1.DeleteEntityResponse
-	(*RelateRequest)(nil),         // 17: loom.v1.RelateRequest
-	(*RelateResponse)(nil),        // 18: loom.v1.RelateResponse
-	(*UnrelateRequest)(nil),       // 19: loom.v1.UnrelateRequest
-	(*UnrelateResponse)(nil),      // 20: loom.v1.UnrelateResponse
-	(*NeighborsRequest)(nil),      // 21: loom.v1.NeighborsRequest
-	(*NeighborsResponse)(nil),     // 22: loom.v1.NeighborsResponse
-	(*RememberRequest)(nil),       // 23: loom.v1.RememberRequest
-	(*RememberResponse)(nil),      // 24: loom.v1.RememberResponse
-	(*RecallRequest)(nil),         // 25: loom.v1.RecallRequest
-	(*RecallResponse)(nil),        // 26: loom.v1.RecallResponse
-	(*ForgetRequest)(nil),         // 27: loom.v1.ForgetRequest
-	(*ForgetResponse)(nil),        // 28: loom.v1.ForgetResponse
-	(*SupersedeRequest)(nil),      // 29: loom.v1.SupersedeRequest
-	(*SupersedeResponse)(nil),     // 30: loom.v1.SupersedeResponse
-	(*ConsolidateRequest)(nil),    // 31: loom.v1.ConsolidateRequest
-	(*ConsolidateResponse)(nil),   // 32: loom.v1.ConsolidateResponse
-	(*ContextForRequest)(nil),     // 33: loom.v1.ContextForRequest
-	(*ContextForResponse)(nil),    // 34: loom.v1.ContextForResponse
-	(*GetGraphStatsRequest)(nil),  // 35: loom.v1.GetGraphStatsRequest
-	(*GetGraphStatsResponse)(nil), // 36: loom.v1.GetGraphStatsResponse
-	nil,                           // 37: loom.v1.GraphStats.MemoriesByTypeEntry
+	(NeighborDirection)(0),        // 0: loom.v1.NeighborDirection
+	(LineageRelationType)(0),      // 1: loom.v1.LineageRelationType
+	(*GraphEntity)(nil),           // 2: loom.v1.GraphEntity
+	(*GraphEdge)(nil),             // 3: loom.v1.GraphEdge
+	(*GraphMemory)(nil),           // 4: loom.v1.GraphMemory
+	(*MemoryLineage)(nil),         // 5: loom.v1.MemoryLineage
+	(*ScoredMemory)(nil),          // 6: loom.v1.ScoredMemory
+	(*EntityRecall)(nil),          // 7: loom.v1.EntityRecall
+	(*GraphStats)(nil),            // 8: loom.v1.GraphStats
+	(*CreateEntityRequest)(nil),   // 9: loom.v1.CreateEntityRequest
+	(*CreateEntityResponse)(nil),  // 10: loom.v1.CreateEntityResponse
+	(*GetEntityRequest)(nil),      // 11: loom.v1.GetEntityRequest
+	(*GetEntityResponse)(nil),     // 12: loom.v1.GetEntityResponse
+	(*UpdateEntityRequest)(nil),   // 13: loom.v1.UpdateEntityRequest
+	(*UpdateEntityResponse)(nil),  // 14: loom.v1.UpdateEntityResponse
+	(*ListEntitiesRequest)(nil),   // 15: loom.v1.ListEntitiesRequest
+	(*ListEntitiesResponse)(nil),  // 16: loom.v1.ListEntitiesResponse
+	(*DeleteEntityRequest)(nil),   // 17: loom.v1.DeleteEntityRequest
+	(*DeleteEntityResponse)(nil),  // 18: loom.v1.DeleteEntityResponse
+	(*RelateRequest)(nil),         // 19: loom.v1.RelateRequest
+	(*RelateResponse)(nil),        // 20: loom.v1.RelateResponse
+	(*UnrelateRequest)(nil),       // 21: loom.v1.UnrelateRequest
+	(*UnrelateResponse)(nil),      // 22: loom.v1.UnrelateResponse
+	(*NeighborsRequest)(nil),      // 23: loom.v1.NeighborsRequest
+	(*NeighborsResponse)(nil),     // 24: loom.v1.NeighborsResponse
+	(*RememberRequest)(nil),       // 25: loom.v1.RememberRequest
+	(*RememberResponse)(nil),      // 26: loom.v1.RememberResponse
+	(*RecallRequest)(nil),         // 27: loom.v1.RecallRequest
+	(*RecallResponse)(nil),        // 28: loom.v1.RecallResponse
+	(*ForgetRequest)(nil),         // 29: loom.v1.ForgetRequest
+	(*ForgetResponse)(nil),        // 30: loom.v1.ForgetResponse
+	(*SupersedeRequest)(nil),      // 31: loom.v1.SupersedeRequest
+	(*SupersedeResponse)(nil),     // 32: loom.v1.SupersedeResponse
+	(*ConsolidateRequest)(nil),    // 33: loom.v1.ConsolidateRequest
+	(*ConsolidateResponse)(nil),   // 34: loom.v1.ConsolidateResponse
+	(*ContextForRequest)(nil),     // 35: loom.v1.ContextForRequest
+	(*ContextForResponse)(nil),    // 36: loom.v1.ContextForResponse
+	(*GetGraphStatsRequest)(nil),  // 37: loom.v1.GetGraphStatsRequest
+	(*GetGraphStatsResponse)(nil), // 38: loom.v1.GetGraphStatsResponse
+	nil,                           // 39: loom.v1.GraphStats.MemoriesByTypeEntry
 }
 var file_loom_v1_graph_memory_proto_depIdxs = []int32{
-	2,  // 0: loom.v1.ScoredMemory.memory:type_name -> loom.v1.GraphMemory
-	0,  // 1: loom.v1.EntityRecall.entity:type_name -> loom.v1.GraphEntity
-	4,  // 2: loom.v1.EntityRecall.memories:type_name -> loom.v1.ScoredMemory
-	1,  // 3: loom.v1.EntityRecall.edges_out:type_name -> loom.v1.GraphEdge
-	1,  // 4: loom.v1.EntityRecall.edges_in:type_name -> loom.v1.GraphEdge
-	37, // 5: loom.v1.GraphStats.memories_by_type:type_name -> loom.v1.GraphStats.MemoriesByTypeEntry
-	0,  // 6: loom.v1.CreateEntityResponse.entity:type_name -> loom.v1.GraphEntity
-	0,  // 7: loom.v1.GetEntityResponse.entity:type_name -> loom.v1.GraphEntity
-	0,  // 8: loom.v1.UpdateEntityResponse.entity:type_name -> loom.v1.GraphEntity
-	0,  // 9: loom.v1.ListEntitiesResponse.entities:type_name -> loom.v1.GraphEntity
-	1,  // 10: loom.v1.RelateResponse.edge:type_name -> loom.v1.GraphEdge
-	1,  // 11: loom.v1.NeighborsResponse.edges:type_name -> loom.v1.GraphEdge
-	0,  // 12: loom.v1.NeighborsResponse.entities:type_name -> loom.v1.GraphEntity
-	2,  // 13: loom.v1.RememberResponse.memory:type_name -> loom.v1.GraphMemory
-	4,  // 14: loom.v1.RecallResponse.memories:type_name -> loom.v1.ScoredMemory
-	2,  // 15: loom.v1.SupersedeResponse.new_memory:type_name -> loom.v1.GraphMemory
-	3,  // 16: loom.v1.SupersedeResponse.lineage:type_name -> loom.v1.MemoryLineage
-	2,  // 17: loom.v1.ConsolidateResponse.consolidated_memory:type_name -> loom.v1.GraphMemory
-	3,  // 18: loom.v1.ConsolidateResponse.lineage:type_name -> loom.v1.MemoryLineage
-	5,  // 19: loom.v1.ContextForResponse.recall:type_name -> loom.v1.EntityRecall
-	6,  // 20: loom.v1.GetGraphStatsResponse.stats:type_name -> loom.v1.GraphStats
-	7,  // 21: loom.v1.GraphMemoryService.CreateEntity:input_type -> loom.v1.CreateEntityRequest
-	9,  // 22: loom.v1.GraphMemoryService.GetEntity:input_type -> loom.v1.GetEntityRequest
-	11, // 23: loom.v1.GraphMemoryService.UpdateEntity:input_type -> loom.v1.UpdateEntityRequest
-	13, // 24: loom.v1.GraphMemoryService.ListEntities:input_type -> loom.v1.ListEntitiesRequest
-	15, // 25: loom.v1.GraphMemoryService.DeleteEntity:input_type -> loom.v1.DeleteEntityRequest
-	17, // 26: loom.v1.GraphMemoryService.Relate:input_type -> loom.v1.RelateRequest
-	19, // 27: loom.v1.GraphMemoryService.Unrelate:input_type -> loom.v1.UnrelateRequest
-	21, // 28: loom.v1.GraphMemoryService.Neighbors:input_type -> loom.v1.NeighborsRequest
-	23, // 29: loom.v1.GraphMemoryService.Remember:input_type -> loom.v1.RememberRequest
-	25, // 30: loom.v1.GraphMemoryService.Recall:input_type -> loom.v1.RecallRequest
-	27, // 31: loom.v1.GraphMemoryService.Forget:input_type -> loom.v1.ForgetRequest
-	29, // 32: loom.v1.GraphMemoryService.Supersede:input_type -> loom.v1.SupersedeRequest
-	31, // 33: loom.v1.GraphMemoryService.Consolidate:input_type -> loom.v1.ConsolidateRequest
-	33, // 34: loom.v1.GraphMemoryService.ContextFor:input_type -> loom.v1.ContextForRequest
-	35, // 35: loom.v1.GraphMemoryService.GetGraphStats:input_type -> loom.v1.GetGraphStatsRequest
-	8,  // 36: loom.v1.GraphMemoryService.CreateEntity:output_type -> loom.v1.CreateEntityResponse
-	10, // 37: loom.v1.GraphMemoryService.GetEntity:output_type -> loom.v1.GetEntityResponse
-	12, // 38: loom.v1.GraphMemoryService.UpdateEntity:output_type -> loom.v1.UpdateEntityResponse
-	14, // 39: loom.v1.GraphMemoryService.ListEntities:output_type -> loom.v1.ListEntitiesResponse
-	16, // 40: loom.v1.GraphMemoryService.DeleteEntity:output_type -> loom.v1.DeleteEntityResponse
-	18, // 41: loom.v1.GraphMemoryService.Relate:output_type -> loom.v1.RelateResponse
-	20, // 42: loom.v1.GraphMemoryService.Unrelate:output_type -> loom.v1.UnrelateResponse
-	22, // 43: loom.v1.GraphMemoryService.Neighbors:output_type -> loom.v1.NeighborsResponse
-	24, // 44: loom.v1.GraphMemoryService.Remember:output_type -> loom.v1.RememberResponse
-	26, // 45: loom.v1.GraphMemoryService.Recall:output_type -> loom.v1.RecallResponse
-	28, // 46: loom.v1.GraphMemoryService.Forget:output_type -> loom.v1.ForgetResponse
-	30, // 47: loom.v1.GraphMemoryService.Supersede:output_type -> loom.v1.SupersedeResponse
-	32, // 48: loom.v1.GraphMemoryService.Consolidate:output_type -> loom.v1.ConsolidateResponse
-	34, // 49: loom.v1.GraphMemoryService.ContextFor:output_type -> loom.v1.ContextForResponse
-	36, // 50: loom.v1.GraphMemoryService.GetGraphStats:output_type -> loom.v1.GetGraphStatsResponse
-	36, // [36:51] is the sub-list for method output_type
-	21, // [21:36] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	1,  // 0: loom.v1.MemoryLineage.relation_type:type_name -> loom.v1.LineageRelationType
+	4,  // 1: loom.v1.ScoredMemory.memory:type_name -> loom.v1.GraphMemory
+	2,  // 2: loom.v1.EntityRecall.entity:type_name -> loom.v1.GraphEntity
+	6,  // 3: loom.v1.EntityRecall.memories:type_name -> loom.v1.ScoredMemory
+	3,  // 4: loom.v1.EntityRecall.edges_out:type_name -> loom.v1.GraphEdge
+	3,  // 5: loom.v1.EntityRecall.edges_in:type_name -> loom.v1.GraphEdge
+	39, // 6: loom.v1.GraphStats.memories_by_type:type_name -> loom.v1.GraphStats.MemoriesByTypeEntry
+	2,  // 7: loom.v1.CreateEntityResponse.entity:type_name -> loom.v1.GraphEntity
+	2,  // 8: loom.v1.GetEntityResponse.entity:type_name -> loom.v1.GraphEntity
+	2,  // 9: loom.v1.UpdateEntityResponse.entity:type_name -> loom.v1.GraphEntity
+	2,  // 10: loom.v1.ListEntitiesResponse.entities:type_name -> loom.v1.GraphEntity
+	3,  // 11: loom.v1.RelateResponse.edge:type_name -> loom.v1.GraphEdge
+	0,  // 12: loom.v1.NeighborsRequest.direction:type_name -> loom.v1.NeighborDirection
+	3,  // 13: loom.v1.NeighborsResponse.edges:type_name -> loom.v1.GraphEdge
+	2,  // 14: loom.v1.NeighborsResponse.entities:type_name -> loom.v1.GraphEntity
+	4,  // 15: loom.v1.RememberResponse.memory:type_name -> loom.v1.GraphMemory
+	6,  // 16: loom.v1.RecallResponse.memories:type_name -> loom.v1.ScoredMemory
+	4,  // 17: loom.v1.SupersedeResponse.new_memory:type_name -> loom.v1.GraphMemory
+	5,  // 18: loom.v1.SupersedeResponse.lineage:type_name -> loom.v1.MemoryLineage
+	4,  // 19: loom.v1.ConsolidateResponse.consolidated_memory:type_name -> loom.v1.GraphMemory
+	5,  // 20: loom.v1.ConsolidateResponse.lineage:type_name -> loom.v1.MemoryLineage
+	7,  // 21: loom.v1.ContextForResponse.recall:type_name -> loom.v1.EntityRecall
+	8,  // 22: loom.v1.GetGraphStatsResponse.stats:type_name -> loom.v1.GraphStats
+	9,  // 23: loom.v1.GraphMemoryService.CreateEntity:input_type -> loom.v1.CreateEntityRequest
+	11, // 24: loom.v1.GraphMemoryService.GetEntity:input_type -> loom.v1.GetEntityRequest
+	13, // 25: loom.v1.GraphMemoryService.UpdateEntity:input_type -> loom.v1.UpdateEntityRequest
+	15, // 26: loom.v1.GraphMemoryService.ListEntities:input_type -> loom.v1.ListEntitiesRequest
+	17, // 27: loom.v1.GraphMemoryService.DeleteEntity:input_type -> loom.v1.DeleteEntityRequest
+	19, // 28: loom.v1.GraphMemoryService.Relate:input_type -> loom.v1.RelateRequest
+	21, // 29: loom.v1.GraphMemoryService.Unrelate:input_type -> loom.v1.UnrelateRequest
+	23, // 30: loom.v1.GraphMemoryService.Neighbors:input_type -> loom.v1.NeighborsRequest
+	25, // 31: loom.v1.GraphMemoryService.Remember:input_type -> loom.v1.RememberRequest
+	27, // 32: loom.v1.GraphMemoryService.Recall:input_type -> loom.v1.RecallRequest
+	29, // 33: loom.v1.GraphMemoryService.Forget:input_type -> loom.v1.ForgetRequest
+	31, // 34: loom.v1.GraphMemoryService.Supersede:input_type -> loom.v1.SupersedeRequest
+	33, // 35: loom.v1.GraphMemoryService.Consolidate:input_type -> loom.v1.ConsolidateRequest
+	35, // 36: loom.v1.GraphMemoryService.ContextFor:input_type -> loom.v1.ContextForRequest
+	37, // 37: loom.v1.GraphMemoryService.GetGraphStats:input_type -> loom.v1.GetGraphStatsRequest
+	10, // 38: loom.v1.GraphMemoryService.CreateEntity:output_type -> loom.v1.CreateEntityResponse
+	12, // 39: loom.v1.GraphMemoryService.GetEntity:output_type -> loom.v1.GetEntityResponse
+	14, // 40: loom.v1.GraphMemoryService.UpdateEntity:output_type -> loom.v1.UpdateEntityResponse
+	16, // 41: loom.v1.GraphMemoryService.ListEntities:output_type -> loom.v1.ListEntitiesResponse
+	18, // 42: loom.v1.GraphMemoryService.DeleteEntity:output_type -> loom.v1.DeleteEntityResponse
+	20, // 43: loom.v1.GraphMemoryService.Relate:output_type -> loom.v1.RelateResponse
+	22, // 44: loom.v1.GraphMemoryService.Unrelate:output_type -> loom.v1.UnrelateResponse
+	24, // 45: loom.v1.GraphMemoryService.Neighbors:output_type -> loom.v1.NeighborsResponse
+	26, // 46: loom.v1.GraphMemoryService.Remember:output_type -> loom.v1.RememberResponse
+	28, // 47: loom.v1.GraphMemoryService.Recall:output_type -> loom.v1.RecallResponse
+	30, // 48: loom.v1.GraphMemoryService.Forget:output_type -> loom.v1.ForgetResponse
+	32, // 49: loom.v1.GraphMemoryService.Supersede:output_type -> loom.v1.SupersedeResponse
+	34, // 50: loom.v1.GraphMemoryService.Consolidate:output_type -> loom.v1.ConsolidateResponse
+	36, // 51: loom.v1.GraphMemoryService.ContextFor:output_type -> loom.v1.ContextForResponse
+	38, // 52: loom.v1.GraphMemoryService.GetGraphStats:output_type -> loom.v1.GetGraphStatsResponse
+	38, // [38:53] is the sub-list for method output_type
+	23, // [23:38] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_graph_memory_proto_init() }
@@ -2971,13 +3087,14 @@ func file_loom_v1_graph_memory_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_graph_memory_proto_rawDesc), len(file_loom_v1_graph_memory_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      2,
 			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_loom_v1_graph_memory_proto_goTypes,
 		DependencyIndexes: file_loom_v1_graph_memory_proto_depIdxs,
+		EnumInfos:         file_loom_v1_graph_memory_proto_enumTypes,
 		MessageInfos:      file_loom_v1_graph_memory_proto_msgTypes,
 	}.Build()
 	File_loom_v1_graph_memory_proto = out.File

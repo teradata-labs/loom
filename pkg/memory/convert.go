@@ -158,6 +158,18 @@ func MemoryFromProto(pb *loomv1.GraphMemory) *Memory {
 	return m
 }
 
+// lineageRelationToProto maps domain lineage relation strings to proto enum values.
+var lineageRelationToProto = map[string]loomv1.LineageRelationType{
+	LineageSupersedes:   loomv1.LineageRelationType_LINEAGE_RELATION_TYPE_SUPERSEDES,
+	LineageConsolidates: loomv1.LineageRelationType_LINEAGE_RELATION_TYPE_CONSOLIDATES,
+}
+
+// lineageRelationFromProto maps proto enum values to domain lineage relation strings.
+var lineageRelationFromProto = map[loomv1.LineageRelationType]string{
+	loomv1.LineageRelationType_LINEAGE_RELATION_TYPE_SUPERSEDES:   LineageSupersedes,
+	loomv1.LineageRelationType_LINEAGE_RELATION_TYPE_CONSOLIDATES: LineageConsolidates,
+}
+
 // LineageToProto converts a domain MemoryLineage to its proto representation.
 func LineageToProto(l *MemoryLineage) *loomv1.MemoryLineage {
 	if l == nil {
@@ -166,7 +178,7 @@ func LineageToProto(l *MemoryLineage) *loomv1.MemoryLineage {
 	return &loomv1.MemoryLineage{
 		NewMemoryId:  l.NewMemoryID,
 		OldMemoryId:  l.OldMemoryID,
-		RelationType: l.RelationType,
+		RelationType: lineageRelationToProto[l.RelationType],
 		CreatedAt:    l.CreatedAt.Unix(),
 	}
 }
@@ -179,7 +191,7 @@ func LineageFromProto(pb *loomv1.MemoryLineage) *MemoryLineage {
 	return &MemoryLineage{
 		NewMemoryID:  pb.NewMemoryId,
 		OldMemoryID:  pb.OldMemoryId,
-		RelationType: pb.RelationType,
+		RelationType: lineageRelationFromProto[pb.RelationType],
 		CreatedAt:    time.Unix(pb.CreatedAt, 0),
 	}
 }

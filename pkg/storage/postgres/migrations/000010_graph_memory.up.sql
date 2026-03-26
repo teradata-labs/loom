@@ -132,8 +132,8 @@ CREATE INDEX IF NOT EXISTS idx_graph_memory_entities_memory ON graph_memory_enti
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS graph_memory_lineage (
-    new_memory_id TEXT NOT NULL REFERENCES graph_memories(id),
-    old_memory_id TEXT NOT NULL REFERENCES graph_memories(id),
+    new_memory_id TEXT NOT NULL REFERENCES graph_memories(id) ON DELETE CASCADE,
+    old_memory_id TEXT NOT NULL REFERENCES graph_memories(id) ON DELETE CASCADE,
     relation_type TEXT NOT NULL DEFAULT 'SUPERSEDES',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (new_memory_id, old_memory_id)

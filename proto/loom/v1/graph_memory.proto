@@ -41,6 +41,25 @@ service GraphMemoryService {
 }
 
 // =============================================================================
+// Enums
+// =============================================================================
+
+// NeighborDirection specifies the traversal direction for graph neighbor queries.
+enum NeighborDirection {
+  NEIGHBOR_DIRECTION_UNSPECIFIED = 0;
+  NEIGHBOR_DIRECTION_OUTBOUND = 1;
+  NEIGHBOR_DIRECTION_INBOUND = 2;
+  NEIGHBOR_DIRECTION_BOTH = 3;
+}
+
+// LineageRelationType classifies memory lineage relationships.
+enum LineageRelationType {
+  LINEAGE_RELATION_TYPE_UNSPECIFIED = 0;
+  LINEAGE_RELATION_TYPE_SUPERSEDES = 1;
+  LINEAGE_RELATION_TYPE_CONSOLIDATES = 2;
+}
+
+// =============================================================================
 // Core Messages
 // =============================================================================
 
@@ -117,8 +136,7 @@ message GraphMemory {
 message MemoryLineage {
   string new_memory_id = 1;
   string old_memory_id = 2;
-  // SUPERSEDES or CONSOLIDATES.
-  string relation_type = 3;
+  LineageRelationType relation_type = 3;
   int64 created_at = 4;
 }
 
@@ -244,8 +262,8 @@ message NeighborsRequest {
   string entity_name = 2;
   // Filter by relation type (empty = all).
   string relation = 3;
-  // Direction: "outbound", "inbound", "both".
-  string direction = 4;
+  // Traversal direction (default: outbound).
+  NeighborDirection direction = 4;
   // Max traversal depth (default 1).
   int32 depth = 5;
 }

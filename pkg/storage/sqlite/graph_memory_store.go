@@ -30,17 +30,32 @@ import (
 
 // GraphMemoryStore implements memory.GraphMemoryStore for SQLite.
 type GraphMemoryStore struct {
-	db     *sql.DB
-	tc     memory.TokenCounter
-	tracer observability.Tracer
+	db      *sql.DB
+	tc      memory.TokenCounter
+	tracer  observability.Tracer
+	salConf memory.SalienceConfig
 }
 
 // NewGraphMemoryStore creates a new SQLite-backed graph memory store.
-func NewGraphMemoryStore(db *sql.DB, tc memory.TokenCounter, tracer observability.Tracer) *GraphMemoryStore {
+func NewGraphMemoryStore(db *sql.DB, tc memory.TokenCounter, tracer observability.Tracer, opts ...GraphMemoryOption) *GraphMemoryStore {
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
-	return &GraphMemoryStore{db: db, tc: tc, tracer: tracer}
+	s := &GraphMemoryStore{db: db, tc: tc, tracer: tracer, salConf: memory.DefaultSalienceConfig()}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// GraphMemoryOption configures a GraphMemoryStore.
+type GraphMemoryOption func(*GraphMemoryStore)
+
+// WithSalienceConfig overrides the default salience configuration.
+func WithSalienceConfig(cfg memory.SalienceConfig) GraphMemoryOption {
+	return func(s *GraphMemoryStore) {
+		s.salConf = cfg
+	}
 }
 
 // Compile-time interface check.
@@ -334,23 +349,28 @@ func (s *GraphMemoryStore) Neighbors(ctx context.Context, entityID string, relat
 }
 
 func (s *GraphMemoryStore) ListEdgesFrom(ctx context.Context, entityID string) ([]*memory.Edge, error) {
-	return s.listEdges(ctx, "source_id", entityID)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, agent_id, source_id, target_id, relation, properties_json, created_at, updated_at
+		 FROM graph_edges WHERE source_id = ? ORDER BY relation`, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("list edges from: %w", err)
+	}
+	defer rows.Close()
+	return scanEdgeRows(rows)
 }
 
 func (s *GraphMemoryStore) ListEdgesTo(ctx context.Context, entityID string) ([]*memory.Edge, error) {
-	return s.listEdges(ctx, "target_id", entityID)
-}
-
-func (s *GraphMemoryStore) listEdges(ctx context.Context, col, entityID string) ([]*memory.Edge, error) {
-	query := fmt.Sprintf(
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, agent_id, source_id, target_id, relation, properties_json, created_at, updated_at
-		 FROM graph_edges WHERE %s = ? ORDER BY relation`, col)
-	rows, err := s.db.QueryContext(ctx, query, entityID)
+		 FROM graph_edges WHERE target_id = ? ORDER BY relation`, entityID)
 	if err != nil {
-		return nil, fmt.Errorf("list edges: %w", err)
+		return nil, fmt.Errorf("list edges to: %w", err)
 	}
 	defer rows.Close()
+	return scanEdgeRows(rows)
+}
 
+func scanEdgeRows(rows *sql.Rows) ([]*memory.Edge, error) {
 	var edges []*memory.Edge
 	for rows.Next() {
 		e, err := scanEdgeFromRows(rows)
@@ -370,28 +390,7 @@ func (s *GraphMemoryStore) Remember(ctx context.Context, mem *memory.Memory) (*m
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.graph_memory.remember")
 	defer s.tracer.EndSpan(span)
 
-	if mem.ID == "" {
-		mem.ID = uuid.New().String()
-	}
-	now := time.Now().UTC()
-	mem.CreatedAt = now
-
-	// Precompute token counts.
-	if s.tc != nil {
-		mem.TokenCount = s.tc.CountTokens(mem.Content)
-		if mem.Summary != "" {
-			mem.SummaryTokenCount = s.tc.CountTokens(mem.Summary)
-		}
-	}
-
-	if mem.Salience == 0 {
-		mem.Salience = memory.DefaultSalience
-	}
-
-	tagsJSON, err := json.Marshal(mem.Tags)
-	if err != nil {
-		tagsJSON = []byte("[]")
-	}
+	s.prepareMemory(mem)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -399,35 +398,11 @@ func (s *GraphMemoryStore) Remember(ctx context.Context, mem *memory.Memory) (*m
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var expiresAt interface{}
-	if mem.ExpiresAt != nil {
-		expiresAt = mem.ExpiresAt.Format(time.RFC3339)
+	if err := insertMemoryTx(ctx, tx, mem); err != nil {
+		return nil, err
 	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO graph_memories
-		 (id, agent_id, content, summary, memory_type, source, source_id, owner, memory_agent_id,
-		  tags, salience, token_count, summary_token_count, access_count, properties_json,
-		  created_at, accessed_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime(?), NULL, ?)`,
-		mem.ID, mem.AgentID, mem.Content, mem.Summary, mem.MemoryType,
-		mem.Source, mem.SourceID, mem.Owner, mem.MemoryAgentID,
-		string(tagsJSON), mem.Salience, mem.TokenCount, mem.SummaryTokenCount,
-		mem.PropertiesJSON, now.Format(time.RFC3339), expiresAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert memory: %w", err)
-	}
-
-	// Link entities via junction table.
-	for _, eid := range mem.EntityIDs {
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)`,
-			mem.ID, eid, memory.RoleAbout,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("link entity %s: %w", eid, err)
-		}
+	if err := linkEntitiesTx(ctx, tx, mem.ID, mem.EntityIDs); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -584,7 +559,9 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 		for i, m := range memories {
 			ids[i] = m.ID
 		}
-		_ = s.TouchMemories(ctx, ids)
+		if err := s.TouchMemories(ctx, ids); err != nil {
+			span.RecordError(fmt.Errorf("touch memories after recall: %w", err))
+		}
 	}
 
 	return memories, nil
@@ -625,27 +602,30 @@ func (s *GraphMemoryStore) Supersede(ctx context.Context, oldMemoryID string, ne
 		newMem.Salience = oldSalience
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit lookup: %w", err)
+	s.prepareMemory(newMem)
+
+	if err := insertMemoryTx(ctx, tx, newMem); err != nil {
+		return nil, err
+	}
+	if err := linkEntitiesTx(ctx, tx, newMem.ID, newMem.EntityIDs); err != nil {
+		return nil, err
 	}
 
-	// Remember the new memory (this creates its own transaction).
-	created, err := s.Remember(ctx, newMem)
-	if err != nil {
-		return nil, fmt.Errorf("remember new: %w", err)
-	}
-
-	// Insert lineage.
-	_, err = s.db.ExecContext(ctx,
+	// Insert lineage within the same transaction.
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO graph_memory_lineage (new_memory_id, old_memory_id, relation_type, created_at)
 		 VALUES (?, ?, 'SUPERSEDES', datetime('now'))`,
-		created.ID, oldMemoryID,
+		newMem.ID, oldMemoryID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert lineage: %w", err)
 	}
 
-	return created, nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit supersede: %w", err)
+	}
+
+	return newMem, nil
 }
 
 func (s *GraphMemoryStore) Consolidate(ctx context.Context, memoryIDs []string, consolidated *memory.Memory) (*memory.Memory, error) {
@@ -681,60 +661,16 @@ func (s *GraphMemoryStore) Consolidate(ctx context.Context, memoryIDs []string, 
 		consolidated.Salience = maxSalience
 	}
 
-	// Insert the consolidated memory within the transaction.
-	if consolidated.ID == "" {
-		consolidated.ID = uuid.New().String()
-	}
-	now := time.Now().UTC()
-	consolidated.CreatedAt = now
+	s.prepareMemory(consolidated)
 
-	if s.tc != nil {
-		consolidated.TokenCount = s.tc.CountTokens(consolidated.Content)
-		if consolidated.Summary != "" {
-			consolidated.SummaryTokenCount = s.tc.CountTokens(consolidated.Summary)
-		}
+	if err := insertMemoryTx(ctx, tx, consolidated); err != nil {
+		return nil, err
 	}
-	if consolidated.Salience == 0 {
-		consolidated.Salience = memory.DefaultSalience
+	if err := linkEntitiesTx(ctx, tx, consolidated.ID, consolidated.EntityIDs); err != nil {
+		return nil, err
 	}
 
-	tagsJSON, err := json.Marshal(consolidated.Tags)
-	if err != nil {
-		tagsJSON = []byte("[]")
-	}
-
-	var expiresAt interface{}
-	if consolidated.ExpiresAt != nil {
-		expiresAt = consolidated.ExpiresAt.Format(time.RFC3339)
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO graph_memories
-		 (id, agent_id, content, summary, memory_type, source, source_id, owner, memory_agent_id,
-		  tags, salience, token_count, summary_token_count, access_count, properties_json,
-		  created_at, accessed_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime(?), NULL, ?)`,
-		consolidated.ID, consolidated.AgentID, consolidated.Content, consolidated.Summary, consolidated.MemoryType,
-		consolidated.Source, consolidated.SourceID, consolidated.Owner, consolidated.MemoryAgentID,
-		string(tagsJSON), consolidated.Salience, consolidated.TokenCount, consolidated.SummaryTokenCount,
-		consolidated.PropertiesJSON, now.Format(time.RFC3339), expiresAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert consolidated memory: %w", err)
-	}
-
-	// Link entities via junction table.
-	for _, eid := range consolidated.EntityIDs {
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)`,
-			consolidated.ID, eid, memory.RoleAbout,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("link entity %s: %w", eid, err)
-		}
-	}
-
-	// Insert lineage for each source and halve source salience.
+	// Insert lineage for each source and decay source salience.
 	for _, oldID := range memoryIDs {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO graph_memory_lineage (new_memory_id, old_memory_id, relation_type, created_at)
@@ -746,10 +682,11 @@ func (s *GraphMemoryStore) Consolidate(ctx context.Context, memoryIDs []string, 
 		}
 
 		_, err = tx.ExecContext(ctx,
-			`UPDATE graph_memories SET salience = salience * 0.5 WHERE id = ?`, oldID,
+			`UPDATE graph_memories SET salience = salience * ? WHERE id = ?`,
+			s.salConf.ConsolidationDecay, oldID,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("halve salience for %s: %w", oldID, err)
+			return nil, fmt.Errorf("decay salience for %s: %w", oldID, err)
 		}
 	}
 
@@ -834,7 +771,8 @@ func (s *GraphMemoryStore) ContextFor(ctx context.Context, opts memory.ContextFo
 	// Phase 1: Entity profile.
 	entity, err := s.GetEntity(ctx, opts.AgentID, opts.EntityName)
 	if err != nil {
-		return nil, fmt.Errorf("get entity for context: %w", err)
+		// Entity not found — return empty recall instead of crashing.
+		return &memory.EntityRecall{}, nil
 	}
 
 	result := &memory.EntityRecall{Entity: entity}
@@ -842,11 +780,15 @@ func (s *GraphMemoryStore) ContextFor(ctx context.Context, opts memory.ContextFo
 
 	// Phase 2: Graph neighborhood (1-hop).
 	edgesOut, err := s.ListEdgesFrom(ctx, entity.ID)
-	if err == nil {
+	if err != nil {
+		span.RecordError(fmt.Errorf("list edges from %s: %w", entity.ID, err))
+	} else {
 		result.EdgesOut = edgesOut
 	}
 	edgesIn, err := s.ListEdgesTo(ctx, entity.ID)
-	if err == nil {
+	if err != nil {
+		span.RecordError(fmt.Errorf("list edges to %s: %w", entity.ID, err))
+	} else {
 		result.EdgesIn = edgesIn
 	}
 	tokensUsed += budget.GraphBudget // Reserve for graph.
@@ -874,6 +816,7 @@ func (s *GraphMemoryStore) ContextFor(ctx context.Context, opts memory.ContextFo
 		Limit:     50,
 	})
 	if err != nil {
+		span.RecordError(fmt.Errorf("recall memories for %s: %w", opts.EntityName, err))
 		return result, nil // Partial result without memories.
 	}
 
@@ -902,42 +845,54 @@ func (s *GraphMemoryStore) GetStats(ctx context.Context, agentID string) (*memor
 
 	stats := &memory.GraphStats{MemoriesByType: make(map[string]int)}
 
-	_ = s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM graph_entities WHERE agent_id = ?`, agentID,
-	).Scan(&stats.EntityCount)
+	).Scan(&stats.EntityCount); err != nil {
+		return nil, fmt.Errorf("count entities: %w", err)
+	}
 
-	_ = s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM graph_edges WHERE agent_id = ?`, agentID,
-	).Scan(&stats.EdgeCount)
+	).Scan(&stats.EdgeCount); err != nil {
+		return nil, fmt.Errorf("count edges: %w", err)
+	}
 
-	_ = s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM graph_memories WHERE agent_id = ?`, agentID,
-	).Scan(&stats.MemoryCount)
+	).Scan(&stats.MemoryCount); err != nil {
+		return nil, fmt.Errorf("count memories: %w", err)
+	}
 
-	_ = s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM graph_memories WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > datetime('now'))`,
 		agentID,
-	).Scan(&stats.ActiveMemoryCount)
+	).Scan(&stats.ActiveMemoryCount); err != nil {
+		return nil, fmt.Errorf("count active memories: %w", err)
+	}
 
-	_ = s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(token_count), 0) FROM graph_memories WHERE agent_id = ?`, agentID,
-	).Scan(&stats.TotalMemoryTokens)
+	).Scan(&stats.TotalMemoryTokens); err != nil {
+		return nil, fmt.Errorf("sum memory tokens: %w", err)
+	}
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT memory_type, COUNT(*) FROM graph_memories WHERE agent_id = ? GROUP BY memory_type`, agentID,
 	)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var mtype string
-			var count int
-			if rows.Scan(&mtype, &count) == nil {
-				stats.MemoriesByType[mtype] = count
-			}
+	if err != nil {
+		return nil, fmt.Errorf("group memories by type: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mtype string
+		var count int
+		if err := rows.Scan(&mtype, &count); err != nil {
+			return nil, fmt.Errorf("scan memory type count: %w", err)
 		}
+		stats.MemoriesByType[mtype] = count
 	}
 
-	return stats, nil
+	return stats, rows.Err()
 }
 
 func (s *GraphMemoryStore) Close() error {
@@ -945,7 +900,71 @@ func (s *GraphMemoryStore) Close() error {
 }
 
 // =============================================================================
-// Helpers
+// Transaction Helpers
+// =============================================================================
+
+// prepareMemory initializes a memory's ID, timestamps, and token counts.
+func (s *GraphMemoryStore) prepareMemory(mem *memory.Memory) {
+	if mem.ID == "" {
+		mem.ID = uuid.New().String()
+	}
+	mem.CreatedAt = time.Now().UTC()
+	if s.tc != nil {
+		mem.TokenCount = s.tc.CountTokens(mem.Content)
+		if mem.Summary != "" {
+			mem.SummaryTokenCount = s.tc.CountTokens(mem.Summary)
+		}
+	}
+	if mem.Salience == 0 {
+		mem.Salience = memory.DefaultSalience
+	}
+}
+
+// insertMemoryTx inserts a memory row within an existing transaction.
+func insertMemoryTx(ctx context.Context, tx *sql.Tx, mem *memory.Memory) error {
+	tagsJSON, err := json.Marshal(mem.Tags)
+	if err != nil {
+		tagsJSON = []byte("[]")
+	}
+
+	var expiresAt interface{}
+	if mem.ExpiresAt != nil {
+		expiresAt = mem.ExpiresAt.Format(time.RFC3339)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO graph_memories
+		 (id, agent_id, content, summary, memory_type, source, source_id, owner, memory_agent_id,
+		  tags, salience, token_count, summary_token_count, access_count, properties_json,
+		  created_at, accessed_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime(?), NULL, ?)`,
+		mem.ID, mem.AgentID, mem.Content, mem.Summary, mem.MemoryType,
+		mem.Source, mem.SourceID, mem.Owner, mem.MemoryAgentID,
+		string(tagsJSON), mem.Salience, mem.TokenCount, mem.SummaryTokenCount,
+		mem.PropertiesJSON, mem.CreatedAt.Format(time.RFC3339), expiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert memory: %w", err)
+	}
+	return nil
+}
+
+// linkEntitiesTx links entity IDs to a memory via the junction table within a transaction.
+func linkEntitiesTx(ctx context.Context, tx *sql.Tx, memoryID string, entityIDs []string) error {
+	for _, eid := range entityIDs {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)`,
+			memoryID, eid, memory.RoleAbout,
+		)
+		if err != nil {
+			return fmt.Errorf("link entity %s: %w", eid, err)
+		}
+	}
+	return nil
+}
+
+// =============================================================================
+// Scan / Parse Helpers
 // =============================================================================
 
 func (s *GraphMemoryStore) loadMemoryEntityIDs(ctx context.Context, memoryID string) ([]string, error) {
@@ -1019,7 +1038,11 @@ func scanMemory(row *sql.Row) (*memory.Memory, error) {
 	}
 
 	m.CreatedAt = parseTime(createdAtStr)
-	_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
+	if tagsJSON != "" && tagsJSON != "null" {
+		if err := json.Unmarshal([]byte(tagsJSON), &m.Tags); err != nil {
+			return nil, fmt.Errorf("unmarshal tags for memory %s: %w", m.ID, err)
+		}
+	}
 
 	if accessedAt.Valid && accessedAt.String != "" {
 		t := parseTime(accessedAt.String)
@@ -1048,7 +1071,11 @@ func scanMemoryFromRows(rows *sql.Rows) (*memory.Memory, error) {
 	}
 
 	m.CreatedAt = parseTime(createdAtStr)
-	_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
+	if tagsJSON != "" && tagsJSON != "null" {
+		if err := json.Unmarshal([]byte(tagsJSON), &m.Tags); err != nil {
+			return nil, fmt.Errorf("unmarshal tags for memory %s: %w", m.ID, err)
+		}
+	}
 
 	if accessedAt.Valid && accessedAt.String != "" {
 		t := parseTime(accessedAt.String)

@@ -17,7 +17,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -522,6 +521,3 @@ func getStrSlice(input map[string]interface{}, key string) []string {
 
 // Compile-time check.
 var _ shuttle.Tool = (*GraphMemoryTool)(nil)
-
-// Unused but kept for documentation: ensure the fmt package is available.
-var _ = fmt.Sprintf

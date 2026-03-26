@@ -236,6 +236,112 @@ func TestGraphMemoryStore_Neighbors_Outbound(t *testing.T) {
 	assert.Len(t, edges, 2)
 }
 
+func TestGraphMemoryStore_Unrelate(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	e1, err := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "src", EntityType: "concept"})
+	require.NoError(t, err)
+	e2, err := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "tgt", EntityType: "concept"})
+	require.NoError(t, err)
+
+	_, err = store.Relate(ctx, &memory.Edge{
+		AgentID: "agent-1", SourceID: e1.ID, TargetID: e2.ID, Relation: "USES",
+	})
+	require.NoError(t, err)
+
+	// Verify edge exists.
+	edges, err := store.ListEdgesFrom(ctx, e1.ID)
+	require.NoError(t, err)
+	assert.Len(t, edges, 1)
+
+	// Unrelate.
+	err = store.Unrelate(ctx, e1.ID, e2.ID, "USES")
+	require.NoError(t, err)
+
+	// Verify edge removed.
+	edges, err = store.ListEdgesFrom(ctx, e1.ID)
+	require.NoError(t, err)
+	assert.Empty(t, edges, "edge should be removed after Unrelate")
+}
+
+func TestGraphMemoryStore_Neighbors_Inbound(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	// A -> B -> C (query inbound from C should find B->C, then A->B at depth 2)
+	a, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "a", EntityType: "concept"})
+	b, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "b", EntityType: "concept"})
+	c, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "c", EntityType: "concept"})
+
+	_, err := store.Relate(ctx, &memory.Edge{AgentID: "agent-1", SourceID: a.ID, TargetID: b.ID, Relation: "KNOWS"})
+	require.NoError(t, err)
+	_, err = store.Relate(ctx, &memory.Edge{AgentID: "agent-1", SourceID: b.ID, TargetID: c.ID, Relation: "KNOWS"})
+	require.NoError(t, err)
+
+	// Inbound depth 1 from C: only B->C
+	edges, err := store.Neighbors(ctx, c.ID, "", "inbound", 1)
+	require.NoError(t, err)
+	assert.Len(t, edges, 1)
+	assert.Equal(t, b.ID, edges[0].SourceID)
+
+	// Inbound depth 2 from C: B->C and A->B
+	edges, err = store.Neighbors(ctx, c.ID, "", "inbound", 2)
+	require.NoError(t, err)
+	assert.Len(t, edges, 2)
+}
+
+func TestGraphMemoryStore_Neighbors_Both(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	// A -> B -> C (query "both" from B should find both A->B and B->C)
+	a, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "a", EntityType: "concept"})
+	b, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "b", EntityType: "concept"})
+	c, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "c", EntityType: "concept"})
+
+	_, err := store.Relate(ctx, &memory.Edge{AgentID: "agent-1", SourceID: a.ID, TargetID: b.ID, Relation: "KNOWS"})
+	require.NoError(t, err)
+	_, err = store.Relate(ctx, &memory.Edge{AgentID: "agent-1", SourceID: b.ID, TargetID: c.ID, Relation: "KNOWS"})
+	require.NoError(t, err)
+
+	// Both from B: should find A->B and B->C
+	edges, err := store.Neighbors(ctx, b.ID, "", "both", 1)
+	require.NoError(t, err)
+	assert.Len(t, edges, 2)
+}
+
+func TestGraphMemoryStore_Neighbors_WithRelationFilter(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	a, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "a", EntityType: "concept"})
+	b, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "b", EntityType: "concept"})
+	c, _ := store.CreateEntity(ctx, &memory.Entity{AgentID: "agent-1", Name: "c", EntityType: "concept"})
+
+	_, err := store.Relate(ctx, &memory.Edge{AgentID: "agent-1", SourceID: a.ID, TargetID: b.ID, Relation: "KNOWS"})
+	require.NoError(t, err)
+	_, err = store.Relate(ctx, &memory.Edge{AgentID: "agent-1", SourceID: a.ID, TargetID: c.ID, Relation: "USES"})
+	require.NoError(t, err)
+
+	// Filter to KNOWS only.
+	edges, err := store.Neighbors(ctx, a.ID, "KNOWS", "outbound", 1)
+	require.NoError(t, err)
+	assert.Len(t, edges, 1)
+	assert.Equal(t, "KNOWS", edges[0].Relation)
+
+	// Filter to USES only.
+	edges, err = store.Neighbors(ctx, a.ID, "USES", "outbound", 1)
+	require.NoError(t, err)
+	assert.Len(t, edges, 1)
+	assert.Equal(t, "USES", edges[0].Relation)
+
+	// No filter returns both.
+	edges, err = store.Neighbors(ctx, a.ID, "", "outbound", 1)
+	require.NoError(t, err)
+	assert.Len(t, edges, 2)
+}
+
 // =============================================================================
 // Memory Tests
 // =============================================================================
@@ -410,6 +516,45 @@ func TestGraphMemoryStore_Consolidate(t *testing.T) {
 	}
 }
 
+func TestGraphMemoryStore_Consolidate_CustomDecay(t *testing.T) {
+	// Use a custom consolidation decay (0.25 instead of default 0.5).
+	db := newTestDB(t)
+	ctx := context.Background()
+	_, err := db.Exec("PRAGMA busy_timeout = 5000")
+	require.NoError(t, err)
+	migrator, err := NewMigrator(db, observability.NewNoOpTracer())
+	require.NoError(t, err)
+	require.NoError(t, migrator.MigrateUp(ctx))
+
+	cfg := memory.DefaultSalienceConfig()
+	cfg.ConsolidationDecay = 0.25
+	store := NewGraphMemoryStore(db, &mockTokenCounter{}, observability.NewNoOpTracer(), WithSalienceConfig(cfg))
+
+	// Create 2 memories with salience 0.8.
+	ids := make([]string, 2)
+	for i, content := range []string{"Fact A", "Fact B"} {
+		m, err := store.Remember(ctx, &memory.Memory{
+			AgentID: "agent-1", Content: content, MemoryType: memory.MemoryTypeFact, Salience: 0.8,
+		})
+		require.NoError(t, err)
+		ids[i] = m.ID
+	}
+
+	// Consolidate.
+	consolidated, err := store.Consolidate(ctx, ids, &memory.Memory{
+		AgentID: "agent-1", Content: "Combined A+B",
+	})
+	require.NoError(t, err)
+	assert.InDelta(t, 0.8, consolidated.Salience, 0.01) // max of originals
+
+	// Source salience should be 0.8 * 0.25 = 0.2 (not the default 0.4).
+	for _, id := range ids {
+		m, err := store.GetMemory(ctx, "agent-1", id)
+		require.NoError(t, err)
+		assert.InDelta(t, 0.2, m.Salience, 0.01, "should use custom consolidation decay 0.25")
+	}
+}
+
 func TestGraphMemoryStore_TouchMemories(t *testing.T) {
 	store := newTestGraphMemoryStore(t)
 	ctx := context.Background()
@@ -492,6 +637,22 @@ func TestGraphMemoryStore_ContextFor(t *testing.T) {
 	assert.Equal(t, "alice", recall.Entity.Name)
 	assert.NotEmpty(t, recall.EdgesOut)
 	assert.NotEmpty(t, recall.Memories)
+}
+
+func TestGraphMemoryStore_ContextFor_EntityNotFound(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	// ContextFor a nonexistent entity should return empty recall, not error.
+	recall, err := store.ContextFor(ctx, memory.ContextForOpts{
+		AgentID:    "agent-1",
+		EntityName: "nonexistent",
+		MaxTokens:  5000,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, recall)
+	assert.Nil(t, recall.Entity)
+	assert.Empty(t, recall.Memories)
 }
 
 // =============================================================================
@@ -676,6 +837,75 @@ func TestGraphMemoryStore_Recall_ByTags(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, memories, 1)
 	assert.Contains(t, memories[0].Tags, "important")
+}
+
+func TestGraphMemoryStore_Recall_CombinedFilters(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	// Create entity for scoping.
+	entity, err := store.CreateEntity(ctx, &memory.Entity{
+		AgentID: "agent-1", Name: "project-x", EntityType: "project",
+	})
+	require.NoError(t, err)
+
+	// Memory 1: fact, tagged "backend", linked to entity, salience 0.9
+	_, err = store.Remember(ctx, &memory.Memory{
+		AgentID: "agent-1", Content: "Project X uses Go for backend", MemoryType: memory.MemoryTypeFact,
+		Tags: []string{"backend", "go"}, Salience: 0.9, EntityIDs: []string{entity.ID},
+	})
+	require.NoError(t, err)
+
+	// Memory 2: preference, tagged "backend", linked to entity, salience 0.3
+	_, err = store.Remember(ctx, &memory.Memory{
+		AgentID: "agent-1", Content: "Team prefers gRPC over REST", MemoryType: memory.MemoryTypePreference,
+		Tags: []string{"backend", "api"}, Salience: 0.3, EntityIDs: []string{entity.ID},
+	})
+	require.NoError(t, err)
+
+	// Memory 3: fact, tagged "frontend", NOT linked to entity, salience 0.8
+	_, err = store.Remember(ctx, &memory.Memory{
+		AgentID: "agent-1", Content: "Frontend uses React", MemoryType: memory.MemoryTypeFact,
+		Tags: []string{"frontend"}, Salience: 0.8,
+	})
+	require.NoError(t, err)
+
+	// Combined filter: type=fact + tag=backend + entity scoped + min_salience=0.5
+	memories, err := store.Recall(ctx, memory.RecallOpts{
+		AgentID:     "agent-1",
+		MemoryType:  memory.MemoryTypeFact,
+		Tags:        []string{"backend"},
+		EntityIDs:   []string{entity.ID},
+		MinSalience: 0.5,
+		Limit:       10,
+	})
+	require.NoError(t, err)
+	require.Len(t, memories, 1, "should match only fact+backend+entity+high-salience")
+	assert.Contains(t, memories[0].Content, "Project X uses Go")
+}
+
+func TestGraphMemoryStore_Recall_MinSalience(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	// Create memories with varying salience.
+	for _, s := range []float64{0.2, 0.5, 0.8} {
+		_, err := store.Remember(ctx, &memory.Memory{
+			AgentID: "agent-1", Content: fmt.Sprintf("Memory with salience %.1f", s),
+			MemoryType: memory.MemoryTypeFact, Salience: s,
+		})
+		require.NoError(t, err)
+	}
+
+	// Recall with min_salience=0.6 should only return the 0.8 memory.
+	memories, err := store.Recall(ctx, memory.RecallOpts{
+		AgentID:     "agent-1",
+		MinSalience: 0.6,
+		Limit:       10,
+	})
+	require.NoError(t, err)
+	require.Len(t, memories, 1)
+	assert.InDelta(t, 0.8, memories[0].Salience, 0.01)
 }
 
 func TestGraphMemoryStore_EntityRecallFormat(t *testing.T) {

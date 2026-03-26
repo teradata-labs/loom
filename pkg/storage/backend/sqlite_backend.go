@@ -38,6 +38,7 @@ type SQLiteBackend struct {
 	resultStore       storage.ResultStore
 	humanRequestStore shuttle.HumanRequestStore
 	graphMemoryStore  memory.GraphMemoryStore
+	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
 	migrator          *sqlite.Migrator
 	dbPath            string
 	tracer            observability.Tracer
@@ -166,6 +167,7 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		resultStore:       resultStore,
 		humanRequestStore: humanStore,
 		graphMemoryStore:  graphMemoryStore,
+		graphMemDB:        graphMemDB,
 		migrator:          migrator,
 		dbPath:            dbPath,
 		tracer:            tracer,
@@ -268,6 +270,11 @@ func (b *SQLiteBackend) Close() error {
 	}
 	if err := b.humanRequestStore.Close(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("human request store close: %w", err)
+	}
+	if b.graphMemDB != nil {
+		if err := b.graphMemDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("graph memory db close: %w", err)
+		}
 	}
 
 	return firstErr
