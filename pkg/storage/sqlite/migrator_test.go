@@ -67,10 +67,10 @@ func TestMigrateUp_FreshDB(t *testing.T) {
 	assert.True(t, tableExists(t, db, "schema_migrations"),
 		"schema_migrations table should exist after MigrateUp")
 
-	// Verify CurrentVersion returns 1
+	// Verify CurrentVersion returns 2 (latest migration)
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, version, "version should be 1 after applying initial migration")
+	assert.Equal(t, 2, version, "version should be 2 after applying all migrations")
 
 	// Verify all expected tables exist
 	expectedTables := []string{
@@ -82,6 +82,11 @@ func TestMigrateUp_FreshDB(t *testing.T) {
 		"agent_errors",
 		"sql_result_metadata",
 		"human_requests",
+		"graph_entities",
+		"graph_edges",
+		"graph_memories",
+		"graph_memory_entities",
+		"graph_memory_lineage",
 	}
 	for _, table := range expectedTables {
 		assert.True(t, tableExists(t, db, table),
@@ -160,8 +165,8 @@ func TestBootstrap_PreMigrationDB(t *testing.T) {
 	// Verify version is 1 (bootstrapped)
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, version,
-		"version should be 1 after bootstrapping a pre-migration database")
+	assert.Equal(t, 2, version,
+		"version should be 2 after bootstrapping a pre-migration database")
 
 	// Verify the original data in sessions is still present
 	var sessionName string
@@ -206,8 +211,8 @@ func TestCurrentVersion_AfterMigrateUp(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, version,
-		"CurrentVersion should return 1 after applying all migrations")
+	assert.Equal(t, 2, version,
+		"CurrentVersion should return 2 after applying all migrations")
 }
 
 func TestMigrateDown(t *testing.T) {
@@ -223,10 +228,10 @@ func TestMigrateDown(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, version, "should be at version 1 before rollback")
+	assert.Equal(t, 2, version, "should be at version 2 before rollback")
 
-	// Now migrate down 1 step
-	err = migrator.MigrateDown(ctx, 1)
+	// Now migrate down all steps
+	err = migrator.MigrateDown(ctx, 2)
 	require.NoError(t, err)
 
 	// Verify CurrentVersion returns 0
@@ -245,6 +250,11 @@ func TestMigrateDown(t *testing.T) {
 		"agent_errors",
 		"sql_result_metadata",
 		"human_requests",
+		"graph_entities",
+		"graph_edges",
+		"graph_memories",
+		"graph_memory_entities",
+		"graph_memory_lineage",
 	}
 	for _, table := range droppedTables {
 		assert.False(t, tableExists(t, db, table),
@@ -267,5 +277,5 @@ func TestNewMigrator_NilTracer(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, version, "migration should succeed with nil tracer fallback")
+	assert.Equal(t, 2, version, "migration should succeed with nil tracer fallback")
 }

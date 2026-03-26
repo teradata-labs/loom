@@ -22,6 +22,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
@@ -36,6 +37,7 @@ type SQLiteBackend struct {
 	artifactStore     artifacts.ArtifactStore
 	resultStore       storage.ResultStore
 	humanRequestStore shuttle.HumanRequestStore
+	graphMemoryStore  memory.GraphMemoryStore
 	migrator          *sqlite.Migrator
 	dbPath            string
 	tracer            observability.Tracer
@@ -141,12 +143,29 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		)
 	}
 
+	// Create graph memory store (uses same DB path, separate connection).
+	graphMemDB, err := sql.Open("sqlite3", dbPath+"?_fk=1&_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for graph memory: %w", err),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			errorStore.Close(),
+			artifactStore.Close(),
+			resultStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	tc := agent.GetTokenCounter()
+	graphMemoryStore := sqlite.NewGraphMemoryStore(graphMemDB, tc, tracer)
+
 	return &SQLiteBackend{
 		sessionStore:      sessionStore,
 		errorStore:        errorStore,
 		artifactStore:     artifactStore,
 		resultStore:       resultStore,
 		humanRequestStore: humanStore,
+		graphMemoryStore:  graphMemoryStore,
 		migrator:          migrator,
 		dbPath:            dbPath,
 		tracer:            tracer,
@@ -254,7 +273,13 @@ func (b *SQLiteBackend) Close() error {
 	return firstErr
 }
 
+// GraphMemoryStore implements GraphMemoryProvider.
+func (b *SQLiteBackend) GraphMemoryStore() memory.GraphMemoryStore {
+	return b.graphMemoryStore
+}
+
 // Compile-time checks
 var _ StorageBackend = (*SQLiteBackend)(nil)
 var _ MigrationInspector = (*SQLiteBackend)(nil)
 var _ StorageDetailProvider = (*SQLiteBackend)(nil)
+var _ GraphMemoryProvider = (*SQLiteBackend)(nil)

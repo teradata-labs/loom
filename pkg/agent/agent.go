@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -886,6 +887,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -1077,6 +1079,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
 
 	if err != nil {
 		// Emit failure event
@@ -1310,6 +1313,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 	}
+
+	// Inject graph memory context (if enabled and available).
+	a.injectGraphMemoryContext(ctx, session)
 
 	// Get available tools
 	tools := a.tools.ListTools()
@@ -2323,6 +2329,95 @@ func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
 	// The tool's discovery is natural - agent sees it in tool list when needed
 }
 
+// checkAndRegisterGraphMemoryTool implements progressive disclosure for the graph_memory tool.
+// Registers the tool immediately if a graph memory store is configured and enabled.
+func (a *Agent) checkAndRegisterGraphMemoryTool() {
+	if a.tools.IsRegistered("graph_memory") {
+		return
+	}
+	if a.graphMemoryStore == nil {
+		return
+	}
+	if a.graphMemoryConfig != nil && !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.config.Name))
+	a.tools.Register(tool)
+}
+
+// graphMemoryTokenBudget returns the token budget for graph memory context injection.
+// Follows the same pattern as SegmentedMemory's L1 budget.
+func (a *Agent) graphMemoryTokenBudget() int {
+	if a.graphMemoryConfig == nil {
+		return 0
+	}
+	if a.graphMemoryConfig.MaxContextTokens > 0 {
+		return int(a.graphMemoryConfig.MaxContextTokens)
+	}
+	pct := a.graphMemoryConfig.ContextBudgetPercent
+	if pct == 0 {
+		pct = 10 // default 10%
+	}
+	if a.config.MaxContextTokens > 0 {
+		return a.config.MaxContextTokens * int(pct) / 100
+	}
+	// Default: 200K context → 10% = 20K tokens
+	return 200000 * int(pct) / 100
+}
+
+// injectGraphMemoryContext queries graph memory for the current topic and injects
+// relevant context into the conversation as a system message.
+func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
+	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	budget := a.graphMemoryTokenBudget()
+	if budget <= 0 {
+		return
+	}
+
+	// Extract topic from recent user messages.
+	topic := ""
+	msgs := session.GetMessages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && msgs[i].Content != "" {
+			topic = msgs[i].Content
+			if len(topic) > 200 {
+				topic = topic[:200]
+			}
+			break
+		}
+	}
+	if topic == "" {
+		return
+	}
+
+	// Query graph memory for context.
+	recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+		AgentID:    a.config.Name,
+		EntityName: a.config.Name,
+		Topic:      topic,
+		MaxTokens:  budget,
+	})
+	if err != nil || recall == nil || len(recall.Memories) == 0 {
+		return
+	}
+
+	// Format and inject as a system-level context note.
+	content := recall.Format()
+	if content == "" {
+		return
+	}
+
+	// Add as a system message so it appears in context without polluting conversation.
+	session.AddMessage(ctx, types.Message{
+		Role:    "system",
+		Content: "[Graph Memory Context]\n" + content,
+	})
+}
+
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
 	// Handle execution errors (tool didn't run)
 	if err != nil {
@@ -3089,6 +3184,14 @@ func WithReferenceStore(store communication.ReferenceStore) Option {
 func WithCommunicationPolicy(policy *communication.PolicyManager) Option {
 	return func(a *Agent) {
 		a.commPolicy = policy
+	}
+}
+
+// WithGraphMemoryStore sets the graph-backed episodic memory store.
+func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMemoryConfig) Option {
+	return func(a *Agent) {
+		a.graphMemoryStore = store
+		a.graphMemoryConfig = config
 	}
 }
 

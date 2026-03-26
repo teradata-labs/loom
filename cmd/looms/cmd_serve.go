@@ -49,6 +49,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
@@ -805,8 +806,16 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
 	errorStore := storageBackend.ErrorStore()
+
+	// Extract graph memory store if available (optional interface)
+	var graphMemoryStore memory.GraphMemoryStore
+	if gmp, ok := storageBackend.(backend.GraphMemoryProvider); ok {
+		graphMemoryStore = gmp.GraphMemoryStore()
+	}
+
 	logger.Info("Storage backend initialized",
-		zap.String("backend", config.Storage.Backend))
+		zap.String("backend", config.Storage.Backend),
+		zap.Bool("graph_memory_available", graphMemoryStore != nil))
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -1329,6 +1338,13 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
+
+				// Wire graph memory if available and configured
+				if graphMemoryStore != nil && cfg.Memory != nil && cfg.Memory.GetGraphMemory() != nil && cfg.Memory.GetGraphMemory().Enabled {
+					agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, cfg.Memory.GetGraphMemory()))
+					logger.Info("    Graph memory enabled",
+						zap.Int32("budget_percent", cfg.Memory.GetGraphMemory().ContextBudgetPercent))
+				}
 
 				// Add PermissionChecker if configured
 				if permissionChecker != nil {
