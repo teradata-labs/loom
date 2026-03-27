@@ -1035,7 +1035,8 @@ spec:
 	require.NotNil(t, yamlConfig.Agent.Memory.GraphMemory)
 
 	gmYAML := yamlConfig.Agent.Memory.GraphMemory
-	assert.True(t, gmYAML.Enabled)
+	require.NotNil(t, gmYAML.Enabled)
+	assert.True(t, *gmYAML.Enabled)
 	assert.Equal(t, 15, gmYAML.ContextBudgetPercent)
 	assert.Equal(t, 5000, gmYAML.MaxContextTokens)
 	assert.InDelta(t, 0.99, gmYAML.DecayRate, 0.001)
@@ -1075,4 +1076,38 @@ agent:
 	require.NoError(t, err)
 	require.NotNil(t, config.Memory)
 	assert.Nil(t, config.Memory.GraphMemory)
+}
+
+func TestGraphMemoryConfig_OptOutDefaultEnabled(t *testing.T) {
+	// When graph_memory section exists but enabled is not specified,
+	// it should default to true (opt-out behavior).
+	yamlContent := `
+agent:
+  name: opt-out-test
+  memory:
+    type: sqlite
+    graph_memory:
+      context_budget_percent: 20
+`
+	config, err := LoadConfigFromString(yamlContent)
+	require.NoError(t, err)
+	require.NotNil(t, config.Memory.GraphMemory)
+	assert.True(t, config.Memory.GraphMemory.Enabled, "graph_memory should default to enabled (opt-out)")
+	assert.Equal(t, int32(20), config.Memory.GraphMemory.ContextBudgetPercent)
+}
+
+func TestGraphMemoryConfig_OptOutExplicitDisable(t *testing.T) {
+	// When enabled is explicitly set to false, graph memory should be disabled.
+	yamlContent := `
+agent:
+  name: disabled-graph-test
+  memory:
+    type: sqlite
+    graph_memory:
+      enabled: false
+`
+	config, err := LoadConfigFromString(yamlContent)
+	require.NoError(t, err)
+	require.NotNil(t, config.Memory.GraphMemory)
+	assert.False(t, config.Memory.GraphMemory.Enabled, "graph_memory should be disabled when explicitly set to false")
 }

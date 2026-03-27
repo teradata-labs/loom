@@ -189,9 +189,11 @@ type MemoryConfigYAML struct {
 	GraphMemory                *GraphMemoryConfigYAML       `yaml:"graph_memory"`
 }
 
-// GraphMemoryConfigYAML represents graph memory configuration in YAML
+// GraphMemoryConfigYAML represents graph memory configuration in YAML.
+// Enabled is a *bool so we can distinguish "not set" (nil → defaults to true, opt-out)
+// from "explicitly set to false" (opt-out by the user).
 type GraphMemoryConfigYAML struct {
-	Enabled              bool    `yaml:"enabled"`
+	Enabled              *bool   `yaml:"enabled"`
 	ContextBudgetPercent int     `yaml:"context_budget_percent"`
 	MaxContextTokens     int     `yaml:"max_context_tokens"`
 	DecayRate            float64 `yaml:"decay_rate"`
@@ -791,7 +793,8 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 	return config
 }
 
-// parseGraphMemoryConfig converts YAML graph memory config to proto
+// parseGraphMemoryConfig converts YAML graph memory config to proto.
+// Graph memory is opt-out: if Enabled is nil (not specified), it defaults to true.
 func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConfig {
 	if yaml == nil {
 		return nil
@@ -810,8 +813,14 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		return nil
 	}
 
+	// Opt-out: default to enabled unless explicitly set to false
+	enabled := true
+	if yaml.Enabled != nil {
+		enabled = *yaml.Enabled
+	}
+
 	return &loomv1.GraphMemoryConfig{
-		Enabled:              yaml.Enabled,
+		Enabled:              enabled,
 		ContextBudgetPercent: contextBudgetPercent,
 		MaxContextTokens:     maxContextTokens,
 		DecayRate:            float32(yaml.DecayRate),
@@ -961,8 +970,9 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			MaxHistory: int(config.Memory.MaxHistory),
 		}
 		if config.Memory.GraphMemory != nil {
+			enabled := config.Memory.GraphMemory.Enabled
 			yaml.Agent.Memory.GraphMemory = &GraphMemoryConfigYAML{
-				Enabled:              config.Memory.GraphMemory.Enabled,
+				Enabled:              &enabled,
 				ContextBudgetPercent: int(config.Memory.GraphMemory.ContextBudgetPercent),
 				MaxContextTokens:     int(config.Memory.GraphMemory.MaxContextTokens),
 				DecayRate:            float64(config.Memory.GraphMemory.DecayRate),

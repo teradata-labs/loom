@@ -1339,11 +1339,21 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
 
-				// Wire graph memory if available and configured
-				if graphMemoryStore != nil && cfg.Memory != nil && cfg.Memory.GetGraphMemory() != nil && cfg.Memory.GetGraphMemory().Enabled {
-					agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, cfg.Memory.GetGraphMemory()))
-					logger.Info("    Graph memory enabled",
-						zap.Int32("budget_percent", cfg.Memory.GetGraphMemory().ContextBudgetPercent))
+				// Wire graph memory (opt-out: enabled by default when store is available).
+				// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
+				if graphMemoryStore != nil {
+					gmCfg := cfg.Memory.GetGraphMemory()
+					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
+					if !explicitlyDisabled {
+						if gmCfg == nil {
+							gmCfg = &loomv1.GraphMemoryConfig{Enabled: true}
+						}
+						agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+						logger.Info("    Graph memory enabled",
+							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
+					} else {
+						logger.Info("    Graph memory explicitly disabled")
+					}
 				}
 
 				// Add PermissionChecker if configured
