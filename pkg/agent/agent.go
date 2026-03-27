@@ -643,17 +643,20 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		romContent = LoadROMContent(a.config.Rom, backendPath)
 	}
 
+	// Resolve the base prompt from config, prompt registry, or fallback
+	var basePrompt string
+
 	// If agent has a custom system prompt in config, use it (takes priority)
 	if a.config != nil && a.config.SystemPrompt != "" {
-		// Combine ROM + System Prompt
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
+			basePrompt = romContent + "\n\n---\n\n" + a.config.SystemPrompt
+		} else {
+			basePrompt = a.config.SystemPrompt
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// Try loading from PromptRegistry as fallback
-	if a.prompts != nil {
+	if basePrompt == "" && a.prompts != nil {
 		patternCount := 0
 		if a.orchestrator != nil && a.orchestrator.GetLibrary() != nil {
 			patternCount = len(a.orchestrator.GetLibrary().ListAll())
@@ -680,40 +683,80 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		if streamingSupported {
 			prompt, err := a.prompts.Get(ctx, "agent.system_with_streaming", vars)
 			if err == nil && prompt != "" {
-				return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+				basePrompt = prompt
 			}
-			// Fall through to standard prompt if streaming prompt not found
 		}
 
-		// Try loading system prompt with patterns if pattern library is available
-		prompt, err := a.prompts.Get(ctx, "agent.system", vars)
-		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+		if basePrompt == "" {
+			// Try loading system prompt with patterns if pattern library is available
+			prompt, err := a.prompts.Get(ctx, "agent.system", vars)
+			if err == nil && prompt != "" {
+				basePrompt = prompt
+			}
 		}
 
-		// Fall back to basic system prompt
-		prompt, err = a.prompts.Get(ctx, "agent.system_basic", vars)
-		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+		if basePrompt == "" {
+			// Fall back to basic system prompt
+			prompt, err := a.prompts.Get(ctx, "agent.system_basic", vars)
+			if err == nil && prompt != "" {
+				basePrompt = prompt
+			}
 		}
 	}
 
-	// Fall back to config
-	if a.config.SystemPrompt != "" {
-		// Combine ROM + System Prompt
+	// Fall back to config (second check for non-nil config without SystemPrompt already set)
+	if basePrompt == "" && a.config.SystemPrompt != "" {
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
+			basePrompt = romContent + "\n\n---\n\n" + a.config.SystemPrompt
+		} else {
+			basePrompt = a.config.SystemPrompt
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// If we have ROM but no system prompt, just use ROM
-	if romContent != "" {
-		return formatSystemPromptWithDatetime(romContent, a.workflowCommContext)
+	if basePrompt == "" && romContent != "" {
+		basePrompt = romContent
 	}
 
 	// Final fallback - minimal instruction
-	return formatSystemPromptWithDatetime(`Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`, a.workflowCommContext)
+	if basePrompt == "" {
+		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
+	}
+
+	// Append graph memory instructions if graph memory is enabled
+	basePrompt += a.graphMemoryPromptSupplement()
+
+	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
+}
+
+// graphMemoryPromptSupplement returns instructions for agents with graph memory enabled.
+// Returns empty string when graph memory is not available.
+func (a *Agent) graphMemoryPromptSupplement() string {
+	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
+		return ""
+	}
+	return `
+
+---
+
+GRAPH MEMORY
+
+You have a graph_memory tool for persistent, cross-session knowledge.
+
+Store: remember — save facts, decisions, preferences, experiences, or failures with salience (0-1).
+Retrieve: recall — search by keywords, filter by type or tags, ranked by salience.
+Update: supersede — correct outdated info (preserves lineage). consolidate — merge related memories.
+Remove: forget — soft-delete a memory.
+Graph: relate — link entities (people, tools, projects) with typed relationships (USES, WORKS_ON, KNOWS_ABOUT, etc.). entities — browse the knowledge graph.
+Context: context_for — get an entity's full profile, relationships, and ranked memories within a token budget.
+
+When to use:
+- User shares identity, preferences, or project context → remember it.
+- User corrects something you stored → supersede the old memory.
+- User asks "what do you know about X" → recall or context_for.
+- You notice related entities → relate them.
+- Keep salience proportional to importance: critical decisions 0.8-1.0, casual facts 0.3-0.5.
+- Always include a short summary for budget-constrained retrieval.`
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
