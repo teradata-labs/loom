@@ -987,3 +987,92 @@ func TestConvertProtoToLLMConfigYAML(t *testing.T) {
 		})
 	}
 }
+
+func TestGraphMemoryConfig_YAMLRoundTrip(t *testing.T) {
+	// Test k8s-style YAML with graph_memory config
+	yamlContent := `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: graph-test
+spec:
+  system_prompt: "Test agent"
+  memory:
+    type: sqlite
+    max_history: 200
+    graph_memory:
+      enabled: true
+      context_budget_percent: 15
+      max_context_tokens: 5000
+      decay_rate: 0.99
+      boost_amount: 0.1
+      min_salience_threshold: 0.05
+      max_recall_candidates: 100
+      default_salience: 0.7
+  config:
+    max_turns: 50
+`
+	config, err := LoadConfigFromString(yamlContent)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify graph memory config was parsed
+	require.NotNil(t, config.Memory)
+	require.NotNil(t, config.Memory.GraphMemory)
+
+	gm := config.Memory.GraphMemory
+	assert.True(t, gm.Enabled)
+	assert.Equal(t, int32(15), gm.ContextBudgetPercent)
+	assert.Equal(t, int32(5000), gm.MaxContextTokens)
+	assert.InDelta(t, 0.99, float64(gm.DecayRate), 0.001)
+	assert.InDelta(t, 0.1, float64(gm.BoostAmount), 0.001)
+	assert.InDelta(t, 0.05, float64(gm.MinSalienceThreshold), 0.001)
+	assert.Equal(t, int32(100), gm.MaxRecallCandidates)
+	assert.InDelta(t, 0.7, float64(gm.DefaultSalience), 0.001)
+
+	// Test round-trip: proto -> YAML -> proto
+	yamlConfig := protoToYAML(config)
+	require.NotNil(t, yamlConfig.Agent.Memory.GraphMemory)
+
+	gmYAML := yamlConfig.Agent.Memory.GraphMemory
+	assert.True(t, gmYAML.Enabled)
+	assert.Equal(t, 15, gmYAML.ContextBudgetPercent)
+	assert.Equal(t, 5000, gmYAML.MaxContextTokens)
+	assert.InDelta(t, 0.99, gmYAML.DecayRate, 0.001)
+	assert.InDelta(t, 0.1, gmYAML.BoostAmount, 0.001)
+	assert.InDelta(t, 0.05, gmYAML.MinSalienceThreshold, 0.001)
+	assert.Equal(t, 100, gmYAML.MaxRecallCandidates)
+	assert.InDelta(t, 0.7, gmYAML.DefaultSalience, 0.001)
+}
+
+func TestGraphMemoryConfig_LegacyYAML(t *testing.T) {
+	// Test legacy format with graph_memory config
+	yamlContent := `
+agent:
+  name: legacy-graph-test
+  memory:
+    type: sqlite
+    graph_memory:
+      enabled: true
+      context_budget_percent: 10
+`
+	config, err := LoadConfigFromString(yamlContent)
+	require.NoError(t, err)
+	require.NotNil(t, config.Memory)
+	require.NotNil(t, config.Memory.GraphMemory)
+	assert.True(t, config.Memory.GraphMemory.Enabled)
+	assert.Equal(t, int32(10), config.Memory.GraphMemory.ContextBudgetPercent)
+}
+
+func TestGraphMemoryConfig_NilWhenNotConfigured(t *testing.T) {
+	yamlContent := `
+agent:
+  name: no-graph-test
+  memory:
+    type: sqlite
+`
+	config, err := LoadConfigFromString(yamlContent)
+	require.NoError(t, err)
+	require.NotNil(t, config.Memory)
+	assert.Nil(t, config.Memory.GraphMemory)
+}

@@ -75,10 +75,12 @@ func (t *GraphMemoryTool) InputSchema() *shuttle.JSONSchema {
 			"tags": {
 				Type:        "array",
 				Description: "(remember/recall/supersede/consolidate) Tags for filtering",
+				Items:       &shuttle.JSONSchema{Type: "string"},
 			},
 			"entity_ids": {
 				Type:        "array",
 				Description: "(remember/recall) Entity IDs to link or scope to",
+				Items:       &shuttle.JSONSchema{Type: "string"},
 			},
 			"salience": {
 				Type:        "number",
@@ -107,6 +109,7 @@ func (t *GraphMemoryTool) InputSchema() *shuttle.JSONSchema {
 			"memory_ids": {
 				Type:        "array",
 				Description: "(consolidate) Memory IDs to merge",
+				Items:       &shuttle.JSONSchema{Type: "string"},
 			},
 			"entity_name": {
 				Type:        "string",

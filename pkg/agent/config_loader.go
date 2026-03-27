@@ -186,6 +186,19 @@ type MemoryConfigYAML struct {
 	SharedMemoryThresholdBytes int64                        `yaml:"shared_memory_threshold_bytes"`
 	MaxToolResults             int                          `yaml:"max_tool_results"`
 	MemoryCompression          *MemoryCompressionConfigYAML `yaml:"memory_compression"`
+	GraphMemory                *GraphMemoryConfigYAML       `yaml:"graph_memory"`
+}
+
+// GraphMemoryConfigYAML represents graph memory configuration in YAML
+type GraphMemoryConfigYAML struct {
+	Enabled              bool    `yaml:"enabled"`
+	ContextBudgetPercent int     `yaml:"context_budget_percent"`
+	MaxContextTokens     int     `yaml:"max_context_tokens"`
+	DecayRate            float64 `yaml:"decay_rate"`
+	BoostAmount          float64 `yaml:"boost_amount"`
+	MinSalienceThreshold float64 `yaml:"min_salience_threshold"`
+	MaxRecallCandidates  int     `yaml:"max_recall_candidates"`
+	DefaultSalience      float64 `yaml:"default_salience"`
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -586,6 +599,11 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Memory.MemoryCompression = parseMemoryCompressionConfig(yaml.Agent.Memory.MemoryCompression)
 	}
 
+	// Convert graph memory config if specified
+	if yaml.Agent.Memory.GraphMemory != nil {
+		config.Memory.GraphMemory = parseGraphMemoryConfig(yaml.Agent.Memory.GraphMemory)
+	}
+
 	// Convert behavior config with safe integer conversions
 	maxIterations, err := safeInt32(yaml.Agent.Behavior.MaxIterations, "MaxIterations")
 	if err != nil {
@@ -773,6 +791,37 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 	return config
 }
 
+// parseGraphMemoryConfig converts YAML graph memory config to proto
+func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConfig {
+	if yaml == nil {
+		return nil
+	}
+
+	contextBudgetPercent, err := safeInt32(yaml.ContextBudgetPercent, "GraphMemory.ContextBudgetPercent")
+	if err != nil {
+		return nil
+	}
+	maxContextTokens, err := safeInt32(yaml.MaxContextTokens, "GraphMemory.MaxContextTokens")
+	if err != nil {
+		return nil
+	}
+	maxRecallCandidates, err := safeInt32(yaml.MaxRecallCandidates, "GraphMemory.MaxRecallCandidates")
+	if err != nil {
+		return nil
+	}
+
+	return &loomv1.GraphMemoryConfig{
+		Enabled:              yaml.Enabled,
+		ContextBudgetPercent: contextBudgetPercent,
+		MaxContextTokens:     maxContextTokens,
+		DecayRate:            float32(yaml.DecayRate),
+		BoostAmount:          float32(yaml.BoostAmount),
+		MinSalienceThreshold: float32(yaml.MinSalienceThreshold),
+		MaxRecallCandidates:  maxRecallCandidates,
+		DefaultSalience:      float32(yaml.DefaultSalience),
+	}
+}
+
 // expandEnvVars replaces ${VAR} or $VAR with environment variable values
 func expandEnvVars(s string) string {
 	return os.Expand(s, func(key string) string {
@@ -910,6 +959,18 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			Path:       config.Memory.Path,
 			DSN:        config.Memory.Dsn,
 			MaxHistory: int(config.Memory.MaxHistory),
+		}
+		if config.Memory.GraphMemory != nil {
+			yaml.Agent.Memory.GraphMemory = &GraphMemoryConfigYAML{
+				Enabled:              config.Memory.GraphMemory.Enabled,
+				ContextBudgetPercent: int(config.Memory.GraphMemory.ContextBudgetPercent),
+				MaxContextTokens:     int(config.Memory.GraphMemory.MaxContextTokens),
+				DecayRate:            float64(config.Memory.GraphMemory.DecayRate),
+				BoostAmount:          float64(config.Memory.GraphMemory.BoostAmount),
+				MinSalienceThreshold: float64(config.Memory.GraphMemory.MinSalienceThreshold),
+				MaxRecallCandidates:  int(config.Memory.GraphMemory.MaxRecallCandidates),
+				DefaultSalience:      float64(config.Memory.GraphMemory.DefaultSalience),
+			}
 		}
 	}
 
