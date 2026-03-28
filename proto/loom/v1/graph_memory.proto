@@ -1,0 +1,389 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// GraphMemoryService provides salience-driven graph-backed episodic memory.
+// Entities (mutable) represent current state. Memories (immutable/append-only)
+// represent historical record. The memory_entities junction table bridges
+// graph and episodic memory (many-to-many).
+service GraphMemoryService {
+  // Entity CRUD (mutable nodes representing current state)
+  rpc CreateEntity(CreateEntityRequest) returns (CreateEntityResponse);
+  rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
+  rpc UpdateEntity(UpdateEntityRequest) returns (UpdateEntityResponse);
+  rpc ListEntities(ListEntitiesRequest) returns (ListEntitiesResponse);
+  rpc DeleteEntity(DeleteEntityRequest) returns (DeleteEntityResponse);
+
+  // Edge CRUD (mutable directed relationships)
+  rpc Relate(RelateRequest) returns (RelateResponse);
+  rpc Unrelate(UnrelateRequest) returns (UnrelateResponse);
+  rpc Neighbors(NeighborsRequest) returns (NeighborsResponse);
+
+  // Memory operations (append-only, immutable content)
+  rpc Remember(RememberRequest) returns (RememberResponse);
+  rpc Recall(RecallRequest) returns (RecallResponse);
+  rpc Forget(ForgetRequest) returns (ForgetResponse);
+  rpc Supersede(SupersedeRequest) returns (SupersedeResponse);
+  rpc Consolidate(ConsolidateRequest) returns (ConsolidateResponse);
+
+  // Composite queries
+  rpc ContextFor(ContextForRequest) returns (ContextForResponse);
+
+  // Stats
+  rpc GetGraphStats(GetGraphStatsRequest) returns (GetGraphStatsResponse);
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+// NeighborDirection specifies the traversal direction for graph neighbor queries.
+enum NeighborDirection {
+  NEIGHBOR_DIRECTION_UNSPECIFIED = 0;
+  NEIGHBOR_DIRECTION_OUTBOUND = 1;
+  NEIGHBOR_DIRECTION_INBOUND = 2;
+  NEIGHBOR_DIRECTION_BOTH = 3;
+}
+
+// LineageRelationType classifies memory lineage relationships.
+enum LineageRelationType {
+  LINEAGE_RELATION_TYPE_UNSPECIFIED = 0;
+  LINEAGE_RELATION_TYPE_SUPERSEDES = 1;
+  LINEAGE_RELATION_TYPE_CONSOLIDATES = 2;
+}
+
+// =============================================================================
+// Core Messages
+// =============================================================================
+
+// GraphEntity is a mutable node representing current state.
+message GraphEntity {
+  string id = 1;
+  string agent_id = 2;
+  string name = 3;
+  // Entity type: person, tool, pattern, concept, project, device, etc.
+  string entity_type = 4;
+  // JSON blob for flexible attributes.
+  string properties_json = 5;
+  // Who created this entity.
+  string owner = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+}
+
+// GraphEdge is a mutable directed relationship between two entities.
+message GraphEdge {
+  string id = 1;
+  string agent_id = 2;
+  string source_id = 3;
+  string target_id = 4;
+  // Relation type: USES, FOLLOWS, KNOWS_ABOUT, PARENT_OF, WORKS_AT, etc.
+  string relation = 5;
+  // JSON blob for edge properties (since, strength, context).
+  string properties_json = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+}
+
+// GraphMemory is IMMUTABLE once created. Only accessed_at, access_count,
+// salience, and expires_at may be mutated (via specific engine operations).
+message GraphMemory {
+  string id = 1;
+  string agent_id = 2;
+  // The memory content (natural language).
+  string content = 3;
+  // Short version for budget-constrained retrieval.
+  string summary = 4;
+  // Memory type: fact, preference, decision, experience, failure, observation, consolidation.
+  string memory_type = 5;
+  // Source: conversation, observation, manual, agent.
+  string source = 6;
+  // Conversation or session ID.
+  string source_id = 7;
+  // Which person this memory belongs to.
+  string owner = 8;
+  // Which agent created this memory.
+  string memory_agent_id = 9;
+  repeated string tags = 10;
+  // Salience score 0.0-1.0. Governs retrieval priority.
+  float salience = 11;
+  // Precomputed at write time.
+  int32 token_count = 12;
+  // Precomputed for summary.
+  int32 summary_token_count = 13;
+  int32 access_count = 14;
+  // Linked entity IDs (via junction table).
+  repeated string entity_ids = 15;
+  // Type-specific structured data (decision reasoning, failure root cause, etc.).
+  string properties_json = 16;
+  int64 created_at = 17;
+  // 0 = never accessed.
+  int64 accessed_at = 18;
+  // 0 = never expires.
+  int64 expires_at = 19;
+  // True if superseded by a newer memory via lineage.
+  bool is_superseded = 20;
+}
+
+// MemoryLineage tracks SUPERSEDES and CONSOLIDATES chains.
+message MemoryLineage {
+  string new_memory_id = 1;
+  string old_memory_id = 2;
+  LineageRelationType relation_type = 3;
+  int64 created_at = 4;
+}
+
+// ScoredMemory is a memory with computed ranking scores.
+message ScoredMemory {
+  GraphMemory memory = 1;
+  // Salience after time decay.
+  float computed_salience = 2;
+  // BM25 / FTS rank.
+  float relevance_score = 3;
+  // Combined score (salience * relevance).
+  float combined_score = 4;
+  // True if summary was used instead of full content (budget).
+  bool used_summary = 5;
+}
+
+// EntityRecall is the composite result of a ContextFor query.
+message EntityRecall {
+  GraphEntity entity = 1;
+  repeated ScoredMemory memories = 2;
+  repeated GraphEdge edges_out = 3;
+  repeated GraphEdge edges_in = 4;
+  int32 total_tokens_used = 5;
+  int32 total_candidates = 6;
+}
+
+// GraphStats provides entity/memory/token counts.
+message GraphStats {
+  int32 entity_count = 1;
+  int32 edge_count = 2;
+  int32 memory_count = 3;
+  int32 active_memory_count = 4;
+  int32 total_memory_tokens = 5;
+  map<string, int32> memories_by_type = 6;
+}
+
+// =============================================================================
+// Entity RPCs
+// =============================================================================
+
+message CreateEntityRequest {
+  string agent_id = 1;
+  string name = 2;
+  string entity_type = 3;
+  string properties_json = 4;
+  string owner = 5;
+}
+
+message CreateEntityResponse {
+  GraphEntity entity = 1;
+}
+
+message GetEntityRequest {
+  string agent_id = 1;
+  string name = 2;
+}
+
+message GetEntityResponse {
+  GraphEntity entity = 1;
+}
+
+message UpdateEntityRequest {
+  string agent_id = 1;
+  string name = 2;
+  string entity_type = 3;
+  string properties_json = 4;
+}
+
+message UpdateEntityResponse {
+  GraphEntity entity = 1;
+}
+
+message ListEntitiesRequest {
+  string agent_id = 1;
+  string entity_type = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListEntitiesResponse {
+  repeated GraphEntity entities = 1;
+  int32 total_count = 2;
+}
+
+message DeleteEntityRequest {
+  string agent_id = 1;
+  string name = 2;
+}
+
+message DeleteEntityResponse {
+  bool success = 1;
+}
+
+// =============================================================================
+// Edge RPCs
+// =============================================================================
+
+message RelateRequest {
+  string agent_id = 1;
+  string source_name = 2;
+  string target_name = 3;
+  string relation = 4;
+  string properties_json = 5;
+}
+
+message RelateResponse {
+  GraphEdge edge = 1;
+}
+
+message UnrelateRequest {
+  string agent_id = 1;
+  string source_name = 2;
+  string target_name = 3;
+  string relation = 4;
+}
+
+message UnrelateResponse {
+  bool success = 1;
+}
+
+message NeighborsRequest {
+  string agent_id = 1;
+  string entity_name = 2;
+  // Filter by relation type (empty = all).
+  string relation = 3;
+  // Traversal direction (default: outbound).
+  NeighborDirection direction = 4;
+  // Max traversal depth (default 1).
+  int32 depth = 5;
+}
+
+message NeighborsResponse {
+  repeated GraphEdge edges = 1;
+  repeated GraphEntity entities = 2;
+}
+
+// =============================================================================
+// Memory RPCs
+// =============================================================================
+
+message RememberRequest {
+  string agent_id = 1;
+  string content = 2;
+  string summary = 3;
+  string memory_type = 4;
+  string source = 5;
+  string source_id = 6;
+  string owner = 7;
+  string memory_agent_id = 8;
+  repeated string tags = 9;
+  // Initial salience 0.0-1.0 (default 0.5).
+  float salience = 10;
+  // Entity IDs to link via junction table.
+  repeated string entity_ids = 11;
+  // Type-specific structured data.
+  string properties_json = 12;
+  // Optional expiration (0 = never).
+  int64 expires_at = 13;
+}
+
+message RememberResponse {
+  GraphMemory memory = 1;
+}
+
+message RecallRequest {
+  string agent_id = 1;
+  // FTS search query.
+  string query = 2;
+  // Filter by memory type (empty = all).
+  string memory_type = 3;
+  // Scope to specific entities (empty = all).
+  repeated string entity_ids = 4;
+  // Filter by tags.
+  repeated string tags = 5;
+  // Minimum salience threshold (default 0.1).
+  float min_salience = 6;
+  // Token budget (0 = no limit).
+  int32 max_tokens = 7;
+  // Max results (default 50).
+  int32 limit = 8;
+}
+
+message RecallResponse {
+  repeated ScoredMemory memories = 1;
+  int32 total_candidates = 2;
+  int32 total_tokens_used = 3;
+}
+
+message ForgetRequest {
+  string agent_id = 1;
+  string memory_id = 2;
+}
+
+message ForgetResponse {
+  bool success = 1;
+}
+
+message SupersedeRequest {
+  string agent_id = 1;
+  string old_memory_id = 2;
+  string new_content = 3;
+  string new_summary = 4;
+  repeated string new_tags = 5;
+  string new_properties_json = 6;
+}
+
+message SupersedeResponse {
+  GraphMemory new_memory = 1;
+  MemoryLineage lineage = 2;
+}
+
+message ConsolidateRequest {
+  string agent_id = 1;
+  repeated string memory_ids = 2;
+  string content = 3;
+  string summary = 4;
+  repeated string tags = 5;
+  // Optional override (default: max of originals).
+  float salience = 6;
+}
+
+message ConsolidateResponse {
+  GraphMemory consolidated_memory = 1;
+  repeated MemoryLineage lineage = 2;
+}
+
+// =============================================================================
+// Composite RPCs
+// =============================================================================
+
+message ContextForRequest {
+  string agent_id = 1;
+  string entity_name = 2;
+  // FTS query for relevant memories.
+  string topic = 3;
+  // Total token budget (default 2000).
+  int32 max_tokens = 4;
+}
+
+message ContextForResponse {
+  EntityRecall recall = 1;
+}
+
+message GetGraphStatsRequest {
+  string agent_id = 1;
+}
+
+message GetGraphStatsResponse {
+  GraphStats stats = 1;
+}

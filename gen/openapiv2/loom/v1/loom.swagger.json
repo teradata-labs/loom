@@ -5147,6 +5147,51 @@
       },
       "description": "GetUIAppResponse returns the app metadata and HTML content."
     },
+    "v1GraphMemoryConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether graph memory is enabled."
+        },
+        "contextBudgetPercent": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Memory budget as percentage of max context window (0-100).\nDefault: 10 (10% of context). For 200K context -\u003e 20K tokens.\nSet to 0 to use max_context_tokens instead."
+        },
+        "maxContextTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Fixed token budget (overrides context_budget_percent if \u003e 0).\nDefault: 0 (use percentage-based budget)."
+        },
+        "decayRate": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience decay rate per day. Default: 0.995.\n0.995^138 ~ 0.5 (half-life ~138 days)."
+        },
+        "boostAmount": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience boost per access. Default: 0.05."
+        },
+        "minSalienceThreshold": {
+          "type": "number",
+          "format": "float",
+          "description": "Minimum salience for recall. Default: 0.1."
+        },
+        "maxRecallCandidates": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Max memories to consider during recall. Default: 50."
+        },
+        "defaultSalience": {
+          "type": "number",
+          "format": "float",
+          "description": "Default salience for new memories. Default: 0.5."
+        }
+      },
+      "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
+    },
     "v1HITLRequestInfo": {
       "type": "object",
       "properties": {
@@ -6022,6 +6067,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Maximum number of tool results to keep in the conversation kernel.\n0 = use default (5). Higher values give the LLM more context from recent tool calls."
+        },
+        "graphMemory": {
+          "$ref": "#/definitions/v1GraphMemoryConfig",
+          "description": "Graph memory configuration for salience-driven episodic memory."
         }
       },
       "title": "MemoryConfig defines agent memory and session storage"

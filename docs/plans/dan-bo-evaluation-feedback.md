@@ -28,7 +28,7 @@
 
 **Root Cause (diagnosed):** See `docs/plans/circuit-breaker-diagnosis.md`
 
-**Status:** 🔴 Under active investigation — see circuit breaker fix branch
+**Status:** ✅ Fixed in v1.2.0 — CB now only counts truncated tool calls as failures; text responses that hit `max_tokens` clear the counter. Threshold raised from 3 to 8 (configurable via `output_token_cb_threshold` in agent YAML). See `docs/plans/circuit-breaker-diagnosis.md` for the archived diagnosis.
 
 ---
 
@@ -41,9 +41,9 @@
 **Action Items:**
 - [ ] Reproduce with the healthcare pipeline config
 - [ ] Run with `-race` to check for deadlocks
-- [ ] Add per-step timeout to pipeline executor (`pkg/orchestration/pipeline_executor.go`)
-- [ ] Add pipeline-level logging: which agent, which step, how long each step took
-- [ ] Investigate whether CB fires inside pipeline steps and swallows the error
+- [ ] Add per-step timeout to pipeline executor (`pkg/orchestration/pipeline_executor.go`) — note: `PipelineStage` proto has no `timeout_seconds` field yet
+- [ ] Add pipeline-level logging: which agent, which step, how long each step took — note: per-stage spans exist (`pipeline.stage.N`) and `AgentResult.DurationMs` is tracked, but no zap log line per stage duration
+- [x] Investigate whether CB fires inside pipeline steps and swallows the error — CB logic fixed in v1.2.0 (P0); text responses no longer trigger CB
 
 ---
 
@@ -55,9 +55,9 @@
 3. Multiple terminals required, unclear which does what
 
 **Action Items:**
-- [ ] Add port conflict detection at `looms serve` startup — print actionable message if 60051 is in use
+- [ ] Add port conflict detection at `looms serve` startup — print actionable message if 60051 is in use (📋 not yet implemented)
 - [ ] Separate quickstart paths for Anthropic API vs AWS Bedrock (with auth method clearly called out)
-- [ ] Add pre-flight check command: `loom doctor` that validates all dependencies and connectivity
+- [ ] Add pre-flight check command: `loom doctor` that validates all dependencies and connectivity (📋 not yet implemented — no `doctor` subcommand exists)
 
 ---
 
@@ -67,7 +67,7 @@
 **Assessment:** Likely external, but error messaging is insufficient.
 
 **Action Items:**
-- [ ] Improve Bedrock error messages to distinguish:
+- [ ] Improve Bedrock error messages to distinguish (📋 not yet implemented — `pkg/llm/bedrock/` does not classify AWS error codes):
   - Expired credentials
   - Rate limiting / throttling
   - Model access not provisioned (wrong region, not enabled in console)
@@ -92,9 +92,9 @@
 **Assessment:** This is partly configuration (Weaver-generated agents should have sensible defaults), partly a consequence of the CB bug (P0).
 
 **Action Items:**
-- [ ] Add `output_style: concise|balanced|comprehensive` field to agent config
+- [ ] Add `output_style: concise|balanced|comprehensive` field to agent config (📋 not in proto or config yet)
 - [ ] Weaver should default to `balanced` unless user specifies a reporting use case
-- [ ] Consider adding `max_output_tokens` as a first-class agent config field (not just system-level)
+- [ ] Consider adding `max_output_tokens` as a first-class agent config field — currently exists on `ModelInfo` in `loom.proto` but not on `AgentConfig` in `agent_config.proto`; `max_tokens` on `LLMConfig` controls overall token limit but is not output-specific
 
 ---
 
@@ -116,7 +116,7 @@
 | Pattern library | ✅ Works | No |
 | MCP / Teradata integration | ✅ Works | No |
 | Single agent queries | ✅ Works | No |
-| Output token CB | 🔴 Broken | **Yes — fires on legitimate responses** |
-| Multi-agent pipelines | ⚠️ Unstable | Yes for production demos |
+| Output token CB | ✅ Fixed (v1.2.0) | No — logic corrected, threshold configurable |
+| Multi-agent pipelines | ⚠️ Unstable | Yes for demos — CB fix (v1.2.0) may have resolved root cause but pipeline timeout not independently verified |
 | Setup / onboarding | ⚠️ Rough | Yes for customer-facing demos |
 | Error messages | ⚠️ Poor | No (confusing but not blocking) |

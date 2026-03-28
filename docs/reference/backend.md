@@ -1,9 +1,9 @@
 
 # Backend Reference
 
-Complete technical specification for Loom backend configuration and capabilities.
+Technical specification for Loom backend configuration.
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 **API Version**: loom/v1
 **Configuration Kind**: `Backend`
 
@@ -14,104 +14,117 @@ Complete technical specification for Loom backend configuration and capabilities
 - [Backend YAML Schema](#backend-yaml-schema)
 - [Backend Types](#backend-types)
   - [Postgres Backend](#postgres-backend)
+  - [MySQL Backend](#mysql-backend)
   - [SQLite Backend](#sqlite-backend)
-  - [REST API Backend](#rest-api-backend)
-  - [MCP Backend](#mcp-backend)
   - [File Backend](#file-backend)
-  - [MySQL Backend](#mysql-backend-planned)
-  - [MongoDB Backend](#mongodb-backend-planned)
-  - [GraphQL Backend](#graphql-backend-planned)
+  - [REST API Backend](#rest-api-backend)
+  - [GraphQL Backend](#graphql-backend)
+  - [gRPC Backend](#grpc-backend)
+  - [MCP Backend](#mcp-backend)
+  - [Supabase Backend](#supabase-backend)
+- [Authentication](#authentication)
 - [Common Configuration Fields](#common-configuration-fields)
-- [Capabilities](#capabilities)
-- [Connection Management](#connection-management)
 - [Schema Discovery](#schema-discovery)
 - [Tool Generation](#tool-generation)
 - [Health Checks](#health-checks)
+- [Connection Management](#connection-management)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
 
 
 ## Quick Reference
 
-| Backend Type | Status | Capabilities | Use Case |
-|--------------|--------|--------------|----------|
-| **postgres** | ✅ Implemented | Query, schema, tools | PostgreSQL databases |
-| **sqlite** | ✅ Implemented | Query, schema, tools | Local SQLite databases |
-| **rest** | ✅ Implemented | API calls, auth | REST APIs |
-| **mcp** | ✅ Implemented | Dynamic tools, resources | MCP servers (Teradata, GitHub, etc.) |
-| **file** | ✅ Implemented | File read, directory listing | Local file systems |
-| **mysql** | 📋 Planned | Query, schema, tools | MySQL databases |
-| **mongodb** | 📋 Planned | Document queries | MongoDB databases |
-| **graphql** | 📋 Planned | GraphQL queries | GraphQL APIs |
+| Backend Type | Status | Connection Config | Use Case |
+|--------------|--------|-------------------|----------|
+| **postgres** | ✅ Implemented | `database` | PostgreSQL databases |
+| **mysql** | ✅ Implemented | `database` | MySQL databases |
+| **sqlite** | ✅ Implemented | `database` | Local SQLite databases |
+| **file** | ✅ Implemented | `database` (dsn = base directory) | Local file systems |
+| **rest** | ✅ Implemented | `rest` | REST APIs |
+| **graphql** | ⚠️ Config validated, factory pending | `graphql` | GraphQL APIs |
+| **grpc** | ⚠️ Config validated, factory pending | `grpc` | gRPC services |
+| **mcp** | ✅ Implemented | `mcp` | MCP servers |
+| **supabase** | ✅ Implemented | `supabase` | Supabase hosted Postgres |
+
+All 9 types are accepted by the YAML config parser and validator. The graphql and grpc types parse and validate correctly but do not yet have factory implementations to instantiate a running backend.
 
 
 ## Backend YAML Schema
 
-All backends use the Kubernetes-style YAML format.
+All backends use the Kubernetes-style YAML format with environment variable expansion (`${VAR}`).
 
 ### Complete Schema
 
 ```yaml
-apiVersion: loom/v1        # Required: API version
-kind: Backend              # Required: Resource type
+apiVersion: loom/v1        # Required: Must be "loom/v1"
+kind: Backend              # Required: Must be "Backend"
 
-# Metadata section
+# Metadata
 name: string               # Required: Backend identifier
 description: string        # Optional: Human-readable description
 
 # Backend type
-type: string               # Required: postgres|sqlite|rest|mcp|file|mysql|mongodb|graphql
+type: string               # Required: postgres|mysql|sqlite|file|rest|graphql|grpc|mcp|supabase
 
-# Type-specific configuration
-database:                  # For SQL backends (postgres, sqlite, mysql)
-  dsn: string             # Required: Connection string
-  driver: string          # Optional: Driver name
-  max_connections: int    # Optional: Connection pool size
+# Type-specific connection configuration (exactly one required)
+database:                  # For: postgres, mysql, sqlite, file
+  dsn: string             # Required: Connection string (or base dir for file)
+  max_connections: int    # Optional: Pool size (default: 10)
   max_idle_connections: int # Optional: Idle connection limit
-  connection_timeout_seconds: int # Optional: Connection timeout
+  connection_timeout_seconds: int # Optional: Timeout (default: 30)
   enable_ssl: bool        # Optional: Enable SSL/TLS
-  ssl_cert_path: string   # Optional: SSL certificate path
+  ssl_cert_path: string   # Optional: Path to SSL CA certificate
 
-rest:                      # For REST API backend
+rest:                      # For: rest
   base_url: string        # Required: API base URL
-  auth:                   # Optional: Authentication
-    type: string          # bearer|basic|api_key
-    token: string         # For bearer auth
-    username: string      # For basic auth
-    password: string      # For basic auth
-    key: string           # For api_key auth
-    header: string        # For api_key auth (default: X-API-Key)
-  headers: map[string]string # Optional: Custom headers
-  timeout_seconds: int    # Optional: Request timeout
+  auth: AuthConfig        # Optional: See Authentication section
+  headers: map            # Optional: Custom HTTP headers
+  timeout_seconds: int    # Optional: Request timeout (default: 30)
   max_retries: int        # Optional: Retry attempts
 
-mcp:                       # For MCP backend
-  command: string         # Required: MCP server executable
-  transport: string       # Required: stdio|http|sse
-  env: map[string]string  # Optional: Environment variables
+graphql:                   # For: graphql
+  endpoint: string        # Required: GraphQL endpoint URL
+  auth: AuthConfig        # Optional: See Authentication section
+  headers: map            # Optional: Custom HTTP headers
+  timeout_seconds: int    # Optional: Request timeout (default: 30)
+
+grpc:                      # For: grpc
+  address: string         # Required: gRPC server address (host:port)
+  use_tls: bool           # Optional: Enable TLS
+  cert_path: string       # Optional: TLS certificate path
+  metadata: map           # Optional: gRPC metadata key-value pairs
+  timeout_seconds: int    # Optional: Request timeout (default: 30)
+
+mcp:                       # For: mcp
+  command: string         # Required for stdio transport
   args: []string          # Optional: Command arguments
+  env: map                # Optional: Environment variables
+  transport: string       # Optional: stdio|http|sse (default: stdio)
+  url: string             # Required for http/sse transport
+  working_dir: string     # Optional: Working directory for subprocess
 
-# Capabilities configuration
-capabilities:
-  query_execution: bool   # SQL query execution
-  schema_discovery: bool  # Schema introspection
-  metadata: bool          # Metadata access
-  resource_listing: bool  # Resource enumeration
-  custom_operations: bool # Backend-specific operations
+supabase:                  # For: supabase
+  project_ref: string     # Required: Supabase project reference
+  api_key: string         # Optional: Supabase anon/public API key
+  database_password: string # Required: Database password
+  pooler_mode: string     # Optional: session|transaction
+  enable_rls: bool        # Optional: Enable Row Level Security
+  database: string        # Optional: Database name (default: postgres)
+  max_pool_size: int      # Optional: Pool size (default: 10)
+  region: string          # Required: Supabase region (e.g., us-east-1)
+  pooler_host: string     # Optional: Custom pooler hostname
 
-# Schema discovery configuration
+# Shared optional sections
 schema_discovery:
   enabled: bool           # Enable schema discovery
   cache_ttl_seconds: int  # Schema cache TTL
-  include_tables: []string # Table whitelist (glob patterns)
-  exclude_tables: []string # Table blacklist (glob patterns)
+  include_tables: []string # Table whitelist
+  exclude_tables: []string # Table blacklist
 
-# Tool generation configuration
 tool_generation:
-  enable_all: bool        # Generate tools for all tables
+  enable_all: bool        # Generate tools for all resources
   tools: []string         # Explicit tool list
 
-# Health check configuration
 health_check:
   enabled: bool           # Enable health checks
   interval_seconds: int   # Check interval
@@ -124,109 +137,51 @@ health_check:
 
 ### Postgres Backend
 
-PostgreSQL database backend with full SQL capabilities.
+PostgreSQL database backend using the pgx driver.
 
 **Type**: `postgres`
 **Status**: ✅ Implemented
+**Driver**: `pgx` (pgx/v5/stdlib)
 
 #### Required Fields
 
-##### type
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"postgres"` |
+| `database.dsn` | `string` | PostgreSQL connection string |
 
-**Value**: `"postgres"`
-
-
-##### database.dsn
-
-**Type**: `string`
-**Required**: Yes
-**Format**: PostgreSQL connection string
-
-**Format**:
+**DSN format**:
 ```
 postgresql://[username[:password]@]host[:port]/database[?param=value]
 ```
 
-**Parameters**:
-- `sslmode` - SSL mode: `disable`, `require`, `verify-ca`, `verify-full`
+**DSN parameters**:
+- `sslmode` - `disable`, `require`, `verify-ca`, `verify-full`
 - `connect_timeout` - Connection timeout in seconds
 - `application_name` - Application identifier
 
-**Examples**:
-```yaml
-database:
-  dsn: postgresql://localhost:5432/loom_dev?sslmode=disable
-  dsn: postgresql://user:pass@prod.example.com:5432/analytics?sslmode=require
-  dsn: ${POSTGRES_URL}  # Environment variable expansion
-```
-
-
 #### Optional Fields
 
-##### database.max_connections
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `database.max_connections` | `int` | `10` | Maximum concurrent connections |
+| `database.max_idle_connections` | `int` | - | Idle connections retained |
+| `database.connection_timeout_seconds` | `int` | `30` | Connection timeout |
+| `database.enable_ssl` | `bool` | `false` | Enable SSL/TLS |
+| `database.ssl_cert_path` | `string` | - | Path to SSL CA certificate |
 
-**Type**: `int`
-**Default**: `10`
-**Range**: `1` - `1000`
-
-Maximum concurrent connections in pool.
-
-**Recommendation**:
-- Development: `5-10`
-- Production (single agent): `20-50`
-- Production (multi-agent): `10` per agent
-
-
-##### database.max_idle_connections
-
-**Type**: `int`
-**Default**: `2`
-**Range**: `1` - `max_connections`
-
-Maximum idle connections retained in pool.
-
-**Recommendation**: `max_connections / 4`
-
-
-##### database.connection_timeout_seconds
-
-**Type**: `int`
-**Default**: `30`
-**Range**: `1` - `300`
-
-Timeout for establishing new connections.
-
-
-##### database.enable_ssl
-
-**Type**: `bool`
-**Default**: `false`
-
-Enable SSL/TLS encryption for database connection.
-
-**Production**: Always set to `true` for production databases.
-
-
-##### database.ssl_cert_path
-
-**Type**: `string`
-**Required when**: `enable_ssl: true` and using `verify-ca` or `verify-full`
-
-Path to SSL CA certificate for server verification.
-
-
-#### Complete Postgres Example
+#### Example
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
 
 name: analytics-postgres
-description: Production PostgreSQL analytics database
+description: PostgreSQL analytics database
 type: postgres
 
 database:
-  dsn: postgresql://analytics_user@prod-db.example.com:5432/analytics?sslmode=require
+  dsn: postgresql://analytics_user@db.example.com:5432/analytics?sslmode=require
   max_connections: 20
   max_idle_connections: 5
   connection_timeout_seconds: 30
@@ -239,7 +194,6 @@ schema_discovery:
   include_tables:
     - users
     - orders
-    - products
     - analytics_*
   exclude_tables:
     - temp_*
@@ -256,193 +210,161 @@ health_check:
 ```
 
 
-### SQLite Backend
+### MySQL Backend
 
-Local SQLite database backend for development and testing.
+MySQL database backend using the go-sql-driver/mysql driver.
 
-**Type**: `sqlite`
+**Type**: `mysql`
 **Status**: ✅ Implemented
+**Driver**: `mysql` (go-sql-driver/mysql)
 
 #### Required Fields
 
-##### type
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"mysql"` |
+| `database.dsn` | `string` | MySQL connection string |
 
-**Value**: `"sqlite"`
-
-
-##### database.dsn
-
-**Type**: `string`
-**Required**: Yes
-**Format**: File path to SQLite database
-
-**Examples**:
-```yaml
-database:
-  dsn: ./loom.db           # Relative path
-  dsn: /var/lib/loom/data.db # Absolute path
-  dsn: :memory:            # In-memory database (testing only)
+**DSN format**:
+```
+user:password@tcp(host:port)/database
 ```
 
+#### Optional Fields
 
-##### database.driver
+Same as [Postgres optional fields](#optional-fields).
 
-**Type**: `string`
-**Default**: `sqlite3`
-**Value**: `"sqlite3"`
-
-SQLite driver name (always `sqlite3`).
-
-
-#### Capabilities
-
-SQLite backend supports:
-- ✅ Query execution
-- ✅ Schema discovery
-- ✅ Metadata access
-- ✅ Resource listing
-- ❌ Custom operations
-
-
-#### Complete SQLite Example
+#### Example
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
 
-name: sqlite-backend
+name: mysql-backend
+description: MySQL database backend
+type: mysql
+
+database:
+  dsn: ${MYSQL_DSN}
+  max_connections: 25
+  max_idle_connections: 5
+  connection_timeout_seconds: 30
+
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 3600
+
+tool_generation:
+  enable_all: true
+
+health_check:
+  enabled: true
+  interval_seconds: 300
+  timeout_seconds: 10
+  query: "SELECT 1"
+```
+
+
+### SQLite Backend
+
+Local SQLite database backend. Built with FTS5 support.
+
+**Type**: `sqlite`
+**Status**: ✅ Implemented
+**Driver**: `sqlite3` (internal `sqlitedriver` package — uses go-sqlcipher with CGO, or modernc.org/sqlite without CGO; requires `-tags fts5` build tag)
+
+#### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"sqlite"` |
+| `database.dsn` | `string` | File path to SQLite database |
+
+**DSN examples**:
+```yaml
+database:
+  dsn: ./loom.db           # Relative path
+  dsn: /var/lib/loom/data.db # Absolute path
+  dsn: :memory:            # In-memory (testing only)
+```
+
+#### Example
+
+```yaml
+apiVersion: loom/v1
+kind: Backend
+
+name: sqlite-local
 description: Local SQLite database for development
 type: sqlite
 
 database:
   dsn: ./examples/data/example.db
-  driver: sqlite3
 
-capabilities:
-  query_execution: true
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: false
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 600
+
+tool_generation:
+  enable_all: true
+```
+
+
+### File Backend
+
+Local file system backend. Uses the `database` config block, where `dsn` specifies the base directory.
+
+**Type**: `file`
+**Status**: ✅ Implemented
+
+The base directory is created automatically if it does not exist.
+
+#### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"file"` |
+| `database.dsn` | `string` | Base directory path for file operations |
+
+#### Example
+
+```yaml
+apiVersion: loom/v1
+kind: Backend
+
+name: file-backend
+description: File system backend for reading and analyzing files
+type: file
+
+database:
+  dsn: ./data
 ```
 
 
 ### REST API Backend
 
-REST API backend for HTTP-based services.
+HTTP-based REST API backend with authentication support.
 
 **Type**: `rest`
 **Status**: ✅ Implemented
 
 #### Required Fields
 
-##### type
-
-**Value**: `"rest"`
-
-
-##### rest.base_url
-
-**Type**: `string`
-**Required**: Yes
-**Format**: `http://` or `https://` URL
-
-Base URL for all API requests.
-
-**Examples**:
-```yaml
-rest:
-  base_url: https://api.github.com
-  base_url: https://my-api.example.com/v1
-  base_url: http://localhost:8080
-```
-
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"rest"` |
+| `rest.base_url` | `string` | API base URL (`http://` or `https://`) |
 
 #### Optional Fields
 
-##### rest.auth
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `rest.auth` | `AuthConfig` | - | See [Authentication](#authentication) |
+| `rest.headers` | `map[string]string` | - | Custom HTTP headers for all requests |
+| `rest.timeout_seconds` | `int` | `30` | Request timeout |
+| `rest.max_retries` | `int` | - | Maximum retry attempts |
 
-Authentication configuration.
-
-**Type**: `object`
-**Required**: No
-
-**Fields**:
-- `type` (string): `bearer` | `basic` | `api_key`
-- `token` (string): For `bearer` auth
-- `username` (string): For `basic` auth
-- `password` (string): For `basic` auth
-- `key` (string): For `api_key` auth
-- `header` (string): Header name for `api_key` (default: `X-API-Key`)
-
-**Examples**:
-
-Bearer token:
-```yaml
-rest:
-  auth:
-    type: bearer
-    token: ${GITHUB_TOKEN}
-```
-
-Basic auth:
-```yaml
-rest:
-  auth:
-    type: basic
-    username: admin
-    password: "{{keyring:api_password}}"
-```
-
-API key:
-```yaml
-rest:
-  auth:
-    type: api_key
-    key: ${API_KEY}
-    header: X-API-Key
-```
-
-
-##### rest.headers
-
-**Type**: `map[string]string`
-**Required**: No
-
-Custom HTTP headers for all requests.
-
-**Example**:
-```yaml
-rest:
-  headers:
-    Accept: application/vnd.github.v3+json
-    User-Agent: loom-agent/1.0
-    X-Custom-Header: value
-```
-
-
-##### rest.timeout_seconds
-
-**Type**: `int`
-**Default**: `30`
-**Range**: `1` - `300`
-
-Request timeout in seconds.
-
-
-##### rest.max_retries
-
-**Type**: `int`
-**Default**: `3`
-**Range**: `0` - `10`
-
-Maximum retry attempts for failed requests.
-
-**Retry conditions**: 5xx errors, connection timeouts, network errors
-**Backoff**: Exponential with jitter
-
-
-#### Complete REST API Example
+#### Example
 
 ```yaml
 apiVersion: loom/v1
@@ -471,10 +393,6 @@ tool_generation:
     - list_repositories
     - create_issue
     - get_pull_request
-    - create_pull_request
-    - list_issues
-    - get_user
-    - search_code
 
 health_check:
   enabled: true
@@ -483,142 +401,169 @@ health_check:
 ```
 
 
-### MCP Backend
+### GraphQL Backend
 
-Model Context Protocol backend for dynamic tool discovery.
+GraphQL API backend with authentication support.
 
-**Type**: `mcp`
-**Status**: ✅ Implemented
-**Protocol Version**: MCP 1.0
-**Transports**: `stdio`, `http`, `sse`
-
-MCP backends connect to external MCP servers (Teradata Vantage, GitHub, file systems, etc.) that expose tools and resources dynamically.
+**Type**: `graphql`
+**Status**: ⚠️ Config validated, factory pending (the YAML config is parsed and validated, but `NewBackend` in the factory does not yet instantiate a GraphQL backend)
 
 #### Required Fields
 
-##### type
-
-**Value**: `"mcp"`
-
-
-##### mcp.command
-
-**Type**: `string`
-**Required**: Yes
-
-Path to MCP server executable.
-
-**Examples**:
-```yaml
-mcp:
-  command: vantage-mcp            # From PATH
-  command: ~/bin/vantage-mcp      # Absolute path
-  command: ./vantage-mcp          # Relative path
-  command: python3                # With args (see mcp.args)
-```
-
-
-##### mcp.transport
-
-**Type**: `string`
-**Required**: Yes
-**Allowed values**: `stdio` | `http` | `sse`
-
-Transport mechanism for MCP communication.
-
-**stdio**: JSON-RPC over stdin/stdout (most common)
-**http**: HTTP-based JSON-RPC
-**sse**: Server-Sent Events
-
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"graphql"` |
+| `graphql.endpoint` | `string` | GraphQL endpoint URL |
 
 #### Optional Fields
 
-##### mcp.env
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `graphql.auth` | `AuthConfig` | - | See [Authentication](#authentication) |
+| `graphql.headers` | `map[string]string` | - | Custom HTTP headers |
+| `graphql.timeout_seconds` | `int` | `30` | Request timeout |
 
-**Type**: `map[string]string`
-**Required**: No
+#### Example
 
-Environment variables passed to MCP server process.
-
-**Environment variable expansion**:
-- `${VAR}` - Shell environment variable
-- `{{keyring:key_name}}` - Keyring-stored secret
-
-**Example**:
 ```yaml
-mcp:
-  env:
-    TD_USER: ${TD_USER}
-    TD_DEFAULT_HOST: prod.teradata.com
-    TD_PASSWORD: "{{keyring:td_password}}"
-    LOG_LEVEL: debug
+apiVersion: loom/v1
+kind: Backend
+
+name: graphql-backend
+description: GraphQL API backend with authentication
+type: graphql
+
+graphql:
+  endpoint: ${GRAPHQL_ENDPOINT}
+
+  auth:
+    type: bearer
+    token: ${GRAPHQL_TOKEN}
+    header_name: Authorization
+
+  headers:
+    Content-Type: application/json
+    Accept: application/json
+
+  timeout_seconds: 30
+
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 3600
 ```
 
 
-##### mcp.args
+### gRPC Backend
 
-**Type**: `[]string`
-**Required**: No
+gRPC service backend with TLS and metadata support.
 
-Command-line arguments for MCP server.
+**Type**: `grpc`
+**Status**: ⚠️ Config validated, factory pending (the YAML config is parsed and validated, but `NewBackend` in the factory does not yet instantiate a gRPC backend)
 
-**Example**:
+#### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"grpc"` |
+| `grpc.address` | `string` | gRPC server address (`host:port`) |
+
+#### Optional Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `grpc.use_tls` | `bool` | `false` | Enable TLS |
+| `grpc.cert_path` | `string` | - | TLS certificate path (resolved relative to YAML file) |
+| `grpc.metadata` | `map[string]string` | - | gRPC metadata key-value pairs |
+| `grpc.timeout_seconds` | `int` | `30` | Request timeout |
+
+#### Example
+
 ```yaml
-mcp:
-  command: python3
-  args:
-    - -m
-    - my_mcp_server
-    - --config
-    - /etc/mcp/config.json
+apiVersion: loom/v1
+kind: Backend
+
+name: grpc-backend
+description: gRPC service backend
+type: grpc
+
+grpc:
+  address: grpc.example.com:443
+  use_tls: true
+  cert_path: /etc/loom/certs/grpc-ca.crt
+  metadata:
+    x-api-key: ${GRPC_API_KEY}
+  timeout_seconds: 30
 ```
 
 
-#### Capabilities
+### MCP Backend
 
-MCP backends support dynamic capabilities based on MCP server:
-- ✅ Query execution (if server provides tools)
-- ✅ Schema discovery (via resources)
-- ✅ Metadata access (via resources)
-- ✅ Resource listing (MCP resources/list)
-- ✅ Custom operations (MCP server-specific)
+Model Context Protocol backend for dynamic tool and resource discovery. Connects to external MCP servers that expose tools via the MCP specification.
 
-**Tool discovery**: Automatic via MCP `tools/list` endpoint
-**Resource discovery**: Automatic via MCP `resources/list` endpoint
+**Type**: `mcp`
+**Status**: ✅ Implemented
+**Transports**: `stdio` (default), `http`, `sse`
 
+#### Required Fields
 
-#### MCP Backend Examples
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"mcp"` |
+| `mcp.command` | `string` | MCP server executable (required when transport is `stdio` or omitted) |
+| `mcp.url` | `string` | MCP server URL (required when transport is `http` or `sse`) |
 
-**Teradata Vantage via MCP**:
+**Transport rules**:
+- When `transport` is omitted or `"stdio"`: `command` is required, `url` is ignored
+- When `transport` is `"http"` or `"sse"`: `url` is required, `command` is not needed
+
+#### Optional Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mcp.transport` | `string` | `stdio` | Transport: `stdio`, `http`, or `sse` |
+| `mcp.args` | `[]string` | - | Command-line arguments for the MCP server |
+| `mcp.env` | `map[string]string` | - | Environment variables passed to MCP server process |
+| `mcp.working_dir` | `string` | - | Working directory for the subprocess |
+| `mcp.url` | `string` | - | URL for http/sse transport |
+
+#### stdio Example
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
 
 name: vantage-mcp-backend
-description: Teradata Vantage via MCP
+description: Teradata Vantage via MCP server
 type: mcp
 
 mcp:
   command: vantage-mcp
   transport: stdio
-  env: {}  # Credentials from looms config
-
-capabilities:
-  query_execution: true
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: true
+  env: {}
 ```
 
-**Python MCP Server**:
+#### http/sse Example
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
 
-name: python-mcp
+name: mcp-http-backend
+description: Remote MCP server via HTTP
+type: mcp
+
+mcp:
+  transport: http
+  url: http://localhost:8080/mcp
+```
+
+#### Python MCP Server Example
+
+```yaml
+apiVersion: loom/v1
+kind: Backend
+
+name: python-data-processor
 description: Python MCP server for data processing
 type: mcp
 
@@ -627,199 +572,121 @@ mcp:
   transport: stdio
   args:
     - -m
-    - my_data_server
+    - my_mcp_server
+    - --config
+    - /etc/mcp/config.json
   env:
     DATA_PATH: /var/data
     LOG_LEVEL: info
-
-capabilities:
-  query_execution: false
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: true
-```
-
-**HTTP MCP Server**:
-
-```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: http-mcp
-description: HTTP-based MCP server
-type: mcp
-
-mcp:
-  command: mcp-http-client
-  transport: http
-  args:
-    - --url
-    - https://mcp.example.com
-  env:
-    API_KEY: ${MCP_API_KEY}
-
-capabilities:
-  query_execution: true
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: true
+  working_dir: /opt/mcp
 ```
 
 
-### File Backend
+### Supabase Backend
 
-Local file system backend for file operations.
+Supabase hosted Postgres backend with native pgxpool, connection pooling via Supavisor, and Row Level Security (RLS) support.
 
-**Type**: `file`
+**Type**: `supabase`
 **Status**: ✅ Implemented
 
 #### Required Fields
 
-##### type
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be `"supabase"` |
+| `supabase.project_ref` | `string` | Supabase project reference (from dashboard) |
+| `supabase.database_password` | `string` | Database password |
+| `supabase.region` | `string` | Supabase region (e.g., `us-east-1`) |
 
-**Value**: `"file"`
+#### Optional Fields
 
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `supabase.api_key` | `string` | - | Supabase anon/public API key (for RLS context) |
+| `supabase.pooler_mode` | `string` | unspecified | `session` or `transaction` |
+| `supabase.enable_rls` | `bool` | `false` | Enable Row Level Security context injection |
+| `supabase.database` | `string` | `postgres` | Database name |
+| `supabase.max_pool_size` | `int` | `10` | Maximum connection pool size |
+| `supabase.pooler_host` | `string` | - | Custom pooler hostname (defaults to `aws-0-{region}.pooler.supabase.com`) |
 
-##### database.dsn
-
-**Type**: `string`
-**Required**: Yes
-**Format**: Directory path (root directory for file operations)
-
-**Examples**:
-```yaml
-database:
-  dsn: ./data              # Relative path
-  dsn: /var/lib/loom/files # Absolute path
-  dsn: ~/Documents         # Home directory expansion
-```
-
-
-#### Capabilities
-
-File backend supports:
-- ❌ Query execution (no SQL)
-- ✅ Schema discovery (directory listing)
-- ✅ Metadata access (file stats)
-- ✅ Resource listing (file enumeration)
-- ❌ Custom operations
-
-
-#### Complete File Backend Example
+#### Example
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
 
-name: file-backend
-description: Local file system access
-type: file
+name: supabase-backend
+description: Supabase database backend with RLS and connection pooling
+type: supabase
 
-database:
-  dsn: ./data
-
-capabilities:
-  query_execution: false
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: false
-```
-
-
-### MySQL Backend (Planned)
-
-MySQL database backend.
-
-**Type**: `mysql`
-**Status**: 📋 Planned for v1.0
-**Current Workaround**: None (use Postgres or SQLite for SQL)
-
-#### Planned Configuration
-
-```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: mysql-backend
-type: mysql
-
-database:
-  dsn: mysql://user:pass@localhost:3306/dbname
-  max_connections: 20
-  max_idle_connections: 5
-  connection_timeout_seconds: 30
-  enable_ssl: true
+supabase:
+  project_ref: ${SUPABASE_PROJECT_REF}
+  api_key: ${SUPABASE_ANON_KEY}
+  database_password: ${SUPABASE_DB_PASSWORD}
+  pooler_mode: transaction
+  enable_rls: true
+  database: postgres
+  max_pool_size: 15
+  region: us-east-1
 
 schema_discovery:
   enabled: true
-  cache_ttl_seconds: 3600
-
-tool_generation:
-  enable_all: true
+  cache_ttl_seconds: 1800
+  exclude_tables:
+    - _migration_*
 
 health_check:
   enabled: true
   interval_seconds: 60
+  timeout_seconds: 5
   query: "SELECT 1"
 ```
 
 
-### MongoDB Backend (Planned)
+## Authentication
 
-MongoDB database backend for document operations.
+The `AuthConfig` block is used by `rest` and `graphql` backends.
 
-**Type**: `mongodb`
-**Status**: 📋 Planned for v1.0
-**Current Workaround**: None
+### Auth Config Fields
 
-#### Planned Configuration
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Required. One of: `bearer`, `basic`, `apikey`, `oauth2` |
+| `token` | `string` | Required for `bearer` and `apikey` types |
+| `username` | `string` | Required for `basic` type |
+| `password` | `string` | Required for `basic` type |
+| `header_name` | `string` | Optional. Custom header name for `apikey` type |
 
+### Auth Type Examples
+
+**Bearer token**:
 ```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: mongodb-backend
-type: mongodb
-
-database:
-  dsn: mongodb://localhost:27017/loom
-  max_connections: 10
-
-capabilities:
-  query_execution: true
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: true
+auth:
+  type: bearer
+  token: ${API_TOKEN}
 ```
 
-
-### GraphQL Backend (Planned)
-
-GraphQL API backend.
-
-**Type**: `graphql`
-**Status**: 📋 Planned for v1.0
-**Current Workaround**: Use REST backend with GraphQL endpoints
-
-#### Planned Configuration
-
+**Basic auth**:
 ```yaml
-apiVersion: loom/v1
-kind: Backend
+auth:
+  type: basic
+  username: admin
+  password: ${API_PASSWORD}
+```
 
-name: graphql-backend
-type: graphql
+**API key**:
+```yaml
+auth:
+  type: apikey
+  token: ${API_KEY}
+  header_name: X-API-Key
+```
 
-rest:
-  base_url: https://api.github.com/graphql
-  auth:
-    type: bearer
-    token: ${GITHUB_TOKEN}
-  timeout_seconds: 30
+**OAuth2**:
+```yaml
+auth:
+  type: oauth2
+  token: ${OAUTH_TOKEN}
 ```
 
 
@@ -833,7 +700,7 @@ These fields apply to all backend types.
 **Required**: Yes
 **Value**: `loom/v1`
 
-Loom API version for backend configuration.
+Must be exactly `"loom/v1"`. Validation fails for any other value.
 
 
 ### kind
@@ -842,145 +709,213 @@ Loom API version for backend configuration.
 **Required**: Yes
 **Value**: `Backend`
 
-Resource type identifier.
+Must be exactly `"Backend"`.
 
 
 ### name
 
 **Type**: `string`
 **Required**: Yes
-**Format**: Lowercase alphanumeric with hyphens
-**Regex**: `^[a-z][a-z0-9-]*$`
 
-Unique backend identifier used in agent configuration.
-
-**Example**:
-```yaml
-name: analytics-postgres
-name: github-api
-name: vantage-mcp-backend
-```
+Unique backend identifier. Used to reference the backend in agent configurations.
 
 
 ### description
 
 **Type**: `string`
 **Required**: No
-**Length**: 10-500 characters
 
-Human-readable description of backend purpose.
-
-**Example**:
-```yaml
-description: Production PostgreSQL analytics database
-description: GitHub REST API for repository management
-description: Teradata Vantage via MCP server
-```
+Human-readable description of the backend's purpose.
 
 
 ### type
 
 **Type**: `string`
 **Required**: Yes
-**Allowed values**: `postgres` | `sqlite` | `rest` | `mcp` | `file` | `mysql` | `mongodb` | `graphql`
+**Allowed values**: `postgres` | `mysql` | `sqlite` | `file` | `rest` | `graphql` | `grpc` | `mcp` | `supabase`
 
-Backend implementation type.
-
-
-## Capabilities
-
-Backend capabilities define available operations.
-
-### capabilities.query_execution
-
-**Type**: `bool`
-**Default**: Varies by backend type
-
-Supports SQL query execution (SQL backends only).
-
-**Supported**:
-- ✅ Postgres
-- ✅ SQLite
-- ✅ MySQL (planned)
-- ✅ MCP (if server provides tools)
-- ❌ REST
-- ❌ File
+Backend implementation type. Determines which connection config block is required.
 
 
-### capabilities.schema_discovery
+## Schema Discovery
 
-**Type**: `bool`
-**Default**: Varies by backend type
+Automatic discovery of backend schema (tables, columns, types).
 
-Supports schema introspection (table/column discovery).
+### Fields
 
-**Supported**: All backends
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `schema_discovery.enabled` | `bool` | - | Enable schema discovery |
+| `schema_discovery.cache_ttl_seconds` | `int` | - | Schema cache time-to-live |
+| `schema_discovery.include_tables` | `[]string` | - | Table whitelist (glob patterns) |
+| `schema_discovery.exclude_tables` | `[]string` | - | Table blacklist (glob patterns) |
+
+### Example
+
+```yaml
+schema_discovery:
+  enabled: true
+  cache_ttl_seconds: 3600
+  include_tables:
+    - users
+    - orders
+    - analytics_*
+  exclude_tables:
+    - temp_*
+    - staging_*
+```
+
+`exclude_tables` takes priority over `include_tables`.
 
 
-### capabilities.metadata
+## Tool Generation
 
-**Type**: `bool`
-**Default**: Varies by backend type
+Automatic tool generation from backend resources.
 
-Supports metadata access (table stats, column types, constraints).
+### Fields
 
-**Supported**: All backends
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tool_generation.enable_all` | `bool` | `false` | Generate tools for all discovered resources |
+| `tool_generation.tools` | `[]string` | - | Explicit list of tools to generate |
+
+### Example
+
+```yaml
+tool_generation:
+  enable_all: false
+  tools:
+    - query_users
+    - query_orders
+    - list_repositories
+```
+
+MCP backends discover tools automatically via the MCP `tools/list` endpoint, so `tool_generation` is typically not needed for MCP.
 
 
-### capabilities.resource_listing
+## Health Checks
 
-**Type**: `bool`
-**Default**: Varies by backend type
+Periodic backend health verification.
 
-Supports resource enumeration (tables, files, endpoints).
+### Fields
 
-**Supported**: All backends
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `health_check.enabled` | `bool` | - | Enable periodic health checks |
+| `health_check.interval_seconds` | `int` | - | Interval between checks |
+| `health_check.timeout_seconds` | `int` | - | Check timeout |
+| `health_check.query` | `string` | - | Health check query (SQL backends) |
 
+### Example
 
-### capabilities.custom_operations
-
-**Type**: `bool`
-**Default**: `false`
-
-Supports backend-specific operations (e.g., Teradata-specific SQL extensions).
-
-**Supported**:
-- ✅ MCP (server-dependent)
-- ❌ Standard SQL backends
-- ❌ REST
-- ❌ File
+```yaml
+health_check:
+  enabled: true
+  interval_seconds: 60
+  timeout_seconds: 5
+  query: "SELECT 1"
+```
 
 
 ## Connection Management
 
-### Connection Pooling
+### Connection Pooling (SQL Backends)
 
-SQL backends (Postgres, SQLite, MySQL) use connection pooling for performance.
+SQL backends (postgres, mysql, sqlite) use Go's `database/sql` connection pooling.
 
 **Configuration**:
 ```yaml
 database:
-  max_connections: 20        # Pool size
-  max_idle_connections: 5    # Idle connections retained
+  max_connections: 20
+  max_idle_connections: 5
   connection_timeout_seconds: 30
 ```
 
+**Defaults applied by Loom**:
+- `max_connections`: `10` (if not set or set to 0)
+- `connection_timeout_seconds`: `30` (if not set or set to 0)
+
 **Behavior**:
 - Connections created on-demand up to `max_connections`
-- Idle connections reused for new requests
-- Connections closed after idle timeout
-- Failed connections retried with exponential backoff
+- Initial `Ping` verifies connectivity on backend load
+- If `Ping` fails, the database connection is closed and an error is returned
+- Driver is inferred from `type`: postgres uses `pgx`, mysql uses `mysql`, sqlite uses `sqlite3`
+
+### Timeout Defaults
+
+The following defaults are applied when timeout is not set or is 0:
+
+| Backend | Default Timeout |
+|---------|----------------|
+| rest | 30s |
+| graphql | 30s |
+| grpc | 30s |
+| database | 30s (connection timeout) |
+
+### Environment Variable Expansion
+
+All YAML string values support environment variable expansion using `${VAR}` syntax. The expansion uses Go's `os.Expand` with `os.Getenv`, which means only `${VAR}` and `$VAR` forms are supported. Shell-style default values (`${VAR:-default}`) are **not** supported — the entire string including `:-default` is treated as the variable name, which will resolve to an empty string.
+
+```yaml
+database:
+  dsn: ${POSTGRES_URL}
+
+rest:
+  auth:
+    token: ${GITHUB_TOKEN}
+
+supabase:
+  project_ref: ${SUPABASE_PROJECT_REF}
+  database_password: ${SUPABASE_DB_PASSWORD}
+```
+
+### File Path Resolution
+
+Relative file paths in `database.ssl_cert_path` and `grpc.cert_path` are resolved relative to the directory containing the backend YAML file.
 
 
-### Connection Lifecycle
+## Error Handling
 
-1. **Initialization**: Connection pool created on backend load
-2. **Health Check**: Initial connection verified
-3. **Active Use**: Connections acquired from pool
-4. **Return**: Connections returned to pool after use
-5. **Idle Management**: Idle connections maintained up to limit
-6. **Cleanup**: Pool drained on backend shutdown
+### Validation Errors
 
+These errors occur when loading a backend YAML file.
+
+| Error | Cause |
+|-------|-------|
+| `apiVersion is required` | Missing `apiVersion` field |
+| `unsupported apiVersion: X (expected: loom/v1)` | Wrong API version |
+| `kind must be 'Backend', got: X` | Wrong `kind` value |
+| `name is required` | Missing `name` field |
+| `type is required` | Missing `type` field |
+| `invalid backend type: X (must be: postgres, mysql, sqlite, file, rest, graphql, grpc, mcp, supabase)` | Type not one of the 9 valid types |
+| `database connection config is required for type: X` | Missing `database` block for SQL type (postgres, mysql, sqlite) |
+| `database connection config is required for file backend (use dsn to specify base directory)` | Missing `database` block for file type |
+| `database.dsn is required` | Missing DSN in database config (SQL types) |
+| `database.dsn is required (base directory path for file backend)` | Missing DSN in database config (file type) |
+| `rest connection config is required for type: rest` | Missing `rest` block |
+| `rest.base_url is required` | Missing base URL in rest config |
+| `graphql connection config is required for type: graphql` | Missing `graphql` block |
+| `graphql.endpoint is required` | Missing endpoint in graphql config |
+| `grpc connection config is required for type: grpc` | Missing `grpc` block |
+| `grpc.address is required` | Missing address in grpc config |
+| `mcp connection config is required for type: mcp` | Missing `mcp` block |
+| `mcp.transport must be 'stdio', 'http', or 'sse'` | Invalid transport value |
+| `mcp.command is required for stdio transport` | Missing command when using stdio |
+| `mcp.url is required for http/sse transport` | Missing URL when using http or sse |
+| `supabase connection config is required for type: supabase` | Missing `supabase` block |
+| `supabase.project_ref is required` | Missing project reference |
+| `supabase.database_password is required` | Missing database password |
+| `supabase.region is required` | Missing region |
+
+### Auth Validation Errors
+
+| Error | Cause |
+|-------|-------|
+| `type is required` | Missing `auth.type` |
+| `invalid auth type: X (must be: bearer, basic, apikey, oauth2)` | Invalid auth type |
+| `token is required for auth type: bearer` | Missing token for bearer auth |
+| `token is required for auth type: apikey` | Missing token for apikey auth |
+| `username and password are required for basic auth` | Missing credentials for basic auth |
 
 ### Connection Errors
 
@@ -989,252 +924,29 @@ database:
 | `connection refused` | Backend service not running | Start service, verify host/port |
 | `authentication failed` | Invalid credentials | Check username/password in DSN |
 | `timeout` | Connection took too long | Increase `connection_timeout_seconds` |
-| `too many connections` | Pool exhausted | Increase `max_connections` or reduce load |
-| `ssl required` | Server requires SSL but disabled | Set `enable_ssl: true` |
-
-
-## Schema Discovery
-
-Automatic discovery of backend schema (tables, columns, types).
-
-### schema_discovery.enabled
-
-**Type**: `bool`
-**Default**: `true`
-
-Enable automatic schema discovery.
-
-
-### schema_discovery.cache_ttl_seconds
-
-**Type**: `int`
-**Default**: `3600` (1 hour)
-**Range**: `60` - `86400`
-
-Schema cache time-to-live in seconds.
-
-**Recommendation**:
-- Development: `600` (10 minutes)
-- Production: `3600` (1 hour)
-- Static schemas: `86400` (24 hours)
-
-
-### schema_discovery.include_tables
-
-**Type**: `[]string`
-**Required**: No
-
-Table whitelist (glob patterns supported).
-
-**Examples**:
-```yaml
-schema_discovery:
-  include_tables:
-    - users           # Exact match
-    - orders          # Exact match
-    - analytics_*     # Glob pattern
-    - prod.*          # Schema-qualified
-```
-
-
-### schema_discovery.exclude_tables
-
-**Type**: `[]string`
-**Required**: No
-
-Table blacklist (glob patterns supported).
-
-**Examples**:
-```yaml
-schema_discovery:
-  exclude_tables:
-    - temp_*          # Temporary tables
-    - staging_*       # Staging tables
-    - _internal       # Internal tables
-    - test_*          # Test tables
-```
-
-**Precedence**: `exclude_tables` takes priority over `include_tables`.
-
-
-## Tool Generation
-
-Automatic tool generation from backend capabilities.
-
-### tool_generation.enable_all
-
-**Type**: `bool`
-**Default**: `false`
-
-Generate tools for all discovered tables/resources.
-
-**Recommendation**:
-- Development: `true` (discover all capabilities)
-- Production: `false` (explicit tool list for security)
-
-
-### tool_generation.tools
-
-**Type**: `[]string`
-**Required**: No
-
-Explicit list of tools to generate.
-
-**SQL backends**:
-```yaml
-tool_generation:
-  tools:
-    - query_users       # Table-specific query tool
-    - query_orders
-    - get_analytics
-```
-
-**REST backends**:
-```yaml
-tool_generation:
-  tools:
-    - list_repositories
-    - create_issue
-    - get_pull_request
-```
-
-**MCP backends**: Tools discovered automatically via MCP `tools/list` endpoint.
-
-
-## Health Checks
-
-Periodic backend health verification.
-
-### health_check.enabled
-
-**Type**: `bool`
-**Default**: `true`
-
-Enable periodic health checks.
-
-
-### health_check.interval_seconds
-
-**Type**: `int`
-**Default**: `60`
-**Range**: `10` - `3600`
-
-Interval between health checks.
-
-**Recommendation**:
-- Critical backends: `30` (30 seconds)
-- Standard backends: `60` (1 minute)
-- Low-priority backends: `300` (5 minutes)
-
-
-### health_check.timeout_seconds
-
-**Type**: `int`
-**Default**: `5`
-**Range**: `1` - `30`
-
-Health check timeout.
-
-
-### health_check.query
-
-**Type**: `string`
-**Required for**: SQL backends
-**Default**: `"SELECT 1"`
-
-Health check query for SQL backends.
-
-**Examples**:
-```yaml
-health_check:
-  query: "SELECT 1"                 # Generic
-  query: "SELECT version()"         # Postgres-specific
-  query: "SELECT CURRENT_TIMESTAMP" # MySQL-specific
-```
-
-
-## Error Handling
-
-### Common Backend Errors
-
-#### Connection Failed
-
-**Cause**: Cannot connect to backend service
-
-**Error message**:
-```
-Error: backend connection failed: dial tcp 127.0.0.1:5432: connection refused
-```
-
-**Resolution**:
-1. Verify backend service running
-2. Check host/port in DSN
-3. Verify network connectivity
-4. Check firewall rules
-
-
-#### Authentication Failed
-
-**Cause**: Invalid credentials
-
-**Error message**:
-```
-Error: authentication failed: password authentication failed for user "loom"
-```
-
-**Resolution**:
-1. Verify username/password in DSN
-2. Check credentials in keyring: `looms config get database.dsn`
-3. Test credentials manually: `psql "postgresql://..."`
-
-
-#### Schema Discovery Failed
-
-**Cause**: Insufficient permissions or missing tables
-
-**Error message**:
-```
-Error: schema discovery failed: permission denied for schema public
-```
-
-**Resolution**:
-1. Grant SELECT on `information_schema` tables
-2. Verify `include_tables` patterns match actual tables
-3. Check `exclude_tables` not blocking all tables
-
-
-#### Tool Generation Failed
-
-**Cause**: Invalid tool configuration
-
-**Error message**:
-```
-Error: tool generation failed: table 'users' not found in schema
-```
-
-**Resolution**:
-1. Verify table exists: Run schema discovery
-2. Check table name spelling
-3. Verify `include_tables`/`exclude_tables` patterns
-
-
-#### Health Check Failed
-
-**Cause**: Backend unhealthy or query failed
-
-**Error message**:
-```
-Error: health check failed: query timeout after 5s
-```
-
-**Resolution**:
-1. Check backend service logs
-2. Increase `health_check.timeout_seconds`
-3. Verify health check query is valid
-4. Check network latency
+| `too many connections` | Pool exhausted | Increase `max_connections` |
+| `ssl required` | Server requires SSL | Set `enable_ssl: true` |
 
 
 ## Examples
+
+### Multi-Backend Project
+
+Project spec referencing multiple backends (backends are configured at the project level, not per-agent):
+
+```yaml
+apiVersion: loom/v1
+kind: Project
+metadata:
+  name: multi-backend-project
+spec:
+  backends:
+    - config_file: ./backends/postgres.yaml
+    - config_file: ./backends/github-api.yaml
+    - config_file: ./backends/vantage-mcp.yaml
+  agents:
+    - config_file: ./agents/sql-expert.yaml
+```
 
 ### Development PostgreSQL
 
@@ -1249,16 +961,14 @@ type: postgres
 database:
   dsn: postgresql://localhost:5432/loom_dev?sslmode=disable
   max_connections: 10
-  max_idle_connections: 2
   connection_timeout_seconds: 5
-  enable_ssl: false
 
 schema_discovery:
   enabled: true
-  cache_ttl_seconds: 600  # 10 minutes
+  cache_ttl_seconds: 600
 
 tool_generation:
-  enable_all: true  # Discover all tables in dev
+  enable_all: true
 
 health_check:
   enabled: true
@@ -1267,214 +977,53 @@ health_check:
   query: "SELECT 1"
 ```
 
-
-### Production PostgreSQL
-
-```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: postgres-prod
-description: Production PostgreSQL analytics database
-type: postgres
-
-database:
-  dsn: postgresql://analytics_user@prod-db.example.com:5432/analytics?sslmode=require
-  max_connections: 50
-  max_idle_connections: 10
-  connection_timeout_seconds: 30
-  enable_ssl: true
-  ssl_cert_path: /etc/loom/certs/postgres-ca.crt
-
-schema_discovery:
-  enabled: true
-  cache_ttl_seconds: 3600
-  include_tables:
-    - users
-    - orders
-    - products
-    - analytics_*
-  exclude_tables:
-    - temp_*
-    - staging_*
-    - _internal
-
-tool_generation:
-  enable_all: false
-  tools:
-    - query_users
-    - query_orders
-    - query_products
-    - query_analytics_daily
-
-health_check:
-  enabled: true
-  interval_seconds: 30
-  timeout_seconds: 10
-  query: "SELECT version()"
-```
-
-
-### Local SQLite
+### REST API with API Key Auth
 
 ```yaml
 apiVersion: loom/v1
 kind: Backend
 
-name: sqlite-local
-description: Local SQLite database for testing
-type: sqlite
-
-database:
-  dsn: ./test-data.db
-  driver: sqlite3
-
-capabilities:
-  query_execution: true
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: false
-```
-
-
-### GitHub REST API
-
-```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: github-api
-description: GitHub REST API for repository management
+name: internal-api
+description: Internal service API
 type: rest
 
 rest:
-  base_url: https://api.github.com
+  base_url: https://internal.example.com/v1
   auth:
-    type: bearer
-    token: ${GITHUB_TOKEN}
+    type: apikey
+    token: ${INTERNAL_API_KEY}
+    header_name: X-API-Key
   headers:
-    Accept: application/vnd.github.v3+json
-    User-Agent: loom-agent/0.9.0
-  timeout_seconds: 30
+    Accept: application/json
+  timeout_seconds: 15
   max_retries: 3
-
-tool_generation:
-  tools:
-    - list_repositories
-    - create_issue
-    - get_pull_request
-    - create_pull_request
-    - list_issues
-
-health_check:
-  enabled: true
-  interval_seconds: 300
-  timeout_seconds: 10
 ```
 
 
-### Teradata Vantage (MCP)
+## ExecutionBackend Interface
 
-```yaml
-apiVersion: loom/v1
-kind: Backend
+All backends implement the `fabric.ExecutionBackend` interface defined in `pkg/fabric/interface.go`:
 
-name: vantage-mcp
-description: Teradata Vantage via MCP server
-type: mcp
-
-mcp:
-  command: vantage-mcp
-  transport: stdio
-  env: {}  # Credentials configured via looms config
-
-capabilities:
-  query_execution: true
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: true
+```go
+type ExecutionBackend interface {
+    Name() string
+    ExecuteQuery(ctx context.Context, query string) (*QueryResult, error)
+    GetSchema(ctx context.Context, resource string) (*Schema, error)
+    ListResources(ctx context.Context, filters map[string]string) ([]Resource, error)
+    GetMetadata(ctx context.Context, resource string) (map[string]interface{}, error)
+    Ping(ctx context.Context) error
+    Capabilities() *Capabilities
+    ExecuteCustomOperation(ctx context.Context, op string, params map[string]interface{}) (interface{}, error)
+    Close() error
+}
 ```
 
-
-### Custom Python MCP Server
-
-```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: python-data-processor
-description: Custom Python MCP server for data processing
-type: mcp
-
-mcp:
-  command: python3
-  transport: stdio
-  args:
-    - -m
-    - my_mcp_server
-    - --config
-    - /etc/mcp/config.json
-  env:
-    DATA_PATH: /var/data
-    CACHE_DIR: /var/cache/mcp
-    LOG_LEVEL: info
-    MAX_WORKERS: "4"
-
-capabilities:
-  query_execution: false
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: true
-```
-
-
-### File System Access
-
-```yaml
-apiVersion: loom/v1
-kind: Backend
-
-name: file-system
-description: Local file system for document analysis
-type: file
-
-database:
-  dsn: /var/lib/loom/documents
-
-capabilities:
-  query_execution: false
-  schema_discovery: true
-  metadata: true
-  resource_listing: true
-  custom_operations: false
-```
-
-
-### Multi-Backend Configuration
-
-Agent with multiple backends:
-
-```yaml
-# Server configuration
-agents:
-  agents:
-    multi-backend-agent:
-      name: Multi-Backend Agent
-      description: Agent with multiple data sources
-      backends:
-        - ./backends/postgres.yaml    # Primary SQL backend
-        - ./backends/github-api.yaml  # GitHub integration
-        - ./backends/vantage-mcp.yaml # Teradata Vantage
-      system_prompt: "You have access to PostgreSQL, GitHub API, and Teradata Vantage."
-```
+The `Capabilities()` method returns runtime capability information (supports transactions, concurrency, streaming, etc.). This is a runtime interface method, not a YAML configuration field.
 
 
 ## See Also
 
 - [CLI Reference](./cli.md) - Backend management commands
-- [Configuration Reference](./configuration.md) - Server configuration
-- [MCP Integration Guide](../guides/integration/mcp.md) - MCP setup guide
+- [MCP Apps Guide](../guides/mcp-apps-guide.md) - MCP setup and usage guide
+- [MCP Integration Overview](../guides/integration/mcp-readme.md) - MCP integration documentation
 - [LLM Providers](./llm-providers.md) - LLM provider configuration

@@ -1,7 +1,7 @@
 
 # Loom Documentation
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 
 ## Getting Started
@@ -42,14 +42,14 @@ Connect to Model Context Protocol servers.
 Trace agent operations and track costs.
 
 **[Prompt Management (Promptio) →](guides/integration/prompt-management/)**
-Manage prompts with version control.
+Manage prompts with YAML files, hot-reload, and A/B testing.
 
 **[All Integrations →](guides/integration/)**
 
 
 ## Architecture
 
-System design documentation for developers extending Loom.
+System design documentation for architects, academics, and developers extending Loom.
 
 **[System Architecture →](architecture/loom-system-architecture/)**
 Overall system design and components.
@@ -63,20 +63,23 @@ Pattern matching and loading.
 **[Multi-Agent System →](architecture/multi-agent/)**
 Agent communication and orchestration.
 
+**[Graph Memory →](architecture/graph-memory/)** 🚧
+Cross-session salience-driven knowledge graph (on `graph-memory` branch).
+
+**[Memory Systems →](architecture/memory-systems/)**
+5-layer segmented memory hierarchy.
+
 **[All Architecture Docs →](architecture/)**
 
 
 ## Reference
 
-Complete API specifications and command documentation.
+API specifications and command documentation.
 
 **[LLM Providers →](reference/llm-providers/)**
-Anthropic, Bedrock, Ollama configuration.
+8 providers including Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Gemini, Mistral, and HuggingFace.
 
 **[CLI Commands →](reference/cli/)**
-Complete looms and loom command reference.
-
-**[API Reference →](reference/api/)**
-gRPC and HTTP API specifications.
+`looms` (server) and `loom` (client) command reference.
 
 **[All Reference Docs →](reference/)**

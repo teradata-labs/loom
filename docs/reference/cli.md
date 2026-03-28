@@ -1,46 +1,41 @@
 
 # Loom CLI Reference
 
-Complete command reference for `loom` (client) and `looms` (server).
+Command reference for `loom` (client) and `looms` (server).
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 
 
 ## Table of Contents
 
 ### Server Commands (`looms`)
-- [looms serve](#looms-serve) - Start multi-agent server
-- [looms config](#looms-config) - Manage server configuration
-- [looms agent](#looms-agent) - Manage agent lifecycle
-- [looms judge evaluate](#looms-judge-evaluate) - Evaluate agent responses
-- [looms judge stream](#looms-judge-stream) - Stream judge evaluation
-- [looms teleprompter compile](#looms-teleprompter-compile) - Optimize prompts
-- [looms learning stats](#looms-learning-stats) - View pattern statistics
-- [looms learning export](#looms-learning-export) - Export learning data
-- [looms learning sync](#looms-learning-sync) - Sync with external systems
-- [looms pattern list](#looms-pattern-list) - List patterns
-- [looms pattern validate](#looms-pattern-validate) - Validate pattern YAML
-- [looms pattern reload](#looms-pattern-reload) - Hot reload patterns
-- [looms workflow run](#looms-workflow-run) - Execute workflows
-- [looms workflow validate](#looms-workflow-validate) - Validate workflow YAML
+- [looms serve](#looms-serve) - Start gRPC/HTTP server
+- [looms config](#looms-config) - Manage server configuration and secrets
+- [looms hitl](#looms-hitl) - Human-in-the-loop request management
+- [looms upgrade](#looms-upgrade) - Upgrade database schema
+- [looms pattern](#looms-pattern) - Create and watch patterns
+- [looms workflow](#looms-workflow) - Manage and execute workflow orchestrations
+- [looms learning](#looms-learning) - Manage learning agent operations
+- [looms eval](#looms-eval) - Run and manage evaluation suites (requires `hawk` build tag)
+- [looms judge](#looms-judge) - Multi-dimensional judge evaluation
+- [looms validate](#looms-validate) - Validate configuration files
+- [looms teleprompter](#looms-teleprompter) - DSPy-style prompt optimization
 
 ### Client Commands (`loom`)
-- [loom chat](#loom-chat) - Interactive chat session
-- [loom thread](#loom-thread) - Manage conversation threads
-- [loom config set](#loom-config-set) - Set configuration values
-- [loom config get](#loom-config-get) - Get configuration values
-- [loom config set-key](#loom-config-set-key) - Store secrets in keyring
-- [loom session list](#loom-session-list) - List sessions
-- [loom session resume](#loom-session-resume) - Resume previous session
-- [loom session export](#loom-session-export) - Export session to Hawk
-- [loom mcp list](#loom-mcp-list) - List MCP servers
-- [loom mcp test](#loom-mcp-test) - Test MCP server connection
+- [loom (root)](#loom-root) - Launch TUI chat interface
+- [loom chat](#loom-chat) - Send message to agent (CLI only, no TUI)
+- [loom agents](#loom-agents) - List available agents/threads
+- [loom sessions](#loom-sessions) - Manage conversation sessions
+- [loom artifacts](#loom-artifacts) - Manage artifacts
+- [loom mcp](#loom-mcp) - Manage MCP servers
+- [loom providers](#loom-providers) - Manage LLM provider pool
 
 ### Reference
+- [Global Server Flags](#global-server-flags) - Flags available on all `looms` commands
+- [Global Client Flags](#global-client-flags) - Flags available on all `loom` commands
 - [Environment Variables](#environment-variables) - Environment configuration
 - [Configuration Files](#configuration-files) - YAML configuration examples
 - [Exit Codes](#exit-codes) - Exit code meanings
-- [Error Codes](#error-codes) - Complete error reference
 - [Common Workflows](#common-workflows) - Standard patterns
 - [Troubleshooting](#troubleshooting) - Common issues
 
@@ -51,150 +46,156 @@ Complete command reference for `loom` (client) and `looms` (server).
 
 | Command | Purpose | Key Flags |
 |---------|---------|-----------|
-| `looms serve` | Start multi-agent server | `--port`, `--http-port`, `--hot-reload`, `--agents` |
-| `looms config` | Manage server config | `set`, `get`, `list`, `reset` |
-| `looms agent` | Manage agents | `list`, `start`, `stop`, `reload`, `status` |
-| `looms judge evaluate` | Evaluate responses | `--agent`, `--judges`, `--aggregation` |
-| `looms judge stream` | Stream evaluation | `--agent`, `--judge`, `--prompt` |
-| `looms teleprompter compile` | Optimize prompts | `--optimizer`, `--training-data`, `--iterations` |
-| `looms learning stats` | View pattern stats | `--domain`, `--window`, `--sort` |
-| `looms learning export` | Export learning data | `--domain`, `--format`, `--output` |
-| `looms learning sync` | Sync learning data | `--direction`, `--endpoint` |
-| `looms pattern list` | List patterns | `--domain`, `--category`, `--backend` |
-| `looms pattern validate` | Validate pattern | `<file>`, `--strict` |
-| `looms pattern reload` | Hot reload patterns | `--pattern`, `--domain` |
-| `looms workflow run` | Execute workflow | `<file>`, `--input`, `--stream` |
-| `looms workflow validate` | Validate workflow | `<file>`, `--strict` |
+| `looms serve` | Start gRPC/HTTP server | (uses global flags) |
+| `looms config init` | Generate example config | (interactive) |
+| `looms config set` | Set config value | `<key> <value>` |
+| `looms config get` | Get config value | `<key>` |
+| `looms config show` | Show current config | |
+| `looms config set-key` | Store secret in keyring | `<key-name>` |
+| `looms config get-key` | Retrieve secret from keyring | `<key-name>` |
+| `looms config delete-key` | Delete secret from keyring | `<key-name>` |
+| `looms config list-keys` | List available secret keys | |
+| `looms hitl list` | List pending HITL requests | `--session`, `--agent`, `--db` |
+| `looms hitl show` | Show HITL request details | `<request-id>`, `--db` |
+| `looms hitl respond` | Respond to HITL request | `<request-id>`, `--status`, `--message` |
+| `looms upgrade` | Upgrade database schema | `--dry-run`, `--no-backup`, `--yes` |
+| `looms pattern create` | Create a new pattern | `<name>`, `--thread`, `--file` |
+| `looms pattern watch` | Watch pattern updates | `--thread`, `--category` |
+| `looms workflow validate` | Validate workflow YAML | `<file>` |
+| `looms workflow run` | Execute a workflow | `<file>`, `--threads`, `--dry-run`, `--timeout` |
+| `looms workflow list` | List workflow files | `[directory]`, `--dir` |
+| `looms learning analyze` | Analyze pattern effectiveness | `--domain`, `--agent`, `--window` |
+| `looms learning proposals` | List improvement proposals | `--status`, `--domain`, `--limit` |
+| `looms learning apply` | Apply improvement | `<improvement-id>` |
+| `looms learning rollback` | Rollback improvement | `<improvement-id>` |
+| `looms learning history` | Get improvement history | `--domain`, `--agent`, `--status` |
+| `looms learning stream` | Stream pattern metrics | `--domain`, `--agent` |
+| `looms learning tune` | Auto-tune pattern priorities | `--domain`, `--strategy`, `--library` |
+| `looms eval run` | Run evaluation suite | `<suite-file>`, `--thread`, `--store` |
+| `looms eval list` | List evaluation runs | `--suite`, `--store`, `--limit` |
+| `looms eval show` | Show eval run details | `<run-id>`, `--store` |
+| `looms judge evaluate` | Evaluate with judges | `--agent`, `--judges`, `--prompt`, `--response` |
+| `looms judge evaluate-stream` | Streaming judge evaluation | `--agent`, `--judges`, `--prompt`, `--response` |
+| `looms judge register` | Register judge from YAML | `<config-file>` |
+| `looms judge history` | Get evaluation history | `--agent`, `--judges`, `--pattern` |
+| `looms validate file` | Validate a single YAML file | `<path>` |
+| `looms validate dir` | Validate all YAML in directory | `<path>` |
+| `looms teleprompter bootstrap` | Bootstrap few-shot demos | `--agent`, `--trainset`, `--judges` |
+| `looms teleprompter mipro` | MIPRO prompt optimization | `--agent`, `--trainset`, `--instructions`, `--judges`, `--output` |
+| `looms teleprompter textgrad` | TextGrad prompt optimization | `--agent`, `--example`, `--variables`, `--judges`, `--output` |
+| `looms teleprompter history` | Show compilation history | `--agent`, `--limit` |
+| `looms teleprompter rollback` | Rollback a compilation | `<compilation-id>`, `--agent` |
+| `looms teleprompter compare` | Compare two compilations (A/B test) | `<compilation-a> <compilation-b>`, `--agent`, `--testset`, `--judges` |
 
 ### Client Commands Summary
 
 | Command | Purpose | Key Flags |
 |---------|---------|-----------|
-| `loom chat` | Interactive chat | `--agent`, `--session`, `--stream` |
-| `loom thread` | Manage threads | `create`, `resume`, `list`, `delete` |
-| `loom config set` | Set config value | `<key> <value>` |
-| `loom config get` | Get config value | `<key>` |
-| `loom config set-key` | Store secret | `<key-name>` (interactive) |
-| `loom session list` | List sessions | `--agent`, `--limit`, `--format` |
-| `loom session resume` | Resume session | `<session-id>` |
-| `loom session export` | Export to Hawk | `<session-id>`, `--format` |
-| `loom mcp list` | List MCP servers | `--format` |
+| `loom` | Launch TUI | `--thread`, `--server`, `--session` |
+| `loom chat` | CLI chat (no TUI) | `--thread`, `--message`, `--stream`, `--timeout` |
+| `loom agents` | List agents/threads | |
+| `loom sessions list` | List sessions | `--limit`, `--offset` |
+| `loom sessions show` | Show session details | `<session-id>` |
+| `loom sessions delete` | Delete session | `<session-id>` |
+| `loom artifacts list` | List artifacts | `--source`, `--content-type`, `--tags` |
+| `loom artifacts search` | Full-text search artifacts | `<query>`, `--limit` |
+| `loom artifacts show` | Show artifact details | `<artifact-id-or-name>` |
+| `loom artifacts upload` | Upload file as artifact | `<file-path>`, `--purpose`, `--tags` |
+| `loom artifacts download` | Download artifact | `<artifact-id-or-name>`, `--output` |
+| `loom artifacts delete` | Delete artifact | `<artifact-id-or-name>`, `--hard` |
+| `loom artifacts stats` | Show storage statistics | |
+| `loom mcp list` | List MCP servers | |
 | `loom mcp test` | Test MCP server | `<server-name>` |
+| `loom mcp tools` | List tools from MCP server | `<server-name>` |
+| `loom providers list` | List LLM providers | |
+| `loom providers switch` | Switch active LLM provider | `<provider-name>`, `--session`, `--thread` |
 
-### Common Flag Patterns
 
-**Output Formats:**
-- `--format table` (default, human-readable)
-- `--format json` (machine-readable, programmatic)
-- `--format yaml` (configuration export)
-- `--format csv` (data export)
+## Global Server Flags
 
-**Filtering:**
-- `--domain <string>` (filter by domain: analytics, ml, etc.)
-- `--agent <string>` (filter by agent ID)
-- `--window <duration>` (time window: 1h, 24h, 7d, 30d, all)
+These persistent flags are available on all `looms` commands:
 
-**Validation:**
-- `--strict` (fail on warnings, not just errors)
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--config` | string | `$LOOM_DATA_DIR/looms.yaml` | Path to config file |
+| `--port` | int | `60051` | gRPC server port |
+| `--host` | string | `0.0.0.0` | gRPC server host |
+| `--http-port` | int | `5006` | HTTP/REST+SSE server port (0=disabled) |
+| `--reflection` | bool | `true` | Enable gRPC reflection |
+| `--llm-provider` | string | `anthropic` | LLM provider (anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface) |
+| `--anthropic-key` | string | `""` | Anthropic API key (or use keyring/env) |
+| `--anthropic-model` | string | `claude-sonnet-4-5-20250929` | Anthropic model |
+| `--temperature` | float64 | `1.0` | LLM temperature |
+| `--max-tokens` | int | `4096` | Maximum tokens per request |
+| `--db` | string | `$LOOM_DATA_DIR/loom.db` | SQLite database path |
+| `--observability` | bool | `true` | Enable observability (use `--observability=false` to disable) |
+| `--hawk-endpoint` | string | `""` | Hawk endpoint URL |
+| `--hawk-key` | string | `""` | Hawk API key (or use keyring/env) |
+| `--log-level` | string | `info` | Log level (debug, info, warn, error) |
+| `--log-format` | string | `text` | Log format (text, json) |
+| `--yolo` | bool | `false` | Bypass all tool permission prompts |
+| `--require-approval` | bool | `false` | Require user approval before executing tools |
+
+
+## Global Client Flags
+
+These persistent flags are available on all `loom` commands:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-s`, `--server` | string | `127.0.0.1:60051` | Loom server address |
+| `--session` | string | `""` | Resume existing session ID |
+| `-t`, `--thread` | string | `""` | Thread ID to connect to |
+| `--tls` | bool | `false` | Enable TLS connection |
+| `--tls-insecure` | bool | `false` | Skip TLS certificate verification |
+| `--tls-ca-file` | string | `""` | Path to CA certificate file |
+| `--tls-server-name` | string | `""` | Override TLS server name verification |
 
 
 ## Server Commands (`looms`)
 
 ### looms serve
 
-Start the multi-agent server with gRPC and HTTP gateways.
+Start the Loom gRPC server. Initializes agents from config, sets up session persistence with SQLite, enables observability, and listens for gRPC and HTTP requests.
 
 **Usage:**
 ```bash
 looms serve [flags]
 ```
 
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--config` | string | `$LOOM_DATA_DIR/server.yaml` | Path to server config file |
-| `--port` | int | `50051` | gRPC port |
-| `--http-port` | int | `8080` | HTTP gateway port |
-| `--agents` | stringArray | `[]` | Agent config files to load (repeatable) |
-| `--hot-reload` | bool | `false` | Enable pattern hot reload |
-| `--tls-cert` | string | `""` | Path to TLS certificate |
-| `--tls-key` | string | `""` | Path to TLS private key |
+No additional flags beyond the global server flags. Server port, host, HTTP port, LLM provider, database path, and all other settings are controlled via global flags or the config file.
 
 **Examples:**
 
-Start server with default settings:
+Start server with defaults (gRPC on :60051, HTTP on :5006):
 ```bash
 looms serve
 ```
 
-Start with custom port and agents:
+Start with custom ports:
 ```bash
-looms serve \
-  --port 9090 \
-  --http-port 8888 \
-  --agents $LOOM_DATA_DIR/agents/sql-expert.yaml \
-  --agents $LOOM_DATA_DIR/agents/data-analyst.yaml
+looms serve --port 9090 --http-port 8888
 ```
 
-Enable hot reload for development:
+Start with Ollama and debug logging:
 ```bash
-looms serve --hot-reload
+looms serve --llm-provider ollama --log-level debug
 ```
 
-Start with TLS:
+Start with YOLO mode (skip tool approval prompts):
 ```bash
-looms serve \
-  --tls-cert /path/to/cert.pem \
-  --tls-key /path/to/key.pem
-```
-
-**Expected Output:**
-```
-🚀 Loom server starting...
-✅ Loaded 2 agents: sql-expert, data-analyst
-✅ MCP servers initialized: vantage, github
-🎯 gRPC server listening on :50051
-🌐 HTTP gateway listening on :8080
-✅ Server ready
+looms serve --yolo
 ```
 
 **When to Use:**
-- Starting the server for the first time
+- Starting the server for agent interactions
 - Running multiple agents simultaneously
-- Deploying in production environments
-- Development with hot reload enabled
-
-**Configuration File Example:**
-```yaml
-# $LOOM_DATA_DIR/server.yaml
-server:
-  grpc_port: 50051
-  http_port: 8080
-  hot_reload: false
-
-agents_dir: $LOOM_DATA_DIR/agents
-patterns_dir: $LOOM_DATA_DIR/patterns
-
-observability:
-  enabled: true
-  hawk_endpoint: http://localhost:9090
-```
-
-**Errors:**
-- Exit code 1: Port already in use
-- Exit code 3: Invalid configuration file
-- Exit code 4: Failed to load agents
-- Exit code 4: Failed to initialize MCP servers
-
-**See Also:**
-- [looms config](#looms-config) - Configure server settings
-- [looms agent](#looms-agent) - Manage running agents
+- Development and production deployments
 
 
 ### looms config
 
-Manage server-wide configuration settings.
+Manage Loom Server configuration files and secrets.
 
 **Usage:**
 ```bash
@@ -205,1534 +206,938 @@ looms config <subcommand> [flags]
 
 | Subcommand | Description |
 |------------|-------------|
-| `set` | Set configuration value |
-| `get` | Get configuration value |
-| `list` | List all configuration |
-| `reset` | Reset to defaults |
+| `init` | Generate example configuration file (interactive) |
+| `set <key> <value>` | Set a non-sensitive configuration value |
+| `get <key>` | Get a configuration value |
+| `show` | Display current configuration (merged from all sources) |
+| `set-key <key-name>` | Save API key to system keyring (interactive, input hidden) |
+| `get-key <key-name>` | Retrieve API key from system keyring (partially masked) |
+| `delete-key <key-name>` | Delete API key from system keyring |
+| `list-keys` | List available secret key names |
 
 **Examples:**
 
-Set MCP server configuration:
+Initialize config interactively:
 ```bash
-looms config set mcp.servers.vantage.command ~/bin/vantage-mcp
-looms config set mcp.servers.vantage.env.TD_USER myuser
+looms config init
 ```
 
-Set observability endpoint:
+Set LLM provider to Bedrock:
 ```bash
-looms config set observability.hawk_endpoint http://localhost:9090
-looms config set observability.enabled true
+looms config set llm.provider bedrock
+looms config set llm.bedrock_region us-west-2
+looms config set llm.bedrock_model_id anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
-List all configuration:
+Store API key securely:
 ```bash
-looms config list
+looms config set-key anthropic_api_key
+# Prompts: Enter anthropic_api_key (input hidden):
 ```
 
-Get specific value:
+View current configuration:
 ```bash
-looms config get mcp.servers.vantage.command
+looms config show
 ```
-
-**When to Use:**
-- Initial server setup
-- Configuring MCP servers without editing YAML
-- Updating observability settings
-- Managing environment-specific configuration
 
 **Configuration Hierarchy:**
 1. Command-line flags (highest priority)
-2. `$LOOM_DATA_DIR/server.yaml`
-3. `/etc/loom/server.yaml`
-4. Default values (lowest priority)
+2. `$LOOM_DATA_DIR/looms.yaml`
+3. Default values (lowest priority)
 
-**Errors:**
-- Exit code 2: Invalid key format
-- Exit code 3: Invalid value for key type
-- Exit code 3: Required field cannot be unset
-
-**See Also:**
-- [Configuration Files](#configuration-files) - YAML structure
+**When to Use:**
+- Initial server setup
+- Changing LLM providers
+- Storing API keys securely in the OS keyring
+- Verifying current configuration
 
 
-### looms agent
+### looms hitl
 
-Manage agent lifecycle (start, stop, reload).
+Manage human-in-the-loop (HITL) requests from agents.
 
 **Usage:**
 ```bash
-looms agent <subcommand> [flags]
+looms hitl <subcommand> [flags]
 ```
 
 **Subcommands:**
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List running agents |
-| `start` | Start an agent |
-| `stop` | Stop an agent |
-| `reload` | Reload agent configuration |
-| `status` | Get agent status |
+| `list` | List pending HITL requests |
+| `show <request-id>` | Show details of a specific HITL request |
+| `respond <request-id>` | Respond to a HITL request |
+
+**Flags (list):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--session` | string | `""` | Filter by session ID |
+| `--agent` | string | `""` | Filter by agent ID |
+| `--db` | string | `$LOOM_DATA_DIR/hitl.db` | Path to HITL SQLite database |
+
+**Flags (respond):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--status` | string | `approved` | Response status (approved, rejected, responded) |
+| `--message` | string | required | Response message |
+| `--data` | string | `""` | Response data as JSON (optional) |
+| `--by` | string | `""` | Who is responding (default: current user) |
+| `--db` | string | `$LOOM_DATA_DIR/hitl.db` | Path to HITL SQLite database |
 
 **Examples:**
 
-List all running agents:
+List pending requests:
 ```bash
-looms agent list
+looms hitl list
+looms hitl list --session sess-123
+looms hitl list --agent agent-1
 ```
 
-Output:
-```
-NAME           STATUS    UPTIME     REQUESTS
-sql-expert     running   2h 15m     1,234
-data-analyst   running   2h 15m     456
-code-reviewer  stopped   -          -
-```
-
-Start a specific agent:
+Show details of a request:
 ```bash
-looms agent start code-reviewer
+looms hitl show req-abc123
 ```
 
-Reload agent configuration without restart:
+Approve a request:
 ```bash
-looms agent reload sql-expert
+looms hitl respond req-abc123 --status approved --message "Yes, proceed"
 ```
 
-Get detailed agent status:
+Reject a request:
 ```bash
-looms agent status sql-expert
+looms hitl respond req-abc123 --status rejected --message "No, cancel"
 ```
 
-Output:
-```
-Agent: sql-expert
-Status: running
-Uptime: 2h 15m 30s
-Requests: 1,234
-Avg Response Time: 2.3s
-Memory: 45 MB
-MCP servers: vantage, github
-Last Error: none
+Provide input with structured data:
+```bash
+looms hitl respond req-abc123 --status responded --message "Use PostgreSQL" --data '{"confirmed":true}'
 ```
 
-**When to Use:**
-- Checking agent health
-- Starting agents on-demand
-- Reloading configuration after changes
-- Debugging agent issues
 
-**Errors:**
-- Exit code 7: Agent not found
-- Exit code 3: Agent configuration invalid
-- Exit code 4: Agent failed to start
+### looms upgrade
 
-**See Also:**
-- [Agent Configuration Reference](./agent-configuration.md) - Agent YAML spec
-
-
-### looms judge evaluate
-
-Evaluate agent responses using one or more judges.
+Upgrade the Loom database schema to the latest version.
 
 **Usage:**
 ```bash
-looms judge evaluate [flags]
+looms upgrade [flags]
 ```
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--agent` | string | required | Agent to evaluate |
-| `--judges` | stringArray | required | Judge IDs to use (repeatable) |
-| `--prompt` | string | required | Input prompt |
-| `--response` | string | required | Agent response to evaluate |
-| `--aggregation` | string | `weighted-average` | Aggregation strategy |
-| `--export-hawk` | bool | `true` | Export results to Hawk |
-
-**Aggregation Strategies:**
-
-| Strategy | Description | Use Case |
-|----------|-------------|----------|
-| `weighted-average` | Combine scores using judge weights | Balanced evaluation with priority judges |
-| `all-must-pass` | All judges must approve (AND logic) | Strict quality gates (security, compliance) |
-| `any-must-pass` | At least one judge must approve (OR logic) | Exploratory or lenient evaluation |
-| `majority` | Majority of judges must approve | Democratic consensus |
+| `--dry-run` | bool | `false` | Show pending migrations without applying |
+| `--backup-only` | bool | `false` | Only create a backup, don't migrate (SQLite only) |
+| `--no-backup` | bool | `false` | Skip backup (not recommended) |
+| `-y`, `--yes` | bool | `false` | Skip confirmation prompt |
 
 **Examples:**
 
-Evaluate with single judge:
+Show pending migrations without applying:
 ```bash
-looms judge evaluate \
-  --agent sql-expert \
-  --judges quality-judge \
-  --prompt "Generate a sales report query" \
-  --response "SELECT * FROM sales WHERE date > '2024-01-01'"
+looms upgrade --dry-run
 ```
 
-Output:
-```
-Judge: quality-judge
-Score: 7.5/10
-Verdict: PASS
-
-Feedback:
-✅ Query syntax is correct
-✅ Date filter properly formatted
-⚠️  SELECT * not recommended (specify columns)
-⚠️  Missing ORDER BY clause
-```
-
-Evaluate with multiple judges and weighted aggregation:
+Upgrade with backup (default behavior):
 ```bash
-looms judge evaluate \
-  --agent sql-expert \
-  --judges quality-judge,safety-judge,performance-judge \
-  --aggregation weighted-average \
-  --prompt "Delete old customer records" \
-  --response "DELETE FROM customers WHERE last_login < '2020-01-01'"
+looms upgrade
 ```
 
-Output:
-```
-Judge Results:
-  quality-judge:      8.0/10 (weight: 0.4) = 3.2
-  safety-judge:       4.0/10 (weight: 0.4) = 1.6
-  performance-judge:  7.0/10 (weight: 0.2) = 1.4
-
-Final Score: 6.2/10
-Verdict: CONDITIONAL
-
-Safety Issues:
-❌ No WHERE clause validation
-❌ No row limit specified
-⚠️  Recommend adding LIMIT clause
-```
-
-All-must-pass aggregation (strict):
+Upgrade without prompting:
 ```bash
-looms judge evaluate \
-  --agent code-reviewer \
-  --judges security-judge,style-judge,test-coverage-judge \
-  --aggregation all-must-pass \
-  --prompt "Review this authentication function" \
-  --response "def login(user, pass): ..."
+looms upgrade --yes
 ```
 
-**When to Use:**
-- Validating agent outputs before production use
-- A/B testing different agent configurations
-- Automated quality assurance in CI/CD
-- Collecting evaluation metrics for training data
 
-**Errors:**
-- Exit code 2: Missing required flags
-- Exit code 7: Judge not found
-- Exit code 7: Agent not found
-- Exit code 4: Failed to connect to Hawk (when `--export-hawk=true`)
+### looms pattern
 
-**See Also:**
-- [looms judge stream](#looms-judge-stream) - Streaming variant
-
-
-### looms judge stream
-
-Stream judge evaluation progress for long-running assessments.
+Manage patterns for agents.
 
 **Usage:**
 ```bash
-looms judge stream [flags]
+looms pattern <subcommand> [flags]
 ```
 
-**Flags:**
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `create <pattern-name>` | Create a new pattern at runtime |
+| `watch` | Watch for real-time pattern updates |
+
+**Flags (create):**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--agent` | string | required | Agent to evaluate |
-| `--judge` | string | required | Judge ID to use |
-| `--prompt` | string | required | Input prompt |
-| `--response` | string | required | Agent response to evaluate |
+| `--thread` | string | required | Thread ID to create pattern for |
+| `--file` | string | `""` | Path to pattern YAML file |
+| `--stdin` | bool | `false` | Read pattern YAML from stdin |
+| `--interactive` | bool | `false` | Open editor to create pattern interactively |
+| `--server` | string | `localhost:9090` | Loom server address |
+| `--timeout` | int | `30` | Request timeout in seconds |
 
-**Example:**
+**Flags (watch):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--thread` | string | `""` | Filter by thread ID (optional) |
+| `--category` | string | `""` | Filter by pattern category (optional) |
+| `--server` | string | `localhost:9090` | Loom server address |
+
+**Examples:**
+
+Create pattern from file:
+```bash
+looms pattern create my-pattern --thread sql-thread --file pattern.yaml
+```
+
+Create pattern from stdin:
+```bash
+cat pattern.yaml | looms pattern create my-pattern --thread sql-thread --stdin
+```
+
+Watch all pattern updates:
+```bash
+looms pattern watch
+```
+
+Watch updates for a specific thread:
+```bash
+looms pattern watch --thread sql-thread
+```
+
+
+### looms workflow
+
+Manage and execute workflow orchestrations for multi-agent coordination.
+
+Workflows support 6 orchestration patterns: debate, fork-join, pipeline, parallel, conditional, and swarm.
+
+**Usage:**
+```bash
+looms workflow <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `validate <file>` | Validate a workflow YAML file |
+| `run <file>` | Execute a workflow from YAML file |
+| `list [directory]` | List available workflow files |
+
+**Flags (run):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--threads` | stringSlice | `[]` | Comma-separated thread IDs to register |
+| `--dry-run` | bool | `false` | Validate without executing |
+| `--timeout` | int | `3600` | Execution timeout in seconds |
+
+**Flags (list):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-d`, `--dir` | string | `""` | Directory to search (default: auto-detect) |
+
+**Examples:**
+
+Validate a workflow file:
+```bash
+looms workflow validate architecture-debate.yaml
+```
+
+Execute a workflow:
+```bash
+looms workflow run code-review.yaml
+```
+
+Execute with specific threads:
+```bash
+looms workflow run --threads=architect,pragmatist code-review.yaml
+```
+
+Dry-run (validate without executing):
+```bash
+looms workflow run --dry-run feature-pipeline.yaml
+```
+
+List available workflows:
+```bash
+looms workflow list examples/workflows
+```
+
+
+### looms learning
+
+Manage the Learning Agent (Burler) -- self-improving agent system.
+
+**Usage:**
+```bash
+looms learning <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `analyze` | Analyze pattern effectiveness |
+| `proposals` | List improvement proposals |
+| `apply <improvement-id>` | Apply an improvement proposal |
+| `rollback <improvement-id>` | Rollback an applied improvement |
+| `history` | Get improvement history |
+| `stream` | Stream real-time pattern metrics |
+| `tune` | Automatically tune pattern priorities |
+
+All subcommands share these common flags:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--server` | string | `localhost:60051` | Loom server address |
+| `--timeout` | int | `30` | Request timeout in seconds |
+
+**Flags (analyze):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--domain` | string | `""` | Filter by domain (optional) |
+| `--agent` | string | `""` | Filter by agent ID (optional) |
+| `--window` | int | `24` | Time window in hours |
+
+**Flags (proposals):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--domain` | string | `""` | Filter by domain |
+| `--agent` | string | `""` | Filter by agent ID |
+| `--status` | string | `pending` | Filter by status (pending, applied, rolled_back, rejected). Note: unrecognized values default to pending. |
+| `--limit` | int32 | `20` | Maximum number of proposals to show |
+
+**Flags (history):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--domain` | string | `""` | Filter by domain |
+| `--agent` | string | `""` | Filter by agent ID |
+| `--status` | string | `""` | Filter by status (pending, applied, rolled_back, rejected) |
+| `--limit` | int32 | `50` | Maximum number of entries |
+
+**Flags (stream):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--domain` | string | `""` | Filter by domain |
+| `--agent` | string | `""` | Filter by agent ID |
+
+**Flags (tune):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--domain` | string | `""` | Filter by domain |
+| `--agent` | string | `""` | Filter by agent ID |
+| `--strategy` | string | `moderate` | Tuning strategy (conservative, moderate, aggressive) |
+| `--dry-run` | bool | `false` | Preview changes without applying them |
+| `--library` | string | required | Path to pattern library YAML files |
+| `--cost-weight` | float64 | `0.0` | Legacy: Optimization weight for cost (0.0-1.0) |
+| `--quality-weight` | float64 | `0.0` | Legacy: Optimization weight for quality (0.0-1.0) |
+| `--latency-weight` | float64 | `0.0` | Legacy: Optimization weight for latency (0.0-1.0) |
+| `--dimension-quality` | float64 | `0.0` | Judge dimension weight for quality (0.0-1.0) |
+| `--dimension-safety` | float64 | `0.0` | Judge dimension weight for safety (0.0-1.0) |
+| `--dimension-cost` | float64 | `0.0` | Judge dimension weight for cost (0.0-1.0) |
+| `--dimension-domain` | float64 | `0.0` | Judge dimension weight for domain compliance (0.0-1.0) |
+| `--dimension-performance` | float64 | `0.0` | Judge dimension weight for performance (0.0-1.0) |
+| `--dimension-usability` | float64 | `0.0` | Judge dimension weight for usability (0.0-1.0) |
+
+**Examples:**
+
+Analyze pattern effectiveness:
+```bash
+looms learning analyze
+looms learning analyze --domain=sql --window=48
+looms learning analyze --agent=sql-optimizer-abc123
+```
+
+List pending improvement proposals:
+```bash
+looms learning proposals
+looms learning proposals --status=applied --domain=sql
+```
+
+Apply an improvement:
+```bash
+looms learning apply abc123-def456-ghi789
+```
+
+Rollback an applied improvement:
+```bash
+looms learning rollback abc123-def456-ghi789
+```
+
+Stream real-time pattern metrics:
+```bash
+looms learning stream
+looms learning stream --domain=sql
+```
+
+Tune patterns with dimension weights:
+```bash
+looms learning tune --domain=sql --strategy=moderate --library=/path/to/patterns
+looms learning tune --domain=sql --dry-run \
+  --dimension-quality=0.6 --dimension-safety=0.3 --dimension-cost=0.1 \
+  --library=/path/to/patterns
+```
+
+
+### looms eval
+
+Run and manage evaluation suites.
+
+**Note:** Requires the `hawk` build tag (`go build -tags hawk,fts5`).
+
+**Usage:**
+```bash
+looms eval <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `run <suite-file>` | Run an evaluation suite |
+| `list` | List evaluation runs |
+| `show <run-id>` | Show evaluation run details |
+
+**Flags (run):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--thread` | string | `""` | Thread ID to use (default: suite's agent_id) |
+| `--store` | string | `./evals.db` | SQLite database path |
+
+**Flags (list):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--suite` | string | `""` | Filter by suite name |
+| `--store` | string | `./evals.db` | SQLite database path |
+| `--limit` | int | `10` | Maximum number of results |
+
+**Flags (show):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--store` | string | `./evals.db` | SQLite database path |
+
+**Examples:**
+
+Run an eval suite:
+```bash
+looms eval run examples/dogfooding/config-loader-eval.yaml
+```
+
+Run with custom thread ID:
+```bash
+looms eval run --thread my-thread suite.yaml
+```
+
+List recent eval runs for a suite:
+```bash
+looms eval list --suite config-loader-quality
+```
+
+Show specific run details:
+```bash
+looms eval show 42
+```
+
+
+### looms judge
+
+Multi-dimensional LLM evaluation across 6 dimensions: quality, safety, cost, domain, performance, usability.
+
+**Usage:**
+```bash
+looms judge <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `evaluate` | Evaluate agent output with judges |
+| `evaluate-stream` | Evaluate with streaming progress |
+| `register <config-file>` | Register a new judge from YAML config |
+| `history` | Get judge evaluation history |
+
+All subcommands share these common flags:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--server` | string | `localhost:60051` | Loom server address |
+| `--timeout` | int | `60` | Request timeout in seconds |
+
+**Flags (evaluate / evaluate-stream):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--agent` | string | required | Agent ID |
+| `--prompt` | string | `""` | User prompt/input |
+| `--prompt-file` | string | `""` | Read prompt from file |
+| `--response` | string | `""` | Agent response/output |
+| `--response-file` | string | `""` | Read response from file |
+| `--judges` | stringSlice | required | Judge IDs (comma-separated) |
+| `--aggregation` | string | `weighted-average` | Strategy: weighted-average, all-must-pass, majority-pass, any-pass, min-score, max-score |
+| `--export-to-hawk` | bool | `false` | Export results to Hawk |
+| `--fail-fast` | bool | `false` | Abort if any critical judge fails |
+| `--pattern` | string | `""` | Pattern used (optional) |
+
+**Flags (register):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--max-attempts` | int | `3` | Maximum retry attempts |
+| `--initial-backoff-ms` | int | `1000` | Initial backoff in milliseconds |
+| `--max-backoff-ms` | int | `8000` | Maximum backoff in milliseconds |
+| `--backoff-multiplier` | float64 | `2.0` | Backoff multiplier |
+| `--circuit-breaker` | bool | `true` | Enable circuit breaker |
+| `--circuit-breaker-failure-threshold` | int | `5` | Circuit breaker failure threshold |
+| `--circuit-breaker-reset-timeout-ms` | int | `60000` | Circuit breaker reset timeout |
+| `--circuit-breaker-success-threshold` | int | `2` | Circuit breaker success threshold |
+
+**Flags (history):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--agent` | string | `""` | Filter by agent ID |
+| `--pattern` | string | `""` | Filter by pattern name |
+| `--judges` | stringSlice | `[]` | Filter by judge ID(s) |
+| `--start-time` | string | `""` | Start time (RFC3339 format) |
+| `--end-time` | string | `""` | End time (RFC3339 format) |
+| `--limit` | int32 | `50` | Maximum number of results |
+| `--offset` | int32 | `0` | Offset for pagination |
+
+**Examples:**
+
+Evaluate with quality and safety judges:
+```bash
+looms judge evaluate \
+  --agent=sql-agent \
+  --prompt="Generate a SELECT query" \
+  --response="SELECT * FROM users" \
+  --judges=quality-judge,safety-judge
+```
 
 Stream evaluation progress:
 ```bash
-looms judge stream \
-  --agent sql-expert \
-  --judge quality-judge \
-  --prompt "Analyze quarterly sales trends" \
-  --response "SELECT region, quarter, SUM(revenue) FROM sales..."
+looms judge evaluate-stream \
+  --agent=sql-agent \
+  --prompt="Query for admins" \
+  --response="SELECT * FROM users WHERE role='admin'" \
+  --judges=quality-judge,safety-judge,cost-judge \
+  --aggregation=weighted-average
 ```
 
-Output (streaming):
-```
-[setup] 0% - Initializing judge
-[setup] 10% - Loading evaluation criteria
-[analysis] 25% - Analyzing query structure
-[analysis] 50% - Checking for performance issues
-[analysis] 75% - Validating business logic
-[scoring] 90% - Calculating final score
-[complete] 100% - Evaluation complete
-
-Final Score: 8.5/10
-Verdict: PASS
+Register a judge:
+```bash
+looms judge register config/judges/quality-judge.yaml
 ```
 
-**When to Use:**
-- Long-running judge evaluations (>5 seconds)
-- Real-time feedback during evaluation
-- Debugging judge logic
-- User-facing evaluation with progress indicators
-
-**Benefits:**
-- Immediate feedback without waiting for completion
-- Early termination if critical issues detected
-- Better UX for complex evaluations
-- Easier debugging of slow judges
-
-**Errors:**
-- Exit code 2: Missing required flags
-- Exit code 7: Judge not found
-- Exit code 7: Agent not found
-- Exit code 4: Stream connection lost
-
-**See Also:**
-- [looms judge evaluate](#looms-judge-evaluate) - Single-shot evaluation
+View evaluation history:
+```bash
+looms judge history --agent=sql-agent --limit=20
+looms judge history --start-time=2026-01-01T00:00:00Z --end-time=2026-01-10T23:59:59Z
+```
 
 
-### looms teleprompter compile
+### looms validate
 
-Optimize prompts using DSPy-compatible compilation with training data.
+Validate Loom configuration files (agent configs, backends, patterns, workflows, skills, eval suites).
 
 **Usage:**
 ```bash
-looms teleprompter compile [flags]
+looms validate <subcommand> [flags]
 ```
 
-**Flags:**
+**Subcommands:**
 
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--optimizer` | string | required | Optimizer: `mipro`, `copro`, `textgrad`, `bootstrap-fewshot` |
-| `--training-data` | string | required | Path to training data JSONL file |
-| `--validation-data` | string | `""` | Path to validation data JSONL file |
-| `--metric` | string | `accuracy` | Evaluation metric: `accuracy`, `f1`, `precision`, `recall` |
-| `--iterations` | int | `10` | Number of optimization iterations |
-| `--output` | string | stdout | Output file for optimized prompt |
-| `--base-prompt` | string | required | Starting prompt to optimize |
+| Subcommand | Description |
+|------------|-------------|
+| `file <path>` | Validate a single configuration file |
+| `dir <path>` | Validate all YAML files in a directory recursively |
 
-**Optimizer Comparison:**
-
-| Optimizer | Best For | Training Data Required | Speed |
-|-----------|----------|------------------------|-------|
-| `mipro` | General optimization | 100-1000 examples | Slow (minutes-hours) |
-| `copro` | Constraint satisfaction (safety, compliance) | 50-500 examples | Medium |
-| `textgrad` | Fine-grained optimization | 200-1000 examples | Slow |
-| `bootstrap-fewshot` | Few-shot example generation | 20-100 examples | Fast (seconds) |
+The `file` subcommand automatically detects file type by reading the `kind` field in the YAML:
+- `Agent` -- Agent configuration
+- `AgentTemplate` -- Agent template configuration
+- `Workflow` -- Workflow configuration
+- `Skill` -- Skill configuration
+- `Project` -- Project configuration
+- `Backend` -- Backend configuration
+- `PatternLibrary` -- Pattern library configuration
+- `EvalSuite` -- Evaluation suite configuration
 
 **Examples:**
 
-Optimize with MIPRO (multi-prompt instruction proposal):
+Validate a single file:
 ```bash
-looms teleprompter compile \
-  --optimizer mipro \
-  --base-prompt "Analyze this SQL query for performance issues" \
-  --training-data ./data/sql-analysis-train.jsonl \
-  --validation-data ./data/sql-analysis-val.jsonl \
-  --metric accuracy \
-  --iterations 20 \
-  --output ./prompts/sql-analysis-optimized.txt
+looms validate file agents/my-agent.yaml
+looms validate file workflows/my-workflow.yaml
 ```
 
-Output:
-```
-🔄 Starting MIPRO optimization...
-📊 Training examples: 500
-📊 Validation examples: 100
-
-Iteration 1/20: accuracy=0.65 (baseline)
-Iteration 2/20: accuracy=0.68 (+0.03)
-Iteration 3/20: accuracy=0.71 (+0.03)
-...
-Iteration 20/20: accuracy=0.84 (+0.13)
-
-✅ Optimization complete!
-📈 Improvement: +29% (0.65 → 0.84)
-💾 Saved to: ./prompts/sql-analysis-optimized.txt
-```
-
-Bootstrap few-shot examples:
+Validate all YAML files in a directory:
 ```bash
-looms teleprompter compile \
-  --optimizer bootstrap-fewshot \
-  --base-prompt "Classify customer sentiment" \
-  --training-data ./data/sentiment-train.jsonl \
-  --iterations 5
+looms validate dir examples/
+looms validate dir examples/backends/
 ```
 
-ConstraintGrad (CoPro) with safety constraints:
-```bash
-looms teleprompter compile \
-  --optimizer copro \
-  --base-prompt "Generate SQL query from natural language" \
-  --training-data ./data/text2sql-train.jsonl \
-  --metric accuracy \
-  --iterations 15
-```
 
-**Training Data Format (JSONL):**
-```jsonl
-{"input": "Find customers in California", "output": "SELECT * FROM customers WHERE state = 'CA'", "label": "correct"}
-{"input": "Count total orders", "output": "SELECT COUNT(*) FROM orders", "label": "correct"}
-{"input": "Show revenue by region", "output": "SELECT region, SUM(revenue) FROM sales GROUP BY region", "label": "correct"}
-```
+### looms teleprompter
 
-**When to Use:**
-- Initial prompt engineering with systematic optimization
-- Improving agent accuracy on specific tasks
-- Creating few-shot examples automatically
-- A/B testing prompt variations with data-driven approach
-
-**Errors:**
-- Exit code 2: Missing required flags
-- Exit code 6: Invalid training data format
-- Exit code 6: Training data file not found
-- Exit code 1: Optimization failed to converge
-
-**See Also:**
-- [Judge Integration Guide](../guides/judge-dspy-integration.md) - DSPy details
-
-
-### looms learning stats
-
-View pattern effectiveness statistics and learning metrics.
+DSPy-style prompt optimization using multi-judge evaluation.
 
 **Usage:**
 ```bash
-looms learning stats [flags]
+looms teleprompter <subcommand> [flags]
 ```
 
-**Flags:**
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `bootstrap` | Bootstrap few-shot demonstrations using multi-judge evaluation |
+| `mipro` | MIPRO (Multi-prompt Instruction Proposal Optimizer) prompt optimization |
+| `textgrad` | TextGrad-style prompt optimization using gradient-based feedback (not yet integrated with TeleprompterService) |
+| `history` | Show compilation history for an agent |
+| `rollback <compilation-id>` | Rollback to a previous compilation |
+| `compare <compilation-a> <compilation-b>` | A/B test two compiled versions on a testset |
+
+**Flags (bootstrap):**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--domain` | string | `""` | Filter by domain (e.g., analytics, ml, data-quality) |
-| `--agent` | string | `""` | Filter by agent ID |
-| `--pattern` | string | `""` | Filter by pattern name |
-| `--window` | string | `24h` | Time window: `1h`, `24h`, `7d`, `30d`, `all` |
-| `--format` | string | `table` | Output format: `table`, `json`, `csv` |
-| `--sort` | string | `usage` | Sort by: `usage`, `success_rate`, `avg_tokens`, `avg_time` |
+| `--agent` | string | required | Agent ID |
+| `--trainset` | string | required | Path to training data JSONL file |
+| `--judges` | string | required | Comma-separated judge IDs |
+| `--output` | string | required | Output file path |
+| `--max-demos` | int | `5` | Maximum number of demonstrations to select |
+| `--min-confidence` | float64 | `0.8` | Minimum confidence threshold (0.0-1.0) |
+| `--dimension-weights` | string | `""` | JSON map of dimension weights |
+| `--aggregation` | string | `WEIGHTED_AVERAGE` | Aggregation strategy (WEIGHTED_AVERAGE, ALL_MUST_PASS, MAJORITY_PASS, etc.) |
+| `--server` | string | `localhost:60051` | Loom server address |
+| `--timeout` | int | `300` | Request timeout in seconds |
+| `--export-hawk` | bool | `false` | Export results to Hawk |
 
 **Examples:**
 
-View all pattern statistics (last 24h):
+Bootstrap with quality and safety judges:
 ```bash
-looms learning stats
+looms teleprompter bootstrap \
+  --agent=sql-agent \
+  --trainset=examples.jsonl \
+  --judges=quality-judge,safety-judge \
+  --max-demos=5 \
+  --min-confidence=0.8 \
+  --output=demos.yaml
 ```
 
-Output:
-```
-PATTERN                    USAGE  SUCCESS  FAIL  SUCCESS_RATE  AVG_TOKENS  AVG_TIME
-revenue_aggregation        1,234  1,180    54    95.6%         1,245       2.3s
-join_optimization          456    402      54    88.2%         2,134       3.1s
-funnel_analysis            234    198      36    84.6%         3,456       4.2s
-missing_index_analysis     123    115      8     93.5%         1,876       2.8s
-```
-
-Filter by domain and sort by success rate:
+With dimension weights:
 ```bash
-looms learning stats \
-  --domain analytics \
-  --window 7d \
-  --sort success_rate
+looms teleprompter bootstrap \
+  --agent=sql-agent \
+  --trainset=examples.jsonl \
+  --judges=quality-judge,safety-judge,cost-judge \
+  --dimension-weights='{"quality":0.6,"safety":0.3,"cost":0.1}' \
+  --max-demos=10 \
+  --output=demos.yaml
 ```
-
-View specific pattern details with JSON output:
-```bash
-looms learning stats \
-  --pattern revenue_aggregation \
-  --window 30d \
-  --format json
-```
-
-Output:
-```json
-{
-  "pattern": "revenue_aggregation",
-  "domain": "analytics",
-  "window": "30d",
-  "total_usage": 5432,
-  "success_count": 5187,
-  "failure_count": 245,
-  "success_rate": 0.955,
-  "avg_tokens": 1245,
-  "avg_execution_time_ms": 2300,
-  "agents_using": ["sql-expert", "data-analyst"],
-  "variants": {
-    "control": {"usage": 2716, "success_rate": 0.948},
-    "treatment-a": {"usage": 2716, "success_rate": 0.962}
-  }
-}
-```
-
-Export to CSV for analysis:
-```bash
-looms learning stats --window 30d --format csv > pattern-stats.csv
-```
-
-**When to Use:**
-- Identifying underperforming patterns
-- Monitoring pattern adoption across agents
-- Tracking pattern effectiveness over time
-- Preparing data for A/B test analysis
-
-**Errors:**
-- Exit code 2: Invalid window format
-- Exit code 2: Invalid sort field
-- Exit code 7: Pattern not found
-- Exit code 7: Domain not found
-
-**See Also:**
-- [looms learning export](#looms-learning-export) - Export raw data
-
-
-### looms learning export
-
-Export learning data for external analysis or synchronization.
-
-**Usage:**
-```bash
-looms learning export [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--domain` | string | `""` | Filter by domain |
-| `--agent` | string | `""` | Filter by agent ID |
-| `--patterns` | stringArray | `[]` | Filter by pattern names (repeatable) |
-| `--window` | string | `all` | Time window: `1h`, `24h`, `7d`, `30d`, `all` |
-| `--format` | string | `jsonl` | Output format: `json`, `jsonl`, `csv` |
-| `--output` | string | stdout | Output file |
-
-**Examples:**
-
-Export all learning data:
-```bash
-looms learning export --output learning-data.jsonl
-```
-
-Export specific domain for last 7 days:
-```bash
-looms learning export \
-  --domain analytics \
-  --window 7d \
-  --format json \
-  --output analytics-7d.json
-```
-
-Export specific patterns as CSV:
-```bash
-looms learning export \
-  --patterns revenue_aggregation,join_optimization \
-  --window 30d \
-  --format csv \
-  --output patterns-30d.csv
-```
-
-**Output Format (JSONL):**
-```jsonl
-{"pattern":"revenue_aggregation","domain":"analytics","agent":"sql-expert","timestamp":"2025-01-23T10:15:30Z","success":true,"tokens":1245,"time_ms":2300}
-{"pattern":"join_optimization","domain":"analytics","agent":"sql-expert","timestamp":"2025-01-23T10:18:45Z","success":true,"tokens":2134,"time_ms":3100}
-```
-
-**When to Use:**
-- Backing up learning data
-- Analyzing patterns in external tools (pandas, Excel)
-- Syncing data to centralized learning repository
-- Creating training datasets for teleprompter optimization
-
-**Errors:**
-- Exit code 2: Invalid format
-- Exit code 7: No data found matching filters
-- Exit code 1: Failed to write output file
-
-**See Also:**
-- [looms learning stats](#looms-learning-stats) - View statistics
-
-
-### looms learning sync
-
-Synchronize learning data with external systems.
-
-**Usage:**
-```bash
-looms learning sync [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--direction` | string | required | Sync direction: `push`, `pull`, `bidirectional` |
-| `--domain` | string | `""` | Filter by domain |
-| `--agent` | string | `""` | Filter by agent ID |
-| `--patterns` | stringArray | `[]` | Filter by pattern names (repeatable) |
-| `--endpoint` | string | required | External system endpoint (for push/pull) |
-| `--window` | string | `24h` | Time window for sync: `1h`, `24h`, `7d`, `30d`, `all` |
-
-**Examples:**
-
-Push local learning data to external system:
-```bash
-looms learning sync \
-  --direction push \
-  --domain analytics \
-  --endpoint https://learning-hub.example.com/api/v1/sync \
-  --window 24h
-```
-
-Output:
-```
-🔄 Syncing learning data...
-📤 Direction: push
-🎯 Domain: analytics
-⏱️  Window: 24h
-
-Analyzing local data...
-  Found 1,234 learning records
-  Patterns: revenue_aggregation, join_optimization, funnel_analysis
-
-Pushing to https://learning-hub.example.com/api/v1/sync...
-  ✅ Uploaded 1,234 records
-  ✅ Sync complete
-
-Summary:
-  Records pushed: 1,234
-  Patterns synced: 3
-  Duration: 2.3s
-```
-
-Pull external improvements:
-```bash
-looms learning sync \
-  --direction pull \
-  --domain analytics \
-  --endpoint https://learning-hub.example.com/api/v1/sync
-```
-
-Bidirectional sync:
-```bash
-looms learning sync \
-  --direction bidirectional \
-  --endpoint https://learning-hub.example.com/api/v1/sync
-```
-
-**When to Use:**
-- Centralized learning across multiple Loom deployments
-- Sharing pattern improvements across teams
-- Importing curated patterns from external sources
-- Backing up learning data to remote storage
-
-**Note:** Pull sync currently has infrastructure but requires external system integration. Push sync is fully functional.
-
-**Errors:**
-- Exit code 2: Missing required flags
-- Exit code 4: Failed to connect to endpoint
-- Exit code 4: Authentication failed
-- Exit code 1: Sync operation failed
-
-**See Also:**
-- [looms learning export](#looms-learning-export) - Export for manual sync
-
-
-### looms pattern list
-
-List all available patterns with filtering options.
-
-**Usage:**
-```bash
-looms pattern list [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--domain` | string | `""` | Filter by domain (e.g., analytics, ml) |
-| `--category` | string | `""` | Filter by category (e.g., performance, security) |
-| `--backend` | string | `""` | Filter by backend type (e.g., postgres, teradata) |
-| `--format` | string | `table` | Output format: `table`, `json`, `yaml` |
-
-**Examples:**
-
-List all patterns:
-```bash
-looms pattern list
-```
-
-Output:
-```
-NAME                        DOMAIN      CATEGORY      BACKEND    DESCRIPTION
-revenue_aggregation         analytics   reporting     sql        Aggregate revenue metrics by dimension
-join_optimization           analytics   performance   sql        Optimize JOIN operations
-funnel_analysis             analytics   reporting     sql        Multi-step funnel conversion analysis
-linear_regression           ml          supervised    sql        Linear regression model training
-data_profiling              quality     validation    sql        Profile data distributions and quality
-```
-
-Filter by domain:
-```bash
-looms pattern list --domain analytics
-```
-
-Output as JSON for programmatic use:
-```bash
-looms pattern list --domain analytics --format json
-```
-
-Filter by multiple criteria:
-```bash
-looms pattern list \
-  --domain analytics \
-  --category performance \
-  --backend postgres
-```
-
-**When to Use:**
-- Discovering available patterns
-- Finding patterns for specific tasks
-- Programmatic pattern discovery
-- Documentation generation
-
-**Errors:**
-- Exit code 7: No patterns found matching filters
-- Exit code 2: Invalid format specified
-
-**See Also:**
-- [Pattern Reference](./patterns.md) - Pattern specification
-
-
-### looms pattern validate
-
-Validate pattern YAML files against the schema.
-
-**Usage:**
-```bash
-looms pattern validate <pattern-file> [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--strict` | bool | `false` | Enable strict validation (fail on warnings) |
-
-**Examples:**
-
-Validate a pattern file:
-```bash
-looms pattern validate patterns/analytics/revenue-agg.yaml
-```
-
-Output (success):
-```
-✅ Pattern is valid: revenue_aggregation
-
-Validation Results:
-  ✅ Schema structure valid
-  ✅ Required fields present
-  ✅ Template syntax valid
-  ✅ Example parameters valid
-  ✅ Backend compatibility confirmed
-```
-
-Output (errors):
-```
-❌ Pattern validation failed: join_optimization
-
-Errors:
-  ❌ Line 15: Missing required field 'description'
-  ❌ Line 23: Invalid template syntax: {{.table_name}
-  ❌ Line 45: Example missing required parameter 'left_table'
-
-Warnings:
-  ⚠️  Line 30: Template uses deprecated variable {{.backend}}
-```
-
-Validate with strict mode:
-```bash
-looms pattern validate patterns/analytics/revenue-agg.yaml --strict
-```
-
-Validate all patterns in directory:
-```bash
-for f in patterns/**/*.yaml; do
-  looms pattern validate "$f"
-done
-```
-
-**When to Use:**
-- Before committing new patterns
-- CI/CD pipeline validation
-- Debugging pattern syntax errors
-- Ensuring pattern quality standards
-
-**Errors:**
-- Exit code 2: File not found
-- Exit code 6: Validation failed
-- Exit code 6: Strict mode: warnings present
-
-**See Also:**
-- [Pattern Reference](./patterns.md) - Schema specification
-
-
-### looms pattern reload
-
-Hot reload patterns without server restart.
-
-**Usage:**
-```bash
-looms pattern reload [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--pattern` | string | `""` | Reload specific pattern (optional) |
-| `--domain` | string | `""` | Reload all patterns in domain (optional) |
-
-**Examples:**
-
-Reload all patterns:
-```bash
-looms pattern reload
-```
-
-Output:
-```
-🔄 Reloading patterns...
-  ✅ Loaded 59 patterns
-  ⏱️  Reload time: 89ms
-  ✅ All agents updated
-```
-
-Reload specific pattern:
-```bash
-looms pattern reload --pattern revenue_aggregation
-```
-
-Reload all patterns in domain:
-```bash
-looms pattern reload --domain analytics
-```
-
-**When to Use:**
-- After editing pattern files during development
-- Testing pattern changes without server restart
-- Hot-fixing pattern issues in production
-- Updating patterns from version control
-
-**Requirements:**
-- Server must be started with `--hot-reload` flag
-- Pattern files must pass validation
-- No syntax errors in YAML
-
-**Performance:**
-- Typical reload time: 89-143ms
-- Zero downtime during reload
-- Existing sessions unaffected
-
-**Errors:**
-- Exit code 1: Server not started with `--hot-reload`
-- Exit code 7: Pattern not found
-- Exit code 6: Pattern validation failed
-- Exit code 4: Server connection failed
-
-**See Also:**
-- [looms serve](#looms-serve) - Start with `--hot-reload`
-
-
-### looms workflow run
-
-Execute multi-stage workflows with orchestration.
-
-**Usage:**
-```bash
-looms workflow run <workflow-file> [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--input` | string | `{}` | Input data (JSON string or `@file`) |
-| `--session` | string | `""` | Session ID for conversation context |
-| `--stream` | bool | `false` | Stream execution progress |
-| `--export-hawk` | bool | `true` | Export workflow trace to Hawk |
-
-**Examples:**
-
-Run workflow with inline input:
-```bash
-looms workflow run workflows/npath-analysis.yaml \
-  --input '{"user_query": "Analyze customer journeys", "database": "demo"}'
-```
-
-Run with input from file:
-```bash
-looms workflow run workflows/data-pipeline.yaml --input @data/input.json
-```
-
-Stream workflow progress:
-```bash
-looms workflow run workflows/multi-stage-report.yaml \
-  --input '{"report_type": "quarterly", "year": 2024}' \
-  --stream
-```
-
-Output (streaming):
-```
-🚀 Starting workflow: multi-stage-report
-
-[Stage 1/5] database_discovery (0%)
-  ✅ Discovered 3 databases: demo, analytics, staging
-
-[Stage 2/5] table_selection (20%)
-  ✅ Selected table: analytics.sales_facts
-
-[Stage 3/5] data_profiling (40%)
-  ✅ Profiled 1.2M rows, 15 columns
-
-[Stage 4/5] aggregation (60%)
-  ✅ Generated quarterly aggregations
-
-[Stage 5/5] report_generation (80%)
-  ✅ Generated report with 4 sections
-
-✅ Workflow complete (12.3s)
-📊 Results exported to Hawk
-```
-
-**When to Use:**
-- Complex multi-stage analyses
-- Data pipelines with dependencies between stages
-- Automated reporting workflows
-- Orchestrated agent interactions
-
-**Workflow File Example:**
-```yaml
-# workflows/multi-stage-report.yaml
-name: quarterly-report
-type: pipeline
-
-stages:
-  - id: discovery
-    agent: sql-expert
-    pattern: database_discovery
-
-  - id: selection
-    agent: sql-expert
-    pattern: table_selection
-    depends_on: [discovery]
-
-  - id: aggregation
-    agent: sql-expert
-    pattern: aggregation
-    depends_on: [selection]
-
-  - id: report
-    agent: data-analyst
-    pattern: report_generation
-    depends_on: [aggregation]
-```
-
-**Errors:**
-- Exit code 2: Workflow file not found
-- Exit code 6: Invalid workflow YAML
-- Exit code 7: Referenced agent not found
-- Exit code 7: Referenced pattern not found
-- Exit code 1: Stage execution failed
-
-**See Also:**
-- [looms workflow validate](#looms-workflow-validate) - Validate workflow
-
-
-### looms workflow validate
-
-Validate workflow YAML files.
-
-**Usage:**
-```bash
-looms workflow validate <workflow-file> [flags]
-```
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--strict` | bool | `false` | Enable strict validation |
-
-**Examples:**
-
-Validate workflow:
-```bash
-looms workflow validate workflows/npath-analysis.yaml
-```
-
-Output (success):
-```
-✅ Workflow is valid: npath-analysis
-
-Validation Results:
-  ✅ Schema structure valid
-  ✅ All stages have valid agents
-  ✅ All patterns exist
-  ✅ Dependencies are acyclic
-  ✅ Input/output contracts match
-```
-
-Output (errors):
-```
-❌ Workflow validation failed: data-pipeline
-
-Errors:
-  ❌ Stage 'aggregation' references non-existent agent 'analytics-bot'
-  ❌ Stage 'report' has circular dependency: report -> analysis -> report
-  ❌ Stage 'selection' pattern 'table_picker' not found
-
-Warnings:
-  ⚠️  Stage 'discovery' has no dependencies (expected for first stage)
-```
-
-**When to Use:**
-- Before running new workflows
-- CI/CD pipeline validation
-- Debugging workflow execution errors
-- Ensuring workflow quality standards
-
-**Errors:**
-- Exit code 2: File not found
-- Exit code 6: Validation failed
-- Exit code 6: Strict mode: warnings present
-- Exit code 7: Referenced agent/pattern not found
-
-**See Also:**
-- [Workflow Orchestration Guide](../guides/workflow-orchestration.md) - Workflow patterns
 
 
 ## Client Commands (`loom`)
 
-### loom chat
+### loom (root)
 
-Start an interactive chat session with an agent.
+Launch the interactive TUI chat interface. Connects to the Loom server via gRPC and provides a Bubbletea-based terminal UI with session management, streaming, and real-time cost tracking.
 
 **Usage:**
 ```bash
-loom chat [flags]
+loom [flags]
 ```
+
+When run without a `--thread` flag, defaults to the built-in "guide" agent that helps users discover and select agents. If the server is not reachable, shows a "no-server" splash with connection instructions.
+
+**Examples:**
+
+Start TUI with auto-select:
+```bash
+loom
+```
+
+Connect to a specific thread:
+```bash
+loom --thread sql-agent
+loom -t file-explorer-abc123
+```
+
+Connect to a remote server:
+```bash
+loom --server 192.168.1.100:60051 --thread sql-agent
+```
+
+Resume a previous session:
+```bash
+loom --thread sql-agent --session sess_abc123
+```
+
+Connect with TLS:
+```bash
+loom --tls --tls-ca-file /path/to/ca.pem --server myserver:60051
+```
+
+
+### loom chat
+
+Send a message to an agent and get a response in the terminal, without launching the TUI.
+
+**Usage:**
+```bash
+loom chat [message] [flags]
+```
+
+The `--thread` flag is required. Message can be provided as an argument, via `--message` flag, or piped from stdin.
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--agent` | string | from config | Agent to chat with |
-| `--server` | string | `localhost:50051` | Server address |
-| `--session` | string | `""` | Resume existing session ID |
-| `--pattern` | string | `""` | Use specific pattern |
-| `--stream` | bool | `true` | Stream responses |
+| `-m`, `--message` | string | `""` | Message to send (if not via args or stdin) |
+| `--stream` | bool | `false` | Stream response in real-time (shows progress stages) |
+| `--timeout` | duration | `5m` | Timeout for response |
 
 **Examples:**
 
-Start interactive chat:
+Send message as argument:
 ```bash
-loom chat
+loom chat --thread sql-agent "show me all tables"
 ```
 
-Chat with specific agent:
+Send message via flag:
 ```bash
-loom chat --agent sql-expert
+loom chat --thread sql-agent --message "explain the schema"
 ```
 
-Resume previous session:
+Pipe from stdin:
 ```bash
-loom chat --session sess_abc123
+echo "analyze this query" | loom chat --thread sql-agent
 ```
 
-Chat using specific pattern:
+Stream response with progress:
 ```bash
-loom chat --agent sql-expert --pattern aggregation
+loom chat --thread sql-agent --stream "explain the schema"
 ```
 
-**Interactive Session:**
-```
-🤖 Connected to sql-expert
-
-You: Analyze sales by region for Q4 2024
-
-Agent: I'll help you analyze Q4 2024 sales by region. Let me query the database.
-
-[Executing: get_schema sales]
-[Executing: execute_query SELECT region, SUM...]
-
-Based on the analysis:
-
-1. **West Region**: $2.4M (35% of total)
-2. **East Region**: $2.1M (30% of total)
-3. **South Region**: $1.5M (22% of total)
-4. **Central Region**: $0.9M (13% of total)
-
-Total Q4 Revenue: $6.9M
-
-Would you like me to break this down further by month?
-
-You: Yes, show monthly breakdown
-
-Agent: Here's the monthly breakdown for Q4 2024...
-
-
-Commands:
-  /exit, /quit   - Exit chat
-  /session       - Show current session ID
-  /clear         - Clear conversation history
-  /export        - Export session to Hawk
-  /help          - Show help
+With custom timeout:
+```bash
+loom chat --thread sql-agent --timeout 10m "run a long analysis"
 ```
 
-**When to Use:**
-- Interactive exploration and analysis
-- Testing agent behavior
-- Ad-hoc queries and investigations
-- Learning agent capabilities
 
-**Errors:**
-- Exit code 4: Cannot connect to server
-- Exit code 7: Agent not found
-- Exit code 7: Session not found
-- Exit code 5: Authentication failed
+### loom agents
 
-**See Also:**
-- [loom thread](#loom-thread) - Persistent threads
-
-
-### loom thread
-
-Create or resume conversation threads with persistent context.
+List all available agents and threads configured on the server.
 
 **Usage:**
 ```bash
-loom thread [subcommand] [flags]
+loom agents [flags]
+```
+
+**Aliases:** `list`, `ls`, `threads`
+
+No additional flags beyond the global client flags.
+
+**Examples:**
+
+```bash
+loom agents
+loom ls
+loom threads
+```
+
+**Expected Output:**
+```
+Available agents (2):
+
+  sql-agent (SQL Agent)
+    Status: running | Active sessions: 3 | Total messages: 42
+    Uptime: 2h 15m
+    Model: claude-sonnet-4-5-20250929 (anthropic)
+
+  file-explorer
+    Status: running
+    Uptime: 2h 15m
+
+To connect to an agent:
+  loom --thread <agent-id>                # Open TUI
+  loom chat --thread <agent-id> 'message' # CLI chat
+```
+
+
+### loom sessions
+
+Manage conversation sessions.
+
+**Usage:**
+```bash
+loom sessions <subcommand> [flags]
 ```
 
 **Subcommands:**
 
 | Subcommand | Description |
 |------------|-------------|
-| `create` | Start new thread |
-| `resume` | Continue existing thread |
-| `list` | List your threads |
-| `delete` | Delete a thread |
+| `list` | List conversation sessions |
+| `show <session-id>` | Show session details |
+| `delete <session-id>` | Delete a session and its conversation history |
 
-**Examples:**
-
-Create new thread:
-```bash
-loom thread create --agent sql-expert --title "Q4 Sales Analysis"
-```
-
-Output:
-```
-✅ Created thread: thread_xyz789
-📝 Title: Q4 Sales Analysis
-🤖 Agent: sql-expert
-💬 Messages: 0
-```
-
-Resume thread:
-```bash
-loom thread resume thread_xyz789
-```
-
-List threads:
-```bash
-loom thread list
-```
-
-Output:
-```
-THREAD_ID       TITLE                  AGENT        MESSAGES  UPDATED
-thread_xyz789   Q4 Sales Analysis      sql-expert   12        2 hours ago
-thread_abc123   Customer Segmentation  data-analyst 8         1 day ago
-thread_def456   Performance Tuning     sql-expert   5         3 days ago
-```
-
-Delete thread:
-```bash
-loom thread delete thread_xyz789
-```
-
-**When to Use:**
-- Long-running investigations with persistent context
-- Organizing conversations by topic
-- Collaborating on analysis with teammates
-- Maintaining conversation history
-
-**Errors:**
-- Exit code 4: Cannot connect to server
-- Exit code 7: Thread not found
-- Exit code 7: Agent not found
-
-**See Also:**
-- [loom chat](#loom-chat) - Simple chat sessions
-
-
-### loom config set
-
-Set configuration values.
-
-**Usage:**
-```bash
-loom config set <key> <value> [flags]
-```
-
-**Examples:**
-
-Set default server:
-```bash
-loom config set server.address localhost:50051
-```
-
-Configure default agent:
-```bash
-loom config set agent.default sql-expert
-```
-
-Enable streaming responses:
-```bash
-loom config set client.stream true
-```
-
-Set MCP server configuration:
-```bash
-loom config set mcp.servers.vantage.command ~/bin/vantage-mcp
-loom config set mcp.servers.vantage.args.0 --database demo
-```
-
-Set MCP environment variables:
-```bash
-loom config set mcp.servers.vantage.env.TD_USER myuser
-```
-
-**When to Use:**
-- Initial client setup
-- Switching between servers/environments
-- Configuring MCP servers
-- Setting default preferences
-
-**Configuration File:** `$LOOM_DATA_DIR/config.yaml`
-
-**Errors:**
-- Exit code 2: Invalid key format
-- Exit code 3: Invalid value for key type
-
-**See Also:**
-- [loom config get](#loom-config-get) - View configuration
-
-
-### loom config get
-
-Get configuration values.
-
-**Usage:**
-```bash
-loom config get <key> [flags]
-```
-
-**Examples:**
-
-Get server address:
-```bash
-loom config get server.address
-```
-
-Output:
-```
-localhost:50051
-```
-
-Get all configuration:
-```bash
-loom config get
-```
-
-Output:
-```yaml
-server:
-  address: localhost:50051
-agent:
-  default: sql-expert
-client:
-  stream: true
-mcp:
-  servers:
-    vantage:
-      command: ~/bin/vantage-mcp
-      env:
-        TD_USER: myuser
-```
-
-**When to Use:**
-- Checking current configuration
-- Debugging connection issues
-- Verifying MCP server setup
-
-**Errors:**
-- Exit code 7: Key not found
-
-**See Also:**
-- [loom config set](#loom-config-set) - Set configuration
-
-
-### loom config set-key
-
-Store secrets securely in system keyring.
-
-**Usage:**
-```bash
-loom config set-key <key-name> [flags]
-```
-
-**Flags:**
+**Flags (list):**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--value` | string | `""` | Provide value directly (not recommended) |
+| `-n`, `--limit` | int32 | `20` | Maximum number of sessions to return |
+| `--offset` | int32 | `0` | Number of sessions to skip |
 
 **Examples:**
 
-Store password interactively (secure - password hidden):
+List sessions:
 ```bash
-loom config set-key td_password
+loom sessions list
+loom sessions list --limit 50
 ```
 
-Prompt:
-```
-Enter value for 'td_password': [hidden input]
-✅ Stored in system keyring
-```
-
-Use stored key in MCP configuration:
+Show session details:
 ```bash
-loom config set mcp.servers.vantage.env.TD_PASSWORD "{{keyring:td_password}}"
+loom sessions show sess_abc123def456
 ```
 
-Store API key:
+Delete a session:
 ```bash
-loom config set-key anthropic_api_key
+loom sessions delete sess_abc123def456
 ```
 
-**Supported Keyrings:**
-- **macOS**: Keychain
-- **Linux**: Secret Service (gnome-keyring, kwallet)
-- **Windows**: Windows Credential Manager
 
-**When to Use:**
-- Storing database passwords
-- Storing API keys
-- Storing any sensitive credentials
-- Avoiding plaintext secrets in configuration files
+### loom artifacts
 
-**Security:**
-- Never use `--value` flag for secrets (visible in shell history)
-- Always use interactive prompt for sensitive data
-- Keys are encrypted by OS keyring service
-
-**Errors:**
-- Exit code 1: Keyring service unavailable
-- Exit code 1: Failed to store key
-
-**See Also:**
-- [loom config set](#loom-config-set) - Reference keys in config
-
-
-### loom session list
-
-List conversation sessions.
+Manage artifacts (upload, download, search, delete).
 
 **Usage:**
 ```bash
-loom session list [flags]
+loom artifacts <subcommand> [flags]
 ```
 
-**Flags:**
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List artifacts with optional filtering |
+| `search <query>` | Search artifacts with FTS5 full-text search |
+| `show <id-or-name>` | Show artifact details |
+| `upload <file-path>` | Upload a file as an artifact |
+| `download <id-or-name>` | Download artifact content |
+| `delete <id-or-name>` | Delete an artifact |
+| `stats` | Show artifact storage statistics |
+
+**Flags (list):**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--agent` | string | `""` | Filter by agent |
-| `--limit` | int | `20` | Limit results |
-| `--format` | string | `table` | Output format: `table`, `json` |
+| `-n`, `--limit` | int32 | `20` | Maximum number of artifacts to return |
+| `--offset` | int32 | `0` | Number of artifacts to skip |
+| `--source` | string | `""` | Filter by source (user, generated, agent) |
+| `--content-type` | string | `""` | Filter by MIME type |
+| `--tags` | stringSlice | `[]` | Filter by tags (comma-separated) |
+| `--include-deleted` | bool | `false` | Include soft-deleted artifacts |
 
-**Examples:**
-
-List recent sessions:
-```bash
-loom session list
-```
-
-Output:
-```
-SESSION_ID       AGENT         MESSAGES  TOKENS   CREATED
-sess_abc123      sql-expert    15        12,345   2 hours ago
-sess_def456      data-analyst  8         5,678    1 day ago
-sess_ghi789      sql-expert    23        18,900   3 days ago
-```
-
-Filter by agent:
-```bash
-loom session list --agent sql-expert
-```
-
-Get more sessions:
-```bash
-loom session list --limit 50
-```
-
-JSON output for programmatic use:
-```bash
-loom session list --format json
-```
-
-**When to Use:**
-- Finding previous conversations
-- Reviewing session history
-- Monitoring session usage
-- Preparing for session export
-
-**Errors:**
-- Exit code 4: Cannot connect to server
-- Exit code 2: Invalid limit value
-
-**See Also:**
-- [loom session resume](#loom-session-resume) - Resume session
-
-
-### loom session resume
-
-Resume a previous conversation session.
-
-**Usage:**
-```bash
-loom session resume <session-id> [flags]
-```
-
-**Examples:**
-
-Resume session:
-```bash
-loom session resume sess_abc123
-```
-
-Output:
-```
-📂 Resuming session: sess_abc123
-🤖 Agent: sql-expert
-💬 Messages: 15
-🔄 Loading conversation history...
-
-[Previous conversation displayed]
-
-You: [continue conversation]
-```
-
-**When to Use:**
-- Continuing previous analysis
-- Reviewing past conversations
-- Building on prior context
-- Following up on recommendations
-
-**Errors:**
-- Exit code 4: Cannot connect to server
-- Exit code 7: Session not found
-
-**See Also:**
-- [loom session list](#loom-session-list) - Find session IDs
-
-
-### loom session export
-
-Export session to Hawk for analysis.
-
-**Usage:**
-```bash
-loom session export <session-id> [flags]
-```
-
-**Flags:**
+**Flags (search):**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--hawk-endpoint` | string | from config | Hawk server endpoint |
-| `--format` | string | `hawk` | Export format: `hawk`, `json` |
-| `--output` | string | send to Hawk | Output file |
+| `-n`, `--limit` | int32 | `20` | Maximum number of results to return |
 
-**Examples:**
-
-Export to Hawk:
-```bash
-loom session export sess_abc123
-```
-
-Output:
-```
-📤 Exporting session to Hawk...
-  Session: sess_abc123
-  Messages: 15
-  Tokens: 12,345
-  Endpoint: http://localhost:9090
-
-✅ Export complete
-🔗 View in Hawk: http://localhost:9090/sessions/sess_abc123
-```
-
-Export to JSON file:
-```bash
-loom session export sess_abc123 \
-  --format json \
-  --output session-abc123.json
-```
-
-**When to Use:**
-- Analyzing conversation patterns
-- Debugging agent behavior
-- Tracking token usage and costs
-- Sharing sessions with team for review
-
-**Errors:**
-- Exit code 4: Cannot connect to server
-- Exit code 7: Session not found
-- Exit code 4: Cannot connect to Hawk
-
-**See Also:**
-- [Observability Guide](../guides/integration/observability.md) - Hawk integration
-
-
-### loom mcp list
-
-List configured MCP servers and their status.
-
-**Usage:**
-```bash
-loom mcp list [flags]
-```
-
-**Flags:**
+**Flags (upload):**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--format` | string | `table` | Output format: `table`, `json` |
+| `--purpose` | string | `""` | Purpose or description of the artifact |
+| `--tags` | stringSlice | `[]` | Tags for the artifact (comma-separated) |
+
+**Flags (download):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-o`, `--output` | string | `""` | Output file path (default: stdout or original filename) |
+
+**Flags (delete):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--hard` | bool | `false` | Permanently delete artifact (cannot be undone) |
+
+**Examples:**
+
+List artifacts:
+```bash
+loom artifacts list
+loom artifacts list --source user --tags sql,report
+```
+
+Search artifacts:
+```bash
+loom artifacts search "sales report"
+loom artifacts search "excel AND quarterly"
+```
+
+Upload a file:
+```bash
+loom artifacts upload ~/data.csv
+loom artifacts upload report.pdf --purpose "Q4 sales report" --tags excel,sales,2024
+```
+
+Download an artifact:
+```bash
+loom artifacts download art_abc123def456
+loom artifacts download data.csv --output ~/Downloads/data.csv
+```
+
+Delete an artifact:
+```bash
+loom artifacts delete art_abc123def456
+loom artifacts delete data.csv --hard
+```
+
+Show storage stats:
+```bash
+loom artifacts stats
+```
+
+
+### loom mcp
+
+Manage Model Context Protocol (MCP) servers.
+
+**Usage:**
+```bash
+loom mcp <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List configured MCP servers and their status |
+| `test <server-name>` | Test MCP server connection |
+| `tools <server-name>` | List tools from a specific MCP server |
 
 **Examples:**
 
@@ -1741,102 +1146,59 @@ List MCP servers:
 loom mcp list
 ```
 
-Output:
-```
-NAME         STATUS    TOOLS  COMMAND
-vantage      running   45     ~/bin/vantage-mcp
-github       running   12     npx @modelcontextprotocol/server-github
-filesystem   stopped   8      npx @modelcontextprotocol/server-filesystem
-```
-
-JSON output:
-```bash
-loom mcp list --format json
-```
-
-**When to Use:**
-- Checking MCP server health
-- Discovering available tools
-- Debugging MCP configuration
-- Verifying server startup
-
-**Errors:**
-- Exit code 4: Cannot connect to server
-
-**See Also:**
-- [loom mcp test](#loom-mcp-test) - Test MCP server
-
-
-### loom mcp test
-
-Test MCP server connection and list available tools.
-
-**Usage:**
-```bash
-loom mcp test <server-name> [flags]
-```
-
-**Examples:**
-
-Test MCP server:
+Test MCP server connection:
 ```bash
 loom mcp test vantage
 ```
 
-Output:
-```
-🔌 Testing MCP server: vantage
-
-Connection:
-  ✅ Server started successfully
-  ✅ Handshake complete
-  ✅ Protocol version: 1.0
-
-Available Tools:
-  ✅ execute_query - Execute Teradata SQL query
-  ✅ get_schema - Get table schema information
-  ✅ list_tables - List available tables
-  ✅ list_databases - List accessible databases
-  ... (41 more tools)
-
-Summary:
-  Status: healthy
-  Tools: 45
-  Response time: 234ms
-```
-
-Test with errors:
+List tools from a server:
 ```bash
-loom mcp test filesystem
+loom mcp tools github
 ```
 
-Output:
-```
-🔌 Testing MCP server: filesystem
 
-Connection:
-  ❌ Failed to start server
-  Error: command not found: npx
+### loom providers
 
-Troubleshooting:
-  1. Install Node.js and npm
-  2. Install server: npm install -g @modelcontextprotocol/server-filesystem
-  3. Verify command: npx @modelcontextprotocol/server-filesystem --help
+Manage the LLM provider pool.
+
+**Usage:**
+```bash
+loom providers <subcommand> [flags]
 ```
 
-**When to Use:**
-- After configuring new MCP server
-- Debugging MCP connection issues
-- Verifying tool availability
-- Testing after MCP server updates
+**Subcommands:**
 
-**Errors:**
-- Exit code 4: Cannot connect to server
-- Exit code 7: MCP server not configured
-- Exit code 4: MCP server failed to start
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List available providers in the pool |
+| `switch <provider-name>` | Switch to a named provider |
 
-**See Also:**
-- [MCP Integration Guide](../guides/integration/mcp.md) - MCP setup
+**Flags (switch):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--session` | string | `""` | Session ID to switch model for |
+| `--thread` | string | `""` | Thread (agent) ID |
+
+**Examples:**
+
+List available providers:
+```bash
+loom providers list
+```
+
+**Expected Output:**
+```
+NAME      PROVIDER    MODEL                           ACTIVE
+fast      anthropic   claude-sonnet-4-5-20250929      ✓
+cheap     ollama      qwen2.5:7b
+```
+
+Switch to a different provider:
+```bash
+loom providers switch cheap
+loom providers switch fast --session sess_abc123
+```
 
 
 ## Environment Variables
@@ -1844,150 +1206,72 @@ Troubleshooting:
 ### Server Environment
 
 ```bash
-# Server configuration
-LOOM_SERVER_PORT=50051
-LOOM_HTTP_PORT=8080
-LOOM_CONFIG_PATH=$LOOM_DATA_DIR/server.yaml
+# Data directory (all defaults relative to this)
+LOOM_DATA_DIR=~/.loom              # Default data directory
 
-# Observability
-LOOM_HAWK_ENDPOINT=http://localhost:9090
-LOOM_HAWK_ENABLED=true
-
-# LLM providers
+# LLM providers (alternatives to config file / keyring)
 ANTHROPIC_API_KEY=sk-ant-...
-AWS_REGION=us-east-1
+AWS_REGION=us-west-2
 OLLAMA_BASE_URL=http://localhost:11434
-
-# Database credentials (via keyring recommended)
-TD_USER=myuser
-TD_PASSWORD={{keyring:td_password}}
 ```
 
 ### Client Environment
 
 ```bash
-# Client configuration
-LOOM_SERVER=localhost:50051
-LOOM_AGENT=sql-expert
-LOOM_CONFIG_PATH=$LOOM_DATA_DIR/config.yaml
-
-# MCP servers
-MCP_VANTAGE_CMD=~/bin/vantage-mcp
-MCP_GITHUB_TOKEN={{keyring:github_token}}
+# Data directory
+LOOM_DATA_DIR=~/.loom
 ```
 
 
 ## Configuration Files
 
-### Server Configuration (`$LOOM_DATA_DIR/server.yaml`)
+### Server Configuration (`$LOOM_DATA_DIR/looms.yaml`)
 
 ```yaml
 server:
-  grpc_port: 50051
-  http_port: 8080
-  hot_reload: false
-  tls:
-    enabled: false
-    cert_file: /path/to/cert.pem
-    key_file: /path/to/key.pem
-
-agents_dir: $LOOM_DATA_DIR/agents
-patterns_dir: $LOOM_DATA_DIR/patterns
-
-observability:
-  enabled: true
-  hawk_endpoint: http://localhost:9090
-  trace_sampling: 1.0
-
-llm:
-  default_provider: anthropic
-  providers:
-    anthropic:
-      api_key: ${ANTHROPIC_API_KEY}
-      model: claude-sonnet-4-5-20250929
-    bedrock:
-      region: us-east-1
-      model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
-
-mcp:
-  servers:
-    vantage:
-      command: ~/Projects/vantage-mcp/bin/vantage-mcp
-      env:
-        TD_USER: ${TD_USER}
-        TD_PASSWORD: "{{keyring:td_password}}"
-```
-
-### Client Configuration (`$LOOM_DATA_DIR/config.yaml`)
-
-```yaml
-server:
-  address: localhost:50051
-  tls: false
-
-agent:
-  default: sql-expert
-
-client:
-  stream: true
-  timeout: 300s
-
-mcp:
-  servers:
-    vantage:
-      command: ~/bin/vantage-mcp
-      env:
-        TD_USER: myuser
-        TD_PASSWORD: "{{keyring:td_password}}"
-    github:
-      command: npx
-      args:
-        - "-y"
-        - "@modelcontextprotocol/server-github"
-      env:
-        GITHUB_TOKEN: "{{keyring:github_token}}"
-```
-
-### Agent Configuration (`$LOOM_DATA_DIR/agents/sql-expert.yaml`)
-
-```yaml
-name: sql-expert
-description: SQL query generation and optimization expert
+  port: 60051
+  host: 0.0.0.0
+  enable_reflection: true
+  http_port: 5006
 
 llm:
   provider: anthropic
-  model: claude-sonnet-4-5-20250929
-  temperature: 0.0
+  anthropic_model: claude-sonnet-4-5-20250929
+  # anthropic_api_key: set via keyring (looms config set-key anthropic_api_key)
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
 
-backend:
-  type: sql
-  connection_string: "{{keyring:db_connection}}"
-
-tools:
-  - name: execute_query
-    enabled: true
-  - name: get_schema
-    enabled: true
-  - name: list_tables
-    enabled: true
-
-patterns:
-  - aggregation
-  - join_optimization
-  - funnel_analysis
-
-memory:
-  type: sqlite
-  path: $LOOM_DATA_DIR/memory/sql-expert.db
-  max_history: 50
-
-limits:
-  max_turns: 25
-  max_tool_executions: 50
-  timeout_seconds: 300
+database:
+  path: ./loom.db
+  driver: sqlite
 
 observability:
-  enabled: true
+  enabled: false
+  provider: hawk
+  hawk_endpoint: ""
+
+logging:
+  level: info
+  format: text
+
+tools:
+  permissions:
+    yolo: false
+    require_approval: false
+
+# Multi-agent configuration
+agents:
+  agents:
+    sql-agent:
+      name: SQL Agent
+      description: Queries databases
+      backend_path: ./examples/backends/sqlite.yaml
+      system_prompt: |
+        Help users query databases. Explain what you're doing before taking action.
+      max_turns: 25
+      max_tool_executions: 50
+      enable_tracing: true
 ```
 
 
@@ -1999,468 +1283,6 @@ All commands use standard exit codes:
 |------|---------|
 | 0 | Success |
 | 1 | General error |
-| 2 | Invalid arguments |
-| 3 | Configuration error |
-| 4 | Connection error |
-| 5 | Authentication error |
-| 6 | Validation error |
-| 7 | Not found (session, pattern, agent) |
-
-**Example:**
-```bash
-looms judge evaluate --agent sql-expert --judges quality-judge --prompt "test"
-if [ $? -eq 0 ]; then
-  echo "Evaluation passed"
-else
-  echo "Evaluation failed with code: $?"
-fi
-```
-
-
-## Error Codes
-
-### ERR_PORT_IN_USE
-
-**Exit Code**: 1
-**Command**: `looms serve`
-
-**Cause**: The specified gRPC or HTTP port is already in use by another process.
-
-**Example**:
-```
-Error: listen tcp :50051: bind: address already in use
-```
-
-**Resolution**:
-1. Check what's using the port:
-   ```bash
-   lsof -i :50051
-   ```
-2. Kill the process or use a different port:
-   ```bash
-   looms serve --port 9090
-   ```
-
-
-### ERR_CONFIG_NOT_FOUND
-
-**Exit Code**: 3
-**Command**: All commands using config files
-
-**Cause**: Configuration file specified does not exist.
-
-**Example**:
-```
-Error: config file not found: $LOOM_DATA_DIR/server.yaml
-```
-
-**Resolution**:
-1. Create the default config file:
-   ```bash
-   mkdir -p $LOOM_DATA_DIR
-   looms config set server.grpc_port 50051
-   ```
-2. Or specify a different config:
-   ```bash
-   looms serve --config /path/to/config.yaml
-   ```
-
-
-### ERR_INVALID_CONFIG
-
-**Exit Code**: 3
-**Command**: All commands using config files
-
-**Cause**: Configuration file has syntax errors or invalid values.
-
-**Example**:
-```
-Error: invalid configuration: field 'agent.timeout' must be positive duration, got: -5s
-```
-
-**Resolution**:
-1. Validate YAML syntax:
-   ```bash
-   yamllint $LOOM_DATA_DIR/server.yaml
-   ```
-2. Check field types match schema requirements
-3. Verify all required fields are present
-
-**See Also**: [Agent Configuration Reference](./agent-configuration.md)
-
-
-### ERR_AGENT_NOT_FOUND
-
-**Exit Code**: 7
-**Command**: `looms agent`, `loom chat`, `looms judge evaluate`
-
-**Cause**: Referenced agent does not exist or is not loaded.
-
-**Example**:
-```
-Error: agent not found: sql-expert
-```
-
-**Resolution**:
-1. List available agents:
-   ```bash
-   looms agent list
-   ```
-2. Check agent configuration file exists:
-   ```bash
-   ls -la $LOOM_DATA_DIR/agents/sql-expert.yaml
-   ```
-3. Load agent at server start:
-   ```bash
-   looms serve --agents $LOOM_DATA_DIR/agents/sql-expert.yaml
-   ```
-
-
-### ERR_PATTERN_NOT_FOUND
-
-**Exit Code**: 7
-**Command**: `looms pattern validate`, `looms pattern reload`, `looms workflow run`
-
-**Cause**: Referenced pattern does not exist in the pattern library.
-
-**Example**:
-```
-Error: pattern not found: revenue_aggregation
-```
-
-**Resolution**:
-1. List available patterns:
-   ```bash
-   looms pattern list
-   ```
-2. Check pattern file exists:
-   ```bash
-   ls -la $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
-   ```
-3. Validate pattern YAML:
-   ```bash
-   looms pattern validate $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
-   ```
-4. Reload patterns:
-   ```bash
-   looms pattern reload
-   ```
-
-
-### ERR_SESSION_NOT_FOUND
-
-**Exit Code**: 7
-**Command**: `loom session resume`, `loom session export`
-
-**Cause**: Referenced session ID does not exist or has been deleted.
-
-**Example**:
-```
-Error: session not found: sess_abc123
-```
-
-**Resolution**:
-1. List available sessions:
-   ```bash
-   loom session list
-   ```
-2. Verify session ID format: `sess_[a-z0-9]+`
-
-
-### ERR_VALIDATION_FAILED
-
-**Exit Code**: 6
-**Command**: `looms pattern validate`, `looms workflow validate`
-
-**Cause**: Pattern or workflow YAML file has validation errors.
-
-**Example**:
-```
-Error: validation failed: line 15: missing required field 'description'
-```
-
-**Resolution**:
-1. Review validation error messages
-2. Fix YAML syntax errors
-3. Add missing required fields
-4. Check template variable syntax: `{{.variable}}`
-5. Ensure backend compatibility
-
-**See Also**: [Pattern Reference](./patterns.md)
-
-
-### ERR_CONNECTION_FAILED
-
-**Exit Code**: 4
-**Command**: All client commands, `looms serve` (for backends)
-
-**Cause**: Cannot connect to server, backend, or external service.
-
-**Example (client):**
-```
-Error: failed to connect to server: dial tcp 127.0.0.1:50051: connect: connection refused
-```
-
-**Example (server):**
-```
-Error: failed to connect to database: postgres://localhost:5432: connection refused
-```
-
-**Resolution (client):**
-1. Verify server is running:
-   ```bash
-   lsof -i :50051
-   ```
-2. Check server address:
-   ```bash
-   loom config get server.address
-   ```
-3. Test network connectivity:
-   ```bash
-   telnet localhost 50051
-   ```
-
-**Resolution (server):**
-1. Verify backend service is running (database, MCP server, etc.)
-2. Check firewall/network settings
-3. Verify credentials in configuration
-4. Check service logs for errors
-
-
-### ERR_AUTH_FAILED
-
-**Exit Code**: 5
-**Command**: All commands connecting to external services
-
-**Cause**: Authentication failed due to invalid credentials or expired tokens.
-
-**Example**:
-```
-Error: authentication failed: invalid credentials for vantage MCP server
-```
-
-**Resolution**:
-1. Verify credentials in keyring:
-   ```bash
-   loom config set-key td_password
-   ```
-2. Check keyring reference in config:
-   ```bash
-   loom config get mcp.servers.vantage.env.TD_PASSWORD
-   ```
-3. Test MCP server connection:
-   ```bash
-   loom mcp test vantage
-   ```
-
-
-### ERR_MCP_SERVER_FAILED
-
-**Exit Code**: 4
-**Command**: `looms serve`, `loom mcp test`
-
-**Cause**: MCP server failed to start or crashed during initialization.
-
-**Example**:
-```
-Error: failed to start MCP server 'vantage': command not found: ~/bin/vantage-mcp
-```
-
-**Resolution**:
-1. Verify MCP server command exists:
-   ```bash
-   ls -la ~/bin/vantage-mcp
-   ```
-2. Test command manually:
-   ```bash
-   ~/bin/vantage-mcp --help
-   ```
-3. Check MCP server configuration:
-   ```bash
-   loom config get mcp.servers.vantage
-   ```
-4. Review MCP server logs (if available)
-
-**See Also**: [MCP Integration Guide](../guides/integration/mcp.md)
-
-
-### ERR_HOT_RELOAD_NOT_ENABLED
-
-**Exit Code**: 1
-**Command**: `looms pattern reload`
-
-**Cause**: Server was not started with `--hot-reload` flag.
-
-**Example**:
-```
-Error: hot reload not enabled on server
-```
-
-**Resolution**:
-1. Restart server with hot reload enabled:
-   ```bash
-   looms serve --hot-reload
-   ```
-
-**Note**: Hot reload is disabled by default in production for stability.
-
-
-### ERR_INVALID_TRAINING_DATA
-
-**Exit Code**: 6
-**Command**: `looms teleprompter compile`
-
-**Cause**: Training data JSONL file has invalid format or missing required fields.
-
-**Example**:
-```
-Error: invalid training data at line 42: missing 'output' field
-```
-
-**Resolution**:
-1. Verify JSONL format (one JSON object per line)
-2. Check required fields: `input`, `output`, `label`
-3. Validate JSON syntax:
-   ```bash
-   jq empty training-data.jsonl
-   ```
-
-**Expected format**:
-```jsonl
-{"input": "query", "output": "result", "label": "correct"}
-```
-
-
-### ERR_JUDGE_NOT_FOUND
-
-**Exit Code**: 7
-**Command**: `looms judge evaluate`, `looms judge stream`
-
-**Cause**: Referenced judge ID does not exist or is not configured.
-
-**Example**:
-```
-Error: judge not found: quality-judge
-```
-
-**Resolution**:
-1. Verify judge configuration exists
-2. Check judge is registered with agent
-3. Review available judges in agent configuration
-
-**See Also**: [Judge Integration Guide](../guides/judge-dspy-integration.md)
-
-
-### ERR_MAX_TURNS_EXCEEDED
-
-**Exit Code**: 1
-**Command**: `loom chat`, `looms workflow run`
-
-**Cause**: Conversation exceeded configured `max_turns` limit.
-
-**Example**:
-```
-Error: max turns exceeded: limit 25, current 26
-```
-
-**Resolution**:
-1. Increase max_turns in agent configuration:
-   ```yaml
-   limits:
-     max_turns: 50
-   ```
-2. Or start new session:
-   ```bash
-   loom chat --agent sql-expert
-   ```
-
-
-### ERR_TIMEOUT
-
-**Exit Code**: 1
-**Command**: All commands with operations taking longer than timeout
-
-**Cause**: Operation exceeded configured timeout duration.
-
-**Example**:
-```
-Error: operation timed out after 300s
-```
-
-**Resolution**:
-1. Increase timeout in configuration:
-   ```yaml
-   client:
-     timeout: 600s
-   ```
-2. Or increase agent-level timeout:
-   ```yaml
-   limits:
-     timeout_seconds: 600
-   ```
-
-
-### ERR_HAWK_UNAVAILABLE
-
-**Exit Code**: 4
-**Command**: `loom session export`, `looms serve` (when observability enabled)
-
-**Cause**: Cannot connect to Hawk observability platform.
-
-**Example**:
-```
-Error: failed to export to Hawk: dial tcp 127.0.0.1:9090: connect: connection refused
-```
-
-**Resolution**:
-1. Verify Hawk is running:
-   ```bash
-   curl http://localhost:9090/health
-   ```
-2. Check Hawk endpoint configuration:
-   ```bash
-   looms config get observability.hawk_endpoint
-   ```
-3. Disable observability if Hawk not available:
-   ```bash
-   looms config set observability.enabled false
-   ```
-
-**See Also**: [Observability Guide](../guides/integration/observability.md)
-
-
-### ERR_WORKFLOW_CIRCULAR_DEPENDENCY
-
-**Exit Code**: 6
-**Command**: `looms workflow validate`, `looms workflow run`
-
-**Cause**: Workflow has circular dependency between stages.
-
-**Example**:
-```
-Error: circular dependency detected: stage-a -> stage-b -> stage-a
-```
-
-**Resolution**:
-1. Review workflow `depends_on` relationships
-2. Ensure dependency graph is acyclic (DAG)
-3. Visualize workflow to identify cycles
-
-**Example fix**:
-```yaml
-# BAD (circular)
-stages:
-  - id: stage-a
-    depends_on: [stage-b]
-  - id: stage-b
-    depends_on: [stage-a]
-
-# GOOD (acyclic)
-stages:
-  - id: stage-a
-  - id: stage-b
-    depends_on: [stage-a]
-```
 
 
 ## Common Workflows
@@ -2468,126 +1290,72 @@ stages:
 ### Initial Setup
 
 ```bash
-# 1. Start server
-looms serve --hot-reload
+# 1. Initialize server configuration interactively
+looms config init
 
-# 2. In another terminal, configure client
-loom config set server.address localhost:50051
-loom config set agent.default sql-expert
+# 2. Store API key securely
+looms config set-key anthropic_api_key
 
-# 3. Store credentials securely
-loom config set-key td_password
-loom config set-key anthropic_api_key
+# 3. Start the server
+looms serve
 
-# 4. Configure MCP servers
-loom config set mcp.servers.vantage.command ~/bin/vantage-mcp
-loom config set mcp.servers.vantage.env.TD_PASSWORD "{{keyring:td_password}}"
+# 4. In another terminal, list available agents
+loom agents
 
-# 5. Test connection
-loom mcp test vantage
+# 5. Connect to an agent
+loom --thread sql-agent
 
-# 6. Start chatting
-loom chat
+# 6. Or use CLI chat
+loom chat --thread sql-agent "show me all tables"
 ```
 
 
 ### Pattern Development
 
 ```bash
-# 1. Create pattern file
-vim patterns/analytics/custom-pattern.yaml
+# 1. Create pattern from file
+looms pattern create my-pattern --thread sql-thread --file pattern.yaml
 
-# 2. Validate pattern
-looms pattern validate patterns/analytics/custom-pattern.yaml
+# 2. Watch for pattern updates in real-time
+looms pattern watch --thread sql-thread
 
-# 3. Reload patterns (server must be running with --hot-reload)
-looms pattern reload --pattern custom-pattern
+# 3. Monitor pattern effectiveness
+looms learning analyze --domain=sql --window=24
 
-# 4. Test pattern
-loom chat --pattern custom-pattern
-
-# 5. Monitor effectiveness
-looms learning stats --pattern custom-pattern --window 1h
+# 4. Tune pattern priorities
+looms learning tune --domain=sql --strategy=moderate --library=/path/to/patterns
 ```
 
 
-### A/B Testing Patterns
+### Evaluation Workflow
 
 ```bash
-# 1. Create pattern variants
-# patterns/analytics/revenue-agg-control.yaml (variant: control)
-# patterns/analytics/revenue-agg-treatment-a.yaml (variant: treatment-a)
+# 1. Run evaluation suite
+looms eval run examples/dogfooding/config-loader-eval.yaml
 
-# 2. Use patterns in production
-# (agents automatically use variants)
+# 2. List eval runs
+looms eval list --suite config-loader-quality
 
-# 3. View stats
-looms learning stats --pattern revenue_aggregation --window 7d
+# 3. Show run details
+looms eval show 42
 
-# 4. Analyze A/B test results
-# (trigger via interrupt channel - see learning agent guide)
-
-# 5. Export results
-looms learning export \
-  --patterns revenue_aggregation \
-  --window 7d \
-  --format csv \
-  --output ab-test-results.csv
-```
-
-
-### Judge-Based CI/CD
-
-```bash
-#!/bin/bash
-# ci-evaluate.sh
-
-AGENT="sql-expert"
-PROMPT="Generate a quarterly sales report query"
-RESPONSE=$(loom chat --agent $AGENT --message "$PROMPT" --non-interactive)
-
-# Evaluate with multiple judges
+# 4. Judge-based evaluation
 looms judge evaluate \
-  --agent $AGENT \
-  --judges quality-judge,safety-judge,performance-judge \
-  --aggregation all-must-pass \
-  --prompt "$PROMPT" \
-  --response "$RESPONSE"
-
-if [ $? -eq 0 ]; then
-  echo "✅ All judges passed - deploying"
-  exit 0
-else
-  echo "❌ Judge evaluation failed - blocking deployment"
-  exit 1
-fi
+  --agent=sql-agent \
+  --judges=quality-judge,safety-judge \
+  --prompt="Generate a SELECT query" \
+  --response="SELECT * FROM users"
 ```
 
 
-### Prompt Optimization
+### Database Upgrade
 
 ```bash
-# 1. Prepare training data
-# Create training.jsonl with input/output pairs
+# 1. Check pending migrations (dry-run)
+looms upgrade --dry-run
 
-# 2. Run optimization
-looms teleprompter compile \
-  --optimizer mipro \
-  --base-prompt "Analyze SQL query performance" \
-  --training-data ./data/sql-perf-train.jsonl \
-  --validation-data ./data/sql-perf-val.jsonl \
-  --iterations 20 \
-  --output ./prompts/sql-perf-optimized.txt
-
-# 3. Update agent configuration with optimized prompt
-vim $LOOM_DATA_DIR/agents/sql-expert.yaml
-# (update system_prompt with optimized content)
-
-# 4. Reload agent
-looms agent reload sql-expert
-
-# 5. Compare before/after
-looms learning stats --agent sql-expert --window 24h
+# 2. Apply migrations (with automatic backup)
+looms upgrade --yes
 ```
 
 
@@ -2600,88 +1368,63 @@ looms learning stats --agent sql-expert --window 24h
 **Solution:**
 ```bash
 # Check what's using the port
-lsof -i :50051
+lsof -i :60051
 
-# Kill the process or use different port
+# Kill the process or use a different port
 looms serve --port 9090
+```
+
+
+### Cannot Connect to Server
+
+**Symptom:** `loom agents` fails with "Failed to connect to Loom server"
+
+**Solution:**
+```bash
+# Verify server is running
+lsof -i :60051
+
+# Check server address
+loom agents --server 127.0.0.1:60051
+
+# Test connectivity
+grpcurl -plaintext localhost:60051 list
 ```
 
 
 ### MCP Server Connection Failed
 
-**Symptom:** `Error: failed to start MCP server`
+**Symptom:** `loom mcp test` shows "Not connected"
 
 **Solution:**
 ```bash
 # Test MCP server manually
-npx @modelcontextprotocol/server-filesystem /data
-
-# Check configuration
-loom config get mcp.servers.filesystem
-
-# Test with loom
-loom mcp test filesystem
-```
-
-
-### Pattern Not Found
-
-**Symptom:** `Error: pattern 'revenue_aggregation' not found`
-
-**Solution:**
-```bash
-# List available patterns
-looms pattern list
-
-# Check pattern file exists
-ls -la $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
-
-# Validate pattern
-looms pattern validate $LOOM_DATA_DIR/patterns/analytics/revenue-aggregation.yaml
-
-# Reload patterns
-looms pattern reload
-```
-
-
-### Authentication Failed
-
-**Symptom:** `Error: authentication failed`
-
-**Solution:**
-```bash
-# Check credentials in keyring
-loom config set-key td_password
-
-# Verify configuration
-loom config get mcp.servers.vantage.env
-
-# Test connection
 loom mcp test vantage
+
+# Check server details in output
+# Verify the command exists and is executable
+which vantage-mcp
 ```
 
 
-### Session Not Persisting
+### No LLM Provider Configured
 
-**Symptom:** Sessions don't appear in `loom session list`
+**Symptom:** `looms serve` fails with "No LLM provider configured"
 
 **Solution:**
 ```bash
-# Check agent memory configuration
-cat $LOOM_DATA_DIR/agents/sql-expert.yaml | grep -A 3 memory:
+# Run interactive setup
+looms config init
 
-# Verify database exists
-ls -la $LOOM_DATA_DIR/memory/sql-expert.db
-
-# Check permissions
-chmod 644 $LOOM_DATA_DIR/memory/sql-expert.db
+# Or set manually
+looms config set llm.provider anthropic
+looms config set-key anthropic_api_key
 ```
 
 
 ## See Also
 
-- [Agent Configuration Reference](./agent-configuration.md) - Agent configuration details
+- [Agent Configuration Reference](./agent-configuration.md) - Agent YAML spec
 - [Backend Reference](./backend.md) - Backend configuration
 - [Pattern System Reference](./patterns.md) - Pattern authoring guide
 - [LLM Providers Reference](./llm-providers.md) - LLM configuration
-- [Features Guide](../guides/features.md) - Feature overview

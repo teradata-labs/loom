@@ -3,7 +3,7 @@
 
 Learn how to use Loom's Docker backend for secure, containerized code execution with automatic distributed tracing. This guide shows how to programmatically execute Python, Node.js, or custom code in isolated Docker containers.
 
-**Status**: ✅ Available (v1.0.0-beta.2)
+**Status**: ✅ Available (v1.2.0)
 
 > **Note:** The Docker backend is a Go library (`pkg/docker`). There is currently no CLI interface. For CLI-based code execution, see the [planned roadmap](https://github.com/teradata-labs/loom/issues).
 
@@ -48,14 +48,14 @@ Before using the Docker backend:
    ```
 
 2. **Docker Images** (automatically pulled on first use):
-   - Python: `python:3.11-slim` (~180MB)
-   - Node.js: `node:20-slim` (~140MB)
+   - Python: `python:3.11-slim` (~45MB compressed, ~120MB uncompressed)
+   - Node.js: `node:20-slim` (~60MB compressed, ~180MB uncompressed)
    - Custom: User-specified image
 
 3. **Go Development Environment** (for programmatic usage):
    ```bash
    go version
-   # Should be Go 1.21+
+   # Should be Go 1.25+
    ```
 
 4. **Hawk Service** (optional, for distributed tracing):
@@ -163,7 +163,12 @@ print(f"Stars: {response.json()['stargazers_count']}")
 		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
 			BaseImage: "python:3.11-slim",
 		},
-		Packages: []string{"requests", "pandas"},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Python{
+			Python: &loomv1.PythonRuntimeConfig{
+				PythonVersion:      "3.11",
+				PreinstallPackages: []string{"requests", "pandas"},
+			},
+		},
 	},
 }
 
@@ -175,7 +180,7 @@ if err != nil {
 
 **What happens**:
 1. Docker backend creates Python container (or reuses existing)
-2. Installs `requests` and `pandas` via `pip install --no-cache-dir`
+2. Installs `requests` and `pandas` via the `preinstall_packages` runtime config
 3. Executes script inside container
 4. Returns output and exit code
 
@@ -208,7 +213,12 @@ main();
 		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
 			BaseImage: "node:20-slim",
 		},
-		Packages: []string{"axios", "lodash"},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Node{
+			Node: &loomv1.NodeRuntimeConfig{
+				NodeVersion:        "20",
+				PreinstallPackages: []string{"axios", "lodash"},
+			},
+		},
 	},
 }
 ```
@@ -216,7 +226,13 @@ main();
 
 ### Task 3: Execute Code with Custom Docker Image
 
-Use a custom Docker image for specialized environments:
+Use a custom Docker image for specialized environments. The `image_source` oneof supports three variants:
+
+- `base_image` - a pre-built image name (e.g., `"python:3.11-slim"` or `"myregistry/custom-python:latest"`)
+- `dockerfile_path` - path to a custom Dockerfile
+- `build_config` - inline `ImageBuildConfig` for generating a Dockerfile
+
+Using `base_image` with a custom registry image:
 
 ```go
 req := &loomv1.ExecuteRequest{
@@ -225,8 +241,53 @@ req := &loomv1.ExecuteRequest{
 	Config: &loomv1.DockerBackendConfig{
 		Name:        "custom-image",
 		RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
-		ImageSource: &loomv1.DockerBackendConfig_CustomImage{
-			CustomImage: "myregistry/custom-python:latest",
+		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
+			BaseImage: "myregistry/custom-python:latest",
+		},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Custom{
+			Custom: &loomv1.CustomRuntimeConfig{},
+		},
+	},
+}
+```
+
+Using `dockerfile_path` to build from a local Dockerfile:
+
+```go
+req := &loomv1.ExecuteRequest{
+	RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
+	Command:     []string{"python3", "-c", "print('Running from Dockerfile')"},
+	Config: &loomv1.DockerBackendConfig{
+		Name:        "custom-dockerfile",
+		RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
+		ImageSource: &loomv1.DockerBackendConfig_DockerfilePath{
+			DockerfilePath: "./dockerfiles/custom-python/Dockerfile",
+		},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Custom{
+			Custom: &loomv1.CustomRuntimeConfig{},
+		},
+	},
+}
+```
+
+Using `build_config` for inline image generation:
+
+```go
+req := &loomv1.ExecuteRequest{
+	RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
+	Command:     []string{"python3", "-c", "import numpy; print(numpy.__version__)"},
+	Config: &loomv1.DockerBackendConfig{
+		Name:        "inline-build",
+		RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
+		ImageSource: &loomv1.DockerBackendConfig_BuildConfig{
+			BuildConfig: &loomv1.ImageBuildConfig{
+				FromImage:   "python:3.11-slim",
+				RunCommands: []string{"pip install --no-cache-dir numpy pandas"},
+				Workdir:     "/app",
+			},
+		},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Custom{
+			Custom: &loomv1.CustomRuntimeConfig{},
 		},
 	},
 }
@@ -255,13 +316,15 @@ req := &loomv1.ExecuteRequest{
 		ResourceLimits: &loomv1.ResourceLimits{
 			CpuCores:                1.0,   // 1 CPU core
 			MemoryMb:                512,   // 512 MB RAM
-			StorageMb:               1024,  // 1 GB disk
+			StorageMb:               1024,  // 1 GB disk (see note below)
 			PidsLimit:               100,   // Max 100 processes
 			ExecutionTimeoutSeconds: 60,    // Kill after 60s
 		},
 	},
 }
 ```
+
+> **Note:** `StorageMb` is accepted in the configuration but **not currently enforced** at the Docker level. Enforcement requires the `--storage-opt` flag with a devicemapper or overlay2 storage driver that supports quotas. This is planned for a future release.
 
 
 ### Task 5: Configure Container Rotation
@@ -331,11 +394,13 @@ if __name__ == "__main__":
 
 Execute with Hawk tracer:
 
+> **Build requirement:** `NewHawkTracer` is behind a build tag. You must compile with `-tags hawk` (e.g., `go build -tags hawk ./...`) for this code to be available. Without the tag, the symbol will not exist.
+
 ```go
 // Create Hawk tracer (instead of mock)
+// Requires: go build -tags hawk
 hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
-	Endpoint: "localhost:50051",
-	ServiceName: "loom-docker",
+	Endpoint: "http://localhost:8080/v1/traces",
 })
 if err != nil {
 	panic(err)
@@ -359,7 +424,11 @@ req := &loomv1.ExecuteRequest{
 		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
 			BaseImage: "python:3.11-slim",
 		},
-		Packages: []string{"pandas"},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Python{
+			Python: &loomv1.PythonRuntimeConfig{
+				PreinstallPackages: []string{"pandas"},
+			},
+		},
 	},
 }
 
@@ -381,14 +450,14 @@ Execute Node.js code with automatic trace capture:
 
 ```javascript
 // api_integration.js
-const { tracer, traceSpanSync } = require('loom-trace.js');
+const { tracer, traceSpan } = require('loom-trace.js');
 const axios = require('axios');
 
 async function main() {
     console.log(`Trace ID: ${tracer.traceId}`);
 
     try {
-        await traceSpanSync('fetch_user_data', { api: 'github' }, async () => {
+        await traceSpan('fetch_user_data', { api: 'github' }, async () => {
             const response = await axios.get('https://api.github.com/users/octocat');
             console.log(`User: ${response.data.login}`);
             console.log(`Public repos: ${response.data.public_repos}`);
@@ -399,7 +468,7 @@ async function main() {
         process.exit(1);
     }
 
-    await traceSpanSync('process_response', {}, async () => {
+    await traceSpan('process_response', {}, async () => {
         console.log('Processing completed');
     });
 }
@@ -421,7 +490,11 @@ req := &loomv1.ExecuteRequest{
 		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
 			BaseImage: "node:20-slim",
 		},
-		Packages: []string{"axios"},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Node{
+			Node: &loomv1.NodeRuntimeConfig{
+				PreinstallPackages: []string{"axios"},
+			},
+		},
 	},
 }
 ```
@@ -447,8 +520,8 @@ RUN pip install --no-cache-dir \
     opencv-python \
     numpy
 
-# Set non-root user (security best practice)
-USER nobody
+# Set non-root user to match Loom's UID (security best practice)
+USER 1000:1000
 ```
 
 Build and push:
@@ -470,8 +543,11 @@ print('OpenCV version:', cv2.__version__)
 	Config: &loomv1.DockerBackendConfig{
 		Name:        "media-processor",
 		RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
-		ImageSource: &loomv1.DockerBackendConfig_CustomImage{
-			CustomImage: "mycompany/media-processor:v1",
+		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
+			BaseImage: "mycompany/media-processor:v1",
+		},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Custom{
+			Custom: &loomv1.CustomRuntimeConfig{},
 		},
 	},
 }
@@ -484,11 +560,14 @@ print('OpenCV version:', cv2.__version__)
 
 ```protobuf
 message ExecuteRequest {
-  RuntimeType runtime_type = 1;              // PYTHON | NODE | CUSTOM
-  repeated string command = 2;               // Command to execute
+  string container_id = 1;                   // Container to execute in (if empty, create new)
+  RuntimeType runtime_type = 2;              // PYTHON | NODE | CUSTOM
   DockerBackendConfig config = 3;            // Docker configuration
-  map<string, string> env = 4;               // User environment variables
+  repeated string command = 4;               // Command to execute
   bytes stdin = 5;                           // Optional stdin input
+  int32 timeout_seconds = 6;                 // Timeout (overrides config)
+  string working_dir = 7;                    // Working directory (overrides config)
+  map<string, string> env = 8;               // Additional environment variables
 }
 ```
 
@@ -497,14 +576,25 @@ message ExecuteRequest {
 ```protobuf
 message DockerBackendConfig {
   string name = 1;                           // Container name/ID
-  RuntimeType runtime_type = 2;              // Runtime type
+  string description = 2;                    // Description
+  RuntimeType runtime_type = 3;              // Runtime type
   oneof image_source {
-    string base_image = 3;                   // Base image (e.g., python:3.11-slim)
-    string custom_image = 4;                 // Custom image (e.g., mycompany/app:v1)
+    string base_image = 4;                   // Base image (e.g., python:3.11-slim)
+    string dockerfile_path = 5;              // Path to custom Dockerfile
+    ImageBuildConfig build_config = 6;       // Inline Dockerfile generation
   }
-  repeated string packages = 5;              // Packages to install (pip/npm)
   ResourceLimits resource_limits = 7;        // CPU, memory, storage limits
+  repeated VolumeMount volume_mounts = 8;    // Volume mounts
+  map<string, string> environment = 9;       // Environment variables
+  string working_dir = 10;                   // Working directory
+  oneof runtime_config {
+    PythonRuntimeConfig python = 20;         // Python runtime settings
+    NodeRuntimeConfig node = 21;             // Node.js runtime settings
+    CustomRuntimeConfig custom = 22;         // Custom runtime settings
+  }
+  MCPServerConfig mcp_server = 30;           // Optional MCP server config
   ContainerLifecycleConfig lifecycle = 40;   // Rotation and cleanup config
+  TraceContext trace_context = 50;           // Trace propagation (future use)
 }
 ```
 
@@ -514,11 +604,13 @@ message DockerBackendConfig {
 message ResourceLimits {
   double cpu_cores = 1;                      // CPU cores (default: 1.0)
   int64 memory_mb = 2;                       // Memory in MB (default: 512)
-  int64 storage_mb = 3;                      // Storage in MB (default: 1024)
+  int64 storage_mb = 3;                      // Storage in MB (accepted but not enforced; see note)
   int32 pids_limit = 4;                      // Max processes (default: 100)
   int32 execution_timeout_seconds = 5;       // Timeout in seconds (default: 300)
 }
 ```
+
+> **Note:** `storage_mb` is parsed and stored but not currently passed to the Docker engine. Enforcement requires `--storage-opt` with a compatible storage driver (devicemapper or overlay2 with quota support).
 
 ### ContainerLifecycleConfig Proto
 
@@ -592,13 +684,14 @@ Error: pip install failed: Could not find a version that satisfies...
 
 1. **Check package name spelling**:
    ```bash
-   # Verify package exists
-   pip search <package-name>
+   # Verify package exists (pip search is deprecated; check PyPI directly)
+   pip install --dry-run <package-name>
+   # Or browse https://pypi.org/project/<package-name>/
    ```
 
-2. **Specify version**:
+2. **Specify version** (in `PythonRuntimeConfig.PreinstallPackages` or `NodeRuntimeConfig.PreinstallPackages`):
    ```go
-   Packages: []string{"requests==2.28.0"},  // Pin version
+   PreinstallPackages: []string{"requests==2.28.0"},  // Pin version
    ```
 
 3. **Use custom image** with pre-installed packages (see Example 3)
@@ -612,11 +705,12 @@ Error: pip install failed: Could not find a version that satisfies...
 
 **Solutions**:
 
-1. **Verify Hawk tracer configured**:
+1. **Verify Hawk tracer configured** (requires `-tags hawk` build tag):
    ```go
    // Make sure using HawkTracer, not MockTracer
+   // Build with: go build -tags hawk ./...
    hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
-   	Endpoint: "localhost:50051",
+   	Endpoint: "http://localhost:8080/v1/traces",
    })
    ```
 
@@ -629,8 +723,8 @@ Error: pip install failed: Could not find a version that satisfies...
 
 3. **Verify Hawk service reachable**:
    ```bash
-   grpcurl localhost:50051 list
-   # Should show Hawk service methods
+   curl -s http://localhost:8080/health
+   # Should return 200 OK
    ```
 
 
@@ -643,14 +737,14 @@ Error: Permission denied: '/app/data.txt'
 
 **Solution**:
 
-Containers run as non-root user (`nobody`) by default for security. Use writable directories:
+Containers run as non-root user (`1000:1000`) by default for security. Use writable directories:
 
 ```python
-# Good: Use /tmp (world-writable)
+# Good: Use /tmp or /workspace (writable by UID 1000)
 with open('/tmp/data.txt', 'w') as f:
     f.write('data')
 
-# Bad: Use /app (read-only for nobody user)
+# Bad: Use /app (not owned by UID 1000)
 with open('/app/data.txt', 'w') as f:  # Permission denied
     f.write('data')
 ```
@@ -691,7 +785,7 @@ Instead of installing large packages every time:
 FROM python:3.11-slim
 RUN pip install --no-cache-dir \
     torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-USER nobody
+USER 1000:1000
 ```
 
 ```bash
@@ -706,8 +800,11 @@ req := &loomv1.ExecuteRequest{
 	Config: &loomv1.DockerBackendConfig{
 		Name:        "pytorch",
 		RuntimeType: loomv1.RuntimeType_RUNTIME_TYPE_CUSTOM,
-		ImageSource: &loomv1.DockerBackendConfig_CustomImage{
-			CustomImage: "mycompany/pytorch:latest",
+		ImageSource: &loomv1.DockerBackendConfig_BaseImage{
+			BaseImage: "mycompany/pytorch:latest",
+		},
+		RuntimeConfig: &loomv1.DockerBackendConfig_Custom{
+			Custom: &loomv1.CustomRuntimeConfig{},
 		},
 	},
 }
@@ -750,12 +847,12 @@ executor.Execute(ctx, &loomv1.ExecuteRequest{
 
 ### Practice 1: Use Non-Root Containers
 
-All default runtimes run as `nobody` user. For custom images:
+All default runtimes run as UID `1000:1000` (non-root). For custom images, match the same UID:
 
 ```dockerfile
 FROM python:3.11-slim
 # ... install packages ...
-USER nobody  # Always run as non-root
+USER 1000:1000  # Match Loom's non-root UID
 ```
 
 
@@ -792,17 +889,16 @@ Lifecycle: &loomv1.ContainerLifecycleConfig{
 
 ## Next Steps
 
-- **Architecture**: [Docker Backend Architecture](/docs/architecture/docker-backend/) - Deep dive into design decisions
-- **Integration**: [Observability Guide](/docs/guides/integration/observability/) - Configure Hawk tracing
-- **Integration**: [MCP Integration Guide](/docs/guides/integration/mcp/) - Use MCP servers in containers
-- **Examples**: [Docker Backend Examples](/examples/docker/) - Complete example projects
+- **Architecture**: [Docker Backend Architecture](/docs/architecture/docker-backend.md) - Deep dive into design decisions
+- **Integration**: [Observability Guide](/docs/guides/integration/observability.md) - Configure Hawk tracing
+- **Integration**: [MCP Apps Guide](/docs/guides/mcp-apps-guide.md) - Use MCP servers in containers
 
 
 ## FAQ
 
 **Q: Is there a CLI interface for Docker backend?**
 
-A: Not yet. The Docker backend is currently a Go library (`pkg/docker`) with no CLI interface. Use the Go API as shown in this guide. CLI commands (`loom execute`, `loom containers list`) are [planned for v1.1](https://github.com/teradata-labs/loom/issues).
+A: Not yet. The Docker backend is currently a Go library (`pkg/docker`) with no CLI interface. Use the Go API as shown in this guide. CLI commands (`loom execute`, `loom containers list`) are planned for a future release.
 
 
 **Q: Can I use Docker Compose with Loom?**
@@ -865,7 +961,8 @@ Or integrate with Prometheus via Docker metrics endpoint.
 
 | Loom Version | Docker API | Python Runtime | Node Runtime | Status |
 |--------------|------------|----------------|--------------|--------|
-| v1.0.0-beta.2 | v1.40+     | 3.11-slim      | 20-slim    | ✅ Current |
+| v1.2.0        | v1.40+     | 3.11-slim      | 20-slim    | ✅ Current |
+| v1.0.0-beta.2 | v1.40+     | 3.11-slim      | 20-slim    | ⚠️ Superseded |
 | v1.0.0-beta.1 | v1.40+     | 3.11-slim      | 20-alpine    | ⚠️ No trace library injection |
 
 **Minimum Docker Version**: 20.10 (API v1.40)

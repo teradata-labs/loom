@@ -416,9 +416,12 @@ Observe the weaver's tool calls during agent/workflow creation:
 ### T7.1 — ROM is loaded
 
 ```bash
-# In server logs when weaver thread starts, look for ROM loading:
-# Should see "Composed ROM" or domain ROM loading for weaver
-grep -i "rom\|ROM\|weaver" <server-log-output>
+# ROM loading is silent in server logs (no explicit log line).
+# Verify ROM is configured by checking the installed weaver YAML:
+grep "rom:" ~/.loom/agents/weaver.yaml    # should show: rom: "weaver"
+
+# Also verify the ROM file is embedded in the binary:
+strings ./bin/looms | grep "SECTION 1: AGENT YAML SCHEMA"  # from WEAVER.rom
 ```
 
 ### T7.2 — ROM content in context

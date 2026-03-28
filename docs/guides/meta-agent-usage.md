@@ -1,262 +1,412 @@
 
-# Weaver Usage Guide
+# Weaver: Agent Creation via Conversation
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
+**Status**: ✅ Implemented
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-- [Common Tasks](#common-tasks)
-  - [Create a Thread](#create-a-thread)
-  - [List Threads](#list-threads)
-  - [Preview Configuration](#preview-configuration)
-  - [Connect to a Thread](#connect-to-a-thread)
-- [Workflow Patterns](#workflow-patterns)
-  - [Debate Mode](#debate-mode)
-  - [Swarm Mode](#swarm-mode)
-  - [Pipeline Mode](#pipeline-mode)
+- [How the Weaver Works](#how-the-weaver-works)
+  - [Deployment](#deployment)
+  - [Tools Available to the Weaver](#tools-available-to-the-weaver)
+  - [The WEAVER.rom Ground-Truth Reference](#the-weaverrom-ground-truth-reference)
+- [Planning Modes](#planning-modes)
+  - [Quick Start Mode](#quick-start-mode)
+  - [/agent-plan Mode (Guided Planning)](#agent-plan-mode-guided-planning)
+- [Creating Agents](#creating-agents)
+  - [Single Agent](#single-agent)
+  - [Multi-Agent Workflow](#multi-agent-workflow)
+- [Creating Skills](#creating-skills)
+  - [Skill Activation Modes](#skill-activation-modes)
+- [Workflow Types](#workflow-types)
+  - [Orchestration Workflows](#orchestration-workflows)
+  - [Coordination Workflows](#coordination-workflows)
 - [Examples](#examples)
-  - [Example 1: File Analysis Thread](#example-1-file-analysis-thread)
-  - [Example 2: SQL Performance Thread](#example-2-sql-performance-thread)
-  - [Example 3: Multi-Agent Debate](#example-3-multi-agent-debate)
+  - [Example 1: SQL Optimizer Agent](#example-1-sql-optimizer-agent)
+  - [Example 2: Multi-Agent Debate Workflow](#example-2-multi-agent-debate-workflow)
 - [Troubleshooting](#troubleshooting)
+- [Next Steps](#next-steps)
 
 
 ## Overview
 
-Create agents from natural language requirements. Describe what you need, and the weaver generates the YAML configuration automatically.
+The weaver is a **Loom agent** that creates other agent and workflow configurations through conversational interaction. Instead of writing YAML by hand, you chat with the weaver in the TUI and describe what you need. The weaver uses the `agent_management` tool to generate, validate, and save configuration files to your `$LOOM_DATA_DIR`.
+
+The weaver is not a CLI subcommand. There is no `looms weave` command. You interact with the weaver the same way you interact with any other Loom agent: through the TUI client.
+
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
-- LLM API key configured
-- `just build` completed
+- Loom v1.2.0+
+- LLM provider configured (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, or HuggingFace)
+- Loom server running (`looms serve`)
+
+Verify setup:
+
+```bash
+# Start the server (default port 60051)
+looms serve
+
+# In another terminal, confirm the weaver is listed
+loom agents
+```
+
 
 ## Quick Start
 
-Configure LLM provider:
+1. Start the Loom server if it is not already running:
 
 ```bash
-bin/looms config init
-bin/looms config set-key anthropic_api_key
+looms serve
 ```
 
-Create your first thread:
+2. Connect to the weaver thread via the TUI:
 
 ```bash
-bin/looms weave "I need a thread to read and analyze files"
+loom --thread weaver
 ```
 
-Connect to the thread:
+3. Describe the agent you want:
+
+```
+You: Create an agent that analyzes PostgreSQL slow queries and suggests indexes
+
+Weaver: [Uses agent_management to create the agent YAML]
+        [Validates the configuration]
+        [Saves to $LOOM_DATA_DIR/agents/postgres-slow-query-analyzer.yaml]
+
+        Agent created! The server will hot-reload it automatically.
+        Connect to it with: loom --thread postgres-slow-query-analyzer
+```
+
+4. Connect to your new agent:
 
 ```bash
-bin/loom --thread file-analyzer-abc123
+loom --thread postgres-slow-query-analyzer
 ```
 
-## Common Tasks
 
-### Create a Thread
+## How the Weaver Works
 
-Basic creation:
+### Deployment
 
-```bash
-bin/looms weave "Build a PostgreSQL query analyzer"
+When you run `looms serve`, the server automatically deploys the weaver agent to `$LOOM_DATA_DIR/agents/weaver.yaml` (if it does not already exist). The source lives at `embedded/weaver.yaml` in the Loom codebase (embedded into the binary at compile time via `//go:embed`).
+
+The server also deploys a `weaver-creation` skill to `$LOOM_DATA_DIR/skills/weaver-creation.yaml`.
+
+If you already have a customized `weaver.yaml` in your agents directory, the server will not overwrite it.
+
+### Tools Available to the Weaver
+
+The weaver has three tools configured in its agent spec:
+
+| Tool | Purpose |
+|------|---------|
+| `agent_management` | Create, update, read, list, validate, and delete agent/workflow/skill YAML files. Actions include `create_agent`, `create_workflow`, `create_skill`, `update_agent`, `update_workflow`, `update_skill`, `read`, `list`, `validate`, `delete`. |
+| `shell_execute` | Run shell commands. The weaver's working directory defaults to `$LOOM_SANDBOX_DIR` (which itself defaults to `$LOOM_DATA_DIR`). An explicit `working_dir` parameter overrides this. |
+| `tool_search` | Discover available tools via FTS search. The weaver uses this to find the right tools for the agents it creates. |
+
+The `agent_management` tool is security-restricted: only the weaver and guide agents can use it. The guide agent is further restricted to read-only access (`list` and `read` only).
+
+### The WEAVER.rom Ground-Truth Reference
+
+The weaver loads a ROM (Read-Only Memory) file at `pkg/agent/roms/WEAVER.rom`. This file contains the ground-truth schema definitions for:
+
+- Agent YAML structure (`apiVersion: loom/v1`, `kind: Agent`)
+- The full tool availability matrix (configurable tools, auto-registered tools, workflow-injected tools)
+- All 7 orchestration workflow types with their required fields (`debate`, `fork-join`, `pipeline`, `parallel`, `swarm`, `conditional`, `iterative`)
+- Event-driven coordination workflow patterns (`hub-and-spoke`, `peer-to-peer-pub-sub`)
+- Communication rules (event-driven messaging, no `receive_message` tool)
+- Common mistakes to avoid
+- Minimal templates for each workflow type
+
+The ROM ensures the weaver generates valid YAML that conforms to the actual Loom schema, rather than relying on LLM training data.
+
+
+## Planning Modes
+
+When you first interact with the weaver, it offers two approaches:
+
+### Quick Start Mode
+
+For users who know what they need. Describe your agent and the weaver creates it immediately.
+
+```
+You: Create a file analyzer that reads and searches code
+
+Weaver: [Analyzes requirements]
+        [Discovers tools via tool_search]
+        [Creates agent via agent_management]
+        [Validates configuration]
+
+        Done! Agent saved to $LOOM_DATA_DIR/agents/file-analyzer.yaml
+        Connect with: loom --thread file-analyzer
 ```
 
-Save to custom location:
+### /agent-plan Mode (Guided Planning)
 
-```bash
-bin/looms weave "Build a log analyzer" --output ./my-agents/log-analyzer.yaml
+For complex agents or when you need help defining requirements. The weaver guides you through 5 structured phases:
+
+1. **Problem Understanding** -- What problem are you solving? How will you measure success?
+2. **Technical Requirements** -- What database/language/stack? What access level?
+3. **Skill Recommendation** -- The weaver recommends existing skills or offers to create new ones
+4. **Workflow Design** -- (Multi-agent only) Which pattern fits: pipeline, parallel, debate, coordinator?
+5. **Confirmation and Creation** -- Summary of everything, then create on your approval
+
+Activate it by typing `/agent-plan` or choosing option 2 when the weaver offers:
+
+```
+You: /agent-plan
+
+Weaver: Let's plan your agent. What specific problem are you solving?
 ```
 
-### List Threads
 
-```bash
-bin/looms weave list
+## Creating Agents
+
+### Single Agent
+
+Be specific about your requirements for better results:
+
+```
+-- Less specific (weaver has to guess more):
+You: Create an agent for SQL
+
+-- More specific (weaver generates a more useful agent):
+You: Create a PostgreSQL agent that optimizes slow queries, suggests indexes,
+     and explains query execution plans. It should use read-only access.
 ```
 
-Expected output:
+The weaver calls `agent_management` with `action="create_agent"` to write the YAML. Validation errors are returned immediately, and the weaver will fix them and retry.
+
+Agents are saved to `$LOOM_DATA_DIR/agents/<agent-name>.yaml` and hot-reloaded by the server.
+
+### Multi-Agent Workflow
+
+The weaver determines workflow type based on your description:
+
+- "debate" or "best approach" --> Debate workflow (agents argue merits, reach consensus)
+- "vote" or "independently" --> Swarm workflow (agents vote, majority/supermajority/unanimous)
+- "then" or "pipeline" or "sequential" --> Pipeline workflow (output feeds next stage)
+- "simultaneously" or "parallel" --> Parallel workflow (agents work on different tasks concurrently)
+- "coordinate" or "collaborate" --> Coordination workflow (event-driven, agents communicate freely)
+
+The weaver always creates agents first, then creates the workflow that references them.
+
+
+## Creating Skills
+
+The weaver can create skills -- LLM-agnostic prompt injections that provide domain expertise to agents. The weaver always asks for your consent before creating a new skill.
+
 ```
-NAME                    ID           STATUS    CREATED
-file-analyzer-abc123    thread_123   running   2024-12-10 14:30
-sql-optimizer-def456    thread_456   stopped   2024-12-09 10:15
-```
+You: Create an agent for analyzing Python performance
 
-### Preview Configuration
+Weaver: I don't have a Python performance skill yet. I can create one that would:
+        - Provide specialized knowledge about cProfile, memory_profiler, and py-spy
+        - Activate when you mention 'slow python' or use the /perf command
+        - Be reusable across any Python-focused agent
 
-```bash
-bin/looms weave "Build a SQL thread" --dry-run --show-yaml
-```
+        Would you like me to create this skill? (yes to create, skip to continue without it)
 
-### Connect to a Thread
+You: yes
 
-```bash
-bin/loom --thread file-analyzer-abc123 --server localhost:9090
-```
-
-## Workflow Patterns
-
-The weaver detects keywords and generates appropriate multi-agent workflows.
-
-### Debate Mode
-
-**Trigger keywords**: "debate", "best", "optimize", "decide"
-
-```bash
-bin/looms weave "Build a SQL optimizer where multiple threads debate the best query plan"
-```
-
-Generates 3-5 expert threads with consensus-based resolution.
-
-### Swarm Mode
-
-**Trigger keywords**: "independently", "vote", "multiple reviewers"
-
-```bash
-bin/looms weave "Create a code review thread where 5 reviewers independently analyze code and vote"
+Weaver: [Uses agent_management with action="create_skill"]
+        [Saves to $LOOM_DATA_DIR/skills/python-performance-analysis.yaml]
+        [Configures the skill in the agent's spec.skills section]
 ```
 
-Generates 5-7 independent evaluators with voting aggregation.
+### Skill Activation Modes
 
-### Pipeline Mode
+| Mode | Behavior |
+|------|----------|
+| `MANUAL` | Only via slash command (e.g., `/perf`) |
+| `AUTO` | Automatically when keywords are detected (e.g., "slow python") |
+| `HYBRID` | Both slash command and keyword activation |
+| `ALWAYS` | Injected on every agent turn |
 
-**Trigger keywords**: "extract", "transform", "load", "then"
 
-```bash
-bin/looms weave "Extract data from CSV, transform columns, then load into PostgreSQL"
-```
+## Workflow Types
 
-Generates sequential stages with data flow between them.
+The weaver can generate two categories of workflows.
 
-### Pair Programming Mode
+### Orchestration Workflows
 
-**Trigger keywords**: "writes code", "reviews"
+Deterministic, executor-driven patterns. These use the `spec.type` field in the workflow YAML.
 
-```bash
-bin/looms weave "Build a Go service where one thread writes code and another reviews it"
-```
+| Type | Description | Key Fields |
+|------|-------------|------------|
+| `debate` | Agents argue merits, reach consensus | `topic`, `agent_ids`, `rounds`, `merge_strategy` |
+| `fork-join` | Same prompt to all agents, results merged | `prompt`, `agent_ids`, `merge_strategy` |
+| `pipeline` | Sequential stages, output feeds next | `initial_prompt`, `stages` |
+| `parallel` | Each agent gets a unique task | `tasks` (each with `agent_id` and `prompt`) |
+| `swarm` | Agents vote on a question | `question`, `agent_ids`, `strategy` |
+| `conditional` | Classifier routes to sub-workflows | `condition_agent_id`, `condition_prompt`, `branches`, `default_branch` |
+| `iterative` | Pipeline with repeated iterations | `max_iterations`, `pipeline` |
 
-Generates driver and navigator agents with iterative feedback.
+### Coordination Workflows
+
+Event-driven, agent-autonomous patterns. These use the `spec.entrypoint` field.
+
+| Pattern | Description |
+|---------|-------------|
+| `hub-and-spoke` | One coordinator sends/receives from workers via `send_message` |
+| `peer-to-peer-pub-sub` | Agents publish/subscribe to topics via `publish` |
+
+Messages are event-driven and auto-delivered. There is no `receive_message` tool -- agents receive messages as injected context in their conversation.
+
 
 ## Examples
 
-### Example 1: File Analysis Thread
+### Example 1: SQL Optimizer Agent
+
+Connect to the weaver and request a single agent:
 
 ```bash
-bin/looms weave "I need a thread to explore my codebase, read files, and search for patterns"
+loom --thread weaver
 ```
 
-Generated configuration:
-- Domain: `file`
-- Backend: `./examples/backends/file.yaml`
-- Tools: `read_file`, `write_file`, `list_files`
+```
+You: Create a PostgreSQL optimizer that analyzes slow queries and suggests indexes
 
-Connect and use:
+Weaver: I'll create that for you. Let me find the right tools...
+
+        [Uses tool_search to discover available tools]
+        [Uses agent_management action="create_agent" with config:]
+
+        apiVersion: loom/v1
+        kind: Agent
+        metadata:
+          name: postgres-optimizer
+          description: Analyzes PostgreSQL queries for performance issues
+          labels:
+            domain: sql
+        spec:
+          system_prompt: |
+            Analyze PostgreSQL queries for performance issues.
+            Use EXPLAIN ANALYZE to identify bottlenecks.
+            Suggest index improvements and query rewrites.
+          tools:
+            - shell_execute
+            - file_read
+            - tool_search
+
+        Agent saved to: $LOOM_DATA_DIR/agents/postgres-optimizer.yaml
+        The server will hot-reload it automatically.
+        Connect with: loom --thread postgres-optimizer
+```
+
+Use the new agent:
 
 ```bash
-bin/loom --thread file-explorer-abc123
-
-> "Read the main.go file"
-> "List all Go files in pkg/agent/"
-> "Search for files containing 'ExecutionBackend'"
+loom --thread postgres-optimizer
 ```
 
-### Example 2: SQL Performance Thread
+```
+You: Analyze this query: SELECT * FROM orders WHERE customer_id = 123
+```
+
+### Example 2: Multi-Agent Debate Workflow
 
 ```bash
-bin/looms weave "Build a PostgreSQL thread that analyzes slow queries and suggests indexes"
+loom --thread weaver
 ```
 
-Generated configuration:
-- Domain: `sql`
-- Backend: `./examples/backends/postgres.yaml`
-- Patterns: `sequential_scan_detection`, `missing_index_analysis`, `join_optimization`
-- Tools: `execute_sql`, `get_schema`, `explain_plan`
+```
+You: Build a SQL optimizer where 3 experts debate the best query plan
 
-Connect and use:
+Weaver: I'll create a debate workflow with 3 specialist agents.
+
+        [Creates agent: index-optimizer]
+        [Creates agent: query-rewriter]
+        [Creates agent: join-optimizer]
+        [Creates workflow: sql-optimizer-debate with type=debate, rounds=3]
+
+        Created 3 agents and 1 workflow:
+
+        Agents:
+        1. index-optimizer - Suggests indexing strategies
+        2. query-rewriter - Proposes query rewrite optimizations
+        3. join-optimizer - Optimizes join operations and order
+
+        Workflow: sql-optimizer-debate
+        Type: debate (3 rounds, synthesis merge)
+
+        Connect with: loom --thread sql-optimizer-debate
+```
+
+Use the workflow:
 
 ```bash
-bin/loom --thread sql-postgres-performance-agent-def456
-
-> "Analyze this query: SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
-> "Show me slow queries from the past hour"
-> "What indexes should I add?"
+loom --thread sql-optimizer-debate
 ```
 
-### Example 3: Multi-Agent Debate
-
-```bash
-bin/looms weave "Build a SQL optimizer where 3 experts debate the best query plan" --spawn-window
+```
+You: Optimize this slow query: SELECT * FROM large_table JOIN another_table ON ...
 ```
 
-Generated workflow:
-- 3 expert threads (index, query rewrite, join strategy)
-- 5 debate rounds
-- Consensus merge strategy
-
-The `--spawn-window` flag opens separate terminal windows for each agent.
-
-## Backend Selection
-
-The weaver selects backends based on keywords:
-
-| Keywords | Selected Backend |
-|----------|------------------|
-| files, codebase, documents | `file.yaml` |
-| PostgreSQL, Postgres, SQL | `postgres.yaml` |
-| API, HTTP, REST | `public-api.yaml` |
-| SQLite, local database | `sqlite.yaml` |
-
-For API backends, set the base URL:
-
-```bash
-export API_BASE_URL=https://api.github.com
-bin/looms weave "Create a GitHub repository explorer"
-```
 
 ## Troubleshooting
 
-### No LLM Provider Configured
+### Cannot find the weaver thread
+
+**Problem:** `loom --thread weaver` says agent not found.
+
+**Check:**
 
 ```bash
-bin/looms config init
-bin/looms config set-key anthropic_api_key
+# Verify the weaver was deployed
+ls $LOOM_DATA_DIR/agents/weaver.yaml
+
+# If missing, restart the server -- it deploys on startup
+looms serve
 ```
 
-### Backend Connection Failed
+### Weaver creates agents but they do not appear
 
-For API backends:
+**Problem:** The weaver says it created an agent, but `loom --thread <name>` fails.
+
+**Check:**
 
 ```bash
-export API_BASE_URL=https://api.example.com
+# Verify the YAML file exists
+ls $LOOM_DATA_DIR/agents/
+
+# Check server logs for validation errors
+# The server validates YAML on hot-reload
+
+# Force reload by restarting the server
+looms serve
 ```
 
-For SQL backends, verify connection in the agent config:
+### Weaver generates invalid YAML
+
+**Problem:** The `agent_management` tool returns validation errors.
+
+The weaver's self-correction is enabled (`enable_self_correction: true`), so it will typically read the error message and retry with a fixed configuration. If it keeps failing:
+
+- Make sure the WEAVER.rom is present (it ships with Loom and is loaded at agent startup)
+- Be more specific in your requirements -- vague requests lead to more guesswork
+- Try `/agent-plan` mode for structured guidance
+
+### Connection to server fails
+
+**Problem:** `loom --thread weaver` cannot connect.
+
+**Check:**
 
 ```bash
-vim $LOOM_DATA_DIR/threads/<agent-name>.yaml
+# Default server address is 127.0.0.1:60051
+# If using a different port, specify it:
+loom --server 127.0.0.1:<port> --thread weaver
 ```
 
-### Agent Spawn Failed
 
-View validation errors:
+## Next Steps
 
-```bash
-bin/looms weave "<requirements>" --dry-run --show-yaml
-```
-
-### Pattern Not Found
-
-List available patterns:
-
-```bash
-ls patterns/
-```
-
-Check pattern exists:
-
-```bash
-grep -r "name: <pattern-name>" patterns/
-```
+- [Weaver Usage Guide](./weaver-usage.md) -- Additional examples and skill recommendations
+- [Pattern Library Guide](./pattern-library-guide.md) -- Available patterns for agents
+- [Zero-Code Implementation](./zero-code-implementation-guide.md) -- Manual agent configuration (without the weaver)
+- [MCP Integration](./integration/mcp-readme.md) -- External tool integration

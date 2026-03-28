@@ -1,0 +1,512 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "loom/v1/graph_memory.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "GraphMemoryService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {},
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1ConsolidateResponse": {
+      "type": "object",
+      "properties": {
+        "consolidatedMemory": {
+          "$ref": "#/definitions/v1GraphMemory"
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1MemoryLineage"
+          }
+        }
+      }
+    },
+    "v1ContextForResponse": {
+      "type": "object",
+      "properties": {
+        "recall": {
+          "$ref": "#/definitions/v1EntityRecall"
+        }
+      }
+    },
+    "v1CreateEntityResponse": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "$ref": "#/definitions/v1GraphEntity"
+        }
+      }
+    },
+    "v1DeleteEntityResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1EntityRecall": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "$ref": "#/definitions/v1GraphEntity"
+        },
+        "memories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ScoredMemory"
+          }
+        },
+        "edgesOut": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GraphEdge"
+          }
+        },
+        "edgesIn": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GraphEdge"
+          }
+        },
+        "totalTokensUsed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalCandidates": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "description": "EntityRecall is the composite result of a ContextFor query."
+    },
+    "v1ForgetResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1GetEntityResponse": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "$ref": "#/definitions/v1GraphEntity"
+        }
+      }
+    },
+    "v1GetGraphStatsResponse": {
+      "type": "object",
+      "properties": {
+        "stats": {
+          "$ref": "#/definitions/v1GraphStats"
+        }
+      }
+    },
+    "v1GraphEdge": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        },
+        "relation": {
+          "type": "string",
+          "description": "Relation type: USES, FOLLOWS, KNOWS_ABOUT, PARENT_OF, WORKS_AT, etc."
+        },
+        "propertiesJson": {
+          "type": "string",
+          "description": "JSON blob for edge properties (since, strength, context)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "GraphEdge is a mutable directed relationship between two entities."
+    },
+    "v1GraphEntity": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "entityType": {
+          "type": "string",
+          "description": "Entity type: person, tool, pattern, concept, project, device, etc."
+        },
+        "propertiesJson": {
+          "type": "string",
+          "description": "JSON blob for flexible attributes."
+        },
+        "owner": {
+          "type": "string",
+          "description": "Who created this entity."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "GraphEntity is a mutable node representing current state."
+    },
+    "v1GraphMemory": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string",
+          "description": "The memory content (natural language)."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Short version for budget-constrained retrieval."
+        },
+        "memoryType": {
+          "type": "string",
+          "description": "Memory type: fact, preference, decision, experience, failure, observation, consolidation."
+        },
+        "source": {
+          "type": "string",
+          "description": "Source: conversation, observation, manual, agent."
+        },
+        "sourceId": {
+          "type": "string",
+          "description": "Conversation or session ID."
+        },
+        "owner": {
+          "type": "string",
+          "description": "Which person this memory belongs to."
+        },
+        "memoryAgentId": {
+          "type": "string",
+          "description": "Which agent created this memory."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "salience": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience score 0.0-1.0. Governs retrieval priority."
+        },
+        "tokenCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Precomputed at write time."
+        },
+        "summaryTokenCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Precomputed for summary."
+        },
+        "accessCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "entityIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Linked entity IDs (via junction table)."
+        },
+        "propertiesJson": {
+          "type": "string",
+          "description": "Type-specific structured data (decision reasoning, failure root cause, etc.)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64"
+        },
+        "accessedAt": {
+          "type": "string",
+          "format": "int64",
+          "description": "0 = never accessed."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "int64",
+          "description": "0 = never expires."
+        },
+        "isSuperseded": {
+          "type": "boolean",
+          "description": "True if superseded by a newer memory via lineage."
+        }
+      },
+      "description": "GraphMemory is IMMUTABLE once created. Only accessed_at, access_count,\nsalience, and expires_at may be mutated (via specific engine operations)."
+    },
+    "v1GraphStats": {
+      "type": "object",
+      "properties": {
+        "entityCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "edgeCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "memoryCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "activeMemoryCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalMemoryTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "memoriesByType": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "description": "GraphStats provides entity/memory/token counts."
+    },
+    "v1LineageRelationType": {
+      "type": "string",
+      "enum": [
+        "LINEAGE_RELATION_TYPE_UNSPECIFIED",
+        "LINEAGE_RELATION_TYPE_SUPERSEDES",
+        "LINEAGE_RELATION_TYPE_CONSOLIDATES"
+      ],
+      "default": "LINEAGE_RELATION_TYPE_UNSPECIFIED",
+      "description": "LineageRelationType classifies memory lineage relationships."
+    },
+    "v1ListEntitiesResponse": {
+      "type": "object",
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GraphEntity"
+          }
+        },
+        "totalCount": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "v1MemoryLineage": {
+      "type": "object",
+      "properties": {
+        "newMemoryId": {
+          "type": "string"
+        },
+        "oldMemoryId": {
+          "type": "string"
+        },
+        "relationType": {
+          "$ref": "#/definitions/v1LineageRelationType"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "MemoryLineage tracks SUPERSEDES and CONSOLIDATES chains."
+    },
+    "v1NeighborDirection": {
+      "type": "string",
+      "enum": [
+        "NEIGHBOR_DIRECTION_UNSPECIFIED",
+        "NEIGHBOR_DIRECTION_OUTBOUND",
+        "NEIGHBOR_DIRECTION_INBOUND",
+        "NEIGHBOR_DIRECTION_BOTH"
+      ],
+      "default": "NEIGHBOR_DIRECTION_UNSPECIFIED",
+      "description": "NeighborDirection specifies the traversal direction for graph neighbor queries."
+    },
+    "v1NeighborsResponse": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GraphEdge"
+          }
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GraphEntity"
+          }
+        }
+      }
+    },
+    "v1RecallResponse": {
+      "type": "object",
+      "properties": {
+        "memories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ScoredMemory"
+          }
+        },
+        "totalCandidates": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalTokensUsed": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "v1RelateResponse": {
+      "type": "object",
+      "properties": {
+        "edge": {
+          "$ref": "#/definitions/v1GraphEdge"
+        }
+      }
+    },
+    "v1RememberResponse": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "$ref": "#/definitions/v1GraphMemory"
+        }
+      }
+    },
+    "v1ScoredMemory": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "$ref": "#/definitions/v1GraphMemory"
+        },
+        "computedSalience": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience after time decay."
+        },
+        "relevanceScore": {
+          "type": "number",
+          "format": "float",
+          "description": "BM25 / FTS rank."
+        },
+        "combinedScore": {
+          "type": "number",
+          "format": "float",
+          "description": "Combined score (salience * relevance)."
+        },
+        "usedSummary": {
+          "type": "boolean",
+          "description": "True if summary was used instead of full content (budget)."
+        }
+      },
+      "description": "ScoredMemory is a memory with computed ranking scores."
+    },
+    "v1SupersedeResponse": {
+      "type": "object",
+      "properties": {
+        "newMemory": {
+          "$ref": "#/definitions/v1GraphMemory"
+        },
+        "lineage": {
+          "$ref": "#/definitions/v1MemoryLineage"
+        }
+      }
+    },
+    "v1UnrelateResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1UpdateEntityResponse": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "$ref": "#/definitions/v1GraphEntity"
+        }
+      }
+    }
+  }
+}

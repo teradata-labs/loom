@@ -1,6 +1,19 @@
 # HTTP Server Configuration
 
-The Loom HTTP server provides REST API, Server-Sent Events (SSE) streaming, CORS support, and Swagger UI documentation.
+The Loom HTTP server provides REST API access (via gRPC-gateway), Server-Sent Events (SSE) streaming, CORS support, and Swagger UI documentation.
+
+**Version**: v1.2.0
+
+## Feature Status
+
+- ✅ HTTP/REST gateway for LoomService (via grpc-gateway)
+- ✅ SSE streaming for `/v1/weave:stream`
+- ✅ CORS middleware with configurable origins, methods, headers
+- ✅ Swagger UI served from CDN
+- ✅ OpenAPI spec served from `gen/openapiv2/loom/v1/loom.swagger.json`
+- ✅ Apps browser (`/apps/`) when AppHTMLProvider is configured
+- ✅ Simple health check (`/health`) and detailed health check (`/v1/health`)
+- ⚠️ OpenAPI spec is read from disk at runtime (requires `gen/openapiv2/` directory to be present alongside the binary)
 
 ## Quick Start
 
@@ -18,20 +31,28 @@ looms serve --http-port 0
 
 ### Core Endpoints
 
-- **Health Check**: `GET /health`
+- **Simple Health Check**: `GET /health` -- returns `{"status":"healthy"}` (static, always 200 if server is running)
+- **gRPC Health Check**: `GET /v1/health` -- returns `HealthStatus` proto with per-component status, version, and uptime (via gRPC-gateway)
 - **Swagger UI**: `GET /swagger-ui`
 - **OpenAPI Spec**: `GET /openapi.json`
 - **SSE Streaming**: `POST /v1/weave:stream`
 
 ### API Endpoints
 
-All gRPC endpoints are available via HTTP/REST:
+LoomService gRPC endpoints are available via HTTP/REST through the grpc-gateway. Only LoomService is registered with the HTTP gateway (other gRPC services like ToolRegistryService are gRPC-only). Example endpoints:
+
 - `POST /v1/weave` - Execute agent query
 - `POST /v1/sessions` - Create session
 - `GET /v1/sessions/{session_id}` - Get session
 - `POST /v1/weave:stream` - Stream agent execution (SSE)
 
-See `/swagger-ui` for complete API documentation.
+This is a subset; the LoomService exposes 68 HTTP path patterns via gRPC-gateway. See `/swagger-ui` for the complete API documentation.
+
+### Apps Browser
+
+- **Apps UI**: `GET /apps/` - Browse and interact with Loom apps (available when an app HTML provider is configured)
+
+The `/apps/` endpoint serves the HTML UI for Loom apps. Requests to `/apps` (without trailing slash) are redirected to `/apps/`.
 
 ## CORS Configuration
 
@@ -114,17 +135,20 @@ The server enforces security rules:
 
 1. **Wildcard + Credentials Blocked**: Cannot use `allowed_origins: ["*"]` with `allow_credentials: true` (browsers reject this)
 2. **Startup Warnings**: Wildcard origins trigger warnings in logs
-3. **Production Detection**: Server checks for production indicators
 
 ### Environment Variables
 
-Override CORS settings via environment:
+Override CORS settings via environment variables. Loom uses the `LOOM_` prefix with underscores replacing dots in config keys:
 
 ```bash
-# Set via config file
-export LOOM_CONFIG=/path/to/config.yaml
+# Override specific CORS settings via environment
+export LOOM_SERVER_CORS_ENABLED=true
+export LOOM_SERVER_CORS_ALLOW_CREDENTIALS=false
 
-# Or configure in looms.yaml
+# Or specify a config file via CLI flag
+looms serve --config /path/to/config.yaml
+
+# Default config file location: $LOOM_DATA_DIR/looms.yaml
 ```
 
 ## Swagger UI
@@ -160,11 +184,11 @@ Use this URL for:
 Swagger UI is loaded from CDN (no bundling required):
 - Zero impact on binary size
 - Always up-to-date UI
-- Fast load times
+- Requires internet connectivity to load assets
 
 ## Testing
 
-### Health Check
+### Simple Health Check
 
 ```bash
 curl http://localhost:5006/health
@@ -173,6 +197,24 @@ curl http://localhost:5006/health
 Response:
 ```json
 {"status":"healthy"}
+```
+
+### Detailed Health Check (via gRPC-gateway)
+
+```bash
+curl http://localhost:5006/v1/health
+```
+
+Response (example):
+```json
+{
+  "status": "healthy",
+  "components": {
+    "llm.default": { "status": "healthy", "latencyMs": "142" }
+  },
+  "version": "1.2.0",
+  "uptimeSeconds": "3600"
+}
 ```
 
 ### CORS Preflight
@@ -237,9 +279,9 @@ curl -N -X POST http://localhost:5006/v1/weave:stream \
 
 ### Wildcard + Credentials Error
 
-**Symptom**: Server refuses to start or logs fatal error
+**Symptom**: Server exits immediately on startup with a fatal log message
 
-**Cause**: Invalid combination of `allowed_origins: ["*"]` with `allow_credentials: true`
+**Cause**: Invalid combination of `allowed_origins: ["*"]` with `allow_credentials: true` (the server calls `logger.Fatal` which terminates the process)
 
 **Solution**: Either:
 - Use specific origins with credentials: `allowed_origins: ["https://app.com"]` + `allow_credentials: true`
@@ -247,13 +289,20 @@ curl -N -X POST http://localhost:5006/v1/weave:stream \
 
 ### Swagger UI Not Loading
 
-**Symptom**: `/swagger-ui` returns 404
+**Symptom**: `/swagger-ui` page is blank or assets fail to load
 
 **Solutions**:
-1. Check `http_port` is configured (not 0)
-2. Verify server started successfully
-3. Check logs for HTTP server startup message
-4. Ensure CDN is accessible (requires internet for assets)
+1. Check `http_port` is configured (not 0); if 0, no HTTP server is started
+2. Verify server started successfully (check logs for "Starting HTTP server")
+3. Ensure CDN is accessible (Swagger UI CSS/JS are loaded from `cdn.jsdelivr.net`)
+
+### OpenAPI Spec Not Found
+
+**Symptom**: `/openapi.json` returns 404
+
+**Cause**: The spec file is read from disk at `gen/openapiv2/loom/v1/loom.swagger.json` relative to the working directory
+
+**Solution**: Run the server from the project root, or ensure the `gen/openapiv2/` directory is present in the working directory
 
 ## Integration Examples
 
@@ -261,9 +310,12 @@ curl -N -X POST http://localhost:5006/v1/weave:stream \
 
 ```javascript
 // Configure API client with CORS
+// Note: withCredentials requires the server's allowed_origins to list your
+// exact origin (not "*") and allow_credentials: true. The default CORS config
+// uses wildcard origins with allow_credentials: false, so omit withCredentials
+// unless you have configured specific origins.
 const api = axios.create({
   baseURL: 'http://localhost:5006',
-  withCredentials: true,  // If using credentials
   headers: {
     'Content-Type': 'application/json'
   }
@@ -278,18 +330,35 @@ const response = await api.post('/v1/weave', {
 
 ### SSE Streaming Client
 
-```javascript
-const eventSource = new EventSource(
-  'http://localhost:5006/v1/weave:stream?query=test',
-  {
-    withCredentials: true  // If using credentials
-  }
-);
+The `/v1/weave:stream` endpoint requires `POST`, so the browser `EventSource` API (GET-only) cannot be used. Use `fetch()` with a `ReadableStream` instead:
 
-eventSource.onmessage = (event) => {
-  const progress = JSON.parse(event.data);
-  console.log('Progress:', progress);
-};
+```javascript
+async function streamWeave(query, sessionId) {
+  const response = await fetch('http://localhost:5006/v1/weave:stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, session_id: sessionId }),
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+    // Each SSE event is separated by a blank line
+    for (const line of chunk.split('\n')) {
+      if (line.startsWith('data: ')) {
+        const progress = JSON.parse(line.slice(6));
+        console.log('Progress:', progress);
+      }
+    }
+  }
+}
+
+streamWeave('test', '');
 ```
 
 ## Performance
@@ -302,9 +371,10 @@ eventSource.onmessage = (event) => {
 
 ### Concurrency
 
-- HTTP server handles concurrent requests efficiently
+- HTTP server handles concurrent requests via Go's `net/http` goroutine-per-request model
 - SSE streaming supports multiple simultaneous connections
-- No connection limits (system defaults apply)
+- No explicit connection limits (OS defaults apply)
+- Server timeouts: `ReadTimeout=30s`, `WriteTimeout=0` (disabled for SSE), `IdleTimeout=120s`
 
 ## Security Best Practices
 

@@ -103,6 +103,76 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClient_EntraTokenBearerStripping(t *testing.T) {
+	tests := []struct {
+		name           string
+		entraToken     string
+		wantAuthHeader string
+	}{
+		{
+			name:           "token without Bearer prefix",
+			entraToken:     "test-token",
+			wantAuthHeader: "Bearer test-token",
+		},
+		{
+			name:           "token with Bearer prefix is stripped",
+			entraToken:     "Bearer test-token",
+			wantAuthHeader: "Bearer test-token",
+		},
+		{
+			name:           "token with Bearer prefix and JWT-like value",
+			entraToken:     "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+			wantAuthHeader: "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Mock HTTP server that captures the Authorization header
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, tt.wantAuthHeader, r.Header.Get("Authorization"),
+					"Authorization header should not double-prefix Bearer")
+				assert.Empty(t, r.Header.Get("api-key"),
+					"api-key header should be empty for Entra token auth")
+
+				resp := openai.ChatCompletionResponse{
+					ID:    "chatcmpl-test",
+					Model: "gpt-4o",
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message:      openai.ChatMessage{Role: "assistant", Content: "ok"},
+							FinishReason: "stop",
+						},
+					},
+					Usage: openai.ChatCompletionUsage{
+						PromptTokens:     5,
+						CompletionTokens: 1,
+						TotalTokens:      6,
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(Config{
+				Endpoint:     server.URL,
+				DeploymentID: "test-deployment",
+				EntraToken:   tt.entraToken,
+				ModelName:    "gpt-4o",
+			})
+			require.NoError(t, err)
+
+			ctx := &mockContext{Context: context.Background()}
+			messages := []types.Message{{Role: "user", Content: "test"}}
+
+			resp, err := client.Chat(ctx, messages, nil)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+		})
+	}
+}
+
 func TestClient_Name(t *testing.T) {
 	client, err := NewClient(Config{
 		Endpoint:     "https://test.openai.azure.com",

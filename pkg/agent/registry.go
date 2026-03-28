@@ -585,6 +585,25 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			agentConfig.SkillsConfig = sc
 		}
 		opts = append(opts, WithConfig(agentConfig))
+
+		// Apply pattern config from YAML/proto if provided.
+		// Start from Go defaults, then overlay non-zero proto values. Bool fields
+		// are applied directly since the YAML parser already merged user values
+		// with sensible defaults before populating the proto message.
+		if config.Behavior.Patterns != nil {
+			pc := config.Behavior.Patterns
+			patternCfg := DefaultPatternConfig()
+			patternCfg.Enabled = pc.Enabled
+			patternCfg.EnableTracking = pc.EnableTracking
+			patternCfg.UseLLMClassifier = pc.UseLlmClassifier
+			if pc.MinConfidence > 0 {
+				patternCfg.MinConfidence = float64(pc.MinConfidence)
+			}
+			if pc.MaxPatternsPerTurn > 0 {
+				patternCfg.MaxPatternsPerTurn = int(pc.MaxPatternsPerTurn)
+			}
+			opts = append(opts, WithPatternConfig(patternCfg))
+		}
 	}
 
 	// Set tracer if provided
@@ -1023,6 +1042,9 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 
 	case "huggingface":
 		apiKey := os.Getenv("HUGGINGFACE_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("HUGGINGFACE_TOKEN") // backward compat
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("HUGGINGFACE_API_KEY environment variable not set")
 		}

@@ -19,8 +19,10 @@ import (
 	"sync"
 	"time"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
 	"github.com/teradata-labs/loom/pkg/prompts"
@@ -146,6 +148,10 @@ type Agent struct {
 	// Lazy tool sets: registered only when trigger(userMessage) returns true.
 	// Guarded by a.mu.
 	lazyToolSets []lazyToolSet
+
+	// Graph-backed episodic memory (optional).
+	graphMemoryStore  memory.GraphMemoryStore
+	graphMemoryConfig *loomv1.GraphMemoryConfig
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts

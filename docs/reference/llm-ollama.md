@@ -1,9 +1,9 @@
 
 # Ollama Local LLM Integration
 
-Complete reference for connecting Loom to Ollama for local LLM inference.
+Technical reference for connecting Loom to Ollama for local LLM inference.
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -16,14 +16,16 @@ Complete reference for connecting Loom to Ollama for local LLM inference.
 6. [Configuration](#configuration)
 7. [Testing Your Setup](#testing-your-setup)
 8. [Tool Calling Support](#tool-calling-support)
-9. [Performance Considerations](#performance-considerations)
-10. [Model Selection Guide](#model-selection-guide)
-11. [Dynamic Model Discovery](#dynamic-model-discovery)
-12. [Advanced Configuration](#advanced-configuration)
-13. [Comparison: Ollama vs Cloud LLMs](#comparison-ollama-vs-cloud-llms)
-14. [Error Codes](#error-codes)
-15. [Best Practices](#best-practices)
-16. [See Also](#see-also)
+9. [Streaming Support](#streaming-support)
+10. [Vision Support](#vision-support)
+11. [Performance Considerations](#performance-considerations)
+12. [Model Selection Guide](#model-selection-guide)
+13. [Dynamic Model Discovery](#dynamic-model-discovery)
+14. [Advanced Configuration](#advanced-configuration)
+15. [Comparison: Ollama vs Cloud LLMs](#comparison-ollama-vs-cloud-llms)
+16. [Error Handling](#error-handling)
+17. [Best Practices](#best-practices)
+18. [See Also](#see-also)
 
 
 ## Quick Reference
@@ -34,19 +36,21 @@ Complete reference for connecting Loom to Ollama for local LLM inference.
 llm:
   provider: ollama
   ollama_endpoint: http://localhost:11434
-  ollama_model: llama3.1
-  temperature: 0.8
+  ollama_model: llama3.1:8b
+  temperature: 1.0
   max_tokens: 4096
-  timeout_seconds: 120
-  ollama_tool_mode: auto  # auto, native, or prompt
+  timeout_seconds: 60
 ```
+
+**Note**: The tool mode (`auto`, `native`, or `prompt`) is configurable only via the Go API (`ollama.Config.ToolMode`), not through YAML config. It defaults to `auto`.
 
 ### Popular Models
 
 | Model | Size | Context | Best For | Pull Command |
 |-------|------|---------|----------|--------------|
 | `llama3.3:70b` | 70B | 128k | Latest Meta model, excellent quality | `ollama pull llama3.3:70b` |
-| `llama3.1` | 8B | 128k | General purpose (recommended) | `ollama pull llama3.1` |
+| `llama3.1:8b` | 8B | 128k | General purpose (server default) | `ollama pull llama3.1:8b` |
+| `llama3.2` | 3B | 128k | Lightweight general purpose | `ollama pull llama3.2` |
 | `qwen3:8b` | 8B | 128k | Strong reasoning, tool use | `ollama pull qwen3:8b` |
 | `qwen3-coder:30b` | 30B | 128k | Code generation, large context | `ollama pull qwen3-coder:30b` |
 | `qwen2.5-coder` | 7B/32B | 32k | Code generation | `ollama pull qwen2.5-coder` |
@@ -102,6 +106,9 @@ Ollama provides local LLM inference on your machine:
 - **Fast**: Low-latency local inference
 - **Offline**: Works without internet connection
 - **Flexible**: Support for many open-source models
+- **Streaming**: ✅ Implements `StreamingLLMProvider` for token-by-token output
+- **Vision**: ✅ Supports multi-modal content (base64 images) for vision-capable models
+- **Rate Limiting**: ✅ Client-side rate limiting via `RateLimiterConfig`
 
 **Use Ollama when**:
 - You want zero inference costs
@@ -210,12 +217,13 @@ Edit `$LOOM_DATA_DIR/looms.yaml`:
 llm:
   provider: ollama
   ollama_endpoint: http://localhost:11434
-  ollama_model: llama3.1
-  temperature: 0.8
+  ollama_model: llama3.1:8b
+  temperature: 1.0
   max_tokens: 4096
-  timeout_seconds: 120
-  ollama_tool_mode: auto  # Options: auto, native, prompt
+  timeout_seconds: 60
 ```
+
+**Note**: Tool mode is configurable only via the Go API (`ollama.Config.ToolMode`), not YAML. Defaults to `auto`.
 
 ### Configuration Parameters
 
@@ -250,7 +258,8 @@ ollama_endpoint: http://192.168.1.100:11434
 #### ollama_model
 
 **Type**: `string`
-**Required**: Yes
+**Default**: `llama3.1:8b` (server config default); `llama3.1` (Go API `ollama.Config` default)
+**Required**: No (defaults to `llama3.1:8b` in server config)
 
 Model name to use. Must be pulled locally first.
 
@@ -266,8 +275,8 @@ Model name to use. Must be pulled locally first.
 #### temperature
 
 **Type**: `float64`
-**Default**: `0.8`
-**Range**: `0.0` - `2.0`
+**Default**: `1.0` (server config default); `0.8` (Go API `ollama.Config` default)
+**Range**: `0.0` - `1.0` (Loom agent-level validation enforces this range; Ollama's API accepts up to 2.0 but Loom rejects values above 1.0)
 **Required**: No
 
 Sampling temperature for creativity control.
@@ -275,7 +284,6 @@ Sampling temperature for creativity control.
 **Temperature guide**:
 - **0.0-0.3**: Deterministic, focused responses
 - **0.7-1.0**: Balanced creativity (recommended)
-- **1.5-2.0**: Very creative, may be less coherent
 
 **Example**:
 ```yaml
@@ -290,11 +298,13 @@ temperature: 0.7  # Balanced
 **Range**: `1` - model's context window
 **Required**: No
 
-Maximum response length in tokens. If not set, Loom selects a default based on model size:
+Maximum response length in tokens. If not set, Loom selects a default based on model name substrings:
 
-- **70B+**: 8192 (e.g., `llama3.3:70b`, `qwen2.5:72b`)
-- **13B-34B**: 6144 (e.g., `qwen3-coder:30b`, `phi4`, `mistral-small3.1`)
-- **7B-8B**: 4096 (e.g., `llama3.1`, `qwen3:8b`, `mistral`)
+- **70B+**: 8192 — names containing `70b`, `72b`, or `405b` (e.g., `llama3.3:70b`, `qwen2.5:72b`)
+- **13B-34B**: 6144 — names containing `13b`, `14b`, `20b`, `30b`, `32b`, or `34b` (e.g., `qwen3-coder:30b`, `phi4:14b`)
+- **Default**: 4096 — all other models (e.g., `llama3.1`, `qwen3:8b`, `mistral`, `phi4`, `mistral-small3.1`)
+
+**Note**: Size detection is based on literal substrings in the model name. Models like `phi4` (14B actual) or `mistral-small3.1` (24B actual) get the default 4096 unless you specify the size tag explicitly (e.g., `phi4:14b`).
 
 **Constraints**:
 
@@ -311,7 +321,7 @@ max_tokens: 2048  # Faster responses
 #### timeout_seconds
 
 **Type**: `int`
-**Default**: `120`
+**Default**: `60` (server config default); `120` (Go API `ollama.Config` default)
 **Range**: `1` - `3600`
 **Required**: No
 
@@ -328,15 +338,14 @@ timeout_seconds: 300  # 5 minutes for CPU
 ```
 
 
-#### ollama_tool_mode
+#### Tool Mode (Go API Only)
 
-**Type**: `string` (enum)
+**Type**: `ollama.ToolMode` (enum)
 **Default**: `auto`
 **Allowed values**: `auto`, `native`, `prompt`
-**Required**: No
 **Available since**: v0.7.0
 
-Tool calling mode for Ollama.
+Tool calling mode for Ollama. This is configurable only via the Go API (`ollama.Config.ToolMode`), not through YAML config.
 
 | Mode | Behavior | When to Use |
 |------|----------|-------------|
@@ -344,9 +353,13 @@ Tool calling mode for Ollama.
 | `native` | Force native tool calling API | When you know model supports it (Ollama v0.12.3+) |
 | `prompt` | Prompt-based tool calling fallback | For older Ollama or unsupported models |
 
-**Example**:
-```yaml
-ollama_tool_mode: auto  # Recommended
+**Example (Go API)**:
+```go
+client := ollama.NewClient(ollama.Config{
+    Endpoint: "http://localhost:11434",
+    Model:    "llama3.1",
+    ToolMode: ollama.ToolModeAuto, // Recommended
+})
 ```
 
 **See**: [Tool Calling Support](#tool-calling-support) and [Dynamic Model Discovery](#dynamic-model-discovery) for details
@@ -389,7 +402,7 @@ curl http://localhost:11434/api/tags
 }
 ```
 
-If connection fails, see [ERR_CONNECTION_REFUSED](#err_connection_refused).
+If connection fails, see [Error Handling](#error-handling).
 
 
 ### Step 2: Start Loom Server
@@ -401,8 +414,8 @@ looms serve
 **Expected output**:
 ```
 INFO  Starting Loom server
-INFO  gRPC server listening on :50051
-INFO  HTTP gateway listening on :8080
+INFO  gRPC server listening on :60051
+INFO  HTTP gateway listening on :5006
 INFO  LLM provider: ollama (endpoint: http://localhost:11434)
 INFO  Model: llama3.1
 ```
@@ -412,21 +425,21 @@ INFO  Model: llama3.1
 
 ```bash
 grpcurl -plaintext -d '{"query": "What is 2+2?"}' \
-  localhost:50051 loom.v1.LoomService/Weave
+  localhost:60051 loom.v1.LoomService/Weave
 ```
 
-**Expected output**:
+**Expected output** (fields shown in proto JSON camelCase):
 ```json
 {
   "text": "2 + 2 equals 4.",
   "sessionId": "sess_abc123",
   "cost": {
     "llmCost": {
-      "provider": "ollama",
-      "model": "llama3.1",
       "inputTokens": 10,
       "outputTokens": 8,
-      "costUsd": 0
+      "costUsd": 0,
+      "model": "llama3.1",
+      "provider": "ollama"
     }
   }
 }
@@ -445,25 +458,25 @@ Loom supports Ollama's native tool calling API (requires Ollama v0.12.3 or later
 
 **Tool support is detected dynamically.** Loom probes Ollama's `/api/show` endpoint to check if a model's template includes tool-handling directives. Any Ollama model with tool support in its template will work automatically — no hardcoded model list required.
 
-**Known-working model families** (used as fallback when probe fails):
+**Known-working model families** (used as fallback when probe fails; matched by prefix):
 
-- **Llama 3.x** (3.1, 3.2, 3.3) - Full native tool calling
-- **Qwen 2.5 / Qwen 3** (all variants including coder) - Excellent tool calling
-- **Mistral / Mistral Small / Mixtral** - Native tool calling
-- **DeepSeek-R1** - Tool calling with reasoning
-- **Command-R** - Tool calling support
-- **Phi 4** - Microsoft's reasoning model
-- **Functionary** - Specialized for function calling
+- **llama3.1**, **llama3.2**, **llama3.3** - Full native tool calling
+- **qwen2.5**, **qwen2.5-coder**, **qwen3**, **qwen3-coder** - Excellent tool calling
+- **mistral**, **mistral-small**, **mixtral** - Native tool calling (also matches `mistral-small3.1` etc. via prefix)
+- **deepseek-r1** - Tool calling with reasoning
+- **command-r** - Tool calling support
+- **phi4** - Microsoft's reasoning model
+- **functionary** - Specialized for function calling
 
 ### Tool Mode Configuration
 
-Configure how Loom handles tools with Ollama:
+Configure how Loom handles tools with Ollama. Tool mode is set via the Go API (`ollama.Config.ToolMode`), not YAML config:
 
-```yaml
-llm:
-  provider: ollama
-  ollama_model: llama3.3
-  ollama_tool_mode: auto  # Recommended: auto-detect support
+```go
+client := ollama.NewClient(ollama.Config{
+    Model:    "llama3.3",
+    ToolMode: ollama.ToolModeAuto, // Recommended: auto-detect support
+})
 ```
 
 **Tool Mode Options**:
@@ -505,27 +518,27 @@ ollama run llama3.3 "Use the calculator tool to compute 2+2"
 ### Tool Calling Examples
 
 **Automatic Detection** (recommended):
-```yaml
-llm:
-  provider: ollama
-  ollama_model: llama3.3
-  ollama_tool_mode: auto  # Detects native support
+```go
+client := ollama.NewClient(ollama.Config{
+    Model:    "llama3.3",
+    ToolMode: ollama.ToolModeAuto, // Detects native support
+})
 ```
 
 **Force Native Mode** (Ollama v0.12.3+):
-```yaml
-llm:
-  provider: ollama
-  ollama_model: qwen2.5
-  ollama_tool_mode: native  # Use native API
+```go
+client := ollama.NewClient(ollama.Config{
+    Model:    "qwen2.5",
+    ToolMode: ollama.ToolModeNative, // Use native API
+})
 ```
 
 **Fallback to Prompt Mode** (older Ollama):
-```yaml
-llm:
-  provider: ollama
-  ollama_model: llama3.1
-  ollama_tool_mode: prompt  # Prompt engineering workaround
+```go
+client := ollama.NewClient(ollama.Config{
+    Model:    "llama3.1",
+    ToolMode: ollama.ToolModePrompt, // Prompt engineering workaround
+})
 ```
 
 
@@ -559,6 +572,31 @@ ollama pull qwen2.5
 | **Mistral Small 3.1** | Excellent | Very Good | Medium | Strong instruction following |
 | **Llama 3.1 8B** | Good | Good | Very Fast | Good for development |
 | **DeepSeek-R1** | Good | Excellent | Slow | Best for reasoning tasks |
+
+
+## Streaming Support
+
+The Ollama client implements the `StreamingLLMProvider` interface, enabling token-by-token streaming via Ollama's `/api/chat` endpoint with `stream: true`.
+
+**How it works**:
+1. Loom sends the chat request with `stream: true`
+2. Ollama returns newline-delimited JSON (NDJSON) — one JSON object per token
+3. Each token is passed to the `tokenCallback` as it arrives
+4. The final chunk (with `done: true`) contains usage metadata (`prompt_eval_count`, `eval_count`)
+
+Streaming is used automatically when the client is accessed via `StreamWeave` gRPC RPC or SSE endpoints.
+
+
+## Vision Support
+
+The Ollama client supports multi-modal content blocks for vision-capable models (e.g., `llava`, `llama3.2-vision`).
+
+**How it works**:
+- User messages with `ContentBlocks` containing `type: "image"` are converted to Ollama's `images` array format
+- Images must be base64-encoded in the `Image.Source.Data` field
+- Text and image blocks are combined into a single Ollama message
+
+**Note**: Vision support depends on the Ollama model — only models trained for vision tasks will process images.
 
 
 ## Performance Considerations
@@ -699,7 +737,7 @@ Loom automatically discovers your installed Ollama models — no manual registry
 1. **Model Registry**: At startup, Loom queries Ollama's `/api/tags` endpoint to discover all installed models
 2. **Tool Support Probe**: On first tool call, Loom queries `/api/show` for the model's template to detect tool support
 3. **Fallback**: If Ollama is unreachable, Loom uses a static list of known-working models
-4. **Max Tokens**: Automatically scaled based on model size (7B→4096, 13-34B→6144, 70B+→8192)
+4. **Max Tokens**: Automatically scaled based on model name substrings (default→4096, names containing 13b-34b→6144, 70b+→8192; see [max_tokens](#max_tokens) for details)
 
 ### What This Means
 
@@ -766,23 +804,36 @@ OLLAMA_HOST=0.0.0.0:11434 ollama serve &
 OLLAMA_HOST=0.0.0.0:11435 ollama serve &
 ```
 
-Configure Loom to use specific instance:
-```yaml
-# Agent 1: Fast model
-agents:
-  - name: fast-agent
-    llm:
-      provider: ollama
-      ollama_endpoint: http://localhost:11434
-      ollama_model: llama3.1
+Configure per-agent Ollama endpoints using k8s-style agent YAML configs:
 
-# Agent 2: Large model
-  - name: quality-agent
-    llm:
-      provider: ollama
-      ollama_endpoint: http://localhost:11435
-      ollama_model: llama3.3:70b
+```yaml
+# agents/fast-agent.yaml
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: fast-agent
+spec:
+  llm:
+    provider: ollama
+    model: llama3.1
+  # Uses default ollama_endpoint from looms.yaml (http://localhost:11434)
 ```
+
+```yaml
+# agents/quality-agent.yaml
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: quality-agent
+spec:
+  llm:
+    provider: ollama
+    model: llama3.3:70b
+  # To use a different Ollama instance, configure the server-level
+  # ollama_endpoint in looms.yaml or use the Go API directly
+```
+
+**Note**: Per-agent Ollama endpoint overrides are available via the Go API (`ollama.Config.Endpoint`) but not via per-agent YAML config. Agent YAML configs inherit the server's `llm.ollama_endpoint`.
 
 
 ### Ollama Model Parameters
@@ -797,7 +848,25 @@ ollama show llama3.1
 # Loom uses temperature and max_tokens from config
 ```
 
-**Note**: Loom controls temperature and max_tokens. Advanced Ollama parameters (like `top_p`, `top_k`) not currently exposed.
+**Note**: Loom controls temperature and max_tokens. Advanced Ollama parameters (like `top_p`, `top_k`) not currently exposed via YAML config.
+
+
+### Rate Limiting (Go API Only)
+
+The Ollama client supports client-side rate limiting via the `RateLimiterConfig` field in `ollama.Config`. This is a global singleton shared across all Ollama client instances.
+
+```go
+client := ollama.NewClient(ollama.Config{
+    Model: "llama3.1",
+    RateLimiterConfig: llm.RateLimiterConfig{
+        Enabled:           true,
+        RequestsPerSecond: 2.0,
+        // See llm.RateLimiterConfig for all fields
+    },
+})
+```
+
+Rate limiting is typically unnecessary for local Ollama (no API rate limits), but useful when running a shared Ollama server to prevent overload.
 
 
 ## Comparison: Ollama vs Cloud LLMs
@@ -809,6 +878,8 @@ ollama show llama3.1
 | **Privacy** | 100% private | Data sent to provider |
 | **Quality** | Good (8B), Excellent (70B+) | Excellent |
 | **Tool Calling** | Native (v0.12.3+) | Native, reliable |
+| **Streaming** | ✅ Token-by-token | ✅ Token-by-token |
+| **Vision** | ✅ (model-dependent) | ✅ |
 | **Hardware Required** | Yes (GPU recommended) | No |
 | **Internet Required** | No | Yes |
 | **Rate Limits** | None (local) | Yes (varies by tier) |
@@ -818,229 +889,56 @@ ollama show llama3.1
 **Choose Cloud for**: Production at scale, managed infrastructure, no hardware costs
 
 
-## Error Codes
+## Error Handling
 
-### ERR_CONNECTION_REFUSED
+The Ollama client does not define custom error codes. All errors are returned as generic `fmt.Errorf` messages wrapping the underlying cause. Common error patterns:
 
-**Code**: `connection_refused`
-**HTTP Status**: 503 Service Unavailable
-**gRPC Code**: `UNAVAILABLE`
+| Error Message Pattern | Likely Cause | Resolution |
+|-----------------------|--------------|------------|
+| `ollama API call failed: HTTP request failed: ... connection refused` | Ollama server not running | Run `ollama serve` or `brew services restart ollama` |
+| `ollama API call failed: API error (status 404): ...` | Model not pulled locally | Run `ollama pull <model>` |
+| `ollama API call failed: API error (status 500): ...` | Ollama internal error (e.g., out of memory) | Use a smaller model or quantized variant |
+| `ollama API call failed: failed to marshal request: ...` | Invalid request parameters | Check configuration values |
+| `ollama API call failed: failed to unmarshal response: ...` | Ollama returned invalid JSON | Check Ollama server health; may indicate version incompatibility |
+| `ollama API call failed: failed to read response: ...` | HTTP response body could not be read | Check Ollama server health, network connectivity |
+| `context deadline exceeded` | Request exceeded Go context timeout | Increase `timeout_seconds` in config |
+| `error reading stream: ...` | Stream interrupted during streaming response | Check Ollama server health, retry |
 
-**Cause**: Ollama server not running.
+**Debugging tips**:
 
-**Example**:
-```
-Error: connection_refused: failed to connect to http://localhost:11434: connection refused
-```
-
-**Resolution**:
 ```bash
+# Verify Ollama server is running
+curl http://localhost:11434/api/tags
+
 # Start Ollama server
 ollama serve
 
-# Or on macOS, restart the service
+# On macOS, restart the service
 brew services restart ollama
 
-# Verify server running
-curl http://localhost:11434/api/tags
-```
-
-**Retry behavior**: Loom will not automatically retry. Start server and retry request.
-
-
-### ERR_MODEL_NOT_FOUND
-
-**Code**: `model_not_found`
-**HTTP Status**: 404 Not Found
-**gRPC Code**: `NOT_FOUND`
-
-**Cause**: Model not downloaded locally.
-
-**Example**:
-```
-Error: model_not_found: model 'llama3.1' not found. Run 'ollama pull llama3.1'
-```
-
-**Resolution**:
-```bash
-# List available models
+# Check installed models
 ollama list
 
-# Pull the model specified in config
+# Pull a missing model
 ollama pull llama3.1
-
-# Verify model pulled
-ollama list | grep llama3.1
 ```
 
-**Prevention**: Always run `ollama pull <model>` before configuring Loom.
-
-
-### ERR_OUT_OF_MEMORY
-
-**Code**: `out_of_memory`
-**HTTP Status**: 507 Insufficient Storage
-**gRPC Code**: `RESOURCE_EXHAUSTED`
-
-**Cause**: Model too large for available RAM/VRAM.
-
-**Example**:
-```
-Error: out_of_memory: failed to load model 'llama3.3:70b': insufficient memory (need 64GB, have 16GB)
-```
-
-**Resolution**:
-
-**Option 1: Use smaller model**:
-```yaml
-ollama_model: phi3  # 3.8B parameter model
-```
-
-**Option 2: Use quantized version**:
-```bash
-ollama pull llama3.1:7b-q4_0  # 4-bit quantization
-```
-
-**Option 3: Close other applications** to free RAM:
-```bash
-# Check memory usage
-free -h  # Linux
-vm_stat  # macOS
-
-# Kill memory-intensive processes
-```
-
-**Prevention**: Choose model size appropriate for your hardware (see [Hardware Requirements](#hardware-requirements)).
-
-
-### ERR_TIMEOUT
-
-**Code**: `timeout`
-**HTTP Status**: 504 Gateway Timeout
-**gRPC Code**: `DEADLINE_EXCEEDED`
-
-**Cause**: Request took longer than configured timeout.
-
-**Example**:
-```
-Error: timeout: request exceeded timeout of 120s (still generating after 125s)
-```
-
-**Resolution**:
-
-**CPU inference (common cause)**:
+**Timeout issues** (common with CPU inference):
 ```yaml
 timeout_seconds: 300  # 5 minutes for slow CPU inference
+max_tokens: 1024      # Shorter responses complete faster
 ```
 
-**Reduce response length**:
-```yaml
-max_tokens: 1024  # Faster completion
-```
-
-**Use smaller model**:
-```yaml
-ollama_model: llama3.1  # 8B model faster than 70B
-```
-
-**Install GPU acceleration** (best solution):
+**Out of memory**: Use a smaller or quantized model:
 ```bash
-# NVIDIA: Install CUDA
-# AMD: Install ROCm
-# Apple: Automatic via Metal
+ollama pull llama3.1:7b-q4_0  # 4-bit quantization, ~50% less VRAM
 ```
-
-**Retry behavior**: Loom will not automatically retry. Increase timeout or optimize performance, then retry.
-
-
-### ERR_TOOL_CALLING_FAILED
-
-**Code**: `tool_calling_failed`
-**HTTP Status**: 500 Internal Server Error
-**gRPC Code**: `INTERNAL`
-
-**Cause**: Tool mode incompatible with model or Ollama version.
-
-**Example**:
-```
-Error: tool_calling_failed: native tool calling not supported by model 'mistral' (Ollama v0.11.0)
-```
-
-**Resolution**:
-
-**Option 1: Use auto mode**:
-```yaml
-ollama_tool_mode: auto  # Automatically detect support
-```
-
-**Option 2: Upgrade Ollama** (for native tool calling):
-```bash
-# macOS
-brew upgrade ollama
-
-# Linux
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Verify version
-ollama --version  # Should be v0.12.3 or later
-```
-
-**Option 3: Use prompt mode** (fallback):
-```yaml
-ollama_tool_mode: prompt  # Works with all versions
-```
-
-**Prevention**: Use `ollama_tool_mode: auto` (recommended default).
-
-
-### ERR_SLOW_INFERENCE
-
-**Code**: `slow_inference`
-**HTTP Status**: 200 OK (not an error, but warning)
-**gRPC Code**: N/A
-
-**Cause**: Running on CPU is much slower than GPU.
-
-**Example**:
-```
-Warning: slow_inference: CPU inference detected, tokens/sec: 3.2 (expected: >20 on GPU)
-```
-
-**Resolution**:
-
-**Option 1: Install CUDA/ROCm** for GPU acceleration:
-```bash
-# NVIDIA: https://developer.nvidia.com/cuda-downloads
-# AMD: https://rocmdocs.amd.com/
-```
-
-**Option 2: Use smaller models** (3B-7B parameters):
-```yaml
-ollama_model: phi3  # 3.8B, fast on CPU
-```
-
-**Option 3: Reduce `max_tokens`**:
-```yaml
-max_tokens: 1024  # Faster completion
-```
-
-**Option 4: Increase `timeout_seconds`** to allow completion:
-```yaml
-timeout_seconds: 300  # 5 minutes
-```
-
-**Performance comparison**:
-| Hardware | Tokens/sec | Time for 1000 tokens |
-|----------|-----------|----------------------|
-| CPU (8-core) | 5-10 | 100-200s |
-| NVIDIA RTX 3060 | 20-50 | 20-50s |
-| NVIDIA RTX 4090 | 50-100 | 10-20s |
 
 
 ## Best Practices
 
 1. **Development/Testing**: Use Ollama to avoid API costs during development
-2. **Tool Mode**: Use `auto` mode — Loom probes the model dynamically and caches the result
+2. **Tool Mode**: Use `auto` mode (the default) — Loom probes the model dynamically and caches the result. Set via Go API (`ollama.Config.ToolMode`)
 3. **Model Selection**: Start with `qwen3:8b` or `llama3.1` for testing, `llama3.3:70b` for quality
 4. **Code Tasks**: Use `qwen3-coder:30b` or `qwen2.5-coder` for code generation and analysis
 5. **Hybrid**: Use Ollama for privacy-sensitive data, cloud for production scale

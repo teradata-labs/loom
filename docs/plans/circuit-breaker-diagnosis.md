@@ -1,8 +1,10 @@
+> **Status: ✅ COMPLETED** — Fix implemented in v1.2.0. This plan is archived for historical reference.
+
 # Output Token Circuit Breaker — Bug Diagnosis
 
-**File:** `pkg/agent/conversation_helpers.go` + `pkg/agent/agent.go:1342-1384`
+**File:** `pkg/agent/conversation_helpers.go` + `pkg/agent/agent.go:1722-1794`
 **Reported by:** Dan Bo (evaluation), Anthropic users, OpenAI users
-**Status:** 🔴 Bug confirmed — incorrect counter accumulation logic
+**Status:** ✅ Bug fixed — incorrect counter accumulation logic corrected in v1.2.0
 
 ---
 
@@ -12,9 +14,9 @@ The `outputTokenExhaustions` counter accumulates across an **entire session** an
 
 ---
 
-## Code Flow (Current Behavior)
+## Code Flow (Old Buggy Behavior)
 
-In `agent.go` inside the agentic turn loop:
+In `agent.go` inside the agentic turn loop, **before the fix**:
 
 ```
 LLM call returns (StopReason, Content, ToolCalls)
@@ -33,21 +35,21 @@ LLM call returns (StopReason, Content, ToolCalls)
 
 ---
 
-## Why This Is Wrong
+## Why The Old Behavior Was Wrong
 
 There are three distinct scenarios when `max_tokens` is hit:
 
-| Scenario | ToolCalls | Truncated? | Is it a failure? | Current behavior |
+| Scenario | ToolCalls | Truncated? | Is it a failure? | Old behavior |
 |----------|-----------|------------|-----------------|-----------------|
 | 1. Long text response, no tools | empty | N/A | **No** — valid response | Counts as failure ❌ |
 | 2. Tool calls returned, not truncated | present | No | Borderline — can still make progress | Counts as failure ❌ |
 | 3. Tool calls returned, truncated mid-generation | present | Yes | **Yes** — agent stuck, can't execute | Counts as failure ✅ |
 
-The CB is designed to catch **Scenario 3** (infinite loop, truncated tool calls, no progress). But it counts **all three** identically.
+The CB is designed to catch **Scenario 3** (infinite loop, truncated tool calls, no progress). But the old code counted **all three** identically.
 
 ---
 
-## The Failing Sequence (Reproduced from Dan's Session)
+## The Failing Sequence (Reproduced from Dan's Session, Before Fix)
 
 ```
 Session created → FailureTracker.outputTokenExhaustions = 0
@@ -68,7 +70,7 @@ Turn 3: User: "Generate the final summary"
   → User sees an error. No output. Session effectively dead.
 ```
 
-The user's three queries were all legitimate. All three responses were useful (text returned, no tool calls). The CB fired because the healthcare agents are configured to generate comprehensive reports — which is what they were asked to do.
+The user's three queries were all legitimate. All three responses were useful (text returned, no tool calls). The CB fired because the healthcare agents are configured to generate detailed reports — which is what they were asked to do.
 
 ---
 
@@ -76,54 +78,74 @@ The user's three queries were all legitimate. All three responses were useful (t
 
 **Principle:** Only count a `max_tokens` event as an "exhaustion failure" when it actually prevents the agent from making progress. A text response that hits `max_tokens` is a complete (if truncated) response — not a failure.
 
-**Required changes in `agent.go` (lines 1342-1384):**
+**Changes implemented in `agent.go` (lines 1722-1794):**
 
 ```go
 // === OUTPUT TOKEN CIRCUIT BREAKER ===
 if failureTracker, ok := session.FailureTracker.(*consecutiveFailureTracker); ok && failureTracker != nil {
+    threshold := a.config.OutputTokenCBThreshold
+    if threshold == 0 {
+        threshold = 8 // Default if not configured
+    }
+
     if llmResp.StopReason == "max_tokens" {
         hasEmptyToolCall := detectEmptyToolCall(llmResp.ToolCalls)
 
-        if len(llmResp.ToolCalls) > 0 && hasEmptyToolCall {
-            // REAL FAILURE: Agent is in tool loop, tool calls truncated — can't make progress
+        switch {
+        case threshold < 0:
+            // CB disabled entirely — do nothing
+
+        case len(llmResp.ToolCalls) > 0 && hasEmptyToolCall:
+            // TRUE FAILURE: agent is stuck in agentic loop with truncated tool calls.
             exhaustionCount := failureTracker.recordOutputTokenExhaustion(hasEmptyToolCall)
             // ... tracing ...
             if err := failureTracker.checkOutputTokenCircuitBreaker(threshold); err != nil {
                 // ... tracing ...
                 return nil, fmt.Errorf("output token circuit breaker: %w", err)
             }
-        } else if len(llmResp.ToolCalls) == 0 {
-            // NOT A FAILURE: Agent returned a complete text response, just hit token limit
-            // Clear counter — a successful response resets the streak
+
+        case len(llmResp.ToolCalls) == 0:
+            // NOT A FAILURE: the LLM returned a complete text response that hit the
+            // token limit. Reset the counter.
             failureTracker.clearOutputTokenExhaustion()
+
+        default:
+            // max_tokens with non-truncated tool calls: agent may still make progress.
+            // Don't count, don't clear — let it continue.
         }
-        // else: max_tokens with non-truncated tool calls — agent may still make progress
-        // Don't count as failure yet, but don't clear either
     } else {
-        // Normal completion — clear the counter
+        // Normal completion — clear the counter.
         failureTracker.clearOutputTokenExhaustion()
     }
 }
 ```
 
-**Also needed:**
-1. Make the threshold configurable per-agent (not hardcoded at 3)
-2. Add agent config field: `output_token_cb_threshold` (default: 5, was: 3)
-3. Raise the default — threshold of 3 is too low even for the corrected logic
+**All three requirements were implemented:**
+1. ✅ Threshold is configurable per-agent via `output_token_cb_threshold` in agent YAML
+2. ✅ Proto field added: `agent_config.proto` → `AgentBehaviorConfig.output_token_cb_threshold`
+3. ✅ Default raised from 3 to 8; set to `-1` to disable entirely
 
 ---
 
-## Secondary Issue: Threshold Hardcoded at 3
+## Secondary Issue: Threshold Was Hardcoded at 3 (✅ Fixed)
 
-Even with the logic fix, a threshold of 3 consecutive *actual* failures (truncated tool calls) is aggressive for agents doing complex multi-step work. In the evals circuit breaker (`pkg/evals/judges/circuit_breaker.go`), this is configurable. The agent CB should be too.
+The original threshold of 3 consecutive failures was too aggressive for agents doing complex multi-step work. This has been addressed:
+
+- ✅ Threshold is now configurable via `output_token_cb_threshold` in agent YAML (default: 8)
+- ✅ Set to `0` to use default (8), or `-1` to disable the CB entirely
+- ✅ Consistent with the evals circuit breaker (`pkg/evals/judges/circuit_breaker.go`), which uses `CircuitBreakerConfig` with configurable thresholds
 
 ---
 
-## Test Coverage Gaps
+## Test Coverage (✅ Addressed)
 
-The existing tests in `pkg/agent/circuit_breaker_test.go` only test the counter mechanics. They don't test:
-- CB behavior when max_tokens fires but ToolCalls is empty (should clear, not count)
-- CB behavior across multiple user messages in a session
-- CB behavior in a pipeline context
+Tests in `pkg/agent/circuit_breaker_test.go` now cover all identified gaps:
 
-These tests need to be added as part of the fix.
+- ✅ `TestOutputTokenCB_TextResponseClearsCounter` — CB clears counter when max_tokens fires with empty ToolCalls (text response)
+- ✅ `TestOutputTokenCB_SessionAccumulation_Regression` — exact regression scenario from Dan Bo's session (3 verbose text responses across turns)
+- ✅ `TestOutputTokenCB_OnlyTruncatedToolCallsCount` — only truncated tool calls count toward threshold
+- ✅ `TestOutputTokenCircuitBreaker_ThresholdCustomization` — custom thresholds (tests with threshold=8)
+- ✅ `TestOutputTokenCB_ThresholdInErrorMessage` — error message reports configured threshold
+- ✅ `TestOutputTokenCircuitBreaker_Recovery` — counter resets after successful response
+- ✅ `TestOutputTokenCircuitBreaker_Integration` — full flow with truncated tool calls
+- 📋 CB behavior in a pipeline context — not yet tested

@@ -1,8 +1,8 @@
 # Artifact Management Architecture
 
-**Version**: v1.0.2
+**Version**: v1.2.0
 **Status**: ✅ Implemented (Session-based with CASCADE cleanup)
-**Last Updated**: 2026-01-21
+**Last Updated**: 2026-03-28
 
 ---
 
@@ -21,7 +21,7 @@
 - [Key Interactions](#key-interactions)
   - [Artifact Creation Flow](#artifact-creation-flow)
   - [CASCADE Cleanup Flow](#cascade-cleanup-flow)
-  - [Cross-Session Search](#cross-session-search)
+  - [Session-Scoped Search](#session-scoped-search)
 - [Data Structures](#data-structures)
   - [Session-Artifact Relationship](#session-artifact-relationship)
   - [Directory Structure](#directory-structure)
@@ -142,8 +142,8 @@ The Artifact Management subsystem provides **session-aware file storage** for th
      │ report.sql  │       │ debug.log   │    │ ├─ id (PK)     │
      │ config.yaml │       │ scratch.py  │    │ ├─ session_id  │
      └─────────────┘       └─────────────┘    │ │  (FK CASCADE)│
-                                               │ ├─ filename    │
-                                               │ └─ content_fts │
+                                               │ ├─ name        │
+                                               │ └─ purpose     │
                                                └────────────────┘
 
      ┌────────────────────────────────────────────────────────────┐
@@ -213,15 +213,15 @@ The Artifact Management subsystem provides **session-aware file storage** for th
                               │ │GetScratchpad │ │  │  │   │   (FK        │  │
 ┌──────────────────────────┐  │ │   Dir        │ │  │  │   │   ON DELETE  │  │
 │   Shell Execute          │  │ │   (session)  │ │  │  │   │   CASCADE)   │  │
-│   ┌──────────────────┐   │  │ │    ▼         │ │  │  │   ├─ filename   │  │
-│   │ Session Sandbox  │   │  │ │  sessions/   │ │  │  │   ├─ content    │  │
+│   ┌──────────────────┐   │  │ │    ▼         │ │  │  │   ├─ name       │  │
+│   │ Session Sandbox  │   │  │ │  sessions/   │ │  │  │   ├─ purpose    │  │
 │   │ • Set working    │   │  │ │  <session>/  │ │  │  │   ├─ created_at │  │
 │   │   dir to session │   │  │ │  scratchpad/ │ │  │  │   └─ updated_at │  │
 │   │ • Restrict paths │   │  │ └──────────────┘ │  │  ├──────────────────┤  │
-│   │ • Log execution  │   │  │                  │  │  │ artifacts_fts    │  │
+│   │ • Log execution  │   │  │                  │  │  │ artifacts_fts5   │  │
 │   └──────────────────┘   │  │ ┌──────────────┐ │  │  │  (FTS5 index)    │  │
-└──────────────────────────┘  │ │ CreateIfNot  │ │  │  │   • filename     │  │
-                              │ │ Exists()     │ │  │  │   • content      │  │
+└──────────────────────────┘  │ │ CreateIfNot  │ │  │  │   • name         │  │
+                              │ │ Exists()     │ │  │  │   • purpose      │  │
                               │ └──────────────┘ │  │  └──────────────────┘  │
                               └──────────────────┘  └────────────────────────┘
 
@@ -252,7 +252,7 @@ The Artifact Management subsystem provides **session-aware file storage** for th
 
 **Responsibility**: Type-safe propagation of session ID through the call chain
 
-**Interface**:
+**Interface** (package `session`):
 ```go
 // Inject session ID into context
 func WithSessionID(ctx context.Context, sessionID string) context.Context
@@ -261,7 +261,7 @@ func WithSessionID(ctx context.Context, sessionID string) context.Context
 func SessionIDFromContext(ctx context.Context) string
 ```
 
-**Implementation**: Uses `context.Context` with type-safe key:
+**Implementation**: Uses `context.Context` with type-safe key and string key fallback:
 ```go
 type sessionIDKey struct{}
 
@@ -271,12 +271,25 @@ func WithSessionID(ctx context.Context, sessionID string) context.Context {
     }
     return context.WithValue(ctx, sessionIDKey{}, sessionID)
 }
+
+func SessionIDFromContext(ctx context.Context) string {
+    // Try typed key first
+    if sessionID, ok := ctx.Value(sessionIDKey{}).(string); ok {
+        return sessionID
+    }
+    // Fallback to string key for backward compatibility
+    if sessionID, ok := ctx.Value("session_id").(string); ok {
+        return sessionID
+    }
+    return ""
+}
 ```
 
 **Invariants**:
 1. **Immutability**: Once set, session ID cannot be changed in context
 2. **Empty Fallback**: Missing session ID results in `""` (temp directory fallback)
 3. **Type Safety**: sessionIDKey is unexported, preventing key collisions
+4. **Backward Compatibility**: String key `"session_id"` supported as fallback for older context wrappers
 
 **Why This Design**:
 - **Type safety**: Private key type prevents accidental overwrites
@@ -303,7 +316,7 @@ type WorkspaceTool struct {
     artifactStore ArtifactStore
 }
 
-func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface{}) (*Result, error)
+func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error)
 ```
 
 **Parameters**:
@@ -368,7 +381,15 @@ func GetArtifactDir(sessionID string, source SourceType) (string, error) {
 
     // Session-based path
     sessionDir := filepath.Join(artifactsDir, "sessions", sessionID)
-    return filepath.Join(sessionDir, "agent"), nil
+
+    switch source {
+    case SourceUser:
+        return filepath.Join(sessionDir, "user"), nil
+    case SourceAgent, SourceGenerated:
+        return filepath.Join(sessionDir, "agent"), nil
+    default:
+        return sessionDir, nil
+    }
 }
 ```
 
@@ -379,7 +400,8 @@ $LOOM_DATA_DIR/artifacts/
 ├── temp/                          # Fallback (no session context)
 └── sessions/
     ├── <session-id-1>/
-    │   ├── agent/                # Artifacts (indexed)
+    │   ├── agent/                # Agent/generated artifacts (indexed)
+    │   ├── user/                 # User uploads within session
     │   └── scratchpad/           # Ephemeral (not indexed)
     └── <session-id-2>/
         └── agent/
@@ -409,27 +431,27 @@ CREATE TABLE sessions (
 
 CREATE TABLE artifacts (
     id TEXT PRIMARY KEY,
-    session_id TEXT,
-    filename TEXT NOT NULL,
+    name TEXT NOT NULL,
     path TEXT NOT NULL,
-    content_type TEXT,
-    size_bytes INTEGER,
-    checksum TEXT,
-    created_at INTEGER,
-    updated_at INTEGER,
+    source TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
     tags TEXT,  -- JSON array
+    session_id TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_artifacts_session ON artifacts(session_id);
+CREATE INDEX idx_artifacts_name ON artifacts(name);
 
-CREATE VIRTUAL TABLE artifacts_fts USING fts5(
+CREATE VIRTUAL TABLE artifacts_fts5 USING fts5(
     artifact_id UNINDEXED,
-    filename,
-    content,
+    name,
+    purpose,
     tags,
-    content='artifacts',
-    content_rowid='rowid'
+    tokenize='porter unicode61'
 );
 ```
 
@@ -438,7 +460,7 @@ CREATE VIRTUAL TABLE artifacts_fts USING fts5(
 DELETE FROM sessions WHERE id = '<session-id>';
 -- Automatically triggers:
 -- DELETE FROM artifacts WHERE session_id = '<session-id>';
--- DELETE FROM artifacts_fts WHERE artifact_id IN (...);
+-- DELETE FROM artifacts_fts5 WHERE artifact_id IN (...);
 ```
 
 **Why CASCADE**:
@@ -471,50 +493,51 @@ db.Exec("PRAGMA foreign_keys=ON")
 **Configuration**:
 ```go
 type ShellExecuteTool struct {
-    restrictWrites   bool             // Enforce write restrictions
-    restrictReads    ReadRestriction  // Session-only or all-sessions
-    loomDataDir      string           // Boundary for all operations
+    baseDir        string  // Base directory for resolving relative paths
+    loomDataDir    string  // LOOM_DATA_DIR for boundary checking
+    restrictWrites bool    // Enforce write restrictions (default: true)
+    restrictReads  string  // Read restriction level: "session" or "all_sessions"
 }
 ```
 
-**Read Restrictions**:
+**Read Restrictions** (⚠️ fields exist but not enforced in current implementation):
 
-| Mode | Access | Use Case |
-|------|--------|----------|
-| `session` | Current session + docs/examples | Default (most agents) |
-| `all_sessions` | All sessions + docs/examples | Coordinator/research agents |
+| Mode | Intended Access | Use Case |
+|------|-----------------|----------|
+| `session` | Current session only | Default (most agents) |
+| `all_sessions` | All sessions | Coordinator/research agents |
 
-**Security Model**:
+Note: `restrictReads` and `restrictWrites` fields exist on the struct and have setters, but enforcement was removed in favor of the working-directory boundary check (PATH_RESTRICTED). All commands with a working directory inside `$LOOM_DATA_DIR` or `/tmp` are allowed.
 
-| Operation | Allowed Paths | Blocked Paths |
-|-----------|---------------|---------------|
-| **Read** | `$LOOM_DATA_DIR/artifacts/sessions/<session>/` | Other sessions (if `restrictReads=session`) |
-| | `$LOOM_DATA_DIR/documentation/` | Outside `LOOM_DATA_DIR` |
-| | `$LOOM_DATA_DIR/examples/` | System directories (`/etc`, `/tmp`) |
-| **Write** | `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/` | Other sessions |
-| | `$LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/` | User directory |
-| | | Outside `LOOM_DATA_DIR` |
+**Security Model** (current enforcement):
 
-**Environment Variables**:
+| Check | Behavior |
+|-------|----------|
+| **Working directory boundary** | Must be within `$LOOM_DATA_DIR` or `/tmp` (PATH_RESTRICTED error otherwise) |
+| **Blocked system directories** | `/etc`, `/bin`, `/sbin`, `/boot`, `/sys`, `/proc`, etc. blocked (UNSAFE_PATH error) |
+| **Sensitive env vars filtered** | AWS secrets, API keys, database passwords blocked from user-provided env |
+| **Command size limit** | Commands >40KB (~10k tokens) rejected to prevent output token exhaustion |
+
+**Environment Variables** (injected into shell commands when session exists):
 ```bash
 $LOOM_DATA_DIR             # $LOOM_DATA_DIR/
+$SESSION_ID                # Current session ID
 $SESSION_ARTIFACT_DIR      # $LOOM_DATA_DIR/artifacts/sessions/<session>/agent/
 $SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/
 ```
 
-**Working Directory**: Defaults to `$SESSION_ARTIFACT_DIR` (agent can use relative paths)
+**Working Directory**: Defaults to `LOOM_SANDBOX_DIR` (falls back to `LOOM_DATA_DIR` if not set). Agents can override with `working_dir` parameter.
 
-**Path Validation**:
+**Path Validation** (working directory restriction):
 ```go
-func isWriteAllowed(command string, allowedDirs []string) bool {
-    outputPaths := extractOutputPaths(command)  // Parse > >> tee -o etc.
-    for _, path := range outputPaths {
-        absPath, _ := filepath.Abs(path)
-        if !strings.HasPrefix(absPath, allowedDir) {
-            return false  // Outside session boundary
-        }
-    }
-    return true
+// Shell execute validates that the working directory is within LOOM_DATA_DIR or /tmp.
+// If outside these boundaries, the command is rejected with PATH_RESTRICTED error.
+absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
+absLoomDataDir, _ := filepath.Abs(loomDataDir)
+isAllowed := strings.HasPrefix(absWorkingDir, absLoomDataDir)
+// Also allows /tmp for temporary file operations
+if !isAllowed && strings.HasPrefix(absWorkingDir, "/tmp") {
+    isAllowed = true
 }
 ```
 
@@ -679,7 +702,7 @@ Agent.Chat()   Context      Workspace      Directory      Filesystem    SQLite
     │               │              │    'session-123'             │
     │               │              │  (automatic via FK)          │
     │               │              │                              │
-    │               │              │  DELETE FROM artifacts_fts   │
+    │               │              │  DELETE FROM artifacts_fts5  │
     │               │              │  WHERE docid IN (...)        │
     │               │              │  (automatic via FK)          │
     │               │              │              │               │
@@ -768,34 +791,35 @@ Agent.Chat()   Context      Workspace      Directory      Filesystem    SQLite
 
 ---
 
-### Cross-Session Search
+### Session-Scoped Search
 
-**Problem**: FTS5 search should find artifacts across all sessions, but list/read should be session-scoped
-
-**Solution**: Search omits session filter, list/read includes session filter
+**Behavior**: Both FTS5 search and list are session-scoped when invoked through the workspace tool. The workspace tool always passes the current session ID, so search results are filtered to the current session.
 
 ```sql
--- Search (cross-session)
+-- Search (session-scoped via workspace tool)
 SELECT a.*
 FROM artifacts a
-JOIN artifacts_fts fts ON a.id = fts.artifact_id
-WHERE fts MATCH '<query>'
+INNER JOIN artifacts_fts5 fts ON a.id = fts.artifact_id
+WHERE artifacts_fts5 MATCH '<query>'
+  AND a.session_id = '<current-session>'
 ORDER BY rank
 LIMIT 20;
 
--- List (session-scoped)
+-- List (session-scoped, default limit 100)
 SELECT * FROM artifacts
 WHERE session_id = '<current-session>'
+  AND deleted_at IS NULL
 ORDER BY created_at DESC
-LIMIT 20;
+LIMIT 100;
 ```
 
+**Note**: The underlying `ArtifactStore.Search()` method supports cross-session search when `sessionID` is empty, but the workspace tool always provides a session ID (defaulting to "temp" if none exists). Cross-session search is available at the API level for coordinator agents or server-side operations.
+
 **Rationale**:
-- **Search**: Users want to find artifacts regardless of session
+- **Search**: Session-scoped by default for isolation
 - **List**: Only show artifacts in current session (avoid clutter)
 - **Read**: Session-scoped for security (no cross-session access)
-
-**Coordinator Override**: Agents with `restrictReads=all_sessions` can read across sessions
+- **API-level**: Cross-session search available for server-side operations
 
 ---
 
@@ -810,10 +834,10 @@ LIMIT 20;
 ├───────────────────┤                      ├───────────────────┤
 │ id (PK)           │                      │ id (PK)           │
 │ name              │                      │ session_id (FK)   │
-│ created_at        │                      │ filename          │
-│ updated_at        │                      │ path              │
-└───────────────────┘                      │ content_type      │
-                                           │ size_bytes        │
+│ agent_id          │                      │ name              │
+│ created_at        │                      │ path              │
+│ updated_at        │                      │ content_type      │
+└───────────────────┘                      │ size_bytes        │
                                            │ checksum          │
                                            │ created_at        │
                                            │ updated_at        │
@@ -823,11 +847,11 @@ LIMIT 20;
                                                     │ FTS5
                                                     ▼
                                            ┌───────────────────┐
-                                           │  artifacts_fts    │
+                                           │  artifacts_fts5   │
                                            ├───────────────────┤
                                            │ artifact_id (FK)  │
-                                           │ filename          │
-                                           │ content           │
+                                           │ name              │
+                                           │ purpose           │
                                            │ tags              │
                                            └───────────────────┘
 ```
@@ -838,9 +862,9 @@ LIMIT 20;
 - CASCADE: Delete session → delete all artifacts
 
 **Invariants**:
-1. **Foreign Key Constraint**: `artifacts.session_id` must reference valid `sessions.id`
+1. **Foreign Key Constraint**: `artifacts.session_id` must reference valid `sessions.id` (when non-NULL)
 2. **CASCADE**: Deleting session automatically deletes all related artifacts
-3. **Non-nullable**: `artifacts.session_id` cannot be NULL (every artifact has a session)
+3. **Nullable session_id**: `artifacts.session_id` is nullable for backward compatibility with pre-session artifacts (user uploads and legacy temp artifacts may have NULL session_id)
 
 ---
 
@@ -858,10 +882,12 @@ $LOOM_DATA_DIR/
 │   │   └── <uuid>.tmp
 │   └── sessions/
 │       ├── sess_abc123/
-│       │   ├── agent/             # Agent artifacts (indexed)
+│       │   ├── agent/             # Agent/generated artifacts (indexed)
 │       │   │   ├── analysis.md
 │       │   │   ├── query.sql
 │       │   │   └── results.json
+│       │   ├── user/              # User uploads within session
+│       │   │   └── input-data.csv
 │       │   └── scratchpad/        # Ephemeral notes (not indexed)
 │       │       ├── debug.log
 │       │       └── temp-calc.txt
@@ -870,17 +896,18 @@ $LOOM_DATA_DIR/
 │           │   └── report.pdf
 │           └── scratchpad/
 │               └── notes.md
-├── documentation/                  # Always readable
-│   └── guides.md
-└── examples/                       # Always readable
+├── agents/                         # Agent configurations
+├── workflows/                      # Workflow definitions
+└── examples/                       # Example patterns
     └── sample-pattern.yaml
 ```
 
 **Path Resolution**:
 | Context | Path |
 |---------|------|
-| User upload | `$LOOM_DATA_DIR/artifacts/user/<filename>` |
-| Agent with session | `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/<filename>` |
+| User upload (no session) | `$LOOM_DATA_DIR/artifacts/user/<filename>` |
+| User upload (with session) | `$LOOM_DATA_DIR/artifacts/sessions/<session>/user/<filename>` |
+| Agent/generated with session | `$LOOM_DATA_DIR/artifacts/sessions/<session>/agent/<filename>` |
 | Scratchpad | `$LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/<filename>` |
 | No session context | `$LOOM_DATA_DIR/artifacts/temp/<filename>` |
 
@@ -897,63 +924,67 @@ PRAGMA foreign_keys=ON;
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
     name TEXT,
-    backend TEXT,
-    state TEXT,
+    agent_id TEXT,
+    parent_session_id TEXT,
+    context_json TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    conversation_count INTEGER DEFAULT 0,
-    total_cost_usd REAL DEFAULT 0.0
+    total_cost_usd REAL DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
 
 -- Artifacts table with foreign key CASCADE
 CREATE TABLE artifacts (
     id TEXT PRIMARY KEY,
-    session_id TEXT,                        -- Foreign key to sessions
-    filename TEXT NOT NULL,
+    name TEXT NOT NULL,
     path TEXT NOT NULL,
-    source TEXT,                            -- user|generated|agent
+    source TEXT NOT NULL,
     source_agent_id TEXT,
     purpose TEXT,
-    content_type TEXT,
-    size_bytes INTEGER,
-    checksum TEXT,
-    created_at INTEGER,
-    updated_at INTEGER,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
     last_accessed_at INTEGER,
     access_count INTEGER DEFAULT 0,
     tags TEXT,                              -- JSON array
     metadata_json TEXT,                     -- JSON object
     deleted_at INTEGER,
+    session_id TEXT,                        -- Foreign key to sessions
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_artifacts_session ON artifacts(session_id);
+CREATE INDEX idx_artifacts_name ON artifacts(name);
+CREATE INDEX idx_artifacts_source ON artifacts(source);
+CREATE INDEX idx_artifacts_content_type ON artifacts(content_type);
+CREATE INDEX idx_artifacts_created ON artifacts(created_at DESC);
 CREATE INDEX idx_artifacts_deleted ON artifacts(deleted_at);
 
 -- FTS5 full-text search index
-CREATE VIRTUAL TABLE artifacts_fts USING fts5(
+CREATE VIRTUAL TABLE artifacts_fts5 USING fts5(
     artifact_id UNINDEXED,
-    filename,
+    name,
     purpose,
     tags,
-    content='artifacts',
-    content_rowid='rowid'
+    tokenize='porter unicode61'
 );
 
 -- FTS5 triggers (automatic sync)
-CREATE TRIGGER artifacts_ai AFTER INSERT ON artifacts BEGIN
-    INSERT INTO artifacts_fts(artifact_id, filename, purpose, tags)
-    VALUES (new.id, new.filename, new.purpose, new.tags);
+CREATE TRIGGER artifacts_fts5_insert AFTER INSERT ON artifacts BEGIN
+    INSERT INTO artifacts_fts5(artifact_id, name, purpose, tags)
+    VALUES (new.id, new.name, new.purpose, new.tags);
 END;
 
-CREATE TRIGGER artifacts_ad AFTER DELETE ON artifacts BEGIN
-    DELETE FROM artifacts_fts WHERE artifact_id = old.id;
+CREATE TRIGGER artifacts_fts5_delete AFTER DELETE ON artifacts BEGIN
+    DELETE FROM artifacts_fts5 WHERE artifact_id = old.id;
 END;
 
-CREATE TRIGGER artifacts_au AFTER UPDATE ON artifacts BEGIN
-    DELETE FROM artifacts_fts WHERE artifact_id = old.id;
-    INSERT INTO artifacts_fts(artifact_id, filename, purpose, tags)
-    VALUES (new.id, new.filename, new.purpose, new.tags);
+CREATE TRIGGER artifacts_fts5_update AFTER UPDATE ON artifacts BEGIN
+    DELETE FROM artifacts_fts5 WHERE artifact_id = old.id;
+    INSERT INTO artifacts_fts5(artifact_id, name, purpose, tags)
+    VALUES (new.id, new.name, new.purpose, new.tags);
 END;
 ```
 
@@ -1196,16 +1227,15 @@ db.Exec("PRAGMA foreign_keys=ON")
 
 **Decision**: Unification chosen. Token savings (1600 tokens = ~$0.012/turn with Claude Sonnet 4) justify slightly reduced discoverability. Clear documentation in tool description compensates.
 
-**Validation Strategy**: Tool validates `action` + `scope` combinations:
-```go
-validCombinations := map[string][]string{
-    "write":  {"artifact", "scratchpad"},
-    "read":   {"artifact", "scratchpad"},
-    "list":   {"artifact", "scratchpad"},
-    "search": {"artifact"},  // Scratchpad not indexed
-    "delete": {"artifact", "scratchpad"},
-}
-```
+**Validation Strategy**: Each action handler validates its scope. The supported combinations are:
+
+| Action | Supported Scopes |
+|--------|-----------------|
+| `write` | `artifact`, `scratchpad` |
+| `read` | `artifact`, `scratchpad` |
+| `list` | `artifact`, `scratchpad` |
+| `search` | `artifact` only (scratchpad not indexed) |
+| `delete` | `artifact` (soft delete), `scratchpad` (hard delete) |
 
 ---
 
@@ -1227,9 +1257,9 @@ validCombinations := map[string][]string{
 // Agent cannot override session ID via tool parameters
 // Session ID comes from context, not user-controllable input
 
-func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface{}) {
+func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
     sessionID := session.SessionIDFromContext(ctx)  // Trusted source
-    // params["session_id"] is ignored
+    // params["session_id"] is ignored - session ID always from context
 }
 ```
 
@@ -1248,38 +1278,37 @@ func (t *WorkspaceTool) Execute(ctx context.Context, params map[string]interface
 
 **Mitigation**:
 
-1. **Path Validation**:
+1. **Working Directory Restriction**:
 ```go
-func isWithinSessionBoundary(path string, sessionDir string) bool {
-    absPath, err := filepath.Abs(path)
-    if err != nil {
-        return false  // Invalid path rejected
-    }
-    return strings.HasPrefix(absPath, sessionDir)
+// Working directory must be within LOOM_DATA_DIR or /tmp
+absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
+absLoomDataDir, _ := filepath.Abs(loomDataDir)
+isAllowed := strings.HasPrefix(absWorkingDir, absLoomDataDir)
+if !isAllowed && strings.HasPrefix(absWorkingDir, "/tmp") {
+    isAllowed = true
 }
 ```
 
-2. **Command Parsing**:
+2. **Blocked System Directories**:
 ```go
-// Extract all paths from command (>, >>, tee, -o, etc.)
-paths := extractAllPaths(command)
-for _, path := range paths {
-    if !isWithinSessionBoundary(path, sessionDir) {
-        return ErrPathNotAllowed
-    }
+// Shell execute blocks commands in sensitive system directories
+func isBlockedWorkingDir(path string) bool {
+    blockedDirs := []string{"/etc", "/bin", "/sbin", "/boot", "/sys", "/proc", ...}
+    // Check exact match or prefix
 }
 ```
 
-3. **Working Directory**:
+3. **Working Directory Default**:
 ```go
-// Default to session artifact directory
-cmd.Dir = sessionArtifactDir
-// Relative paths resolve within session
+// Default to LOOM_SANDBOX_DIR (falls back to LOOM_DATA_DIR)
+workingDir := config.GetLoomSandboxDir()
+// Explicit working_dir param can override
 ```
 
 **Limitations**:
-- **Command parsing heuristics**: May miss complex shell constructs
-- **Future improvement**: Consider seccomp-bpf or sandboxing libraries
+- **Working directory only**: Path restriction validates the working directory, not individual file paths within commands
+- **No command parsing**: Does not parse shell commands for output redirects (>, >>, tee, etc.)
+- **Future improvement**: Consider seccomp-bpf or sandboxing libraries for tighter file-level restrictions
 
 ---
 
@@ -1582,7 +1611,7 @@ COUNT(*) FROM artifacts WHERE session_id = s = 0
 
 ---
 
-**Document Version:** v1.0.2
-**Last Updated:** 2026-01-21
+**Document Version:** v1.2.0
+**Last Updated:** 2026-03-28
 **Diagrams Created By:** ascii-diagram-architect (agent a309de1)
 **Verified:** ✅ All design claims verified against implementation

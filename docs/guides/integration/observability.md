@@ -1,7 +1,7 @@
 
 # Observability Guide
 
-**Version**: v1.0.2
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -17,20 +17,19 @@
   - [Enable Privacy Redaction](#enable-privacy-redaction)
   - [Use No-Op Tracer for Development](#use-no-op-tracer-for-development)
 - [Examples](#examples)
-  - [Example 1: Embedded SQLite Storage](#example-1-embedded-sqlite-storage)
-  - [Example 2: Hawk Service Export](#example-2-hawk-service-export)
-  - [Example 3: Production Configuration](#example-3-production-configuration)
+  - [Example 1: Instrumented Agent](#example-1-instrumented-agent)
+  - [Example 2: Production Configuration](#example-2-production-configuration)
 - [Query Examples](#query-examples)
 - [Troubleshooting](#troubleshooting)
 
 
 ## Overview
 
-Loom provides comprehensive observability with distributed tracing and metrics. Choose from three modes based on your needs:
+Loom provides built-in observability with tracing and metrics collection. Choose from three modes based on your needs:
 
-1. **Embedded Mode**: In-process storage (memory or SQLite) - no external dependencies
-2. **Service Mode**: HTTP export to Hawk or other observability services
-3. **None Mode**: Zero overhead for testing
+1. **Embedded Mode** ✅: In-process storage (memory or SQLite) - no external dependencies
+2. **Service Mode** ✅: HTTP export to Hawk (requires `-tags hawk` build flag)
+3. **None Mode** ✅: Zero overhead for testing
 
 ## Observability Modes
 
@@ -39,20 +38,21 @@ Loom provides comprehensive observability with distributed tracing and metrics. 
 **Use when**: You want local trace storage without external services
 
 **Features**:
-- ✅ Zero external dependencies
+- ✅ Zero external dependencies (always available, no build tags needed)
 - ✅ Memory or SQLite storage options
-- ✅ Query traces with SQL
-- ✅ Offline capability
+- ✅ Query traces with SQL (SQLite storage)
+- ✅ Aggregated metrics (success rate, avg execution time, cost)
+- ✅ Optional SpanExporter attachment for external export
 - ❌ Single-server only (no centralized aggregation)
 
 ### Service Mode
 
-**Use when**: You need centralized observability across multiple servers
+**Use when**: You need to export traces to an external Hawk service
 
 **Features**:
-- ✅ Centralized trace aggregation
-- ✅ Hawk UI for visualization
-- ✅ Multi-server support
+- ✅ HTTP-based trace export to Hawk
+- ✅ Privacy redaction before export
+- ✅ Batch export with retry and exponential backoff
 - ❌ Requires external Hawk service
 - ❌ Requires `-tags hawk` build flag
 
@@ -68,7 +68,7 @@ Loom provides comprehensive observability with distributed tracing and metrics. 
 ## Prerequisites
 
 **For all modes**:
-- Loom v1.0.2+
+- Loom v1.2.0+
 - Build with FTS5 tag: `go build -tags fts5`
 
 **For service mode only**:
@@ -108,7 +108,7 @@ sqlite3 ./traces.db "SELECT * FROM eval_metrics;"
 observability:
   enabled: true
   mode: service
-  hawk_endpoint: http://localhost:9090/v1/traces
+  hawk_endpoint: http://localhost:8080/v1/traces
   hawk_api_key: ${HAWK_API_KEY}
 ```
 
@@ -145,6 +145,7 @@ type HawkConfig struct {
     MaxRetries    int           // Max retry attempts (default: 3)
     RetryBackoff  time.Duration // Initial backoff (default: 1s)
     Privacy       PrivacyConfig // Privacy settings
+    HTTPClient    *http.Client  // Custom HTTP client (optional)
 }
 
 type PrivacyConfig struct {
@@ -154,18 +155,17 @@ type PrivacyConfig struct {
 }
 ```
 
-### YAML Configuration
+### YAML Configuration (looms.yaml)
 
 ```yaml
-apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: my-agent
-  version: "1.0.0"
-spec:
-  observability:
-    enabled: true
-    hawk_endpoint: http://localhost:9090
+# Top-level observability block in looms.yaml
+observability:
+  enabled: true
+  mode: embedded       # embedded, service, or none
+  storage_type: sqlite # memory or sqlite (for embedded mode)
+  sqlite_path: ./traces.db
+  # hawk_endpoint: http://localhost:8080  # for service mode
+  # hawk_api_key: set via keyring (looms config set-key hawk_api_key)
 ```
 
 ## Common Tasks
@@ -216,7 +216,7 @@ Export traces to centralized Hawk service:
 observability:
   enabled: true
   mode: service
-  hawk_endpoint: http://localhost:9090/v1/traces
+  hawk_endpoint: http://localhost:8080/v1/traces
   hawk_api_key: ${HAWK_API_KEY}
 ```
 
@@ -242,10 +242,13 @@ fmt.Printf("Cost: $%.4f\n", response.Usage.CostUSD)
 fmt.Printf("Tokens: %d\n", response.Usage.TotalTokens)
 ```
 
-Query costs in Hawk:
+Query costs in embedded SQLite storage:
 
 ```bash
-hawk query --metric llm.cost --group-by session.id --timerange 24h
+sqlite3 ./traces.db "
+SELECT eval_id, total_tokens, ROUND(total_cost, 4) as total_cost
+FROM eval_metrics ORDER BY total_cost DESC;
+"
 ```
 
 ### Enable Privacy Redaction
@@ -254,7 +257,7 @@ Redact sensitive data before export:
 
 ```go
 tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
-    Endpoint: "http://localhost:9090/v1/traces",
+    Endpoint: "http://localhost:8080/v1/traces",
     Privacy: observability.PrivacyConfig{
         RedactCredentials: true,
         RedactPII:         true,
@@ -279,12 +282,15 @@ Disable tracing without code changes:
 
 ```go
 tracer := observability.NewNoOpTracer()
-agent := loom.NewInstrumentedAgent(backend, llmProvider, tracer)
+agent := builder.NewInstrumentedAgent(backend, llmProvider, tracer)
 ```
 
 ## Examples
 
 ### Example 1: Instrumented Agent
+
+> **Note:** Service mode (NewHawkTracer) requires building with `-tags fts5,hawk`.
+> For embedded mode, use `NewEmbeddedTracer` which is always available with `-tags fts5`.
 
 ```go
 package main
@@ -295,7 +301,7 @@ import (
     "os"
     "time"
 
-    "github.com/teradata-labs/loom"
+    "github.com/teradata-labs/loom/pkg/builder"
     "github.com/teradata-labs/loom/pkg/llm/anthropic"
     "github.com/teradata-labs/loom/pkg/observability"
 )
@@ -303,9 +309,9 @@ import (
 func main() {
     ctx := context.Background()
 
-    // Create tracer
+    // Create tracer (service mode - requires -tags hawk build)
     tracer, err := observability.NewHawkTracer(observability.HawkConfig{
-        Endpoint:      "http://localhost:9090/v1/traces",
+        Endpoint:      "http://localhost:8080/v1/traces",
         BatchSize:     100,
         FlushInterval: 10 * time.Second,
     })
@@ -315,13 +321,13 @@ func main() {
     defer tracer.Close()
 
     // Create LLM provider
-    llm := anthropic.NewClient(anthropic.Config{
+    llmProvider := anthropic.NewClient(anthropic.Config{
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
         Model:  "claude-sonnet-4-5-20250929",
     })
 
-    // Create instrumented agent
-    agent := loom.NewInstrumentedAgent(backend, llm, tracer)
+    // Create instrumented agent (backend must implement fabric.ExecutionBackend)
+    agent := builder.NewInstrumentedAgent(backend, llmProvider, tracer)
 
     // Use agent
     response, err := agent.Chat(ctx, "session-123", "Hello!")
@@ -333,14 +339,18 @@ func main() {
     log.Printf("Cost: $%.4f", response.Usage.CostUSD)
 
     // Flush before exit
-    tracer.Flush(ctx)
+    if err := tracer.Flush(ctx); err != nil {
+        log.Printf("Warning: flush failed: %v", err)
+    }
 }
 ```
 
 ### Example 2: Production Configuration
 
+> **Note:** This example requires building with `-tags fts5,hawk`.
+
 ```go
-tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
+tracer, err := observability.NewHawkTracer(observability.HawkConfig{
     Endpoint:      os.Getenv("HAWK_ENDPOINT"),
     APIKey:        os.Getenv("HAWK_API_KEY"),
     BatchSize:     100,
@@ -366,42 +376,52 @@ tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
         },
     },
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
-## Hawk Query Examples
+## Query Examples
 
-### Cost Analysis
+### Embedded SQLite Queries
+
+When using embedded SQLite storage, query traces directly:
 
 ```bash
-# Total cost by session
-hawk query --metric llm.cost --group-by session.id --timerange 24h
+# View evaluation sessions
+sqlite3 ./traces.db "
+SELECT id, name, status, datetime(created_at, 'unixepoch') as created
+FROM evals ORDER BY created_at DESC LIMIT 10;
+"
 
-# Cost by LLM provider
-hawk query --metric llm.cost --group-by llm.provider --timerange 7d
+# Cost and token analysis per evaluation
+sqlite3 ./traces.db "
+SELECT eval_id, total_runs, successful_runs,
+       ROUND(success_rate, 4) as success_rate,
+       total_tokens, ROUND(total_cost, 4) as total_cost
+FROM eval_metrics;
+"
 
-# Most expensive sessions
-hawk query --metric llm.cost --sort desc --limit 10
+# Slow operations (over 5 seconds)
+sqlite3 ./traces.db "
+SELECT id, query, model, execution_time_ms
+FROM eval_runs
+WHERE execution_time_ms > 5000
+ORDER BY execution_time_ms DESC;
+"
+
+# Error tracking
+sqlite3 ./traces.db "
+SELECT model, COUNT(*) as errors, error_message
+FROM eval_runs
+WHERE success = 0
+GROUP BY model, error_message;
+"
 ```
 
-### Performance Analysis
+### Service Mode (Hawk)
 
-```bash
-# LLM latency by model
-hawk query --metric llm.latency --group-by llm.model --timerange 24h
-
-# Slow tool executions
-hawk query --span tool.execute --where "duration_ms > 5000"
-```
-
-### Error Tracking
-
-```bash
-# LLM error rate
-hawk query --metric llm.errors.total --group-by error.type --timerange 24h
-
-# Failed tool executions
-hawk query --span tool.execute --where "status = error" --timerange 24h
-```
+📋 **Planned**: When using service mode, Hawk provides a web UI for trace visualization and querying. Hawk query CLI is not yet available in Loom.
 
 ## Troubleshooting
 
@@ -409,7 +429,7 @@ hawk query --span tool.execute --where "status = error" --timerange 24h
 
 1. Check endpoint reachability:
    ```bash
-   curl -X POST http://localhost:9090/v1/traces
+   curl -X POST http://localhost:8080/v1/traces
    ```
 
 2. Verify API key (if required):
@@ -428,6 +448,7 @@ Reduce buffer size or flush more frequently:
 
 ```go
 tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
+    Endpoint:      "http://localhost:8080/v1/traces",
     BatchSize:     50,
     FlushInterval: 5 * time.Second,
 })
@@ -439,6 +460,7 @@ Increase retry attempts:
 
 ```go
 tracer, _ := observability.NewHawkTracer(observability.HawkConfig{
+    Endpoint:     "http://localhost:8080/v1/traces",
     MaxRetries:   5,
     RetryBackoff: 2 * time.Second,
 })

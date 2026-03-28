@@ -34,7 +34,7 @@ Architecture docs do NOT answer:
 Focus on **why**, not **how**:
 - ✅ "Memory is segmented into ROM/Kernel/L1/L2 layers to balance context window usage with conversation continuity"
 - ✅ "The tool system uses goroutines for concurrent execution with shared error channels"
-- ✅ "Pattern matching uses TF-IDF cosine similarity to rank domain knowledge relevance"
+- ✅ "Pattern matching uses keyword-based intent classification to rank domain knowledge relevance"
 - ❌ "Call agent.NewAgent() with backend and LLM provider" (that's reference/guide content)
 - ❌ "Run `looms serve --port 50051`" (that's guide content)
 
@@ -719,10 +719,10 @@ How fast? Under what conditions?
 **Breakdown**:
 - File watch notification: 10-15ms
 - YAML parsing: 45-60ms
-- TF-IDF index rebuild: 20-40ms
+- Pattern index rebuild: 20-40ms
 - Atomic swap: <1ms
 
-**Scaling**: O(n log n) where n = pattern count (TF-IDF indexing dominates)
+**Scaling**: O(n) where n = pattern count (pattern index build dominates)
 
 **Optimization Considered**: Incremental index updates
 - Would reduce latency to ~30ms

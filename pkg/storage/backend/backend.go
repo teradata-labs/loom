@@ -23,6 +23,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 )
@@ -69,6 +70,14 @@ type StorageDetailProvider interface {
 	// StorageDetails returns the current migration version and connection pool
 	// statistics. poolStats may be nil for non-pooled backends (e.g., SQLite).
 	StorageDetails(ctx context.Context) (migrationVersion int32, poolStats *loomv1.PoolStats, err error)
+}
+
+// GraphMemoryProvider is an optional interface that StorageBackend implementations
+// may satisfy to provide graph-backed episodic memory.
+// Only backends with the graph_memory migration applied implement this.
+type GraphMemoryProvider interface {
+	// GraphMemoryStore returns the graph memory store, or nil if not available.
+	GraphMemoryStore() memory.GraphMemoryStore
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.

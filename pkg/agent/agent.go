@@ -25,6 +25,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/patterns"
@@ -642,17 +643,20 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		romContent = LoadROMContent(a.config.Rom, backendPath)
 	}
 
+	// Resolve the base prompt from config, prompt registry, or fallback
+	var basePrompt string
+
 	// If agent has a custom system prompt in config, use it (takes priority)
 	if a.config != nil && a.config.SystemPrompt != "" {
-		// Combine ROM + System Prompt
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
+			basePrompt = romContent + "\n\n---\n\n" + a.config.SystemPrompt
+		} else {
+			basePrompt = a.config.SystemPrompt
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// Try loading from PromptRegistry as fallback
-	if a.prompts != nil {
+	if basePrompt == "" && a.prompts != nil {
 		patternCount := 0
 		if a.orchestrator != nil && a.orchestrator.GetLibrary() != nil {
 			patternCount = len(a.orchestrator.GetLibrary().ListAll())
@@ -679,40 +683,80 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 		if streamingSupported {
 			prompt, err := a.prompts.Get(ctx, "agent.system_with_streaming", vars)
 			if err == nil && prompt != "" {
-				return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+				basePrompt = prompt
 			}
-			// Fall through to standard prompt if streaming prompt not found
 		}
 
-		// Try loading system prompt with patterns if pattern library is available
-		prompt, err := a.prompts.Get(ctx, "agent.system", vars)
-		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+		if basePrompt == "" {
+			// Try loading system prompt with patterns if pattern library is available
+			prompt, err := a.prompts.Get(ctx, "agent.system", vars)
+			if err == nil && prompt != "" {
+				basePrompt = prompt
+			}
 		}
 
-		// Fall back to basic system prompt
-		prompt, err = a.prompts.Get(ctx, "agent.system_basic", vars)
-		if err == nil && prompt != "" {
-			return formatSystemPromptWithDatetime(prompt, a.workflowCommContext)
+		if basePrompt == "" {
+			// Fall back to basic system prompt
+			prompt, err := a.prompts.Get(ctx, "agent.system_basic", vars)
+			if err == nil && prompt != "" {
+				basePrompt = prompt
+			}
 		}
 	}
 
-	// Fall back to config
-	if a.config.SystemPrompt != "" {
-		// Combine ROM + System Prompt
+	// Fall back to config (second check for non-nil config without SystemPrompt already set)
+	if basePrompt == "" && a.config.SystemPrompt != "" {
 		if romContent != "" {
-			return formatSystemPromptWithDatetime(romContent+"\n\n---\n\n"+a.config.SystemPrompt, a.workflowCommContext)
+			basePrompt = romContent + "\n\n---\n\n" + a.config.SystemPrompt
+		} else {
+			basePrompt = a.config.SystemPrompt
 		}
-		return formatSystemPromptWithDatetime(a.config.SystemPrompt, a.workflowCommContext)
 	}
 
 	// If we have ROM but no system prompt, just use ROM
-	if romContent != "" {
-		return formatSystemPromptWithDatetime(romContent, a.workflowCommContext)
+	if basePrompt == "" && romContent != "" {
+		basePrompt = romContent
 	}
 
 	// Final fallback - minimal instruction
-	return formatSystemPromptWithDatetime(`Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`, a.workflowCommContext)
+	if basePrompt == "" {
+		basePrompt = `Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return.`
+	}
+
+	// Append graph memory instructions if graph memory is enabled
+	basePrompt += a.graphMemoryPromptSupplement()
+
+	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
+}
+
+// graphMemoryPromptSupplement returns instructions for agents with graph memory enabled.
+// Returns empty string when graph memory is not available.
+func (a *Agent) graphMemoryPromptSupplement() string {
+	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
+		return ""
+	}
+	return `
+
+---
+
+GRAPH MEMORY
+
+You have a graph_memory tool for persistent, cross-session knowledge.
+
+Store: remember — save facts, decisions, preferences, experiences, or failures with salience (0-1).
+Retrieve: recall — search by keywords, filter by type or tags, ranked by salience.
+Update: supersede — correct outdated info (preserves lineage). consolidate — merge related memories.
+Remove: forget — soft-delete a memory.
+Graph: relate — link entities (people, tools, projects) with typed relationships (USES, WORKS_ON, KNOWS_ABOUT, etc.). entities — browse the knowledge graph.
+Context: context_for — get an entity's full profile, relationships, and ranked memories within a token budget.
+
+When to use:
+- User shares identity, preferences, or project context → remember it.
+- User corrects something you stored → supersede the old memory.
+- User asks "what do you know about X" → recall or context_for.
+- You notice related entities → relate them.
+- Keep salience proportional to importance: critical decisions 0.8-1.0, casual facts 0.3-0.5.
+- Always include a short summary for budget-constrained retrieval.`
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
@@ -880,6 +924,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -1068,6 +1113,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	// (after first L2 swap event)
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
+	a.checkAndRegisterGraphMemoryTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -1374,6 +1420,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 	}
+
+	// Inject graph memory context (if enabled and available).
+	a.injectGraphMemoryContext(ctx, session)
 
 	// Get available tools
 	tools := a.tools.ListTools()
@@ -2421,6 +2470,95 @@ func (a *Agent) checkAndRegisterSessionMemoryTool(ctx context.Context) {
 	// The tool's discovery is natural - agent sees it in tool list when needed
 }
 
+// checkAndRegisterGraphMemoryTool implements progressive disclosure for the graph_memory tool.
+// Registers the tool immediately if a graph memory store is configured and enabled.
+func (a *Agent) checkAndRegisterGraphMemoryTool() {
+	if a.tools.IsRegistered("graph_memory") {
+		return
+	}
+	if a.graphMemoryStore == nil {
+		return
+	}
+	if a.graphMemoryConfig != nil && !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.config.Name))
+	a.tools.Register(tool)
+}
+
+// graphMemoryTokenBudget returns the token budget for graph memory context injection.
+// Follows the same pattern as SegmentedMemory's L1 budget.
+func (a *Agent) graphMemoryTokenBudget() int {
+	if a.graphMemoryConfig == nil {
+		return 0
+	}
+	if a.graphMemoryConfig.MaxContextTokens > 0 {
+		return int(a.graphMemoryConfig.MaxContextTokens)
+	}
+	pct := a.graphMemoryConfig.ContextBudgetPercent
+	if pct == 0 {
+		pct = 10 // default 10%
+	}
+	if a.config.MaxContextTokens > 0 {
+		return a.config.MaxContextTokens * int(pct) / 100
+	}
+	// Default: 200K context → 10% = 20K tokens
+	return 200000 * int(pct) / 100
+}
+
+// injectGraphMemoryContext queries graph memory for the current topic and injects
+// relevant context into the conversation as a system message.
+func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
+	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
+		return
+	}
+
+	budget := a.graphMemoryTokenBudget()
+	if budget <= 0 {
+		return
+	}
+
+	// Extract topic from recent user messages.
+	topic := ""
+	msgs := session.GetMessages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && msgs[i].Content != "" {
+			topic = msgs[i].Content
+			if len(topic) > 200 {
+				topic = topic[:200]
+			}
+			break
+		}
+	}
+	if topic == "" {
+		return
+	}
+
+	// Query graph memory for context.
+	recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+		AgentID:    a.config.Name,
+		EntityName: a.config.Name,
+		Topic:      topic,
+		MaxTokens:  budget,
+	})
+	if err != nil || recall == nil || len(recall.Memories) == 0 {
+		return
+	}
+
+	// Format and inject as a system-level context note.
+	content := recall.Format()
+	if content == "" {
+		return
+	}
+
+	// Add as a system message so it appears in context without polluting conversation.
+	session.AddMessage(ctx, types.Message{
+		Role:    "system",
+		Content: "[Graph Memory Context]\n" + content,
+	})
+}
+
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
 	// Handle execution errors (tool didn't run)
 	if err != nil {
@@ -3187,6 +3325,14 @@ func WithReferenceStore(store communication.ReferenceStore) Option {
 func WithCommunicationPolicy(policy *communication.PolicyManager) Option {
 	return func(a *Agent) {
 		a.commPolicy = policy
+	}
+}
+
+// WithGraphMemoryStore sets the graph-backed episodic memory store.
+func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMemoryConfig) Option {
+	return func(a *Agent) {
+		a.graphMemoryStore = store
+		a.graphMemoryConfig = config
 	}
 }
 
