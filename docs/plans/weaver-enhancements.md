@@ -1,7 +1,9 @@
+> **Status: COMPLETED** — All enhancements implemented. This plan is archived for historical reference.
+
 # Weaver Enhancements Implementation Plan
 
 **Branch**: `weaver-agent-plan-mode`
-**Version**: v1.1.0
+**Version**: v1.2.0
 **Status**: ✅ Implemented
 
 ## Overview
@@ -43,53 +45,34 @@ if isActive {
 
 **Key Additions:**
 
-#### Guidelines Section
-- Extended to cover agent/workflow/skill YAMLs
-- Updated file discovery to include skills directory
-- Added LLM-agnostic skill creation documentation
+#### Tools Section
+- Extended to cover agent/workflow/skill YAMLs (agent_management tool description)
 
 #### New: Skill Creation Section
 ```yaml
 ## Skill Creation
-
-- Skills are LLM-agnostic prompt injections that enhance agents with domain expertise
-- Use agent_management with action="create_skill" to create new skills
-- Use agent_management with action="update_skill" to modify existing skills
-- Skills automatically validate and write to $LOOM_DATA_DIR/skills/
-- Skill structure: apiVersion: loom/v1, kind: Skill, metadata (name, description), spec (trigger, prompt, tools)
+- Use agent_management with action="create_skill" / action="update_skill"
+- Skill structure: apiVersion: loom/v1, kind: Skill, metadata (name, domain), prompt (instructions)
 - Activation modes: MANUAL (/command), AUTO (keyword-based), HYBRID (both), ALWAYS (every turn)
-- Skills can be configured in agent spec.skills section to enable them for specific agents
+- **ALWAYS ask before creating a new skill. Never create skills without user consent.**
 ```
 
-#### New: Skill Recommendation Guidelines
-```yaml
-## Skill Recommendation Guidelines
+> Note: The consent requirement is embedded within the Skill Creation section, not as a separate "Skill Recommendation Guidelines" section. Detailed skill recommendation logic lives in `prompts/metaagent/skills_catalog.yaml` and `prompts/metaagent/agent_plan_mode.yaml`, not in the weaver system prompt itself.
 
-**ALWAYS ask before creating a new skill. Never create skills without user consent.**
-
-When recommending a new skill:
-1. Explain what the skill would do (specific capabilities)
-2. Explain why it's beneficial (automation, expertise injection, consistency)
-3. Explain how it activates (slash command, keywords, or always-on)
-4. Give user clear choice: "Would you like me to create this skill? (yes/skip)"
-```
-
-**Example template provided in prompt for skill recommendations.**
-
-#### Updated Workflow Steps
+#### Updated Workflow Steps (matches `embedded/weaver.yaml.tmpl`)
 1. On first interaction: Offer /agent-plan mode vs quick start
-2. Assess intent AND recommend skills based on problem domain
-3. **If needed skill doesn't exist**: ASK before creating with clear reasoning
-4. Multi-agent workflow determination
-5. Tool discovery via tool_search
-6. Agent creation with agent_management
-7. **Configure recommended skills** in agent's spec.skills section
-8. Workflow creation (if multi-agent)
-9. Validation and error handling
-10. Documentation with skill activation commands
-11. Verification via agent_management list
-12. Show exact loom commands
-13. Remind user they can return for changes
+2. Assess intent and recommend relevant skills (SQL/Database, Code quality, Data validation, Multi-agent). If needed skill doesn't exist: ASK before creating
+3. If multi-agent, determine workflow type (Coordination vs Orchestration)
+4. Use shell_execute to find relevant example agents as inspiration
+5. Use tool_search to discover tools for agents
+6. Create agents with agent_management (action="create_agent") - one call per agent
+7. **Configure skills** in agent's spec.skills section (enabled: true)
+8. Create workflow with agent_management (action="create_workflow") referencing agents
+9. Fix validation errors using returned error messages, then retry
+10. Create user docs in workspace showing how to use what you built
+11. Verify with agent_management (action="list")
+12. Use shell_execute to run `loom --help` for exact run commands
+13. Let user know they can return for changes
 
 ### 3. Agent Plan Mode Guide
 
@@ -158,7 +141,7 @@ IF user mentions:
 
 ### 5. Skill Creation Backend
 
-**File**: `pkg/shuttle/builtin/agent_management_skill.go` (248 lines, NEW)
+**File**: `pkg/shuttle/builtin/agent_management_skill.go` (246 lines, NEW)
 
 **Core Functions:**
 
@@ -199,13 +182,15 @@ func (t *AgentManagementTool) writeSkillFile(name, yamlContent string, isUpdate 
 - Checks create vs update semantics:
   - create: Error if file exists
   - update: Error if file doesn't exist
-- Writes file with 0644 permissions
+- Writes file with 0600 permissions (owner read/write only)
 - Returns result with file path and success message
 
 **File Modified**: `pkg/shuttle/builtin/agent_management.go`
-- Updated InputSchema enum: added "create_skill", "update_skill"
-- Added routing cases for skill actions (lines 143-148)
-- Updated type validation to include "skill"
+- Updated InputSchema WithEnum: added "create_skill", "update_skill" (line 89)
+- Added routing cases for skill actions in Execute switch (lines 145-152)
+- Updated type validation to accept "agent", "workflow", or "skill" (line 168)
+
+> ⚠️ Known gap: The `read`, `list`, `validate`, and `delete` handlers only branch on "agent" vs everything-else (→workflows). Passing `type: "skill"` is accepted by validation but incorrectly routes to the workflows directory.
 
 ### 6. Skill Creation Flow
 
@@ -242,10 +227,10 @@ func (t *AgentManagementTool) writeSkillFile(name, yamlContent string, isUpdate 
 ### Files Created
 - `prompts/metaagent/agent_plan_mode.yaml` - 5-phase planning guide (247 lines)
 - `prompts/metaagent/skills_catalog.yaml` - Skill recommendation decision tree (226 lines)
-- `pkg/shuttle/builtin/agent_management_skill.go` - Skill CRUD implementation (248 lines)
+- `pkg/shuttle/builtin/agent_management_skill.go` - Skill CRUD implementation (246 lines)
 - `docs/plans/weaver-enhancements.md` - This technical plan document
 
-**Total New Lines**: 721+ lines (excluding documentation)
+**Total New Lines**: 719 lines across 3 new source files (excluding documentation and modifications to existing files)
 
 ## Testing
 
@@ -301,14 +286,14 @@ go test -tags fts5 ./pkg/shuttle/builtin/... -v -run TestAgentManagement
 ```
 
 **Test Coverage:**
-- agent_management.go: Access control, create/update/read/list/validate/delete for agents and workflows
-- Skill creation functions follow same validation patterns
-- Skill CRUD logic in agent_management_skill.go (248 lines) needs unit tests (create/update/validation paths)
+- ✅ agent_management.go: Access control, create/update/read/list/validate/delete for agents and workflows (agent_management_test.go, agent_management_structured_test.go)
+- ⚠️ Skill creation functions follow same validation patterns but have no dedicated tests
+- 🚧 Skill CRUD logic in agent_management_skill.go (246 lines) needs unit tests (create/update/validation paths)
 
 ## Commits
 
 ```bash
-git log --oneline -6
+git log --oneline -7
 
 74ea9c6 docs: Update WEAVER_ENHANCEMENTS.md for opt-in skill creation
 01569c6 feat(weaver): Make skill creation opt-in with clear reasoning
@@ -336,20 +321,21 @@ acf3b35 feat(weaver): Add /agent-plan mode and skills-based recommendations
 - Now accepts "agent", "workflow", "skill"
 
 **Behavior:**
-- Skills write to $LOOM_DATA_DIR/skills/
+- Skills write to $LOOM_DATA_DIR/skills/ (via `create_skill` and `update_skill` actions only)
 - Validation uses existing validation.ValidateYAMLContent
 - Same error handling as agent/workflow operations
+
+> ⚠️ The default case error message in `Execute()` (line 195) does not list `create_skill`/`update_skill` as valid actions. This is cosmetic -- the actions work, but an invalid action error message is incomplete.
 
 ## Configuration Changes
 
 ### Weaver Agent Config
 
-**New Workflow Steps:**
+**New Workflow Steps (13 total, see `embedded/weaver.yaml.tmpl`):**
 - Step 1: Offer /agent-plan mode vs quick start
-- Step 2: Assess intent + recommend skills
-- Step 3 (NEW): Ask before creating custom skills
-- Step 7 (NEW): Configure skills in agent spec.skills section
-- Step 10: Include skill activation commands in documentation
+- Step 2 (UPDATED): Assess intent + recommend skills + ask before creating missing skills
+- Step 7 (NEW): Configure skills in agent spec.skills section (enabled: true)
+- Step 10: Create user docs in workspace showing how to use what you built
 
 **Skill Configuration Format:**
 ```yaml
@@ -377,17 +363,19 @@ spec:
 
 1. **Skill catalog is static** - Defined in prompts/metaagent/skills_catalog.yaml, not dynamically generated
 2. **No skill editing UI** - Skills must be edited via YAML files
-3. **No skill deletion** - Currently only create/update supported
+3. **Skill read/list/delete routes to wrong directory** - Type validation accepts "skill" for read/list/validate/delete actions, but the handlers only branch on "agent" vs else (→workflows). Passing `type: "skill"` silently looks in the workflows directory instead of skills. Only `create_skill` and `update_skill` (dedicated actions) correctly use `$LOOM_DATA_DIR/skills/`.
 4. **Pattern injection timing** - Skills use existing pattern system, limited to configured injection points
+5. **No unit tests for skill CRUD** - `agent_management_skill.go` has no dedicated test file
 
 ## Future Enhancements
 
+- [ ] Fix read/list/validate/delete handlers to properly route `type: "skill"` to `$LOOM_DATA_DIR/skills/`
+- [ ] Add unit tests for skill CRUD in agent_management_skill.go
 - [ ] Skill discovery from $LOOM_DATA_DIR/skills/ directory
 - [ ] Skill testing framework
 - [ ] Skill versioning
 - [ ] Skill templates library
 - [ ] Metrics on skill usage and effectiveness
-- [ ] Skill deletion via agent_management
 - [ ] Skill marketplace/sharing
 
 ## References

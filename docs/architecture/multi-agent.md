@@ -1,11 +1,11 @@
 
 # Multi-Agent Orchestration Architecture
 
-Comprehensive architecture of Loom's multi-agent orchestration system with 7 workflow patterns, fluent API, Kubernetes-style YAML configuration, and tri-modal communication for coordinating multiple agents.
+Architecture of Loom's multi-agent orchestration system with 9 workflow patterns, fluent API, Kubernetes-style YAML configuration, and tri-modal communication for coordinating multiple agents.
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -45,14 +45,16 @@ Comprehensive architecture of Loom's multi-agent orchestration system with 7 wor
 
 The Multi-Agent Orchestration System coordinates **multiple agents using workflow patterns** that enable complex multi-agent behaviors: debate, pipeline execution, parallel processing, fork-join synchronization, conditional routing, and iterative refinement with autonomous restart.
 
-**7 Workflow Patterns**:
-1. **Pipeline**: Sequential agent chaining (A → B → C)
-2. **Fork-Join**: Parallel execution with merge (A, B, C → merge)
+**9 Workflow Patterns**:
+1. **Pipeline**: Sequential agent chaining (A -> B -> C)
+2. **Fork-Join**: Parallel execution with merge (A, B, C -> merge)
 3. **Parallel**: Independent parallel tasks (no merge required)
 4. **Conditional**: Dynamic routing based on classifier agent output
 5. **Debate**: Multi-round consensus building with optional moderator
-6. **Swarm**: Collective intelligence with emergent behavior
-7. **Iterative Pipeline**: Self-correcting pipeline with restart coordination
+6. **Swarm**: Collective voting with configurable strategies (majority, supermajority, ranked choice)
+7. **Pair Programming**: Driver/navigator role-based code generation and review
+8. **Teacher-Student**: Knowledge transfer from expert to learner
+9. **Iterative Pipeline**: Self-correcting pipeline with restart coordination
 
 The system provides **both programmatic (fluent API) and declarative (Kubernetes-style YAML)** workflow definition, with full observability (Hawk tracing), tri-modal communication (broadcast, queue, shared memory), and cost tracking per agent.
 
@@ -61,7 +63,7 @@ The system provides **both programmatic (fluent API) and declarative (Kubernetes
 
 ## Design Goals
 
-1. **Composable Patterns**: Mix and match 7 patterns for complex workflows
+1. **Composable Patterns**: Mix and match 9 patterns for complex workflows
 2. **Fluent API**: Type-safe builder pattern for programmatic construction
 3. **Kubernetes-Style YAML**: Declarative workflows (apiVersion/kind/metadata/spec)
 4. **Zero External Dependencies**: Single-process multi-agent coordination
@@ -90,7 +92,7 @@ graph TB
         subgraph Orchestrator["Orchestrator (Pattern Coordinator)"]
             Registry[Agent Registry<br/>lookup by ID]
             Builders[Pattern Builders<br/>fluent API]
-            Executors[Pattern Executors<br/>7 types]
+            Executors[Pattern Executors<br/>9 types]
             YAMLLoader[YAML Config Loader<br/>Kubernetes-style]
         end
 
@@ -102,7 +104,6 @@ graph TB
 
         subgraph CollabEngine["Collaboration Engine (Advanced Patterns)"]
             Debate[Debate<br/>multi-round consensus]
-            Swarm[Swarm<br/>collective intelligence]
             PairProg[Pair Programming<br/>driver/navigator]
             TeacherStudent[Teacher-Student<br/>knowledge transfer]
         end
@@ -154,15 +155,15 @@ graph TB
 │  │              Pattern Builders (Fluent API)                   │         │  │
 │  │                                                              │         │  │
 │  │  DebateBuilder:                                              │         │  │
-│  │    .WithAgents(ids...)                                       │         │  │
+│  │    .WithAgents(agents...)                                     │         │  │
 │  │    .WithRounds(n)                                            │         │  │
 │  │    .WithMergeStrategy(strategy)                              │         │  │
 │  │    .Execute(ctx) → Result                                    │         │  │
 │  │                                                              │         │  │
 │  │  PipelineBuilder:                                            │         │  │
-│  │    .WithStage(agentID, promptTemplate)                       │         │  │
-│  │    .WithValidation(prompt)                                   │         │  │
-│  │    .PassFullHistory(bool)                                    │         │  │
+│  │    .WithStage(agent, promptTemplate)                         │         │  │
+│  │    .WithStageValidation(agent, promptTemplate, validation)   │         │  │
+│  │    .WithFullHistory()                                        │         │  │
 │  │    .Execute(ctx) → Result                                    │         │  │
 │  │                                                              │         │  │
 │  │  ForkJoinBuilder, ParallelBuilder, ConditionalBuilder...     │         │  │
@@ -170,7 +171,7 @@ graph TB
 │                            │                                                 │
 │                            ▼                                                 │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │              Pattern Executors (7 types)                     │         │  │
+│  │              Pattern Executors (9 types)                     │         │  │
 │  │                                                              │         │  │
 │  │  PipelineExecutor:                                           │         │  │
 │  │    1. Validate all agents exist                              │         │  │
@@ -187,7 +188,8 @@ graph TB
 │  │    4. Apply merge strategy (voting, consensus, summary)      │         │  │
 │  │    5. Return merged result                                   │         │  │
 │  │                                                              │         │  │
-│  │  ParallelExecutor, ConditionalExecutor, IterativeExecutor    │         │  │
+│  │  ParallelExecutor, ConditionalExecutor, IterativeExecutor,   │         │  │
+│  │  SwarmExecutor                                               │         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                            │                                                 │
 │                            ▼                                                 │
@@ -221,10 +223,6 @@ graph TB
 │  │    - Each round sees previous responses                      │         │  │
 │  │    - Optional moderator agent                                │         │  │
 │  │                                                              │         │  │
-│  │  Swarm:                                                      │         │  │
-│  │    - Collective intelligence                                 │         │  │
-│  │    - Emergent behavior from simple rules                     │         │  │
-│  │                                                              │         │  │
 │  │  Pair Programming:                                           │         │  │
 │  │    - Driver/Navigator roles                                  │         │  │
 │  │    - Turn-based code generation and review                   │         │  │
@@ -243,7 +241,7 @@ graph TB
 
 **Responsibility**: Coordinate multiple agents using workflow patterns with fluent API and YAML configuration.
 
-**Core Structure** (`pkg/orchestration/orchestrator.go:24`):
+**Core Structure** (`pkg/orchestration/orchestrator.go:46`):
 ```go
 type Orchestrator struct {
     mu sync.RWMutex
@@ -271,6 +269,12 @@ type Orchestrator struct {
 
     // SharedMemory for inter-stage data sharing (optional)
     sharedMemory *communication.SharedMemoryStore
+
+    // Progress callback for workflow execution updates (optional)
+    progressCallback WorkflowProgressCallback
+
+    // LLM concurrency semaphore to limit parallel LLM calls (optional)
+    llmSemaphore chan struct{}
 }
 ```
 
@@ -318,33 +322,45 @@ orchestrator.Conditional(classifier, prompt) → *ConditionalBuilder
 **Pattern Routing Algorithm**:
 ```go
 func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.WorkflowPattern) (*loomv1.WorkflowResult, error) {
-    // Route to appropriate executor based on pattern type
-    switch p := pattern.Pattern.(type) {
+    // Route collaboration patterns to collaboration engine first
+    switch pattern.Pattern.(type) {
     case *loomv1.WorkflowPattern_Debate,
-         *loomv1.WorkflowPattern_Swarm,
          *loomv1.WorkflowPattern_PairProgramming,
          *loomv1.WorkflowPattern_TeacherStudent:
         // Collaboration patterns → collaboration engine
         return o.collaborationEngine.Execute(ctx, pattern)
+    }
 
+    // Route to orchestration executors (each takes a workflowID for session determinism)
+    switch p := pattern.Pattern.(type) {
     case *loomv1.WorkflowPattern_ForkJoin:
-        executor := NewForkJoinExecutor(o, p.ForkJoin)
+        wfID := o.resolveWorkflowID("fork-join", pattern)
+        executor := NewForkJoinExecutor(o, p.ForkJoin, wfID)
         return executor.Execute(ctx)
 
     case *loomv1.WorkflowPattern_Pipeline:
-        executor := NewPipelineExecutor(o, p.Pipeline)
+        wfID := o.resolveWorkflowID("pipeline", pattern)
+        executor := NewPipelineExecutor(o, p.Pipeline, wfID)
         return executor.Execute(ctx)
 
     case *loomv1.WorkflowPattern_Parallel:
-        executor := NewParallelExecutor(o, p.Parallel)
+        wfID := o.resolveWorkflowID("parallel", pattern)
+        executor := NewParallelExecutor(o, p.Parallel, wfID)
         return executor.Execute(ctx)
 
     case *loomv1.WorkflowPattern_Conditional:
-        executor := NewConditionalExecutor(o, p.Conditional)
+        wfID := o.resolveWorkflowID("conditional", pattern)
+        executor := NewConditionalExecutor(o, p.Conditional, wfID)
         return executor.Execute(ctx)
 
     case *loomv1.WorkflowPattern_Iterative:
-        executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus)
+        wfID := o.resolveWorkflowID("iterative", pattern)
+        executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
+        return executor.Execute(ctx)
+
+    case *loomv1.WorkflowPattern_Swarm:
+        wfID := o.resolveWorkflowID("swarm", pattern)
+        executor := NewSwarmExecutor(o, p.Swarm, wfID)
         return executor.Execute(ctx)
 
     default:
@@ -356,7 +372,7 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 **Rationale**:
 - **Two-level registry**: Local cache for workflow-specific agents, global registry for server-wide lookup
 - **Fluent API**: Type-safe builder pattern prevents invalid workflow construction
-- **Pattern routing**: Collaboration patterns use separate engine (debate, swarm), orchestration patterns use dedicated executors
+- **Pattern routing**: Collaboration patterns (debate, pair programming, teacher-student) use separate engine, orchestration patterns (pipeline, fork-join, parallel, conditional, iterative, swarm) use dedicated executors
 - **Communication integration**: Optional MessageBus and SharedMemory for iterative workflows with autonomous restart
 
 
@@ -373,8 +389,11 @@ type PipelineBuilder struct {
     passFullHistory bool
 }
 
-// Fluent API chain
-func (b *PipelineBuilder) WithStage(agentID, promptTemplate string) *PipelineBuilder {
+// Fluent API chain -- first parameter is *agent.Agent, not string.
+// The builder auto-generates an agent ID from the pointer address.
+func (b *PipelineBuilder) WithStage(ag *agent.Agent, promptTemplate string) *PipelineBuilder {
+    agentID := fmt.Sprintf("pipeline_agent_%p", ag)
+    b.orchestrator.RegisterAgent(agentID, ag)
     b.stages = append(b.stages, &loomv1.PipelineStage{
         AgentId:        agentID,
         PromptTemplate: promptTemplate,
@@ -382,8 +401,9 @@ func (b *PipelineBuilder) WithStage(agentID, promptTemplate string) *PipelineBui
     return b
 }
 
-func (b *PipelineBuilder) PassFullHistory(enable bool) *PipelineBuilder {
-    b.passFullHistory = enable
+// WithFullHistory enables passing full history to each stage (no parameter).
+func (b *PipelineBuilder) WithFullHistory() *PipelineBuilder {
+    b.passFullHistory = true
     return b
 }
 
@@ -403,12 +423,15 @@ func (b *PipelineBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, 
 
 **Usage Example**:
 ```go
+// Template placeholders use strings.ReplaceAll, not text/template:
+//   {{previous}} = previous stage output
+//   {{history}}  = all previous outputs
+// There is no {{initial}} placeholder; the initial prompt is passed to Pipeline().
 result, err := orchestrator.
     Pipeline("Design a new feature").
-    WithStage("architect", "Create architecture for: {{.initial}}").
-    WithStage("implementer", "Implement: {{.previous}}").
-    WithStage("tester", "Test: {{.previous}}").
-    PassFullHistory(false).
+    WithStage(architectAgent, "Create architecture for this: {{previous}}").
+    WithStage(implementerAgent, "Implement: {{previous}}").
+    WithStage(testerAgent, "Test: {{previous}}").
     Execute(ctx)
 ```
 
@@ -419,10 +442,17 @@ type ForkJoinBuilder struct {
     prompt        string
     agentIDs      []string
     mergeStrategy loomv1.MergeStrategy
+    timeoutSecs   int32
 }
 
-func (b *ForkJoinBuilder) WithAgents(agentIDs ...string) *ForkJoinBuilder {
-    b.agentIDs = append(b.agentIDs, agentIDs...)
+// WithAgents takes *agent.Agent pointers, not strings.
+// The builder auto-generates agent IDs from pointer addresses.
+func (b *ForkJoinBuilder) WithAgents(agents ...*agent.Agent) *ForkJoinBuilder {
+    for _, ag := range agents {
+        agentID := fmt.Sprintf("fork_join_agent_%p", ag)
+        b.orchestrator.RegisterAgent(agentID, ag)
+        b.agentIDs = append(b.agentIDs, agentID)
+    }
     return b
 }
 
@@ -436,9 +466,10 @@ func (b *ForkJoinBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, 
     pattern := &loomv1.WorkflowPattern{
         Pattern: &loomv1.WorkflowPattern_ForkJoin{
             ForkJoin: &loomv1.ForkJoinPattern{
-                Prompt:        b.prompt,
-                AgentIds:      b.agentIDs,
-                MergeStrategy: b.mergeStrategy,
+                Prompt:         b.prompt,
+                AgentIds:       b.agentIDs,
+                MergeStrategy:  b.mergeStrategy,
+                TimeoutSeconds: b.timeoutSecs,
             },
         },
     }
@@ -461,8 +492,9 @@ func (b *ConditionalBuilder) When(condition string, workflow *loomv1.WorkflowPat
     return b
 }
 
-func (b *ConditionalBuilder) Otherwise(workflow *loomv1.WorkflowPattern) *ConditionalBuilder {
-    b.defaultBranch = workflow
+// Default (not "Otherwise") sets the default branch.
+func (b *ConditionalBuilder) Default(pattern *loomv1.WorkflowPattern) *ConditionalBuilder {
+    b.defaultBranch = pattern
     return b
 }
 ```
@@ -483,6 +515,7 @@ func (b *ConditionalBuilder) Otherwise(workflow *loomv1.WorkflowPattern) *Condit
 type PipelineExecutor struct {
     orchestrator *Orchestrator
     pattern      *loomv1.PipelinePattern
+    workflowID   string
 }
 
 func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
@@ -537,7 +570,8 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
         AgentResults: allResults,
         MergedOutput: stageOutputs[len(stageOutputs)-1],
         DurationMs:   time.Since(startTime).Milliseconds(),
-        Cost:         e.calculateCost(allResults),
+        Cost:         e.calculateCost(allResults),  // *WorkflowCost (not CostBreakdown)
+        ModelsUsed:   modelsUsed,
     }, nil
 }
 ```
@@ -567,10 +601,11 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
             }
 
             // Execute agent with same prompt
-            output, err := agent.Generate(ctx, e.pattern.Prompt)
+            // agent.Chat returns (*Response, error)
+            response, err := agent.Chat(ctx, sessionID, e.pattern.Prompt)
             resultsCh <- agentResult{
                 agentID: id,
-                result:  &loomv1.AgentResult{AgentId: id, Output: output},
+                result:  &loomv1.AgentResult{AgentId: id, Output: response.Content},
                 err:     err,
             }
         }(agentID)
@@ -596,7 +631,7 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
     }
 
     return &loomv1.WorkflowResult{
-        PatternType:  "fork-join",
+        PatternType:  "fork_join",
         AgentResults: results,
         MergedOutput: mergedOutput,
     }, nil
@@ -655,7 +690,7 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 
 **Responsibility**: Load Kubernetes-style YAML workflows with validation and proto conversion.
 
-**Workflow YAML Structure** (`pkg/orchestration/workflow_config.go:25`):
+**Workflow YAML Structure** (`pkg/orchestration/workflow_config.go:29`):
 ```yaml
 apiVersion: loom/v1
 kind: Workflow
@@ -671,15 +706,15 @@ spec:
   initial_prompt: "Analyze sales data"
   stages:
     - agent_id: schema-agent
-      prompt_template: "Discover schema: {{.initial}}"
+      prompt_template: "Discover schema: {{previous}}"
     - agent_id: optimizer-agent
-      prompt_template: "Optimize query: {{.previous}}"
+      prompt_template: "Optimize query: {{previous}}"
     - agent_id: executor-agent
-      prompt_template: "Execute: {{.previous}}"
+      prompt_template: "Execute: {{previous}}"
   pass_full_history: false
 ```
 
-**Loading Algorithm** (`pkg/orchestration/workflow_config.go:57`):
+**Loading Algorithm** (`pkg/orchestration/workflow_config.go:71`):
 ```go
 func LoadWorkflowFromYAML(path string) (*loomv1.WorkflowPattern, error) {
     // 1. Read file (check permissions)
@@ -784,25 +819,32 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 **Engine Structure** (`pkg/collaboration/engine.go`):
 ```go
 type Engine struct {
-    agentProvider AgentProvider  // Lookup agents by ID
-    tracer        observability.Tracer
-    logger        *zap.Logger
+    provider       AgentProvider  // Lookup agents by ID
+    tracer         observability.Tracer
+    logger         *zap.Logger
+    debater        *DebateOrchestrator
+    swarm          *SwarmOrchestrator
+    pairProgrammer *PairProgrammingOrchestrator
+    teacherStudent *TeacherStudentOrchestrator
 }
 
 func (e *Engine) Execute(ctx context.Context, pattern *loomv1.WorkflowPattern) (*loomv1.WorkflowResult, error) {
     switch p := pattern.Pattern.(type) {
     case *loomv1.WorkflowPattern_Debate:
-        return e.executeDebate(ctx, p.Debate)
+        result, err = e.debater.Execute(ctx, p.Debate)
     case *loomv1.WorkflowPattern_Swarm:
-        return e.executeSwarm(ctx, p.Swarm)
+        result, err = e.swarm.Execute(ctx, p.Swarm)
     case *loomv1.WorkflowPattern_PairProgramming:
-        return e.executePairProgramming(ctx, p.PairProgramming)
+        result, err = e.pairProgrammer.Execute(ctx, p.PairProgramming)
     case *loomv1.WorkflowPattern_TeacherStudent:
-        return e.executeTeacherStudent(ctx, p.TeacherStudent)
+        result, err = e.teacherStudent.Execute(ctx, p.TeacherStudent)
     default:
-        return nil, fmt.Errorf("unsupported collaboration pattern")
+        return nil, fmt.Errorf("unsupported collaboration pattern: %T", p)
     }
+    // ...
 }
+// Note: Swarm is also available as a standalone SwarmExecutor in pkg/orchestration.
+// The orchestrator routes Swarm to the orchestration executor, not the collaboration engine.
 ```
 
 **Debate Pattern** (multi-round consensus):
@@ -819,20 +861,21 @@ func (e *Engine) executeDebate(ctx context.Context, debate *loomv1.DebatePattern
         roundResults := make([]*loomv1.AgentResult, 0)
 
         for _, agentID := range agentIDs {
-            agent, _ := e.agentProvider.GetAgent(ctx, agentID)
+            agent, _ := e.provider.GetAgent(ctx, agentID)
 
             // Build prompt with debate history
             prompt := fmt.Sprintf("Topic: %s\n\nPrevious rounds:\n%s\n\nYour position for round %d:",
                 topic, strings.Join(debateHistory, "\n---\n"), round)
 
-            output, _ := agent.Generate(ctx, prompt)
+            // agent.Chat returns (*Response, error)
+            response, _ := agent.Chat(ctx, sessionID, prompt)
 
             result := &loomv1.AgentResult{
                 AgentId: agentID,
-                Output:  output,
+                Output:  response.Content,
             }
             roundResults = append(roundResults, result)
-            debateHistory = append(debateHistory, fmt.Sprintf("[%s]: %s", agentID, output))
+            debateHistory = append(debateHistory, fmt.Sprintf("[%s]: %s", agentID, response.Content))
         }
 
         allResults = append(allResults, roundResults...)
@@ -860,47 +903,45 @@ func (e *Engine) executeDebate(ctx context.Context, debate *loomv1.DebatePattern
 
 **Responsibility**: Host multiple agents in single process with gRPC service, HTTP gateway, and agent registry.
 
-**Server Structure** (`pkg/server/multi_agent.go`):
+**Server Structure** (`pkg/server/multi_agent.go:48`):
 ```go
 type MultiAgentServer struct {
-    agents    *agent.Registry        // Agent registry
-    patterns  *patterns.Library      // Pattern library per agent
-    workflows map[string]*Workflow   // Workflow registry
-    mcp       *mcp.Manager            // MCP server registry
-    tracer    observability.Tracer
+    loomv1.UnimplementedLoomServiceServer
+
+    agents       map[string]*agent.Agent       // Agent instances by ID
+    sessionStore agent.SessionStorage           // Session persistence
+    mu           sync.RWMutex
+
+    // Communication system (tri-modal: broadcast, point-to-point, shared memory)
+    messageBus       *communication.MessageBus
+    messageQueue     *communication.MessageQueue
+    sharedMemoryComm *communication.SharedMemoryStore
+
+    // Workflow execution
+    workflowStore *WorkflowStore
+    registry      *agent.Registry               // Agent registry for workflow execution
+    scheduler     *scheduler.Scheduler           // Cron-based workflow scheduling
+    tracer        observability.Tracer
+
+    // LLM concurrency control
+    llmSemaphore        chan struct{}
+    llmConcurrencyLimit int
+    // ... (additional fields for TLS, MCP, artifacts, etc.)
 }
 
-func (s *MultiAgentServer) Start(ctx context.Context, port int) error {
-    // 1. Start gRPC server
-    grpcServer := grpc.NewServer()
-    loomv1.RegisterLoomServiceServer(grpcServer, s)
-
-    // 2. Start HTTP gateway
-    mux := runtime.NewServeMux()
-    loomv1.RegisterLoomServiceHandlerServer(ctx, mux, s)
-
-    // 3. Start pattern hot-reload per agent
-    for _, ag := range s.agents.ListAgents() {
-        s.watchPatterns(ag.GetName())
-    }
-
-    // 4. Listen on port
-    listener, _ := net.Listen("tcp", fmt.Sprintf(":%d", port))
-    return grpcServer.Serve(listener)
-}
+// Server startup is handled by cmd/looms/cmd_serve.go
+// which reads looms.yaml for multi-agent configuration.
+// The gRPC server registers LoomServiceServer and starts
+// listening on the configured port.
 ```
 
 **CLI Usage**:
 ```bash
-# Start multi-agent server
-looms serve \
-  --config agent1.yaml \
-  --config agent2.yaml \
-  --config agent3.yaml \
-  --port 9090
+# Start multi-agent server (reads looms.yaml for agent configuration)
+looms serve
 
 # Connect TUI client to specific agent
-loom --thread agent1 --server localhost:9090
+loom --thread agent1 --server localhost:5006
 
 # Execute workflow across agents
 looms workflow run analytics-pipeline.yaml
@@ -970,7 +1011,7 @@ This violated the **session isolation invariant**: workflows in different sessio
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation** (`pkg/server/multi_agent.go:728-746, 857-888`):
+**Implementation** (`pkg/server/multi_agent.go:1277+`):
 
 ```go
 // Coordinator registration with composite key
@@ -1119,7 +1160,7 @@ Attempt 3: Bedrock ThrottlingException → retry immediately
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation** (`pkg/server/multi_agent.go:1065-1106`):
+**Implementation** (`pkg/server/multi_agent.go:2200+`):
 
 ```go
 // Context structure with failure tracking
@@ -1135,8 +1176,8 @@ type workflowSubAgentContext struct {
 
 // Monitor loop with exponential backoff
 for {
-    // Execute agent Chat
-    _, _, err := subAgentCtx.agent.Chat(subAgentCtx.sessionID, "")
+    // Execute agent Chat (returns *Response, error)
+    _, err := subAgentCtx.agent.Chat(ctx, subAgentCtx.sessionID, "")
 
     if err != nil {
         // On failure - apply exponential backoff
@@ -1293,7 +1334,7 @@ With limit=1, only one agent (coordinator OR sub-agent) could call LLM at a time
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation** (`pkg/server/multi_agent.go:97, 131`):
+**Implementation** (`pkg/server/multi_agent.go:48, 184`):
 
 ```go
 // Server structure
@@ -1326,21 +1367,16 @@ func NewMultiAgentServer(...) *MultiAgentServer {
     }
 }
 
-// Acquire/Release Pattern (used in Chat RPC)
-func (s *MultiAgentServer) Chat(ctx context.Context, req *loomv1.ChatRequest) (*loomv1.ChatResponse, error) {
+// Acquire/Release Pattern (used in sub-agent monitor goroutines and workflow execution)
+// Example from fork-join executor branch goroutines:
+func executeWithSemaphore(ctx context.Context, s *MultiAgentServer, ag *agent.Agent, sessionID, prompt string) {
     // Acquire semaphore slot
-    select {
-    case s.llmSemaphore <- struct{}{}:
-        defer func() { <-s.llmSemaphore }() // Release on return
-    case <-ctx.Done():
-        return nil, ctx.Err() // Context cancelled
-    }
+    s.llmSemaphore <- struct{}{}
+    defer func() { <-s.llmSemaphore }() // Release on return
 
     // Make LLM call (holding semaphore slot)
-    response, model, err := ag.Chat(req.SessionId, req.Message)
-
-    // Semaphore released by defer
-    return &loomv1.ChatResponse{Response: response}, err
+    response, err := ag.Chat(ctx, sessionID, prompt)
+    // ... handle response
 }
 ```
 
@@ -1446,37 +1482,34 @@ Traditional blocking RPCs don't work for async patterns. User needs real-time up
 ┌──────────────────────────────────────────────────────────────────┐
 │           SubscribeToSession Streaming Pattern                   │
 │                                                                  │
-│  Client                Server              MessageQueue          │
+│  Client                Server              SessionStore          │
 │    │                      │                      │               │
 │    ├─ SubscribeToSession ▶│                      │               │
 │    │  (sessionID)         │                      │               │
-│    │                      ├─ Register listener ─▶│               │
+│    │                      ├─ Verify session ─────▶│               │
 │    │                      │                      │               │
 │    │◀───── stream open ───┤                      │               │
 │    │                      │                      │               │
-│    │                      │      Sub-agent calls send_message    │
-│    │                      │                      │               │
-│    │                      │◀─── EnqueuedEvent ───┤               │
-│    │                      │                      │               │
-│    │◀─ SessionUpdate ─────┤                      │               │
-│    │   (new message)      │                      │               │
-│    │                      │                      │               │
-│    │                      │      Another message arrives         │
-│    │                      │                      │               │
-│    │                      │◀─── EnqueuedEvent ───┤               │
+│    │                      │  ┌─ Ticker (500ms) ──┐               │
+│    │                      │  │                   │               │
+│    │                      ├──┤ LoadMessages() ───▶│               │
+│    │                      │  │                   │               │
+│    │                      │◀─┤ Messages ─────────┤               │
+│    │                      │  │                   │               │
+│    │                      │  │ (new messages?)   │               │
+│    │                      │  └───────────────────┘               │
 │    │                      │                      │               │
 │    │◀─ SessionUpdate ─────┤                      │               │
-│    │   (new message)      │                      │               │
+│    │   (new messages)     │                      │               │
 │    │                      │                      │               │
 │    │     (stream remains open until client cancels)              │
 │    │                      │                      │               │
 │    ├─ Cancel stream ──────▶│                      │               │
-│    │                      ├─ Unregister listener ▶│              │
 │    │                      │                      │               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Proto Definition** (`proto/loom/v1/loom.proto:120-126`):
+**Proto Definition** (`proto/loom/v1/loom.proto:119-125`):
 
 ```protobuf
 // SubscribeToSession subscribes to real-time updates for a session.
@@ -1489,20 +1522,22 @@ rpc SubscribeToSession(SubscribeToSessionRequest) returns (stream SessionUpdate)
 
 message SubscribeToSessionRequest {
     string session_id = 1; // Session to monitor
+    string agent_id = 2;   // Optional: filter updates by agent
 }
 
 message SessionUpdate {
     string session_id = 1;
-    UpdateType type = 2; // MESSAGE_ENQUEUED, STATE_CHANGED, etc.
+    string agent_id = 2;    // Agent that produced this update
+    int64 timestamp = 3;     // Unix timestamp in seconds
 
-    oneof update {
-        MessageEnqueuedUpdate message_enqueued = 3;
-        StateChangedUpdate state_changed = 4;
+    oneof update_type {
+        NewMessageUpdate new_message = 4;
+        SessionStatusUpdate status_change = 5;
     }
 }
 ```
 
-**Implementation Approach** (not yet implemented, architecture defined):
+**Implementation** (`pkg/server/multi_agent.go:4079`):
 
 ```go
 func (s *MultiAgentServer) SubscribeToSession(
@@ -1510,56 +1545,55 @@ func (s *MultiAgentServer) SubscribeToSession(
     stream loomv1.LoomService_SubscribeToSessionServer,
 ) error {
     sessionID := req.SessionId
+    ctx := stream.Context()
 
-    // Create update channel
-    updateCh := make(chan *loomv1.SessionUpdate, 10)
+    // Verify session exists
+    // ... (checks agent sessions)
 
-    // Register listener with MessageQueue
-    s.messageQueue.RegisterListener(sessionID, updateCh)
-    defer s.messageQueue.UnregisterListener(sessionID, updateCh)
+    // Track the last message count we've seen
+    lastMessageCount := 0
 
-    // Stream updates until client cancels
+    // Poll for new messages every 500ms
+    ticker := time.NewTicker(500 * time.Millisecond)
+    defer ticker.Stop()
+
     for {
         select {
-        case update := <-updateCh:
-            // Send update to client
-            if err := stream.Send(update); err != nil {
-                return err // Stream closed
+        case <-ctx.Done():
+            return ctx.Err() // Client cancelled
+
+        case <-ticker.C:
+            // Load all messages from session store
+            messages, err := s.sessionStore.LoadMessages(ctx, sessionID)
+            if err != nil {
+                continue
             }
 
-        case <-stream.Context().Done():
-            return nil // Client cancelled
+            // Send updates for new messages only
+            if len(messages) > lastMessageCount {
+                for i := lastMessageCount; i < len(messages); i++ {
+                    msg := messages[i]
+                    update := &loomv1.SessionUpdate{
+                        SessionId: sessionID,
+                        UpdateType: &loomv1.SessionUpdate_NewMessage{
+                            NewMessage: &loomv1.NewMessageUpdate{
+                                Role:    msg.Role,
+                                Content: msg.Content,
+                            },
+                        },
+                    }
+                    if err := stream.Send(update); err != nil {
+                        return err
+                    }
+                }
+                lastMessageCount = len(messages)
+            }
         }
     }
 }
 ```
 
-**MessageQueue Integration**:
-
-```go
-// Enqueue notifies listeners
-func (q *MessageQueue) Enqueue(ctx context.Context, msg *Message) error {
-    // Store message in database
-    if err := q.store(msg); err != nil {
-        return err
-    }
-
-    // Notify listeners subscribed to this session
-    q.notifyListeners(msg.ToAgent, &loomv1.SessionUpdate{
-        SessionId: msg.ToAgent, // ToAgent is session for coordinator
-        Type: loomv1.UpdateType_MESSAGE_ENQUEUED,
-        Update: &loomv1.SessionUpdate_MessageEnqueued{
-            MessageEnqueued: &loomv1.MessageEnqueuedUpdate{
-                MessageId: msg.ID,
-                FromAgent: msg.FromAgent,
-                MessageType: msg.MessageType,
-            },
-        },
-    })
-
-    return nil
-}
-```
+**Note**: The current implementation uses polling (500ms ticker) against the session store rather than event-driven listener registration. This is simpler to implement but trades optimal latency for reliability.
 
 **Usage Example (TUI Client)**:
 
@@ -1576,20 +1610,14 @@ go func() {
             return // Stream closed
         }
 
-        switch update.Type {
-        case loomv1.UpdateType_MESSAGE_ENQUEUED:
+        switch u := update.UpdateType.(type) {
+        case *loomv1.SessionUpdate_NewMessage:
             // New message from sub-agent
-            msgUpdate := update.GetMessageEnqueued()
-            fmt.Printf("New message from %s\n", msgUpdate.FromAgent)
+            fmt.Printf("New message [%s]: %s\n", u.NewMessage.Role, u.NewMessage.Content)
 
-            // Fetch and display message
-            msg := fetchMessage(msgUpdate.MessageId)
-            displayMessage(msg)
-
-        case loomv1.UpdateType_STATE_CHANGED:
+        case *loomv1.SessionUpdate_StatusChange:
             // Session state changed (e.g., workflow completed)
-            stateUpdate := update.GetStateChanged()
-            fmt.Printf("Session state: %s\n", stateUpdate.NewState)
+            fmt.Printf("Session state: %s - %s\n", u.StatusChange.Status, u.StatusChange.Message)
         }
     }
 }()
@@ -1626,19 +1654,20 @@ Stream lifetime = min(client_cancel, server_error)
 (Either party can terminate)
 ```
 
-**Property 4: No Backpressure Blocking**
+**Property 4: Poll-Based Delivery**
 ```
-Buffered channel (size=10) prevents slow clients from blocking Enqueue()
-(Overflow drops updates, logs warning)
+Messages are read from session store on each tick (500ms interval).
+No event bus required; session store is the single source of truth.
+lastMessageCount tracking ensures each message is sent exactly once.
 ```
 
 **Performance Characteristics**:
 
 **Latency**:
-- Message enqueued → Client receives update: 5-20ms
+- Message enqueued → Client receives update: 0-500ms (polling interval)
 - Components:
   - Database insert: 1-3ms
-  - Listener notification: <1ms
+  - Poll cycle: up to 500ms
   - gRPC stream send: 3-15ms
 
 **Throughput**:
@@ -1646,28 +1675,28 @@ Buffered channel (size=10) prevents slow clients from blocking Enqueue()
 - Concurrent streams: 1000+ (goroutine per stream, ~2KB each)
 
 **Resource Usage**:
-- Per subscription: 1 goroutine + 1 channel (10 buffered updates)
+- Per subscription: 1 goroutine + 1 ticker (500ms poll)
 - Memory: ~2KB per active subscription
-- **Scaling**: 10,000 concurrent subscriptions = 20MB
+- **Scaling**: 10,000 concurrent subscriptions = 20MB + poll load on session store
 
 **Rationale**:
-- gRPC streaming chosen for real-time updates with low latency
-- Buffered channel prevents slow clients from blocking message enqueue
+- gRPC server streaming chosen for real-time updates without client polling for RPC results
+- Poll-based implementation (500ms ticker) trades optimal latency for implementation simplicity
 - Server-side streaming (not bidirectional) sufficient for one-way updates
-- HTTP SSE alternative for web dashboard (separate implementation)
+- Session store used as source of truth (no separate event bus needed)
 
 **Integration with Event-Driven Sub-Agents**:
 
-Sub-agents use notification channels for auto-injection of messages. SubscribeToSession extends this pattern to clients:
+Sub-agents use notification channels for auto-injection of messages. SubscribeToSession provides a separate mechanism for clients:
 
 ```
 Sub-Agent Notification:          Client Notification:
-MessageQueue.Enqueue()            MessageQueue.Enqueue()
-  └─▶ NotifyChannel               └─▶ NotifyListeners
-      (auto-inject via Chat())       (stream.Send update)
+MessageQueue.Enqueue()            SessionStore.LoadMessages()
+  └─▶ NotifyChannel               └─▶ Poll (500ms ticker)
+      (auto-inject via Chat())       (stream.Send new messages)
 ```
 
-Both use the same underlying message events. Sub-agents have messages automatically injected into their conversation via `agent.Chat()`, while clients receive updates via gRPC streaming. This provides consistent real-time delivery without polling.
+Sub-agents have messages automatically injected into their conversation via notification channels and `agent.Chat()`. Clients receive updates via gRPC server streaming with poll-based message detection from the session store.
 
 
 ## Key Interactions
@@ -1723,16 +1752,16 @@ Client            Orchestrator     Pipeline        Stage 1        Stage 2       
 
 **Variable Substitution**:
 ```
-Stage 1: "Discover schema: {{.initial}}"
-  → Substitutes: {{.initial}} = initialPrompt
+Stage 1: "Discover schema: {{previous}}"
+  → Substitutes: {{previous}} = initialPrompt
   → Result: "Discover schema: Analyze sales data"
 
-Stage 2: "Optimize query: {{.previous}}"
-  → Substitutes: {{.previous}} = Output 1
+Stage 2: "Optimize query: {{previous}}"
+  → Substitutes: {{previous}} = Output 1
   → Result: "Optimize query: [Stage 1 output]"
 
-Stage 3: "Execute: {{.previous}}"
-  → Substitutes: {{.previous}} = Output 2
+Stage 3: "Execute: {{previous}}"
+  → Substitutes: {{previous}} = Output 2
   → Result: "Execute: [Stage 2 output]"
 ```
 
@@ -1864,7 +1893,7 @@ spec:
 
 ### WorkflowPattern Proto
 
-**Definition** (`proto/loom/v1/orchestration.proto:14`):
+**Definition** (`proto/loom/v1/orchestration.proto:17`):
 ```protobuf
 message WorkflowPattern {
   oneof pattern {
@@ -1878,6 +1907,10 @@ message WorkflowPattern {
     TeacherStudentPattern teacher_student = 8;
     IterativeWorkflowPattern iterative = 9;
   }
+
+  // Stable workflow ID for session determinism across scheduled executions.
+  // If set, executors use this instead of generating a random UUID.
+  string workflow_id = 10;
 }
 
 message PipelinePattern {
@@ -1927,34 +1960,37 @@ enum MergeStrategy {
 **Definition** (`proto/loom/v1/orchestration.proto`):
 ```protobuf
 message WorkflowResult {
-  string pattern_type = 1;                  // "pipeline", "fork-join", etc.
+  string pattern_type = 1;                  // "pipeline", "fork_join", etc.
   repeated AgentResult agent_results = 2;   // All agent executions
   string merged_output = 3;                 // Final merged result
   map<string, string> metadata = 4;         // Pattern-specific metadata
   int64 duration_ms = 5;                    // Total execution time
-  CostBreakdown cost = 6;                   // Cost per agent
-  map<string, string> models_used = 7;      // agent_id → model
+  string trace_id = 6;                      // Trace ID for observability
+  WorkflowCost cost = 7;                    // Cost per agent
+  // Fields 8-11: collaboration-specific results (oneof)
+  CollaborationMetrics metrics = 12;        // Collaboration quality metrics
+  map<string, string> models_used = 13;     // agent_id → model
 }
 
-message CostBreakdown {
+message WorkflowCost {
   double total_cost_usd = 1;
-  double input_tokens_cost = 2;
-  double output_tokens_cost = 3;
-  int64 total_input_tokens = 4;
-  int64 total_output_tokens = 5;
+  map<string, double> agent_costs_usd = 2;  // Per-agent cost breakdown
+  int32 total_tokens = 3;
+  int32 llm_calls = 4;
 }
 ```
 
 
 ### WorkflowConfig YAML
 
-**Definition** (`pkg/orchestration/workflow_config.go:26`):
+**Definition** (`pkg/orchestration/workflow_config.go:29`):
 ```go
 type WorkflowConfig struct {
     APIVersion string                 `yaml:"apiVersion"`
     Kind       string                 `yaml:"kind"`
     Metadata   WorkflowMetadata       `yaml:"metadata"`
     Spec       map[string]interface{} `yaml:"spec"`
+    Schedule   *ScheduleYAML          `yaml:"schedule,omitempty"`
 }
 
 type WorkflowMetadata struct {
@@ -1977,32 +2013,39 @@ type WorkflowMetadata struct {
 **Algorithm**:
 ```go
 func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.WorkflowPattern) (*loomv1.WorkflowResult, error) {
-    // 1. Check if collaboration pattern
+    // 1. Check if collaboration pattern (debate, pair programming, teacher-student)
     switch pattern.Pattern.(type) {
     case *loomv1.WorkflowPattern_Debate,
-         *loomv1.WorkflowPattern_Swarm,
          *loomv1.WorkflowPattern_PairProgramming,
          *loomv1.WorkflowPattern_TeacherStudent:
-        // Route to collaboration engine
         return o.collaborationEngine.Execute(ctx, pattern)
     }
 
-    // 2. Route to orchestration executor
+    // 2. Route to orchestration executor (all take workflowID for session determinism)
     switch p := pattern.Pattern.(type) {
     case *loomv1.WorkflowPattern_Pipeline:
-        executor := NewPipelineExecutor(o, p.Pipeline)
+        wfID := o.resolveWorkflowID("pipeline", pattern)
+        executor := NewPipelineExecutor(o, p.Pipeline, wfID)
         return executor.Execute(ctx)
     case *loomv1.WorkflowPattern_ForkJoin:
-        executor := NewForkJoinExecutor(o, p.ForkJoin)
+        wfID := o.resolveWorkflowID("fork-join", pattern)
+        executor := NewForkJoinExecutor(o, p.ForkJoin, wfID)
         return executor.Execute(ctx)
     case *loomv1.WorkflowPattern_Parallel:
-        executor := NewParallelExecutor(o, p.Parallel)
+        wfID := o.resolveWorkflowID("parallel", pattern)
+        executor := NewParallelExecutor(o, p.Parallel, wfID)
         return executor.Execute(ctx)
     case *loomv1.WorkflowPattern_Conditional:
-        executor := NewConditionalExecutor(o, p.Conditional)
+        wfID := o.resolveWorkflowID("conditional", pattern)
+        executor := NewConditionalExecutor(o, p.Conditional, wfID)
         return executor.Execute(ctx)
     case *loomv1.WorkflowPattern_Iterative:
-        executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus)
+        wfID := o.resolveWorkflowID("iterative", pattern)
+        executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
+        return executor.Execute(ctx)
+    case *loomv1.WorkflowPattern_Swarm:
+        wfID := o.resolveWorkflowID("swarm", pattern)
+        executor := NewSwarmExecutor(o, p.Swarm, wfID)
         return executor.Execute(ctx)
     default:
         return nil, fmt.Errorf("unknown workflow pattern type")
@@ -2012,7 +2055,7 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 
 **Complexity**: O(1) type switch
 
-**Rationale**: Separate collaboration engine for patterns requiring specialized coordination logic (debate rounds, swarm emergent behavior).
+**Rationale**: Separate collaboration engine for patterns requiring specialized coordination logic (debate rounds, pair programming turn-taking, teacher-student knowledge transfer). Swarm is handled as an orchestration executor in `pkg/orchestration/swarm_executor.go`.
 
 
 ### Merge Strategy Selection
@@ -2023,89 +2066,55 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 
 **Algorithm**:
 ```go
-func (e *ForkJoinExecutor) mergeResults(ctx context.Context, results []*loomv1.AgentResult, strategy loomv1.MergeStrategy) (string, error) {
-    switch strategy {
+func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, error) {
+    switch e.pattern.MergeStrategy {
     case loomv1.MergeStrategy_CONCATENATE:
-        // Simple concatenation
-        outputs := make([]string, len(results))
-        for i, r := range results {
-            outputs[i] = r.Output
+        // Concatenation with agent ID headers
+        var builder strings.Builder
+        for i, result := range results {
+            builder.WriteString(fmt.Sprintf("=== Agent %s ===\n", result.AgentId))
+            builder.WriteString(result.Output)
+            if i < len(results)-1 { builder.WriteString("\n\n") }
         }
-        return strings.Join(outputs, "\n---\n"), nil
+        return builder.String(), nil
 
     case loomv1.MergeStrategy_FIRST:
         // Return first result
         return results[0].Output, nil
 
-    case loomv1.MergeStrategy_VOTING:
-        // Majority vote (requires LLM for similarity comparison)
-        return e.applyVoting(ctx, results)
-
-    case loomv1.MergeStrategy_CONSENSUS:
-        // LLM synthesizes agreement
-        prompt := fmt.Sprintf("Synthesize consensus from these agent responses:\n\n%s",
-            formatResults(results))
-        return e.llmProvider.Generate(ctx, prompt)
-
-    case loomv1.MergeStrategy_SUMMARY:
-        // LLM summarizes all outputs
-        prompt := fmt.Sprintf("Summarize these agent responses:\n\n%s",
-            formatResults(results))
-        return e.llmProvider.Generate(ctx, prompt)
-
-    case loomv1.MergeStrategy_BEST:
-        // LLM selects highest quality
-        prompt := fmt.Sprintf("Select the best response from these options:\n\n%s",
-            formatResults(results))
-        return e.llmProvider.Generate(ctx, prompt)
+    case loomv1.MergeStrategy_CONSENSUS, loomv1.MergeStrategy_SUMMARY,
+         loomv1.MergeStrategy_VOTING, loomv1.MergeStrategy_BEST:
+        // These strategies require LLM-based merging via GetMergeLLM()
+        // Each builds a strategy-specific prompt and makes a single LLM call
+        return e.llmMerge(ctx, workflowID, results)
 
     default:
-        return "", fmt.Errorf("unknown merge strategy: %s", strategy)
+        return "", fmt.Errorf("unsupported merge strategy: %s", e.pattern.MergeStrategy)
     }
 }
 ```
 
 **Complexity**:
 - CONCATENATE, FIRST: O(1)
-- VOTING: O(N²) (pairwise similarity comparison)
-- CONSENSUS, SUMMARY, BEST: O(1) LLM call (cost: ~$0.001-0.003)
+- VOTING, CONSENSUS, SUMMARY, BEST: O(1) LLM call each (cost: ~$0.001-0.003)
 
-**Voting Algorithm** (majority via similarity):
+**Voting Algorithm** (LLM-based selection):
+
+The actual implementation uses a single LLM call to select the most compelling answer, not pairwise similarity comparison:
 ```go
-func (e *ForkJoinExecutor) applyVoting(ctx context.Context, results []*loomv1.AgentResult) (string, error) {
-    N := len(results)
-    similarityMatrix := make([][]float64, N)
-
-    // Pairwise similarity comparison using LLM
-    for i := 0; i < N; i++ {
-        for j := i+1; j < N; j++ {
-            prompt := fmt.Sprintf("Rate similarity 0-1:\nA: %s\nB: %s", results[i].Output, results[j].Output)
-            score, _ := e.llmProvider.GenerateScore(ctx, prompt)
-            similarityMatrix[i][j] = score
-            similarityMatrix[j][i] = score
-        }
+func (e *ForkJoinExecutor) buildVotingPrompt(results []*loomv1.AgentResult) string {
+    var builder strings.Builder
+    builder.WriteString(fmt.Sprintf("Original prompt: %s\n\n", e.pattern.Prompt))
+    builder.WriteString("Review these responses and select the most compelling answer:\n\n")
+    for i, result := range results {
+        builder.WriteString(fmt.Sprintf("Option %d:\n%s\n\n", i+1, result.Output))
     }
-
-    // Sum similarity scores for each result
-    scores := make([]float64, N)
-    for i := 0; i < N; i++ {
-        for j := 0; j < N; j++ {
-            scores[i] += similarityMatrix[i][j]
-        }
-    }
-
-    // Return result with highest total similarity (majority consensus)
-    maxScore := 0.0
-    maxIdx := 0
-    for i, score := range scores {
-        if score > maxScore {
-            maxScore = score
-            maxIdx = i
-        }
-    }
-
-    return results[maxIdx].Output, nil
+    builder.WriteString("Identify which option is most convincing and explain why.")
+    return builder.String()
 }
+
+// All LLM-based strategies (VOTING, CONSENSUS, SUMMARY, BEST) use the same
+// pattern: build a strategy-specific prompt, call GetMergeLLM().Chat() once.
 ```
 
 
@@ -2113,41 +2122,55 @@ func (e *ForkJoinExecutor) applyVoting(ctx context.Context, results []*loomv1.Ag
 
 **Problem**: Substitute placeholders in prompt templates with actual values from workflow context.
 
-**Solution**: Go template engine with custom context variables.
+**Solution**: Simple `strings.ReplaceAll` substitution (not `text/template`). This avoids the complexity and escaping pitfalls of Go templates.
 
 **Algorithm**:
 ```go
 func (e *PipelineExecutor) buildStagePrompt(stage *loomv1.PipelineStage, previousOutput string, allOutputs []string) string {
-    tmpl, err := template.New("stage").Parse(stage.PromptTemplate)
-    if err != nil {
-        return stage.PromptTemplate  // Fallback: return unsubstituted
+    prompt := stage.PromptTemplate
+
+    // Replace {{previous}} with the previous stage's output
+    if strings.Contains(prompt, "{{previous}}") {
+        prompt = strings.ReplaceAll(prompt, "{{previous}}", previousOutput)
     }
 
-    // Build context map
-    ctx := map[string]interface{}{
-        "initial":  e.pattern.InitialPrompt,
-        "previous": previousOutput,
-        "history":  strings.Join(allOutputs, "\n---\n"),
+    // Replace {{history}} with all previous outputs
+    if strings.Contains(prompt, "{{history}}") {
+        history := e.buildHistoryString(allOutputs)
+        prompt = strings.ReplaceAll(prompt, "{{history}}", history)
     }
 
-    var buf bytes.Buffer
-    if err := tmpl.Execute(&buf, ctx); err != nil {
-        return stage.PromptTemplate  // Fallback
+    // Replace {{structured_context}} with JSON context
+    if strings.Contains(prompt, "{{structured_context}}") {
+        if structuredCtx != nil {
+            contextJSON, _ := structuredCtx.ToJSON()
+            prompt = strings.ReplaceAll(prompt, "{{structured_context}}", contextJSON)
+        }
     }
 
-    return buf.String()
+    // If pass_full_history is enabled and no placeholders used, append history
+    if e.pattern.PassFullHistory && len(allOutputs) > 0 {
+        if !strings.Contains(stage.PromptTemplate, "{{previous}}") &&
+           !strings.Contains(stage.PromptTemplate, "{{history}}") {
+            prompt = fmt.Sprintf("%s\n\nPrevious stages:\n%s", prompt, history)
+        }
+    }
+
+    return prompt
 }
 ```
 
-**Supported Variables**:
-- `{{.initial}}`: Initial prompt (first stage only)
-- `{{.previous}}`: Previous stage output
-- `{{.history}}`: All previous outputs (if `pass_full_history: true`)
+**Supported Placeholders** (plain string substitution, not Go template syntax):
+- `{{previous}}`: Previous stage output (for stage 1, this is the initial prompt)
+- `{{history}}`: All previous outputs concatenated
+- `{{structured_context}}`: JSON-serialized StructuredContext
+
+There is no `{{initial}}` placeholder. The initial prompt is passed as the first stage's `previousOutput`.
 
 **Example**:
 ```
-Template: "Optimize query: {{.previous}}"
-Context: {previous: "SELECT * FROM customers WHERE age > 30"}
+Template: "Optimize query: {{previous}}"
+Previous output: "SELECT * FROM customers WHERE age > 30"
 Result: "Optimize query: SELECT * FROM customers WHERE age > 30"
 ```
 
@@ -2515,10 +2538,8 @@ Validation Failed     → Log warning, continue (if optional)
 
 ### Reference Documentation
 
-- [Orchestration API Reference](/docs/reference/orchestration-api.md) - RPC definitions for workflows
-- [CLI Reference](/docs/reference/cli.md) - `looms workflow` commands
+- [CLI Reference](../reference/cli.md) - `looms workflow` commands
 
 ### Guides
 
-- [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Multi-Agent Workflows Guide](/docs/guides/multi-agent-workflows.md) - Building workflows with fluent API and YAML
+- [Getting Started](../guides/quickstart.md) - Quick start guide

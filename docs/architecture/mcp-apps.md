@@ -2,7 +2,7 @@
 
 How the MCP Apps system compiles declarative JSON specs into secure, standalone HTML documents.
 
-**Status**: ✅ Implemented (v1.1.0)
+**Status**: ✅ Implemented (v1.2.0)
 
 ## Table of Contents
 
@@ -91,7 +91,7 @@ An embedded HTML template (~1000 lines of CSS) that provides:
 
 ### Runtime (`pkg/mcp/apps/html/runtime.js`)
 
-An embedded JavaScript file (~600 lines) that:
+An embedded JavaScript file (~1700 lines) that:
 - Parses the spec from `<script type="application/json" id="app-spec">`
 - Renders components using `document.createElement` + `textContent` (no `innerHTML`)
 - Creates Chart.js charts (loaded via CDN with SRI hash)
@@ -193,7 +193,7 @@ All apps use the `ui://loom/<name>` URI scheme. The short name is extracted from
 ### Runtime Safety
 
 1. **DOM safety**: All component rendering uses `document.createElement` + `textContent`. No `innerHTML` anywhere.
-2. **SVG safety**: DAG rendering uses strict element allowlist (12 elements: `svg`, `g`, `rect`, `circle`, `line`, `path`, `text`, `tspan`, `defs`, `marker`, `polygon`, `polyline`) and attribute allowlist (30 attributes)
+2. **SVG safety**: DAG rendering uses strict element allowlist (12 elements: `svg`, `g`, `rect`, `circle`, `line`, `path`, `text`, `tspan`, `defs`, `marker`, `polygon`, `polyline`) and attribute allowlist (38 attributes)
 3. **No network access**: `connect-src 'none'` prevents the app from making any network requests
 4. **No form submission**: `form-action 'none'` prevents form-based attacks
 
@@ -232,7 +232,7 @@ The system exposes three parallel API surfaces, all backed by the same compiler 
 
 ### 3. Agent Tools (`pkg/server/app_tools.go`)
 
-4 `shuttle.Tool` implementations auto-registered to all server-side agents:
+4 `shuttle.Tool` implementations lazily registered to server-side agents when `ContainsUIIntent` detects a visualization request:
 
 | Tool | Description |
 |------|-------------|
@@ -260,10 +260,10 @@ MCP resources are served as single documents. The compiled HTML must be self-con
 
 Defense-in-depth. Even though the spec is validated, using `textContent` eliminates any possibility of HTML injection from spec values reaching the DOM.
 
-### Why auto-register agent tools?
+### Why lazily register agent tools?
 
-Any agent might need to create visualizations from query results or analysis output. Requiring configuration per-agent would be an unnecessary barrier. The tools are lightweight (no state, no side effects beyond the registry) and safe to register universally.
+Agent tools are not registered upfront for every conversation. Instead, `ContainsUIIntent` performs a case-insensitive keyword scan on each user message. When it detects visualization intent (e.g., "dashboard", "chart", "create ui"), the four UI app tools are injected into the agent's tool set for that turn. This avoids inflating the tool list for conversations that never need UI creation, while still making tools available without per-agent configuration.
 
 ### Why in-memory registry, not SQLite?
 
-Dynamic apps are ephemeral by design — they're created during agent conversations and viewed in the same session. Persistence across server restarts is not a requirement. The in-memory registry keeps the implementation simple with no database dependencies.
+Dynamic apps are ephemeral by design — they're created during agent conversations and viewed in the same session. Persistence across server restarts is not a requirement. The in-memory registry avoids database dependencies and keeps the implementation straightforward.

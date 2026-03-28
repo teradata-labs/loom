@@ -1,7 +1,7 @@
 
 ## Overview
 
-Loom uses a **segmented memory architecture** to efficiently manage conversation history and context for long-running agent sessions. As conversations grow, Loom intelligently compresses older messages to stay within LLM context windows while preserving important information.
+Loom uses a **segmented memory architecture** to manage conversation history and context for long-running agent sessions. As conversations grow, Loom compresses older messages based on configurable token budgets to stay within LLM context windows while preserving recent information.
 
 **Key Features:**
 - ✅ Adaptive compression based on workload type
@@ -10,14 +10,15 @@ Loom uses a **segmented memory architecture** to efficiently manage conversation
 - ✅ Integrated observability with Hawk metrics
 - ✅ Backwards compatible defaults
 
-**Status:** Implemented in v1.0.0-beta.5
+**Version:** v1.2.0
+**Status:** Implemented (since v1.0.0-beta.5)
 
 
 ## Memory Architecture
 
 ### Layered Memory System
 
-Loom organizes conversation context into four tiers:
+Loom organizes conversation context into five tiers:
 
 1. **ROM Layer** (Read-Only Memory)
    - Static documentation and system prompts
@@ -27,15 +28,16 @@ Loom organizes conversation context into four tiers:
 2. **Kernel Layer**
    - Tool definitions
    - Recent tool execution results
-   - Cached schemas (LRU eviction, max 10)
+   - Cached schemas (LRU eviction)
    - Per-conversation state
 
 3. **L1 Cache** (Hot Memory)
-   - Recent messages (last N exchanges)
-   - Size depends on workload profile:
-     - Data intensive: 5 messages
-     - Balanced: 8 messages
-     - Conversational: 12 messages
+   - Recent conversation history, bounded by token budget
+   - Configured via `max_l1_messages` (converted to tokens internally at ~800 tokens/message)
+   - Default limits depend on workload profile:
+     - Data intensive: 5 messages (~4000 tokens)
+     - Balanced: 8 messages (~6400 tokens)
+     - Conversational: 12 messages (~9600 tokens)
    - Adaptive compression triggered by token budget
 
 4. **L2 Cache** (Warm Memory)
@@ -47,6 +49,13 @@ Loom organizes conversation context into four tiers:
    - Database-backed long-term storage
    - Automatic eviction when L2 exceeds 5000 tokens
    - Enables "forever conversations"
+
+### Additional Memory Features
+
+- ✅ **Dynamic Memory Allocation**: Automatically calculates L1/L2 token budgets based on model context window size (e.g., Ollama 4K vs Claude 200K). Uses `CalculateDynamicMemoryAllocation` internally.
+- ✅ **Shared Memory**: Large tool results can be stored in a `SharedMemoryStore` to save context tokens.
+- ✅ **Session Memory Tool**: Unified access to session lifecycle, cross-session memory, and compact operations.
+- 🚧 **Graph Memory** (on `graph-memory` branch): Salience-driven graph-backed episodic memory with entities, edges, and FTS5 search. Configured via `graph_memory` in the memory config. See [Graph Memory Architecture](/docs/architecture/graph-memory/).
 
 
 ## Workload Profiles
@@ -65,7 +74,8 @@ memory:
 ```
 
 **Configuration:**
-- **Max L1 Messages:** 5 (aggressive compression)
+- **Max L1 Messages:** 5 (~4000 tokens, aggressive compression)
+- **Min L1 Messages:** 3 (minimum preserved for recency)
 - **Warning Threshold:** 50% (compress early)
 - **Critical Threshold:** 70%
 - **Batch Sizes:** normal=2, warning=4, critical=6
@@ -90,7 +100,8 @@ memory:
 ```
 
 **Configuration:**
-- **Max L1 Messages:** 12 (preserve recent context)
+- **Max L1 Messages:** 12 (~9600 tokens, preserve recent context)
+- **Min L1 Messages:** 6 (minimum preserved for recency)
 - **Warning Threshold:** 70%
 - **Critical Threshold:** 85%
 - **Batch Sizes:** normal=4, warning=6, critical=8
@@ -116,7 +127,8 @@ memory:
 ```
 
 **Configuration:**
-- **Max L1 Messages:** 8
+- **Max L1 Messages:** 8 (~6400 tokens)
+- **Min L1 Messages:** 4 (minimum preserved for recency)
 - **Warning Threshold:** 60%
 - **Critical Threshold:** 75%
 - **Batch Sizes:** normal=3, warning=5, critical=7
@@ -138,7 +150,7 @@ memory:
   type: memory
   memory_compression:
     workload_profile: balanced
-    max_l1_messages: 15          # Override max L1 size
+    max_l1_messages: 15          # Override max L1 messages (converted to tokens internally at ~800 tokens/message)
     warning_threshold_percent: 55 # Compress at 55% budget
     batch_sizes:
       normal: 2
@@ -152,10 +164,10 @@ memory:
 3. Balanced profile defaults (fallback)
 
 **Validation:**
-- `max_l1_messages` must be > 0
+- `max_l1_messages` must result in > 0 tokens (internally converted to tokens at 800 tokens/message)
 - `min_l1_messages` must be >= 1
-- `warning_threshold_percent` must be in [1, 100]
-- `critical_threshold_percent` must be >= warning threshold
+- `warning_threshold_percent` must be in [0, 100]
+- `critical_threshold_percent` must be strictly greater than `warning_threshold_percent`
 - Batch sizes must be > 0
 
 
@@ -165,18 +177,18 @@ memory:
 
 ```yaml
 memory:
-  type: memory  # or sqlite
+  type: memory  # or sqlite, postgres
   memory_compression:
     # Profile selection (data_intensive, conversational, balanced)
     workload_profile: balanced
 
-    # L1 cache size (number of messages to keep hot)
-    max_l1_messages: 8    # Compress when exceeded
-    min_l1_messages: 4    # Minimum to preserve
+    # L1 cache size (message count, converted to tokens internally at ~800 tokens/message)
+    max_l1_messages: 8    # Messages in L1 before compression triggers (balanced default: 8)
+    min_l1_messages: 4    # Minimum messages to preserve for recency
 
-    # Token budget thresholds (percentage)
+    # Token budget thresholds (percentage, 0-100)
     warning_threshold_percent: 60   # Start compressing aggressively
-    critical_threshold_percent: 75  # Maximum compression
+    critical_threshold_percent: 75  # Maximum compression (must be > warning)
 
     # Batch sizes (messages per compression cycle)
     batch_sizes:
@@ -195,7 +207,7 @@ agent:
   llm:
     provider: anthropic
     model: claude-sonnet-4-5-20250929
-    context_size: 200000
+    max_context_tokens: 200000
     reserved_output_tokens: 20000
 
   memory:
@@ -230,28 +242,20 @@ Loom records compression events to Hawk for observability:
 **Events:**
 - `memory.profile_configured` - Profile selection and configuration
 
-### Monitoring Example
+### Monitoring
 
-Check Hawk dashboard to monitor compression behavior:
-
-```bash
-# View compression events
-curl http://localhost:9090/metrics | grep memory.compression
-
-# Example output:
-memory.compression.events{profile="data_intensive",batch_size="warning"} 15
-memory.compression.tokens_saved{profile="data_intensive",batch_size="warning"} 12450
-memory.compression.budget_pct{profile="data_intensive",batch_size="warning"} 62.5
-```
+Compression events are recorded as Hawk metrics via `RecordMetric` with structured labels. Profile configuration is recorded as a Hawk event via `RecordEvent`. Use the Hawk observability integration to view compression behavior. There is no Prometheus `/metrics` endpoint.
 
 
 ## How Compression Works
 
 ### Trigger Conditions
 
-Compression triggers when **both** conditions are met:
-1. **L1 size exceeds max:** More than `max_l1_messages` in L1 cache
-2. **Token budget high:** Usage exceeds warning threshold
+Compression triggers when **either** condition is met:
+1. **L1 tokens exceed max:** L1 token count exceeds the internal token budget (derived from `max_l1_messages` * ~800 tokens/message)
+2. **Token budget high:** Overall usage percentage exceeds warning threshold
+
+Both conditions are token-based internally. Compression only proceeds if the number of messages in L1 is above `min_l1_messages`, ensuring recent context is always preserved.
 
 ### Compression Process
 
@@ -311,14 +315,14 @@ If compression boundary falls between a pair, the boundary is adjusted to keep t
 ```yaml
 memory_compression:
   warning_threshold_percent: 50  # Lower threshold
-  max_l1_messages: 6             # Smaller L1 cache
+  max_l1_messages: 6             # Fewer messages before compression (~4800 tokens)
 ```
 
 **If compression happens too early:**
 ```yaml
 memory_compression:
   warning_threshold_percent: 70  # Higher threshold
-  max_l1_messages: 12            # Larger L1 cache
+  max_l1_messages: 12            # More messages before compression (~9600 tokens)
 ```
 
 **If compression is too aggressive:**
@@ -334,7 +338,7 @@ memory_compression:
 
 1. **Track compression frequency:**
    - Goal: 3-5 compressions per 20-turn conversation
-   - Too frequent: Increase thresholds or L1 size
+   - Too frequent: Increase thresholds or `max_l1_messages`
    - Too rare: Lower thresholds
 
 2. **Monitor token savings:**
@@ -364,9 +368,10 @@ memory:
 ```
 
 **Default behavior:**
-- Max L1 messages: 8 (changed from 10)
-- Min L1 messages: 4 (changed from 5)
+- Max L1 messages: 8 (~6400 tokens at 800 tokens/message)
+- Min L1 messages: 4 (minimum preserved for recency)
 - Thresholds: 60%/75% (changed from 70%/85%)
+- Max tool results in kernel: 5
 
 These changes provide better compression defaults while maintaining reasonable context preservation.
 
@@ -380,7 +385,7 @@ These changes provide better compression defaults while maintaining reasonable c
 **Solutions:**
 1. Switch to `data_intensive` profile
 2. Lower `warning_threshold_percent` to 40-50%
-3. Reduce `max_l1_messages` to 5
+3. Reduce `max_l1_messages` to 5 (~4000 tokens)
 4. Enable LLM-powered compression (better summaries)
 
 ### Lost Conversational Context
@@ -389,7 +394,7 @@ These changes provide better compression defaults while maintaining reasonable c
 
 **Solutions:**
 1. Switch to `conversational` profile
-2. Increase `max_l1_messages` to 12-15
+2. Increase `max_l1_messages` to 12-15 (~9600-12000 tokens)
 3. Raise `warning_threshold_percent` to 70%
 4. Check if L2 summaries are too brief (enable detailed compression)
 
@@ -407,7 +412,7 @@ These changes provide better compression defaults while maintaining reasonable c
 **Symptom:** Token budget grows but no compression
 
 **Solutions:**
-1. Verify `max_l1_messages` is being exceeded
+1. Verify the internal L1 token limit (derived from `max_l1_messages` * ~800) is being exceeded
 2. Check that token budget is above warning threshold
 3. Ensure compressor is configured (for LLM compression)
 4. Check Hawk logs for compression errors
@@ -451,15 +456,15 @@ memory:
 
 ## Related Documentation
 
-- [Agent Configuration](/docs/guides/agent-configuration/)
+- [Agent Configuration](/docs/reference/agent-configuration/)
 - [Observability Integration](/docs/guides/integration/observability/)
-- [Session Management](/docs/concepts/sessions/)
-- [Architecture Deep Dive](/docs/concepts/architecture/)
+- [Memory Systems Architecture](/docs/architecture/memory-systems/)
+- [Graph Memory Architecture](/docs/architecture/graph-memory/) (🚧 in development on `graph-memory` branch)
 
 
 ## Feedback
 
 If you encounter issues or have questions about memory management:
-- Open an issue at https://github.com/anthropics/loom/issues
+- Open an issue at https://github.com/teradata-labs/loom/issues
 - Tag with `memory` and `compression` labels
 - Include Hawk metrics and agent config

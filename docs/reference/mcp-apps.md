@@ -27,7 +27,7 @@ MCP Apps are standalone HTML documents compiled from a declarative JSON spec. Th
 
 - **gRPC**: `CreateUIApp` / `UpdateUIApp` / `DeleteUIApp` RPCs
 - **MCP tools**: `loom_create_app` / `loom_update_app` / `loom_delete_app` (for Claude Code, Cursor, etc.)
-- **Agent tools**: `create_ui_app` / `update_ui_app` / `delete_ui_app` (auto-registered to all server-side agents)
+- **Agent tools**: `create_ui_app` / `update_ui_app` / `delete_ui_app` (lazily disclosed to all server-side agents)
 
 Apps are served as MCP resources at `ui://loom/<name>` and via HTTP at `/apps/<name>`.
 
@@ -539,7 +539,7 @@ Exposed by `loom-mcp` bridge to MCP clients (Claude Code, Cursor, etc.):
 
 ### Agent Tools
 
-Auto-registered to all server-side Loom agents (no configuration needed):
+Registered to all server-side Loom agents via lazy disclosure (tools appear in the active tool set only when the user message contains UI-related keywords like "dashboard", "chart", "visualization", etc.):
 
 | Tool | Description |
 |------|-------------|
@@ -557,7 +557,7 @@ The compiler validates and sanitizes all specs before compilation:
 - **Prototype pollution prevention**: Keys `__proto__`, `constructor`, `prototype` are rejected at any depth
 - **Script injection prevention**: Values starting with `javascript:`, `vbscript:`, `data:text/html` are rejected
 - **CSS injection prevention**: Values containing `url(`, `expression(`, `@import` are rejected
-- **HTML injection prevention**: `<`, `>`, `&` in spec JSON are escaped to unicode equivalents
-- **CSP**: Compiled HTML includes `Content-Security-Policy` with `default-src 'none'`, `connect-src 'none'`, `form-action 'none'`
+- **HTML injection prevention**: `<`, `>`, `&` in spec JSON are escaped to JSON unicode sequences (`\u003c`, `\u003e`, `\u0026`) for safe embedding inside `<script>` tags
+- **CSP**: Compiled HTML includes `Content-Security-Policy` meta tag with: `default-src 'none'`; `script-src 'unsafe-inline' https://cdn.jsdelivr.net`; `style-src 'unsafe-inline'`; `img-src data:`; `connect-src 'none'`; `form-action 'none'`
 - **DOM safety**: Runtime uses `textContent` exclusively (no `innerHTML`), SVG uses strict element/attribute allowlists
 - **Chart.js**: Loaded with SRI hash from `cdn.jsdelivr.net` (pinned to v4.4.7)

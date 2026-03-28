@@ -1,11 +1,11 @@
 
 # Pattern System Architecture
 
-Comprehensive architecture of Loom's pattern system - hot-reloadable domain knowledge library with semantic search, A/B testing, and pattern effectiveness tracking for continuous improvement.
+Architecture of Loom's pattern system - hot-reloadable domain knowledge library with keyword-based search (plus optional LLM re-ranking), A/B testing, and pattern effectiveness tracking for continuous improvement.
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -47,11 +47,11 @@ The Pattern System encodes **domain knowledge as reusable YAML patterns** that g
 
 1. **Pattern Library**: Cache-backed pattern storage with embedded + filesystem sources
 2. **Hot-Reload**: Zero-downtime pattern updates via fsnotify (89-143ms latency)
-3. **Semantic Search**: Keyword-based pattern matching with intent classification
+3. **Hybrid Search**: Keyword-based pattern matching with intent classification, plus optional LLM-based re-ranking for ambiguous cases
 4. **A/B Testing**: Compare pattern variants for continuous improvement
 5. **Effectiveness Tracking**: SQLite-backed metrics for learning agent feedback
 
-The system supports **70 patterns across 13 domains** (prompt engineering, SQL, Teradata, Postgres, text, code, debugging, vision, evaluation, REST API, data quality, ETL, ML).
+The system supports **104 patterns across 26 search paths** (13 top-level domains + 13 vendor-specific subdirectories including Teradata, Postgres, SQL, and Weaver patterns).
 
 
 ## Design Goals
@@ -159,10 +159,11 @@ graph TB
 │  │  │     - Supports local development                   │     │          │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                              │         │  │
-│  │  Search Paths (13 domains):                                 │          │  │
-│  │    analytics, ml, timeseries, text, data_quality,           │          │  │
-│  │    rest_api, document, etl, prompt_engineering,             │          │  │
-│  │    code, debugging, vision, evaluation                      │          │  │
+│  │  Search Paths (26 total: 13 top-level + 13 vendor):         │          │  │
+│  │    Top-level: analytics, ml, timeseries, text,              │          │  │
+│  │    data_quality, rest_api, document, etl,                   │          │  │
+│  │    prompt_engineering, code, debugging, vision, evaluation  │          │  │
+│  │    Vendor: teradata/*, postgres/analytics, sql/*, weaver    │          │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
@@ -224,13 +225,13 @@ graph TB
 │  │                  A/B Testing + Learning                      │         │  │
 │  │                                                              │         │  │
 │  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
-│  │  │         PatternABTestingLibrary                    │     │          │  │
+│  │  │         A/B Testing (VariantSelector)               │     │          │  │
 │  │  │                                                    │     │          │  │
 │  │  │  Variant Selection Strategies:                     │     │          │  │
-│  │  │    - Round-robin (equal distribution)              │     │          │  │
+│  │  │    - Explicit (forced variant)                     │     │          │  │
+│  │  │    - Hash-based (deterministic per session)        │     │          │  │
+│  │  │    - Random (uniform distribution)                 │     │          │  │
 │  │  │    - Weighted (importance-based)                   │     │          │  │
-│  │  │    - UCB (Upper Confidence Bound)                  │     │          │  │
-│  │  │    - Epsilon-greedy (explore/exploit)              │     │          │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                              │         │  │
 │  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
@@ -255,15 +256,17 @@ graph TB
 
 **Responsibility**: Cache-backed pattern storage with dual-source loading (embedded + filesystem).
 
-**Core Structure** (`pkg/patterns/library.go:18`):
+**Core Structure** (`pkg/patterns/library.go`):
 ```go
 type Library struct {
     mu               sync.RWMutex
     patternCache     map[string]*Pattern      // In-memory cache
     patternIndex     []PatternSummary         // Lightweight metadata
+    indexInitialized bool                     // Whether index has been built
     embeddedFS       *embed.FS                // Compiled-in patterns
     patternsDir      string                   // Filesystem patterns
     searchPaths      []string                 // Domain directories
+    pathCache        map[string]string        // Pattern name -> relative path
     tracer           observability.Tracer     // Hawk tracing
 }
 ```
@@ -284,30 +287,47 @@ type Library struct {
 ```
 
 **Rationale**:
-- **Embedded FS fallback**: Ensures patterns always available (no filesystem dependency)
-- **Filesystem priority**: Allows local overrides and hot-reload during development
 - **In-memory cache**: Avoids repeated file I/O (99%+ cache hit rate after warm-up)
+- **Embedded FS first**: Ensures patterns always available (no filesystem dependency); compiled into binary
+- **Filesystem fallback**: Allows hot-reload during development; checked after embedded FS
 - **RWMutex**: Optimizes for read-heavy workload (concurrent pattern lookups)
 
-**Search Paths** (13 domains):
+**Search Paths** (26 paths: 13 top-level + 13 vendor-specific):
 ```
 patterns/
-├── analytics/          # Business intelligence, aggregations                   
-├── ml/                 # Machine learning patterns (Teradata ML)               
-├── timeseries/         # Time series analysis                                  
-├── text/               # NLP patterns (sentiment, summarization)               
-├── data_quality/       # Validation, profiling, duplicates                     
-├── rest_api/           # REST API interaction patterns                         
-├── document/           # Document processing                                   
-├── etl/                # Extract, Transform, Load                              
-├── prompt_engineering/ # Universal meta-patterns (CoT, few-shot)               
-├── code/               # Code generation, testing                              
-├── debugging/          # Root cause analysis                                   
-├── vision/             # Multimodal patterns (chart interpretation)            
-└── evaluation/         # Quality assurance patterns                            
+├── analytics/              # Business intelligence, aggregations
+├── ml/                     # Machine learning patterns
+├── timeseries/             # Time series analysis
+├── text/                   # NLP patterns (sentiment, summarization)
+├── data_quality/           # Validation, profiling, duplicates
+├── rest_api/               # REST API interaction patterns
+├── document/               # Document processing
+├── etl/                    # Extract, Transform, Load
+├── prompt_engineering/     # Universal meta-patterns (CoT, few-shot)
+├── code/                   # Code generation, testing
+├── debugging/              # Root cause analysis
+├── vision/                 # Multimodal patterns (chart interpretation)
+├── evaluation/             # Quality assurance patterns
+├── teradata/analytics/     # Teradata-specific analytics (nPath, sessionize)
+├── teradata/ml/            # Teradata ML functions
+├── teradata/timeseries/    # Teradata time series
+├── teradata/data_quality/  # Teradata data quality
+├── teradata/data_loading/  # Teradata FastLoad, etc.
+├── teradata/data_modeling/ # Teradata temporal tables, etc.
+├── teradata/code_migration/# Macro to procedure migration
+├── teradata/data_discovery/# Schema graph, column similarity
+├── teradata/text/          # Teradata text analytics
+├── teradata/performance/   # PI skew, spool space analysis
+├── postgres/analytics/     # Postgres query optimization
+├── sql/timeseries/         # Generic SQL time series
+├── sql/data_quality/       # Generic SQL data quality
+├── sql/text/               # Generic SQL text analytics
+└── weaver/                 # Workflow patterns (debate, fork-join, etc.)
 ```
 
-**Pattern Struct** (`pkg/patterns/types.go:6`):
+**Note**: Additional directories exist on the filesystem (fun, documents, libraries, nasa, loom) that are not in the default search paths but are discoverable via full filesystem indexing.
+
+**Pattern Struct** (`pkg/patterns/types.go`):
 ```go
 type Pattern struct {
     // Metadata
@@ -321,12 +341,13 @@ type Pattern struct {
     RelatedPatterns []string // Cross-references
 
     // Definition
-    Parameters    []Parameter         // Template variables
-    Templates     map[string]Template // Named templates (basic, advanced)
-    Examples      []Example           // Worked examples
-    CommonErrors  []CommonError       // Known failure modes
-    BestPractices string              // Usage recommendations
-    Syntax        *Syntax             // Backend-specific syntax docs
+    Parameters      []Parameter         // Template variables
+    Templates       map[string]Template // Named templates (basic, advanced)
+    Examples        []Example           // Worked examples
+    CommonErrors    []CommonError       // Known failure modes
+    BestPractices   string              // Usage recommendations
+    Syntax          *Syntax             // Backend-specific syntax docs
+    BackendFunction string              // Backend-specific function name (e.g., nPath)
 }
 ```
 
@@ -340,7 +361,7 @@ type Pattern struct {
 Filesystem Change → fsnotify Event → Debounce → Validate → Reload → Broadcast
 ```
 
-**HotReloader Struct** (`pkg/patterns/hotreload.go:29`):
+**HotReloader Struct** (`pkg/patterns/hotreload.go`):
 ```go
 type HotReloader struct {
     library        *Library
@@ -352,6 +373,8 @@ type HotReloader struct {
     debounceMu     sync.Mutex                 // Protects timer map
     stopCh         chan struct{}              // Shutdown signal
     doneCh         chan struct{}              // Completion signal
+    stopped        bool                       // Shutdown flag
+    stopMu         sync.Mutex                 // Protects stopped flag
 }
 ```
 
@@ -444,12 +467,12 @@ User Message ───▶ Intent Classifier ───▶ IntentCategory + Confid
    ├─ Search pattern index                                                      
    └─ Return top N candidates                                                   
 
-2. Score Candidates (multi-factor)
-   ├─ Category match (intent alignment): +0.4                                   
-   ├─ Use case match (keyword overlap):  +0.3                                   
-   ├─ Title match (keyword in title):    +0.2                                   
-   ├─ Description match (keyword):       +0.1                                   
-   └─ Sum scores                                                                
+2. Score Candidates (multi-factor, from orchestrator.go)
+   ├─ Category match (intent alignment):    +0.5
+   ├─ Keyword match rate (% of keywords):   up to +0.5
+   ├─ Exact name match:                     +0.2
+   ├─ Title keyword match:                  +0.1
+   └─ Sum scores
 
 3. Rank by Score
    ├─ Sort descending                                                           
@@ -490,7 +513,7 @@ orchestrator.SetIntentClassifier(TeradataIntentClassifier)
 
 **Responsibility**: Find relevant patterns based on user query.
 
-**Search Algorithm** (keyword-based):
+**Search Algorithm** (keyword-based, with optional LLM re-ranking via `pkg/patterns/llm_reranker.go`):
 ```
 1. Build Pattern Index (startup)
    ├─ Load all patterns                                                         
@@ -498,19 +521,21 @@ orchestrator.SetIntentClassifier(TeradataIntentClassifier)
    └─ Store in []PatternSummary                                                 
 
 2. Query Matching (per request)
-   ├─ Extract keywords from query (lowercase, split)                            
-   ├─ For each pattern in index:                                                
-   │   ├─ Check name contains keyword                                           
-   │   ├─ Check title contains keyword                                          
-   │   ├─ Check description contains keyword                                    
-   │   ├─ Check use cases contain keyword                                       
-   │   └─ Check category matches intent                                         
-   ├─ Calculate relevance score (0.0-1.0)                                       
-   └─ Return top-K patterns (K=5 default)                                       
+   ├─ Tokenize query and filter stop words
+   ├─ For each pattern in index:
+   │   ├─ Build searchable text (name + title + description + use cases)
+   │   ├─ Count keyword matches
+   │   ├─ Base score = matchCount / totalKeywords
+   │   ├─ Boost: name contains keyword → +0.5
+   │   └─ Boost: title contains keyword → +0.3
+   ├─ Sort by score descending, then by match count
+   └─ Return ALL matching patterns (no top-K truncation)
 
-3. Intent Boosting (optional)
-   ├─ If pattern category matches intent → +0.4 score                           
-   └─ Prioritize semantically relevant patterns                                 
+3. Intent Boosting (in Orchestrator.RecommendPattern, not in Library.Search)
+   ├─ If pattern category matches intent → +0.5 score
+   ├─ Keyword match rate → up to +0.5 score
+   ├─ Exact name match → +0.2 score
+   └─ Title keyword match → +0.1 score
 ```
 
 **Complexity**:
@@ -519,8 +544,8 @@ orchestrator.SetIntentClassifier(TeradataIntentClassifier)
 - Space: O(N) for pattern summaries
 
 **Performance**:
-- Index build: <100ms for 70 patterns
-- Query: <10ms for 70 patterns
+- Index build: <100ms for 104 patterns
+- Query: <10ms for 104 patterns
 - Memory: ~500KB for pattern index
 
 **Rationale for Keyword-Based (not TF-IDF/embeddings)**:
@@ -531,66 +556,69 @@ orchestrator.SetIntentClassifier(TeradataIntentClassifier)
 - ❌ Limited semantic understanding (synonyms not handled)
 - ❌ Keyword-based only (no semantic similarity)
 
-**Future Enhancement**: Hybrid keyword + embedding similarity for better semantic matching.
+**Hybrid LLM Re-Ranking** (✅ Implemented in `pkg/patterns/llm_reranker.go`):
+
+When an LLM provider is configured on the orchestrator (via `SetLLMProvider()`), the system uses a hybrid approach: fast keyword matching followed by LLM-based re-ranking for ambiguous cases. LLM re-ranking is triggered when:
+- Intent is unknown
+- Top keyword score is below 0.70
+- Top two candidates are within 0.20 of each other
+- Three or more candidates score above 0.60
+
+This provides semantic understanding beyond keyword matching without requiring embedding models or vector databases.
 
 
 ### A/B Testing
 
 **Responsibility**: Compare pattern variants to identify improvements.
 
-**Variant Selection Strategies** (4 algorithms):
+**Variant Selection Strategies** (`pkg/prompts/ab_testing.go` for selectors, `pkg/patterns/ab_testing.go` for pattern-specific A/B wrapper, 4 strategies):
 
-1. **Round-Robin**:
-   - Equal distribution across variants
-   - Simple, no bias
-   - Use for: Initial data collection
+The A/B testing system is implemented via the `VariantSelector` interface in `pkg/prompts/ab_testing.go`, with four concrete strategies. Pattern-specific A/B testing wraps this via `PatternABTestingLibrary` in `pkg/patterns/ab_testing.go`:
 
-2. **Weighted**:
-   - Distribution based on variant weights
-   - Manual control over traffic split
-   - Use for: Gradual rollout (10% variant A, 90% variant B)
+1. **Explicit** (`ExplicitSelector`):
+   - Always returns the specified variant (no selection logic)
+   - Use for: Manual override, debugging, forced rollout
 
-3. **Upper Confidence Bound (UCB)**:
-   - Explore-exploit balance via confidence intervals
-   - Automatically increases traffic to better variants
-   - Use for: Automated optimization
+2. **Hash-Based** (`HashSelector`):
+   - Deterministic based on FNV-64a hash of session ID + key
+   - Same session always gets the same variant (consistent experience)
+   - Use for: Stable A/B testing where user experience must not change mid-session
 
-4. **Epsilon-Greedy**:
-   - Exploit best variant (1-ε) of time
-   - Explore random variant ε of time
-   - Use for: Safe exploration with proven baseline
+3. **Random** (`RandomSelector`):
+   - Uniform random selection across variants
+   - Use for: True A/B testing with equal distribution
 
-**A/B Test Configuration** (YAML):
-```yaml
-name: query_optimization_v2
-variants:
-  - name: baseline
-    weight: 0.5
-    template: |
-      SELECT ... (current approach)
-  - name: optimized
-    weight: 0.5
-    template: |
-      SELECT ... (new approach with CTE)
+4. **Weighted** (`WeightedSelector`):
+   - Weighted random selection based on variant weights
+   - Weights are relative (don't need to sum to 100)
+   - Use for: Gradual rollout (e.g., 80% default, 20% experimental)
 
-selection_strategy: ucb
-metrics:
-  - name: query_latency
-    optimization_direction: minimize
-  - name: judge_score
-    optimization_direction: maximize
+**A/B Test Configuration** (code-based):
+```go
+// Hash-based: deterministic per session
+selector := prompts.NewHashSelector()
+
+// Weighted: 80% default, 20% experimental
+selector := prompts.NewWeightedSelector(map[string]int{
+    "default":      80,
+    "experimental": 20,
+}, 0)
+
+// Wrap a PromptRegistry with A/B testing
+abRegistry := prompts.NewABTestingRegistry(fileRegistry, selector)
+prompt, _ := abRegistry.GetForSession(ctx, "agent.system", "sess-123", vars)
 ```
 
 **Integration with Learning Agent**:
 ```
-Execute Variant ───▶ Collect Metrics ───▶ Pattern Effectiveness Tracker         
-                                              │                                 
+Execute Variant ───▶ Collect Metrics ───▶ Pattern Effectiveness Tracker
+                                              │
                                               ▼
                                         Learning Analysis
-                                              │                                 
-                                              ├─ Statistical significance test  
-                                              ├─ Winner identification          
-                                              └─ Auto-apply (if configured)     
+                                              │
+                                              ├─ Statistical significance test
+                                              ├─ Winner identification
+                                              └─ Auto-apply (if configured)
 ```
 
 
@@ -598,23 +626,24 @@ Execute Variant ───▶ Collect Metrics ───▶ Pattern Effectiveness 
 
 **Responsibility**: Track pattern usage metrics for learning agent feedback.
 
-**Metrics Collected**:
-- Pattern ID (name)
-- Success/failure count
-- Judge scores (multi-dimensional: quality, safety, cost)
-- Token usage (input + output)
-- Latency (execution time)
-- Error messages (failure analysis)
+**Metrics Collected** (aggregated per time window, per pattern/variant/agent):
+- Pattern name, variant, domain, agent ID
+- Success/failure count and success rate
+- Judge pass rate, average score, per-criterion scores (multi-dimensional)
+- Average cost in USD
+- Average latency in milliseconds
+- Error type breakdown (JSON map)
+- LLM provider and model used
 
-**Storage**: SQLite database (schema in `pkg/metaagent/learning/pattern_tracker.go`)
+**Storage**: SQLite database (schema in `pkg/metaagent/learning/schema.go`, logic in `pkg/metaagent/learning/pattern_tracker.go`)
 
 **Integration Points**:
-1. **Agent Execution**: Records metrics after pattern use
-2. **Judge System**: Exports scores to tracker
+1. **Agent Execution**: Records metrics after pattern use (via `Orchestrator.RecordPatternUsage()`)
+2. **Judge System**: Exports scores to tracker (multi-dimensional: pass rate, criterion scores)
 3. **Learning Agent**: Queries tracker for analysis
-4. **DSPy Teleprompters**: Uses metrics as optimization signal
+4. **MessageBus**: Publishes aggregated metrics to `meta.pattern.effectiveness` topic
 
-**See**: [Learning Agent Architecture](learning-agent-design.md)
+**See**: [Learning Agent Architecture](learning-agent.md)
 
 
 ## Key Interactions
@@ -706,20 +735,21 @@ User Query      Orchestrator    Library       Pattern Index
   │                 │               │                │                          
 ```
 
-**Scoring Example**:
+**Scoring Example** (based on actual weights from `pkg/patterns/orchestrator.go`):
 ```
 User: "Analyze customer purchase journey with nPath"
 
 Pattern: npath_analysis
-├─ Category = "analytics" matches IntentAnalytics → +0.4                        
-├─ Use cases contain "customer journey" → +0.3                                  
-├─ Title contains "nPath" → +0.2                                                
-└─ Total Score: 0.9 (high confidence match)                                     
+├─ Category = "analytics" matches IntentAnalytics → +0.5
+├─ Keyword match rate (4/5 keywords matched)      → +0.4
+├─ Name contains "npath"                          → +0.2
+├─ Title contains "nPath"                         → +0.1
+└─ Total Score: 1.2 (high confidence match)
 
 Pattern: sessionize
-├─ Category = "analytics" matches IntentAnalytics → +0.4                        
-├─ Use cases contain "session analysis" → +0.3                                  
-└─ Total Score: 0.7 (medium confidence, alternative)                            
+├─ Category = "analytics" matches IntentAnalytics → +0.5
+├─ Keyword match rate (2/5 keywords matched)      → +0.2
+└─ Total Score: 0.7 (medium confidence, alternative)
 ```
 
 
@@ -727,7 +757,7 @@ Pattern: sessionize
 
 ### Pattern Struct
 
-**Definition** (`pkg/patterns/types.go:6`):
+**Definition** (`pkg/patterns/types.go`):
 ```go
 type Pattern struct {
     Name            string               // npath_analysis
@@ -745,14 +775,15 @@ type Pattern struct {
     CommonErrors    []CommonError        // Known failures + solutions
     BestPractices   string               // Usage guidance
     Syntax          *Syntax              // Backend-specific syntax
+    BackendFunction string               // Backend-specific function name
 }
 ```
 
-**YAML Example**:
+**YAML Example** (based on `patterns/teradata/analytics/npath.yaml`):
 ```yaml
-name: npath_analysis
-title: "nPath Sequential Analysis"
-description: "Analyze sequential customer behavior using nPath function"
+name: npath
+title: "nPath Sequence Analysis"
+description: "Analyze sequences of events to find patterns over ordered data partitions"
 category: analytics
 difficulty: advanced
 backend_type: sql
@@ -789,50 +820,52 @@ examples:
 
 ### Pattern Search
 
-**Problem**: Find relevant patterns from 70 candidates in <10ms.
+**Problem**: Find relevant patterns from 104 candidates in <10ms.
 
-**Solution**: In-memory keyword matching with intent boosting.
+**Solution**: In-memory keyword matching with intent boosting and optional LLM re-ranking.
 
-**Algorithm**:
+**Algorithm** (simplified from `pkg/patterns/library.go`):
 ```go
 func (lib *Library) Search(query string) []PatternSummary {
     queryLower := strings.ToLower(query)
-    keywords := strings.Fields(queryLower)
+    keywords := tokenizeAndFilterStopWords(queryLower)
 
-    results := []PatternSummary{}
+    type scoredResult struct {
+        pattern    PatternSummary
+        matchCount int
+        score      float64
+    }
+    scoredResults := []scoredResult{}
 
-    for _, pattern := range lib.patternIndex {
-        score := 0.0
-
-        // Keyword matching
+    for _, p := range lib.ListAll() {
+        searchText := strings.ToLower(p.Name + " " + p.Title + " " + p.Description)
+        matchCount := 0
         for _, kw := range keywords {
-            if strings.Contains(strings.ToLower(pattern.Name), kw) {
-                score += 0.3
-            }
-            if strings.Contains(strings.ToLower(pattern.Title), kw) {
-                score += 0.2
-            }
-            if strings.Contains(strings.ToLower(pattern.Description), kw) {
-                score += 0.1
+            if strings.Contains(searchText, kw) {
+                matchCount++
             }
         }
 
-        if score > 0 {
-            results = append(results, pattern)
+        if matchCount > 0 {
+            score := float64(matchCount) / float64(len(keywords))
+            // Boost for name/title matches (stronger signal)
+            for _, kw := range keywords {
+                if strings.Contains(strings.ToLower(p.Name), kw) {
+                    score += 0.5
+                }
+                if strings.Contains(strings.ToLower(p.Title), kw) {
+                    score += 0.3
+                }
+            }
+            scoredResults = append(scoredResults, scoredResult{p, matchCount, score})
         }
     }
 
-    // Sort by score descending
-    sort.Slice(results, func(i, j int) bool {
-        return results[i].Score > results[j].Score
-    })
+    // Sort by score descending, then by match count
+    sort.Slice(scoredResults, func(i, j int) bool { ... })
 
-    // Return top-K (K=5 default)
-    if len(results) > 5 {
-        results = results[:5]
-    }
-
-    return results
+    // Return ALL matching patterns (no top-K truncation)
+    return extractPatterns(scoredResults)
 }
 ```
 
@@ -840,7 +873,7 @@ func (lib *Library) Search(query string) []PatternSummary {
 - Time: O(N × K) where N = patterns, K = keywords
 - Space: O(N) for results array
 
-**Performance**: <10ms for 70 patterns, 5 keywords
+**Performance**: <10ms for 104 patterns, 5 keywords
 
 
 ### Debounce Algorithm
@@ -886,67 +919,69 @@ Timer fires at t=700ms → Reload Pattern
 
 ### A/B Test Selection
 
-**UCB Algorithm** (Upper Confidence Bound):
-```
-Score(variant) = mean(success_rate) + sqrt(2 × ln(total_trials) / trials(variant))
-                 │                     │                                        
-                 └─ Exploitation      └─ Exploration                            
+**Variant Selection** (4 strategies, no UCB -- stateless selection models):
 
-Select variant with highest UCB score
+The A/B testing system uses the `VariantSelector` interface (`pkg/prompts/ab_testing.go`) with four concrete strategies. Selection is stateless -- there is no bandit algorithm or adaptive selection based on past results.
+
+```
+1. ExplicitSelector:  Always returns forced variant (debugging, manual override)
+2. HashSelector:      FNV-64a hash of (sessionID + key) → deterministic variant
+3. RandomSelector:    Uniform random (math/rand with configurable seed)
+4. WeightedSelector:  Weighted random based on relative integer weights
 ```
 
 **Rationale**:
-- High success rate → High exploitation term
-- Few trials → High exploration term
-- Automatically balances explore/exploit
+- Hash-based provides consistent user experience within a session
+- Weighted enables gradual rollout (e.g., 90/10 canary testing)
+- No bandit/UCB algorithm -- effectiveness tracking feeds into the Learning Agent for offline analysis, not real-time variant selection
 
-**Example**:
-```
-Variant A: 80% success, 100 trials
-UCB(A) = 0.80 + sqrt(2 × ln(200) / 100) = 0.80 + 0.19 = 0.99
+**Example** (WeightedSelector):
+```go
+// 80% default, 20% experimental
+selector := prompts.NewWeightedSelector(map[string]int{
+    "default":      80,
+    "experimental": 20,
+}, 0)
 
-Variant B: 85% success, 10 trials
-UCB(B) = 0.85 + sqrt(2 × ln(200) / 10) = 0.85 + 0.78 = 1.63
-
-→ Select Variant B (less confident but higher potential)
+// For canary testing (convenience function in pkg/patterns/ab_testing.go):
+selector := patterns.NewCanarySelector("control", "treatment", 0.10) // 90/10 split
 ```
 
 
 ## Design Trade-offs
 
-### Decision 1: Keyword-Based Search vs. Semantic Embeddings
+### Decision 1: Hybrid Keyword + LLM Re-Ranking
 
-**Chosen**: Keyword-based search with intent boosting
+**Chosen**: Keyword-based search with optional LLM re-ranking for ambiguous cases
 
 **Rationale**:
-- **Fast**: <10ms query time (no model inference)
-- **Deterministic**: Same query → same results (reproducible)
-- **Explainable**: Can show why pattern was matched
-- **No dependencies**: No embedding models, no vector DB
+- **Fast path**: <10ms query time for clear keyword matches (no model inference)
+- **Accurate path**: LLM re-ranking for ambiguous cases (triggered automatically)
+- **Deterministic default**: Same query → same results when LLM not triggered
+- **Graceful degradation**: Works without LLM provider configured
 
-**Alternatives**:
-1. **TF-IDF cosine similarity**:
-   - ✅ Better semantic matching than keywords
-   - ❌ Requires index rebuild on every pattern change
-   - ❌ More complex, harder to debug
+**How it works** (`pkg/patterns/llm_reranker.go`):
+1. Keyword-based scoring runs first (fast path)
+2. If results are ambiguous (low confidence, close scores, unknown intent), LLM re-ranks top candidates
+3. If LLM fails, falls back to keyword-based scores
 
-2. **Embedding similarity (OpenAI/Claude embeddings)**:
+**Alternatives considered**:
+1. **Embedding similarity (vector DB)**:
    - ✅ Best semantic understanding
-   - ❌ External API dependency
-   - ❌ Latency (50-200ms embedding generation)
-   - ❌ Cost ($0.0001 per embedding)
+   - ❌ Requires external vector DB or embedding model
+   - ❌ Latency for embedding generation
+   - ❌ Cost per embedding
 
-3. **Local embedding model (sentence-transformers)**:
-   - ✅ No external dependency
-   - ❌ Model size (100-500MB)
-   - ❌ Inference latency (10-50ms per query)
-   - ❌ GPU recommended for speed
+2. **Keywords only (no LLM fallback)**:
+   - ✅ Fastest, simplest
+   - ❌ Limited semantic understanding (synonyms missed)
 
 **Consequences**:
-- ✅ Fast, reliable, explainable pattern matching
-- ✅ Zero external dependencies
-- ❌ Limited semantic understanding (synonyms missed)
-- ❌ Requires good keyword coverage in pattern descriptions
+- ✅ Fast for clear matches, accurate for ambiguous cases
+- ✅ Zero external dependencies in default mode
+- ✅ Graceful degradation without LLM
+- ❌ LLM re-ranking adds latency when triggered
+- ❌ Requires good keyword coverage for fast-path accuracy
 
 
 ### Decision 2: Hot-Reload vs. Server Restart
@@ -1015,7 +1050,7 @@ UCB(B) = 0.85 + sqrt(2 × ln(200) / 10) = 0.85 + 0.78 = 1.63
 
 **Description**: Search algorithm is O(N) in pattern count
 
-**Current**: 70 patterns, <10ms search time
+**Current**: 104 patterns, <10ms search time
 
 **Impact**: 700 patterns → ~100ms search time (may become bottleneck)
 
@@ -1060,7 +1095,7 @@ UCB(B) = 0.85 + sqrt(2 × ln(200) / 10) = 0.85 + 0.78 = 1.63
 | Pattern load (cache hit) | <1ms | <1ms | In-memory map lookup |
 | Pattern load (embedded) | 8ms | 15ms | YAML parse |
 | Pattern load (filesystem) | 12ms | 25ms | File I/O + YAML parse |
-| Pattern search | 5ms | 10ms | 70 patterns, keyword matching |
+| Pattern search | 5ms | 10ms | 104 patterns, keyword matching |
 | Hot-reload (debounce) | 505ms | 520ms | 500ms debounce + 5-20ms reload |
 | Hot-reload (measured) | 89ms | 143ms | Optimized path, no debounce wait |
 | Intent classification | 2ms | 5ms | Keyword-based heuristics |
@@ -1070,7 +1105,7 @@ UCB(B) = 0.85 + sqrt(2 × ln(200) / 10) = 0.85 + 0.78 = 1.63
 
 | Component | Size |
 |-----------|------|
-| Pattern cache (70 patterns) | ~1.5MB (full structs) |
+| Pattern cache (104 patterns) | ~1.5MB (full structs) |
 | Pattern index (summaries) | ~500KB (metadata only) |
 | Hot-reloader | ~100KB (timers, watcher) |
 | **Total** | **~2MB** |
@@ -1078,7 +1113,7 @@ UCB(B) = 0.85 + sqrt(2 × ln(200) / 10) = 0.85 + 0.78 = 1.63
 ### Throughput
 
 - **Pattern loads**: 10,000+ req/s (cache hit)
-- **Pattern searches**: 1,000+ req/s (70 patterns)
+- **Pattern searches**: 1,000+ req/s (104 patterns)
 - **Hot-reloads**: N/A (filesystem-bound, rare operation)
 
 
@@ -1104,7 +1139,7 @@ UCB(B) = 0.85 + sqrt(2 × ln(200) / 10) = 0.85 + 0.78 = 1.63
 
 **Race Prevention**:
 - All tests run with `-race` detector
-- Zero race conditions in v1.0.0-beta.1
+- Zero race conditions in v1.2.0
 
 
 ### Pattern Orchestrator
@@ -1200,11 +1235,9 @@ Hot-Reload Validation Failure ───▶ Log + Trace ───▶ Keep Old Pat
 
 ## References
 
-1. fs notify (fsnotify/fsnotify). Cross-platform file system notifications for Go. https://github.com/fsnotify/fsnotify
+1. fsnotify (fsnotify/fsnotify). Cross-platform file system notifications for Go. https://github.com/fsnotify/fsnotify
 
-2. Auer, P., Cesa-Bianchi, N., & Fischer, P. (2002). *Finite-time analysis of the multiarmed bandit problem*. Machine Learning, 47(2-3), 235-256. (UCB algorithm)
-
-3. Sutton, R. S., & Barto, A. G. (2018). *Reinforcement Learning: An Introduction* (2nd ed.). MIT Press. (Epsilon-greedy exploration)
+2. Fowler, G. & Vo, P. (1991). *FNV Hash*. Used for deterministic A/B testing variant selection via FNV-64a hash.
 
 
 ## Further Reading
@@ -1213,7 +1246,7 @@ Hot-Reload Validation Failure ───▶ Log + Trace ───▶ Keep Old Pat
 
 - [Agent System Architecture](agent-system-design.md) - Pattern integration with ROM layer
 - [Memory System Architecture](memory-systems.md) - ROM layer immutability for hot-reload
-- [Learning Agent Architecture](learning-agent-design.md) - Pattern effectiveness tracking
+- [Learning Agent Architecture](learning-agent.md) - Pattern effectiveness tracking
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
 
 ### Reference Documentation
@@ -1224,4 +1257,4 @@ Hot-Reload Validation Failure ───▶ Log + Trace ───▶ Keep Old Pat
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Pattern Authoring Guide](/docs/guides/pattern-authoring.md) - Writing custom patterns
+- [Pattern Library Guide](/docs/guides/pattern-library-guide.md) - Pattern library usage

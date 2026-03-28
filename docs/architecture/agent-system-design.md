@@ -5,7 +5,7 @@ Detailed architecture of Loom's agent runtime - the conversation loop, segmented
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -62,7 +62,7 @@ The agent is designed to be **backend-agnostic** (SQL, REST, documents), **LLM-a
 ## Design Goals
 
 1. **Autonomy**: Agent drives conversation with minimal human intervention
-2. **Memory Efficiency**: Bounded token usage via segmented memory (ROM/Kernel/L1/L2)
+2. **Memory Efficiency**: Bounded token usage via segmented memory (ROM/Kernel/L1/L2/Swap)
 3. **Crash Recovery**: Session persistence enables recovery from any failure
 4. **Observable**: Every decision traced to Hawk for debugging and evaluation
 5. **Pluggable**: Swap backends, LLMs, tools, patterns without agent code changes
@@ -93,7 +93,7 @@ graph TB
 
         subgraph Support["Support Systems"]
             Memory[Memory Manager<br/>ROM/K/L1/L2]
-            Pattern[Pattern Matcher<br/>TF-IDF]
+            Pattern[Pattern Matcher<br/>LLM/Keyword]
             BackendIf[Backend Interface<br/>SQL/REST/MCP]
         end
 
@@ -119,7 +119,7 @@ graph TB
 ```
 
 **External Interfaces**:
-- **Client**: gRPC/HTTP requests via `Weave` and `StreamWeave` RPCs
+- **Client**: gRPC/HTTP requests via `Weave` and `StreamWeave` RPCs (maps to `Agent.Chat` and `Agent.ChatWithProgress`)
 - **LLM Provider**: Streaming chat completions with tool calling
 - **Backend**: Domain-specific operations (SQL queries, API calls, document retrieval)
 - **Hawk**: Observability trace export with span metadata
@@ -137,6 +137,7 @@ graph TB
 │  │  • Backend (ExecutionBackend)    • LLM (LLMProvider)       │           │  │
 │  │  • Tools (shuttle.Registry)      • Tracer (Hawk)           │           │  │
 │  │  • Prompts (PromptRegistry)      • Config                  │           │  │
+│  │  • Role LLMs (judge/classifier)  • Graph Memory (optional) │           │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                              │                                               │
 │                              ▼                                               │
@@ -147,28 +148,29 @@ graph TB
 │  │  │          Segmented Memory System                  │     │           │  │
 │  │  │                                                   │     │           │  │
 │  │  │  ┌─────────────────────────────────────────┐     │     │            │  │
-│  │  │  │ ROM (5k tokens)                         │     │     │            │  │
-│  │  │  │ Immutable: system prompt, patterns,     │     │     │            │  │
-│  │  │  │ backend schema. Never changes.          │     │     │            │  │
+│  │  │  │ ROM (system prompt, immutable)           │     │     │            │  │
+│  │  │  │ Never changes during session.           │     │     │            │  │
 │  │  │  └─────────────────────────────────────────┘     │     │            │  │
 │  │  │  ┌─────────────────────────────────────────┐     │     │            │  │
-│  │  │  │ Kernel (2k tokens)                      │     │     │            │  │
-│  │  │  │ Session context: user identity, goals,  │     │     │            │  │
-│  │  │  │ preferences. Updated on user request.   │     │     │            │  │
+│  │  │  │ Kernel (tool results, schemas, findings)│     │     │            │  │
+│  │  │  │ Working memory from tool executions.    │     │     │            │  │
+│  │  │  │ LRU eviction for schemas (max 10).      │     │     │            │  │
 │  │  │  └─────────────────────────────────────────┘     │     │            │  │
 │  │  │  ┌─────────────────────────────────────────┐     │     │            │  │
-│  │  │  │ L1 (10k tokens)                         │     │     │            │  │
-│  │  │  │ Recent conversation (sliding window).   │     │     │            │  │
-│  │  │  │ Last N turns, FIFO eviction.            │     │     │            │  │
+│  │  │  │ L1 (recent messages, token-based limit) │     │     │            │  │
+│  │  │  │ Sliding window with adaptive compression│     │     │            │  │
 │  │  │  └─────────────────────────────────────────┘     │     │            │  │
 │  │  │  ┌─────────────────────────────────────────┐     │     │            │  │
-│  │  │  │ L2 (3k tokens)                          │     │     │            │  │
-│  │  │  │ Compressed summaries of old turns.      │     │     │            │  │
-│  │  │  │ LLM-generated, long-term context.       │     │     │            │  │
+│  │  │  │ L2 (compressed summary string)          │     │     │            │  │
+│  │  │  │ LLM-compressed history. Evicts to Swap. │     │     │            │  │
+│  │  │  └─────────────────────────────────────────┘     │     │            │  │
+│  │  │  ┌─────────────────────────────────────────┐     │     │            │  │
+│  │  │  │ Swap (database-backed cold storage)     │     │     │            │  │
+│  │  │  │ L2 snapshots archived to SessionStore.  │     │     │            │  │
 │  │  │  └─────────────────────────────────────────┘     │     │            │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                             │          │  │
-│  │  Sessions (map[string]*Session) ◀──▶ SessionStore (SQLite) │           │  │
+│  │  Sessions (map[string]*Session) ◀──▶ SessionStorage (SQLite/PG) │      │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                              │                                               │
 │                              ▼                                               │
@@ -176,8 +178,8 @@ graph TB
 │  │                   Conversation Loop                         │          │  │
 │  │                                                             │          │  │
 │  │  1. Load/Create Session                                    │           │  │
-│  │  2. Match Patterns (TF-IDF cosine similarity)              │           │  │
-│  │  3. Build Context (ROM + Kernel + L1 + L2 + msg)           │           │  │
+│  │  2. Match Patterns (LLM-based intent classification)        │           │  │
+│  │  3. Build Context (ROM + L2 + patterns + skills + L1)      │           │  │
 │  │  4. LLM Invoke (streaming)                                 │           │  │
 │  │  5. Parse Tool Calls                                       │           │  │
 │  │  6. Execute Tools (concurrent via Shuttle)                 │           │  │
@@ -213,30 +215,44 @@ graph TB
 
 ### Agent Core
 
-**Responsibility**: Orchestrate all agent subsystems and expose the `Weave` API.
+**Responsibility**: Orchestrate all agent subsystems and expose the `Chat`/`ChatWithProgress` API.
 
-**Fields** (from `pkg/agent/types.go:26`):
+**Fields** (from `pkg/agent/types.go`):
 ```go
 type Agent struct {
+    id                  string                         // Unique agent identifier (UUID v4)
+    mu                  sync.RWMutex                   // Thread-safe field access
     backend             fabric.ExecutionBackend        // Domain operations
     tools               *shuttle.Registry              // Tool registry
     executor            *shuttle.Executor              // Tool executor
+    permissionChecker   *shuttle.PermissionChecker     // Tool execution permissions
     memory              *Memory                        // Session manager
     errorStore          ErrorStore                     // Error submission channel
-    llm                 LLMProvider                    // LLM provider
+    llm                 LLMProvider                    // Primary LLM provider
+    judgeLLM            LLMProvider                    // Role-specific: evaluation
+    orchestratorLLM     LLMProvider                    // Role-specific: fork-join synthesis
+    classifierLLM       LLMProvider                    // Role-specific: intent classification
+    compressorLLM       LLMProvider                    // Role-specific: memory compression
     tracer              observability.Tracer           // Hawk tracer
     prompts             prompts.PromptRegistry         // Prompt management
     config              *Config                        // Agent config
-    guardrails          *fabric.GuardrailEngine       // Optional guardrails
-    circuitBreakers     *fabric.CircuitBreakerManager // Optional circuit breakers
+    guardrails          *fabric.GuardrailEngine        // Optional guardrails
+    circuitBreakers     *fabric.CircuitBreakerManager  // Optional circuit breakers
     orchestrator        *patterns.Orchestrator         // Pattern orchestration
+    skillOrchestrator   *skills.Orchestrator           // Skill orchestration
     refStore            communication.ReferenceStore   // Agent-to-agent refs
     commPolicy          *communication.PolicyManager   // Communication policy
     messageQueue        *communication.MessageQueue    // Async message queue
-    mcpClients          map[string]MCPClientRef       // MCP client tracking
-    dynamicDiscovery    *DynamicToolDiscovery         // Lazy MCP tool loading
+    mcpClients          map[string]MCPClientRef        // MCP client tracking
+    dynamicDiscovery    *DynamicToolDiscovery          // Lazy MCP tool loading
     sharedMemory        *storage.SharedMemoryStore     // Large data storage
+    refTracker          *storage.SessionReferenceTracker // Shared memory cleanup
+    sqlResultStore      storage.ResultStore            // Queryable SQL results
     tokenCounter        *TokenCounter                  // Token estimation
+    providerPool        map[string]LLMProvider         // Named provider pool
+    lazyToolSets        []lazyToolSet                  // Conditionally-registered tools
+    graphMemoryStore    memory.GraphMemoryStore        // Graph-backed episodic memory
+    graphMemoryConfig   *loomv1.GraphMemoryConfig      // Graph memory configuration
 }
 ```
 
@@ -248,34 +264,46 @@ type Agent struct {
 
 **Interface**:
 ```go
-func (a *Agent) Weave(ctx context.Context, sessionID, message string) (*Response, error)
-func (a *Agent) StreamWeave(ctx context.Context, sessionID, message string, callback ProgressCallback) error
-func (a *Agent) Close() error
+func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) (*Response, error)
+func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMessage string, progressCallback ProgressCallback) (*Response, error)
 ```
+
+Note: The gRPC service exposes `Weave` and `StreamWeave` RPCs (defined in `proto/loom/v1/loom.proto`), which the server layer translates to `Agent.Chat` and `Agent.ChatWithProgress` respectively.
 
 
 ### Memory Controller
 
 **Responsibility**: Manage session lifecycle and segmented memory.
 
-**Implementation** (`pkg/agent/memory.go:17`):
+**Implementation** (`pkg/agent/memory.go`):
 ```go
 type Memory struct {
     mu                   sync.RWMutex                   // Protects sessions map
     sessions             map[string]*Session            // In-memory session cache
-    store                *SessionStore                  // Optional SQLite persistence
-    sharedMemory         *storage.SharedMemoryStore    // Optional large data storage
-    systemPromptFunc     SystemPromptFunc              // Dynamic system prompt
-    maxContextTokens     int                           // Context window size
-    reservedOutputTokens int                           // Output reservation
+    store                SessionStorage                 // Optional persistence (SQLite or PostgreSQL)
+    sharedMemory         *storage.SharedMemoryStore     // Optional large data storage
+    systemPromptFunc     SystemPromptFunc               // Dynamic system prompt
+    tracer               observability.Tracer           // Optional tracer for observability
+    logger               *zap.Logger                    // Structured logger for storage errors
+    llmProvider          LLMProvider                    // Optional LLM for semantic search reranking
+    maxContextTokens     int                            // Context window size
+    reservedOutputTokens int                            // Output reservation
+    compressionProfile   *CompressionProfile            // Compression behavior profile
+    maxToolResults       int                            // Max tool results in kernel
+    observers            map[string][]MemoryObserver    // Real-time cross-session observers
+    observersMu          sync.RWMutex                   // Protects observers map
 }
 ```
 
 **Operations**:
-- `GetOrCreateSession(sessionID)`: Load from cache → SQLite → create new
-- `Persist(session)`: Write session to SQLite (idempotent)
-- `Delete(sessionID)`: Remove from cache and SQLite
-- `ListSessions()`: Enumerate all sessions
+- `GetOrCreateSession(ctx, sessionID)`: Load from cache → persistent store → create new
+- `GetOrCreateSessionWithAgent(ctx, sessionID, agentID, parentSessionID)`: Same with agent metadata
+- `PersistSession(ctx, session)`: Write session to persistent store (idempotent)
+- `PersistMessage(ctx, sessionID, msg)`: Persist individual message
+- `DeleteSession(sessionID)`: Remove from in-memory cache
+- `ListSessions()`: Enumerate all in-memory sessions
+- `AddMessage(ctx, sessionID, msg)`: Add message with observer notification
+- `RegisterObserver(agentID, observer)`: Register real-time cross-session observer
 
 **Concurrency**: `sync.RWMutex` protects `sessions` map for concurrent reads, exclusive writes.
 
@@ -292,21 +320,24 @@ type Memory struct {
    └─ If not found, create new session with segmented memory                    
 
 2. Match Patterns
-   ├─ Extract keywords from user message                                        
-   ├─ TF-IDF cosine similarity against pattern library                          
-   └─ Select top-K patterns (K=3 by default)                                    
+   ├─ Classify user intent (LLM-based by default, keyword fallback)
+   ├─ Score patterns against classified intent
+   └─ Select top-K patterns (K=1 by default, configurable up to 5)
 
 3. Build Context
-   ├─ ROM: System prompt + patterns + backend schema                            
-   ├─ Kernel: Session context (user info, goals)                                
-   ├─ L1: Recent N turns (FIFO window)                                          
-   ├─ L2: Summarized history (LLM-compressed)                                   
-   └─ Current message                                                           
+   ├─ ROM: System prompt (immutable)
+   ├─ L2: Summarized history (LLM-compressed)
+   ├─ Pattern: Injected domain knowledge (if matched)
+   ├─ Skills: Active skill instructions (if configured)
+   ├─ Findings: Working memory from tool executions
+   ├─ Promoted: Retrieved context from swap layer
+   └─ L1: Recent messages (sliding window)
 
 4. Check Token Budget
-   ├─ Calculate total tokens: ROM + Kernel + L1 + L2 + msg                      
-   ├─ If exceeds limit, evict oldest L1 message                                 
-   └─ Repeat until within budget                                                
+   ├─ Calculate total tokens across all layers
+   ├─ If exceeds warning threshold, compress oldest L1 messages to L2
+   ├─ If L2 exceeds maxL2Tokens, evict L2 to swap (database)
+   └─ Adaptive batch sizes based on budget pressure (profile-dependent)                                                
 
 5. LLM Invoke
    ├─ Format messages (system + history + user)                                 
@@ -346,35 +377,42 @@ type Memory struct {
 
 **Responsibility**: Select relevant domain patterns for user query.
 
-**Algorithm**: TF-IDF Cosine Similarity
+**Algorithm**: LLM-Based Intent Classification (default) with Keyword Fallback
 ```
 1. Preprocessing (pattern library load):
-   ├─ Tokenize pattern descriptions                                             
-   ├─ Build TF-IDF index (term frequency-inverse document frequency)            
-   └─ Store in atomic.Value for hot-reload                                      
+   ├─ Build pattern index (name, title, description, category, use cases)
+   ├─ Store index as []PatternSummary
+   └─ Store in atomic.Value for hot-reload
 
-2. Query matching:
-   ├─ Tokenize user message                                                     
-   ├─ Convert to TF-IDF vector                                                  
-   ├─ Compute cosine similarity with all pattern vectors                        
-   ├─ Sort by similarity score (descending)                                     
-   └─ Return top-K patterns (K=3)                                               
+2. Query matching (LLM classifier, default):
+   ├─ Send user message + pattern summaries to classifier LLM
+   ├─ LLM selects best-fit pattern with confidence score
+   └─ Return top-K patterns (K=1 by default, configurable up to 5)
+
+2b. Query matching (keyword fallback, when UseLLMClassifier=false):
+   ├─ Classify intent via defaultIntentClassifier (keyword lists + containsAny)
+   ├─ Extract keywords from user message (split, lowercase, filter stop words)
+   ├─ Score each pattern: category match (+0.5), keyword match rate (up to +0.5),
+   │   name match (+0.2), title match (+0.1)
+   ├─ Sort by score (descending)
+   └─ Return top-K patterns (K=1)
 
 3. Hot-reload (fsnotify):
-   ├─ Detect file change event                                                  
-   ├─ Reload YAML files                                                         
-   ├─ Rebuild TF-IDF index                                                      
-   └─ Atomic swap (atomic.Store)                                                
+   ├─ Detect file change event
+   ├─ Reload YAML files
+   ├─ Rebuild pattern index
+   └─ Atomic swap (atomic.Store)
 ```
 
 **Complexity**:
-- Indexing: O(n log n) where n = pattern count
-- Query: O(log n) for top-K selection
-- Space: O(v × n) where v = vocabulary size
+- Indexing: O(n) where n = pattern count
+- Query (keyword): O(n x m) where m = keywords per pattern
+- Query (LLM): One LLM call per turn (latency dominated by LLM inference)
+- Space: O(n) for pattern summaries
 
-**Performance**: <10ms for 65 patterns, 89-143ms hot-reload latency.
+**Performance**: <10ms for keyword matching over 104 patterns, 89-143ms hot-reload latency.
 
-**See**: [Pattern System Architecture](pattern-library-design.md)
+**See**: [Pattern System Architecture](pattern-system.md)
 
 
 ### Tool Executor Integration
@@ -383,21 +421,19 @@ type Memory struct {
 
 **Integration**:
 ```go
-// Agent calls Shuttle executor
-results, err := a.executor.ExecuteTools(ctx, toolCalls, session)
+// Agent calls Shuttle executor for each tool (single-tool API)
+result, err := a.executor.Execute(ctx, toolName, params)
 
-// Shuttle spawns goroutines
-for each tool in toolCalls {
-    go func(tool) {
-        result := tool.Execute(ctx, params)
-        resultChan <- result
-    }(tool)
-}
+// Or use ExecuteWithTool for a specific tool instance
+result, err := a.executor.ExecuteWithTool(ctx, tool, params)
 
-// Aggregate results
-for i := 0; i < len(toolCalls); i++ {
-    result := <-resultChan
-    results = append(results, result)
+// Concurrent execution: Agent spawns goroutines for multiple tool calls
+// from a single LLM response, then aggregates results
+for _, tc := range toolCalls {
+    go func(call ToolCall) {
+        result, err := a.executor.Execute(ctx, call.Name, call.Input)
+        resultChan <- ToolExecution{ToolName: call.Name, Result: result, Error: err}
+    }(tc)
 }
 ```
 
@@ -408,7 +444,7 @@ for i := 0; i < len(toolCalls); i++ {
 
 **Timeout**: Per-tool timeout via `context.WithTimeout` (default: 30s).
 
-**See**: [Tool System Architecture](tool-system-design.md)
+**See**: Tool execution is handled by the Shuttle system in `pkg/shuttle/executor.go`
 
 
 ### Self-Correction (Judge)
@@ -439,13 +475,13 @@ User Query ────▶ Agent Response
               Fail (score < threshold)
 ```
 
-**Aggregation Strategies** (6 strategies):
-1. **Mean**: Average of all judge scores
-2. **Median**: Middle value (robust to outliers)
-3. **Min**: Strictest judge wins (all must pass)
-4. **Max**: Most lenient judge wins (any can pass)
-5. **Weighted**: Weighted average (judge-specific weights)
-6. **Vote**: Majority vote (pass if >50% pass)
+**Aggregation Strategies** (6 strategies, defined in proto as `AggregationStrategy`):
+1. **WEIGHTED_AVERAGE**: Weighted average of all judge scores (default)
+2. **ALL_MUST_PASS**: Strictest - every judge must pass (logical AND)
+3. **MAJORITY_PASS**: Majority vote - pass if >50% of judges pass
+4. **ANY_PASS**: Most lenient - any single judge can pass (logical OR)
+5. **MIN_SCORE**: Use the minimum score across all judges
+6. **MAX_SCORE**: Use the maximum score across all judges
 
 **Retry Logic**:
 ```
@@ -463,9 +499,9 @@ return response  # Return last attempt even if failed
 **Configuration**:
 - Threshold: 0.0-1.0 (default: 0.7)
 - Max retries: 1-10 (default: 3)
-- Aggregation strategy: mean, median, min, max, weighted, vote
+- Aggregation strategy: weighted_average, all_must_pass, majority_pass, any_pass, min_score, max_score
 
-**See**: Judge implementation in `pkg/evals/judge.go`
+**See**: Judge implementation in `pkg/evals/judges/judge.go`, aggregator in `pkg/evals/judges/aggregator.go`
 
 
 ### Session Persistence
@@ -473,22 +509,58 @@ return response  # Return last attempt even if failed
 **Responsibility**: Crash recovery via SQLite session store.
 
 **Schema** (`pkg/agent/session_store.go`):
+
+The `SessionStore` (SQLite implementation of the `SessionStorage` interface) uses a normalized relational schema rather than serialized BLOBs. This enables FTS5 full-text search over message content and queryable tool execution history.
+
 ```sql
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
-    data BLOB NOT NULL,                -- Serialized session (protobuf)
+    name TEXT,
+    agent_id TEXT,
+    parent_session_id TEXT,
+    context_json TEXT,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    total_cost_usd REAL DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_updated_at ON sessions(updated_at);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT,
+    tool_calls_json TEXT,
+    tool_use_id TEXT,
+    tool_result_json TEXT,
+    session_context TEXT DEFAULT 'direct',
+    timestamp INTEGER NOT NULL,
+    token_count INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE tool_executions (...);    -- Tool execution audit trail
+CREATE TABLE memory_snapshots (...);   -- L2 summary archival (swap layer)
+CREATE TABLE artifacts (...);          -- User/agent-generated files
+
+-- FTS5 virtual table for semantic search (BM25 ranking)
+CREATE VIRTUAL TABLE messages_fts5 USING fts5(
+    message_id UNINDEXED, session_id UNINDEXED, role UNINDEXED,
+    content, timestamp UNINDEXED,
+    tokenize='porter unicode61'
+);
 ```
 
-**Operations**:
-- `SaveSession(ctx, session)`: Upsert session (idempotent)
-- `LoadSession(ctx, sessionID)`: Deserialize from BLOB
-- `DeleteSession(ctx, sessionID)`: Remove session
+**Operations** (via `SessionStorage` interface, `pkg/agent/session_storage.go`):
+- `SaveSession(ctx, session)`: Upsert session metadata (idempotent, JSON context)
+- `LoadSession(ctx, sessionID)`: Load session + all messages from relational tables
+- `DeleteSession(ctx, sessionID)`: CASCADE delete session and all associated data
 - `ListSessions(ctx)`: Enumerate all session IDs
+- `SaveMessage(ctx, sessionID, msg)`: Persist individual message (FTS5 auto-indexed)
+- `SearchMessages(ctx, sessionID, query, limit)`: BM25 full-text search via FTS5
+- `SaveMemorySnapshot(ctx, sessionID, type, content, tokens)`: Archive L2 summaries to swap
 
 **Persistence Timing**: Every turn persisted **before** returning response to client.
 
@@ -512,7 +584,7 @@ CREATE INDEX idx_updated_at ON sessions(updated_at);
 ```
 Client         Agent          Memory       LLM          Shuttle      Backend
   │              │              │            │             │           │        
-  ├─ Weave ─────▶│              │            │             │           │        
+  ├─ Chat ──────▶│              │            │             │           │        
   │              ├─ GetOrCreate ▶│            │             │           │       
   │              │◀─ Session ───┤            │             │           │        
   │              │              │            │             │           │        
@@ -619,35 +691,52 @@ See [Agent Core](#agent-core) above for full struct definition.
 
 ### Session
 
-**Definition** (`pkg/types/session.go`):
+**Definition** (`pkg/types/types.go`):
 ```go
 type Session struct {
-    ID           string                 // Unique session identifier
-    Messages     []Message              // Full conversation history
-    Context      map[string]interface{} // Session-level context
-    SegmentedMem *SegmentedMemory      // Tiered memory (ROM/Kernel/L1/L2)
-    SharedMemRef *SharedMemoryRef       // Reference to shared memory store
-    CreatedAt    time.Time              // Session creation timestamp
-    UpdatedAt    time.Time              // Last update timestamp
+    mu              sync.RWMutex            // Thread-safe access
+    ID              string                  // Unique session identifier
+    Name            string                  // Human-readable name (optional)
+    AgentID         string                  // Owning agent (for cross-session memory)
+    ParentSessionID string                  // Coordinator session link (for sub-agents)
+    UserID          string                  // User identity (for RLS multi-tenancy)
+    Messages        []Message               // Full conversation history (flat)
+    SegmentedMem    interface{}             // Tiered memory (ROM/Kernel/L1/L2/Swap)
+    FailureTracker  interface{}             // Consecutive tool failure tracking
+    Context         map[string]interface{}  // Session-level context
+    CreatedAt       time.Time               // Session creation timestamp
+    UpdatedAt       time.Time               // Last update timestamp
+    TotalCostUSD    float64                 // Accumulated cost
+    TotalTokens     int                     // Accumulated token usage
 }
 ```
 
 **Invariants**:
 - `ID` must be non-empty
-- `Messages` append-only (never deleted, only evicted from L1 → L2)
+- `Messages` append-only (never deleted, only evicted from L1 to L2)
 - `SegmentedMem` always initialized (even for empty sessions)
 - `UpdatedAt` modified on every turn
+- `SegmentedMem` is typed as `interface{}` to break import cycles between `pkg/types` and `pkg/agent`; at runtime it holds `*agent.SegmentedMemory`
 
 
 ### Message
 
-**Definition** (`pkg/types/message.go`):
+**Definition** (`pkg/types/types.go`):
 ```go
 type Message struct {
-    Role    string     // "system", "user", "assistant", "tool"
-    Content string     // Message text
-    ToolCalls []ToolCall // Optional tool calls (for assistant messages)
-    Timestamp time.Time // Message creation time
+    ID             string           // Unique message identifier (from database)
+    Role           string           // "system", "user", "assistant", "tool"
+    Content        string           // Message text
+    ContentBlocks  []ContentBlock   // Multi-modal content (text + images)
+    ToolCalls      []ToolCall       // Optional tool calls (for assistant messages)
+    ToolUseID      string           // Tool request ID (for tool role messages)
+    ToolResult     *shuttle.Result  // Tool execution result (for tool role messages)
+    SessionContext SessionContext   // Context: direct, coordinator, shared
+    AgentID        string           // Which agent created this message
+    UserID         string           // User identity (for RLS multi-tenancy)
+    Timestamp      time.Time        // Message creation time
+    TokenCount     int              // Token count for cost tracking
+    CostUSD        float64          // Cost in USD for this message
 }
 ```
 
@@ -657,21 +746,41 @@ type Message struct {
 **Definition** (`pkg/agent/segmented_memory.go`):
 ```go
 type SegmentedMemory struct {
-    ROM                  []Message // Read-only: system prompt, patterns, schema
-    Kernel               []Message // Session context: user info, goals
-    L1                   []Message // Recent turns (sliding window)
-    L2                   []Message // Summarized history (compressed)
-    MaxContextTokens     int       // Total token budget
-    ReservedOutputTokens int       // Reserved for LLM output
-    L1Capacity           int       // Max messages in L1 before eviction
+    // ROM Layer (never changes during session)
+    romContent         string                  // Static documentation/system prompt
+
+    // Kernel Layer (changes per conversation)
+    tools              []string                // Available tool names
+    toolResults        []CachedToolResult      // Recent tool results (max 5)
+    schemaCache        map[string]string       // LRU schema cache (max 10)
+    findingsCache      map[string]Finding      // Verified findings (working memory)
+
+    // L1 Cache (hot - recent messages)
+    l1Messages         []Message               // Recent conversation (sliding window)
+
+    // L2 Cache (warm - summarized history)
+    l2Summary          string                  // Compressed summary of older conversation
+
+    // Swap Layer (cold - database-backed long-term storage)
+    sessionStore       SessionStorage          // Database for persistent storage
+    swapEnabled        bool                    // Whether swap layer is configured
+
+    // Token management
+    tokenCounter       *TokenCounter           // Accurate token counting
+    tokenBudget        *TokenBudget            // Token budget enforcement
+    maxL1Tokens        int                     // Token-based L1 capacity
+    compressionProfile CompressionProfile      // Adaptive compression thresholds
+
+    mu                 sync.RWMutex
 }
 ```
 
 **Invariants**:
 ```
-∀ t: len(ROM) + len(Kernel) + len(L1) + len(L2) ≤ MaxContextTokens - ReservedOutputTokens
-∀ m ∈ L1: m.Timestamp > ∀ m' ∈ L2: m'.Timestamp  (L1 newer than L2)
-ROM never mutated after initialization (immutable)
+∀ t: tokens(ROM) + tokens(Kernel) + tokens(L1) + tokens(L2) ≤ MaxContextTokens - ReservedOutputTokens
+∀ m ∈ L1: m.Timestamp > timestamps in L2 summary  (L1 newer than L2)
+ROM (romContent) never mutated after initialization (immutable)
+L2 evicts to Swap (database) when exceeding maxL2Tokens (default: 5000 tokens)
 ```
 
 
@@ -681,34 +790,38 @@ ROM never mutated after initialization (immutable)
 
 **Problem**: LLM context windows are finite (200k tokens for Claude Sonnet 4.5). Conversations exceed this limit.
 
-**Solution**: Segmented memory with tiered eviction.
+**Solution**: Segmented memory with tiered eviction and adaptive compression.
 
-**Algorithm**:
+**Algorithm** (see `GetMessagesForLLM()` in `pkg/agent/segmented_memory.go`):
 ```
-func BuildContext(session *Session) []Message:
-    budget = MaxContextTokens - ReservedOutputTokens
+func GetMessagesForLLM() []Message:
+    messages = []
 
-    // ROM always included (immutable)
-    messages = session.SegmentedMem.ROM
-    tokens = countTokens(messages)
+    // ROM always included (immutable system prompt)
+    messages += Message{role: "system", content: romContent}
 
-    // Kernel always included (rarely changes)
-    messages += session.SegmentedMem.Kernel
-    tokens += countTokens(session.SegmentedMem.Kernel)
+    // L2 summary (compressed history, if exists)
+    if l2Summary != "":
+        messages += Message{role: "system", content: "Previous conversation summary: " + l2Summary}
 
-    // Add L2 (compressed summaries)
-    messages += session.SegmentedMem.L2
-    tokens += countTokens(session.SegmentedMem.L2)
+    // Pattern content (if injected for this turn)
+    if patternContent != "":
+        messages += Message{role: "system", content: patternContent}
 
-    // Add L1 (recent turns), evict oldest if budget exceeded
-    for msg in session.SegmentedMem.L1:
-        if tokens + countTokens(msg) > budget:
-            break  // Stop adding, context full
-        messages += msg
-        tokens += countTokens(msg)
+    // Skill content (if active skills injected)
+    if skillContent != "":
+        messages += Message{role: "system", content: skillContent}
 
-    // Add current user message
-    messages += currentMessage
+    // Findings summary (working memory from tool executions)
+    if findingsCache not empty:
+        messages += Message{role: "system", content: findingsSummary}
+
+    // Promoted context from swap (retrieved old messages)
+    if promotedContext not empty:
+        messages += promotedContext
+
+    // L1 messages (recent conversation)
+    messages += l1Messages
 
     return messages
 ```
@@ -720,7 +833,7 @@ func BuildContext(session *Session) []Message:
 
 **Problem**: Accurately estimate token count to prevent context overflow.
 
-**Solution**: Use tokenizer library (tiktoken for OpenAI, anthropic-tokenizer for Claude).
+**Solution**: Use a built-in `TokenCounter` that estimates token count (character-based heuristic with message overhead).
 
 **Algorithm**:
 ```
@@ -748,42 +861,66 @@ func CountTokens(messages []Message) int:
 
 **Problem**: When L1 exceeds capacity, which messages to evict to L2?
 
-**Solution**: FIFO (First-In-First-Out) eviction with LLM summarization.
+**Solution**: Adaptive compression with profile-dependent thresholds and LLM summarization.
 
-**Algorithm**:
+**Algorithm** (see `AddMessage()` in `pkg/agent/segmented_memory.go`):
 ```
-func EvictOldestFromL1(session *Session):
-    if len(session.SegmentedMem.L1) <= L1Capacity:
-        return  // No eviction needed
+func AddMessage(msg):
+    l1Messages.append(msg)
+    updateTokenCount()
 
-    // Remove oldest N messages from L1
-    numToEvict = len(session.SegmentedMem.L1) - L1Capacity
-    evicted = session.SegmentedMem.L1[:numToEvict]
-    session.SegmentedMem.L1 = session.SegmentedMem.L1[numToEvict:]
+    // Two compression triggers (profile-dependent):
+    // 1. L1 token count exceeds maxL1Tokens
+    // 2. Overall token budget exceeds warning threshold
+    l1Tokens = countTokens(l1Messages)
+    budgetUsage = tokenBudget.UsagePercentage()
+    warningThreshold = compressionProfile.WarningThresholdPercent
 
-    // Summarize evicted messages
-    summary = llm.Summarize(evicted)
+    if (l1Tokens > maxL1Tokens || budgetUsage > warningThreshold)
+       && len(l1Messages) > minL1Messages:
 
-    // Append summary to L2
-    session.SegmentedMem.L2 = append(session.SegmentedMem.L2, Message{
-        Role: "system",
-        Content: "Previous conversation summary: " + summary,
-        Timestamp: time.Now(),
-    })
+        // Adaptive batch sizing based on budget pressure
+        if budgetUsage > criticalThreshold:
+            batchSize = compressionProfile.CriticalBatchSize  // Aggressive
+        elif budgetUsage > warningThreshold:
+            batchSize = compressionProfile.WarningBatchSize    // Moderate
+        else:
+            batchSize = compressionProfile.NormalBatchSize     // Normal
 
-    // If L2 exceeds capacity, compress further
-    if len(session.SegmentedMem.L2) > L2Capacity:
-        compressSummaries(session.SegmentedMem.L2)
+        // Adjust boundary to avoid splitting tool_use/tool_result pairs
+        batchSize = adjustCompressionBoundary(batchSize)
+
+        // Compress oldest messages to L2
+        evicted = l1Messages[:batchSize]
+        l1Messages = l1Messages[batchSize:]
+
+        // LLM-powered compression if available, otherwise heuristic fallback
+        if compressor != nil && compressor.IsEnabled():
+            summary = compressor.CompressMessages(evicted)
+        else:
+            summary = extractKeywords(evicted)  // Simple heuristic
+
+        l2Summary += summary
+
+        // If L2 exceeds maxL2Tokens and swap is enabled, evict to database
+        if swapEnabled && countTokens(l2Summary) > maxL2Tokens:
+            sessionStore.SaveMemorySnapshot(sessionID, "l2_summary", l2Summary)
+            l2Summary = ""  // Clear and start fresh
 ```
 
-**Eviction Frequency**: Every ~10 turns for L1Capacity=10.
+**Compression Profiles** (defined in `pkg/agent/compression_profiles.go`):
+- `data_intensive`: warning=50%, critical=70%, batches=2/4/6
+- `balanced` (default): warning=60%, critical=75%, batches=3/5/7
+- `conversational`: warning=70%, critical=85%, batches=4/6/8
+
+**Eviction Frequency**: Depends on profile and message size; adaptive rather than fixed.
 
 
 ## Design Trade-offs
 
 ### Decision 1: Segmented Memory vs. Full History
 
-**Chosen**: Segmented memory (ROM/Kernel/L1/L2)
+**Chosen**: Segmented memory (ROM/Kernel/L1/L2/Swap)
 
 **Alternatives**:
 1. **Full history (no eviction)**:
@@ -890,7 +1027,7 @@ func EvictOldestFromL1(session *Session):
 |-----------|-----|-----|-------|
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
-| Pattern match | 8ms | 15ms | TF-IDF over 65 patterns |
+| Pattern match | 8ms | 15ms | Keyword matching over 104 patterns |
 | LLM invoke | 850ms | 2100ms | Network + Claude Sonnet 4.5 generation |
 | Tool execution | 45ms | 180ms | Backend-dependent (SQL query) |
 | Judge evaluation | 920ms | 2300ms | LLM-based scoring |
@@ -1016,15 +1153,17 @@ Backend Error ───▶ Tool Error ───▶ Agent Error ───▶ gRPC
 ## Further Reading
 
 ### Architecture
-- [Memory System Architecture](memory-system-design.md) - Segmented memory deep dive
-- [Tool System Architecture](tool-system-design.md) - Shuttle concurrent execution
-- [Pattern System Architecture](pattern-library-design.md) - TF-IDF matching and hot-reload
+- [Memory Systems Architecture](memory-systems.md) - Segmented memory deep dive
+- [Pattern System Architecture](pattern-system.md) - Intent classification and hot-reload
+- [Judge System Architecture](judge-system.md) - Self-correction and evaluation
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
+- [Observability Architecture](observability.md) - Hawk tracing and metrics
 
 ### Reference
 - [Agent Configuration Reference](/docs/reference/agent-configuration.md) - Complete config options
-- [API Reference](/docs/reference/api.md) - gRPC and HTTP APIs
+- [Tool Registry Reference](/docs/reference/tool-registry.md) - Tool registration and execution
+- [Self-Correction Reference](/docs/reference/self-correction.md) - Judge configuration
 
 ### Guides
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [LLM Providers](/docs/guides/llm-providers/) - Provider setup
+- [Memory Management](/docs/guides/memory-management.md) - Memory system usage

@@ -1,7 +1,7 @@
 
 # Prompt Migration Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -13,21 +13,30 @@
   - [Step 2: Export Prompts to YAML](#step-2-export-prompts-to-yaml)
   - [Step 3: Configure looms.yaml](#step-3-configure-loomsyaml)
   - [Step 4: Test and Verify](#step-4-test-and-verify)
+- [YAML Format Reference](#yaml-format-reference)
+- [Variable Interpolation](#variable-interpolation)
+- [A/B Testing with Variants](#ab-testing-with-variants)
+- [Hot-Reload with Watch](#hot-reload-with-watch)
+- [Caching](#caching)
 - [Examples](#examples)
-  - [Example 1: Simple Agent Prompt](#example-1-simple-agent-prompt)
-  - [Example 2: Prompt with Variables](#example-2-prompt-with-variables)
+  - [Example 1: Basic Agent Prompt](#example-1-basic-agent-prompt)
+  - [Example 2: Prompt with Variables and Variants](#example-2-prompt-with-variables-and-variants)
 - [Troubleshooting](#troubleshooting)
 
 
 ## Overview
 
-Migrate from inline prompts to the PromptRegistry system for centralized prompt management, hot-reload, and A/B testing.
+✅ **Available** -- All features described in this guide are implemented and tested.
+
+Migrate from inline prompts to the `FileRegistry` system for centralized prompt management, hot-reload via `Watch()`, and A/B testing with variant selectors.
+
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
+- Loom v1.2.0+
 - Server running: `looms serve`
 - Existing agent with inline prompts
+
 
 ## Quick Start
 
@@ -35,14 +44,18 @@ Migrate from inline prompts to the PromptRegistry system for centralized prompt 
 # Create prompts directory
 mkdir -p prompts/agent
 
-# Move prompts to YAML
+# Create a prompt YAML file using frontmatter format
 cat > prompts/agent/system.yaml << 'EOF'
-name: agent
-namespace: loom
-prompts:
-  - id: system_sql
-    content: |
-      Help users write SQL queries accurately and efficiently.
+---
+key: agent.system
+version: 1.0.0
+author: you@example.com
+description: Base system prompt for agents
+tags: [agent, system]
+variants: [default]
+variables: [backend_type]
+---
+Help users write {{.backend_type}} queries accurately and efficiently.
 EOF
 
 # Update looms.yaml
@@ -50,7 +63,6 @@ cat >> $LOOM_DATA_DIR/looms.yaml << 'EOF'
 prompts:
   source: file
   file_dir: ./prompts
-  enable_reload: true
 EOF
 
 # Restart server
@@ -69,39 +81,43 @@ mkdir -p prompts/{agent,tools,guidance,errors}
 Directory structure:
 ```
 prompts/
-├── agent/           # Agent system prompts
-│   └── system.yaml
-├── tools/           # Tool descriptions
-│   └── communication.yaml
-├── guidance/        # Self-correction messages
-│   └── self_correction.yaml
-└── errors/          # Error messages
-    └── validation.yaml
++-- agent/                     # Agent system prompts
+|   +-- system.yaml            # Key: "agent.system", variant: "default"
+|   +-- system.concise.yaml    # Key: "agent.system", variant: "concise"
++-- tools/                     # Tool descriptions
+|   +-- execute_sql.yaml
++-- guidance/                  # Self-correction messages
+|   +-- self_correction.yaml
++-- errors/                    # Error messages
+    +-- validation.yaml
 ```
+
+Keys are derived from the `key` field in the YAML frontmatter metadata. Variants are derived from the filename: `system.yaml` maps to the "default" variant, `system.concise.yaml` maps to the "concise" variant.
 
 ### Step 2: Export Prompts to YAML
 
-Convert inline prompts to YAML files:
+Convert inline prompts to YAML files using the frontmatter format:
 
 ```yaml
 # prompts/agent/system.yaml
-name: agent
-namespace: loom
-prompts:
-  - id: system
-    content: |
-      Help users with {{.backend_type}}.
-      You have {{.tool_count}} tools available.
-    variables:
-      backend_type:
-        type: 1  # STRING
-        required: true
-      tool_count:
-        type: 2  # INT
-        required: true
-    metadata:
-      version: "v1.0"
+---
+key: agent.system
+version: 1.0.0
+author: you@example.com
+description: Base system prompt for agents
+tags: [agent, system]
+variants: [default]
+variables: [backend_type, tool_count]
+---
+Help users interact with {{.backend_type}} using {{.tool_count}} tools.
 ```
+
+The file has two sections separated by `---`:
+
+1. **Metadata block** (between the two `---` lines): YAML with flat fields
+2. **Content block** (after the second `---`): The prompt text with `{{.variable}}` placeholders
+
+Variables are a flat list of string names. There are no type codes -- all values are passed as `map[string]interface{}` at runtime and converted to strings during interpolation.
 
 ### Step 3: Configure looms.yaml
 
@@ -110,16 +126,14 @@ Add prompts configuration:
 ```yaml
 # looms.yaml
 prompts:
-  source: file              # "file" | "promptio-library" | "promptio-service"
-  file_dir: ./prompts       # Directory with YAML files
-  cache_size: 1000          # LRU cache size
-  enable_reload: true       # Hot-reload on file changes
+  source: file
+  file_dir: ./prompts
 
 agents:
   agents:
     sql-agent:
       name: SQL Agent
-      system_prompt_key: agent.system_sql  # Reference PromptRegistry
+      system_prompt_key: agent.system
       max_turns: 25
 ```
 
@@ -138,38 +152,226 @@ INFO  Using FileRegistry for prompts  dir=./prompts
 INFO  Loaded agents from looms.yaml  count=1
 ```
 
-Test hot-reload:
 
-```bash
-# Update prompt
-echo "Updated content" >> prompts/agent/system.yaml
+## YAML Format Reference
 
-# Create NEW session (existing sessions keep old prompts)
-loom chat --server localhost:9090
+Every prompt YAML file uses frontmatter format with `---` separators:
+
+```yaml
+---
+key: agent.system.base
+version: 2.1.0
+author: developer@example.com
+description: Base system prompt for SQL agents
+tags: [agent, system, sql]
+variants: [default, concise, verbose]
+variables: [backend_type, session_id, cost_threshold]
+created_at: 2025-01-01T00:00:00Z
+updated_at: 2025-01-17T00:00:00Z
+---
+Assist with {{.backend_type}} queries and operations.
+Session: {{.session_id}}
+Cost threshold: ${{.cost_threshold}}
 ```
+
+### Metadata Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `key` | string | Unique identifier (e.g., `agent.system.base`) |
+| `version` | string | Semantic version (e.g., `2.1.0`) |
+| `author` | string | Author email or username (optional) |
+| `description` | string | What this prompt does |
+| `tags` | []string | Categorization tags for filtering |
+| `variants` | []string | Available variant names for A/B testing |
+| `variables` | []string | Variable names used in the content |
+| `created_at` | timestamp | Creation timestamp (optional) |
+| `updated_at` | timestamp | Last update timestamp (optional) |
+
+
+## Variable Interpolation
+
+Variables use `{{.variable_name}}` syntax. All values are escaped to prevent prompt injection attacks.
+
+```go
+registry := prompts.NewFileRegistry("./prompts")
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+vars := map[string]interface{}{
+    "backend_type":   "PostgreSQL",
+    "session_id":     "sess-abc123",
+    "cost_threshold": 50.00,
+}
+
+prompt, err := registry.Get(ctx, "agent.system.base", vars)
+```
+
+Supported value types:
+- `string` -- escaped for injection prevention (control characters removed, HTML entities escaped)
+- `int`, `int64`, `int32`, `float64`, `float32` -- formatted as-is
+- `bool` -- formatted as `true` or `false`
+- `[]string` -- joined with commas, each element escaped
+
+If a variable placeholder exists in the template but is not provided in `vars`, the placeholder is left as-is (e.g., `{{.missing_var}}` stays in the output).
+
+
+## A/B Testing with Variants
+
+✅ **Available** -- Variant selectors and ABTestingRegistry are implemented and tested.
+
+### Variant Files
+
+Variants are determined by filename:
+
+- `system.yaml` --> variant `"default"`
+- `system.concise.yaml` --> variant `"concise"`
+- `system.verbose.yaml` --> variant `"verbose"`
+
+Each variant file is a complete YAML file with its own frontmatter and content. Multiple variant files share the same `key` value but have different content.
+
+### Variant Selectors
+
+Four selector strategies are available:
+
+```go
+// Explicit: always returns a specific variant
+selector := prompts.NewExplicitSelector("concise")
+
+// Hash-based: deterministic based on session ID (consistent per session)
+selector := prompts.NewHashSelector()
+
+// Random: uniform random selection
+selector := prompts.NewRandomSelector(seed) // pass 0 for random seed
+
+// Weighted: weighted random (weights are relative, don't need to sum to 100)
+selector := prompts.NewWeightedSelector(map[string]int{
+    "default":      80,
+    "experimental": 20,
+}, seed) // pass 0 for random seed
+```
+
+### ABTestingRegistry
+
+Wrap a `FileRegistry` with automatic variant selection:
+
+```go
+fileRegistry := prompts.NewFileRegistry("./prompts")
+if err := fileRegistry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+selector := prompts.NewHashSelector()
+abRegistry := prompts.NewABTestingRegistry(fileRegistry, selector)
+
+// Automatically selects variant based on session ID in context
+ctx = prompts.WithSessionID(ctx, "sess-123")
+prompt, err := abRegistry.Get(ctx, "agent.system", vars)
+
+// Or specify session ID directly
+prompt, err = abRegistry.GetForSession(ctx, "agent.system", "sess-123", vars)
+
+// Bypass selector and request a specific variant
+prompt, err = abRegistry.GetWithVariant(ctx, "agent.system", "concise", vars)
+```
+
+
+## Hot-Reload with Watch
+
+✅ `Watch()` uses `fsnotify` to monitor the prompts directory and all subdirectories for file changes, automatically reloading prompts when YAML files are created, modified, or deleted.
+
+```go
+registry := prompts.NewFileRegistry("./prompts")
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+// Start watching for changes
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+updates, err := registry.Watch(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Process updates
+for update := range updates {
+    if update.Error != nil {
+        log.Printf("Watch error: %v", update.Error)
+        continue
+    }
+    log.Printf("Prompt %s was %s at %v", update.Key, update.Action, update.Timestamp)
+}
+```
+
+The `PromptUpdate` struct contains:
+- `Key` -- the prompt key that changed
+- `Version` -- the prompt version (from metadata)
+- `Action` -- one of `"created"`, `"modified"`, `"deleted"`, `"error"`
+- `Timestamp` -- when the change was detected
+- `Error` -- set when `Action` is `"error"`
+
+When a file changes, `Watch()` automatically calls `Reload()` to refresh all prompts from disk before sending the update notification.
+
+
+## Caching
+
+✅ **Available** -- TTL-based caching with hit/miss statistics and manual invalidation.
+
+Wrap any `PromptRegistry` with a TTL cache to reduce file I/O:
+
+```go
+fileRegistry := prompts.NewFileRegistry("./prompts")
+if err := fileRegistry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+cachedRegistry := prompts.NewCachedRegistry(fileRegistry, 5*time.Minute)
+
+// First call: cache miss, reads from file
+prompt1, _ := cachedRegistry.Get(ctx, "agent.system", vars)
+
+// Second call: cache hit
+prompt2, _ := cachedRegistry.Get(ctx, "agent.system", vars)
+
+// Check cache statistics
+hits, misses := cachedRegistry.Stats()
+fmt.Printf("Hit rate: %.2f%%\n", float64(hits)/float64(hits+misses)*100)
+
+// Manually invalidate
+cachedRegistry.InvalidateKey("agent.system")  // One key
+cachedRegistry.Invalidate()                   // Entire cache
+```
+
+The cache stores raw content (before variable interpolation), so different `vars` for the same key still benefit from cache hits.
 
 
 ## Examples
 
-### Example 1: Simple Agent Prompt
+### Example 1: Basic Agent Prompt
 
 **Before** (inline in looms.yaml):
 ```yaml
 agents:
-  my-agent:
-    system_prompt: "Help users with their tasks."
+  agents:
+    my-agent:
+      system_prompt: "Help users with their tasks."
 ```
 
 **After** (prompts/agent/system.yaml):
 ```yaml
-name: agent
-namespace: loom
-prompts:
-  - id: system_helper
-    content: "Help users with their tasks."
-    tags: [agent, system]
-    metadata:
-      version: "v1.0"
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: Base system prompt
+tags: [agent, system]
+variants: [default]
+variables: []
+---
+Help users with their tasks.
 ```
 
 **Updated looms.yaml**:
@@ -179,35 +381,68 @@ prompts:
   file_dir: ./prompts
 
 agents:
-  my-agent:
-    system_prompt_key: agent.system_helper
+  agents:
+    my-agent:
+      system_prompt_key: agent.system
 ```
 
-### Example 2: Prompt with Variables
+### Example 2: Prompt with Variables and Variants
 
-**Before**:
+Create two files for the same prompt key -- one default, one concise:
+
+**prompts/agent/system.yaml** (default variant):
 ```yaml
-system_prompt: "Help users with Teradata using 5 available tools."
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: System prompt with backend context
+tags: [agent, system]
+variants: [default, concise]
+variables: [backend_type, session_id]
+---
+Help users interact with {{.backend_type}} for session {{.session_id}}.
+
+Guidelines:
+- Never fabricate data - only report what tools return
+- If a tool fails, admit failure rather than guessing
+- Provide clear explanations of your reasoning
 ```
 
-**After** (prompts/agent/system.yaml):
+**prompts/agent/system.concise.yaml** (concise variant):
 ```yaml
-prompts:
-  - id: system
-    content: |
-      Help users interact with {{.backend_type}} using {{.tool_count}} tools.
-    variables:
-      backend_type:
-        type: 1  # STRING
-        required: true
-      tool_count:
-        type: 2  # INT
-        required: true
+---
+key: agent.system
+version: 1.0.0
+author: developer@example.com
+description: Concise system prompt
+tags: [agent, system]
+variants: [default, concise]
+variables: [backend_type, session_id]
+---
+{{.backend_type}} agent. Session: {{.session_id}}. Be accurate and concise.
 ```
 
-Agent automatically provides these variables:
-- `backend_type`: from backend.Name()
-- `tool_count`: from len(tools)
+**Usage in Go:**
+```go
+registry := prompts.NewFileRegistry("./prompts")
+if err := registry.Reload(ctx); err != nil {
+    log.Fatal(err)
+}
+
+vars := map[string]interface{}{
+    "backend_type": "Teradata",
+    "session_id":   "sess-123",
+}
+
+// Get default variant
+defaultPrompt, _ := registry.Get(ctx, "agent.system", vars)
+// Returns: "Help users interact with Teradata for session sess-123.\n\nGuidelines:\n..."
+
+// Get concise variant
+concisePrompt, _ := registry.GetWithVariant(ctx, "agent.system", "concise", vars)
+// Returns: "Teradata agent. Session: sess-123. Be accurate and concise."
+```
 
 
 ## Troubleshooting
@@ -216,69 +451,82 @@ Agent automatically provides these variables:
 
 **Error:**
 ```
-WARN  Failed to load prompt: agent.system_sql (error: prompt not found)
-INFO  Using hardcoded fallback
+prompt not found: agent.system
 ```
 
 **Solution:**
+1. Verify the file exists in the prompts directory
+2. Verify the `key` field in the YAML frontmatter matches the key you are requesting
+3. Verify you called `registry.Reload(ctx)` after creating the registry
+
 ```bash
 # Check file exists
 ls -la prompts/agent/
 
-# Validate YAML
-yamllint prompts/agent/system.yaml
+# Verify the key field in the frontmatter
+head -5 prompts/agent/system.yaml
+```
 
-# Check prompt ID matches
-grep "id:" prompts/agent/system.yaml
+### Invalid YAML Format
+
+**Error:**
+```
+invalid format: expected YAML frontmatter with --- separator
+```
+
+**Solution:**
+The file must start with `---`, have metadata fields, then another `---`, then content. Ensure there are exactly two `---` separators:
+
+```yaml
+---
+key: my.prompt
+version: 1.0.0
+---
+Content goes here.
+```
+
+### Variant Not Found
+
+**Error:**
+```
+variant not found: concise (key: agent.system)
+```
+
+**Solution:**
+Ensure a file with the variant suffix exists. For variant `"concise"`, the file must be named `system.concise.yaml`:
+
+```
+prompts/agent/system.yaml          # "default" variant
+prompts/agent/system.concise.yaml  # "concise" variant
 ```
 
 ### Hot-Reload Not Working
 
-**Symptom**: Changed prompt but agent uses old version
+**Symptom**: Changed a prompt file but agent uses old content.
 
 **Causes:**
-1. Existing sessions keep old prompts (by design)
-2. Hot-reload disabled in config
+1. `Watch()` not started -- you must call `registry.Watch(ctx)` to enable file monitoring
+2. Existing sessions may cache the old prompt
+3. If using `CachedRegistry`, the TTL has not expired yet
 
 **Solution:**
-1. Create a NEW session to see changes
-2. Verify config:
-   ```yaml
-   prompts:
-     enable_reload: true  # Must be true
-   ```
+1. Ensure `Watch()` is called and the returned channel is being consumed
+2. Create a new session to pick up changes
+3. Call `cachedRegistry.Invalidate()` to force cache refresh
 
-### Variable Interpolation Fails
+### Variable Placeholder Not Replaced
 
-**Error:**
-```
-ERROR  Failed to render prompt: template error
-```
+**Symptom**: Output contains literal `{{.backend_type}}` instead of the value.
 
 **Solution:**
-```yaml
-# Ensure variables are defined
-variables:
-  backend_type:
-    type: 1  # STRING
-    required: true
+Ensure the variable name in the `vars` map matches the placeholder exactly:
 
-# Provide required variables when calling
+```go
+// Placeholder in YAML: {{.backend_type}}
 vars := map[string]interface{}{
-    "backend_type": "teradata",
+    "backend_type": "Teradata",  // key must match exactly
 }
+prompt, err := registry.Get(ctx, "agent.system", vars)
 ```
 
-### Fallback to Hardcoded
-
-**Symptom**: Agent works but logs show "using hardcoded fallback"
-
-This is expected behavior. The system has a 3-tier fallback:
-1. PromptRegistry
-2. Inline config (`system_prompt`)
-3. Hardcoded defaults
-
-To use PromptRegistry instead:
-1. Verify `prompts.source` is set in looms.yaml
-2. Verify `prompts.file_dir` points to correct directory
-3. Verify YAML files exist and are valid
+Variable names are case-sensitive and must use only word characters (letters, digits, underscore).

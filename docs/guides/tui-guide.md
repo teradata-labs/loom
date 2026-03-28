@@ -1,11 +1,11 @@
 # Loom TUI Guide
 
-**Version**: v1.0.2
-**Last Updated**: 2026-01-27
+**Version**: v1.2.0
+**Last Updated**: 2026-03-28
 
 ## Overview
 
-The Loom Terminal UI (`loom`) provides an interactive, guide-driven interface for working with LLM agents. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea) and inspired by [Crush](https://github.com/charmbracelet/crush)'s visual design, it offers a modern, keyboard-first experience for agent interaction.
+The Loom Terminal UI (`loom`) provides an interactive, guide-driven interface for working with LLM agents. Built with [Bubbletea](https://charm.land/bubbletea) and inspired by Charm's Crush visual design, it provides a keyboard-first experience for agent interaction.
 
 ## Key Concepts
 
@@ -40,10 +40,12 @@ There are three ways to select an agent in the TUI:
 
 Workflows (multi-agent orchestrations) can be selected via:
 
-1. **Keyboard Shortcut** (`ctrl+w`): Opens workflow selection modal
-2. **Agent Modal** (`ctrl+e`): Workflow coordinators appear in the agent list
+1. **Keyboard Shortcut** (`ctrl+w`): Opens workflow selection modal with fuzzy search
+2. **Slash Command**: Type `/workflows` in the editor and press enter
 
 Workflow format: `workflow-name:sub-agent-name` (e.g., `dnd-campaign-workflow:session-planner`)
+
+> **Note**: Workflow coordinators are excluded from the agent modal (`ctrl+e`). Use `ctrl+w` to browse workflows.
 
 ## Keyboard Shortcuts
 
@@ -63,15 +65,13 @@ Workflow format: `workflow-name:sub-agent-name` (e.g., `dnd-campaign-workflow:se
 
 | Shortcut | Action | Description |
 |----------|--------|-------------|
-| `tab` | Focus Editor | Switch focus to message input |
-| `shift+tab` | Focus Chat | Switch focus to message list |
-| `ctrl+u` | Page Up | Scroll up half a page |
-| `ctrl+d` | Page Down | Scroll down half a page |
+| `tab` | Cycle Focus | Cycle focus: editor -> chat -> sidebar -> editor |
+| `ctrl+d` | Toggle Details | Toggle message detail view |
 | `u` | Half Page Up | Scroll up (when chat focused) |
 | `d` | Half Page Down | Scroll down (when chat focused) |
 | `g` or `home` | Go to Top | Jump to first message |
 | `G` or `end` | Go to Bottom | Jump to last message |
-| `ctrl+l` | Clear | Clear chat messages |
+| `ctrl+l` | Switch Model | Open model selection dialog |
 | `ctrl+n` | New Session | Start a new conversation session |
 
 ### Editor (Message Input)
@@ -80,10 +80,10 @@ Workflow format: `workflow-name:sub-agent-name` (e.g., `dnd-campaign-workflow:se
 |----------|--------|-------------|
 | `enter` | Send | Send message to agent |
 | `shift+enter` or `ctrl+j` | New Line | Insert line break in message |
-| `ctrl+f` | Add Image | Attach an image file |
+| `ctrl+f` | Add Attachment | Attach an image or file |
 | `@` | Mention File | Reference a file in message |
-| `ctrl+o` | External Editor | Open system editor for longer messages |
-| `/` | Commands | Open command palette (when editor is empty) |
+| `ctrl+o` | External Editor | Open system editor (note: may open Sessions instead due to global binding overlap) |
+| `/` | Slash Commands | Type slash commands (e.g. `/help`, `/model`, `/clear`) and press enter |
 
 ### Agent/Workflow Modals
 
@@ -100,7 +100,7 @@ Workflow format: `workflow-name:sub-agent-name` (e.g., `dnd-campaign-workflow:se
 |----------|--------|-------------|
 | `up` / `down` | Navigate | Cycle through sections |
 | `enter` | Select | Activate selected item |
-| Mouse click | Select | Click to activate (Weaver, MCP server, pattern) |
+| Mouse click | Select | Click to activate (Weaver, MCP server) |
 
 ## UI Layout
 
@@ -112,7 +112,7 @@ Workflow format: `workflow-name:sub-agent-name` (e.g., `dnd-campaign-workflow:se
 ├─────────────────────────────────────────────────────────┤              │
 │                                                          │  Weaver      │
 │                                                          │  MCP Servers │
-│                     Chat Messages                        │  Patterns    │
+│                     Chat Messages                        │              │
 │                                                          │              │
 │                                                          │              │
 ├─────────────────────────────────────────────────────────┤              │
@@ -140,7 +140,7 @@ Workflow format: `workflow-name:sub-agent-name` (e.g., `dnd-campaign-workflow:se
 
 ## Sidebar Sections
 
-The sidebar shows three main sections:
+The sidebar shows two main sections:
 
 ### 1. Weaver
 - Click to switch to the weaver meta-agent
@@ -151,13 +151,7 @@ The sidebar shows three main sections:
 - Lists configured Model Context Protocol servers
 - Click to expand and see available tools
 - Click on a tool to view details (name, description, input schema)
-- Use `ctrl+e` to add a new MCP server
-
-### 3. Patterns
-- Shows pattern categories (SQL, Teradata, Postgres, Code, Text, etc.)
-- Click category to expand/collapse pattern files
-- Click pattern file to view/edit in dialog
-- Patterns are automatically selected and injected by agents based on task intent
+- Press `a` in the MCP sidebar section, or type `/mcp` in the editor, to add a new MCP server
 
 ## Weaver Auto-Switch
 
@@ -244,31 +238,19 @@ loom
 
 ## Visual Design
 
-### Color Scheme (Crush-Inspired)
+### Color Scheme (Charmtone Palette)
 
-- **Primary**: Orange (`#ff7043`) for highlights and active elements
-- **Success**: Green (`#81c784`) for completed states
-- **Warning**: Yellow (`#ffd54f`) for warnings
-- **Error**: Red (`#e57373`) for errors
-- **Text**: Light gray (`#e0e0e0`) for readable text
-- **Borders**: Gray (`#757575`) for UI structure
+Colors are defined in the `charmtone` package (`internal/charmtone/charmtone.go`):
 
-### Agent Colors
-
-Each agent gets a distinct color for message identification:
-
-**Predefined Colors** (first 6 agents):
-1. Orange `#ff7043`
-2. Blue `#64b5f6`
-3. Green `#81c784`
-4. Purple `#ba68c8`
-5. Teal `#4db6ac`
-6. Pink `#f06292`
-
-**Generated Colors** (agents 7+):
-- Golden ratio-based color generation
-- Ensures visual distinction between agents
-- Supports 50+ agents without repetition
+- **Primary**: Purple / Charple (`#7B5FC7`) for highlights and active elements
+- **Success**: Green / Guac (`#9ECE6A`) for completed states
+- **Warning**: Yellow / Mustard (`#E0AF68`) for warnings
+- **Error**: Red / Sriracha (`#F7768E`) for errors
+- **Info**: Blue / Malibu (`#7AA2F7`) for informational states
+- **Text**: Light gray / Ash (`#A9B1D6`) for readable text
+- **Background**: Dark / Pepper (`#1A1B26`) base background
+- **Borders**: Gray / Charcoal (`#414868`) for UI structure
+- **Accent**: Mint / Bok (`#7FD1AE`), Orange / Zest (`#FF9F43`), Yellow / Dolly (`#F5D76E`)
 
 ### Message Format
 
@@ -294,9 +276,9 @@ Each agent gets a distinct color for message identification:
 
 ### Streaming Progress
 
-- **Stage names**: Pattern Selection, Schema Discovery, LLM Generation, Tool Execution
+- **Stage names**: Displayed from server-reported stage labels (e.g., tool names during execution)
 - **Animated spinner**: Indicates active processing
-- **Percentage**: Shows completion for long-running stages
+- **Progress**: Available when reported by the server via gRPC streaming events
 
 ### Message Metadata
 
@@ -306,35 +288,38 @@ Each agent gets a distinct color for message identification:
 
 ## Model Switching
 
-Change LLM model mid-conversation without losing context:
+Change LLM provider mid-conversation without losing context:
 
-**Available Models** (17+):
-- **Anthropic**: Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5
-- **OpenAI**: GPT-5.2, GPT-4.1 Mini, o4-mini
-- **Anthropic Bedrock**: Claude 4.5 models via AWS
-- **Ollama** (local/free): Llama 3.1/3.2, Qwen 2.5, Gemma 2
-- **Google**: Gemini 2.0 Flash, Gemini 2.5 Pro, Gemini 3.x (preview)
-- **Mistral**: Mistral Large, Mistral Small
-- **HuggingFace**: Various open models
+The available models are configured in your `looms.yaml` provider pool. Loom supports these providers:
+
+- ✅ **Anthropic**: Claude models (direct API)
+- ✅ **Bedrock**: Claude models via AWS
+- ✅ **Ollama**: Local open-source models (Llama, Qwen, Gemma, etc.)
+- ✅ **Google Gemini**: Gemini Flash, Gemini Pro
+- ✅ **OpenAI**: GPT models
+- ✅ **Mistral**: Mistral models
+- ✅ **HuggingFace**: Open models via Inference API
 
 **Features:**
 - Context preservation: Full conversation history maintained
-- Cost transparency: Shows $/1M tokens for each model
-- Provider diversity: Mix and match providers in same conversation
+- Provider pool: Configured in `looms.yaml`, switchable at runtime via `ctrl+l`
+- Provider diversity: Mix and match providers in the same conversation
 
 ## Command Palette (ctrl+k or ctrl+p)
 
-Quick access to all TUI actions:
+Quick access to TUI actions:
 
 **Available Commands:**
-- Clear messages
-- New session
-- Change model
-- Add MCP server
-- View agent info
-- Export conversation
-- Toggle compact mode
-- Open external editor
+- New Session (`ctrl+n`)
+- Switch Session (`ctrl+o`)
+- Switch Model (`ctrl+l`)
+- Toggle Sidebar (when window is wide enough)
+- Browse Apps
+- Toggle Yolo Mode
+- Toggle Help (`ctrl+g`)
+- Quit (`ctrl+c`)
+
+The command palette also supports user-defined commands and MCP prompts when available.
 
 ## Tips & Best Practices
 
@@ -350,7 +335,7 @@ Don't remember agent names? Just launch `loom` and ask the Guide:
 Faster workflow with keyboard-first navigation:
 - `ctrl+e` to quickly switch agents
 - `ctrl+w` to browse workflows
-- `tab` / `shift+tab` to move between chat and editor
+- `tab` to cycle focus between editor, chat, and sidebar
 
 ### 3. Leverage Fuzzy Search
 
@@ -381,9 +366,9 @@ Working on a laptop or SSH session?
 ### 7. Use Patterns for Complex Tasks
 
 Patterns provide domain expertise to agents:
-- View available patterns in sidebar
-- Click to see pattern content
 - Agents automatically select relevant patterns based on your query
+- Pattern selection happens server-side via keyword-based intent classification
+- No sidebar interaction needed; patterns are injected into context transparently
 
 ## Troubleshooting
 
@@ -396,7 +381,7 @@ Patterns provide domain expertise to agents:
 # In another terminal, start the server:
 looms serve
 
-# TUI will auto-connect within 2 seconds
+# Once the server is running, the TUI will automatically connect.
 ```
 
 ### Agent Not Found After Creation
@@ -468,8 +453,7 @@ Create specialized agents via weaver, then use workflows to orchestrate them:
 
 1. Switch to weaver: Click "Weaver" in sidebar
 2. Create pattern-aware agent: "Create an agent that uses SQL optimization patterns"
-3. View patterns: Expand "Patterns" in sidebar
-4. Test agent: Switch to new agent, verify pattern selection in responses
+3. Test agent: Switch to new agent via `ctrl+e`, verify pattern selection in responses
 
 ## Keyboard Shortcut Reference Card
 
@@ -485,14 +469,13 @@ Print this for quick reference:
 │  ctrl+g       Help         │  ctrl+c       Quit             │
 ├─────────────────────────────────────────────────────────────┤
 │ CHAT                                                        │
-│  tab          Focus Editor │  shift+tab    Focus Chat      │
-│  ctrl+u       Page Up      │  ctrl+d       Page Down        │
-│  ctrl+l       Clear        │  ctrl+n       New Session     │
+│  tab          Cycle Focus  │  ctrl+d       Details          │
+│  ctrl+n       New Session  │  ctrl+l       Switch Model     │
 ├─────────────────────────────────────────────────────────────┤
 │ EDITOR                                                      │
 │  enter        Send         │  shift+enter  New Line         │
-│  ctrl+f       Add Image    │  @            Mention File     │
-│  /            Commands     │  ctrl+o       External Editor  │
+│  ctrl+f       Attachment   │  @            Mention File     │
+│  /...         Slash Cmds   │  ctrl+o       External Editor  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -502,7 +485,7 @@ Print this for quick reference:
 
 - [Pattern Library Guide](./pattern-library-guide.md) - Learn about pattern-guided learning
 - [Zero-Code Implementation Guide](./zero-code-implementation-guide.md) - Create agents without coding
-- [Architecture](../architecture/ARCHITECTURE.md) - Understand Loom's design
+- [Architecture](../architecture/loom-system-architecture.md) - Understand Loom's design
 
 ## Feedback
 

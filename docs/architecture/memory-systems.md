@@ -1,11 +1,11 @@
 
 # Memory System Architecture
 
-Architecture of Loom's 5-layer segmented memory system with adaptive compression, tiered storage, and optional learned layer for DSPy optimization results.
+Architecture of Loom's 5-layer segmented memory system with profile-based adaptive compression, tiered storage, and optional learned layer for DSPy optimization results.
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -49,10 +49,10 @@ The Memory System implements a **5-layer segmented memory hierarchy** inspired b
 The system combines:
 1. **Immutable knowledge** (ROM: system prompt, patterns, schema)
 2. **Stable session context** (Kernel: user identity, goals)
-3. **Recent conversation** (L1: sliding window with adaptive compression)
+3. **Recent conversation** (L1: token-budget-based window with profile-driven adaptive compression)
 4. **Compressed history** (L2: LLM-powered summarization)
 5. **Long-term storage** (Swap: database-backed persistence)
-6. **Learned optimizations** (Learned: DSPy compiled signatures, optional)
+6. **Learned optimizations** (Learned: DSPy compiled signatures, optional, via gRPC API)
 
 Additionally, **Shared Memory** provides tiered storage (memory → disk) for large tool results, preventing context window overflow.
 
@@ -86,8 +86,8 @@ graph TB
     subgraph MemSystem["Memory System"]
         subgraph Segmented["5-Layer Segmented Memory"]
             ROM[ROM 5k<br/>System prompt, patterns]
-            Kernel[Kernel 2k<br/>Tool defs, schema cache]
-            L1[L1 10k<br/>Recent messages adaptive]
+            Kernel[Kernel 2k<br/>Tool defs, schema cache, findings]
+            L1[L1 4-9.6k<br/>Recent messages profile-based]
             L2[L2 3k<br/>Summarized history LLM]
             Swap[Swap cold<br/>Database-backed storage]
             Learned[Learned<br/>DSPy optimizations optional]
@@ -151,20 +151,21 @@ graph TB
 │  │  │  │ Kernel (Session Context)                 │     │     │           │  │
 │  │  │  │ - Tool definitions (available tools)     │     │     │           │  │
 │  │  │  │ - Schema cache (LRU, max 10 schemas)     │     │     │           │  │
-│  │  │  │ - Tool results (DB-backed, max 1)        │     │     │           │  │
+│  │  │  │ - Tool results (sliding window, max 5)    │     │     │           │  │
+│  │  │  │ - Findings cache (max 50, LRU eviction)  │     │     │           │  │
 │  │  │  │ Size: ~2k tokens                         │     │     │           │  │
 │  │  │  │ Mutability: Updated per conversation     │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  │                                                    │     │          │  │
 │  │  │  ┌──────────────────────────────────────────┐     │     │           │  │
 │  │  │  │ L1 Cache (Hot - Recent Messages)         │     │     │           │  │
-│  │  │  │ - Last 10 messages (5 exchanges)         │     │     │           │  │
-│  │  │  │ - Adaptive compression triggers:         │     │     │           │  │
-│  │  │  │   * 70% budget: Compress 4 msgs          │     │     │           │  │
-│  │  │  │   * 80% budget: Compress 6 msgs          │     │     │           │  │
-│  │  │  │   * 85% budget: Compress 8 msgs          │     │     │           │  │
+│  │  │  │ - Token-based sizing (profile-dependent) │     │     │           │  │
+│  │  │  │ - Profile-based compression triggers:    │     │     │           │  │
+│  │  │  │   * Warning%: Compress N msgs (profile)  │     │     │           │  │
+│  │  │  │   * Critical%: Compress N msgs (profile) │     │     │           │  │
+│  │  │  │   * L1 > MaxTokens: Normal batch         │     │     │           │  │
 │  │  │  │ - Tool pair preservation (never split)   │     │     │           │  │
-│  │  │  │ Size: ~10k tokens                        │     │     │           │  │
+│  │  │  │ Size: 4-9.6k tokens (profile-dependent)  │     │     │           │  │
 │  │  │  │ Eviction: FIFO to L2                     │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  │                                                    │     │          │  │
@@ -173,24 +174,24 @@ graph TB
 │  │  │  │ - LLM-powered summarization              │     │     │           │  │
 │  │  │  │ - Fallback: Heuristic compression        │     │     │           │  │
 │  │  │  │ - Append-only (summaries accumulate)     │     │     │           │  │
-│  │  │  │ Size: ~3k tokens                         │     │     │           │  │
-│  │  │  │ Eviction: None (bounded by compression)  │     │     │           │  │
+│  │  │  │ Size: up to maxL2Tokens (default 5000)   │     │     │           │  │
+│  │  │  │ Eviction: To swap when > maxL2Tokens     │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  │                                                    │     │          │  │
 │  │  │  ┌──────────────────────────────────────────┐     │     │           │  │
 │  │  │  │ Swap (Cold - Long-Term Storage)          │     │     │           │  │
 │  │  │  │ - Database-backed (SQLite)               │     │     │           │  │
-│  │  │  │ - Full message history                   │     │     │           │  │
-│  │  │  │ - Future: On-demand retrieval            │     │     │           │  │
-│  │  │  │ Status: Defined, not fully implemented   │     │     │           │  │
+│  │  │  │ - Full message history + L2 snapshots    │     │     │           │  │
+│  │  │  │ - BM25 + LLM reranking semantic search   │     │     │           │  │
+│  │  │  │ Status: ✅ Implemented                   │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  │                                                    │     │          │  │
 │  │  │  ┌──────────────────────────────────────────┐     │     │           │  │
 │  │  │  │ Learned Layer (Optional)                 │     │     │           │  │
-│  │  │  │ - DSPy compiled signatures               │     │     │           │  │
-│  │  │  │ - Optimized demonstrations               │     │     │           │  │
-│  │  │  │ - Gradient-tuned prompts                 │     │     │           │  │
+│  │  │  │ - Optimized prompts (via gRPC API)       │     │     │           │  │
+│  │  │  │ - Demonstrations (few-shot examples)     │     │     │           │  │
 │  │  │  │ - Versioned, rollbackable                │     │     │           │  │
+│  │  │  │ Status: ⚠️ Partial (API defined)        │     │     │           │  │
 │  │  │  └──────────────────────────────────────────┘     │     │           │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
@@ -238,10 +239,11 @@ graph TB
 ∀ t ∈ [session_start, session_end]: ROM(t) = ROM(session_start)
 ```
 
-**Implementation** (`pkg/agent/segmented_memory.go:33`):
+**Implementation** (`pkg/agent/segmented_memory.go:67`):
 ```go
 type SegmentedMemory struct {
-    ROM []Message  // Never mutated after init
+    // ROM Layer (never changes during session)
+    romContent string // Static documentation content
     // ...
 }
 ```
@@ -254,7 +256,8 @@ type SegmentedMemory struct {
 **Content**:
 - Tool definitions (available tools for this agent)
 - Schema cache (LRU, max 10 schemas)
-- Tool results (database-backed, max 1 in memory for large results)
+- Tool results (sliding window, max 5 in memory)
+- Findings cache (verified facts from tool executions, max 50, LRU eviction)
 
 **Size**: ~2,000 tokens
 
@@ -274,61 +277,91 @@ Schema Request → Check Cache
                               └─ Insert new schema                              
 ```
 
-**Database-Backed Tool Results** (optimization):
-- Large tool results (>100KB) stored in Shared Memory
-- Only reference (DataReference) kept in Kernel
-- Prevents context overflow from 10K-row SQL results
+**Tool Results** (sliding window):
+- Last 5 tool results kept in kernel for context
+- Large tool results (>threshold) can be stored in Shared Memory
+- DataReference kept in Kernel when shared memory threshold is exceeded
+
+**Findings Cache** (working memory):
+- Verified facts extracted from tool executions
+- Structured as path/value pairs with categories (statistic, schema, observation, distribution)
+- Max 50 findings with LRU eviction
+- Injected into LLM context as formatted markdown summary
+- Prevents hallucination by maintaining verified data
 
 **Rationale**:
 - **Tool definitions stable**: Rarely change during conversation
 - **Schema cache**: Avoids repeated backend metadata queries (50-100ms each)
-- **Tool result optimization**: Large results would consume 10-20K tokens, reference uses ~50 tokens
+- **Tool results sliding window**: Keeps recent context without unbounded growth
+- **Findings cache**: Prevents hallucination by maintaining verified structured data from tool executions
 
 
 ### L1 Cache (Recent Conversation)
 
 **Responsibility**: Recent conversation turns with adaptive compression.
 
-**Content**: Last 10 messages (5 exchanges: user + assistant pairs) by default
+**Content**: Recent messages, sized by token budget (not fixed message count). Default balanced profile: 6400 tokens with minimum 4 messages preserved.
 
-**Size**: ~10,000 tokens (adaptive)
+**Size**: Profile-dependent (4000-9600 tokens depending on workload profile)
 
 **Eviction Policy**: FIFO (First-In-First-Out) to L2 when capacity exceeded
 
-**Adaptive Compression Triggers**:
+**Compression Profiles** (workload-dependent thresholds):
 ```
-Token Budget % │ Action                                                         
-───────────────┼────────────────────────────────                                
-< 70%          │ No compression                                                 
-70%            │ Compress oldest 4 messages (2 exchanges)                       
-80%            │ Compress oldest 6 messages (3 exchanges)                       
-85%            │ Compress oldest 8 messages (4 exchanges)                       
-> 85%          │ Evict to L2                                                    
+Profile          │ MaxL1Tokens │ MinMsgs │ Warning% │ Critical% │ Batch (N/W/C)
+─────────────────┼─────────────┼─────────┼──────────┼───────────┼──────────────
+data_intensive   │ 4000        │ 3       │ 50%      │ 70%       │ 2/4/6
+balanced         │ 6400        │ 4       │ 60%      │ 75%       │ 3/5/7
+conversational   │ 9600        │ 6       │ 70%      │ 85%       │ 4/6/8
+```
+
+**Adaptive Compression Triggers** (balanced profile as example):
+```
+Token Budget % │ Action
+───────────────┼────────────────────────────────────
+< 60%          │ No compression
+60% (warning)  │ Compress oldest 5 messages (warning batch)
+75% (critical) │ Compress oldest 7 messages (critical batch)
+L1 > MaxTokens │ Compress oldest 3 messages (normal batch)
 ```
 
 **Tool Pair Preservation**:
 - `tool_use` and `tool_result` messages are atomic pairs
 - Never split across L1/L2 boundary
-- If evicting would split pair, evict both or neither
+- If evicting would split pair, the assistant message is excluded from compression to keep the pair in L1
+- Tool pairs are excluded from compression entirely (compression converts to text, losing block structure required by Bedrock/Anthropic API)
 
 **Rationale**:
 - **Recent conversation most relevant**: Chain-of-thought reasoning requires immediate history
 - **Adaptive compression**: Gradual degradation under token pressure, not sudden cutoff
 - **Tool pair atomicity**: LLMs cannot understand `tool_result` without corresponding `tool_use`
 
-**Algorithm** (`pkg/agent/segmented_memory.go:145`):
-```go
-func (m *SegmentedMemory) MaybeCompressL1(budget int) {
-    usage := m.TokenUsage()
-    threshold := float64(usage) / float64(budget)
+**Algorithm** (`pkg/agent/segmented_memory.go:306`, inside `AddMessage`):
 
-    if threshold >= 0.85 {
-        m.EvictOldestToL2(8)  // Evict 4 exchanges
-    } else if threshold >= 0.80 {
-        m.CompressMessages(m.L1[:6])  // Compress 3 exchanges
-    } else if threshold >= 0.70 {
-        m.CompressMessages(m.L1[:4])  // Compress 2 exchanges
+Compression is triggered inline during `AddMessage()` based on two criteria:
+1. L1 exceeds token budget (token-based, not message-based)
+2. Overall token budget exceeds profile's warning threshold
+
+```go
+// Simplified from AddMessage() - actual code uses profile-based thresholds
+l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+budgetUsage := sm.tokenBudget.UsagePercentage()
+
+shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
+
+if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
+    var toCompressCount int
+    if budgetUsage > criticalThreshold {
+        toCompressCount = sm.compressionProfile.CriticalBatchSize
+    } else if budgetUsage > warningThreshold {
+        toCompressCount = sm.compressionProfile.WarningBatchSize
+    } else {
+        toCompressCount = sm.compressionProfile.NormalBatchSize
     }
+    // adjustCompressionBoundary ensures tool_use/tool_result pairs stay together
+    toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
+    sm.compressToL2(ctx, sm.l1Messages[:toCompressCount])
+    sm.l1Messages = sm.l1Messages[toCompressCount:]
 }
 ```
 
@@ -339,10 +372,10 @@ func (m *SegmentedMemory) MaybeCompressL1(budget int) {
 
 **Content**: Compressed summaries of evicted L1 messages
 
-**Size**: ~3,000 tokens
+**Size**: Up to maxL2Tokens (default 5000 tokens); evicts to swap when exceeded
 
 **Compression Strategy**:
-1. **Primary**: LLM summarization (Claude Haiku for speed/cost)
+1. **Primary**: LLM summarization via `MemoryCompressor` interface (if configured)
 2. **Fallback**: Heuristic compression (keyword extraction, sentence truncation)
 
 **Append-Only**: Summaries accumulate, never deleted
@@ -363,7 +396,7 @@ Summary:
 ```
 
 **Performance**:
-- Summarization latency: 500-800ms (Claude Haiku)
+- Summarization latency: 500-800ms (depends on configured LLM)
 - Compression ratio: 5-10x typical
 - Accuracy: >90% key fact retention (evaluated on test set)
 
@@ -372,7 +405,7 @@ Summary:
 
 **Responsibility**: Database-backed long-term conversation history and L2 summary archival.
 
-**Status**: ✅ Implemented (v1.0.0-beta.2)
+**Status**: ✅ Implemented
 
 **Content**:
 - Full message history (via SessionStore)
@@ -391,6 +424,7 @@ CREATE TABLE messages (
     tool_calls_json TEXT,
     tool_use_id TEXT,
     tool_result_json TEXT,
+    session_context TEXT DEFAULT 'direct',
     timestamp INTEGER NOT NULL,
     token_count INTEGER DEFAULT 0,
     cost_usd REAL DEFAULT 0,
@@ -440,28 +474,29 @@ memory.ClearPromotedContext()
 - ✅ Unbounded conversation support
 - ✅ Bounded memory usage (L2 ≤ 5000 tokens)
 - ✅ Low eviction latency (3-10ms)
-- ✅ Semantic search via BM25 + LLM reranking (v1.0.0-beta.2)
+- ✅ Semantic search via BM25 + LLM reranking
 - ❌ Retrieval latency (80-150ms for semantic search, 12-28ms for offset-based)
 
-**Agent Tools**:
+**Agent Tool**:
 
-Agents automatically receive three built-in tools for swap layer access:
+Agents automatically receive a single `conversation_memory` tool with an `action` parameter for swap layer access:
 
-1. **`conversation_memory`**: Retrieve older conversation history from swap (offset-based)
-   - Parameters: `offset` (int), `limit` (int, max 50)
+1. **`conversation_memory`** (action=`recall`): Retrieve older conversation history from swap (offset-based)
+   - Parameters: `action` (required), `offset` (int), `limit` (int, max 50)
    - Returns: Message previews and promotes messages to context
    - Use case: "Show me messages 20-30"
    - Latency: 12-28ms (database pagination query)
 
-2. **`conversation_memory`** (semantic search mode): Semantic search over conversation history (BM25 + LLM reranking)
-   - Parameters: `query` (string), `limit` (int, max 20), `promote` (bool, default true)
+2. **`conversation_memory`** (action=`search`): Semantic search over conversation history (BM25 + LLM reranking)
+   - Parameters: `action` (required), `query` (string), `limit` (int, max 20), `session_scope` (string: current/agent/all)
    - Returns: Most relevant messages ranked by semantic similarity
    - Use case: "What did we discuss about database optimization?"
    - Latency: 80-150ms (p50-p99, BM25 20-30ms + reranking 50-100ms)
-   - Algorithm: BM25 top-50 candidates → LLM reranks to top-N
+   - Algorithm: BM25 top-50 candidates -> LLM reranks to top-N
+   - Cross-session search: `session_scope=agent` searches all sessions for the agent, `session_scope=all` searches all sessions
 
-3. **`conversation_memory`** (clear mode): Remove promoted messages from context
-   - Parameters: None
+3. **`conversation_memory`** (action=`clear`): Remove promoted messages from context
+   - Parameters: `action` (required)
    - Returns: Count of cleared messages
    - Use case: Free up token budget after using recalled context
 
@@ -470,7 +505,7 @@ These tools are automatically registered when swap is enabled (opt-out design).
 
 #### Semantic Search (BM25 + LLM Reranking)
 
-**Status**: ✅ Implemented (v1.0.0-beta.2)
+**Status**: ✅ Implemented
 
 **Problem**: Offset-based retrieval (`conversation_memory`) requires knowing the approximate position of relevant messages. Agents often need to find conceptually related messages without knowing their chronological position.
 
@@ -532,7 +567,7 @@ Order by score descending (most relevant first).
 **Performance**:
 - **End-to-end latency**: 80-150ms (p50-p99)
 - **BM25 search**: 20-30ms
-- **LLM reranking**: 50-100ms (Sonnet 4.5, 50 message previews ≈ 3K tokens)
+- **LLM reranking**: 50-100ms (uses configured LLM provider, 50 message previews ≈ 3K tokens)
 - **FTS5 index overhead**: ~10% storage, <1ms insert penalty
 
 **Graceful Degradation**:
@@ -581,34 +616,39 @@ Order by score descending (most relevant first).
 **Responsibility**: Store DSPy optimization results for pattern improvement.
 
 **Content**:
-- Compiled signatures from DSPy teleprompters
-- Optimized demonstrations from Bootstrap
-- Gradient-tuned prompts from TextGrad
+- Optimized prompts from DSPy teleprompters (Bootstrap, MIPRO)
+- Demonstrations (few-shot examples) from optimization runs
 - Versioned pattern improvements
 
-**Mutability**: Updated by learning agent, versioned for rollback
+**Mutability**: Updated by learning agent via gRPC `UpdateLearnedLayer` API, versioned for rollback
 
-**Integration** (`pkg/metaagent/learning/learned_layer.go`):
+**Status**: ⚠️ Partial (gRPC API defined in proto, teleprompter integration exists, no standalone `learned_layer.go` file)
+
+**Integration**: The learned layer is exposed via the `MemoryLayerService` gRPC API (`proto/loom/v1/memory.proto`):
+- `GetLearnedLayer(agent_id, pattern_name)` - Retrieves optimized prompts and demonstrations
+- `UpdateLearnedLayer(agent_id, optimized_prompts, demonstrations, source)` - Applies optimization results
+
+The teleprompter package (`pkg/metaagent/teleprompter/`) implements the `AgentMemory` interface:
 ```go
-type LearnedLayer struct {
-    Signatures    map[string]*DSPySignature  // Compiled patterns
-    Demonstrations []Example                   // Few-shot examples
-    Gradients     map[string]*TextGradResult // Gradient tuning
-    Version       int                         // Rollback support
+// From pkg/metaagent/teleprompter/teleprompter.go
+type AgentMemory interface {
+    UpdateLearnedLayer(optimizedPrompts map[string]string,
+        demonstrations []*loomv1.Demonstration) error
+    GetLearnedLayer() (map[string]string, []*loomv1.Demonstration, error)
 }
 ```
 
 **Rationale**:
 - **Persistent optimization**: Learning agent improvements not lost on session end
-- **Versioning**: Roll back if optimized patterns degrade performance
+- **Versioning**: gRPC response includes `learned_version` for tracking
 - **Per-session**: Different sessions can use different learned optimizations
 
-**See**: [Learning Agent Architecture](learning-agent-design.md), [DSPy/Teleprompter Architecture](dspy-teleprompter-design.md)
+**See**: [Learning Agent Architecture](learning-agent.md)
 
 
 ### Shared Memory (Large Data Storage & Agent Communication)
 
-**Status**: ✅ Implemented (v1.0.0-beta.2)
+**Status**: ✅ Implemented
 
 **Responsibilities**:
 1. Tiered storage for large tool results outside context window
@@ -660,8 +700,8 @@ type LearnedLayer struct {
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │         Disk Tier (10GB default)                   │                   │  │
 │  │                                                    │                   │  │
-│  │  Filesystem Cache:                                 │                   │  │
-│  │    - Files: /tmp/loom-cache/{ref_id}.dat          │                    │  │
+│  │  Filesystem Cache (DiskOverflowManager):            │                   │  │
+│  │    - Files: {os.TempDir()}/loom/cache/{ref_id}    │                    │  │
 │  │    - TTL-based cleanup (1 hour default)            │                   │  │
 │  │    - Auto-promotion on access                      │                   │  │
 │  │    - Atomic writes (temp + rename)                 │                   │  │
@@ -731,10 +771,11 @@ Cross-agent access (blocked):
 - Temporary computation results (agent-local caching)
 
 **Integration**:
-- **Backend Wrapper** (`pkg/fabric/shared_backend.go`): Automatically stores results >100KB
+- **Backend Wrapper** (`pkg/fabric/shared_backend.go`): Stores results exceeding threshold (default 100KB) in shared memory
 - **Tool Executor** (`pkg/shuttle/executor.go`): Intercepts large tool results
 - **Agent Context Builder**: Includes only DataReference, not full data
 - **On-Demand Retrieval**: Agent can fetch full data when needed
+- **Note**: The storage-level default threshold (`DefaultSharedMemoryThreshold` in `pkg/storage/shared_memory.go`) is -1 (inline everything). The SharedBackendWrapper applies its own 100KB threshold separately. Per-agent override is available via `MemoryConfig.SharedMemoryThresholdBytes`.
 
 **Concurrency**:
 - **RWMutex**: Protects memory tier map
@@ -790,28 +831,29 @@ Agent           Memory          Token Counter       LLM
 ### Adaptive Compression
 
 ```
-Memory          Compressor      LLM (Haiku)
-  │                 │               │                                           
-  ├─ L1 at 70% ────▶│               │                                           
-  │                 ├─ Identify     │                                           
-  │                 │  oldest 4 msgs│                                           
-  │                 │               │                                           
-  │                 ├─ Summarize ───▶│                                          
-  │                 │◀─ Summary ────┤                                           
-  │                 │               │                                           
-  │                 ├─ Replace msgs │                                           
-  │                 │  with summary │                                           
-  │                 │               │                                           
-  │◀─ Compressed ───┤               │                                           
-  │  (4 msgs → 1)   │               │                                           
-  │                 │               │                                           
+Memory          Compressor      LLM (if available)
+  │                 │               │
+  ├─ Budget exceeds ▶│               │
+  │  warning %      ├─ Identify     │
+  │                 │  oldest N msgs│
+  │                 │  (batch size) │
+  │                 │               │
+  │                 ├─ Summarize ───▶│
+  │                 │◀─ Summary ────┤
+  │                 │               │
+  │                 ├─ Append       │
+  │                 │  summary to L2│
+  │                 │               │
+  │◀─ Compressed ───┤               │
+  │  (N msgs → L2)  │               │
+  │                 │               │
 ```
 
-**Compression Levels**:
-- **70% budget**: Compress 4 messages → 1 summary (light pressure)
-- **80% budget**: Compress 6 messages → 1 summary (medium pressure)
-- **85% budget**: Compress 8 messages → 1 summary (high pressure)
-- **>85% budget**: Evict to L2 (critical pressure)
+**Compression Levels** (profile-dependent, balanced profile shown):
+- **L1 > MaxTokens**: Compress normal batch (3 messages) to L2
+- **60% budget (warning)**: Compress warning batch (5 messages) to L2
+- **75% budget (critical)**: Compress critical batch (7 messages) to L2
+- **L2 > maxL2Tokens**: Evict L2 summary to swap storage (SQLite)
 
 
 ### Memory Eviction
@@ -837,36 +879,64 @@ Memory          L1 Cache        L2 Cache        Swap DB
 ```
 
 **FIFO Eviction**:
-1. L1 reaches capacity (10 messages)
-2. Select oldest N messages (N=2 typical: 1 exchange)
-3. Summarize with LLM (Claude Haiku)
+1. L1 exceeds token budget or overall budget exceeds warning threshold
+2. Select oldest N messages (N = profile batch size, adjusted for tool pair preservation)
+3. Summarize with LLM compressor (if available), otherwise heuristic extraction
 4. Append summary to L2
 5. Remove messages from L1
-6. (Future) Archive full messages to Swap DB
+6. If L2 exceeds maxL2Tokens (default 5000), evict L2 summary to swap (SQLite `memory_snapshots` table)
 
 
 ## Data Structures
 
 ### SegmentedMemory
 
-**Definition** (`pkg/agent/segmented_memory.go:17`):
+**Definition** (`pkg/agent/segmented_memory.go:67`):
 ```go
 type SegmentedMemory struct {
-    ROM                  []Message // Immutable knowledge
-    Kernel               []Message // Session context
-    L1                   []Message // Recent turns
-    L2                   []Message // Compressed summaries
-    Swap                 *SwapLayer // Long-term storage (future)
-    Learned              *LearnedLayer // DSPy optimizations (optional)
-    MaxContextTokens     int       // Total token budget (200K)
-    ReservedOutputTokens int       // Reserved for LLM output (20K)
-    L1Capacity           int       // Max messages in L1 (10 default)
+    // ROM Layer (never changes during session)
+    romContent string // Static documentation content
+
+    // Kernel Layer (changes per conversation)
+    tools           []string             // Available tool names
+    toolResults     []CachedToolResult   // Recent tool execution results (max 5)
+    schemaCache     map[string]string    // Cached schema discoveries
+    schemaAccessLog map[string]time.Time // LRU tracking for schema cache
+    maxSchemas      int                  // Maximum schemas to cache (default: 10)
+    findingsCache   map[string]Finding   // Verified findings (working memory, max 50)
+
+    // L1 Cache (hot - recent messages)
+    l1Messages []Message // Recent messages (token-budget-based)
+
+    // L2 Cache (warm - summarized history)
+    l2Summary string // Compressed summary of older conversation
+
+    // Swap Layer (cold - database-backed long-term storage)
+    sessionStore       SessionStorage // Database for persistent storage (optional)
+    sessionID          string         // Session identifier for swap operations
+    swapEnabled        bool           // Whether swap layer is configured
+    maxL2Tokens        int            // Maximum tokens in L2 before eviction to swap (default: 5000)
+    promotedContext    []Message      // Messages retrieved from swap and promoted to context
+
+    // Token management
+    tokenCounter    *TokenCounter  // tiktoken-based token counting
+    tokenBudget     *TokenBudget   // Token budget enforcement
+    compressor      MemoryCompressor // LLM-powered compression (optional)
+    sharedMemory    *storage.SharedMemoryStore // For large tool results (optional)
+    llmProvider     LLMProvider    // For reranking search results (optional)
+
+    // Configuration
+    maxL1Tokens        int                // Max tokens in L1 before compression
+    minL1Messages      int                // Minimum messages to keep in L1
+    compressionProfile CompressionProfile // Profile-based compression behavior
+
+    mu sync.RWMutex
 }
 ```
 
 **Invariants**:
 ```
-∀ t: len(ROM) + len(Kernel) + len(L1) + len(L2) ≤ MaxContextTokens - ReservedOutputTokens
+∀ t: tokens(romContent) + tokens(kernel) + tokens(l1Messages) + tokens(l2Summary) ≤ tokenBudget
 
 ∀ m ∈ L1: m.Timestamp > ∀ m' ∈ L2: m'.Timestamp
   (L1 messages always newer than L2)
@@ -881,31 +951,42 @@ Tool pairs atomic:
 
 ### SharedMemoryStore
 
-**Definition** (`pkg/storage/shared_memory.go:25`):
+**Definition** (`pkg/storage/shared_memory.go:63`):
 ```go
 type SharedMemoryStore struct {
-    mu               sync.RWMutex
-    memoryTier       map[string]*StoredData  // In-memory cache
-    diskPath         string                   // Disk cache directory
-    maxMemoryBytes   int64                    // Memory tier limit
-    maxDiskBytes     int64                    // Disk tier limit
-    compressionThresh int64                   // Compression threshold
-    ttl              time.Duration            // Disk TTL
-    refCounts        map[string]int           // Reference counting
+    mu                   sync.RWMutex
+    data                 map[string]*SharedData   // In-memory LRU cache
+    lruList              *list.List               // LRU ordering
+    currentSize          int64                    // Current memory usage
+    maxSize              int64                    // Memory tier limit (default 1GB)
+    compressionThreshold int64                    // Gzip threshold (default 1MB)
+    ttl                  time.Duration            // TTL for cleanup (default 1 hour)
+    overflowHandler      OverflowHandler          // Disk tier (DiskOverflowManager)
+    logger               *zap.Logger
+
+    // Metrics (atomic)
+    hits, misses, evictions, compressions atomic.Int64
 }
 
-type StoredData struct {
+type SharedData struct {
     ID          string
     Data        []byte
     Compressed  bool
-    Checksum    string    // SHA-256
+    Size        int64
+    Checksum    string     // SHA-256
     ContentType string
     Metadata    map[string]string
     StoredAt    time.Time
     AccessedAt  time.Time  // For LRU
-    RefCount    int        // Prevent eviction
+    RefCount    int32      // Prevent eviction (atomic)
+    lruElement  *list.Element
 }
 ```
+
+**Disk Overflow** (`pkg/storage/overflow_manager.go`):
+
+The disk tier is implemented as a separate `DiskOverflowManager` that implements the `OverflowHandler` interface.
+Default disk cache path: `{os.TempDir()}/loom/cache/`, max 10GB (`DefaultMaxDiskBytes`).
 
 
 ## Algorithms
@@ -914,28 +995,28 @@ type StoredData struct {
 
 **Problem**: Accurately estimate token count to prevent context overflow.
 
-**Solution**: Provider-specific tokenizer (tiktoken for OpenAI, anthropic-tokenizer for Claude).
+**Solution**: Tiktoken-based `TokenCounter` singleton (`pkg/agent/token_counter.go`).
 
-**Algorithm**:
+**Algorithm**: The `TokenCounter` uses the tiktoken library (cl100k_base encoding) to estimate token counts. It provides methods for counting string tokens and estimating message/tool-result tokens.
+
 ```go
-func CountTokens(messages []Message, tokenizer Tokenizer) int {
-    total := 0
+// TokenCounter uses tiktoken for token estimation (singleton)
+type TokenCounter struct {
+    encoder *tiktoken.Tiktoken
+    mu      sync.Mutex
+}
 
-    for _, msg := range messages {
-        // Count message content
-        total += tokenizer.Count(msg.Content)
-
-        // Count tool calls
-        for _, tool := range msg.ToolCalls {
-            total += tokenizer.Count(tool.Name)
-            total += tokenizer.Count(serialize(tool.Parameters))
-        }
-
-        // Add overhead (role, timestamps, formatting)
-        total += 4  // Empirical overhead per message
-    }
-
-    return total
+// updateTokenCount calculates actual token usage across all memory layers
+func (sm *SegmentedMemory) updateTokenCount() {
+    count := 0
+    count += sm.tokenCounter.CountTokens(sm.romContent)           // ROM
+    count += sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages) // L1
+    count += sm.tokenCounter.CountTokens(sm.l2Summary)            // L2
+    count += sm.tokenCounter.CountTokens(sm.patternContent)       // Patterns
+    count += sm.tokenCounter.CountTokens(sm.skillContent)         // Skills
+    // ... plus kernel (tools, tool results, schema cache) and promoted context
+    sm.tokenBudget.Reset()
+    sm.tokenBudget.Use(count)
 }
 ```
 
@@ -948,34 +1029,11 @@ func CountTokens(messages []Message, tokenizer Tokenizer) int {
 
 **Problem**: Gradual context degradation under token pressure, not sudden cutoff.
 
-**Solution**: Progressive compression thresholds (70%, 80%, 85%).
+**Solution**: Profile-dependent compression thresholds. Compression is triggered inline during `AddMessage()` (not as a separate function). Thresholds and batch sizes are configured per workload profile (see `CompressionProfile` in `pkg/agent/compression_profiles.go`).
 
-**Algorithm**:
-```go
-func (m *SegmentedMemory) AdaptiveCompress(budget int) {
-    tokens := m.CountTokens()
-    usage := float64(tokens) / float64(budget)
+**Algorithm**: See the code example in the [L1 Cache section](#l1-cache-recent-conversation) for the actual compression logic inside `AddMessage()`.
 
-    switch {
-    case usage >= 0.85:
-        // Critical: Evict oldest 8 messages (4 exchanges) to L2
-        m.EvictToL2(m.L1[:8])
-        m.L1 = m.L1[8:]
-
-    case usage >= 0.80:
-        // High pressure: Compress oldest 6 messages (3 exchanges)
-        summary := m.Summarize(m.L1[:6])
-        m.L1 = append([]Message{summary}, m.L1[6:]...)
-
-    case usage >= 0.70:
-        // Medium pressure: Compress oldest 4 messages (2 exchanges)
-        summary := m.Summarize(m.L1[:4])
-        m.L1 = append([]Message{summary}, m.L1[4:]...)
-    }
-}
-```
-
-**Rationale**: Gradual degradation preserves more context longer than sudden truncation.
+**Rationale**: Gradual degradation preserves more context longer than sudden truncation. Profile-based thresholds allow tuning for different workload types (data-intensive vs conversational).
 
 
 ### LRU Schema Cache
@@ -984,42 +1042,38 @@ func (m *SegmentedMemory) AdaptiveCompress(budget int) {
 
 **Solution**: Kernel-layer LRU cache with max 10 schemas.
 
-**Algorithm**:
+**Algorithm**: The schema cache is built into `SegmentedMemory` using two maps (not a separate struct):
+
 ```go
-type SchemaCache struct {
-    schemas map[string]*SchemaInfo  // schema_name → info
-    lru     *list.List               // Access order (front = most recent)
-    lookup  map[string]*list.Element // Fast lookup
-    maxSize int                      // 10 default
-}
+// Part of SegmentedMemory (pkg/agent/segmented_memory.go)
+schemaCache     map[string]string    // key → schema string
+schemaAccessLog map[string]time.Time // key → last access time (LRU tracking)
+maxSchemas      int                  // default: 10
 
-func (c *SchemaCache) Get(schemaName string) (*SchemaInfo, bool) {
-    if elem, ok := c.lookup[schemaName]; ok {
-        c.lru.MoveToFront(elem)  // Update LRU
-        return elem.Value.(*SchemaInfo), true
+func (sm *SegmentedMemory) CacheSchema(key, schema string) {
+    sm.schemaCache[key] = schema
+    sm.schemaAccessLog[key] = time.Now()
+
+    if len(sm.schemaCache) > sm.maxSchemas {
+        // Find and evict least recently used schema
+        var lruKey string
+        var lruTime time.Time
+        for k, accessTime := range sm.schemaAccessLog {
+            if accessTime.Before(lruTime) || lruKey == "" {
+                lruKey = k
+                lruTime = accessTime
+            }
+        }
+        delete(sm.schemaCache, lruKey)
+        delete(sm.schemaAccessLog, lruKey)
     }
-    return nil, false
-}
-
-func (c *SchemaCache) Put(schemaName string, info *SchemaInfo) {
-    if c.lru.Len() >= c.maxSize {
-        // Evict LRU
-        back := c.lru.Back()
-        c.lru.Remove(back)
-        delete(c.schemas, back.Value.(*SchemaInfo).Name)
-        delete(c.lookup, back.Value.(*SchemaInfo).Name)
-    }
-
-    elem := c.lru.PushFront(info)
-    c.schemas[schemaName] = info
-    c.lookup[schemaName] = elem
 }
 ```
 
 **Complexity**:
-- Get: O(1) (map lookup + list move)
-- Put: O(1) (eviction + insertion)
-- Space: O(maxSize)
+- Get: O(1) (map lookup)
+- Put: O(n) worst-case where n = maxSchemas (linear scan for LRU eviction, acceptable for n=10)
+- Space: O(maxSchemas)
 
 **Performance**: <1ms cache operations
 
@@ -1035,7 +1089,7 @@ func (c *SchemaCache) Put(schemaName string, info *SchemaInfo) {
 - **Kernel**: Tool defs/schema cache stable → avoid repeated queries
 - **L1**: Recent messages → coherence for chain-of-thought
 - **L2**: Compressed history → long-term context without verbatim storage
-- **Swap**: Long-term storage → unbounded conversation support (future)
+- **Swap**: Long-term storage → unbounded conversation support (implemented)
 
 **Alternatives Considered**:
 
@@ -1063,18 +1117,19 @@ func (c *SchemaCache) Put(schemaName string, info *SchemaInfo) {
 - ✅ Bounded token budget (predictable cost)
 - ✅ Long-term context via L2 summaries
 - ✅ Hot-reload support via ROM immutability
-- ✅ Unbounded conversations via Swap (future)
+- ✅ Unbounded conversations via Swap (implemented)
 - ❌ Lossy L2 compression (summaries drop detail)
 - ❌ Implementation complexity (5 layers to manage)
 
 
 ### Decision 2: Adaptive Compression vs. Fixed Thresholds
 
-**Chosen**: Adaptive compression (70%, 80%, 85% triggers)
+**Chosen**: Profile-based adaptive compression (configurable thresholds per workload)
 
 **Rationale**:
 - **Gradual degradation**: Progressive compression preserves more context than sudden truncation
 - **Responsive to pressure**: Compression intensity scales with token usage
+- **Workload-aware**: Different profiles (data_intensive, balanced, conversational) tune thresholds appropriately
 - **Tool pair preservation**: Prevents splitting atomic tool_use/tool_result pairs
 
 **Alternatives**:
@@ -1089,8 +1144,8 @@ func (c *SchemaCache) Put(schemaName string, info *SchemaInfo) {
 **Consequences**:
 - ✅ Smooth token usage curve (no spikes)
 - ✅ Preserves more conversation context
-- ❌ Added complexity (3 compression levels)
-- ❌ Requires LLM calls for summarization (500-800ms latency)
+- ❌ Added complexity (3 compression levels per profile, 3 workload profiles)
+- ❌ Requires LLM calls for summarization (500-800ms latency), falls back to heuristic
 
 
 ### Decision 3: LLM Summarization vs. Heuristic Compression
@@ -1117,7 +1172,7 @@ func (c *SchemaCache) Put(schemaName string, info *SchemaInfo) {
 - ✅ High-quality summaries (>90% key fact retention)
 - ✅ 5-10x compression ratio
 - ❌ Summarization latency (500-800ms per eviction)
-- ❌ Added LLM cost (~$0.001 per summarization with Haiku)
+- ❌ Added LLM cost (~$0.001 per summarization, varies by provider)
 
 
 ### Decision 4: Shared Memory Tiered Storage vs. Context Inline
@@ -1315,15 +1370,15 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 **Workaround**: Increase L1 capacity (reduces compression frequency) or use Swap layer for full history retrieval
 
 
-### Constraint 3: Swap Retrieval is Manual
+### Constraint 3: Swap Retrieval is Agent-Initiated
 
-**Description**: Swap layer is operational (v1.0.0-beta.2), but retrieval is manual via API calls. No automatic semantic search.
+**Description**: Swap layer is operational with BM25 + LLM reranking semantic search. However, retrieval is agent-initiated via the `conversation_memory` tool (not automatically triggered).
 
-**Impact**: Agent does not automatically retrieve old context when relevant. User must explicitly call retrieval API.
+**Impact**: Agent must decide to use the `conversation_memory` tool to retrieve old context. It does not automatically retrieve relevant history.
 
-**Workaround**: Use `RetrieveMessagesFromSwap()` and `PromoteMessagesToContext()` when old context is needed.
+**Workaround**: The `conversation_memory` tool supports three actions: `recall` (offset-based), `search` (semantic, with session scopes: current/agent/all), and `clear` (free token budget).
 
-**Future**: Automatic semantic search (embeddings + vector similarity) planned for v1.1.0
+**Future**: Automatic context injection based on query relevance could reduce manual retrieval
 
 
 ### Constraint 4: Summarization Latency
@@ -1353,7 +1408,7 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
 | Context build | 5ms | 12ms | Collect ROM+K+L1+L2 + token count |
-| Adaptive compression | 550ms | 850ms | LLM summarization (Claude Haiku) |
+| Adaptive compression | 550ms | 850ms | LLM summarization (configured provider) |
 | L1 eviction | 600ms | 900ms | Summarize + move to L2 |
 | **L2 eviction to swap** | **3ms** | **10ms** | **SQLite write + tracing** |
 | **Swap retrieval** | **12ms** | **28ms** | **SQLite query + deserialization** |
@@ -1371,8 +1426,8 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 |-----------|------|
 | ROM | ~5KB (system prompt + patterns) |
 | Kernel | ~2KB (tool defs + schema cache) |
-| L1 | ~10KB (10 messages) |
-| L2 | ~3KB (summaries) |
+| L1 | ~4-10KB (profile-dependent, token-based sizing) |
+| L2 | up to ~5KB (summaries, evicts to swap at maxL2Tokens) |
 | Session struct | ~1KB (metadata) |
 | **Total** | **~21KB per session** |
 
@@ -1410,7 +1465,7 @@ Each player: shared_memory_write(key="character_sheet", value="...", namespace="
 
 **Race Prevention**:
 - All tests run with `-race` detector
-- Zero race conditions in v1.0.0-beta.1
+- Zero race conditions (tested with `-race` detector)
 
 
 ### Adaptive Compression
@@ -1516,21 +1571,42 @@ Session Persist Failure ───▶ Retry (idempotent) ───▶ Return Erro
 4. Shinn, N., et al. (2023). *Reflexion: Language Agents with Verbal Reinforcement Learning*. arXiv:2303.11366.
 
 
+## Graph Memory (Cross-Session Knowledge)
+
+In addition to the 5-layer segmented memory (which manages within-session context), Loom provides **Graph Memory** -- a salience-driven, graph-backed episodic memory system for persistent, cross-session knowledge.
+
+Graph memory operates alongside the segmented memory system. While segmented memory manages the LLM context window for a single conversation, graph memory persists knowledge across sessions as a directed graph of entities, relationships, and immutable memory records.
+
+**Key Differences from Segmented Memory**:
+
+| Property | Segmented Memory | Graph Memory |
+|----------|-----------------|--------------|
+| Scope | Single session | Cross-session (persistent) |
+| Structure | Linear message history | Graph (entities + edges + memories) |
+| Mutability | Messages evicted/compressed | Memories immutable; entities mutable |
+| Retrieval | Chronological (L1/L2/Swap) | Salience-ranked + FTS search |
+| Budget | Manages full context window | Consumes ~10% of context budget |
+
+**Integration**: Graph memory context is injected as a system message at each conversation turn, alongside the segmented memory layers. The token budget for graph memory injection is configurable (default 10% of context window).
+
+See [Graph Memory Architecture](graph-memory.md) for the full design.
+
+
 ## Further Reading
 
 ### Architecture Deep Dives
 
+- [Graph Memory Architecture](graph-memory.md) - Cross-session salience-driven knowledge graph
 - [Agent System Architecture](agent-system-design.md) - Conversation loop and session persistence
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
-- [Learning Agent Architecture](learning-agent-design.md) - Learned layer integration
+- [Learning Agent Architecture](learning-agent.md) - Learned layer integration
 - [Communication System Architecture](communication-system-design.md) - Shared Memory integration
 
 ### Reference Documentation
 
 - [Agent Configuration Reference](/docs/reference/agent-configuration.md) - Memory configuration options
-- [API Reference](/docs/reference/api.md) - Session management RPCs
 
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Memory Configuration Guide](/docs/guides/memory-configuration.md) - Tuning memory settings
+- [Memory Management Guide](/docs/guides/memory-management.md) - Memory management

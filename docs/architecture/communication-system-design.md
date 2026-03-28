@@ -1,11 +1,13 @@
 
 # Communication System Architecture
 
-Comprehensive architecture of Loom's tri-modal communication system for agent-to-agent messaging with intelligent routing between value and reference semantics.
+Architecture of Loom's quad-modal communication system for agent-to-agent messaging with intelligent routing between value and reference semantics.
+
+**Status**: ✅ Implemented (all four channels operational with tests)
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -43,15 +45,16 @@ Comprehensive architecture of Loom's tri-modal communication system for agent-to
 
 ## Overview
 
-The Communication System enables **efficient agent-to-agent messaging** with three complementary modes:
+The Communication System enables **efficient agent-to-agent messaging** with four complementary modes:
 
 1. **Broadcast Bus**: Topic-based pub/sub for real-time events and coordination
 2. **Message Queue**: Persistent P2P messaging with offline support and retries
-3. **Shared Memory**: Key-value store for large datasets with tiered storage
+3. **Shared Memory**: In-memory namespaced key-value store with zstd compression (>1KB threshold)
+4. **Interrupt Channel**: Targeted, guaranteed signal delivery with type-safe enums
 
 The system intelligently routes messages using **value semantics** (inline data) or **reference semantics** (stored data with reference ID) based on payload size and message type.
 
-**Key Innovation**: Three-tier routing strategy that optimizes for both small ephemeral messages and large persistent data.
+**Key Innovation**: Quad-modal communication with three-tier routing strategy that optimizes for both small ephemeral messages and large persistent data.
 
 
 ## Design Goals
@@ -95,14 +98,20 @@ graph TB
             MQ4[Priority, TTL support]
         end
 
-        subgraph SharedMemory["Shared Memory (Key-Value, Tiered)"]
-            SM1[Memory tier: LRU cache 1GB default]
-            SM2[Disk tier: Filesystem 10GB default]
-            SM3[Namespaced: GLOBAL, WORKFLOW, SWARM]
+        subgraph SharedMemory["Shared Memory (Key-Value, In-Memory)"]
+            SM1[In-memory namespaced store]
+            SM2[Zstd compression above 1KB]
+            SM3[Namespaced: GLOBAL, WORKFLOW, SWARM, DEBATE, SESSION, AGENT]
+        end
+
+        subgraph InterruptChan["Interrupt Channel (Targeted Signals)"]
+            IC1[Type-safe interrupt signals]
+            IC2[Fast path Go channels plus slow path SQLite]
+            IC3[Priority-based delivery CRITICAL to LOW plus LEARNING]
         end
 
         subgraph ReferenceStore["Reference Store (Value/Reference Router)"]
-            RS1[Auto-promotion 10KB threshold]
+            RS1[Auto-promotion 1KB threshold]
             RS2[Policy-based routing]
             RS3[Memory + SQLite backends]
         end
@@ -148,13 +157,13 @@ graph TB
 │  │                  Message Queue                               │         │  │
 │  │                                                              │         │  │
 │  │  SQLite Storage:                                             │         │  │
-│  │    - messages table (id, from, to, payload, status)         │          │  │
+│  │    - message_queue table (id, to/from, payload_json, status)│          │  │
 │  │    - Indexes: (to_agent, status), (correlation_id)          │          │  │
 │  │                                                              │         │  │
 │  │  Queue Management:                                           │         │  │
 │  │    ├─ Priority queue (high/normal/low)                      │          │  │
-│  │    ├─ TTL cleanup (expired messages purged)                 │          │  │
-│  │    ├─ Retry logic (exponential backoff)                     │          │  │
+│  │    ├─ TTL cleanup (expired messages purged on dequeue)       │          │  │
+│  │    ├─ Retry logic (dequeue count, max 3 default)            │          │  │
 │  │    └─ Correlation IDs (request-response pairing)            │          │  │
 │  │                                                              │         │  │
 │  │  Delivery Guarantees:                                        │         │  │
@@ -172,18 +181,15 @@ graph TB
 │  │    - SWARM:    Scoped to swarm ID                           │          │  │
 │  │    - DEBATE:   Scoped to debate ID                          │          │  │
 │  │    - SESSION:  Scoped to session ID                         │          │  │
+│  │    - AGENT:    Scoped to agent ID (auto-prefixed keys)     │          │  │
 │  │                                                              │         │  │
-│  │  Memory Tier (LRU cache, 1GB):                              │          │  │
-│  │    - In-memory map[string]*StoredData                       │          │  │
-│  │    - Zstd compression (>1MB auto-compress)                  │          │  │
+│  │  In-Memory Store:                                            │         │  │
+│  │    - Per-namespace map: namespace → key → SharedMemoryValue │          │  │
+│  │    - Zstd compression (>1KB auto-compress)                  │          │  │
 │  │    - SHA-256 checksums (integrity)                          │          │  │
-│  │    - Reference counting (prevent eviction)                  │          │  │
-│  │                                                              │         │  │
-│  │  Disk Tier (Filesystem, 10GB):                              │          │  │
-│  │    - Path: /tmp/loom-cache/{namespace}/{key}.dat           │           │  │
-│  │    - TTL cleanup (1 hour default)                           │          │  │
-│  │    - Auto-promotion on access (disk → memory)               │          │  │
-│  │    - Atomic writes (temp + rename)                          │          │  │
+│  │    - Optimistic concurrency control (version field)         │          │  │
+│  │    - Watch support (per-namespace watchers)                 │          │  │
+│  │    - Per-namespace statistics (atomic counters)             │          │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
@@ -197,7 +203,7 @@ graph TB
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                     ▼                                        │         │  │
 │  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
-│  │    │ Tier 2: Auto-Promote (10KB threshold)  │              │           │  │
+│  │    │ Tier 2: Auto-Promote (1KB threshold)  │              │           │  │
 │  │    │ (tool_result, general)                  │              │          │  │
 │  │    │ Small: inline | Large: reference        │              │          │  │
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
@@ -209,23 +215,41 @@ graph TB
 │  │  └──────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                              │         │  │
 │  │  Backends:                                                   │         │  │
-│  │    - MemoryStore (TTL GC, 5-10 min default)                 │          │  │
-│  │    - SQLiteStore (ref_counting, manual GC)                  │          │  │
+│  │    - MemoryStore (TTL + ref-count GC, 5 min default)        │          │  │
+│  │    - SQLiteStore (ref-count + expiry GC, 5 min default)     │          │  │
 │  │    - RedisStore (planned for distributed)                   │          │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │                  Interrupt System (Optional)                 │         │  │
+│  │           Interrupt Channel (4th channel, quad-modal)       │         │  │
 │  │                                                              │         │  │
-│  │  InterruptRouter:                                            │         │  │
-│  │    - Routes interrupts to active agents                     │          │  │
-│  │    - Priority-based delivery                                │          │  │
-│  │    - Integration with Judge for safety checks               │          │  │
+│  │  InterruptChannel:                                           │         │  │
+│  │    - Targeted signal delivery to specific agents            │          │  │
+│  │    - Broadcast to all handlers for a signal                 │          │  │
+│  │    - Type-safe InterruptSignal enums (compile-time safe)    │          │  │
+│  │    - Hawk integration for tracing (spans + metrics)         │          │  │
 │  │                                                              │         │  │
-│  │  InterruptQueue:                                             │         │  │
-│  │    - Per-agent interrupt queue                              │          │  │
-│  │    - Buffered channel (10 default)                          │          │  │
-│  │    - Drop on overflow (log warning)                         │          │  │
+│  │  Fast Path (Router):                                         │         │  │
+│  │    - Go channels with priority-based buffer sizes           │          │  │
+│  │    - CRITICAL/HIGH: 10,000 buffer                           │          │  │
+│  │    - NORMAL: 1,000 buffer, LOW: 100 buffer                  │          │  │
+│  │                                                              │         │  │
+│  │  Slow Path (PersistentQueue):                                │         │  │
+│  │    - SQLite-backed queue for CRITICAL signals               │          │  │
+│  │    - Guaranteed delivery (retry until delivered)             │          │  │
+│  │                                                              │         │  │
+│  │  Signal Priorities:                                          │         │  │
+│  │    - 0-9 CRITICAL: EmergencyStop, SystemShutdown,           │          │  │
+│  │      ThresholdCritical, DatabaseDown, SecurityBreach         │          │  │
+│  │    - 10-19 HIGH: ThresholdHigh, AlertSecurity,              │          │  │
+│  │      AlertError, ResourceExhausted                          │          │  │
+│  │    - 20-29 NORMAL: Wakeup, GracefulShutdown,               │          │  │
+│  │      HealthCheck, ConfigReload                              │          │  │
+│  │    - 30-39 LOW: MetricsCollection, LogRotation              │          │  │
+│  │    - 40-49 LEARNING (NORMAL priority): LearningAnalyze,     │          │  │
+│  │      LearningOptimize, LearningABTest, LearningProposal,   │          │  │
+│  │      LearningValidate, LearningExport, LearningSync         │          │  │
+│  │    - 1000+ CUSTOM: User-defined signals                     │          │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -237,7 +261,7 @@ graph TB
 
 **Responsibility**: Real-time event notifications via topic-based pub/sub.
 
-**Core Structure** (`pkg/communication/bus.go:34`):
+**Core Structure** (`pkg/communication/bus.go:48`):
 ```go
 type MessageBus struct {
     mu              sync.RWMutex
@@ -246,9 +270,11 @@ type MessageBus struct {
     refStore        ReferenceStore
     policy          *PolicyManager
     tracer          observability.Tracer
+    logger          *zap.Logger
     totalPublished  atomic.Int64
     totalDelivered  atomic.Int64
     totalDropped    atomic.Int64
+    closed          atomic.Bool
 }
 ```
 
@@ -259,20 +285,24 @@ Publisher ───▶ Topic ───▶ Subscriber A
                      └───▶ Subscriber C                                         
 ```
 
-**Topic Patterns** (wildcard support):
+**Topic Patterns** (wildcard support via Go's `path.Match`):
 - `workflow.start` - Exact match
-- `workflow.*` - Any single-segment wildcard (matches `workflow.start`, `workflow.complete`)
-- `workflow.**` - Multi-segment wildcard (matches `workflow.step.1.start`)
+- `workflow.*` - Wildcard matches any sequence of non-Separator characters (matches `workflow.start`, `workflow.complete`, AND `workflow.step.1`)
 
-**Subscription Filters** (key-value predicates):
+Note: `path.Match` uses `/` as its separator, not `.`. Since Loom topics use `.` as a separator, `*` effectively matches any characters including `.` within a single `path.Match` call. This means `workflow.*` matches `workflow.step.1` (which may be surprising). Multi-segment `**` wildcards are NOT supported by `path.Match`.
+
+**Subscription Filters** (`proto/loom/v1/bus.proto:48-61`):
 ```go
 filter := &loomv1.SubscriptionFilter{
-    Conditions: []*loomv1.FilterCondition{
-        {Key: "priority", Operator: "equals", Value: "high"},
-        {Key: "workflow_id", Operator: "equals", Value: "wf-123"},
+    FromAgents: []string{"agent-a", "agent-b"},   // Only messages from these agents
+    Metadata: map[string]string{                   // All must match (AND logic)
+        "workflow_id": "wf-123",
+        "priority":    "high",
     },
 }
 ```
+
+The `SubscriptionFilter` proto message (`bus.proto:49`) has four fields: `from_agents` (repeated string), `min_size` (int64), `max_size` (int64), and `metadata` (map). All filter conditions are AND-ed together. Note: the current `matchesFilter()` implementation only evaluates `from_agents` and `metadata`; `min_size` and `max_size` are defined in the proto but not yet enforced in filtering logic.
 
 **Delivery Guarantees**:
 - **Non-blocking**: Publish never blocks on slow subscribers
@@ -290,84 +320,117 @@ filter := &loomv1.SubscriptionFilter{
 
 **Responsibility**: Persistent point-to-point messaging with offline support and retries.
 
-**Core Structure** (`pkg/communication/queue.go`):
+**Core Structure** (`pkg/communication/queue.go:83`):
 ```go
 type MessageQueue struct {
-    db              *sql.DB              // SQLite connection
-    mu              sync.RWMutex
-    subscribers     map[string]chan *QueueMessage
-    policy          *PolicyManager
-    tracer          observability.Tracer
+    mu sync.RWMutex
+
+    // Per-agent queues (agent ID → queue of messages)
+    queues map[string][]*QueueMessage
+
+    // In-flight messages (message ID → message) for acknowledgment tracking
+    inFlight map[string]*QueueMessage
+
+    // Response waiting (correlation ID → response channel) for request-response pattern
+    pendingResponses map[string]chan *QueueMessage
+
+    // Event-driven notifications (agent ID → notification channel)
+    notificationChannels map[string]chan struct{}
+
+    // Persistent storage
+    db     *sql.DB
+    dbPath string
+
+    // Dependencies
+    tracer observability.Tracer
+    logger *zap.Logger
+
+    // Statistics (atomic counters)
+    totalEnqueued atomic.Int64
+    totalDequeued atomic.Int64
+    totalAcked    atomic.Int64
+    totalFailed   atomic.Int64
+    totalExpired  atomic.Int64
+
+    // Lifecycle
+    closed atomic.Bool
 }
 ```
 
-**SQLite Schema**:
+**SQLite Schema** (table name: `message_queue`):
 ```sql
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS message_queue (
     id              TEXT PRIMARY KEY,
-    from_agent      TEXT NOT NULL,
     to_agent        TEXT NOT NULL,
+    from_agent      TEXT NOT NULL,
     message_type    TEXT NOT NULL,
-    payload_type    TEXT NOT NULL,  -- 'value' or 'reference'
-    payload         BLOB,            -- Inline data or serialized Reference
-    priority        INTEGER DEFAULT 0,
+    payload_json    TEXT NOT NULL,
+    metadata_json   TEXT,
     correlation_id  TEXT,
-    created_at      INTEGER NOT NULL,
-    expires_at      INTEGER,
-    status          TEXT DEFAULT 'pending',
-    retry_count     INTEGER DEFAULT 0,
+    priority        INTEGER DEFAULT 0,
+    enqueued_at     INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,
+    dequeue_count   INTEGER DEFAULT 0,
     max_retries     INTEGER DEFAULT 3,
-    last_error      TEXT,
+    status          INTEGER DEFAULT 0,
+    created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
 
-CREATE INDEX idx_to_agent_status ON messages(to_agent, status);
-CREATE INDEX idx_correlation_id ON messages(correlation_id);
-CREATE INDEX idx_expires_at ON messages(expires_at);
+CREATE INDEX IF NOT EXISTS idx_to_agent ON message_queue(to_agent, status);
+CREATE INDEX IF NOT EXISTS idx_status ON message_queue(status);
+CREATE INDEX IF NOT EXISTS idx_expires_at ON message_queue(expires_at);
+CREATE INDEX IF NOT EXISTS idx_correlation_id ON message_queue(correlation_id);
 ```
 
-**Message States**:
-- `pending`: Queued, awaiting delivery
-- `delivered`: Successfully delivered to agent
-- `failed`: Max retries exceeded
-- `expired`: TTL exceeded
+**Message States** (integer enum `QueueMessageStatus`):
+- `0 (Pending)`: Queued, awaiting delivery
+- `1 (InFlight)`: Dequeued, awaiting acknowledgment
+- `2 (Acked)`: Successfully processed by agent
+- `3 (Failed)`: Max retries exceeded
+- `4 (Expired)`: TTL exceeded
 
 **Delivery Flow**:
 ```
-Send(msg) ───▶ Persist to SQLite ───▶ Notify subscriber ───▶ Agent receives     
-                  │                                             │               
-                  ▼                                             ▼
-            ACK persisted                                  ACK sent back
-                  │                                             │               
-└──────────────────────────────────────────────────────────────────────────────┘
+Enqueue(msg) ───▶ Persist to SQLite ───▶ Add to in-memory queue
+                                              │
+                                              ▼
+                                        Notify agent via channel
+                                              │
+                                              ▼
+                                        Agent calls Dequeue()
+                                              │
+                                              ▼
+                                    Message marked InFlight
+                                              │
+                                     ┌────────┴────────┐
+                                     ▼                  ▼
+                              Acknowledge()        Requeue()
+                              (mark Acked)     (back to Pending)
 ```
 
-**Retry Logic** (exponential backoff):
+**Retry Logic** (dequeue count tracking):
 ```
-Attempt 1: Immediate
-Attempt 2: 1s delay
-Attempt 3: 4s delay (2^2)
-Attempt 4: 16s delay (2^4)
-→ Mark as failed
+Dequeue 1: Immediate delivery attempt → Ack or Requeue
+Dequeue 2: Immediate delivery attempt → Ack or Requeue
+Dequeue 3: Immediate delivery attempt → Ack or mark as Failed
+(Default MaxRetries = 3, configurable per message)
 ```
+
+Messages are requeued to Pending state on failure. No explicit backoff delay is applied between retries in the MessageQueue. The queue relies on the consumer (agent) to Acknowledge or Requeue messages after processing.
 
 **Request-Response Correlation**:
-```go
-// Agent A sends request
-requestID := uuid.New()
-queue.Send(ctx, &QueueMessage{
-    ToAgent:       "agent-b",
-    CorrelationID: requestID,
-    Payload:       requestData,
-})
 
-// Agent B sends response
-queue.Send(ctx, &QueueMessage{
-    ToAgent:       "agent-a",
-    CorrelationID: requestID,  // Same correlation ID
-    Payload:       responseData,
-})
+The `SendAndReceive` method handles correlation automatically:
+```go
+// Agent A sends request and blocks waiting for response
+responsePayload, err := queue.SendAndReceive(
+    ctx, "agent-a", "agent-b", "query",
+    requestPayload, metadata, 30, // 30s timeout
+)
 ```
+
+Internally, `SendAndReceive` generates a unique `CorrelationID` (format: `corr-{fromAgent}-{timestamp}`), creates a buffered response channel, and blocks until a response message with the same CorrelationID arrives or the timeout elapses. The responding agent's reply is routed to the waiting channel by the `Enqueue` method when it detects a matching CorrelationID.
 
 **Rationale**:
 - **Persistent**: Messages survive server restart
@@ -378,101 +441,78 @@ queue.Send(ctx, &QueueMessage{
 
 ### Shared Memory (Key-Value)
 
-**Responsibility**: Large dataset storage with tiered memory → disk eviction.
+**Responsibility**: Namespaced in-memory key-value store for zero-copy agent state sharing with optimistic concurrency control.
 
-**Core Structure** (`pkg/communication/shared_memory.go`):
+**Core Structure** (`pkg/communication/shared_memory.go:49`):
 ```go
-type SharedMemory struct {
-    mu               sync.RWMutex
-    memoryTier       map[string]*StoredData  // Key → data
-    diskPath         string                   // /tmp/loom-cache
-    maxMemoryBytes   int64                    // 1GB default
-    maxDiskBytes     int64                    // 10GB default
-    compressionThresh int64                   // 1MB
-    ttl              time.Duration            // 1 hour
-    refCounts        map[string]int           // Reference counting
+type SharedMemoryStore struct {
+    mu sync.RWMutex
+
+    // Per-namespace storage: namespace → key → value
+    data map[loomv1.SharedMemoryNamespace]map[string]*loomv1.SharedMemoryValue
+
+    // Per-namespace statistics
+    stats map[loomv1.SharedMemoryNamespace]*SharedMemoryNamespaceStats
+
+    // Watchers: namespace → watcher list
+    watchers map[loomv1.SharedMemoryNamespace][]*SharedMemoryWatcher
+
+    // Dependencies
+    tracer observability.Tracer
+    logger *zap.Logger
+
+    // Compression encoder/decoder (reusable, thread-safe)
+    encoder *zstd.Encoder
+    decoder *zstd.Decoder
+
+    // Lifecycle
+    closed atomic.Bool
 }
 ```
 
-**Namespaced Keys**:
+**Namespaces** (proto enum `SharedMemoryNamespace`):
+- `GLOBAL` - Shared across all agents
+- `WORKFLOW` - Scoped to workflow instance
+- `SWARM` - Scoped to agent swarm
+- `DEBATE` - Scoped to debate session
+- `SESSION` - Scoped to user session
+- `AGENT` - Scoped to agent instance (keys auto-prefixed with `agent:{agentID}:`)
+
+**Key Scoping** (for AGENT namespace):
 ```
-Format: {namespace}:{scope_id}:{key}
+Format: agent:{agent_id}:{key}
 
 Examples:
-  GLOBAL:*:schema_cache
-  WORKFLOW:wf-123:query_results
-  SWARM:swarm-456:consensus_data
-  SESSION:sess-789:conversation_history
+  agent:agent-a:my_data       (auto-prefixed, isolated per agent)
 ```
+Other namespaces use keys directly without scoping.
 
-**Storage Tiers**:
+**Storage Model**:
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│   Memory Tier (LRU cache, 1GB)                                               │
+│   In-Memory Store (per-namespace maps)                                       │
 │                                                                              │
 │   Fast access (<1ms)                                                         │
-│   Zstd compression (>1MB)                                                    │
+│   Zstd compression (>1KB auto-compress)                                      │
 │   SHA-256 checksums                                                          │
-│   Reference counting                                                         │
-└──────────────────────────────────────────────────────────────────────────────┘
-               │ eviction                                                       
-               ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│   Disk Tier (Filesystem, 10GB)                                               │
-│                                                                              │
-│   Persistent (5-15ms)                                                        │
-│   TTL cleanup (1 hour default)                                               │
-│   Auto-promotion on access                                                   │
-│   Atomic writes (temp + rename)                                              │
+│   Optimistic concurrency control (version field)                             │
+│   Watch support (per-namespace watchers)                                     │
+│   Per-namespace statistics (atomic counters)                                 │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**LRU Eviction**:
-```
-1. Memory tier full (>1GB)
-2. Find LRU entry (lowest AccessedAt)
-3. Check refCount (skip if >0)
-4. Write to disk tier
-5. Remove from memory tier
-6. Log eviction to Hawk
-```
+Note: The current implementation is in-memory only. There is no disk tier or LRU eviction. All data lives in the per-namespace maps and is lost on process restart.
 
-**Auto-Promotion** (disk → memory on access):
-```go
-func (sm *SharedMemory) Get(ctx context.Context, key string) ([]byte, error) {
-    // Try memory tier first
-    if data, found := sm.memoryTier[key]; found {
-        data.AccessedAt = time.Now()  // Update LRU
-        return data.Data, nil
-    }
-
-    // Fall back to disk tier
-    diskData, err := sm.loadFromDisk(key)
-    if err != nil {
-        return nil, err
-    }
-
-    // Promote to memory tier (if space available)
-    if sm.hasMemorySpace() {
-        sm.memoryTier[key] = &StoredData{
-            Data:       diskData,
-            AccessedAt: time.Now(),
-        }
-    }
-
-    return diskData, nil
-}
-```
-
-**Compression** (>1MB auto-compress with zstd):
-- Compression ratio: ~3-5x for JSON/CSV, ~1.5-2x for binary
-- Latency: ~10ms compression, ~5ms decompression
+**Compression** (>1KB auto-compress with zstd, `CompressionThreshold = 1024`):
+- Only compresses if the compressed result is smaller than the original
+- Decompression is transparent on Get (always returns decompressed data)
 
 **Rationale**:
-- **Zero-copy**: Agents share large datasets via references
-- **Tiered storage**: Hot data in memory, cold data on disk
-- **Bounded memory**: LRU eviction prevents OOM
+- **Shared state**: Agents share data via namespaced keys without message passing
+- **Concurrency safety**: Optimistic concurrency control via version fields
 - **Integrity**: SHA-256 checksums detect corruption
+- **Reactivity**: Watchers enable event-driven responses to state changes
+- **Isolation**: AGENT namespace auto-scopes keys to prevent cross-agent access
 
 
 ### Reference Store
@@ -495,16 +535,17 @@ Message Type ───▶ Policy Lookup ───▶ Tier Assignment
 └──────────────────────────────────────────────────────────────────────────────┘
                    │                      │                      │              
                    ▼                      ▼                      ▼
-            Store in DB         Size > 10KB?              Inline value
+            Store in DB         Size > 1KB?              Inline value
             Return ref ID       Yes: ref, No: value
 ```
 
-**ReferenceStore Interface**:
+**ReferenceStore Interface** (`pkg/communication/store.go:24`):
 ```go
 type ReferenceStore interface {
     Store(ctx context.Context, data []byte, opts StoreOptions) (*loomv1.Reference, error)
     Resolve(ctx context.Context, ref *loomv1.Reference) ([]byte, error)
-    Delete(ctx context.Context, refID string) error
+    Retain(ctx context.Context, refID string) error   // Increment ref count
+    Release(ctx context.Context, refID string) error   // Decrement ref count (may trigger GC)
     List(ctx context.Context) ([]*loomv1.Reference, error)
     Stats(ctx context.Context) (*StoreStats, error)
     Close() error
@@ -512,26 +553,26 @@ type ReferenceStore interface {
 ```
 
 **Implementations**:
-1. **MemoryStore**: In-memory with TTL-based GC (5-10 min default)
-2. **SQLiteStore**: Persistent with reference counting and manual GC
-3. **RedisStore**: (Planned) Distributed deployments
+1. **MemoryStore**: In-memory with TTL + reference-count GC (5 min default GC interval)
+2. **SQLiteStore**: Persistent with reference counting + expiry GC (5 min default GC interval)
+3. **RedisStore**: 📋 Planned for distributed deployments
 
-**Policy Examples**:
+**Policy Factory Functions** (actual functions in `policy.go`):
 ```go
-// Always reference
-policy := NewAlwaysReferencePolicy()
-
-// Always value
-policy := NewAlwaysValuePolicy()
-
-// Auto-promote (10KB threshold)
-policy := NewAutoPromotePolicy(10 * 1024)
-
-// Session state (always reference)
+// Session state (Tier 1: Always Reference)
 policy := NewSessionStatePolicy()
 
-// Tool result (auto-promote, 10KB)
-policy := NewToolResultPolicy()
+// Workflow context (Tier 1: Always Reference)
+policy := NewWorkflowContextPolicy()
+
+// Control messages (Tier 3: Always Value)
+policy := NewControlMessagePolicy()
+
+// Tool result (Tier 2: Auto-Promote, custom threshold)
+policy := NewToolResultPolicy(1024)  // 1KB threshold
+
+// Default policy (Tier 2: Auto-Promote, 1KB threshold)
+policy := DefaultPolicy()
 ```
 
 
@@ -542,31 +583,33 @@ policy := NewToolResultPolicy()
 **Core Structure** (`pkg/communication/policy.go`):
 ```go
 type PolicyManager struct {
-    mu       sync.RWMutex
-    policies map[string]*loomv1.CommunicationPolicy
-}
-
-type CommunicationPolicy struct {
-    MessageType      string
-    Routing          RoutingStrategy  // ALWAYS_VALUE, ALWAYS_REFERENCE, AUTO_PROMOTE
-    SizeThreshold    int64            // Bytes (for AUTO_PROMOTE)
-    TTL              int64            // Seconds (for reference storage)
-    RefCountEnabled  bool             // Enable reference counting
+    defaultPolicy *loomv1.CommunicationPolicy
+    policies      map[string]*loomv1.CommunicationPolicy
 }
 ```
 
-**Decision Algorithm**:
+Note: `PolicyManager` has no mutex because policies are typically set at initialization time before concurrent use. `CommunicationPolicy` is a protobuf message defined in `communication.proto` with fields: `tier` (CommunicationTier enum), `message_type`, `auto_promote` (AutoPromoteConfig), and `overrides`.
+
+**Decision Algorithm** (`ShouldUseReference`):
 ```go
-func (pm *PolicyManager) ShouldUseReference(messageType string, sizeBytes int64) bool {
+func (pm *PolicyManager) ShouldUseReference(messageType string, payloadSize int64) bool {
     policy := pm.GetPolicy(messageType)
 
-    switch policy.Routing {
-    case ALWAYS_VALUE:
+    // Check for policy override first
+    if override, ok := policy.Overrides[messageType]; ok {
+        return override.Type == loomv1.PolicyOverride_OVERRIDE_TYPE_FORCE_REFERENCE
+    }
+
+    switch policy.Tier {
+    case COMMUNICATION_TIER_ALWAYS_VALUE:
         return false
-    case ALWAYS_REFERENCE:
+    case COMMUNICATION_TIER_ALWAYS_REFERENCE:
         return true
-    case AUTO_PROMOTE:
-        return sizeBytes > policy.SizeThreshold
+    case COMMUNICATION_TIER_AUTO_PROMOTE:
+        if policy.AutoPromote != nil && policy.AutoPromote.Enabled {
+            return payloadSize > policy.AutoPromote.ThresholdBytes
+        }
+        return payloadSize > 1024 // Fallback: 1KB
     default:
         return false
     }
@@ -576,45 +619,70 @@ func (pm *PolicyManager) ShouldUseReference(messageType string, sizeBytes int64)
 
 ### Interrupt System
 
-**Responsibility**: Priority-based agent interruption for safety-critical events.
+**Responsibility**: Priority-based agent interruption with type-safe signal enums and two-path delivery (fast Go channels + slow persistent SQLite queue).
 
-**Core Structure** (`pkg/communication/interrupt/router.go`):
+**Core Structures**:
+
+`InterruptChannel` (`pkg/communication/interrupt/channel.go:72`):
 ```go
-type InterruptRouter struct {
-    mu              sync.RWMutex
-    agents          map[string]*InterruptQueue
-    judgeIntegration bool  // Integrate with Judge system
-}
-
-type InterruptQueue struct {
-    agentID  string
-    queue    chan *Interrupt
-    capacity int  // 10 default
+type InterruptChannel struct {
+    ctx    context.Context
+    cancel context.CancelFunc
+    router *Router             // Fast-path delivery via Go channels
+    queue  *PersistentQueue    // Slow-path delivery for CRITICAL signals
+    mu       sync.RWMutex
+    handlers map[string]map[InterruptSignal]*HandlerRegistration
+    tracer   observability.Tracer
 }
 ```
 
-**Interrupt Types**:
-- `SAFETY_VIOLATION`: Judge detected unsafe action (immediate stop)
-- `RESOURCE_LIMIT`: Token/cost limit exceeded
-- `USER_STOP`: User requested stop
-- `TIMEOUT`: Operation timeout
+`Router` (`pkg/communication/interrupt/router.go:51`):
+```go
+type Router struct {
+    ctx    context.Context
+    cancel context.CancelFunc
+    mu      sync.RWMutex
+    entries map[string]map[InterruptSignal]*routerEntry // agentID -> signal -> entry
+    wg      sync.WaitGroup
+    tracer  observability.Tracer
+}
+```
 
-**Priority Delivery**:
+Each registered handler gets a dedicated channel with a priority-appropriate buffer size. Background goroutines process each handler's queue.
+
+**Signal Types** (type-safe `InterruptSignal` enum in `signals.go`):
+- `SignalEmergencyStop` (0): Halt all operations
+- `SignalSystemShutdown` (1): Graceful system-wide shutdown
+- `SignalThresholdCritical` (2): Critical threshold breach
+- `SignalDatabaseDown` (3): Database unavailability
+- `SignalSecurityBreach` (4): Confirmed security incident
+- `SignalWakeup` (20): Wake dormant agent
+- `SignalConfigReload` (23): Hot-reload configuration
+- `SignalLearningAnalyze` (40) through `SignalLearningSync` (46): Learning triggers
+
+**Two-Path Delivery**:
 ```
-High Priority (safety) ───▶ Immediate delivery (blocking)                       
-Normal Priority         ───▶ Non-blocking (drop if full)                        
-Low Priority           ───▶ Best-effort                                         
+Send(signal, target, payload)
+    │
+    ├─ Fast Path: Go channel (non-blocking send)
+    │   ├─ Delivered? → Done
+    │   └─ Buffer full?
+    │       ├─ CRITICAL signal → Fall back to Slow Path
+    │       └─ Non-critical → Drop (return error)
+    │
+    └─ Slow Path: PersistentQueue (SQLite)
+        ├─ Enqueue to SQLite
+        ├─ Background retry loop (100ms poll, exponential backoff)
+        └─ Max 50 retries, then mark as failed
 ```
 
-**Integration with Judge**:
-```
-Agent Action ───▶ Judge Evaluation ───▶ Safety Violation?                       
-                                              │                                 
-                                              ├─ Yes: Send Interrupt            
-                                              │        (SAFETY_VIOLATION)       
-                                              │                                 
-                                              └─ No: Continue                   
-```
+**Buffer Sizes by Priority**:
+- `CRITICAL` (0-9): 10,000 buffer
+- `HIGH` (10-19): 10,000 buffer
+- `NORMAL` (20-29): 1,000 buffer
+- `LOW` (30-39): 100 buffer
+
+Note: Judge system integration is not directly wired. Interrupts can be sent from any component, including a Judge evaluator, via the `Send()` / `Broadcast()` methods.
 
 
 ## Key Interactions
@@ -660,12 +728,12 @@ Savings: 99.67%
 ### Auto-Promotion Flow
 
 ```
-Send(data, "tool_result") ───▶ Policy: AUTO_PROMOTE (10KB threshold)            
+Send(data, "tool_result") ───▶ Policy: AUTO_PROMOTE (1KB threshold)            
                                    │                                            
                                    ├─ Serialize data → JSON                     
                                    ├─ Check size: len(JSON)                     
                                    │                                            
-                                   ├─ Size < 10KB?                              
+                                   ├─ Size < 1KB?                              
                                    │   ├─ Yes: Return VALUE message             
                                    │   │       (inline JSON)                    
                                    │   │                                        
@@ -680,65 +748,39 @@ Send(data, "tool_result") ───▶ Policy: AUTO_PROMOTE (10KB threshold)
                             Message with payload
 ```
 
-**Size Calculation**:
-```go
-func calculateSize(data interface{}) (int64, error) {
-    jsonData, err := json.Marshal(data)
-    if err != nil {
-        return 0, err
-    }
-    return int64(len(jsonData)), nil
-}
-```
+**Size Determination**:
+The caller provides `payloadSize int64` directly to `PolicyManager.ShouldUseReference()`. There is no separate `calculateSize` function; size is computed by the caller from the serialized payload length.
 
 
 ### Pub/Sub Pattern Matching
 
+Pattern matching uses Go's `path.Match()` function (not a custom implementation). Since `path.Match` uses `/` as its separator (not `.`), `*` matches any characters including `.` in dot-separated topics. Multi-segment `**` wildcards are NOT supported by `path.Match`.
+
 ```
-Subscribe("workflow.*") ───▶ Pattern: workflow.{segment}                        
-                                │                                               
+Subscribe("workflow.*") ───▶ Pattern: workflow.{any_chars}
+                                │
                                 ▼
                          Incoming topics:
-                            ├─ "workflow.start" ✓ (match)                       
-                            ├─ "workflow.complete" ✓ (match)                    
-                            ├─ "workflow.step.1" ✗ (no match, multi-segment)    
-                            └─ "agent.status" ✗ (no match, different prefix)    
-
-Subscribe("workflow.**") ───▶ Pattern: workflow.{any_depth}                     
-                                │                                               
-                                ▼
-                         Incoming topics:
-                            ├─ "workflow.start" ✓ (match)                       
-                            ├─ "workflow.step.1" ✓ (match)                      
-                            ├─ "workflow.step.1.complete" ✓ (match)             
-                            └─ "agent.status" ✗ (no match, different prefix)    
+                            ├─ "workflow.start" ✓ (match)
+                            ├─ "workflow.complete" ✓ (match)
+                            ├─ "workflow.step.1" ✓ (match, * crosses dots)
+                            └─ "agent.status" ✗ (no match, different prefix)
 ```
 
-**Matching Algorithm** (`pkg/communication/bus.go`):
+**Matching Algorithm** (`pkg/communication/bus.go:461`):
 ```go
 func matchesTopicPattern(pattern, topic string) bool {
-    patternParts := strings.Split(pattern, ".")
-    topicParts := strings.Split(topic, ".")
-
-    i, j := 0, 0
-    for i < len(patternParts) && j < len(topicParts) {
-        if patternParts[i] == "**" {
-            // Multi-segment wildcard: match remaining
-            return true
-        } else if patternParts[i] == "*" {
-            // Single-segment wildcard: match one
-            i++
-            j++
-        } else if patternParts[i] == topicParts[j] {
-            // Exact match
-            i++
-            j++
-        } else {
-            return false
-        }
+    // Exact match
+    if pattern == topic {
+        return true
     }
 
-    return i == len(patternParts) && j == len(topicParts)
+    // Wildcard match using path.Match semantics
+    matched, err := path.Match(pattern, topic)
+    if err != nil {
+        return false
+    }
+    return matched
 }
 ```
 
@@ -747,68 +789,63 @@ func matchesTopicPattern(pattern, topic string) bool {
 
 ### BusMessage
 
-**Definition** (`proto/loom/v1/communication.proto`):
+**Definition** (`proto/loom/v1/bus.proto`):
 ```protobuf
 message BusMessage {
-  string id = 1;                      // Unique message ID
+  string id = 1;                      // Unique message ID for tracking
   string topic = 2;                   // Topic name
-  string from_agent = 3;              // Sender agent ID
-  int64 timestamp = 4;                // Unix timestamp
-
-  oneof payload {
-    google.protobuf.Any value = 5;    // Inline value
-    Reference reference = 6;           // Stored reference
-  }
-
-  map<string, string> metadata = 7;   // Key-value metadata
+  string from_agent = 3;              // Source agent ID
+  MessagePayload payload = 4;         // Value or reference (via MessagePayload oneof)
+  map<string, string> metadata = 5;   // Arbitrary key/value for filtering
+  int64 timestamp = 6;                // Publish timestamp (Unix milliseconds)
+  int32 ttl_seconds = 7;              // TTL (0 = no expiry)
 }
 ```
 
+`MessagePayload` is defined in `communication.proto` and contains a `oneof data { bytes value = 1; Reference reference = 2; }` plus `PayloadMetadata`.
+
 ### QueueMessage
 
-**Definition**:
-```protobuf
-message QueueMessage {
-  string id = 1;
-  string from_agent = 2;
-  string to_agent = 3;
-  string message_type = 4;
-  string correlation_id = 5;          // Request-response pairing
-
-  oneof payload {
-    google.protobuf.Any value = 6;
-    Reference reference = 7;
-  }
-
-  int32 priority = 8;                 // 0=normal, 1=high, -1=low
-  int64 expires_at = 9;               // Unix timestamp
-  int32 retry_count = 10;
-  int32 max_retries = 11;
+**Definition** (Go struct in `pkg/communication/queue.go:54`, not a proto message):
+```go
+type QueueMessage struct {
+    ID            string
+    ToAgent       string
+    FromAgent     string
+    MessageType   string
+    Payload       *loomv1.MessagePayload  // Value or reference via proto oneof
+    Metadata      map[string]string
+    CorrelationID string                  // Request-response pairing
+    Priority      int32                   // Higher = more urgent
+    EnqueuedAt    time.Time
+    ExpiresAt     time.Time
+    DequeueCount  int32
+    MaxRetries    int32                   // Default: 3
+    Status        QueueMessageStatus      // Integer enum (Pending/InFlight/Acked/Failed/Expired)
 }
 ```
 
 ### Reference
 
-**Definition**:
+**Definition** (`proto/loom/v1/communication.proto:89`):
 ```protobuf
 message Reference {
-  string id = 1;                      // ref_abc123
-  int64 size_bytes = 2;               // Original size
-  StorageLocation location = 3;       // MEMORY or DISK
-  string checksum = 4;                // SHA-256
-  bool compressed = 5;                // Zstd compression
-  string content_type = 6;            // MIME type
-  map<string, string> metadata = 7;
-  int64 stored_at = 8;
+  string id = 1;                      // Unique reference identifier (SHA-256 of data)
+  ReferenceType type = 2;             // SESSION_STATE, WORKFLOW_CONTEXT, TOOL_RESULT, etc.
+  ReferenceStore store = 3;           // MEMORY, SQLITE, or REDIS
+  int64 created_at = 4;               // Unix seconds
+  int64 expires_at = 5;               // Unix seconds (0 = never expires)
 }
 
-enum StorageLocation {
-  MEMORY = 0;
-  DISK = 1;
-  SQLITE = 2;
-  REDIS = 3;
+enum ReferenceStore {
+  REFERENCE_STORE_UNSPECIFIED = 0;
+  REFERENCE_STORE_MEMORY = 1;
+  REFERENCE_STORE_SQLITE = 2;
+  REFERENCE_STORE_REDIS = 3;
 }
 ```
+
+Note: Size, checksum, compression, and content type metadata live in the separate `PayloadMetadata` message on the `MessagePayload` envelope, not on the `Reference` itself.
 
 
 ## Algorithms
@@ -817,28 +854,23 @@ enum StorageLocation {
 
 **Problem**: Match incoming topic against wildcard patterns efficiently.
 
-**Solution**: Segment-by-segment matching with wildcard support.
+**Solution**: Delegate to Go's `path.Match()` which uses `/` as separator. Since Loom topics use `.` separators, `*` crosses dot boundaries.
 
 **Algorithm**:
 ```
 Input: pattern="workflow.*", topic="workflow.start"
-
-1. Split by '.' → patternParts=["workflow", "*"], topicParts=["workflow", "start"]
-2. Loop i=0, j=0:
-   - patternParts[0]="workflow", topicParts[0]="workflow" → exact match, i++, j++
-3. Loop i=1, j=1:
-   - patternParts[1]="*" → single wildcard, i++, j++
-4. i==2, j==2 → both exhausted → MATCH
+→ path.Match("workflow.*", "workflow.start") = true ✓
 
 Input: pattern="workflow.*", topic="workflow.step.1"
+→ path.Match("workflow.*", "workflow.step.1") = true ✓
+   (* crosses dots because . is not a path separator for path.Match)
 
-1. Split → patternParts=["workflow", "*"], topicParts=["workflow", "step", "1"]
-2. Loop i=0, j=0: exact match, i++, j++
-3. Loop i=1, j=1: "*" matches "step", i++, j++
-4. i==2, j==2 → but topicParts has one more segment → NO MATCH
+Input: pattern="workflow.*", topic="agent.status"
+→ path.Match("workflow.*", "agent.status") = false ✗
+   (prefix "workflow." does not match "agent.")
 ```
 
-**Complexity**: O(n) where n = max(len(pattern), len(topic))
+**Complexity**: O(n) where n = len(pattern) + len(topic) (path.Match is linear)
 
 
 ### Auto-Promotion Decision
@@ -847,36 +879,35 @@ Input: pattern="workflow.*", topic="workflow.step.1"
 
 **Solution**: Three-tier policy with size threshold.
 
-**Algorithm**:
+**Algorithm** (maps to `PolicyManager.ShouldUseReference` in `policy.go`):
 ```go
-func DecideSemantics(messageType string, data interface{}) (Semantics, error) {
-    policy := GetPolicy(messageType)
+func (pm *PolicyManager) ShouldUseReference(messageType string, payloadSize int64) bool {
+    policy := pm.GetPolicy(messageType)
 
-    if policy.Routing == ALWAYS_VALUE {
-        return VALUE, nil
+    // Check override first
+    if override, ok := policy.Overrides[messageType]; ok {
+        return override.Type == OVERRIDE_TYPE_FORCE_REFERENCE
     }
 
-    if policy.Routing == ALWAYS_REFERENCE {
-        return REFERENCE, nil
+    switch policy.Tier {
+    case ALWAYS_VALUE:
+        return false
+    case ALWAYS_REFERENCE:
+        return true
+    case AUTO_PROMOTE:
+        if policy.AutoPromote != nil && policy.AutoPromote.Enabled {
+            return payloadSize > policy.AutoPromote.ThresholdBytes
+        }
+        return payloadSize > 1024  // Fallback 1KB
+    default:
+        return false
     }
-
-    // AUTO_PROMOTE: check size
-    size, err := CalculateSize(data)
-    if err != nil {
-        return VALUE, err
-    }
-
-    if size > policy.SizeThreshold {
-        return REFERENCE, nil
-    }
-
-    return VALUE, nil
 }
 ```
 
 **Default Thresholds**:
 - Tier 1 (Always Reference): N/A (always stored)
-- Tier 2 (Auto-Promote): 10KB
+- Tier 2 (Auto-Promote): 1KB
 - Tier 3 (Always Value): N/A (never stored)
 
 
@@ -886,17 +917,15 @@ func DecideSemantics(messageType string, data interface{}) (Semantics, error) {
 
 **Solution**: Non-blocking channel send with drop on overflow.
 
-**Algorithm**:
+**Algorithm** (inline in `MessageBus.Publish`, not a separate function):
 ```go
-func DeliverMessage(subscriber *Subscriber, msg *BusMessage) bool {
-    select {
-    case subscriber.channel <- msg:
-        // Delivered successfully
-        return true
-    default:
-        // Channel full, drop message
-        return false
-    }
+// Inside Publish(), for each matching subscription:
+select {
+case subscription.channel <- msg:
+    delivered++
+default:
+    // Channel full - drop message to avoid blocking publisher
+    dropped++
 }
 ```
 
@@ -972,7 +1001,7 @@ func DeliverMessage(subscriber *Subscriber, msg *BusMessage) bool {
 - **Safety**: Session state always persistent (no data loss)
 
 **Alternatives**:
-1. **Single threshold** (e.g., always auto-promote at 10KB):
+1. **Single threshold** (e.g., always auto-promote at 1KB):
    - ✅ Simpler implementation
    - ❌ Cannot enforce "always reference" for session state
    - ❌ Wastes storage on small ephemeral messages
@@ -1009,13 +1038,13 @@ func DeliverMessage(subscriber *Subscriber, msg *BusMessage) bool {
 **Workaround**: Use Message Queue for reliable delivery
 
 
-### Constraint 3: Reference GC Manual
+### Constraint 3: Reference GC Interval
 
-**Description**: SQLiteStore requires manual GC (reference counting)
+**Description**: Both MemoryStore and SQLiteStore run periodic GC (default 5 minute interval)
 
-**Impact**: Unused references accumulate until GC runs
+**Impact**: Expired or zero-refcount references accumulate between GC runs
 
-**Workaround**: Use MemoryStore (TTL-based GC) or run periodic GC
+**Workaround**: Tune GC interval via constructor parameter for shorter accumulation windows
 
 
 ## Performance Characteristics
@@ -1028,10 +1057,8 @@ func DeliverMessage(subscriber *Subscriber, msg *BusMessage) bool {
 | Bus subscribe | <1ms | 2ms | Map insert |
 | Queue send (SQLite) | 5ms | 15ms | Disk write + fsync |
 | Queue receive | 3ms | 8ms | SQLite read |
-| Shared mem write (memory) | <1ms | 5ms | In-memory map |
-| Shared mem write (disk) | 15ms | 35ms | Filesystem write |
-| Shared mem read (memory) | <1ms | 2ms | Map lookup |
-| Shared mem read (disk) | 8ms | 20ms | Filesystem read + promotion |
+| Shared mem write | <1ms | 5ms | In-memory map |
+| Shared mem read | <1ms | 2ms | Map lookup |
 | Reference store (memory) | <1ms | 5ms | In-memory |
 | Reference store (SQLite) | 5ms | 15ms | Database write |
 | Reference resolve (memory) | <1ms | 2ms | Map lookup |
@@ -1043,17 +1070,15 @@ func DeliverMessage(subscriber *Subscriber, msg *BusMessage) bool {
 |-----------|------|
 | Broadcast Bus (1000 subscribers) | ~500KB (channels + metadata) |
 | Message Queue (1000 messages) | ~10MB (SQLite + indexes) |
-| Shared Memory (memory tier) | 1GB (configurable) |
-| Shared Memory (disk tier) | 10GB (configurable) |
-| Reference Store (memory) | Included in Shared Memory |
+| Shared Memory (in-memory) | Unbounded (no configurable limit) |
+| Reference Store (memory) | Proportional to stored data (separate from Shared Memory) |
 | Reference Store (SQLite) | ~5MB per 1000 refs |
 
 ### Throughput
 
 - **Bus publish**: 100,000+ msg/s (in-memory)
 - **Queue send**: 1,000 msg/s (SQLite bound)
-- **Shared memory write (memory)**: 10,000+ writes/s
-- **Shared memory write (disk)**: 100 writes/s (filesystem bound)
+- **Shared memory write**: 10,000+ writes/s (in-memory)
 
 
 ## Concurrency Model
@@ -1070,22 +1095,21 @@ func DeliverMessage(subscriber *Subscriber, msg *BusMessage) bool {
 
 ### Message Queue
 
-**Model**: SQLite transactions + goroutine per agent subscriber
+**Model**: SQLite persistence + in-memory per-agent queues + event-driven notification channels
 
-**Write Path**: Serialized through SQLite (ACID guarantees)
-**Read Path**: Parallel reads from different agents
+**Write Path**: Persist to SQLite, then add to in-memory queue and notify via channel
+**Read Path**: Priority-based dequeue from in-memory queue (highest priority first)
 
-**Subscriber Goroutines**: One goroutine per agent polls SQLite for messages
+**Event-Driven**: Agents register notification channels (`chan struct{}`) for immediate wakeup when messages arrive. No polling goroutines.
 
 
 ### Shared Memory
 
-**Model**: RWMutex protects memory tier map, atomic file writes for disk tier
+**Model**: RWMutex protects per-namespace maps, zstd encoder/decoder are thread-safe
 
-**Memory Tier**: RWMutex (concurrent reads, exclusive writes)
-**Disk Tier**: Atomic writes (temp + rename), concurrent reads
-
-**LRU Eviction**: Write lock required (exclusive)
+**In-Memory Store**: RWMutex (concurrent reads, exclusive writes)
+**Optimistic Concurrency**: Version field on each value; writes with `expected_version` fail on conflict
+**Watchers**: Notified under write lock (non-blocking channel send, drop on full)
 
 
 ## Error Handling
@@ -1106,10 +1130,10 @@ Reference Resolve Failure ───▶ Return Error ───▶ Agent handles
                               Log + Trace to Hawk
 
 
-Queue Send Failure ───▶ Retry (3 attempts) ───▶ Mark as failed                  
-                             │                       │                          
-                             ▼                       ▼
-                        Exponential backoff     Log + Notify
+Queue Delivery Failure ───▶ Requeue (up to 3 attempts) ───▶ Mark as failed
+                                │                                │
+                                ▼                                ▼
+                          Re-enter Pending               Log + update status
 
 
 Bus Publish Overflow ───▶ Drop Message ───▶ Increment totalDropped              
@@ -1130,19 +1154,20 @@ Bus Publish Overflow ───▶ Drop Message ───▶ Increment totalDropp
 ### Mitigations
 
 **Unauthorized Access**:
-- Namespace scoping (WORKFLOW, SWARM, SESSION)
-- Reference IDs include namespace prefix
-- Validation on Resolve()
+- Shared Memory: Namespace scoping (WORKFLOW, SWARM, SESSION, AGENT)
+- AGENT namespace: Keys auto-prefixed with `agent:{agentID}:` to prevent cross-agent access
+- Reference IDs are SHA-256 content hashes (no namespace prefix; access control is not enforced on ReferenceStore)
+- Validation on SharedMemoryStore operations (namespace + agent scoping)
 
 **Message Injection**:
 - Agent ID validation (from_agent must match authenticated agent)
 - Signature/MAC for critical messages (future)
 
 **Resource Exhaustion**:
-- Queue size limits (1000 messages per agent)
-- Memory tier limits (1GB)
-- Disk tier limits (10GB)
-- TTL cleanup (expired references purged)
+- Message TTL (default 24 hours, expired messages purged on dequeue)
+- Reference GC (MemoryStore: periodic TTL + ref-count GC; SQLiteStore: periodic expired + zero-refcount cleanup)
+- Shared memory has no built-in size limits (unbounded in-memory maps)
+- Bus subscriber buffer limits (default 100 messages, drop on overflow)
 
 
 ## Related Work
@@ -1185,16 +1210,16 @@ Bus Publish Overflow ───▶ Drop Message ───▶ Increment totalDropp
 
 ### Architecture Deep Dives
 
-- [Multi-Agent Orchestration](multi-agent.md) - Workflow patterns using tri-modal communication
+- [Multi-Agent Orchestration](multi-agent.md) - Workflow patterns using quad-modal communication
 - [Memory System Architecture](memory-systems.md) - Shared Memory integration
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
 
 ### Reference Documentation
 
-- [Communication API Reference](/docs/reference/communication-api.md) - RPC definitions
 - [Agent Configuration Reference](/docs/reference/agent-configuration.md) - Communication configuration
 
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Multi-Agent Communication Guide](/docs/guides/multi-agent-communication.md) - Usage examples
+
+Note: `/docs/reference/communication-api.md` and `/docs/guides/multi-agent-communication.md` do not yet exist.

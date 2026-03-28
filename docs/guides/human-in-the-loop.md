@@ -1,7 +1,7 @@
 
 # Human-in-the-Loop Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -18,15 +18,18 @@
   - [Example 1: Database Deletion Approval](#example-1-database-deletion-approval)
   - [Example 2: Multi-Choice Decision](#example-2-multi-choice-decision)
 - [Troubleshooting](#troubleshooting)
+- [Next Steps](#next-steps)
 
 
 ## Overview
+
+✅ **Available** - Feature fully working with tests (see `pkg/shuttle/human_tool_test.go`, `pkg/shuttle/human_store_sqlite_test.go`)
 
 Request human approval, input, or decision-making during agent execution using the ContactHumanTool.
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
+- Loom v1.2.0+
 - Agent with ContactHumanTool enabled
 
 ## Quick Start
@@ -36,7 +39,7 @@ The ContactHumanTool is included in the builtin tool registry:
 ```go
 import "github.com/teradata-labs/loom/pkg/shuttle/builtin"
 
-tools := builtin.All()  // Includes contact_human
+tools := builtin.All(promptRegistry)  // Includes contact_human
 ```
 
 Request human input:
@@ -48,7 +51,7 @@ result, err := tool.Execute(ctx, map[string]interface{}{
     "question":     "Should I delete table 'users'?",
     "request_type": "approval",
     "priority":     "high",
-    "timeout_seconds": 300,
+    "timeout_seconds": float64(300),
 })
 
 if result.Success {
@@ -65,10 +68,12 @@ if result.Success {
 
 ```go
 type ContactHumanConfig struct {
-    Store        HumanRequestStore  // Storage backend (default: in-memory)
-    Notifier     Notifier           // Notification mechanism (default: no-op)
-    Timeout      time.Duration      // Default timeout (default: 5 minutes)
-    PollInterval time.Duration      // Check interval (default: 1 second)
+    Store        HumanRequestStore    // Storage backend (default: in-memory)
+    Notifier     Notifier             // Notification mechanism (default: no-op)
+    Timeout      time.Duration        // Default timeout (default: 5 minutes)
+    PollInterval time.Duration        // Check interval (default: 1 second)
+    Tracer       observability.Tracer // Tracer for observability (default: NoOpTracer)
+    Logger       *zap.Logger          // Logger for structured logging (default: NoOp logger)
 }
 ```
 
@@ -103,7 +108,7 @@ result, err := tool.Execute(ctx, map[string]interface{}{
         "table_name": "users",
         "row_count":  1000000,
     },
-    "timeout_seconds": 300,
+    "timeout_seconds": float64(300),
 })
 
 if !result.Success {
@@ -151,7 +156,7 @@ result, err := tool.Execute(ctx, map[string]interface{}{
         "query":          "DELETE FROM orders WHERE created_at < '2023-01-01'",
         "estimated_rows": 10000,
     },
-    "timeout_seconds": 1800,  // 30 minutes for review
+    "timeout_seconds": float64(1800),  // 30 minutes for review
 })
 ```
 
@@ -161,7 +166,7 @@ result, err := tool.Execute(ctx, map[string]interface{}{
 result, err := tool.Execute(ctx, map[string]interface{}{
     "question":        "Approve this transaction?",
     "request_type":    "approval",
-    "timeout_seconds": 300,
+    "timeout_seconds": float64(300),
 })
 
 if !result.Success && result.Error.Code == "TIMEOUT" {
@@ -229,7 +234,7 @@ func selectDatabaseWithHuman(ctx context.Context, workload string) (string, erro
             "options":        []string{"PostgreSQL", "Teradata", "BigQuery"},
             "recommendation": "Teradata for OLAP workloads",
         },
-        "timeout_seconds": 3600,
+        "timeout_seconds": float64(3600),
     })
     if err != nil {
         return "", err
@@ -258,7 +263,7 @@ tool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
 // Or per-request
 result, _ := tool.Execute(ctx, map[string]interface{}{
     "question":        "...",
-    "timeout_seconds": 1800,
+    "timeout_seconds": float64(1800),
 })
 ```
 
@@ -275,17 +280,54 @@ tool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{
 
 ### Request Not Found After Restart
 
-The default in-memory store loses data on restart. For persistence, wait for SQLite store support or implement a custom `HumanRequestStore`.
+The default in-memory store loses data on restart. For persistence, use the SQLite store (`SQLiteHumanRequestStore`), which is the default when running `looms serve`. The server initializes it automatically at `$LOOM_DATA_DIR/hitl.db`:
+
+```go
+store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{
+    Path:   "/path/to/hitl.db",
+    Tracer: tracer,
+})
+```
+
+You can also manage requests via the CLI:
+
+```bash
+# List all pending requests
+looms hitl list
+
+# List requests for a specific session
+looms hitl list --session sess-123
+
+# Show details of a specific request
+looms hitl show req-abc123
+
+# Approve a request
+looms hitl respond req-abc123 --status approved --message "Yes, proceed"
+
+# Reject a request
+looms hitl respond req-abc123 --status rejected --message "No, do not proceed"
+```
 
 ### Multiple Responses Rejected
 
-Only the first response is accepted. Check status before responding:
+Only the first response is accepted. `RespondToRequest` (available on both `InMemoryHumanRequestStore` and `SQLiteHumanRequestStore`) returns an error if the request has already been responded to:
 
 ```go
+// Using the concrete SQLiteHumanRequestStore (or InMemoryHumanRequestStore)
 req, _ := store.Get(ctx, requestID)
 if req.Status != "pending" {
     return fmt.Errorf("already responded: status=%s", req.Status)
 }
 
-store.RespondToRequest(ctx, requestID, "approved", "Yes", "alice", nil)
+err := store.RespondToRequest(ctx, requestID, "approved", "Yes", "alice", nil)
+if err != nil {
+    // Returns error if request not found or already responded
+    return err
+}
 ```
+
+## Next Steps
+
+- [Agent Configuration Reference](/docs/reference/agent-configuration.md) - Configure agents with `contact_human` in the builtin tools list
+- [Observability Guide](/docs/guides/integration/observability.md) - Trace HITL requests with Hawk
+- [Streaming Reference](/docs/reference/streaming.md) - Stream HITL events to clients

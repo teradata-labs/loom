@@ -5,7 +5,7 @@ Architecture of Loom's agent runtime system with Error Submission Channel, built
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -80,7 +80,7 @@ graph TB
     subgraph AgentSystem["Agent Runtime System"]
         Core[Agent Runtime Core<br/>• NewAgent initialization<br/>• Option pattern config<br/>• Built-in tool registration<br/>• Lifecycle management]
         ErrorChannel[Error Submission Channel<br/>• SQLiteErrorStore persistence<br/>• extractErrorSummary 100-char<br/>• Error ID generation<br/>• GetErrorDetailsTool retrieval]
-        ToolRegistry[Built-in Tool Registry<br/>• get_error_details<br/>• get_tool_result<br/>• Auto-registration]
+        ToolRegistry[Built-in Tool Registry<br/>• get_error_details (progressive disclosure)<br/>• query_tool_result (progressive disclosure)<br/>• conversation_memory (progressive disclosure)]
     end
 
     AgentRT --> Core
@@ -112,18 +112,13 @@ flowchart TD
     ApplyOpts --> WithMemory[WithMemory → segmented memory]
     ApplyOpts --> WithSharedMem[WithSharedMemory → large result handling]
 
-    WithErrorStore --> RegisterTools{Register Built-in Tools}
-    WithTracer --> RegisterTools
-    WithMemory --> RegisterTools
-    WithSharedMem --> RegisterTools
-
-    RegisterTools -->|if errorStore != nil| RegErrorTool[Register GetErrorDetailsTool]
-    RegisterTools -->|if sharedMemory != nil| RegResultTool[Register GetToolResultTool]
-
-    RegErrorTool --> ReturnAgent[Return Agent Instance]
-    RegResultTool --> ReturnAgent
+    WithErrorStore --> ReturnAgent[Return Agent Instance]
+    WithTracer --> ReturnAgent
+    WithMemory --> ReturnAgent
+    WithSharedMem --> ReturnAgent
 
     ReturnAgent --> ToolError[Tool Execution Error<br/>3,000+ chars]
+    ToolError -->|Progressive Disclosure| RegErrorTool[Register get_error_details on first error]
 
     ToolError --> FormatResult[formatToolResult result, err, toolName]
 
@@ -157,76 +152,92 @@ flowchart TD
 
 **Responsibility**: Lifecycle management and configuration of agent instances via functional options pattern.
 
-**Core Structure** (`pkg/agent/agent.go:24`):
+**Core Structure** (`pkg/agent/types.go`):
+
+Note: The following is a representative subset of Agent fields. See `pkg/agent/types.go` for the full definition.
+
 ```go
 type Agent struct {
-    backend        fabric.ExecutionBackend // SQL, REST, Document backends
-    llmProvider    LLMProvider             // Anthropic, Bedrock, Ollama
-    memory         *memory.SegmentedMemory // ROM/Kernel/L1/L2 memory
-    tools          *shuttle.ToolRegistry   // Tool executor
-    errorStore     ErrorStore              // Error submission channel
-    sharedMemory   *communication.SharedMemoryStore // Large result storage
-    tracer         observability.Tracer    // Hawk integration
-    logger         *zap.Logger
-    sessionStore   *SessionStore           // SQLite session persistence
+    id             string                  // Unique agent identifier (UUID v4)
     mu             sync.RWMutex            // Thread safety
+    backend        fabric.ExecutionBackend // SQL, REST, Document backends
+    tools          *shuttle.Registry       // Tool registry (shuttle.NewRegistry())
+    executor       *shuttle.Executor       // Tool executor
+    memory         *Memory                 // Conversation history (agent-internal Memory manager)
+    errorStore     ErrorStore              // Error submission channel
+    llm            LLMProvider             // Primary LLM provider
+    judgeLLM       LLMProvider             // Role-specific: evaluation
+    orchestratorLLM LLMProvider            // Role-specific: merge/synthesis
+    classifierLLM  LLMProvider             // Role-specific: intent classification
+    compressorLLM  LLMProvider             // Role-specific: memory compression
+    tracer         observability.Tracer    // Hawk integration
+    prompts        prompts.PromptRegistry  // Prompt registry
+    config         *Config                 // Agent configuration
+    sharedMemory   *storage.SharedMemoryStore // Large result storage (global singleton)
+    // ... additional fields omitted for brevity
 }
 ```
 
-**Initialization Pattern** (`pkg/agent/agent.go:46`):
+**Initialization Pattern** (`pkg/agent/agent.go`):
 ```go
-func NewAgent(backend fabric.ExecutionBackend, llm LLMProvider, opts ...Option) *Agent {
-    agent := &Agent{
-        backend:     backend,
-        llmProvider: llm,
-        tools:       shuttle.NewToolRegistry(),
-        tracer:      observability.NewNoOpTracer(), // Default
-        logger:      zap.NewNop(),
+func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...Option) *Agent {
+    a := &Agent{
+        id:           uuid.New().String(),
+        backend:      backend,
+        llm:          llmProvider,
+        tools:        shuttle.NewRegistry(),
+        memory:       NewMemory(),
+        config:       DefaultConfig(),
+        tracer:       observability.NewNoOpTracer(), // Default no-op
+        tokenCounter: GetTokenCounter(),
     }
 
     // Apply functional options
     for _, opt := range opts {
-        opt(agent)
+        opt(a)
     }
 
-    // Register built-in tools conditionally
-    if agent.errorStore != nil {
-        agent.tools.Register(NewGetErrorDetailsTool(agent.errorStore))
-    }
-    if agent.sharedMemory != nil {
-        agent.tools.Register(NewGetToolResultTool(agent.sharedMemory))
-    }
+    // PROGRESSIVE DISCLOSURE: get_error_details is NOT registered here.
+    // It is registered dynamically in formatToolResult() after the first error.
+    //
+    // get_tool_result is also removed (EXPERIMENT comment in agent.go).
+    // Inline metadata makes it unnecessary; agents use query_tool_result instead.
 
-    return agent
+    // ... (pattern orchestrator, executor, shared memory, SQL result store init omitted)
+
+    return a
 }
 ```
 
-**Functional Options** (`pkg/agent/agent.go:96`):
+**Functional Options** (`pkg/agent/agent.go`):
 ```go
 type Option func(*Agent)
 
 // Core options
 func WithTracer(tracer observability.Tracer) Option
-func WithMemory(mem *memory.SegmentedMemory) Option
-func WithLogger(logger *zap.Logger) Option
-func WithSessionStore(store *SessionStore) Option
+func WithMemory(memory *Memory) Option           // Agent's internal Memory manager
+func WithConfig(config *Config) Option
+func WithPrompts(registry prompts.PromptRegistry) Option
 
 // Error submission channel
 func WithErrorStore(store ErrorStore) Option {
     return func(a *Agent) {
         a.errorStore = store
-        // get_error_details tool auto-registered in NewAgent()
+        // get_error_details registered via progressive disclosure in formatToolResult()
     }
 }
 
-// Large result handling
-func WithSharedMemory(mem *communication.SharedMemoryStore) Option {
+// Large result handling (accepts interface{} for flexibility, type-asserts to *storage.SharedMemoryStore)
+func WithSharedMemory(sharedMemory interface{}) Option {
     return func(a *Agent) {
-        a.sharedMemory = mem
-        // get_tool_result tool auto-registered in NewAgent()
+        if sm, ok := sharedMemory.(*storage.SharedMemoryStore); ok {
+            a.sharedMemory = sm
+        }
     }
 }
 ```
+
+Note: `WithLogger` and `WithSessionStore` do not exist as options. The Agent struct does not have a `logger` field. Shared memory is initialized as a global singleton inside `NewAgent` via `storage.GetGlobalSharedMemory()`.
 
 **Rationale**:
 - **Functional options**: Flexible configuration without breaking API
@@ -239,16 +250,17 @@ func WithSharedMemory(mem *communication.SharedMemoryStore) Option {
 
 **Responsibility**: Progressive disclosure system for verbose tool execution errors with SQLite persistence and on-demand retrieval.
 
-**Core Interface** (`pkg/agent/error_store.go:18`):
+**Core Interface** (`pkg/agent/error_store.go`):
 ```go
 type ErrorStore interface {
     Store(ctx context.Context, err *StoredError) (string, error) // Returns errorID
     Get(ctx context.Context, errorID string) (*StoredError, error)
     List(ctx context.Context, filters ErrorFilters) ([]*StoredError, error)
+    Close() error // Release resources held by the error store
 }
 ```
 
-**StoredError Structure** (`pkg/agent/error_store.go:32`):
+**StoredError Structure** (`pkg/agent/error_store.go`):
 ```go
 type StoredError struct {
     ID           string          // err_YYYYMMDD_HHMMSS_<random>
@@ -260,7 +272,7 @@ type StoredError struct {
 }
 ```
 
-**SQLiteErrorStore Implementation** (`pkg/agent/error_store.go:50`):
+**SQLiteErrorStore Implementation** (`pkg/agent/error_store.go`):
 ```go
 type SQLiteErrorStore struct {
     db     *sql.DB
@@ -271,19 +283,23 @@ type SQLiteErrorStore struct {
 func NewSQLiteErrorStore(dbPath string, tracer observability.Tracer) (*SQLiteErrorStore, error) {
     db, err := sql.Open("sqlite3", dbPath)
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("failed to open database: %w", err)
     }
 
     // Enable WAL mode for better concurrency
-    db.Exec("PRAGMA journal_mode=WAL")
+    if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+        return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
+    }
 
     store := &SQLiteErrorStore{db: db, tracer: tracer}
-    store.initSchema() // Create agent_errors table
+    if err := store.initSchema(); err != nil { // Create agent_errors table
+        return nil, fmt.Errorf("failed to initialize error store schema: %w", err)
+    }
     return store, nil
 }
 ```
 
-**Database Schema** (`pkg/agent/error_store.go:84`):
+**Database Schema** (`pkg/agent/error_store.go`):
 ```sql
 CREATE TABLE IF NOT EXISTS agent_errors (
     id TEXT PRIMARY KEY,              -- err_YYYYMMDD_HHMMSS_<random>
@@ -299,7 +315,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_errors_timestamp ON agent_errors(timestamp)
 CREATE INDEX IF NOT EXISTS idx_agent_errors_tool ON agent_errors(tool_name);
 ```
 
-**Store Operation** (`pkg/agent/error_store.go:115`):
+**Store Operation** (`pkg/agent/error_store.go`):
 ```go
 func (s *SQLiteErrorStore) Store(ctx context.Context, err *StoredError) (string, error) {
     ctx, span := s.tracer.StartSpan(ctx, "error_store.store")
@@ -337,19 +353,24 @@ func (s *SQLiteErrorStore) Store(ctx context.Context, err *StoredError) (string,
     }
 
     span.AddEvent("error_stored", map[string]interface{}{
-        "error_id": errorID,
-        "tool_name": err.ToolName,
+        "error_id":   errorID,
+        "tool_name":  err.ToolName,
+        "session_id": err.SessionID,
     })
 
     return errorID, nil
 }
 ```
 
-**Get Operation** (`pkg/agent/error_store.go:172`):
+**Get Operation** (`pkg/agent/error_store.go`):
 ```go
 func (s *SQLiteErrorStore) Get(ctx context.Context, errorID string) (*StoredError, error) {
     ctx, span := s.tracer.StartSpan(ctx, "error_store.get")
     defer s.tracer.EndSpan(span)
+
+    span.AddEvent("lookup_error", map[string]interface{}{
+        "error_id": errorID,
+    })
 
     s.mu.RLock()
     defer s.mu.RUnlock()
@@ -369,7 +390,7 @@ func (s *SQLiteErrorStore) Get(ctx context.Context, errorID string) (*StoredErro
     }
     if err != nil {
         span.RecordError(err)
-        return nil, err
+        return nil, fmt.Errorf("failed to query error: %w", err)
     }
 
     stored.Timestamp = time.Unix(timestamp, 0)
@@ -379,13 +400,13 @@ func (s *SQLiteErrorStore) Get(ctx context.Context, errorID string) (*StoredErro
 }
 ```
 
-**Integration with Tool Execution** (`pkg/agent/agent.go:1120`):
+**Integration with Tool Execution** (`pkg/agent/agent.go`):
 ```go
-func (a *Agent) formatToolResult(ctx context.Context, sessionID, toolName string, result *shuttle.ToolResult, err error) string {
-    // Handle execution errors (tool failed to run)
+func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
+    // Handle execution errors (tool didn't run)
     if err != nil {
-        errMsg := err.Error()
-        summary := extractErrorSummary(errMsg)
+        errMsg := fmt.Sprintf("%v", err)
+        summary := extractFirstLine(errMsg, 100)
 
         if a.errorStore != nil {
             // Store full error in SQLite
@@ -410,31 +431,35 @@ func (a *Agent) formatToolResult(ctx context.Context, sessionID, toolName string
     }
 
     // Handle tool execution errors (tool ran but failed)
-    if !result.Success && result.Error != nil {
-        summary := extractErrorSummary(result.Error.Message)
-
-        if a.errorStore != nil {
+    if !result.Success {
+        if result.Error != nil {
             rawError, _ := json.Marshal(result.Error)
-            errorID, storeErr := a.errorStore.Store(ctx, &StoredError{
-                SessionID:    sessionID,
-                ToolName:     toolName,
-                RawError:     rawError,
-                ShortSummary: summary,
-            })
+            summary := extractErrorSummary(result.Error)
 
-            if storeErr == nil {
-                return fmt.Sprintf(`Tool '%s' failed: %s
+            if a.errorStore != nil {
+                errorID, storeErr := a.errorStore.Store(ctx, &StoredError{
+                    SessionID:    sessionID,
+                    ToolName:     toolName,
+                    RawError:     rawError,
+                    ShortSummary: summary,
+                })
+
+                if storeErr == nil {
+                    return fmt.Sprintf(`Tool '%s' failed: %s
 [Error ID: %s]
 📋 Use get_error_details tool with error_id="%s" for complete error information`,
-                    toolName, summary, errorID, errorID)
+                        toolName, summary, errorID, errorID)
+                }
             }
-        }
 
-        // Fallback: truncate
-        return fmt.Sprintf("Tool error: %s - %s", result.Error.Code, truncateErrorMessage(result.Error.Message, 500))
+            // Fallback: truncate
+            return fmt.Sprintf("Tool error: %s - %s", result.Error.Code, truncateErrorMessage(result.Error.Message, 500))
+        }
+        return "Tool execution failed"
     }
 
-    // Success: return result data (may be reference if large)
+    // Success: return result data (may store as reference if large)
+    // ... (large result handling, shared memory storage omitted for brevity)
     return fmt.Sprintf("%v", result.Data)
 }
 ```
@@ -450,16 +475,22 @@ func (a *Agent) formatToolResult(ctx context.Context, sessionID, toolName string
 
 ### Built-in Tool Registry
 
-**Responsibility**: Automatic registration of system tools (get_error_details, get_tool_result) when dependencies are configured.
+**Responsibility**: Progressive disclosure of system tools. Built-in tools are NOT registered at agent creation time. They are registered dynamically when their trigger condition is met:
 
-**GetErrorDetailsTool** (`pkg/agent/builtin_tools.go:22`):
+- `get_error_details`: registered after the first tool execution error (requires error store)
+- `query_tool_result`: registered after the first large result is stored in shared memory (requires SQL result store)
+- `conversation_memory`: registered after the first L2 swap event (unified recall/search/clear)
+- `get_tool_result`: disabled (EXPERIMENT removed; inline metadata makes it unnecessary)
+- `record_finding`: removed (replaced by automatic finding extraction via LLM)
+
+**GetErrorDetailsTool** (`pkg/agent/builtin_tools.go`):
 ```go
 type GetErrorDetailsTool struct {
-    errorStore ErrorStore
+    store ErrorStore
 }
 
 func NewGetErrorDetailsTool(store ErrorStore) *GetErrorDetailsTool {
-    return &GetErrorDetailsTool{errorStore: store}
+    return &GetErrorDetailsTool{store: store}
 }
 
 func (t *GetErrorDetailsTool) Name() string {
@@ -478,14 +509,14 @@ Input:
 
 Output:
 - error_id: The error ID
-- timestamp: When the error occurred
-- tool_name: Tool that failed
-- raw_error: Complete error information (JSON)
-- short_summary: Brief error description
+- timestamp: When the error occurred (RFC3339 format)
+- tool_name: Name of the tool that failed
+- short_summary: Brief summary of the error
+- raw_error: Complete original error message including stack traces
 
-Example:
-If a tool fails with message "[Error ID: err_20241121_abc123]",
-you can call: get_error_details(error_id="err_20241121_abc123") to get the full stack trace.`
+Example usage:
+When you see: "Tool 'teradata_sample_table' failed: Code 3523: Permission denied [Error ID: err_20241121_abc123]"
+You can call: get_error_details(error_id="err_20241121_abc123") to get the full stack trace.`
 }
 
 func (t *GetErrorDetailsTool) InputSchema() *shuttle.JSONSchema {
@@ -501,52 +532,60 @@ func (t *GetErrorDetailsTool) InputSchema() *shuttle.JSONSchema {
     }
 }
 
-func (t *GetErrorDetailsTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.ToolResult, error) {
+func (t *GetErrorDetailsTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
     errorID, ok := input["error_id"].(string)
     if !ok {
-        return shuttle.NewToolError("INVALID_INPUT", "error_id must be a string"), nil
+        return &shuttle.Result{
+            Success: false,
+            Error: &shuttle.Error{
+                Code:    "invalid_input",
+                Message: fmt.Sprintf("error_id must be a string, got type=%T", input["error_id"]),
+            },
+        }, nil
     }
 
     // Retrieve error from store
-    stored, err := t.errorStore.Get(ctx, errorID)
+    stored, err := t.store.Get(ctx, errorID)
     if err != nil {
-        return shuttle.NewToolError("ERROR_NOT_FOUND", fmt.Sprintf("Error ID not found: %s", errorID)), nil
+        return &shuttle.Result{
+            Success: false,
+            Error: &shuttle.Error{
+                Code:    "not_found",
+                Message: fmt.Sprintf("Error %s not found. It may have been deleted or the ID is incorrect.", errorID),
+            },
+        }, nil
     }
 
-    // Format output
-    output := map[string]interface{}{
-        "error_id":      stored.ID,
-        "timestamp":     stored.Timestamp.Format(time.RFC3339),
-        "tool_name":     stored.ToolName,
-        "raw_error":     json.RawMessage(stored.RawError),
-        "short_summary": stored.ShortSummary,
-    }
-
-    return &shuttle.ToolResult{
+    // Return full error details
+    return &shuttle.Result{
         Success: true,
-        Data:    output,
+        Data: map[string]interface{}{
+            "error_id":      stored.ID,
+            "timestamp":     stored.Timestamp.Format("2006-01-02T15:04:05Z07:00"), // RFC3339
+            "tool_name":     stored.ToolName,
+            "short_summary": stored.ShortSummary,
+            "raw_error":     string(stored.RawError),
+        },
     }, nil
 }
 ```
 
-**Auto-Registration** (`pkg/agent/agent.go:83`):
+**Progressive Disclosure Registration** (`pkg/agent/agent.go`):
+
+`get_error_details` is NOT registered in `NewAgent()`. Instead, it is registered dynamically in `formatToolResult()` after the first tool execution error occurs:
+
 ```go
-func NewAgent(backend fabric.ExecutionBackend, llm LLMProvider, opts ...Option) *Agent {
-    // ... agent initialization ...
-
-    // Register built-in get_error_details tool if error store is configured
-    if agent.errorStore != nil {
-        agent.tools.Register(NewGetErrorDetailsTool(agent.errorStore))
+// In formatToolResult(), when an error is stored:
+if !a.tools.IsRegistered("get_error_details") {
+    errorTool := shuttle.Tool(NewGetErrorDetailsTool(a.errorStore))
+    if a.prompts != nil {
+        errorTool = shuttle.NewPromptAwareTool(errorTool, a.prompts, "tools.get_error_details")
     }
-
-    // Register built-in get_tool_result tool for large results
-    if agent.sharedMemory != nil {
-        agent.tools.Register(NewGetToolResultTool(agent.sharedMemory))
-    }
-
-    return agent
+    a.tools.Register(errorTool)
 }
 ```
+
+Similarly, `get_tool_result` is commented out (marked as EXPERIMENT removed in `agent.go`). Inline metadata now makes it unnecessary; agents use `query_tool_result` for advanced querying.
 
 **Rationale**:
 - **Conditional registration**: Built-in tools only registered when dependencies available
@@ -561,32 +600,32 @@ func NewAgent(backend fabric.ExecutionBackend, llm LLMProvider, opts ...Option) 
 
 **Initialization**:
 ```go
-// Production agent with all features
-store := agent.NewSQLiteErrorStore("./sessions.db", tracer)
-memory := memory.NewSegmentedMemory(config)
-sharedMem := communication.NewSharedMemoryStore()
+// Agent with error store and tracing
+store, _ := agent.NewSQLiteErrorStore("./sessions.db", tracer)
 
-agent := agent.NewAgent(backend, llm,
+a := agent.NewAgent(backend, llm,
     agent.WithErrorStore(store),
-    agent.WithMemory(memory),
-    agent.WithSharedMemory(sharedMem),
     agent.WithTracer(tracer),
-    agent.WithLogger(logger),
+    agent.WithConfig(config),
 )
+// Note: SharedMemory is initialized as a global singleton inside NewAgent
+// via storage.GetGlobalSharedMemory(). No explicit WithSharedMemory() call needed.
 ```
 
 **Execution**: Agent lifecycle during conversation loop (see Agent System Architecture doc for details)
 
 **Cleanup**:
 ```go
-// Graceful shutdown
-agent.Flush() // Flush any pending operations (traces, etc.)
-// SQLite connections closed when agent goes out of scope (no explicit Close)
+// Graceful shutdown: flush tracer, close error store
+tracer.Flush(ctx) // Flush pending traces/metrics
+store.Close()     // Close error store SQLite connection
 ```
 
+Note: The Agent itself does not have `Flush()` or `Close()` methods. Callers are responsible for flushing the tracer and closing the error store directly.
+
 **Rationale**:
-- **Simple lifecycle**: No explicit Close() required (SQLite connections managed by Go runtime)
-- **Flush on shutdown**: Ensures traces/metrics exported before exit
+- **Straightforward lifecycle**: Agent construction via `NewAgent` with functional options
+- **Tracer flush on shutdown**: Ensures traces/metrics exported before exit
 - **Resource cleanup**: Defer statements in conversation loop ensure cleanup on error
 
 
@@ -599,48 +638,42 @@ sequenceDiagram
     participant User as User Code
     participant NewAgent as NewAgent()
     participant Options as Options
-    participant Tools as Built-in Tools
-    participant Registry as Tool Registry
+    participant Storage as storage.GetGlobalSharedMemory()
+    participant SQL as storage.NewSQLResultStore()
 
     User->>NewAgent: NewAgent(backend, llm,<br/>WithErrorStore, WithTracer)
-    NewAgent->>NewAgent: Create agent instance
+    NewAgent->>NewAgent: Create agent instance<br/>(UUID, defaults, NoOpTracer)
     NewAgent->>Options: Apply options
     Options->>Options: WithErrorStore(store)
     Options->>Options: WithTracer(tracer)
     Options-->>NewAgent: Options applied
 
-    NewAgent->>Tools: Check errorStore != nil?
-    alt errorStore exists
-        NewAgent->>Tools: Register built-in tool
-        Tools->>Tools: NewGetErrorDetailsTool
-        Tools->>Registry: Add tool to registry
-    end
+    NewAgent->>NewAgent: Init pattern orchestrator
+    NewAgent->>NewAgent: Create shuttle.Executor
+    NewAgent->>Storage: Get global shared memory singleton
+    Storage-->>NewAgent: *storage.SharedMemoryStore
+    NewAgent->>SQL: Create SQL result store
+    SQL-->>NewAgent: storage.ResultStore
 
-    NewAgent->>Tools: Check sharedMemory != nil?
-    alt sharedMemory exists
-        NewAgent->>Tools: Register built-in tool
-        Tools->>Tools: NewGetToolResultTool
-        Tools->>Registry: Add tool to registry
-    end
+    Note over NewAgent: Built-in tools NOT registered here.<br/>get_error_details: registered on first error (progressive disclosure)<br/>query_tool_result: registered on first large result (progressive disclosure)<br/>get_tool_result: disabled (EXPERIMENT removed)
 
     NewAgent-->>User: Return agent instance
 ```
 
 **Configuration Example**:
 ```go
-// Minimal agent (no error store, no shared memory)
+// Minimal agent (no error store)
 minimalAgent := agent.NewAgent(backend, llm)
-// Result: No built-in tools registered
+// Result: No error-related built-in tools. SharedMemory still initialized as global singleton.
 
-// Full-featured agent
-store := agent.NewSQLiteErrorStore("./sessions.db", tracer)
-sharedMem := communication.NewSharedMemoryStore()
+// Agent with error submission channel
+store, _ := agent.NewSQLiteErrorStore("./sessions.db", tracer)
 fullAgent := agent.NewAgent(backend, llm,
     agent.WithErrorStore(store),
-    agent.WithSharedMemory(sharedMem),
     agent.WithTracer(tracer),
 )
-// Result: get_error_details and get_tool_result auto-registered
+// Result: get_error_details registered via progressive disclosure on first error
+// SharedMemory initialized automatically inside NewAgent (global singleton)
 ```
 
 
@@ -720,22 +753,22 @@ sequenceDiagram
 
 ### StoredError
 
-**Definition** (`pkg/agent/error_store.go:32`):
+**Definition** (`pkg/agent/error_store.go`):
 ```go
 type StoredError struct {
     ID           string          // err_YYYYMMDD_HHMMSS_<random>
-    Timestamp    time.Time       // When error occurred
-    SessionID    string          // Session context
-    ToolName     string          // Tool that failed
-    RawError     json.RawMessage // Original error (flexible format)
-    ShortSummary string          // First line or 100 chars
+    Timestamp    time.Time       // When the error occurred
+    SessionID    string          // Session that encountered this error
+    ToolName     string          // Name of the tool that failed
+    RawError     json.RawMessage // Original error in any format (no assumptions about structure)
+    ShortSummary string          // First line or 100 chars for quick reference
 }
 ```
 
 **Invariants**:
 ```
-len(ID) = 28 (err_ + 15 digit timestamp + _ + 6 random chars)
-len(ShortSummary) ≤ 100 chars
+len(ID) = 28 (err_ + 15 digit timestamp + _ + 6 random hex chars)
+len(ShortSummary) <= 100 chars
 RawError is valid JSON (enforced by Store())
 Timestamp > 0 (set on Store())
 ```
@@ -743,7 +776,7 @@ Timestamp > 0 (set on Store())
 
 ### ErrorFilters
 
-**Definition** (`pkg/agent/error_store.go:42`):
+**Definition** (`pkg/agent/error_store.go`):
 ```go
 type ErrorFilters struct {
     SessionID string    // Filter by session
@@ -779,7 +812,7 @@ errors, _ := store.List(ctx, ErrorFilters{
 
 **Solution**: Best-effort extraction with fallback to first line or truncation.
 
-**Algorithm** (`pkg/agent/error_store.go:315`):
+**Algorithm** (`pkg/agent/error_store.go`):
 ```go
 func extractErrorSummary(err interface{}) string {
     switch e := err.(type) {
@@ -844,17 +877,21 @@ Output: "Very long error message that exceeds one hundred characters and needs t
 
 **Solution**: Format `err_YYYYMMDD_HHMMSS_<6-char-random>` using cryptographic randomness.
 
-**Algorithm** (`pkg/agent/error_store.go:122`):
+**Algorithm** (`pkg/agent/error_store.go`):
 ```go
 func (s *SQLiteErrorStore) Store(ctx context.Context, err *StoredError) (string, error) {
     now := time.Now()
-    randomSuffix, _ := generateRandomString(6) // Crypto random hex
+    randomSuffix, randErr := generateRandomString(6) // Crypto random hex
+    if randErr != nil {
+        return "", fmt.Errorf("failed to generate random ID suffix: %w", randErr)
+    }
 
     errorID := fmt.Sprintf("err_%s_%s",
         now.Format("20060102_150405"), // YYYYMMDD_HHMMSS
         randomSuffix)                   // 6 hex chars
 
     // Result: err_20241121_230334_abc123
+    // ... (INSERT INTO agent_errors follows)
     return errorID, nil
 }
 
@@ -902,7 +939,7 @@ err_20241121_230335_789xyz  (Next second)
    - ❌ No queryability: Manual filtering required
 
 2. **External database** (Postgres, MySQL):
-   - ✅ Production-grade persistence
+   - ✅ Durable persistence with replication
    - ❌ Network overhead: 50-200ms latency
    - ❌ External dependency: Complicates deployment
 
@@ -936,7 +973,7 @@ err_20241121_230335_789xyz  (Next second)
 
 **Consequences**:
 - ✅ Predictable token usage (25 tokens per error summary)
-- ✅ Simple implementation (substring, no configuration)
+- ✅ Minimal implementation (substring, no configuration)
 - ❌ Fixed length may truncate important context (mitigated by get_error_details)
 
 
@@ -1021,7 +1058,7 @@ DELETE FROM agent_errors WHERE timestamp < unixepoch() - 2592000; -- 30 days
 | Component | Size |
 |-----------|------|
 | StoredError struct | ~500 bytes (ID, timestamps, 100-char summary, json.RawMessage pointer) |
-| SQLiteErrorStore | ~10KB (db connection, tracer, logger) |
+| SQLiteErrorStore | ~10KB (db connection, RWMutex, tracer) |
 | **Total per agent** | **~10KB** (if error store configured) |
 
 ### Storage
@@ -1075,7 +1112,7 @@ func NewSQLiteErrorStore(dbPath string, ...) (*SQLiteErrorStore, error) {
 **Rationale**:
 - **RWMutex**: Read-heavy workload (many Get calls, few Store calls)
 - **WAL mode**: SQLite WAL allows concurrent readers + one writer
-- **No deadlocks**: Simple lock acquisition (never nested locks)
+- **No deadlocks**: Single-level lock acquisition (never nested locks)
 
 **Race Detector**: Zero race conditions detected (all tests run with `-race`)
 
@@ -1102,13 +1139,13 @@ flowchart LR
 ```
 
 **Storage Failures**:
-- SQLite locked → Retry once, then fallback
-- Disk full → Log error, fallback to truncation
-- Invalid JSON → Wrap in `{"message": "..."}`, retry
+- SQLite locked → Fall through to truncation (no retry)
+- Disk full → Fall through to truncation
+- Invalid JSON → Wrap in `{"message": "..."}` before INSERT (handled in Store())
 
 **Retrieval Failures** (get_error_details):
-- Error ID not found → Return tool error: "ERROR_NOT_FOUND"
-- SQLite error → Return tool error: "DATABASE_ERROR"
+- Error ID not found → Return tool error: code="not_found"
+- Invalid input → Return tool error: code="invalid_input"
 
 
 ## Security Considerations
@@ -1175,10 +1212,10 @@ flowchart LR
 
 ### Reference Documentation
 
-- [Agent API Reference](/docs/reference/agent-api.md) - Agent initialization and options
-- [Tool System Reference](/docs/reference/tools.md) - Built-in tool registration
+- [Tool Registry Reference](/docs/reference/tool-registry.md) - Tool registration and execution
+- [CLI Reference](/docs/reference/cli.md) - CLI commands and options
 
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Error Handling Best Practices](/docs/guides/error-handling.md) - Using Error Submission Channel effectively
+- [Memory Management](/docs/guides/memory-management.md) - Memory system usage

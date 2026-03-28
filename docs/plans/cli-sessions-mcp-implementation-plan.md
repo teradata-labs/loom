@@ -1,12 +1,12 @@
 # CLI Sessions and MCP Commands Implementation Plan
 
 **Created**: 2026-01-16
-**Status**: Planning Phase
-**Branch**: `feature/cli-sessions-mcp-commands`
+**Status**: Phase 1 Complete (✅), Phase 2 Partially Complete (⚠️), Phase 3 Planned (📋)
+**Branch**: Phase 1 merged to `main`
 
 ## Executive Summary
 
-The proto definitions and server-side implementations for session and MCP management are **already complete**. We only need to create CLI commands that call the existing client methods.
+The proto definitions and server-side implementations for session and MCP management are **already complete**. Phase 1 CLI commands (`sessions list/show/delete`, `mcp list/test/tools`) have been implemented in `cmd/loom/sessions.go` and `cmd/loom/mcp.go`.
 
 ## Current State Analysis
 
@@ -29,34 +29,52 @@ The proto definitions and server-side implementations for session and MCP manage
 - `rpc HealthCheckMCPServers(HealthCheckMCPServersRequest) returns (HealthCheckMCPServersResponse)`
 
 **Server Implementation** (`pkg/server/`):
-- `pkg/server/server.go` - Session RPCs implemented
-- `pkg/server/multi_agent.go` - Session RPCs for multi-agent server
-- `pkg/server/mcp_management.go` - All MCP RPCs implemented
+- `pkg/server/server.go` - Session RPCs on `Server` struct
+- `pkg/server/multi_agent.go` - Session RPCs on `MultiAgentServer` struct
+- `pkg/server/mcp_management.go` - All MCP RPCs on `MultiAgentServer` struct
 
 **Client Library** (`pkg/tui/client/client.go`):
+- `CreateSession(ctx, name, agentID) (*Session, error)`
 - `GetSession(ctx, sessionID) (*Session, error)`
 - `ListSessions(ctx, limit, offset) ([]*Session, error)`
 - `DeleteSession(ctx, sessionID) error`
+- `GetConversationHistory(ctx, sessionID) ([]*Message, error)`
 - `ListMCPServers(ctx, req) (*ListMCPServersResponse, error)`
+- `GetMCPServer(ctx, req) (*MCPServerInfo, error)`
 - `TestMCPServerConnection(ctx, req) (*TestMCPServerConnectionResponse, error)`
 - `ListMCPServerTools(ctx, serverName) ([]*ToolDefinition, error)`
+- `AddMCPServer(ctx, req) (*AddMCPServerResponse, error)`
+- `UpdateMCPServer(ctx, req) (*MCPServerInfo, error)`
+- `DeleteMCPServer(ctx, req) (*DeleteMCPServerResponse, error)`
+- `RestartMCPServer(ctx, req) (*MCPServerInfo, error)`
+- `HealthCheckMCPServers(ctx, req) (*HealthCheckMCPServersResponse, error)`
 
-### What's Missing ❌
+### Phase 1 CLI Commands ✅ Implemented
 
 **CLI Commands** (`cmd/loom/`):
-- No `sessions.go` file
-- No `mcp.go` file
+- `cmd/loom/sessions.go` - `list`, `show`, `delete` commands
+- `cmd/loom/mcp.go` - `list`, `test`, `tools` commands
+
+### What's Still Missing ❌
+
+**Phase 2 CLI Commands** (`cmd/loom/`):
+- No `sessions export` subcommand
+- No `mcp call` subcommand (requires `CallMCPTool` RPC which does not exist)
+
+**Phase 3 Admin Commands** (`cmd/looms/`):
+- No `sessions.go` file (prune, stats)
+- No `mcp.go` file (reload, start, stop, restart)
 
 ---
 
-## Phase 1: Essential User Commands (Week 1)
+## Phase 1: Essential User Commands ✅ IMPLEMENTED
 
 ### Priority: CRITICAL
 **Goal**: Solve immediate pain points for users.
 
-### Commands to Implement
+### Implemented Commands
 
-#### 1.1 `loom sessions list`
+#### 1.1 `loom sessions list` ✅
 
 **Usage:**
 ```bash
@@ -66,38 +84,35 @@ loom sessions list [flags]
 **Flags:**
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--thread`, `-t` | string | `""` | Filter by thread ID |
-| `--limit` | int | `20` | Max results to return |
-| `--offset` | int | `0` | Pagination offset |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--limit`, `-n` | int32 | `20` | Max results to return |
+| `--offset` | int32 | `0` | Pagination offset |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
+
+> **Note**: The `ListSessionsRequest` proto also supports `state` and `backend` filters, but these are not yet exposed as CLI flags.
 
 **Implementation:**
 - File: `cmd/loom/sessions.go`
 - Client method: `client.ListSessions(ctx, limit, offset)`
-- Output format: Table with columns: SESSION_ID, THREAD, MESSAGES, CREATED, LAST_UPDATED
+- Output format: Table with columns: SESSION ID, STATE, BACKEND, MESSAGES, CREATED
 
 **Example Output:**
 ```
-Available sessions (showing 20 of 45):
+SESSION ID                STATE           BACKEND         MESSAGES     CREATED
+-------------------------------------------------------------------------------------
+sess_abc123def456         active          file            15           2 hours ago
+sess_xyz789ghi012         idle            sqlite          8            1 day ago
+sess_jkl345mno678         active          file            23           3 days ago
 
-SESSION_ID           THREAD              MESSAGES  CREATED           LAST_UPDATED
-sess_abc123def456    sql-expert          15        2 hours ago       1 hour ago
-sess_xyz789ghi012    weaver              8         1 day ago         1 day ago
-sess_jkl345mno678    teradata-explorer   23        3 days ago        2 days ago
-
-To resume a session:
-  loom --thread <thread-id> --session <session-id>
-  loom chat --thread <thread-id> --session <session-id> "message"
+Showing 3 session(s)
 ```
 
 **Exit Codes:**
 - 0: Success
-- 1: Invalid arguments
-- 4: Cannot connect to server
+- 1: Connection error or listing error
 
 ---
 
-#### 1.2 `loom sessions show <session-id>`
+#### 1.2 `loom sessions show <session-id>` ✅
 
 **Usage:**
 ```bash
@@ -107,61 +122,37 @@ loom sessions show <session-id> [flags]
 **Flags:**
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--with-history` | bool | `false` | Include full conversation history |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
+
+> **Note**: A `--with-history` flag to include conversation history via `client.GetConversationHistory()` is not yet implemented.
 
 **Implementation:**
 - File: `cmd/loom/sessions.go`
-- Client methods:
-  - `client.GetSession(ctx, sessionID)`
-  - `client.GetConversationHistory(ctx, sessionID)` (if `--with-history`)
-- Output format: Session metadata + optional conversation history
+- Client method: `client.GetSession(ctx, sessionID)`
+- Output format: Session metadata (id, name, backend, state, messages, cost, timestamps, metadata map)
 
 **Example Output:**
 ```
 Session: sess_abc123def456
+Name: my-session
+Backend: file
+State: active
+Messages: 15
+Total Cost: $0.123456
+Created: 2026-01-16T09:15:23Z (2 hours ago)
+Updated: 2026-01-16T10:42:15Z (1 hour ago)
 
-Details:
-  Thread:       sql-expert
-  Created:      2026-01-16 09:15:23
-  Last Updated: 2026-01-16 10:42:15
-  Messages:     15
-  Tokens:       12,345 (input: 2,345 | output: 10,000)
-  Cost:         $0.123456
-
-To resume:
-  loom --thread sql-expert --session sess_abc123def456
-```
-
-With `--with-history`:
-```
-Session: sess_abc123def456
-...
-
-Conversation History:
-
-[2026-01-16 09:15:23] User:
-show me all tables
-
-[2026-01-16 09:15:25] Agent:
-I'll query the database to list all tables...
-[Tool: get_schema]
-Found 42 tables in the database...
-
-[2026-01-16 09:16:10] User:
-show sales table schema
-...
+Metadata:
+  key1: value1
 ```
 
 **Exit Codes:**
 - 0: Success
-- 1: Session ID required
-- 4: Cannot connect to server
-- 7: Session not found
+- 1: Connection or retrieval error
 
 ---
 
-#### 1.3 `loom sessions delete <session-id>`
+#### 1.3 `loom sessions delete <session-id>` ✅
 
 **Usage:**
 ```bash
@@ -171,38 +162,27 @@ loom sessions delete <session-id> [flags]
 **Flags:**
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--force`, `-f` | bool | `false` | Skip confirmation prompt |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
+
+> **Note**: No `--force` flag or confirmation prompt is implemented. Deletion is immediate.
 
 **Implementation:**
 - File: `cmd/loom/sessions.go`
 - Client method: `client.DeleteSession(ctx, sessionID)`
-- Behavior: Prompt for confirmation unless `--force`
+- Behavior: Deletes immediately with no confirmation
 
 **Example Output:**
 ```
-⚠️  This will permanently delete session sess_abc123def456 and all conversation history.
-
-Continue? (y/N): y
-
-✅ Session sess_abc123def456 deleted successfully.
-```
-
-With `--force`:
-```bash
-loom sessions delete sess_abc123def456 --force
-# Output: ✅ Session sess_abc123def456 deleted successfully.
+Deleted session: sess_abc123def456
 ```
 
 **Exit Codes:**
 - 0: Success
-- 1: Session ID required or user cancelled
-- 4: Cannot connect to server
-- 7: Session not found
+- 1: Connection or deletion error
 
 ---
 
-#### 1.4 `loom mcp list`
+#### 1.4 `loom mcp list` ✅
 
 **Usage:**
 ```bash
@@ -212,36 +192,31 @@ loom mcp list [flags]
 **Flags:**
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
 
 **Implementation:**
 - File: `cmd/loom/mcp.go`
 - Client method: `client.ListMCPServers(ctx, req)`
-- Output format: Table with server status
+- Output format: Table with columns: NAME, STATUS, TOOLS, COMMAND
 
 **Example Output:**
 ```
-Configured MCP servers (3):
+NAME                 STATUS          TOOLS      COMMAND
+--------------------------------------------------------------------------------
+vantage              running         45         /usr/local/bin/vantage-mcp
+github               running         12         npx github-mcp
+filesystem           stopped         0          /usr/bin/fs-mcp
 
-NAME              STATUS   TOOLS  TRANSPORT  UPTIME
-vantage           running  45     stdio      2h 15m
-github            running  12     stdio      2h 15m
-filesystem        stopped  0      stdio      -
-
-To test a server:
-  loom mcp test <server-name>
-
-To list tools:
-  loom mcp tools <server-name>
+Total: 3 MCP server(s)
 ```
 
 **Exit Codes:**
 - 0: Success
-- 4: Cannot connect to server
+- 1: Connection or listing error
 
 ---
 
-#### 1.5 `loom mcp test <server-name>`
+#### 1.5 `loom mcp test <server-name>` ✅
 
 **Usage:**
 ```bash
@@ -251,64 +226,59 @@ loom mcp test <server-name> [flags]
 **Flags:**
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--timeout` | duration | `30s` | Connection timeout |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
+
+> **Note**: No `--timeout` flag is implemented. Uses a hardcoded 10-second context timeout.
 
 **Implementation:**
 - File: `cmd/loom/mcp.go`
-- Client method: `client.TestMCPServerConnection(ctx, req)`
-- Output format: Connection test results
+- Client methods: `client.GetMCPServer(ctx, req)` then `client.ListMCPServerTools(ctx, serverName)`
+- Output format: Server info, connection status, and tool summary (first 10 tools shown)
 
 **Example Output:**
 
 Success:
 ```
-Testing MCP server: vantage
+Checking MCP server: vantage
 
-Connection Test:
-  ✅ Server process started
-  ✅ Handshake completed (234ms)
-  ✅ Protocol version: 1.0.0
+Server Info:
+  Name: vantage
+  Transport: stdio
+  Command: /usr/local/bin/vantage-mcp
+  Args: [-m mcp_server.main]
 
-Tool Discovery:
-  ✅ 45 tools discovered
+Status:
+  ✅ Connected
+  State: running
+  ✅ Enabled
+  Uptime: 2h 15m
 
-Sample Tools:
-  - execute_query: Execute Teradata SQL query
-  - get_schema: Get table schema information
-  - list_tables: List available tables
-  - list_databases: List accessible databases
-  ... (41 more tools)
-
-Status: healthy
-Response Time: 234ms
-
-To list all tools:
-  loom mcp tools vantage
+Tools:
+  45 tools available
+    - execute_query
+    - get_schema
+    - list_tables
+    ... and 42 more
 ```
 
 Failure:
 ```
-Testing MCP server: broken-server
+Checking MCP server: broken-server
 
-Connection Test:
-  ❌ Failed to start server process
+Server Info:
+  Name: broken-server
+  Transport: stdio
+  Command: /usr/bin/nonexistent-mcp
+
+Status:
+  ❌ Not connected
+  State: error
   Error: command not found: /usr/bin/nonexistent-mcp
-
-Troubleshooting:
-  1. Verify the command exists: which /usr/bin/nonexistent-mcp
-  2. Check server configuration: looms config get mcp.servers.broken-server
-  3. Review server logs: looms logs mcp --server broken-server
-
-Status: failed
 ```
 
 **Exit Codes:**
-- 0: Success (server healthy)
-- 1: Server name required
-- 4: Cannot connect to loom server
-- 7: MCP server not found in config
-- 8: MCP server test failed
+- 0: Success (server info retrieved)
+- 1: Connection or retrieval error
 
 ---
 
@@ -317,9 +287,41 @@ Status: failed
 ### Priority: HIGH
 **Goal**: Enable advanced workflows and debugging.
 
-### Commands to Implement
+### Commands
 
-#### 2.1 `loom sessions export <session-id>`
+#### 2.0 `loom mcp tools <server-name>` ✅ (Moved up from Phase 2, already implemented)
+
+**Usage:**
+```bash
+loom mcp tools <server-name> [flags]
+```
+
+**Flags:**
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
+
+**Implementation:**
+- File: `cmd/loom/mcp.go`
+- Client method: `client.ListMCPServerTools(ctx, serverName)`
+- Output format: Tool name and truncated description (50 chars)
+
+**Example Output:**
+```
+Tools from MCP server: vantage
+
+execute_query                  - Execute Teradata SQL query and return resu...
+get_schema                     - Get table schema information
+list_tables                    - List all accessible tables
+
+Total: 45 tool(s)
+```
+
+> **Note**: No `--filter` flag is implemented.
+
+---
+
+#### 2.1 `loom sessions export <session-id>` 📋 Planned
 
 **Usage:**
 ```bash
@@ -331,7 +333,7 @@ loom sessions export <session-id> [flags]
 |------|------|---------|-------------|
 | `--format` | string | `json` | Output format: `json`, `csv`, `markdown` |
 | `--output`, `-o` | string | stdout | Output file path |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
 
 **Implementation:**
 - File: `cmd/loom/sessions.go`
@@ -343,6 +345,8 @@ loom sessions export <session-id> [flags]
   - CSV: Flattened messages (timestamp, role, content, tokens, cost)
   - Markdown: Human-readable conversation transcript
 
+> **Note**: The `Session` proto message has fields: `id`, `name`, `backend`, `state`, `total_cost_usd`, `conversation_count`, `created_at`, `updated_at`, `metadata`. There is no `thread_id` field.
+
 **Example Output:**
 
 JSON format:
@@ -352,25 +356,23 @@ loom sessions export sess_abc123 --format json --output session.json
 ```json
 {
   "session_id": "sess_abc123def456",
-  "thread_id": "sql-expert",
+  "name": "my-session",
+  "backend": "file",
+  "state": "active",
   "created_at": "2026-01-16T09:15:23Z",
   "updated_at": "2026-01-16T10:42:15Z",
-  "total_messages": 15,
-  "total_tokens": 12345,
+  "conversation_count": 15,
   "total_cost_usd": 0.123456,
   "messages": [
     {
       "timestamp": "2026-01-16T09:15:23Z",
       "role": "user",
-      "content": "show me all tables",
-      "tokens": 5
+      "content": "show me all tables"
     },
     {
       "timestamp": "2026-01-16T09:15:25Z",
       "role": "assistant",
       "content": "I'll query the database...",
-      "tokens": 234,
-      "cost_usd": 0.00234,
       "tool_calls": ["get_schema"]
     }
   ]
@@ -384,7 +386,8 @@ loom sessions export sess_abc123 --format markdown --output session.md
 ```markdown
 # Session: sess_abc123def456
 
-**Thread**: sql-expert
+**Name**: my-session
+**Backend**: file
 **Created**: 2026-01-16 09:15:23
 **Messages**: 15
 **Cost**: $0.123456
@@ -413,86 +416,11 @@ Found 42 tables in the database...
 
 ---
 
-#### 2.2 `loom mcp tools <server-name>`
-
-**Usage:**
-```bash
-loom mcp tools <server-name> [flags]
-```
-
-**Flags:**
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--filter` | string | `""` | Filter tools by name pattern |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
-
-**Implementation:**
-- File: `cmd/loom/mcp.go`
-- Client method: `client.ListMCPServerTools(ctx, serverName)`
-- Output format: Detailed tool list with schemas
-
-**Example Output:**
-```
-MCP Server: vantage
-Tools: 45
-
-execute_query
-  Description: Execute Teradata SQL query and return results
-  Input Schema:
-    - query (string, required): SQL query to execute
-    - max_rows (integer, optional): Maximum rows to return (default: 1000)
-  Returns: Query results as JSON array
-
-get_schema
-  Description: Get table schema information
-  Input Schema:
-    - table_name (string, required): Table name
-    - database (string, optional): Database name
-  Returns: Schema definition with column details
-
-list_tables
-  Description: List all accessible tables
-  Input Schema:
-    - database (string, optional): Filter by database
-  Returns: Array of table names
-
-... (42 more tools)
-
-To test a tool:
-  loom mcp call vantage execute_query --arg query="SELECT 1"
-```
-
-With filter:
-```bash
-loom mcp tools vantage --filter "*query*"
-```
-```
-MCP Server: vantage
-Filtered Tools: 3 (of 45 total)
-
-execute_query
-  Description: Execute Teradata SQL query and return results
-  ...
-
-explain_query
-  Description: Get query execution plan
-  ...
-
-validate_query
-  Description: Validate SQL query syntax
-  ...
-```
-
-**Exit Codes:**
-- 0: Success
-- 1: Server name required
-- 4: Cannot connect to loom server
-- 7: MCP server not found
-- 8: MCP server not running
+#### 2.2 `loom mcp tools <server-name>` -- ✅ Already implemented (see 2.0 above)
 
 ---
 
-#### 2.3 `loom mcp call <server-name> <tool-name> [flags]`
+#### 2.3 `loom mcp call <server-name> <tool-name> [flags]` 📋 Planned
 
 **Usage:**
 ```bash
@@ -505,11 +433,11 @@ loom mcp call <server-name> <tool-name> [flags]
 | `--arg` | stringArray | `[]` | Tool arguments (key=value, repeatable) |
 | `--input` | string | `""` | JSON file with arguments |
 | `--timeout` | duration | `30s` | Execution timeout |
-| `--server`, `-s` | string | `localhost:60051` | Server address |
+| `--server`, `-s` | string | `127.0.0.1:60051` | Server address (inherited) |
 
 **Implementation:**
 - File: `cmd/loom/mcp.go`
-- Requires: New `CallMCPTool` RPC (see Phase 3)
+- Requires: New `CallMCPTool` RPC (see Phase 2 Requirements above)
 - Output format: Tool execution result
 
 **Example Usage:**
@@ -561,14 +489,14 @@ Execution Time: 145ms
 
 ---
 
-## Phase 3: Admin Commands (Week 3)
+## Phase 3: Admin Commands (Week 3) 📋 Planned
 
 ### Priority: MEDIUM
 **Goal**: Server administration and automation.
 
 ### Commands to Implement
 
-#### 3.1 `looms sessions prune`
+#### 3.1 `looms sessions prune` 📋
 
 **Usage:**
 ```bash
@@ -635,7 +563,7 @@ Pruning sessions...
 
 ---
 
-#### 3.2 `looms sessions stats`
+#### 3.2 `looms sessions stats` 📋
 
 **Usage:**
 ```bash
@@ -689,7 +617,7 @@ Most Active Days:
 
 ---
 
-#### 3.3 `looms mcp reload [<server-name>]`
+#### 3.3 `looms mcp reload [<server-name>]` 📋
 
 **Usage:**
 ```bash
@@ -746,7 +674,7 @@ Completed: 2 reloaded, 1 skipped
 
 ---
 
-#### 3.4 `looms mcp start <server-name>` / `stop` / `restart`
+#### 3.4 `looms mcp start <server-name>` / `stop` / `restart` 📋
 
 **Usage:**
 ```bash
@@ -813,8 +741,9 @@ Status: stopped
 #### Phase 2 Requirements
 
 ```protobuf
-// Already exists - no new RPCs needed for Phase 2!
-// We can use GetConversationHistory for export
+// GetConversationHistory already exists for export
+// New RPC needed for direct tool execution:
+rpc CallMCPTool(CallMCPToolRequest) returns (CallMCPToolResponse);
 ```
 
 #### Phase 3 Requirements
@@ -824,166 +753,170 @@ Status: stopped
 rpc PruneSessions(PruneSessionsRequest) returns (PruneSessionsResponse);
 rpc GetSessionStats(GetSessionStatsRequest) returns (SessionStats);
 
-// MCP server lifecycle (start/stop already exist via RestartMCPServer)
+// MCP server lifecycle (RestartMCPServer already exists)
 rpc StartMCPServer(StartMCPServerRequest) returns (MCPServerInfo);
 rpc StopMCPServer(StopMCPServerRequest) returns (StopMCPServerResponse);
-
-// Direct MCP tool execution
-rpc CallMCPTool(CallMCPToolRequest) returns (CallMCPToolResponse);
 ```
+
+> **Note**: None of the Phase 2 or Phase 3 RPCs above exist in the proto yet.
 
 ### File Structure
 
 ```
 cmd/loom/
-├── main.go           # Register session and mcp commands
-├── agents.go         # Existing
-├── chat.go           # Existing
-├── sessions.go       # NEW - Phase 1 & 2
-└── mcp.go            # NEW - Phase 1 & 2
+├── main.go           # Registers session, mcp, and other commands
+├── agents.go         # ✅ Existing
+├── artifacts.go      # ✅ Existing
+├── chat.go           # ✅ Existing
+├── providers.go      # ✅ Existing
+├── sessions.go       # ✅ Implemented (list, show, delete)
+└── mcp.go            # ✅ Implemented (list, test, tools)
 
 cmd/looms/
 ├── main.go           # Register admin commands
-├── serve.go          # Existing
-├── sessions.go       # NEW - Phase 3 (admin commands)
-└── mcp.go            # NEW - Phase 3 (admin commands)
+├── root.go           # ✅ Existing (root command definition)
+├── cmd_serve.go      # ✅ Existing (server start)
+├── cmd_config.go     # ✅ Existing (config management)
+├── sessions.go       # 📋 Phase 3 (admin commands: prune, stats)
+└── mcp.go            # 📋 Phase 3 (admin commands: reload, start, stop)
 ```
 
 ---
 
 ## Implementation Timeline
 
-### Week 1: Phase 1 (Essential Commands)
+### Week 1: Phase 1 (Essential Commands) ✅ COMPLETE
 **Days 1-2:**
-- Create `cmd/loom/sessions.go`
-- Implement: `list`, `show`, `delete`
-- Write tests
-- Update documentation
+- ✅ Created `cmd/loom/sessions.go`
+- ✅ Implemented: `list`, `show`, `delete`
+- ⚠️ Tests not yet written (`cmd/loom/` has no `*_test.go` files)
+- ⚠️ Documentation not yet updated
 
 **Days 3-4:**
-- Create `cmd/loom/mcp.go`
-- Implement: `list`, `test`
-- Write tests
-- Update documentation
+- ✅ Created `cmd/loom/mcp.go`
+- ✅ Implemented: `list`, `test`, `tools` (tools was moved up from Phase 2)
+- ⚠️ Tests not yet written
+- ⚠️ Documentation not yet updated
 
 **Day 5:**
-- Integration testing
-- Documentation review
-- Create PR
+- 📋 Integration testing (not yet done)
+- 📋 Documentation review (not yet done)
 
 **Deliverables:**
-- 5 new CLI commands
-- Full documentation
-- Comprehensive tests
-- User-facing pain points solved
+- ✅ 6 new CLI commands implemented (sessions: list, show, delete; mcp: list, test, tools)
+- ⚠️ Documentation pending
+- ⚠️ Tests pending
+- ✅ User-facing pain points solved
 
 ---
 
-### Week 2: Phase 2 (Power User Commands)
+### Week 2: Phase 2 (Power User Commands) ⚠️ Partially Complete
 **Days 1-2:**
-- Implement `loom sessions export` (JSON, CSV, Markdown)
-- Write tests for all export formats
+- 📋 Implement `loom sessions export` (JSON, CSV, Markdown)
+- 📋 Write tests for all export formats
 
 **Days 3-4:**
-- Implement `loom mcp tools`
-- Implement `loom mcp call` (requires new RPC)
-- Write proto for `CallMCPTool`
-- Implement server-side handler
+- ✅ `loom mcp tools` already implemented (moved up to Phase 1)
+- 📋 Implement `loom mcp call` (requires new `CallMCPTool` RPC)
+- 📋 Write proto for `CallMCPTool`
+- 📋 Implement server-side handler
 
 **Day 5:**
-- Integration testing
-- Documentation
-- Create PR
+- 📋 Integration testing
+- 📋 Documentation
+- 📋 Create PR
 
 **Deliverables:**
-- 3 new CLI commands
-- New CallMCPTool RPC
-- Export formats (JSON, CSV, Markdown)
-- Power user workflows enabled
+- 📋 2 remaining CLI commands (`sessions export`, `mcp call`)
+- 📋 New `CallMCPTool` RPC
+- 📋 Export formats (JSON, CSV, Markdown)
+- 📋 Power user workflows enabled
 
 ---
 
-### Week 3: Phase 3 (Admin Commands)
+### Week 3: Phase 3 (Admin Commands) 📋 Not Started
 **Days 1-2:**
-- Create `cmd/looms/sessions.go`
-- Implement `prune` (with new RPC)
-- Implement `stats` (with new RPC)
+- 📋 Create `cmd/looms/sessions.go`
+- 📋 Implement `prune` (requires new `PruneSessions` RPC)
+- 📋 Implement `stats` (requires new `GetSessionStats` RPC)
 
 **Days 3-4:**
-- Create `cmd/looms/mcp.go`
-- Implement `reload`, `start`, `stop`
-- Write proto for new RPCs
-- Implement server-side handlers
+- 📋 Create `cmd/looms/mcp.go`
+- 📋 Implement `reload`, `start`, `stop`
+- 📋 Write proto for new RPCs (`PruneSessions`, `GetSessionStats`, `StartMCPServer`, `StopMCPServer`)
+- 📋 Implement server-side handlers
 
 **Day 5:**
-- Integration testing
-- Documentation
-- Create PR
+- 📋 Integration testing
+- 📋 Documentation
+- 📋 Create PR
 
 **Deliverables:**
-- 5 new admin commands
-- 3-4 new RPCs
-- Server automation capabilities
+- 📋 5 new admin commands
+- 📋 4 new RPCs
+- 📋 Server automation capabilities
 
 ---
 
 ## Success Criteria
 
-### Phase 1
-- ✅ Users can list and find session IDs
-- ✅ Users can view session details
-- ✅ Users can delete old sessions
-- ✅ Users can verify MCP server status
-- ✅ Users can test MCP connectivity
+### Phase 1 ✅ Complete
+- ✅ Users can list and find session IDs (`loom sessions list`)
+- ✅ Users can view session details (`loom sessions show`)
+- ✅ Users can delete old sessions (`loom sessions delete`)
+- ✅ Users can verify MCP server status (`loom mcp list`, `loom mcp test`)
+- ✅ Users can discover MCP tools (`loom mcp tools`)
 
-### Phase 2
-- ✅ Users can export sessions for documentation/analysis
-- ✅ Users can discover available MCP tools
-- ✅ Users can test individual MCP tools directly
+### Phase 2 ⚠️ Partial
+- 📋 Users can export sessions for documentation/analysis (`sessions export` not yet implemented)
+- ✅ Users can discover available MCP tools (`mcp tools` already implemented)
+- 📋 Users can test individual MCP tools directly (`mcp call` not yet implemented, requires `CallMCPTool` RPC)
 
-### Phase 3
-- ✅ Admins can prune old sessions automatically
-- ✅ Admins can monitor session usage
-- ✅ Admins can manage MCP server lifecycle
+### Phase 3 📋 Planned
+- 📋 Admins can prune old sessions automatically (requires `PruneSessions` RPC)
+- 📋 Admins can monitor session usage (requires `GetSessionStats` RPC)
+- 📋 Admins can manage MCP server lifecycle (requires `StartMCPServer`/`StopMCPServer` RPCs)
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests
+> **Status**: ⚠️ No tests exist yet for `cmd/loom/sessions.go` or `cmd/loom/mcp.go`. No `*_test.go` files in `cmd/loom/`.
+
+### Unit Tests 📋
 - Test each command with mock client
 - Test argument parsing
 - Test output formatting
 - Test error handling
 
-### Integration Tests
+### Integration Tests 📋
 - Test against real loom server
 - Test session lifecycle (create, list, show, delete)
 - Test MCP operations with real MCP servers
 - Test export formats produce valid output
 
-### E2E Tests
+### E2E Tests 📋
 - Test complete workflows:
-  - Create session → Chat → List → Resume → Export → Delete
-  - Add MCP server → Test → List tools → Call tool → Restart
+  - Create session -> Chat -> List -> Resume -> Export -> Delete
+  - Add MCP server -> Test -> List tools -> Call tool -> Restart
 
 ---
 
-## Documentation Updates Required
+## Documentation Updates Required 📋
 
 ### Reference Documentation
-- `docs/reference/cli.md` - Add all new commands
-- `docs/reference/sessions.md` - NEW - Session management guide
-- `docs/reference/mcp-cli.md` - NEW - MCP CLI reference
+- `docs/reference/cli.md` - 📋 Add all new commands (file exists but needs updating)
+- `docs/reference/sessions.md` - 📋 NEW - Session management guide (does not exist yet)
+- `docs/reference/mcp-cli.md` - 📋 NEW - MCP CLI reference (does not exist yet)
 
 ### Guides
-- `docs/guides/session-management.md` - NEW - Session workflows
-- `docs/guides/mcp-debugging.md` - NEW - Debugging MCP servers
-- `docs/guides/automation.md` - UPDATE - Add session pruning
+- `docs/guides/session-management.md` - 📋 NEW - Session workflows (does not exist yet)
+- `docs/guides/mcp-debugging.md` - 📋 NEW - Debugging MCP servers (does not exist yet)
+- `docs/guides/automation.md` - 📋 NEW - Add session pruning (does not exist yet)
 
 ### README
-- Update Quick Start with session examples
-- Add MCP management examples
+- 📋 Update Quick Start with session examples
+- 📋 Add MCP management examples
 
 ---
 
@@ -1002,7 +935,7 @@ cmd/looms/
 - Session pruning is destructive (but has --dry-run and confirmation)
 
 ### Mitigation
-- Comprehensive tests at each phase
+- Tests at each phase covering critical paths
 - `--dry-run` flags for destructive operations
 - Confirmation prompts (unless `--force`)
 - Detailed error messages with troubleshooting
@@ -1020,12 +953,9 @@ cmd/looms/
 
 ## Next Steps
 
-1. **Get approval** on this plan
-2. **Create branch**: `feature/cli-sessions-mcp-commands`
-3. **Start Phase 1** implementation
-4. **Daily check-ins** on progress
-5. **PR reviews** after each phase
-
----
-
-**Questions? Concerns? Adjustments?** Let me know before we proceed!
+1. ~~**Get approval** on this plan~~ ✅ Done
+2. ~~**Create branch**: `feature/cli-sessions-mcp-commands`~~ ✅ Phase 1 merged to `main`
+3. ~~**Start Phase 1** implementation~~ ✅ Complete
+4. **Implement Phase 2**: `sessions export` and `mcp call` (requires `CallMCPTool` RPC)
+5. **Implement Phase 3**: Admin commands (requires new proto RPCs)
+6. **Write documentation** for implemented commands

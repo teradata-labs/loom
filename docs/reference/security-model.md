@@ -1,7 +1,7 @@
 
 # Security Model Reference
 
-**Version**: v1.1.0
+**Version**: v1.2.0
 
 Security model for Loom's multi-tenancy, user identity, and data isolation features.
 This document covers the trust model for `x-user-id`, PostgreSQL Row-Level Security (RLS),
@@ -33,7 +33,7 @@ admin token authentication, and deployment requirements.
 | User authentication | **Not performed by Loom** | Delegated to reverse proxy / API gateway |
 | User identity source | `x-user-id` gRPC metadata header | Trusted as-is from caller |
 | Identity validation | Input sanitization only | Max 256 chars, no control characters |
-| Data isolation (PostgreSQL) | Row-Level Security (RLS) | `SET LOCAL app.current_user_id` per transaction |
+| Data isolation (PostgreSQL) | Row-Level Security (RLS) | `set_config('app.current_user_id', $1, true)` per transaction |
 | Data isolation (SQLite) | **None** | Single-tenant mode, all data shared |
 | Admin authentication | `x-admin-token` gRPC metadata header | Compared against `LOOM_ADMIN_TOKEN` env var |
 | Transport security | TLS (configurable) | See `docs/reference/tls.md` |
@@ -52,7 +52,7 @@ header is the sole source of user identity for all tenant-scoped operations.
 2. Loom's `UserIDUnaryInterceptor` or `UserIDStreamInterceptor` extracts the value.
 3. The value is validated for length and character constraints (see [What Loom Validates](#what-loom-validates)).
 4. The validated user ID is stored in the Go `context.Context` via `postgres.ContextWithUserID()`.
-5. On every database transaction, `execInTx()` calls `SET LOCAL app.current_user_id = $1` to activate RLS policies.
+5. On every database transaction, `execInTx()` calls `SELECT pg_catalog.set_config('app.current_user_id', $1, true)` to activate RLS policies. This is equivalent to `SET LOCAL` but supports bind parameters (`$1`).
 
 ### The Critical Assumption
 
@@ -73,7 +73,7 @@ injects a verified identity header before forwarding to the backend service.
 
 - **Interceptors**: `pkg/server/interceptors.go` -- `UserIDUnaryInterceptor`, `UserIDStreamInterceptor`
 - **Context propagation**: `pkg/storage/postgres/tenant.go` -- `ContextWithUserID`, `UserIDFromContext`
-- **RLS activation**: `pkg/storage/postgres/tenant.go` -- `execInTx` (calls `SET LOCAL`)
+- **RLS activation**: `pkg/storage/postgres/tenant.go` -- `execInTx` (calls `set_config()` with `is_local=true`)
 - **Server wiring**: `cmd/looms/cmd_serve.go` (search for `UserIDConfig`)
 
 
@@ -87,8 +87,8 @@ malformed or malicious values from reaching the database, but it is not authenti
 | Rule | Constraint | gRPC Error Code | Error Message |
 |------|-----------|-----------------|---------------|
 | Non-empty | Must not be empty string | `UNAUTHENTICATED` (when `require_user_id: true`) | `x-user-id header required` |
-| Max length | 256 characters maximum | `INVALID_ARGUMENT` | `user ID exceeds maximum length of 256 characters (got N)` |
-| No control characters | No bytes below `0x20` (space) | `INVALID_ARGUMENT` | `user ID contains control character at position N (byte 0xNN)` |
+| Max length | 256 characters maximum | `INVALID_ARGUMENT` | `invalid user ID: user ID exceeds maximum length of 256 characters (got N)` |
+| No control characters | No bytes below `0x20` (space) | `INVALID_ARGUMENT` | `invalid user ID: user ID contains control character at position N (byte 0xNN)` |
 
 ### Allowed Characters
 
@@ -113,7 +113,7 @@ The following are accepted in user ID values:
 ### Why This Matters
 
 The validation prevents:
-- SQL injection via the `SET LOCAL` parameter (parameterized queries handle this, but defense-in-depth)
+- SQL injection via the `set_config()` parameter (parameterized queries handle this, but defense-in-depth)
 - Log injection via control characters in audit logs
 - Header smuggling via embedded newlines
 - Buffer-related issues via excessively long values
@@ -174,10 +174,12 @@ database level using Row-Level Security.
 
 3. Before every query, `execInTx()` sets the session variable:
    ```sql
-   SET LOCAL app.current_user_id = $1;
+   SELECT pg_catalog.set_config('app.current_user_id', $1, true);
    ```
-   `SET LOCAL` is scoped to the current transaction. It cannot leak to other connections
-   or other transactions on the same connection.
+   The third argument (`true`) makes this equivalent to `SET LOCAL`, scoping the value
+   to the current transaction. It cannot leak to other connections or other transactions
+   on the same connection. `set_config()` is used instead of `SET LOCAL` because the
+   `SET` command does not support bind parameters (`$1`).
 
 ### Tables with RLS Policies
 
@@ -189,8 +191,13 @@ database level using Row-Level Security.
 | `agent_errors` | Direct | `user_id` column |
 | `human_requests` | Direct | `user_id` column |
 | `sql_result_metadata` | Direct | `user_id` column |
-| `tool_executions` | Inherited | Via `session_id` -> `sessions.user_id` |
-| `memory_snapshots` | Inherited | Via `session_id` -> `sessions.user_id` |
+| `tool_executions` | Direct | `user_id` column (migration 000008) |
+| `memory_snapshots` | Direct | `user_id` column (migration 000008) |
+| `graph_entities` | Direct | `user_id` column (migration 000010) |
+| `graph_edges` | Direct | `user_id` column (migration 000010) |
+| `graph_memories` | Direct | `user_id` column (migration 000010) |
+| `graph_memory_entities` | Inherited | Via `memory_id` -> `graph_memories.user_id` |
+| `graph_memory_lineage` | Inherited | Via `new_memory_id` -> `graph_memories.user_id` |
 
 ### RLS Guarantees
 
@@ -199,7 +206,7 @@ database level using Row-Level Security.
   (the `WITH CHECK` clause prevents this).
 - **UPDATE isolation**: User `alice` cannot modify rows belonging to user `bob`.
 - **DELETE isolation**: User `alice` cannot delete rows belonging to user `bob`.
-- **Transaction scoping**: `SET LOCAL` ensures user ID context does not leak between requests,
+- **Transaction scoping**: `set_config(..., true)` (equivalent to `SET LOCAL`) ensures user ID context does not leak between requests,
   even when connections are pooled.
 
 ### FORCE ROW LEVEL SECURITY
@@ -220,14 +227,19 @@ count sessions by user, system statistics). These operations bypass RLS.
 1. On startup, Loom reads the `LOOM_ADMIN_TOKEN` environment variable.
 2. If set, every `AdminService` RPC requires the caller to provide a matching
    `x-admin-token` gRPC metadata header.
-3. If `LOOM_ADMIN_TOKEN` is not set, admin endpoints are **unprotected**
-   (a warning is logged at startup).
+3. If `LOOM_ADMIN_TOKEN` is not set and `server.insecure_admin` is `false` (the default),
+   the admin service is **not registered at all** -- no admin endpoints are available.
+   An error is logged at startup.
+4. If `LOOM_ADMIN_TOKEN` is not set and `server.insecure_admin` is `true`, admin endpoints
+   are registered **without any authentication** (a warning is logged at startup).
+   This mode is intended only for local development.
 
 ### Admin Token Validation
 
 | Condition | Result | gRPC Error Code |
 |-----------|--------|-----------------|
-| `LOOM_ADMIN_TOKEN` not set | All admin requests allowed | (none -- no auth check) |
+| `LOOM_ADMIN_TOKEN` not set, `server.insecure_admin: false` (default) | Admin service **not registered** (no admin endpoints available) | N/A |
+| `LOOM_ADMIN_TOKEN` not set, `server.insecure_admin: true` | All admin requests allowed, no auth check | (none -- no auth check) |
 | `LOOM_ADMIN_TOKEN` set, `x-admin-token` header missing | Request rejected | `PERMISSION_DENIED` |
 | `LOOM_ADMIN_TOKEN` set, token mismatch | Request rejected | `PERMISSION_DENIED` |
 | `LOOM_ADMIN_TOKEN` set, token matches | Request allowed | (none -- success) |
@@ -235,7 +247,7 @@ count sessions by user, system statistics). These operations bypass RLS.
 ### Admin Database Access
 
 The admin store (`AdminStore`) uses `execInTxNoRLS` for all queries, which does not
-call `SET LOCAL app.current_user_id`. This means admin queries are not filtered by RLS.
+call `set_config('app.current_user_id', ...)`. This means admin queries are not filtered by RLS.
 
 For full cross-tenant visibility, the admin database role should have the `BYPASSRLS`
 privilege. At startup, Loom checks this with:
@@ -399,13 +411,30 @@ gRPC error. When `false`, requests without the header use `default_user_id` or
 Used when `require_user_id` is `false` and no `x-user-id` header is present.
 If this field is also empty, the system uses `"default-user"`.
 
+### server.insecure_admin
+
+**Type**: `bool`
+**Default**: `false`
+**Config path**: `server.insecure_admin`
+
+When `true`, allows the admin service to be registered without `LOOM_ADMIN_TOKEN`.
+When `false` (default) and `LOOM_ADMIN_TOKEN` is not set, the admin service is not
+registered at all (secure by default). This field is intended only for local development.
+
+```yaml
+server:
+  insecure_admin: true  # NOT recommended for any deployment reachable by untrusted clients
+```
+
 ### LOOM_ADMIN_TOKEN
 
 **Type**: Environment variable (`string`)
-**Default**: Not set (admin endpoints unprotected)
+**Default**: Not set (admin service not registered unless `server.insecure_admin: true`)
 
 When set, all `AdminService` RPCs require a matching `x-admin-token` gRPC metadata header.
-When not set, a warning is logged and admin endpoints are accessible without authentication.
+When not set, behavior depends on `server.insecure_admin`:
+- `false` (default): Admin service is not registered. No admin endpoints available.
+- `true`: Admin endpoints are registered without authentication (development only).
 
 ```bash
 export LOOM_ADMIN_TOKEN="$(openssl rand -hex 32)"
@@ -419,11 +448,11 @@ export LOOM_ADMIN_TOKEN="$(openssl rand -hex 32)"
 | Threat | Mitigation |
 |--------|-----------|
 | Cross-tenant data access at the database level | PostgreSQL RLS policies enforce per-user row isolation |
-| SQL injection via user ID | Parameterized queries (`SET LOCAL app.current_user_id = $1`) |
+| SQL injection via user ID | Parameterized queries (`set_config('app.current_user_id', $1, true)`) |
 | Log injection via control characters | User ID validation rejects bytes below `0x20` |
 | User ID overflow / buffer issues | 256-character maximum length |
 | RLS bypass by table owner | `FORCE ROW LEVEL SECURITY` on all tables |
-| Connection pool user ID leakage | `SET LOCAL` is transaction-scoped, not connection-scoped |
+| Connection pool user ID leakage | `set_config(..., true)` is transaction-scoped (equivalent to `SET LOCAL`), not connection-scoped |
 | Admin access without token | `x-admin-token` check (when `LOOM_ADMIN_TOKEN` is set) |
 
 ### Threats NOT Mitigated by Loom
@@ -446,4 +475,6 @@ export LOOM_ADMIN_TOKEN="$(openssl rand -hex 32)"
 - `pkg/server/interceptors.go` -- User ID interceptor implementation
 - `pkg/server/admin_server.go` -- Admin token authentication implementation
 - `pkg/storage/postgres/tenant.go` -- RLS context propagation and transaction wrapping
-- `pkg/storage/postgres/migrations/000007_user_rls_policies.up.sql` -- Current RLS policy definitions
+- `pkg/storage/postgres/migrations/000007_user_rls_policies.up.sql` -- User-scoped RLS policy definitions
+- `pkg/storage/postgres/migrations/000008_tool_exec_snapshot_user_id.up.sql` -- Direct user_id RLS for tool_executions and memory_snapshots
+- `pkg/storage/postgres/migrations/000010_graph_memory.up.sql` -- Graph memory RLS policies

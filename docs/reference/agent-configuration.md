@@ -1,974 +1,877 @@
 
 # Agent Configuration Reference
 
-Complete technical specification for Loom agent configuration and management.
+Technical specification for Loom agent configuration. Covers both the **server-level** agent
+definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by the server.
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 **API Version**: loom/v1
 **Configuration Kind**: `Agent`
 
+---
 
 ## Table of Contents
 
 - [Quick Reference](#quick-reference)
-- [Agent YAML Schema](#agent-yaml-schema)
+- [Two Configuration Layers](#two-configuration-layers)
+- [Standalone Agent YAML Schema](#standalone-agent-yaml-schema)
+  - [K8s-Style Format](#k8s-style-format)
+  - [Legacy Format](#legacy-format)
 - [Configuration Fields](#configuration-fields)
-  - [Agent Metadata](#agent-metadata)
+  - [Metadata](#metadata)
   - [LLM Configuration](#llm-configuration)
-  - [Backend Configuration](#backend-configuration)
+  - [Role-Specific LLM Overrides](#role-specific-llm-overrides)
+  - [Provider Pool](#provider-pool)
+  - [System Prompt and ROM](#system-prompt-and-rom)
+  - [Tools Configuration](#tools-configuration)
   - [Memory Configuration](#memory-configuration)
-  - [Guardrails Configuration](#guardrails-configuration)
+  - [Graph Memory Configuration](#graph-memory-configuration)
+  - [Memory Compression Configuration](#memory-compression-configuration)
+  - [Behavior Configuration](#behavior-configuration)
   - [Pattern Configuration](#pattern-configuration)
-  - [Tool Configuration](#tool-configuration)
-  - [Observability Configuration](#observability-configuration)
-- [Agent Lifecycle](#agent-lifecycle)
-- [Hot Reloading](#hot-reloading)
-- [Error Handling](#error-handling)
+  - [Skills Configuration](#skills-configuration)
+  - [Ephemeral Agents](#ephemeral-agents)
+  - [Backend (Inline or Path)](#backend-inline-or-path)
+- [Server-Level Agent Configuration](#server-level-agent-configuration)
+- [LLM Providers](#llm-providers)
+- [Backend Types](#backend-types)
+- [Environment Variable Expansion](#environment-variable-expansion)
+- [Validation Rules](#validation-rules)
 - [Examples](#examples)
+- [See Also](#see-also)
 
+---
 
 ## Quick Reference
 
-| Configuration Section | Required | Description |
-|----------------------|----------|-------------|
-| `name` | Yes | Agent identifier |
-| `description` | No | Human-readable description |
-| `llm` | Yes | LLM provider and model configuration |
-| `backend` | No | Data source backend (SQL, REST, MCP, file) |
-| `memory` | No | Session storage configuration |
-| `guardrails` | No | Safety constraints and limits |
-| `patterns` | No | Pattern library configuration |
-| `tools` | No | Tool system configuration |
-| `observability` | No | Tracing and monitoring configuration |
+| Field (spec) | Type | Default | Description |
+|---|---|---|---|
+| `metadata.name` | `string` | **required** | Agent identifier |
+| `metadata.description` | `string` | optional | Human-readable description |
+| `spec.llm` | `LLMConfigYAML` | inherits server | LLM provider and model |
+| `spec.system_prompt` | `string` | optional | System prompt text |
+| `spec.rom` | `string` | `""` | Read-only memory ID (`TD`, `teradata`, `weaver`, `auto`, `none`, `""`) |
+| `spec.tools` | `[]string` or `ToolsConfigYAML` | optional | Tool list |
+| `spec.memory` | `MemoryConfigYAML` | `type: memory` | Session storage |
+| `spec.config` | `BehaviorConfigYAML` | defaults below | Behavior limits |
+| `spec.backend_path` | `string` | optional | Path to backend YAML |
+| `spec.backend` | inline object | optional | Inline backend config |
+| `spec.judge_llm` | `LLMConfigYAML` | inherits main | Judge LLM override |
+| `spec.orchestrator_llm` | `LLMConfigYAML` | inherits main | Orchestrator LLM override |
+| `spec.classifier_llm` | `LLMConfigYAML` | inherits main | Classifier LLM override |
+| `spec.compressor_llm` | `LLMConfigYAML` | inherits main | Compressor LLM override |
+| `spec.active_provider` | `string` | optional | Named provider from global pool |
+| `spec.allowed_providers` | `[]string` | optional | Restrict to subset of pool |
 
+---
 
-## Agent YAML Schema
+## Two Configuration Layers
 
-Agents use Kubernetes-style YAML configuration.
+Loom has two distinct configuration surfaces:
 
-### Complete Schema
+1. **Server config (`looms.yaml`)** -- configures the `looms` server process: gRPC port, default
+   LLM provider, storage backend, MCP servers, observability, and optionally a map of inline
+   agent definitions under the `agents.agents:` key. See [Server-Level Agent Configuration](#server-level-agent-configuration).
+
+2. **Standalone agent YAML** -- a per-agent file loaded by the server at startup (or hot-reloaded).
+   Uses `apiVersion: loom/v1 / kind: Agent` (k8s-style) or the legacy `agent:` root key.
+   The remainder of this document focuses on this format.
+
+If an agent YAML omits `spec.llm`, the agent inherits the server's default LLM provider.
+
+---
+
+## Standalone Agent YAML Schema
+
+### K8s-Style Format
+
+The recommended format. Detected by the presence of the `apiVersion` field.
 
 ```yaml
-apiVersion: loom/v1        # Required: API version
-kind: Agent                # Required: Resource type
+apiVersion: loom/v1       # Required
+kind: Agent               # Required
 
-# Metadata
-name: string               # Required: Agent identifier
-description: string        # Optional: Human-readable description
+metadata:
+  name: my-agent          # Required
+  version: "1.0.0"        # Optional
+  description: "..."      # Optional
+  role: executor           # Optional (for workflow agents)
+  workflow: my-workflow    # Optional (for workflow agents)
+  labels:                  # Optional (arbitrary key-value pairs)
+    team: platform
 
-# LLM configuration
-llm:
-  provider: string         # Required: anthropic|bedrock|ollama
-  model: string            # Required: Model ID
-  temperature: float       # Optional: Sampling temperature (0.0-2.0)
-  max_tokens: int          # Optional: Max output tokens
-  timeout_seconds: int     # Optional: LLM request timeout
+spec:
+  llm:                     # Optional (inherits from server)
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    temperature: 0.7
+    max_tokens: 4096
 
-# Backend configuration
-backend:
-  type: string             # Optional: postgres|sqlite|rest|mcp|file
-  config_path: string      # Optional: Path to backend config YAML
+  system_prompt: |
+    Direct, task-oriented instructions for the agent.
 
-# Memory configuration
-memory:
-  type: string             # Optional: memory|sqlite|postgres
-  path: string             # For sqlite: database path
-  dsn: string              # For postgres: connection string
-  max_sessions: int        # Optional: Max concurrent sessions
-  session_ttl_seconds: int # Optional: Session expiration
+  rom: "auto"              # Optional
 
-# Guardrails configuration
-guardrails:
-  max_turns: int           # Optional: Max conversation turns
-  max_tool_executions: int # Optional: Max tool calls per turn
-  timeout_seconds: int     # Optional: Total conversation timeout
-  allowed_domains: []string # Optional: Domain whitelist (REST backends)
-  blocked_patterns: []string # Optional: Regex patterns to reject
+  tools:                   # Flat array of tool names, or structured ToolsConfigYAML
+    - shell_execute
+    - web_search
+    - tool_search
 
-# Pattern configuration
-patterns:
-  library_path: string     # Optional: Path to pattern library
-  cache_ttl_seconds: int   # Optional: Pattern cache TTL
-  enable_hot_reload: bool  # Optional: Reload patterns without restart
+  memory:
+    type: sqlite
+    max_history: 1000
 
-# Tool configuration
-tools:
-  mcp:
-    servers: []string      # Optional: MCP server names
-    tools: []string        # Optional: Specific tool whitelist
-  custom:
-    enabled: bool          # Optional: Enable custom tools
-    tools: []string        # Optional: Custom tool names
-
-# Observability configuration
-observability:
-  enabled: bool            # Optional: Enable tracing
-  hawk_endpoint: string    # Optional: Hawk service URL
-  export_interval_seconds: int # Optional: Trace export interval
-  sample_rate: float       # Optional: Sampling rate (0.0-1.0)
+  config:                  # Behavior settings
+    max_turns: 25
+    max_tool_executions: 50
+    timeout_seconds: 300
 ```
 
+### Legacy Format
+
+Detected when `apiVersion` is absent and an `agent:` root key is present.
+
+```yaml
+agent:
+  name: my-agent          # Required
+  description: "..."      # Optional
+  backend_path: ./backends/my-backend.yaml  # Optional
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+  system_prompt: |
+    Direct, task-oriented instructions.
+  tools:
+    builtin:
+      - shell_execute
+    mcp:
+      - server: vantage
+        tools: [execute_query]
+  memory:
+    type: memory
+    max_history: 50
+  behavior:
+    max_turns: 25
+    max_tool_executions: 50
+    timeout_seconds: 300
+```
+
+Both formats are converted to the same `loomv1.AgentConfig` proto at load time.
+
+---
 
 ## Configuration Fields
 
-### Agent Metadata
+### Metadata
 
-#### name
+**k8s-style**: fields live under `metadata:`.
+**Legacy**: fields live directly under `agent:`.
+
+#### metadata.name
 
 **Type**: `string`
 **Required**: Yes
-**Format**: Lowercase alphanumeric with hyphens
-**Regex**: `^[a-z][a-z0-9-]*$`
 
-Unique agent identifier.
+Agent identifier. Used to address the agent in gRPC calls and in multi-agent workflows.
 
-**Example**:
-```yaml
-name: sql-assistant
-name: github-bot
-name: analytics-agent
-```
-
-
-#### description
+#### metadata.version
 
 **Type**: `string`
 **Required**: No
-**Length**: 10-500 characters
 
-Human-readable agent description.
+Semantic version string. Stored in agent metadata map.
 
-**Example**:
-```yaml
-description: SQL query assistant for analytics database
-description: GitHub repository management agent
-description: Customer analytics agent with pattern library
-```
+#### metadata.description
 
+**Type**: `string`
+**Required**: No
+
+Human-readable description of the agent.
+
+#### metadata.labels
+
+**Type**: `map[string]interface{}`
+**Required**: No
+
+Arbitrary key-value pairs. Merged into the proto `metadata` map as strings (complex values are JSON-encoded).
+
+---
 
 ### LLM Configuration
 
-#### llm.provider
+Under `spec.llm` (k8s-style) or `agent.llm` (legacy).
 
-**Type**: `string`
-**Required**: Yes
-**Allowed values**: `anthropic` | `bedrock` | `ollama`
+All fields are optional. If `spec.llm` is omitted entirely, the agent inherits the server's default LLM provider. If partially specified, **both** `provider` and `model` are required.
 
-LLM provider name.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `provider` | `string` | (server default) | Provider name. See [LLM Providers](#llm-providers). |
+| `model` | `string` | (server default) | Model identifier |
+| `temperature` | `float64` | `0.7` | Sampling temperature (0.0 - 1.0) |
+| `max_tokens` | `int` | `4096` | Maximum response tokens |
+| `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
+| `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
+| `top_k` | `int` | `0` | Top-k sampling |
+| `max_context_tokens` | `int` | auto-detected | Context window size (e.g., 200000 for Claude) |
+| `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
 
-**Available**:
-- ✅ `anthropic` - Anthropic Claude API
-- ✅ `bedrock` - AWS Bedrock (Anthropic models)
-- ✅ `ollama` - Self-hosted Ollama
-- 📋 `openai` - OpenAI API (planned)
-- 📋 `azure` - Azure OpenAI (planned)
+---
 
-**See also**: [LLM Providers Reference](./llm-providers.md)
+### Role-Specific LLM Overrides
 
+Each role can use a different provider/model optimized for its task.
+Fallback chain: role-specific LLM -> agent default LLM -> server default LLM.
 
-#### llm.model
+| Field | Purpose | Example use case |
+|---|---|---|
+| `spec.judge_llm` | Evaluation / judging | Gemini for unbiased evaluation |
+| `spec.orchestrator_llm` | Fork-join merge / synthesis | Fast model for combining results |
+| `spec.classifier_llm` | Intent classification | Small local model (Ollama) for pattern selection |
+| `spec.compressor_llm` | Memory compression / reranking | Cost-effective model (Haiku) for compression |
 
-**Type**: `string`
-**Required**: Yes
+Each accepts the same `LLMConfigYAML` schema as the main `llm` field.
 
-Model identifier specific to provider.
-
-**Anthropic models**:
-- `claude-sonnet-4-5-20250929` (200k context)
-- `claude-opus-4-6` (200k context)
-
-**Ollama models**:
-- `llama3.2:latest` (128k context)
-- `mistral:latest` (32k context)
-
-**See also**: [LLM Providers Reference](./llm-providers.md) for complete model lists
-
-
-#### llm.temperature
-
-**Type**: `float64`
-**Default**: `1.0`
-**Range**: `0.0` - `2.0`
-
-Sampling temperature for LLM generation.
-
-**Recommendation**:
-- Deterministic tasks (SQL, code): `0.0` - `0.3`
-- Balanced tasks (Q&A, analysis): `0.7` - `1.0`
-- Creative tasks (writing, brainstorming): `1.5` - `2.0`
-
-
-#### llm.max_tokens
-
-**Type**: `int`
-**Default**: Provider-specific
-**Range**: `1` - provider max
-
-Maximum tokens to generate in response.
-
-**Anthropic Claude**: `1` - `8192`
-**Ollama**: `-1` (unlimited) or `1` - `2048`
-
-
-#### llm.timeout_seconds
-
-**Type**: `int`
-**Default**: `60`
-**Range**: `1` - `300`
-
-Timeout for LLM API requests.
-
-
-### Backend Configuration
-
-#### backend.type
-
-**Type**: `string`
-**Required**: No
-**Allowed values**: `postgres` | `sqlite` | `rest` | `mcp` | `file`
-
-Backend type for agent data source.
-
-**Available**:
-- ✅ `postgres` - PostgreSQL database
-- ✅ `sqlite` - SQLite database
-- ✅ `rest` - REST API
-- ✅ `mcp` - Model Context Protocol server
-- ✅ `file` - File system
-
-**See also**: [Backend Reference](./backend.md)
-
-
-#### backend.config_path
-
-**Type**: `string`
-**Required**: When `backend.type` specified
-
-Path to backend configuration YAML file.
-
-**Example**:
 ```yaml
-backend:
-  type: postgres
-  config_path: ./backends/analytics-postgres.yaml
+spec:
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+  judge_llm:
+    provider: gemini
+    model: gemini-2.5-flash
+  classifier_llm:
+    provider: ollama
+    model: llama3.1:8b
 ```
 
+---
+
+### Provider Pool
+
+Agents can reference named providers from the server's global provider pool instead of (or in addition to) specifying their own LLM config.
+
+| Field | Type | Description |
+|---|---|---|
+| `spec.active_provider` | `string` | Name of a provider entry from the global pool |
+| `spec.allowed_providers` | `[]string` | Restrict this agent to a subset of pool entries (empty = all) |
+
+```yaml
+spec:
+  active_provider: claude-opus
+  allowed_providers:
+    - claude-opus
+    - llama-local
+```
+
+---
+
+### System Prompt and ROM
+
+#### spec.system_prompt
+
+**Type**: `string`
+**Required**: No (but recommended)
+
+Direct system prompt text. Defines the agent's behavior and instructions.
+
+Per project convention: **no role prompting**. Use direct, task-oriented instructions.
+
+```yaml
+spec:
+  system_prompt: |
+    Analyze SQL queries for performance issues.
+    Use EXPLAIN output to identify bottlenecks.
+    Suggest index and partitioning improvements.
+```
+
+#### spec.rom
+
+**Type**: `string`
+**Default**: `""` (no ROM)
+
+Read-Only Memory identifier. Embeds domain-specific documentation into the system prompt.
+
+| Value | Behavior |
+|---|---|
+| `"TD"` or `"teradata"` | Load embedded Teradata SQL guidance (~6KB domain + ~1KB base = ~7KB total) |
+| `"weaver"` | Load embedded Weaver ROM |
+| `"auto"` | Auto-detect from `backend_path` (looks for "teradata" or "vantage") |
+| `"none"` | Explicit opt-out (no ROM at all, not even base ROM) |
+| `""` | Base ROM only (operational guidance for all agents); auto-detects domain if `backend_path` is set |
+
+---
+
+### Tools Configuration
+
+Under `spec.tools` (k8s-style) or `agent.tools` (legacy).
+
+**K8s-style** supports two sub-formats:
+
+**Flat array** (preferred for simplicity):
+```yaml
+spec:
+  tools:
+    - shell_execute
+    - web_search
+    - tool_search
+    - http_request
+```
+
+**Structured format** (for MCP and custom tools):
+```yaml
+spec:
+  tools:
+    builtin:
+      - shell_execute
+      - web_search
+    mcp:
+      - server: vantage
+        tools:
+          - execute_query
+          - list_tables
+    custom:
+      - name: my_tool
+        implementation: /path/to/plugin.so
+```
+
+**Tool categories**:
+
+| Category | Behavior |
+|---|---|
+| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search` |
+| **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result), `graph_memory` (when graph memory store configured) |
+| **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
+
+---
 
 ### Memory Configuration
 
-Session and conversation history storage.
+Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 
-#### memory.type
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `type` | `string` | `"memory"` | `memory` (ephemeral), `sqlite`, or `postgres` |
+| `path` | `string` | `""` | SQLite database file path |
+| `dsn` | `string` | `""` | PostgreSQL connection string |
+| `max_history` | `int` | `50` | Max conversation messages to retain |
+| `shared_memory_threshold_bytes` | `int64` | `0` | 0 = always reference; -1 = never reference; >0 = reference if result exceeds N bytes |
+| `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
+| `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
+| `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
 
-**Type**: `string`
-**Default**: `memory`
-**Allowed values**: `memory` | `sqlite` | `postgres`
+---
 
-Session storage backend.
+### Graph Memory Configuration
 
-**memory**: In-memory storage (ephemeral, lost on restart)
-**sqlite**: Local SQLite database (persistent)
-**postgres**: PostgreSQL database (persistent, distributed)
+Salience-driven graph-backed episodic memory. Stores entities, relationships, and memories with FTS5 full-text search. **Opt-out by default**: if `graph_memory` is present but `enabled` is not specified, it defaults to `true`.
 
+Under `spec.memory.graph_memory`.
 
-#### memory.path
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `*bool` | `true` (opt-out) | Enable graph memory |
+| `context_budget_percent` | `int` | `10` | % of max context window for memory budget |
+| `max_context_tokens` | `int` | `0` | Fixed token budget (overrides percent if > 0) |
+| `decay_rate` | `float64` | `0.995` | Salience decay rate per day (~138-day half-life) |
+| `boost_amount` | `float64` | `0.05` | Salience boost per access |
+| `min_salience_threshold` | `float64` | `0.1` | Minimum salience for recall |
+| `max_recall_candidates` | `int` | `50` | Max memories to consider during recall |
+| `default_salience` | `float64` | `0.5` | Initial salience for new memories |
 
-**Type**: `string`
-**Required for**: `memory.type: sqlite`
-
-Path to SQLite database file for session storage.
-
-**Example**:
 ```yaml
-memory:
-  type: sqlite
-  path: ./sessions.db
+spec:
+  memory:
+    type: sqlite
+    max_history: 100
+    graph_memory:
+      enabled: true
+      context_budget_percent: 15
+      decay_rate: 0.99
+      max_recall_candidates: 100
 ```
 
+To opt out:
 
-#### memory.dsn
-
-**Type**: `string`
-**Required for**: `memory.type: postgres`
-
-PostgreSQL connection string for session storage.
-
-**Format**: Same as backend DSN format
-
-**Example**:
 ```yaml
-memory:
-  type: postgres
-  dsn: postgresql://localhost:5432/loom_sessions?sslmode=disable
+spec:
+  memory:
+    graph_memory:
+      enabled: false
 ```
 
+---
 
-#### memory.max_sessions
+### Memory Compression Configuration
 
-**Type**: `int`
-**Default**: `1000`
-**Range**: `1` - `100000`
+Conversation history compression using a tiered L1/L2 cache with workload-aware thresholds.
 
-Maximum concurrent sessions to maintain.
+Under `spec.memory.memory_compression`.
 
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `workload_profile` | `string` | `balanced` | `balanced`, `data_intensive`, or `conversational` |
+| `max_l1_messages` | `int` | profile-dependent | Messages in L1 before compression triggers |
+| `min_l1_messages` | `int` | max_l1 / 2 | Min messages after compression |
+| `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
+| `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
+| `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
+| `batch_sizes.warning` | `int` | profile-dependent | Messages per batch (warning) |
+| `batch_sizes.critical` | `int` | profile-dependent | Messages per batch (critical) |
 
-#### memory.session_ttl_seconds
+**Workload profiles**:
 
-**Type**: `int`
-**Default**: `86400` (24 hours)
-**Range**: `60` - `2592000` (30 days)
+| Profile | max_l1 | warning | critical | batch (N/W/C) | Use case |
+|---|---|---|---|---|---|
+| `balanced` | 8 | 60% | 75% | 3/5/7 | General-purpose agents |
+| `data_intensive` | 5 | 50% | 70% | 2/4/6 | SQL, large file operations |
+| `conversational` | 12 | 70% | 85% | 4/6/8 | Chat-heavy, minimal tool usage |
 
-Session time-to-live before automatic expiration.
+---
 
+### Behavior Configuration
 
-### Guardrails Configuration
+Under `spec.config` (k8s-style) or `agent.behavior` (legacy).
 
-Safety constraints and operational limits.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_iterations` | `int` | `10` | Max tool call iterations per turn |
+| `timeout_seconds` | `int` | `300` | Timeout per message (seconds) |
+| `allow_code_execution` | `bool` | `false` | Allow shell execution |
+| `allowed_domains` | `[]string` | `[]` | Domain whitelist for web access |
+| `max_turns` | `int` | `25` | Max conversation turns |
+| `max_tool_executions` | `int` | `50` | Max tool calls per conversation |
+| `output_token_cb_threshold` | `int` | `8` | Consecutive truncated-tool-call turns before circuit breaker fires. `0` = default (8). `-1` = disabled. |
+| `patterns` | object | optional | See [Pattern Configuration](#pattern-configuration) |
+| `skills` | object | optional | See [Skills Configuration](#skills-configuration) |
 
-#### guardrails.max_turns
-
-**Type**: `int`
-**Default**: `10`
-**Range**: `1` - `100`
-
-Maximum conversation turns before automatic termination.
-
-**Recommendation**:
-- Simple tasks: `5-10`
-- Complex tasks: `20-30`
-- Open-ended conversations: `50-100`
-
-
-#### guardrails.max_tool_executions
-
-**Type**: `int`
-**Default**: `20`
-**Range**: `1` - `100`
-
-Maximum tool executions per conversation turn.
-
-**Recommendation**:
-- Single-query tasks: `5-10`
-- Multi-step workflows: `20-30`
-- Complex orchestration: `50-100`
-
-
-#### guardrails.timeout_seconds
-
-**Type**: `int`
-**Default**: `300` (5 minutes)
-**Range**: `10` - `3600` (1 hour)
-
-Total conversation timeout.
-
-
-#### guardrails.allowed_domains
-
-**Type**: `[]string`
-**Required**: No
-
-Domain whitelist for REST backend URL validation.
-
-**Example**:
-```yaml
-guardrails:
-  allowed_domains:
-    - api.github.com
-    - api.example.com
-```
-
-
-#### guardrails.blocked_patterns
-
-**Type**: `[]string`
-**Required**: No
-
-Regex patterns to reject in user input.
-
-**Example**:
-```yaml
-guardrails:
-  blocked_patterns:
-    - "DROP\\s+TABLE"
-    - "DELETE\\s+FROM"
-    - "<script"
-```
-
+---
 
 ### Pattern Configuration
 
-Pattern library for domain-specific knowledge.
+Under `spec.config.patterns` (k8s-style) or `agent.behavior.patterns` (legacy).
 
-#### patterns.library_path
+Pattern-guided learning injects domain-specific templates into LLM context based on user intent classification.
 
-**Type**: `string`
-**Required**: No
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `*bool` | `true` | Enable pattern injection |
+| `min_confidence` | `*float64` | `0.75` | Minimum confidence threshold (0.0 - 1.0) |
+| `max_patterns_per_turn` | `*int` | `1` | Max patterns injected per turn |
+| `enable_tracking` | `*bool` | `true` | Track pattern effectiveness metrics |
+| `use_llm_classifier` | `*bool` | `true` | Use LLM for intent classification (more accurate, adds ~300ms latency) |
 
-Path to pattern library directory.
-
-**Example**:
 ```yaml
-patterns:
-  library_path: ./patterns
+spec:
+  config:
+    patterns:
+      enabled: true
+      use_llm_classifier: true
+      min_confidence: 0.80
+      max_patterns_per_turn: 2
+      enable_tracking: true
 ```
 
-**See also**: [Patterns Reference](./patterns.md)
+---
 
+### Skills Configuration
 
-#### patterns.cache_ttl_seconds
+Under `spec.config.skills` (k8s-style) or `agent.behavior.skills` (legacy).
 
-**Type**: `int`
-**Default**: `3600` (1 hour)
-**Range**: `60` - `86400`
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `*bool` | not set | Enable skills system |
+| `enabled_skills` | `[]string` | `[]` | Whitelist of skill names |
+| `disabled_skills` | `[]string` | `[]` | Blacklist of skill names |
+| `min_auto_confidence` | `*float64` | (framework default) | Min confidence for auto-invocation |
+| `max_concurrent_skills` | `*int` | (framework default) | Max concurrent skill executions |
+| `skills_dir` | `string` | `""` | Directory containing skill definitions |
+| `context_budget_percent` | `*int` | (framework default) | % of context for skill output |
 
-Pattern cache time-to-live.
+---
 
+### Ephemeral Agents
 
-#### patterns.enable_hot_reload
+Defined in proto as `AgentConfig.ephemeral_agents`. Policies for dynamically spawning agents at runtime.
 
-**Type**: `bool`
-**Default**: `false`
+> **Note**: Ephemeral agent policies are defined in the proto schema but are **not currently parsed from YAML** by the config loader. They must be set programmatically via the Go API or gRPC. The YAML example below shows the proto schema for reference.
 
-Enable pattern hot reload without agent restart.
-
-**Hot reload timing**: 89-143ms
-
-
-### Tool Configuration
-
-Tool system and MCP integration.
-
-#### tools.mcp.servers
-
-**Type**: `[]string`
-**Required**: No
-
-MCP server names to load tools from.
-
-**Example**:
 ```yaml
-tools:
-  mcp:
-    servers:
-      - vantage       # Teradata Vantage MCP
-      - github        # GitHub MCP
-      - filesystem    # File system MCP
+spec:
+  ephemeral_agents:
+    - role: judge
+      trigger:
+        type: CONSENSUS_NOT_REACHED
+        threshold: 0.67
+      template:
+        name: ephemeral-judge
+        system_prompt: |
+          Analyze all perspectives and make an evidence-based decision.
+        config:
+          max_turns: 5
+          timeout_seconds: 60
+      max_spawns: 1
+      cost_limit_usd: 0.50
 ```
 
-**See also**: [MCP Integration Guide](../guides/integration/mcp.md)
+**Spawn trigger types**:
 
+| Type | Description | `threshold` usage |
+|---|---|---|
+| `CONSENSUS_NOT_REACHED` | Consensus failed in debate/swarm | Minimum agreement % |
+| `CONFIDENCE_BELOW` | Average confidence below threshold | Minimum confidence |
+| `TIE_DETECTED` | Voting tie | Not used |
+| `ESCALATION_REQUESTED` | Agent requests escalation | Not used |
+| `ALWAYS` | Unconditional (testing) | Not used |
+| `CUSTOM` | Custom runtime expression | `condition` field |
 
-#### tools.mcp.tools
+---
 
-**Type**: `[]string`
-**Required**: No
+### Backend (Inline or Path)
 
-Specific tool whitelist from MCP servers.
+Agents connect to data sources via backend configuration. Two approaches:
 
-**Example**:
+**Path reference** (recommended -- keeps backend config separate):
 ```yaml
-tools:
-  mcp:
-    servers:
-      - vantage
-    tools:
-      - execute_query
-      - list_tables
-      - get_schema
+spec:
+  backend_path: ./backends/analytics-postgres.yaml
 ```
 
-
-#### tools.custom.enabled
-
-**Type**: `bool`
-**Default**: `false`
-
-Enable custom tool registration.
-
-
-#### tools.custom.tools
-
-**Type**: `[]string`
-**Required**: When `tools.custom.enabled: true`
-
-Custom tool names to register.
-
-
-### Observability Configuration
-
-Tracing and monitoring integration.
-
-#### observability.enabled
-
-**Type**: `bool`
-**Default**: `false`
-
-Enable observability tracing.
-
-
-#### observability.hawk_endpoint
-
-**Type**: `string`
-**Required when**: `observability.enabled: true`
-
-Hawk service endpoint URL.
-
-**Example**:
+**Inline backend** (k8s-style only):
 ```yaml
-observability:
+spec:
+  backend:
+    name: my-backend
+    type: rest
+    config:
+      base_url: https://api.example.com
+      auth_type: bearer
+      auth_token_env: API_TOKEN
+```
+
+See [Backend Types](#backend-types) for supported backend types.
+
+---
+
+## Server-Level Agent Configuration
+
+Agents can also be defined inline in the server config file (`looms.yaml`) under the `agents.agents` key. These use a simpler structure than standalone agent YAML.
+
+Source: `AgentConfig` struct in `cmd/looms/config.go`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | `string` | required | Agent name |
+| `description` | `string` | `""` | Agent description |
+| `backend_path` | `string` | `""` | Path to backend YAML config file |
+| `system_prompt` | `string` | `""` | Direct system prompt text (takes precedence over `system_prompt_key`) |
+| `system_prompt_key` | `string` | `""` | Key for loading prompt from promptio |
+| `max_turns` | `int` | `0` (use agent default) | Max conversation turns |
+| `max_tool_executions` | `int` | `0` (use agent default) | Max tool executions per conversation |
+| `enable_tracing` | `bool` | `false` | Enable observability tracing |
+| `patterns_dir` | `string` | `""` | Directory containing pattern YAML files |
+| `llm` | `LLMConfig` | inherits server | Per-agent LLM override |
+
+```yaml
+# looms.yaml
+agents:
+  agents:
+    sql-agent:
+      name: SQL Query Agent
+      description: Executes SQL queries against configured databases
+      backend_path: ./backends/postgres.yaml
+      system_prompt_key: agent.system.sql
+      max_turns: 25
+      max_tool_executions: 50
+      enable_tracing: true
+      patterns_dir: ./patterns/sql
+      llm:
+        provider: anthropic
+        anthropic_model: claude-sonnet-4-5-20250929
+```
+
+---
+
+## LLM Providers
+
+Eight providers are supported. Provider name is the value of `llm.provider` (in agent YAML) or `llm.provider` (in `looms.yaml`).
+
+| Provider | Config key | Auth | Default model |
+|---|---|---|---|
+| `anthropic` | `anthropic` | API key | `claude-sonnet-4-5-20250929` |
+| `bedrock` | `bedrock` | AWS credentials or profile | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| `ollama` | `ollama` | None (local) | `llama3.1` |
+| `openai` | `openai` | API key | `gpt-4.1` |
+| `azure-openai` or `azureopenai` | `azure-openai` | API key or Entra token | (deployment-specific) |
+| `mistral` | `mistral` | API key | `mistral-large-latest` |
+| `gemini` | `gemini` | API key | `gemini-3-flash-preview` |
+| `huggingface` | `huggingface` | Token | `meta-llama/Meta-Llama-3.1-70B-Instruct` |
+
+In standalone agent YAML, set `provider` and `model` under `spec.llm`:
+
+```yaml
+spec:
+  llm:
+    provider: gemini
+    model: gemini-2.5-flash
+    temperature: 0.5
+    max_tokens: 8192
+```
+
+In the server config (`looms.yaml`), provider-specific fields use flat keys under `llm:`:
+
+```yaml
+llm:
+  provider: anthropic
+  anthropic_model: claude-sonnet-4-5-20250929
+  # anthropic_api_key: set via keyring (looms config set-key anthropic_api_key)
+  temperature: 1.0
+  max_tokens: 4096
+  timeout_seconds: 60
+```
+
+**Server-level provider-specific fields** (from `LLMConfig` in `config.go`):
+
+| Provider | Model field | Auth field(s) | Extra fields |
+|---|---|---|---|
+| anthropic | `anthropic_model` | `anthropic_api_key` | -- |
+| bedrock | `bedrock_model_id` | `bedrock_access_key_id`, `bedrock_secret_access_key`, `bedrock_session_token` | `bedrock_region`, `bedrock_profile` |
+| ollama | `ollama_model` | -- | `ollama_endpoint` |
+| openai | `openai_model` | `openai_api_key` | -- |
+| azure-openai | -- | `azure_openai_api_key`, `azure_openai_entra_token` | `azure_openai_endpoint`, `azure_openai_deployment_id` |
+| mistral | `mistral_model` | `mistral_api_key` | -- |
+| gemini | `gemini_model` | `gemini_api_key` | -- |
+| huggingface | `huggingface_model` | `huggingface_token` | -- |
+
+API keys and tokens should be stored in the system keyring:
+
+```bash
+looms config set-key anthropic_api_key
+looms config set-key openai_api_key
+looms config set-key gemini_api_key
+looms config set-key mistral_api_key
+looms config set-key huggingface_token
+looms config set-key azure_openai_api_key
+```
+
+---
+
+## Backend Types
+
+Backend configuration is defined in standalone YAML files (referenced by `backend_path`).
+Backend files use `apiVersion: loom/v1` and `kind: Backend`.
+
+Supported backend types (from `pkg/fabric/config.go`):
+
+| Type | Connection section | Description |
+|---|---|---|
+| `postgres` | `database:` | PostgreSQL database |
+| `mysql` | `database:` | MySQL database |
+| `sqlite` | `database:` | SQLite database |
+| `file` | `database:` (DSN = base dir) | File system operations |
+| `rest` | `rest:` | REST API |
+| `graphql` | `graphql:` | GraphQL API |
+| `grpc` | `grpc:` | gRPC service |
+| `mcp` | `mcp:` | Model Context Protocol server |
+| `supabase` | `supabase:` | Supabase project |
+
+Example backend file:
+
+```yaml
+apiVersion: loom/v1
+kind: Backend
+name: analytics-db
+description: Analytics PostgreSQL database
+type: postgres
+
+database:
+  dsn: "postgres://${DB_USER}:${DB_PASS}@localhost:5432/analytics?sslmode=require"
+  max_connections: 10
+  connection_timeout_seconds: 30
+
+schema_discovery:
   enabled: true
-  hawk_endpoint: http://localhost:8081
+  cache_ttl_seconds: 3600
+
+health_check:
+  enabled: true
+  interval_seconds: 30
+  query: "SELECT 1"
 ```
 
+---
 
-#### observability.export_interval_seconds
+## Environment Variable Expansion
 
-**Type**: `int`
-**Default**: `30`
-**Range**: `1` - `300`
+Agent YAML files support `${VAR}` and `$VAR` syntax. Variables are expanded from the process
+environment at load time via `os.Expand`.
 
-Interval for trace batch export.
-
-
-#### observability.sample_rate
-
-**Type**: `float64`
-**Default**: `1.0`
-**Range**: `0.0` - `1.0`
-
-Sampling rate for trace collection.
-
-**Recommendation**:
-- Development: `1.0` (100%)
-- Production low-traffic: `1.0` (100%)
-- Production high-traffic: `0.1` (10%)
-
-
-## Agent Lifecycle
-
-### Creation
-
-1. **Parse Configuration**: YAML validated against schema
-2. **Initialize LLM Client**: Provider and model configured
-3. **Load Backend**: Backend configuration loaded and validated
-4. **Initialize Memory**: Session storage initialized
-5. **Load Patterns**: Pattern library loaded (if configured)
-6. **Register Tools**: Tools discovered and registered
-7. **Start Observability**: Tracing initialized (if enabled)
-
-**Creation time**: 50-200ms (without network calls)
-
-
-### Active State
-
-Agent processes conversations:
-1. **Receive Message**: User input validated
-2. **Load Session**: Conversation history retrieved
-3. **Execute Turn**: LLM generates response with tool calls
-4. **Save Session**: Updated history persisted
-5. **Export Traces**: Telemetry data exported (if enabled)
-
-**Turn latency**: 500ms - 5s (depends on LLM provider, tool calls)
-
-
-### Hot Reload
-
-Configuration changes without restart:
-1. **Detect Change**: Configuration file modified
-2. **Validate New Config**: Schema validation
-3. **Reload Components**: Patterns, guardrails updated
-4. **Preserve Sessions**: Active sessions maintained
-5. **Apply Changes**: New config active
-
-**Reload time**: 89-143ms (zero downtime)
-
-**Hot-reloadable**:
-- ✅ Patterns
-- ✅ Guardrails
-- ❌ LLM provider/model (requires restart)
-- ❌ Backend type (requires restart)
-- ❌ Memory type (requires restart)
-
-
-### Shutdown
-
-Graceful agent shutdown:
-1. **Reject New Requests**: No new conversations accepted
-2. **Complete Active Turns**: In-flight requests finished
-3. **Flush Traces**: Remaining telemetry exported
-4. **Close Backend**: Backend connections closed
-5. **Close Memory**: Sessions persisted and storage closed
-
-**Shutdown time**: 100-500ms
-
-
-## Hot Reloading
-
-### Supported Changes
-
-| Configuration | Hot Reload | Restart Required |
-|---------------|------------|------------------|
-| Patterns | ✅ Yes | No |
-| Guardrails (limits) | ✅ Yes | No |
-| Guardrails (domains, patterns) | ✅ Yes | No |
-| Observability (sample rate) | ✅ Yes | No |
-| LLM provider | ❌ No | Yes |
-| LLM model | ❌ No | Yes |
-| Backend type | ❌ No | Yes |
-| Memory type | ❌ No | Yes |
-
-
-### Triggering Hot Reload
-
-**File system watch** (automatic):
-```bash
-# Modify agent config
-vim agents/sql-assistant.yaml
-
-# Changes detected and applied automatically
+```yaml
+spec:
+  memory:
+    type: sqlite
+    path: $LOOM_DATA_DIR/memory/my-agent.db
 ```
 
-**Manual trigger** (via CLI):
-```bash
-# Reload specific agent
-looms agent reload sql-assistant
+---
 
-# Reload all agents
-looms agent reload --all
-```
+## Validation Rules
 
+Enforced by `ValidateAgentConfig()` and `LoadConfigFromString()`:
 
-### Hot Reload Behavior
+1. `name` is required.
+2. If `llm.provider` is set, `llm.model` must also be set (and vice versa).
+3. `llm.provider` must be one of: `anthropic`, `bedrock`, `ollama`, `openai`, `azure-openai`, `azureopenai`, `mistral`, `gemini`, `huggingface`.
+4. `llm.temperature` must be between 0.0 and 1.0.
+5. `memory.type` (if set) must be one of: `memory`, `sqlite`, `postgres`.
+6. Role-specific LLM configs (`judge_llm`, etc.) follow the same provider+model co-requirement.
+7. All `int` fields are bounds-checked to fit `int32`.
 
-**Pattern reload**:
-1. New patterns loaded from disk
-2. Pattern cache invalidated
-3. New patterns available immediately
-4. Old pattern references remain valid (no breaking changes)
-
-**Timing**: 89-143ms
-
-**Guardrail reload**:
-1. New limits validated
-2. Active conversations continue with old limits
-3. New conversations use new limits
-
-**Timing**: <10ms
-
-
-## Error Handling
-
-### Configuration Errors
-
-#### Invalid Configuration Syntax
-
-**Cause**: YAML syntax error
-
-**Error message**:
-```
-Error: invalid agent configuration: yaml: line 12: mapping values are not allowed in this context
-```
-
-**Resolution**:
-1. Validate YAML syntax: `yamllint agents/agent.yaml`
-2. Check indentation (spaces, not tabs)
-3. Verify field names match schema
-
-
-#### Missing Required Field
-
-**Cause**: Required field not provided
-
-**Error message**:
-```
-Error: invalid agent configuration: field 'llm.provider' is required
-```
-
-**Resolution**:
-1. Check schema documentation
-2. Add missing required field
-3. Validate configuration: `looms agent validate agents/agent.yaml`
-
-
-#### Invalid Field Value
-
-**Cause**: Field value outside allowed range
-
-**Error message**:
-```
-Error: invalid agent configuration: field 'llm.temperature' must be between 0.0 and 2.0, got: 3.0
-```
-
-**Resolution**:
-1. Check field constraints in documentation
-2. Adjust value to valid range
-3. Validate configuration
-
-
-### Runtime Errors
-
-#### LLM Provider Unavailable
-
-**Cause**: Cannot connect to LLM provider
-
-**Error message**:
-```
-Error: LLM provider unavailable: failed to connect to api.anthropic.com
-```
-
-**Resolution**:
-1. Verify API key: `looms config get llm.api_key`
-2. Check network connectivity
-3. Verify provider status page
-4. Check rate limits
-
-
-#### Backend Connection Failed
-
-**Cause**: Cannot connect to backend service
-
-**Error message**:
-```
-Error: backend connection failed: dial tcp 127.0.0.1:5432: connection refused
-```
-
-**Resolution**:
-1. Verify backend service running
-2. Check backend configuration
-3. Test backend connection: `psql "postgresql://..."`
-
-**See also**: [Backend Reference - Error Handling](./backend.md#error-handling)
-
-
-#### Pattern Load Failed
-
-**Cause**: Pattern file syntax error
-
-**Error message**:
-```
-Error: pattern load failed: invalid template syntax in 'sql_optimization.yaml': unexpected "}" at line 15
-```
-
-**Resolution**:
-1. Validate pattern file: `looms pattern validate patterns/sql_optimization.yaml`
-2. Check Go text/template syntax
-3. Verify variable names
-
-**See also**: [Patterns Reference - Error Handling](./patterns.md#error-handling)
-
-
-#### Session Limit Exceeded
-
-**Cause**: Too many concurrent sessions
-
-**Error message**:
-```
-Error: session limit exceeded: cannot create new session (max: 1000)
-```
-
-**Resolution**:
-1. Increase `memory.max_sessions`
-2. Reduce `memory.session_ttl_seconds`
-3. Clean up old sessions: `looms session cleanup`
-
+---
 
 ## Examples
 
-### Minimal Agent
+### Minimal Agent (Inherits Server LLM)
 
 ```yaml
 apiVersion: loom/v1
 kind: Agent
-
-name: simple-agent
-description: Minimal agent configuration
-
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-5-20250929
-  temperature: 0.7
+metadata:
+  name: simple-agent
+  description: Minimal agent that inherits server LLM defaults
+spec:
+  system_prompt: |
+    Answer questions accurately. Use tools when needed.
+  config:
+    max_turns: 15
 ```
 
-
-### SQL Assistant
+### SQL Expert with Teradata ROM
 
 ```yaml
 apiVersion: loom/v1
 kind: Agent
+metadata:
+  name: teradata-expert
+  version: "1.0.0"
+  description: Teradata SQL analyst with pattern-guided learning
+  labels:
+    backend: teradata
+spec:
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    temperature: 0.0
+    max_tokens: 4096
+    max_context_tokens: 200000
+    reserved_output_tokens: 20000
 
-name: sql-assistant
-description: SQL query assistant for PostgreSQL analytics
+  system_prompt: |
+    Analyze Teradata databases using available tools.
+    Write efficient SQL following Teradata best practices.
+    Use EXPLAIN for query plan analysis.
 
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-5-20250929
-  temperature: 0.0
-  max_tokens: 4096
+  rom: "TD"
 
-backend:
-  type: postgres
-  config_path: ./backends/analytics-postgres.yaml
+  tools:
+    - shell_execute
+    - tool_search
 
-memory:
-  type: sqlite
-  path: ./sessions/sql-assistant.db
+  memory:
+    type: sqlite
+    max_history: 1000
+    memory_compression:
+      workload_profile: data_intensive
+    graph_memory:
+      enabled: true
+      context_budget_percent: 15
 
-guardrails:
-  max_turns: 20
-  max_tool_executions: 30
-  timeout_seconds: 300
-  blocked_patterns:
-    - "DROP\\s+TABLE"
-    - "DELETE\\s+FROM\\s+(?!temp_)"
-
-patterns:
-  library_path: ./patterns/sql
-  cache_ttl_seconds: 3600
-  enable_hot_reload: true
-
-observability:
-  enabled: true
-  hawk_endpoint: http://localhost:8081
-  sample_rate: 1.0
+  config:
+    max_turns: 25
+    max_tool_executions: 50
+    timeout_seconds: 300
+    patterns:
+      enabled: true
+      use_llm_classifier: true
+      min_confidence: 0.75
 ```
 
-
-### GitHub Bot
+### Multi-Provider Agent with Role Overrides
 
 ```yaml
 apiVersion: loom/v1
 kind: Agent
+metadata:
+  name: multi-model-agent
+  description: Uses different models for different roles
+spec:
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+  judge_llm:
+    provider: gemini
+    model: gemini-2.5-flash
+  classifier_llm:
+    provider: ollama
+    model: llama3.1:8b
+  compressor_llm:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
 
-name: github-bot
-description: GitHub repository management agent
+  system_prompt: |
+    Multi-purpose agent with specialized model routing.
 
-llm:
-  provider: bedrock
-  model: anthropic.claude-sonnet-4-5-20250929-v1:0
-  temperature: 0.5
-
-backend:
-  type: rest
-  config_path: ./backends/github-api.yaml
-
-memory:
-  type: memory
-
-guardrails:
-  max_turns: 15
-  max_tool_executions: 20
-  allowed_domains:
-    - api.github.com
-
-tools:
-  mcp:
-    servers:
-      - github
-    tools:
-      - list_repositories
-      - create_issue
-      - create_pull_request
+  config:
+    max_turns: 30
+    max_tool_executions: 60
 ```
 
-
-### Teradata Vantage Agent
+### Agent Using Named Provider Pool
 
 ```yaml
 apiVersion: loom/v1
 kind: Agent
+metadata:
+  name: pool-agent
+spec:
+  active_provider: claude-opus
+  allowed_providers:
+    - claude-opus
+    - llama-local
 
-name: vantage-agent
-description: Teradata Vantage SQL agent via MCP
-
-llm:
-  provider: anthropic
-  model: claude-opus-4-6
-  temperature: 0.0
-  max_tokens: 8192
-
-backend:
-  type: mcp
-  config_path: ./backends/vantage-mcp.yaml
-
-memory:
-  type: postgres
-  dsn: postgresql://localhost:5432/loom_sessions?sslmode=disable
-  max_sessions: 10000
-  session_ttl_seconds: 604800  # 7 days
-
-guardrails:
-  max_turns: 30
-  max_tool_executions: 50
-  timeout_seconds: 600
-
-patterns:
-  library_path: ./patterns/teradata
-  cache_ttl_seconds: 7200
-  enable_hot_reload: true
-
-tools:
-  mcp:
-    servers:
-      - vantage
-    tools:
-      - execute_query
-      - list_tables
-      - get_schema
-      - explain_query
-
-observability:
-  enabled: true
-  hawk_endpoint: http://hawk.example.com:8081
-  export_interval_seconds: 30
-  sample_rate: 0.1  # 10% sampling in production
+  system_prompt: |
+    Use the assigned provider from the global pool.
+  config:
+    max_turns: 20
 ```
 
-
-### Multi-Backend Agent
+### Agent with Graph Memory Disabled
 
 ```yaml
 apiVersion: loom/v1
 kind: Agent
-
-name: multi-backend-agent
-description: Agent with multiple data sources
-
-llm:
-  provider: ollama
-  model: llama3.2:latest
-  temperature: 0.7
-
-# Primary backend
-backend:
-  type: postgres
-  config_path: ./backends/analytics-postgres.yaml
-
-# Additional backends via MCP
-tools:
-  mcp:
-    servers:
-      - github        # GitHub API
-      - filesystem    # Local files
-      - vantage       # Teradata Vantage
-
-memory:
-  type: sqlite
-  path: ./sessions/multi-backend.db
-
-guardrails:
-  max_turns: 25
-  max_tool_executions: 40
-
-patterns:
-  library_path: ./patterns/multi-domain
-  enable_hot_reload: true
+metadata:
+  name: stateless-agent
+spec:
+  system_prompt: |
+    Stateless query agent. No episodic memory needed.
+  memory:
+    type: memory
+    max_history: 20
+    graph_memory:
+      enabled: false
+  config:
+    max_turns: 10
 ```
 
+---
 
 ## See Also
 
-- [CLI Reference](./cli.md) - Agent management commands
-- [Backend Reference](./backend.md) - Backend configuration
-- [Patterns Reference](./patterns.md) - Pattern system
-- [LLM Providers](./llm-providers.md) - LLM configuration
-- [MCP Integration Guide](../guides/integration/mcp.md) - MCP setup
+- [CLI Reference](./cli.md) -- `looms serve`, `looms config`, agent management commands
+- [LLM Providers Reference](./llm-providers.md) -- per-provider details, models, auth
+- [Backend Reference](./backend.md) -- backend YAML schema, connection types
+- [Patterns Reference](./patterns.md) -- pattern YAML schema, effectiveness tracking
+- Example agent configs: `examples/reference/agents/` (15+ working examples)
+- Proto definition: `proto/loom/v1/agent_config.proto`
+- Config loader source: `pkg/agent/config_loader.go`
+- Server config source: `cmd/looms/config.go`
