@@ -435,6 +435,188 @@ func TestClient_CalculateCost(t *testing.T) {
 	}
 }
 
+// TestClient_CalculateCost_ModelPricing verifies that each model variant gets
+// the correct per-token pricing. This is the regression test for Bug 1c where
+// strings.Contains("opus-4-5", "opus-4") caused Opus 4.5/4.6 to be priced at
+// Opus 4.1 rates (3x overpriced), and Haiku used stale $0.8/$4.0 pricing.
+func TestClient_CalculateCost_ModelPricing(t *testing.T) {
+	const tokens = 1_000_000 // use 1M tokens for easy mental math
+
+	tests := []struct {
+		name         string
+		modelID      string
+		inputTokens  int
+		outputTokens int
+		wantCost     float64
+	}{
+		// --- Opus 4.1 (most expensive) ---
+		{
+			name:         "opus 4.1 cross-region",
+			modelID:      "us.anthropic.claude-opus-4-1-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0, // $15 + $75
+		},
+		// --- Opus 4.5 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.5 cross-region",
+			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.6 cross-region",
+			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Opus 4 bare (no sub-version) ---
+		{
+			name:         "opus 4 bare",
+			modelID:      "anthropic.claude-opus-4-20250514-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Haiku 4 ---
+		{
+			name:         "haiku 4 cross-region",
+			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     6.0, // $1 + $5
+		},
+		// --- Sonnet 4 ---
+		{
+			name:         "sonnet 4.5 cross-region",
+			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15
+		},
+		// --- Unknown model falls back to Sonnet ---
+		{
+			name:         "unknown model defaults to sonnet pricing",
+			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{modelID: tt.modelID}
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			assert.InDelta(t, tt.wantCost, got, 0.001,
+				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
+		})
+	}
+}
+
+// TestSDKClient_CalculateCost_ModelPricing verifies pricing for the SDK client
+// (which also handles cache pricing). Same model-matching logic as Client.
+func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
+	const tokens = 1_000_000
+
+	tests := []struct {
+		name                string
+		modelID             string
+		inputTokens         int
+		outputTokens        int
+		cacheReadTokens     int
+		cacheCreationTokens int
+		wantCost            float64
+	}{
+		// --- Opus 4.1 (most expensive) ---
+		{
+			name:         "opus 4.1 no cache",
+			modelID:      "us.anthropic.claude-opus-4-1-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0, // $15 + $75
+		},
+		// --- Opus 4.5 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.5 no cache",
+			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
+		{
+			name:         "opus 4.6 no cache",
+			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		// --- Haiku 4 ---
+		{
+			name:         "haiku 4 no cache",
+			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     6.0, // $1 + $5
+		},
+		// --- Sonnet 4 ---
+		{
+			name:         "sonnet 4.5 no cache",
+			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15
+		},
+		// --- Cache pricing with Sonnet ---
+		{
+			name:                "sonnet 4.5 with cache",
+			modelID:             "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     500_000,
+			cacheCreationTokens: 200_000,
+			// base: $3 + $15 = $18
+			// cache write: 200K * $3 * 1.25 / 1M = $0.75
+			// cache read:  500K * $3 * 0.10 / 1M = $0.15
+			wantCost: 18.90,
+		},
+		// --- Cache pricing with Opus 4.5 ---
+		{
+			name:                "opus 4.5 with cache",
+			modelID:             "us.anthropic.claude-opus-4-5-20250929-v1:0",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     500_000,
+			cacheCreationTokens: 200_000,
+			// base: $5 + $25 = $30
+			// cache write: 200K * $5 * 1.25 / 1M = $1.25
+			// cache read:  500K * $5 * 0.10 / 1M = $0.25
+			wantCost: 31.50,
+		},
+		// --- Unknown model defaults to Sonnet ---
+		{
+			name:         "unknown model defaults to sonnet",
+			modelID:      "anthropic.claude-unknown-9-20260101-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &SDKClient{modelID: tt.modelID}
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, tt.cacheCreationTokens)
+			assert.InDelta(t, tt.wantCost, got, 0.001,
+				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
+		})
+	}
+}
+
 func TestClient_ImplementsInterface(t *testing.T) {
 	var _ types.LLMProvider = (*Client)(nil)
 }

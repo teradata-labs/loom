@@ -516,8 +516,8 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 	session.CreatedAt = time.Unix(createdAt, 0)
 	session.UpdatedAt = time.Unix(updatedAt, 0)
 
-	// Load messages
-	messages, err := s.LoadMessages(ctx, sessionID)
+	// Load messages (caller already holds RLock, use lock-free variant)
+	messages, err := s.loadMessagesLocked(ctx, sessionID)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to load messages: %w", err)
@@ -619,6 +619,21 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	messages, err := s.loadMessagesLocked(ctx, sessionID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+
+	span.SetAttribute("message_count", fmt.Sprintf("%d", len(messages)))
+	return messages, nil
+}
+
+// loadMessagesLocked is the lock-free implementation of LoadMessages.
+// The caller MUST hold s.mu.RLock (or s.mu.Lock) before calling this method.
+// This avoids re-entrant RLock deadlocks when called from methods that already hold the lock
+// (e.g., LoadSession).
+func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string) ([]Message, error) {
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd
 		FROM messages
@@ -628,7 +643,6 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 
 	rows, err := s.db.QueryContext(ctx, query, sessionID)
 	if err != nil {
-		span.RecordError(err)
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
@@ -669,7 +683,6 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		// SQLite backend is single-tenant; set default UserID
 		msg.UserID = "default-user"
 		if err != nil {
-			span.RecordError(err)
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 
@@ -680,7 +693,6 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		// Deserialize tool calls
 		if toolCallsJSON != nil {
 			if err := json.Unmarshal([]byte(*toolCallsJSON), &msg.ToolCalls); err != nil {
-				span.RecordError(err)
 				return nil, fmt.Errorf("failed to unmarshal tool calls: %w", err)
 			}
 		}
@@ -693,7 +705,6 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 		// Deserialize tool result
 		if toolResultJSON != nil {
 			if err := json.Unmarshal([]byte(*toolResultJSON), &msg.ToolResult); err != nil {
-				span.RecordError(err)
 				return nil, fmt.Errorf("failed to unmarshal tool result: %w", err)
 			}
 		}
@@ -702,11 +713,9 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]Me
 	}
 
 	if err := rows.Err(); err != nil {
-		span.RecordError(err)
 		return nil, fmt.Errorf("error iterating messages: %w", err)
 	}
 
-	span.SetAttribute("message_count", fmt.Sprintf("%d", len(messages)))
 	return messages, nil
 }
 

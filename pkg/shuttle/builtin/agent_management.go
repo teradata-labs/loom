@@ -427,6 +427,8 @@ func (t *AgentManagementTool) executeRead(ctx context.Context, configType string
 	var dir string
 	if configType == "agent" {
 		dir = config.GetLoomSubDir("agents")
+	} else if configType == "skill" {
+		dir = config.GetLoomSubDir("skills")
 	} else {
 		dir = config.GetLoomSubDir("workflows")
 	}
@@ -438,7 +440,7 @@ func (t *AgentManagementTool) executeRead(ctx context.Context, configType string
 	}
 	filePath := filepath.Join(dir, filename)
 
-	// Read file - path validated and restricted to $LOOM_DATA_DIR/agents/ or $LOOM_DATA_DIR/workflows/
+	// Read file - path validated and restricted to $LOOM_DATA_DIR/agents/, $LOOM_DATA_DIR/skills/, or $LOOM_DATA_DIR/workflows/
 	content, err := os.ReadFile(filePath) // #nosec G304 -- Path is validated and sanitized above
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -480,6 +482,8 @@ func (t *AgentManagementTool) executeList(ctx context.Context, configType string
 	var dir string
 	if configType == "agent" {
 		dir = config.GetLoomSubDir("agents")
+	} else if configType == "skill" {
+		dir = config.GetLoomSubDir("skills")
 	} else {
 		dir = config.GetLoomSubDir("workflows")
 	}
@@ -595,6 +599,8 @@ func (t *AgentManagementTool) executeDelete(ctx context.Context, configType stri
 	var dir string
 	if configType == "agent" {
 		dir = config.GetLoomSubDir("agents")
+	} else if configType == "skill" {
+		dir = config.GetLoomSubDir("skills")
 	} else {
 		dir = config.GetLoomSubDir("workflows")
 	}

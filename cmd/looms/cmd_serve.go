@@ -423,6 +423,9 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 	case "huggingface":
 		key := apiKey(cfg.HuggingFaceToken, "HUGGINGFACE_API_KEY")
 		if key == "" {
+			key = os.Getenv("HUGGINGFACE_TOKEN") // backward compat
+		}
+		if key == "" {
 			return nil, fmt.Errorf("huggingface token not configured (set llm.huggingface_token or HUGGINGFACE_API_KEY)")
 		}
 		return huggingface.NewClient(huggingface.Config{

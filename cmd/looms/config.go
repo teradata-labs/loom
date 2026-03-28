@@ -1414,12 +1414,12 @@ func (c *Config) Validate() error {
 
 	case "gemini":
 		if c.LLM.GeminiAPIKey == "" {
-			return fmt.Errorf("gemini API key is required (set via --gemini-key, LOOM_LLM_GEMINI_API_KEY, or save to keyring with 'looms config set-key gemini_api_key')")
+			return fmt.Errorf("gemini API key is required (set LOOM_LLM_GEMINI_API_KEY, GEMINI_API_KEY, or save to keyring with 'looms config set-key gemini_api_key')")
 		}
 
 	case "huggingface":
 		if c.LLM.HuggingFaceToken == "" {
-			return fmt.Errorf("huggingface token is required (set via --huggingface-token, LOOM_LLM_HUGGINGFACE_TOKEN, or save to keyring with 'looms config set-key huggingface_token')")
+			return fmt.Errorf("huggingface token is required (set LOOM_LLM_HUGGINGFACE_TOKEN, HUGGINGFACE_API_KEY, or save to keyring with 'looms config set-key huggingface_token')")
 		}
 
 	default:

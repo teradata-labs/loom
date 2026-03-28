@@ -332,10 +332,13 @@ func (f *ProviderFactory) createGeminiProvider(model string) (interface{}, error
 func (f *ProviderFactory) createHuggingFaceProvider(model string) (interface{}, error) {
 	token := f.config.HuggingFaceToken
 	if token == "" {
-		token = os.Getenv("HUGGINGFACE_TOKEN")
+		token = os.Getenv("HUGGINGFACE_API_KEY")
 	}
 	if token == "" {
-		return nil, fmt.Errorf("huggingface token not configured (set llm.huggingface_token or HUGGINGFACE_TOKEN)")
+		token = os.Getenv("HUGGINGFACE_TOKEN") // backward compat
+	}
+	if token == "" {
+		return nil, fmt.Errorf("huggingface token not configured (set llm.huggingface_token or HUGGINGFACE_API_KEY)")
 	}
 
 	if model == "" {
