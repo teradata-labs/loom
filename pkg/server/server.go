@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -213,14 +215,16 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 				continue
 			}
 
-			// Convert agent progress to proto format
+			// Convert agent progress to proto format.
+			// Sanitize string fields: LLM streaming can produce invalid UTF-8
+			// (e.g. multi-byte chars split across chunks), which proto3 rejects.
 			protoProgress := &loomv1.WeaveProgress{
 				Stage:          convertAgentStageToProto(event.Stage),
 				Progress:       event.Progress,
-				Message:        event.Message,
+				Message:        sanitizeUTF8(event.Message),
 				ToolName:       event.ToolName,
 				Timestamp:      event.Timestamp.Unix(),
-				PartialContent: event.PartialContent,
+				PartialContent: sanitizeUTF8(event.PartialContent),
 				IsTokenStream:  event.IsTokenStream,
 				TokenCount:     event.TokenCount,
 				TtftMs:         event.TTFT,
@@ -283,9 +287,9 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		Timestamp: time.Now().Unix(),
 		PartialResult: &loomv1.ExecutionResult{
 			Type:     "text",
-			DataJson: resp.Content,
+			DataJson: sanitizeUTF8(resp.Content),
 		},
-		PartialContent: resp.Content,
+		PartialContent: sanitizeUTF8(resp.Content),
 		ContextState:   contextState,
 		Cost: &loomv1.CostInfo{
 			TotalCostUsd: resp.Usage.CostUSD,
@@ -359,6 +363,16 @@ func convertHITLRequestToProto(info *agent.HITLRequestInfo) *loomv1.HITLRequestI
 
 // applyToolLifecycleFields populates tool lifecycle fields on a WeaveProgress proto
 // if the source event is a tool-started or tool-completed event.
+// sanitizeUTF8 ensures a string contains only valid UTF-8 bytes.
+// Proto3 string fields require valid UTF-8; LLM streaming responses can
+// contain invalid sequences (e.g., multi-byte characters split across chunks).
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
 func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
 	if !event.IsToolStarted && !event.IsToolCompleted {
 		return
@@ -367,7 +381,7 @@ func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressE
 	proto.IsToolStarted = event.IsToolStarted
 	proto.IsToolCompleted = event.IsToolCompleted
 	proto.ToolCallId = event.ToolCallID
-	proto.ToolError = event.ToolError
+	proto.ToolError = sanitizeUTF8(event.ToolError)
 	proto.ToolSuccess = event.ToolSuccess
 	proto.ToolDurationMs = event.ToolDurationMs
 
@@ -808,7 +822,7 @@ func (s *Server) runABTestSideBySide(ctx context.Context, req *loomv1.ABTestRequ
 			results[i] = result{name: name, content: llmResp.Content, latency: latency}
 			_ = sendEvent(&loomv1.ABTestEvent{
 				ProviderName: name,
-				ContentChunk: llmResp.Content,
+				ContentChunk: sanitizeUTF8(llmResp.Content),
 				Finished:     true,
 				LatencyMs:    latency,
 				AbTestId:     abTestID,
@@ -940,7 +954,7 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 		results[i] = result{name: name, content: llmResp.Content, score: score, latency: latency}
 		if err2 := sendEvent(&loomv1.ABTestEvent{
 			ProviderName: name,
-			ContentChunk: llmResp.Content,
+			ContentChunk: sanitizeUTF8(llmResp.Content),
 			Finished:     true,
 			Score:        score,
 			LatencyMs:    latency,
@@ -1020,7 +1034,7 @@ func (s *Server) runABTestShadow(ctx context.Context, req *loomv1.ABTestRequest,
 
 	if err2 := stream.Send(&loomv1.ABTestEvent{
 		ProviderName: primaryName,
-		ContentChunk: primaryResp.Content,
+		ContentChunk: sanitizeUTF8(primaryResp.Content),
 		Finished:     true,
 		LatencyMs:    latency,
 		AbTestId:     abTestID,

@@ -920,14 +920,16 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				continue
 			}
 
-			// Convert agent progress to proto format
+			// Convert agent progress to proto format.
+			// Sanitize string fields: LLM streaming can produce invalid UTF-8
+			// (e.g. multi-byte chars split across chunks), which proto3 rejects.
 			protoProgress := &loomv1.WeaveProgress{
 				Stage:          convertAgentStageToProto(event.Stage),
 				Progress:       event.Progress,
-				Message:        event.Message,
+				Message:        sanitizeUTF8(event.Message),
 				ToolName:       event.ToolName,
 				Timestamp:      event.Timestamp.Unix(),
-				PartialContent: event.PartialContent, // Stream partial content to TUI
+				PartialContent: sanitizeUTF8(event.PartialContent),
 				IsTokenStream:  event.IsTokenStream,
 				TokenCount:     event.TokenCount,
 				TtftMs:         event.TTFT,
@@ -972,7 +974,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		// Send a FAILED progress event so the TUI can display the error message
 		// before we return the gRPC error. Without this, the client stream ends
 		// abruptly and the user sees zero content after many tool calls.
-		errContent := fmt.Sprintf("Agent execution failed: %v", finalResult.err)
+		errContent := sanitizeUTF8(fmt.Sprintf("Agent execution failed: %v", finalResult.err))
 		failedProgress := &loomv1.WeaveProgress{
 			Stage:          loomv1.ExecutionStage_EXECUTION_STAGE_FAILED,
 			Progress:       100,
@@ -982,7 +984,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		}
 		// Best-effort: if resp has partial content from synthesis fallback, include it
 		if finalResult.resp != nil && finalResult.resp.Content != "" {
-			failedProgress.PartialContent = finalResult.resp.Content
+			failedProgress.PartialContent = sanitizeUTF8(finalResult.resp.Content)
 			failedProgress.Message = "Agent completed with errors"
 		}
 		_ = stream.Send(failedProgress)
@@ -1011,9 +1013,9 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		Timestamp: time.Now().Unix(),
 		PartialResult: &loomv1.ExecutionResult{
 			Type:     "text",
-			DataJson: resp.Content,
+			DataJson: sanitizeUTF8(resp.Content),
 		},
-		PartialContent: resp.Content,
+		PartialContent: sanitizeUTF8(resp.Content),
 		ContextState:   contextState,
 		Cost: &loomv1.CostInfo{
 			TotalCostUsd: resp.Usage.CostUSD,
@@ -3590,7 +3592,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 				ExecutionId:    executionID,
 				PatternType:    event.PatternType,
 				Progress:       event.Progress,
-				Message:        event.Message,
+				Message:        sanitizeUTF8(event.Message),
 				CurrentAgentId: event.CurrentAgentID,
 				Timestamp:      time.Now().Unix(),
 				PartialResults: event.PartialResults,
@@ -4166,7 +4168,7 @@ func (s *MultiAgentServer) SubscribeToSession(req *loomv1.SubscribeToSessionRequ
 					update.UpdateType = &loomv1.SessionUpdate_NewMessage{
 						NewMessage: &loomv1.NewMessageUpdate{
 							Role:             msg.Role,
-							Content:          msg.Content,
+							Content:          sanitizeUTF8(msg.Content),
 							MessageTimestamp: msg.Timestamp.Unix(),
 						},
 					}
