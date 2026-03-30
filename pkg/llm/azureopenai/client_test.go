@@ -121,8 +121,8 @@ func TestNewClient_EntraTokenBearerStripping(t *testing.T) {
 		},
 		{
 			name:           "token with Bearer prefix and JWT-like value",
-			entraToken:     "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
-			wantAuthHeader: "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+			entraToken:     "Bearer " + "fake-header.fake-payload.fake-signature",
+			wantAuthHeader: "Bearer fake-header.fake-payload.fake-signature",
 		},
 	}
 
