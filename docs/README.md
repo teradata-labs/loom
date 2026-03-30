@@ -21,8 +21,12 @@ Welcome to the Loom documentation. Loom is a Go framework for building autonomou
 ### Core Features
 - **[Pattern Library](guides/pattern-library-guide.md)** - Use domain patterns to improve agent responses
 - **[Learning Agents](guides/learning-agent-guide.md)** - Self-improving agents with DSPy integration
-- **[Weaver (Meta-Agent)](guides/meta-agent-usage.md)** - Create agents that work together
-- **[Artifacts Management](guides/artifacts-usage.md)** - Centralized file storage with search
+- **[Weaver (Meta-Agent)](guides/meta-agent-usage.md)** - Create agents from natural language
+- **[Weaver Examples](guides/meta-agent-examples.md)** - End-to-end weaver usage examples
+- **[Weaver Usage](guides/weaver-usage.md)** - Weaver features including /agent-plan mode and skills
+- **[Artifacts Management](guides/artifacts-usage.md)** - Centralized file storage with FTS5 search
+- **[TUI Guide](guides/tui-guide.md)** - Interactive terminal interface usage
+- **[MCP Apps](guides/mcp-apps-guide.md)** - Build interactive dashboards from agent conversations
 
 ### Evaluation & Quality
 - **[Judge CLI](guides/judge_cli_guide.md)** - Evaluate agent responses with judges
@@ -35,6 +39,11 @@ Welcome to the Loom documentation. Loom is a Go framework for building autonomou
 - **[Memory Management](guides/memory-management.md)** - Agent memory layers and caching
 - **[Structured Context Pattern](guides/structured-context-pattern.md)** - Organize agent context
 - **[Docker Backend](guides/docker-backend.md)** - Run agents in containers
+- **[Supabase Integration](guides/supabase-integration.md)** - Use Supabase as execution or storage backend
+
+### Migration & Reference
+- **[Prompt Migration](guides/prompt-migration-guide.md)** - Migrate to YAML-based prompt management
+- **[Beta 5 Migration](guides/beta5-migration.md)** - Historical migration guide for beta.5 release
 
 [View all guides →](guides/)
 
@@ -52,9 +61,9 @@ Welcome to the Loom documentation. Loom is a Go framework for building autonomou
 
 ### Observability & Prompts
 - **[Observability (Hawk)](guides/integration/observability.md)** - Trace agent operations and track costs
-- **[Hawk Embedded Integration](guides/integration/hawk-embedded-integration-guide.md)** - Embed Hawk in your app
-- **[Prompt Management (Promptio)](guides/integration/prompt-management.md)** - Version-controlled prompts
-- **[Prompt Integration](guides/integration/prompt-integration.md)** - Integrate Promptio
+- **[Embedded Observability](guides/integration/embedded-observability-guide.md)** - Embed observability in your app
+- **[Prompt Management](guides/integration/prompt-management.md)** - YAML-based prompts with hot-reload and A/B testing
+- **[Promptio Integration](guides/integration/prompt-integration.md)** - Variable substitution and prompt hot-reload
 
 [View all integration guides →](guides/integration/)
 
@@ -78,12 +87,17 @@ System design documentation for developers extending Loom.
 - **[Agent Private Memory](architecture/agent-private-memory.md)** - Private memory implementation
 
 ### Features & Tools
+- **[Graph Memory](architecture/graph-memory.md)** - Cross-session salience-driven knowledge graph
 - **[Weaver (Meta-Agent)](architecture/weaver.md)** - Meta-agent architecture
 - **[Learning Agent](architecture/learning-agent.md)** - Self-improvement system
 - **[Judge System](architecture/judge-system.md)** - Evaluation framework
 - **[Artifacts](architecture/artifacts.md)** - File storage system
+- **[MCP Apps](architecture/mcp-apps.md)** - Declarative UI app compilation from JSON specs
 - **[Docker Backend](architecture/docker-backend.md)** - Container execution
 - **[Observability](architecture/observability.md)** - Tracing and monitoring
+
+### Design Principles
+- **[12-Factor Architecture](architecture/12-factor-architecture.md)** - Cloud-native design analysis
 
 [View all architecture docs →](architecture/)
 
@@ -91,7 +105,7 @@ System design documentation for developers extending Loom.
 
 ## Reference
 
-Complete API specifications and command documentation.
+API specifications and command documentation.
 
 ### LLM Providers
 - **[LLM Providers Overview](reference/llm-providers.md)** - Supported providers and configuration
@@ -101,9 +115,12 @@ Complete API specifications and command documentation.
 - **[OpenAI](reference/llm-openai.md)** - GPT models configuration
 - **[Azure OpenAI](reference/llm-azure-openai.md)** - Azure OpenAI setup
 - **[Mistral](reference/llm-mistral.md)** - Mistral models
+- **[Gemini](reference/llm-gemini.md)** - Google Gemini models
+- **[HuggingFace](reference/llm-huggingface.md)** - HuggingFace Inference API
 
 ### Commands & APIs
-- **[CLI Commands](reference/cli.md)** - Complete looms and loom command reference
+- **[CLI Commands](reference/cli.md)** - Complete `looms` and `loom` command reference
+- **[HTTP Server](reference/http-server.md)** - REST API, SSE streaming, CORS, and Swagger UI
 - **[TUI (Terminal UI)](reference/tui.md)** - Terminal interface usage
 - **[Streaming](reference/streaming.md)** - Real-time progress events
 
@@ -114,16 +131,27 @@ Complete API specifications and command documentation.
 - **[Tool Registry](reference/tool-registry.md)** - Available tools
 - **[Meta-Agent Tools](reference/meta-agent-tools.md)** - Weaver-specific tools
 - **[Presentation Tools](reference/presentation-tools.md)** - Output formatting tools
+- **[MCP Apps](reference/mcp-apps.md)** - Declarative MCP app spec format
+
+### Security & Operations
+- **[Security Model](reference/security-model.md)** - Multi-tenancy, user identity, and data isolation
+- **[Admin Operations](reference/admin-operations.md)** - Cross-tenant admin gRPC service
+- **[TLS Configuration](reference/tls.md)** - Secure communication setup
 
 ### Advanced
 - **[Backend Interface](reference/backend.md)** - Implementing ExecutionBackend
 - **[Prompt Hot-Reload](reference/prompt-hot-reload.md)** - Dynamic prompt updates
 - **[Self-Correction](reference/self-correction.md)** - Error recovery mechanisms
 - **[SQLite Guidance](reference/sqlite-guidance.md)** - Database best practices
-- **[TLS Configuration](reference/tls.md)** - Secure communication setup
 - **[Workflow Iterative](reference/workflow-iterative.md)** - Iterative workflow patterns
 
 [View all reference docs →](reference/)
+
+---
+
+## Installation
+
+- **[Windows Installation](installation/WINDOWS.md)** - PowerShell, Chocolatey, Scoop, and Winget install methods
 
 ---
 
@@ -131,8 +159,7 @@ Complete API specifications and command documentation.
 
 - **[Go Package Documentation](https://pkg.go.dev/github.com/teradata-labs/loom)** - API reference for Go developers
 - **[GitHub Repository](https://github.com/teradata-labs/loom)** - Source code and issues
-- **[Examples](../examples/)** - Complete example configurations
-- **[Workflow Scheduling](workflow-scheduling.md)** - Cron-based workflows
+- **[Examples](../examples/)** - Example YAML configurations for agents, workflows, backends, and patterns
 
 ---
 

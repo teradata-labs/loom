@@ -1,6 +1,6 @@
 # Tool System Redesign: Eliminating Token Bloat
 
-**Status**: Planning
+**Status**: ✅ Phases 1-2 Complete, 📋 Phases 3-4 Planned
 **Branch strategy**: One branch per phase, land in order
 **Goal**: Reduce tool schema tokens from ~12,000/request to near-zero effective cost
 
@@ -26,7 +26,7 @@ in a session, tool schemas cost nothing against the rate limit. This is Phase 1.
 
 ---
 
-## Phase 1: Prompt Caching `feat/prompt-caching`
+## Phase 1: Prompt Caching `feat/prompt-caching` ✅ Complete
 
 **Impact**: 5–10x throughput for multi-turn sessions. Zero behavioral change.
 **Effort**: 2–3 days
@@ -119,12 +119,12 @@ The `anthropic-sdk-go` already has `CacheControl` fields on `TextBlockParam` and
 ```go
 // System prompt
 params.System = []anthropic.TextBlockParam{{
-    Text: systemPrompt,
-    CacheControl: anthropic.F(anthropic.CacheControlEphemeralParam{Type: "ephemeral"}),
+    Text:         systemPrompt,
+    CacheControl: anthropic.NewCacheControlEphemeralParam(),
 }}
 
 // Last tool in list
-sdkTools[len(sdkTools)-1].CacheControl = anthropic.F(anthropic.CacheControlEphemeralParam{Type: "ephemeral"})
+sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
 ```
 
 Note: `pkg/llm/bedrock/converse.go` (AWS Converse API) does NOT support caching — no changes there.
@@ -176,38 +176,33 @@ Note: Gemini cached tokens **still count against rate limits** (unlike Anthropic
 
 ### 1.7 Tests
 
-**Unit (`pkg/llm/anthropic/`)**
-- `TestClient_convertTools_CacheControl`: serialize 3+ tools, verify last tool has `"cache_control":{"type":"ephemeral"}`, others don't
-- `TestClient_convertMessages_SystemCacheControl`: system prompt serializes as `[]TextBlockParam` with `cache_control` on the block
-- `TestClient_calculateCost_CacheTokens`: cache write = 1.25x rate, cache read = 0.10x rate; verify against known token counts
-- `TestClient_convertResponse_CacheFields`: mock API response with `cache_read_input_tokens:500`, verify `Usage.CacheReadInputTokens == 500`
-- `TestClient_callAPI_BetaHeader`: `httptest.Server` captures raw request, assert `anthropic-beta` header present
+**Unit (`pkg/llm/anthropic/`)** ✅ Implemented
+- `TestClient_Chat_ToolCacheControl`: verifies last tool has `cache_control:ephemeral` and others don't
+- `TestClient_Chat_SystemBlockCacheControl`: system prompt serializes as `[]TextBlockParam` with `cache_control` on the block
+- `TestClient_CalculateCost`: includes cache write (1.25x) and cache read (0.10x) scenarios
+- `TestClient_Chat_CacheTokensInResponse`: mock API response with cache token fields, verifies they flow through to `Usage`
+- `TestClient_Chat_PromptCachingHeader`: `httptest.Server` captures raw request, asserts `anthropic-beta` header present
 - Race: `go test -tags fts5 -race ./pkg/llm/anthropic/...`
 
-**Unit (`pkg/llm/bedrock/`)**
-- `TestSDKClient_convertTools_CacheControl`: last tool has `CacheControl` set
-- `TestSDKClient_convertResponse_CacheFields`: cache token fields flow through to `Usage`
+**Unit (`pkg/llm/bedrock/`)** ⚠️ Covered implicitly via `TestClient_ConvertResponse` and `TestClient_CalculateCost`
+- No dedicated `TestSDKClient_convertTools_CacheControl` test yet — cache control is tested indirectly through integration
+- `TestClient_CalculateCost`: includes cache token pricing scenarios
 
-**Unit (`pkg/llm/gemini/`)**
-- `TestClient_convertResponse_CachedTokens`: `cachedContentTokenCount` from API maps to `Usage.CacheReadInputTokens`
+**Unit (`pkg/llm/gemini/`)** ⚠️ No dedicated `CachedTokens` test
+- `CachedContentTokenCount` is wired in `convertResponse()` and `ChatStream()` but lacks a dedicated unit test
 
-**E2E (`test/e2e/prompt_caching_e2e_test.go`)** — `//go:build integration`
+**E2E (`test/e2e/prompt_caching_e2e_test.go`)** ✅ Implemented — `//go:build integration`
 
 ```go
-// TestE2E_PromptCaching_CacheHitOnSecondTurn verifies that turn 2 in a session
-// reports cache_read_input_tokens > 0, proving tool schemas were cached.
-// Requires ANTHROPIC_API_KEY env var; skips otherwise.
-func TestE2E_PromptCaching_CacheHitOnSecondTurn(t *testing.T)
+// TestE2E_PromptCaching_CacheTokensReported verifies that the LLMCost
+// response correctly reports cache token fields. Turn 1 may show
+// cache_creation_input_tokens > 0; turn 2 may show cache_read_input_tokens > 0.
+func TestE2E_PromptCaching_CacheTokensReported(t *testing.T)
 
-// TestE2E_PromptCaching_CostReduced verifies that total_cost_usd on turn 2
-// is less than turn 1 for the same query length (cache read is 0.10x cost).
-func TestE2E_PromptCaching_CostReduced(t *testing.T)
-
-// TestE2E_PromptCaching_RateLimitRelief verifies that 5 rapid sequential Weave
-// calls within a session all succeed without 429 errors (previously would have
-// hit 30K ITPM limit with 16 tools).
-// Only runs when LOOM_E2E_RATE_LIMIT_TEST=1 to avoid slow CI.
-func TestE2E_PromptCaching_RateLimitRelief(t *testing.T)
+// TestE2E_PromptCaching_CostFields verifies that the new proto fields
+// (cache_read_input_tokens, cache_creation_input_tokens) are populated
+// and non-negative in the WeaveResponse.
+func TestE2E_PromptCaching_CostFields(t *testing.T)
 ```
 
 These tests check `resp.GetCost().GetLlmCost()` — which means the `LlmCost` proto message needs
@@ -215,28 +210,29 @@ These tests check `resp.GetCost().GetLlmCost()` — which means the `LlmCost` pr
 
 ```protobuf
 // In proto/loom/v1/loom.proto, LlmCost message:
-int32 cache_read_input_tokens = 6;
-int32 cache_creation_input_tokens = 7;
+int32 cache_read_input_tokens = 7;
+int32 cache_creation_input_tokens = 8;
 ```
 
 Run `buf generate` after adding these fields.
 
 ---
 
-## Phase 2: Lazy UI Tools `feat/lazy-ui-tools`
+## Phase 2: Lazy UI Tools `feat/lazy-ui-tools` ✅ Complete
 
 **Impact**: Removes 4 tools (~3,000 tokens) from non-UI conversations
 **Effort**: 1 day
 **Risk**: Low — follows existing progressive disclosure pattern exactly
 
-### Problem
+### Problem (resolved)
 
-`create_ui_app`, `update_ui_app`, `delete_ui_app`, `list_component_types` are registered eagerly
+`create_ui_app`, `update_ui_app`, `delete_ui_app`, `list_component_types` were registered eagerly
 for every agent in `cmd/looms/cmd_serve.go`. Most conversations never use UI tools.
+Now registered lazily via `RegisterLazyTools` with `ContainsUIIntent` trigger.
 
-### 2.1 New mechanism: `WithLazyTools` agent option
+### 2.1 Mechanism: `RegisterLazyTools` + `evaluateLazyTools`
 
-**`pkg/agent/agent.go`** — add `lazyToolSet` and the option:
+**`pkg/agent/types.go`** — defines `lazyToolSet`:
 
 ```go
 type lazyToolSet struct {
@@ -246,44 +242,40 @@ type lazyToolSet struct {
 
 // In Agent struct:
 lazyToolSets []lazyToolSet
+```
 
-// Option constructor:
-func WithLazyTools(tools []shuttle.Tool, trigger func(msg string) bool) Option {
-    return func(a *Agent) {
-        a.lazyToolSets = append(a.lazyToolSets, lazyToolSet{tools: tools, trigger: trigger})
-    }
-}
+**`pkg/agent/agent.go`** — public method for post-construction registration:
 
-// Public method for post-construction registration:
-func (a *Agent) RegisterLazyTools(tools []shuttle.Tool, trigger func(msg string) bool) {
-    a.lazyToolSets = append(a.lazyToolSets, lazyToolSet{tools: tools, trigger: trigger})
+```go
+func (a *Agent) RegisterLazyTools(tools []shuttle.Tool, trigger func(string) bool) {
+    // nil-guard and append to lazyToolSets
 }
 ```
 
-In the pre-LLM turn logic, evaluate triggers:
+Note: There is no `WithLazyTools` option constructor. Use `RegisterLazyTools()` after agent creation.
+
+In `runConversationLoop()`, `evaluateLazyTools(userMessage)` runs before `tools := a.tools.ListTools()`:
 ```go
-for _, set := range a.lazyToolSets {
-    if set.trigger(userMessage) {
-        for _, t := range set.tools {
-            if !a.tools.IsRegistered(t.Name()) {
-                a.tools.Register(t)
-            }
-        }
-    }
+func (a *Agent) evaluateLazyTools(userMsg string) {
+    // copies lazyToolSets under lock, then evaluates triggers
+    // registers matching tools via a.tools.Register() (idempotent)
 }
 ```
 
 ### 2.2 UI intent detection (`pkg/server/app_tools.go`)
 
 ```go
-var UIKeywords = []string{
-    "chart", "graph", "dashboard", "visualization", "table",
-    "ui", "app", "display", "plot", "report", "widget",
+var uiIntentKeywords = []string{
+    "dashboard", "visualization", "visualize", "chart", "graph",
+    "create a ui", "build a ui", "make a ui", "create ui", "build ui",
+    "create an app", "build an app", "create app", "build app",
+    "interactive app", "ui app", "web app", "create_ui_app",
+    "display as a chart", "show as a chart",
 }
 
 func ContainsUIIntent(msg string) bool {
     lower := strings.ToLower(msg)
-    for _, kw := range UIKeywords {
+    for _, kw := range uiIntentKeywords {
         if strings.Contains(lower, kw) { return true }
     }
     return false
@@ -305,42 +297,28 @@ ag.RegisterLazyTools(uiAppTools, server.ContainsUIIntent)
 
 ### 2.4 Tests
 
-**Unit (`pkg/agent/`)**
-- `TestLazyTools_NotRegisteredAtStart`: agent with `RegisterLazyTools` has 0 UI tools in `ListTools()` before any message
-- `TestLazyTools_RegisteredOnTrigger`: after calling trigger func with "create a dashboard", UI tools appear in `ListTools()`
-- `TestLazyTools_NotRegisteredOnNonMatchingMessage`: non-UI message doesn't add tools
-- `TestLazyTools_NoDoubleRegistration`: calling trigger twice doesn't add duplicate tools
-- `TestLazyTools_ConcurrentTriggers`: 10 goroutines fire the trigger simultaneously — no race, no duplicates
+**Unit (`pkg/agent/`)** ✅ Implemented
+- `TestRegisterLazyTools_TriggerFalse`: tools are NOT registered when trigger returns false
+- `TestRegisterLazyTools_TriggerTrue`: tools ARE registered when trigger returns true
+- `TestRegisterLazyTools_Idempotent`: calling evaluateLazyTools multiple times only registers once
+- `TestRegisterLazyTools_MultipleSets`: independent lazy sets are evaluated independently
+- `TestRegisterLazyTools_EmptyToolsOrNilTrigger`: no-op for degenerate inputs
+- `TestRegisterLazyTools_Race`: concurrent RegisterLazyTools + evaluateLazyTools is race-free
+- `TestRegisterLazyTools_KeywordTrigger`: realistic UI keyword-based trigger
 - Race: `go test -tags fts5 -race ./pkg/agent/...`
 
-**Unit (`pkg/server/`)**
-- `TestContainsUIIntent`: table-driven — "create a dashboard"→true, "chart the sales"→true, "query the database"→false, ""→false
+**Unit (`pkg/server/`)** ✅ Implemented
+- `TestContainsUIIntent_Positives`: table-driven positive matches (dashboard, chart, etc.)
+- `TestContainsUIIntent_Negatives`: non-UI messages return false
+- `TestContainsUIIntent_CaseInsensitive`: case-insensitive matching
+- `TestContainsUIIntent_Race`: concurrent access is race-free
 
-**E2E (`test/e2e/lazy_tools_e2e_test.go`)** — `//go:build integration`
-
-```go
-// TestE2E_LazyUITools_AbsentOnFreshSession verifies that a newly created
-// session's tool list does NOT include UI tools before any message is sent.
-func TestE2E_LazyUITools_AbsentOnFreshSession(t *testing.T)
-// Uses ListTools RPC, asserts none of create_ui_app/update_ui_app/
-// delete_ui_app/list_component_types are present.
-
-// TestE2E_LazyUITools_PresentAfterUIRequest verifies that after sending a
-// message containing "create a dashboard", the tool list includes UI tools
-// on the next call.
-func TestE2E_LazyUITools_PresentAfterUIRequest(t *testing.T)
-// Sends "create a dashboard" via Weave, then calls ListTools and asserts
-// create_ui_app is present.
-
-// TestE2E_LazyUITools_ToolCountReduced verifies that non-UI conversations
-// show fewer tools than the old eager count (regression guard).
-func TestE2E_LazyUITools_ToolCountReduced(t *testing.T)
-// Asserts len(ListTools()) < 16 for a session that never mentions UI.
-```
+**E2E** 📋 Not yet implemented
+- No `test/e2e/lazy_tools_e2e_test.go` exists. E2E coverage for lazy tools is a gap.
 
 ---
 
-## Phase 3: Schema Pruning `feat/schema-pruning`
+## Phase 3: Schema Pruning `feat/schema-pruning` 📋 Planned
 
 **Impact**: 15–25% smaller schemas, compounds with caching
 **Effort**: 2 days
@@ -357,49 +335,24 @@ Two tracks in parallel:
 - `http_request.headers`: "request headers map"
 
 **Track B** — Use PromptRegistry for tool-level `Description()`:
-- Create `prompts/tools/*.yaml` with concise descriptions
-- The `PromptAwareTool` wrapper already loads these when a registry is provided
+- ⚠️ `prompts/tools/*.yaml` already exist (16 files) and `PromptAwareTool` wrapper already loads them when a registry is provided
+- Remaining work: audit and shorten descriptions in those YAML files to reduce tokens
 - Reduces `Description()` tokens by 50%+ without touching Go source
 
 ### Tests
 
-**Unit (`pkg/shuttle/builtin/`)**
-- `TestToolSchemaSize`: table-driven across all tools — `json.Marshal(tool.InputSchema())` must be
-  under a per-tool byte ceiling. Serves as a regression guard preventing future bloat.
-
-  ```go
-  var maxSchemaBytes = map[string]int{
-      "shell_execute":        900,
-      "agent_management":     500,
-      "shared_memory_write":  600,
-      "top_n_query":          700,
-      "group_by_query":       700,
-      // etc.
-  }
-  ```
-
-- `TestToolDescriptionSize`: `len(tool.Description())` must be under 400 chars per tool
-- `TestAllToolsTotalTokenBudget`: sum of all tool schemas ≤ 8,000 chars (~2,000 tokens). Hard ceiling.
+**Unit (`pkg/shuttle/builtin/`)** ⚠️ Partially implemented
+- ✅ `TestToolSchemaSize`: exists in `schema_test.go` — table-driven across all tools, checks per-tool byte ceilings
+- 📋 `TestToolDescriptionSize`: not yet implemented — `len(tool.Description())` under 400 chars per tool
+- 📋 `TestAllToolsTotalTokenBudget`: not yet implemented — sum of all tool schemas under 8,000 chars
 - Race: `go test -tags fts5 -race ./pkg/shuttle/...`
 
-**E2E (`test/e2e/schema_size_e2e_test.go`)** — `//go:build integration`
-
-```go
-// TestE2E_ToolSchemas_TotalTokenBudget retrieves all registered tools via
-// ListTools RPC and verifies the combined schema size is under 8,000 chars.
-// This is the real-world gate — catches any tool that slips past unit ceiling.
-func TestE2E_ToolSchemas_TotalTokenBudget(t *testing.T)
-// Calls ListTools, marshals each tool's description+schema, sums, asserts < 8000.
-
-// TestE2E_ToolSchemas_InputTokenCountReduced verifies that turn 1 of a
-// Weave call reports fewer input_tokens than the pre-pruning baseline of 12,000.
-func TestE2E_ToolSchemas_InputTokenCountReduced(t *testing.T)
-// Asserts resp.GetCost().GetLlmCost().GetInputTokens() < 9000 (25% reduction floor).
-```
+**E2E** 📋 Not yet implemented
+- No `test/e2e/schema_size_e2e_test.go` exists
 
 ---
 
-## Phase 4: Meta-Tool Consolidation `feat/meta-tools`
+## Phase 4: Meta-Tool Consolidation `feat/meta-tools` 📋 Planned
 
 **Impact**: 11 tools → 5 meta-tools = 60–70% fewer schema tokens
 **Effort**: 2–3 weeks

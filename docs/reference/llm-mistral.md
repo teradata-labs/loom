@@ -1,9 +1,9 @@
 
 # Mistral AI Integration Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete technical reference for integrating Loom with Mistral AI's platform.
+Technical reference for integrating Loom with Mistral AI's platform.
 
 
 ## Table of Contents
@@ -14,7 +14,7 @@ Complete technical reference for integrating Loom with Mistral AI's platform.
 - [Features](#features)
 - [Configuration](#configuration)
 - [Model Support and Pricing](#model-support-and-pricing)
-- [Open Source Models](#open-source-models)
+- [Model Details](#model-details)
 - [Request and Response Format](#request-and-response-format)
 - [Cost Tracking](#cost-tracking)
 - [Tool Calling Support](#tool-calling-support)
@@ -59,23 +59,28 @@ client := mistral.NewClient(mistral.Config{
 
 ### Available Models
 
-#### Open Models (Free/Permissive License)
+#### General Purpose Models
 
-| Model | ID | Input Cost | Output Cost | Parameters | Context | License |
-|-------|----|-----------:|------------:|------------|---------|---------|
-| **Mistral 7B** | `open-mistral-7b` | $0.25/1M | $0.25/1M | 7B | 32K | Apache 2.0 |
-| **Mixtral 8x7B** | `open-mixtral-8x7b` | $0.70/1M | $0.70/1M | 46.7B (MoE) | 32K | Apache 2.0 |
-| **Mixtral 8x22B** | `open-mixtral-8x22b` | $2.00/1M | $6.00/1M | 141B (MoE) | 64K | Apache 2.0 |
+| Model | ID | Input Cost | Output Cost | Context | Max Output | Best For |
+|-------|----|-----------:|------------:|---------|------------|----------|
+| **Mistral Large** | `mistral-large-latest` | $2.00/1M | $6.00/1M | 128K | 8K | Complex tasks, tool use |
+| **Mistral Small** | `mistral-small-latest` | $0.10/1M | $0.30/1M | 32K | 8K | High volume, cost-effective |
 
-#### Commercial Models
+#### Reasoning Models
 
-| Model | ID | Input Cost | Output Cost | Context | Best For |
-|-------|----|-----------:|------------:|---------|----------|
-| **Mistral Small** | `mistral-small-latest` | $1.00/1M | $3.00/1M | 32K | Simple tasks, cost-effective |
-| **Mistral Medium** | `mistral-medium-latest` | $2.70/1M | $8.10/1M | 32K | Balanced (deprecated) |
-| **Mistral Large** | `mistral-large-latest` | $4.00/1M | $12.00/1M | 32K | Complex reasoning |
+| Model | ID | Input Cost | Output Cost | Context | Max Output | Best For |
+|-------|----|-----------:|------------:|---------|------------|----------|
+| **Magistral Medium** | `magistral-medium-latest` | $2.00/1M | $8.00/1M | 128K | 131K | Complex reasoning + tools |
+| **Magistral Small** | `magistral-small-latest` | $0.50/1M | $1.50/1M | 128K | 131K | Cost-effective reasoning |
 
-*Prices as of November 2024. Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.*
+#### Code Models
+
+| Model | ID | Input Cost | Output Cost | Context | Max Output | Best For |
+|-------|----|-----------:|------------:|---------|------------|----------|
+| **Codestral** | `codestral-latest` | $0.30/1M | $0.90/1M | 256K | 8K | Code generation, analysis |
+| **Devstral** | `devstral-medium-latest` | $0.50/1M | $1.50/1M | 128K | 8K | Development workflows |
+
+*Prices from Loom model catalog (`pkg/llm/factory/model_catalog.go`). Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.*
 
 ### Common Commands
 
@@ -86,8 +91,8 @@ export MISTRAL_API_KEY="your-api-key"
 # Get API key from console
 open https://console.mistral.ai/api-keys/
 
-# Test connection
-go run examples/mistral-test/main.go
+# Test with unit tests
+go test -tags fts5 -v ./pkg/llm/mistral/
 ```
 
 ### Configuration Parameters
@@ -103,16 +108,16 @@ go run examples/mistral-test/main.go
 
 ## Overview
 
-Mistral AI provides access to high-performance open and commercial models. The integration offers:
+Mistral AI provides models for text, reasoning, and code. The integration offers:
 - OpenAI-compatible API (easy migration)
 - Native function calling support
-- Multiple model sizes (7B to Large)
-- Both open-source and commercial models
-- Competitive pricing
+- 6 models: general purpose, reasoning (Magistral), and code (Codestral/Devstral)
+- Context windows from 32K to 256K
+- Competitive pricing ($0.10-$8.00 per 1M tokens)
 - Cost tracking for all models
 
 **Implementation**: `pkg/llm/mistral/client.go`
-**Test Coverage**: 92.3%
+**Test Coverage**: 72.0%
 **API Endpoint**: `https://api.mistral.ai/v1/chat/completions`
 **Interface**: Full `LLMProvider` compliance via OpenAI wrapper
 
@@ -152,31 +157,33 @@ curl https://api.mistral.ai/v1/chat/completions \
 - Full LLMProvider interface implementation (`pkg/llm/mistral/client.go`)
 - OpenAI-compatible message format
 - Function calling with JSON schema conversion
-- Cost calculation for all models (open and commercial)
+- Cost calculation for legacy models (open and commercial); see Known Issue below for newer models
 - Custom model selection
 - Temperature and max tokens configuration
 - Tool calling (parallel tool calls supported)
-- 92.3% test coverage (260 lines of tests)
+- 72.0% test coverage (430 lines of tests)
+
+### Implemented ✅ (Streaming)
+
+- Streaming via `StreamingLLMProvider` interface (`ChatStream` method)
+- Delegates to the underlying OpenAI-compatible client's `ChatStream`, then recalculates cost using Mistral pricing
+- See `pkg/llm/mistral/client.go`
 
 ### Partial ⚠️
 
-- Server integration (available via Builder API only, not in `looms serve` CLI yet)
-- Keyring storage (not integrated with `looms config` commands)
-- Streaming (not yet implemented)
+- Automatic retry with exponential backoff (available via `RateLimiterConfig`, not Mistral-specific)
+- Circuit breaker integration (not implemented in the Mistral client)
 
-### Planned 📋
+### Known Issue ⚠️
 
-- Full CLI integration with `looms config` (v1.1.0)
-- Response streaming support (v1.1.0)
-- Automatic retry with exponential backoff (v1.1.0)
-- Circuit breaker integration (v1.2.0)
+**Cost calculation drift**: The `calculateCost()` function in `client.go` uses hardcoded prices from 2024-11 that differ from the model catalog (`pkg/llm/factory/model_catalog.go`). For example, `mistral-large-latest` is priced at $4.00/$12.00 in `calculateCost()` but $2.00/$6.00 in the catalog. Additionally, newer models (Magistral, Codestral, Devstral) are not in `calculateCost()` and fall back to the $4.00/$12.00 default. The model catalog prices shown in this document reflect the catalog, not the runtime `calculateCost()` output.
 
 
 ## Configuration
 
 ### Using Builder API (Programmatic)
 
-The Mistral provider is currently available through the Builder API for programmatic agent creation:
+The Mistral provider is available through both the Builder API (programmatic) and YAML configuration (server mode):
 
 ```go
 import (
@@ -246,7 +253,7 @@ Model: mistral-large-latest
 
 ### Environment Variables
 
-While not integrated with `looms serve` yet, the Mistral client can accept API keys from environment variables:
+The Mistral client accepts API keys from environment variables:
 
 ```go
 apiKey := os.Getenv("MISTRAL_API_KEY")
@@ -271,98 +278,152 @@ agent, err := builder.NewAgentBuilder().
 | `Timeout` | `duration` | No | `60s` | 1s-10m | Request timeout |
 
 
+### Using YAML Configuration (Server Mode)
+
+Mistral is also available through YAML agent configuration files when using `looms serve`:
+
+```yaml
+llm:
+  provider: mistral
+  mistral_model: mistral-large-latest
+  # mistral_api_key: set via keyring (looms config set-key mistral_api_key)
+  temperature: 1.0
+  max_tokens: 4096
+```
+
+**API key management** (do not put API keys in YAML files):
+
+```bash
+# Store API key in keyring (recommended)
+looms config set-key mistral_api_key
+
+# Or set via environment variable
+export LOOM_LLM_MISTRAL_API_KEY="your-api-key"
+```
+
+The factory (`pkg/llm/factory/factory.go`) resolves the API key in this order:
+1. `llm.mistral_api_key` config field
+2. `MISTRAL_API_KEY` environment variable
+
+
 ## Model Support and Pricing
 
-Pricing as of November 2024 (per million tokens):
+Pricing per million tokens (source: `pkg/llm/factory/model_catalog.go`):
 
-### Open Models (Free/Permissive License)
+### General Purpose Models
 
-| Model | ID | Input Cost | Output Cost | Parameters | Architecture | Best For |
-|-------|----|-----------:|------------:|------------|--------------|----------|
-| **Mistral 7B** | `open-mistral-7b` | $0.25 | $0.25 | 7B | Dense | Development, testing, cost-sensitive |
-| **Mixtral 8x7B** | `open-mixtral-8x7b` | $0.70 | $0.70 | 46.7B | MoE (8x7B) | Balanced performance |
-| **Mixtral 8x22B** | `open-mixtral-8x22b` | $2.00 | $6.00 | 141B | MoE (8x22B) | High performance at lower cost |
-
-**MoE**: Mixture of Experts - only 2 experts active per token, providing high performance with lower compute.
+| Model | ID | Input Cost | Output Cost | Context | Max Output | Capabilities |
+|-------|----|-----------:|------------:|---------|------------|--------------|
+| **Mistral Large** | `mistral-large-latest` | $2.00 | $6.00 | 128K | 8K | text, tool-use |
+| **Mistral Small** | `mistral-small-latest` | $0.10 | $0.30 | 32K | 8K | text, tool-use |
 
 
-### Commercial Models
+### Reasoning Models (Magistral)
 
-| Model | ID | Input Cost | Output Cost | Context | Best For |
-|-------|----|-----------:|------------:|---------|----------|
-| **Mistral Small** | `mistral-small-latest` | $1.00 | $3.00 | 32K | Simple tasks, high volume |
-| **Mistral Medium** | `mistral-medium-latest` | $2.70 | $8.10 | 32K | Balanced (deprecated) |
-| **Mistral Large** | `mistral-large-latest` | $4.00 | $12.00 | 32K | Complex reasoning, production |
+| Model | ID | Input Cost | Output Cost | Context | Max Output | Capabilities |
+|-------|----|-----------:|------------:|---------|------------|--------------|
+| **Magistral Medium** | `magistral-medium-latest` | $2.00 | $8.00 | 128K | 131K | text, tool-use, thinking |
+| **Magistral Small** | `magistral-small-latest` | $0.50 | $1.50 | 128K | 131K | text, tool-use, thinking |
+
+Magistral models support extended thinking (reasoning traces) and have a 131K max output window, making them suitable for complex multi-step reasoning tasks.
 
 
-### Legacy Model IDs
+### Code Models
 
-For backwards compatibility, Mistral also supports versioned model IDs:
+| Model | ID | Input Cost | Output Cost | Context | Max Output | Capabilities |
+|-------|----|-----------:|------------:|---------|------------|--------------|
+| **Codestral** | `codestral-latest` | $0.30 | $0.90 | 256K | 8K | text, tool-use |
+| **Devstral** | `devstral-medium-latest` | $0.50 | $1.50 | 128K | 8K | text, tool-use |
 
-| Legacy ID | Maps To | Pricing |
-|-----------|---------|---------|
-| `mistral-tiny-2312` | `open-mistral-7b` | $0.25/$0.25 |
-| `mistral-small-2312` | `open-mixtral-8x7b` | $0.70/$0.70 |
-| `mistral-small-2402` | `mistral-small-latest` | $1.00/$3.00 |
-| `mistral-large-2402` | `mistral-large-latest` | $4.00/$12.00 |
-| `mistral-large-2407` | `mistral-large-latest` | $4.00/$12.00 |
+Codestral has the largest context window (256K) of any Mistral model, optimized for code generation and analysis. Devstral is tuned for development workflows.
 
 **Note**: Prices are approximate and may vary. Check [mistral.ai/technology/#pricing](https://mistral.ai/technology/#pricing) for current rates.
 
 
-## Open Source Models
+## Model Details
 
-Mistral provides several open-source models with permissive licenses:
+### mistral-large-latest (Mistral Large)
 
-### open-mistral-7b
-
-- **Parameters**: 7 billion
-- **License**: Apache 2.0
-- **Context**: 32K tokens
-- **Architecture**: Dense transformer
-- **Best For**: Development, testing, cost-sensitive applications
-- **Speed**: Fastest Mistral model
-- **Cost**: $0.25/1M tokens (input and output)
-
-**Example Use Cases**:
-- Development and testing environments
-- High-volume, simple tasks
-- Cost-sensitive production workloads
-- Educational purposes
-
-
-### open-mixtral-8x7b (Mixtral)
-
-- **Parameters**: 46.7 billion total (8 experts of 7B each)
-- **License**: Apache 2.0
-- **Context**: 32K tokens
-- **Architecture**: Sparse Mixture of Experts (MoE)
-- **Active Parameters**: 12.9B per token (2 experts selected)
-- **Best For**: Balanced performance and cost
-- **Cost**: $0.70/1M tokens (input and output)
-
-**Example Use Cases**:
-- Production workloads requiring good quality
-- Multi-lingual applications
-- Code generation and analysis
-- Reasoning tasks
-
-
-### open-mixtral-8x22b
-
-- **Parameters**: 141 billion total (8 experts of 22B each)
-- **License**: Apache 2.0
-- **Context**: 64K tokens
-- **Architecture**: Sparse Mixture of Experts (MoE)
-- **Active Parameters**: 39B per token (2 experts selected)
-- **Best For**: High-quality inference at lower cost than dense large models
+- **Context**: 128K tokens
+- **Max Output**: 8K tokens
+- **Capabilities**: text, tool-use
 - **Cost**: $2.00/1M input, $6.00/1M output
+- **Best For**: Complex tasks requiring strong general reasoning and tool use
 
 **Example Use Cases**:
-- Complex reasoning and analysis
-- Long-context tasks (up to 64K)
-- High-quality code generation
-- Research and evaluation
+- Multi-step tool orchestration
+- Long-context document analysis (up to 128K)
+- High-quality text generation
+
+
+### mistral-small-latest (Mistral Small)
+
+- **Context**: 32K tokens
+- **Max Output**: 8K tokens
+- **Capabilities**: text, tool-use
+- **Cost**: $0.10/1M input, $0.30/1M output
+- **Best For**: High-volume, cost-sensitive workloads
+
+**Example Use Cases**:
+- Simple classification and extraction
+- High-volume production workloads
+- Development and testing (lowest cost)
+
+
+### magistral-medium-latest (Magistral Medium)
+
+- **Context**: 128K tokens
+- **Max Output**: 131K tokens
+- **Capabilities**: text, tool-use, thinking (reasoning)
+- **Cost**: $2.00/1M input, $8.00/1M output
+- **IsReasoning**: true
+
+**Example Use Cases**:
+- Complex multi-step reasoning
+- Long-form generation (131K output window)
+- Tasks requiring chain-of-thought traces
+
+
+### magistral-small-latest (Magistral Small)
+
+- **Context**: 128K tokens
+- **Max Output**: 131K tokens
+- **Capabilities**: text, tool-use, thinking (reasoning)
+- **Cost**: $0.50/1M input, $1.50/1M output
+- **IsReasoning**: true
+
+**Example Use Cases**:
+- Cost-effective reasoning tasks
+- Moderate-complexity analysis with reasoning traces
+- Development and testing of reasoning workflows
+
+
+### codestral-latest (Codestral)
+
+- **Context**: 256K tokens
+- **Max Output**: 8K tokens
+- **Capabilities**: text, tool-use
+- **Cost**: $0.30/1M input, $0.90/1M output
+- **Best For**: Code generation and analysis
+
+**Example Use Cases**:
+- Code generation and completion
+- Large codebase analysis (256K context)
+- Code review and refactoring suggestions
+
+
+### devstral-medium-latest (Devstral)
+
+- **Context**: 128K tokens
+- **Max Output**: 8K tokens
+- **Capabilities**: text, tool-use
+- **Cost**: $0.50/1M input, $1.50/1M output
+- **Best For**: Development workflows and agent-driven coding
+
+**Example Use Cases**:
+- Agentic coding workflows with tool use
+- Development assistant tasks
+- Code-aware document generation
 
 
 ## Request and Response Format
@@ -379,7 +440,7 @@ ctx := context.Background()
 messages := []types.Message{
     {
         Role:    "system",
-        Content: "You are a helpful coding assistant.",
+        Content: "Answer programming questions with clear, concise Go code examples.",
     },
     {
         Role:    "user",
@@ -407,7 +468,7 @@ Content-Type: application/json
 {
   "model": "mistral-large-latest",
   "messages": [
-    {"role": "system", "content": "You are a helpful coding assistant."},
+    {"role": "system", "content": "Answer programming questions with clear, concise Go code examples."},
     {"role": "user", "content": "Explain Go interfaces."}
   ],
   "max_tokens": 4096,
@@ -420,17 +481,21 @@ Content-Type: application/json
 
 ```go
 type LLMResponse struct {
-    Content  string        // Assistant response
-    Usage    TokenUsage    // Token counts and cost
-    ToolCalls []ToolCall   // Tool calls (if any)
-    Metadata  map[string]interface{} // Provider metadata
+    Content    string                 // Assistant response
+    ToolCalls  []ToolCall             // Tool calls (if any)
+    StopReason string                 // Why the LLM stopped (e.g., "end_turn", "tool_use")
+    Usage      Usage                  // Token counts and cost
+    Metadata   map[string]interface{} // Provider metadata
+    Thinking   string                 // Internal reasoning (for models with extended thinking)
 }
 
-type TokenUsage struct {
-    InputTokens  int
-    OutputTokens int
-    TotalTokens  int
-    CostUSD      float64
+type Usage struct {
+    InputTokens              int
+    OutputTokens             int
+    TotalTokens              int
+    CostUSD                  float64
+    CacheReadInputTokens     int // Tokens served from prompt cache
+    CacheCreationInputTokens int // Tokens written to prompt cache
 }
 ```
 
@@ -439,11 +504,11 @@ type TokenUsage struct {
 ```go
 response := &types.LLMResponse{
     Content: "In Go, an interface is a type that specifies a set of method signatures...",
-    Usage: types.TokenUsage{
+    Usage: types.Usage{
         InputTokens:  35,
         OutputTokens: 245,
         TotalTokens:  280,
-        CostUSD:      0.003080,  // $4/1M input + $12/1M output (mistral-large)
+        CostUSD:      0.001540,  // $2/1M input + $6/1M output (mistral-large)
     },
     Metadata: map[string]interface{}{
         "provider": "mistral",
@@ -456,7 +521,7 @@ response := &types.LLMResponse{
 ```
 Response: In Go, an interface is a type that specifies a set of method signatures...
 Tokens: 35 input, 245 output (280 total)
-Cost: $0.003080
+Cost: $0.001540
 ```
 
 
@@ -496,30 +561,30 @@ Cost = (InputTokens / 1,000,000 * InputPrice) + (OutputTokens / 1,000,000 * Outp
 
 ### Example Costs by Model
 
-**mistral-large-latest** ($4/$12 per 1M tokens):
-- Simple query (100 input, 200 output): $0.002800
-- Medium task (1000 input, 2000 output): $0.028000
-- Large task (10000 input, 20000 output): $0.280000
+**mistral-large-latest** ($2.00/$6.00 per 1M tokens):
+- Simple query (100 input, 200 output): $0.001400
+- Medium task (1000 input, 2000 output): $0.014000
+- Large task (10000 input, 20000 output): $0.140000
 
-**mistral-small-latest** ($1/$3 per 1M tokens):
-- Simple query (100 input, 200 output): $0.000700
-- Medium task (1000 input, 2000 output): $0.007000
-- Large task (10000 input, 20000 output): $0.070000
+**mistral-small-latest** ($0.10/$0.30 per 1M tokens):
+- Simple query (100 input, 200 output): $0.000070
+- Medium task (1000 input, 2000 output): $0.000700
+- Large task (10000 input, 20000 output): $0.007000
 
-**open-mixtral-8x7b** ($0.70/$0.70 per 1M tokens):
+**magistral-medium-latest** ($2.00/$8.00 per 1M tokens):
+- Simple query (100 input, 200 output): $0.001800
+- Medium task (1000 input, 2000 output): $0.018000
+- Large task (10000 input, 20000 output): $0.180000
+
+**codestral-latest** ($0.30/$0.90 per 1M tokens):
 - Simple query (100 input, 200 output): $0.000210
 - Medium task (1000 input, 2000 output): $0.002100
 - Large task (10000 input, 20000 output): $0.021000
 
-**open-mistral-7b** ($0.25/$0.25 per 1M tokens):
-- Simple query (100 input, 200 output): $0.000075
-- Medium task (1000 input, 2000 output): $0.000750
-- Large task (10000 input, 20000 output): $0.007500
-
 
 ## Tool Calling Support
 
-The Mistral provider fully supports function calling (OpenAI-compatible):
+The Mistral provider supports function calling via the OpenAI-compatible API wrapper:
 
 ```go
 import "github.com/teradata-labs/loom/pkg/shuttle"
@@ -531,22 +596,25 @@ func (t *WeatherTool) Name() string { return "get_weather" }
 func (t *WeatherTool) Description() string {
     return "Get current weather for a location"
 }
-func (t *WeatherTool) Parameters() interface{} {
-    return map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "location": map[string]interface{}{
-                "type": "string",
-                "description": "City name",
+func (t *WeatherTool) InputSchema() *shuttle.JSONSchema {
+    return &shuttle.JSONSchema{
+        Type: "object",
+        Properties: map[string]*shuttle.JSONSchema{
+            "location": {
+                Type:        "string",
+                Description: "City name",
             },
         },
-        "required": []string{"location"},
+        Required: []string{"location"},
     }
 }
-func (t *WeatherTool) Execute(ctx context.Context, input map[string]interface{}) (interface{}, error) {
-    // Implementation
-    return map[string]interface{}{"temp": 72, "condition": "sunny"}, nil
+func (t *WeatherTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
+    return &shuttle.Result{
+        Success: true,
+        Data:    map[string]interface{}{"temp": 72, "condition": "sunny"},
+    }, nil
 }
+func (t *WeatherTool) Backend() string { return "" }
 
 // Use tool with agent
 tools := []shuttle.Tool{&WeatherTool{}}
@@ -580,11 +648,9 @@ Mistral supports advanced tool calling features:
    response.ToolCalls // Contains multiple tool calls
    ```
 
-2. **Tool Choice Modes**:
-   - `auto`: Let model decide when to use tools (default)
-   - `none`: Never use tools
-   - `any`: Always use at least one tool
-   - `required`: Must use tools (fail if not used)
+2. **Tool Choice Mode**:
+   - `auto`: Let model decide when to use tools (default, hardcoded in Loom's OpenAI wrapper)
+   - Mistral's API also supports `none`, `any`, and `required`, but Loom does not currently expose tool choice configuration
 
 3. **Tool Result Handling**: Tool results feed back into conversation
    ```go
@@ -707,8 +773,9 @@ Error: Mistral API error (404): The model 'invalid-model' does not exist
 **Retry behavior**: Not retryable (fix model name)
 
 **Valid Model IDs**:
-- Open: `open-mistral-7b`, `open-mixtral-8x7b`, `open-mixtral-8x22b`
-- Commercial: `mistral-small-latest`, `mistral-large-latest`
+- General: `mistral-large-latest`, `mistral-small-latest`
+- Reasoning: `magistral-medium-latest`, `magistral-small-latest`
+- Code: `codestral-latest`, `devstral-medium-latest`
 
 
 ### ERR_RATE_LIMIT
@@ -852,17 +919,18 @@ Error: Mistral API error (400): This model's maximum context length is 32768 tok
 **Resolution**:
 1. Reduce prompt length (truncate conversation history)
 2. Reduce max_tokens parameter
-3. Switch to model with larger context (open-mixtral-8x22b has 64K)
+3. Switch to model with larger context (`codestral-latest` has 256K)
 4. Implement sliding window for long conversations
 
 **Retry behavior**: Not retryable until prompt reduced
 
 **Context Limits**:
-- `open-mistral-7b`: 32K tokens
-- `open-mixtral-8x7b`: 32K tokens
-- `open-mixtral-8x22b`: 64K tokens
 - `mistral-small-latest`: 32K tokens
-- `mistral-large-latest`: 32K tokens
+- `mistral-large-latest`: 128K tokens
+- `magistral-medium-latest`: 128K tokens
+- `magistral-small-latest`: 128K tokens
+- `codestral-latest`: 256K tokens
+- `devstral-medium-latest`: 128K tokens
 
 
 ## Rate Limiting
@@ -895,8 +963,14 @@ client := mistral.NewClient(mistral.Config{
     APIKey:  apiKey,
     Model:   "mistral-large-latest",
     RateLimiterConfig: llm.RateLimiterConfig{
-        TokensPerMinute: 450000,  // 450K TPM (below 500K limit)
-        RefillInterval:  time.Minute,
+        Enabled:           true,
+        RequestsPerSecond: 2.0,
+        TokensPerMinute:   450000,  // 450K TPM (below 500K limit)
+        BurstCapacity:     5,
+        MinDelay:          200 * time.Millisecond,
+        MaxRetries:        5,
+        RetryBackoff:      time.Second,
+        QueueTimeout:      5 * time.Minute,
     },
 })
 ```
@@ -909,21 +983,21 @@ client := mistral.NewClient(mistral.Config{
 
 ## Testing
 
-The Mistral provider has 92.3% test coverage:
+The Mistral provider has 72.0% test coverage:
 
 ```bash
-# Run tests
+# Run tests (fts5 tag required for all Loom packages)
 cd /path/to/loom
-go test ./pkg/llm/mistral/
+go test -tags fts5 ./pkg/llm/mistral/
 
-# With coverage (92.3%)
-go test -cover ./pkg/llm/mistral/
+# With coverage (72.0%)
+go test -tags fts5 -cover ./pkg/llm/mistral/
 
-# With race detection
-go test -race ./pkg/llm/mistral/
+# With race detection (required per project policy)
+go test -tags fts5 -race ./pkg/llm/mistral/
 
 # Verbose output
-go test -v ./pkg/llm/mistral/
+go test -tags fts5 -v ./pkg/llm/mistral/
 ```
 
 **Expected Output**:
@@ -937,7 +1011,7 @@ go test -v ./pkg/llm/mistral/
 --- PASS: TestCalculateCost (0.00s)
 ...
 PASS
-coverage: 92.3% of statements
+coverage: 72.0% of statements
 ok  	github.com/teradata-labs/loom/pkg/llm/mistral	0.124s
 ```
 
@@ -979,7 +1053,7 @@ func TestMistral_Integration(t *testing.T) {
 
 ```bash
 export MISTRAL_API_KEY="your-api-key"
-go test -v ./pkg/llm/mistral -run Integration
+go test -tags fts5 -v ./pkg/llm/mistral -run Integration
 ```
 
 
@@ -988,28 +1062,35 @@ go test -v ./pkg/llm/mistral -run Integration
 ### 1. Model Selection Strategy
 
 ```go
-// Development: Use open models
-agent, err := builder.NewAgentBuilder().
-    WithMistralLLMCustomModel(apiKey, "open-mixtral-8x7b").
-    Build()
-
-// High volume simple tasks: Use small model
+// High volume, cost-effective: Use small model
 agent, err := builder.NewAgentBuilder().
     WithMistralLLMCustomModel(apiKey, "mistral-small-latest").
     Build()
 
-// Production complex reasoning: Use large model
+// Complex tasks with tool use: Use large model
 agent, err := builder.NewAgentBuilder().
     WithMistralLLM(apiKey).  // Defaults to mistral-large-latest
+    Build()
+
+// Reasoning tasks: Use Magistral
+agent, err := builder.NewAgentBuilder().
+    WithMistralLLMCustomModel(apiKey, "magistral-medium-latest").
+    Build()
+
+// Code generation: Use Codestral
+agent, err := builder.NewAgentBuilder().
+    WithMistralLLMCustomModel(apiKey, "codestral-latest").
     Build()
 ```
 
 **Decision Tree**:
-1. **Development/Testing**: → `open-mistral-7b` (fastest, cheapest)
-2. **Cost-Sensitive Production**: → `open-mixtral-8x7b` (good quality, low cost)
-3. **High-Volume Simple Tasks**: → `mistral-small-latest` (commercial support)
-4. **Complex Reasoning**: → `mistral-large-latest` (best quality)
-5. **Long Context (>32K)**: → `open-mixtral-8x22b` (64K context)
+1. **Development/Testing**: → `mistral-small-latest` (cheapest at $0.10/$0.30)
+2. **High-Volume Simple Tasks**: → `mistral-small-latest` (cost-effective)
+3. **Complex Tasks + Tool Use**: → `mistral-large-latest` (best general quality)
+4. **Complex Reasoning**: → `magistral-medium-latest` (reasoning traces, 131K output)
+5. **Cost-Effective Reasoning**: → `magistral-small-latest` ($0.50/$1.50)
+6. **Code Generation**: → `codestral-latest` (256K context, code-optimized)
+7. **Agentic Coding**: → `devstral-medium-latest` (development workflows)
 
 
 ### 2. Cost Management
@@ -1050,7 +1131,7 @@ for _, turn := range conversation {
 ```go
 import "time"
 
-func chatWithRobustRetry(client *mistral.Client, ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
+func chatWithRetryBackoff(client *mistral.Client, ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
     maxRetries := 5
     baseDelay := 1 * time.Second
     maxDelay := 32 * time.Second
@@ -1106,10 +1187,8 @@ if err != nil {
     return fmt.Errorf("failed to get API key: %w", err)
 }
 
-// ✅ Best - Loom keyring integration (coming in v1.1.0)
-agent, err := builder.NewAgentBuilder().
-    WithMistralLLMFromKeyring("mistral_key").
-    Build()
+// ✅ Best - Loom keyring integration
+// looms config set-key mistral_api_key
 ```
 
 
@@ -1129,7 +1208,7 @@ config.MaxTokens = 2048
 config.MaxTokens = 8192
 
 // Never exceed model's context window
-// mistral-large: 32K total (prompt + completion)
+// mistral-large: 128K total (prompt + completion)
 ```
 
 
@@ -1182,7 +1261,7 @@ logger.Info("Mistral response",
 
 ## OpenAI Compatibility
 
-Mistral AI uses an OpenAI-compatible API, making migration simple:
+Mistral AI uses an OpenAI-compatible API, so migration requires minimal code changes:
 
 ### API Compatibility
 
@@ -1190,7 +1269,7 @@ Mistral AI uses an OpenAI-compatible API, making migration simple:
 |---------|--------|---------|-------------|
 | **Message Format** | `[{role, content}]` | `[{role, content}]` | ✅ Yes |
 | **Tool Calling** | Function calling | Function calling | ✅ Yes |
-| **Streaming** | SSE | SSE | ⚠️ Not yet in Loom |
+| **Streaming** | SSE | SSE | ✅ Yes (via OpenAI-compatible delegation) |
 | **Temperature** | 0-2 | 0-2 | ✅ Yes |
 | **Max Tokens** | Model-specific | Model-specific | ✅ Yes |
 | **System Messages** | Supported | Supported | ✅ Yes |
@@ -1218,41 +1297,30 @@ The message format, tool calling, and response structure are identical.
 | Feature | Mistral | OpenAI | Anthropic | Ollama |
 |---------|---------|--------|-----------|--------|
 | **API Compatibility** | OpenAI-like | Native | Native | OpenAI-like |
-| **Tool Calling** | Native | Native | Native | Limited |
-| **Cost** | $0.25-$12/M tokens | $0.15-$60/M tokens | $3-$15/M tokens | Free (local) |
-| **Open Models** | Yes (Apache 2.0) | No | No | Yes |
-| **Context Window** | 32K-64K | 8K-128K | 200K | Model-dependent |
-| **Speed** | Fast | Fast | Fast | Hardware-dependent |
+| **Tool Calling** | Via OpenAI wrapper | Native | Native | Limited |
+| **Cost** | $0.10-$8.00/M tokens | $0.10-$40/M tokens | $1-$75/M tokens | Free (local) |
+| **Reasoning Models** | Yes (Magistral) | Yes (o3/o4) | Yes (thinking) | Yes (DeepSeek R1) |
+| **Context Window** | 32K-256K | 200K-1M | 200K-1M | Model-dependent |
 | **Privacy** | API call | API call | API call | Full (local) |
-| **Multi-lingual** | Excellent | Good | Good | Model-dependent |
 | **European Provider** | Yes (France) | No (US) | No (US) | N/A |
 
 
 ## Limitations
 
-1. **Server Integration**: Not yet integrated with `looms serve` configuration
-   - **Workaround**: Use Builder API programmatically
-   - **ETA**: v1.1.0
+1. **Cost Calculation Drift** ⚠️: The `calculateCost()` function in `client.go` has hardcoded prices from 2024-11 that do not match current model catalog prices. Newer models (Magistral, Codestral, Devstral) are missing from `calculateCost()` and fall back to default ($4.00/$12.00) pricing. Cost values in `response.Usage.CostUSD` may be inaccurate at runtime.
 
-2. **Keyring Storage**: API keys must be provided programmatically
-   - **Workaround**: Use environment variables
-   - **ETA**: v1.1.0
+2. **Rate Limit Handling**: No built-in automatic retry in the Mistral client itself
+   - **Workaround**: Use `RateLimiterConfig` (shared across all providers) or implement exponential backoff manually (see Best Practices)
 
-3. **Streaming**: Response streaming not yet implemented
-   - **Workaround**: Use non-streaming mode
-   - **ETA**: v1.1.0
+3. **Tool Choice Not Configurable**: Loom hardcodes `tool_choice: "auto"` when tools are present. Mistral's API supports `none`, `any`, and `required` modes, but these are not exposed through Loom's configuration.
 
-4. **Rate Limit Handling**: No built-in automatic retry
-   - **Workaround**: Implement exponential backoff manually (see Best Practices)
-   - **ETA**: v1.1.0
-
-5. **Model Availability**: Some models require additional access approval
+4. **Model Availability**: Some models require additional access approval
    - **Resolution**: Request access at [console.mistral.ai](https://console.mistral.ai/)
 
 
 ## Migration from OpenAI
 
-Migrating from OpenAI to Mistral is straightforward due to API compatibility:
+Migrating from OpenAI to Mistral requires minimal changes due to API compatibility:
 
 ### Before (OpenAI)
 
@@ -1261,10 +1329,7 @@ import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
-    WithOpenAILLM(
-        openaiKey,       // OpenAI API key
-        "gpt-4",        // Model name
-    ).
+    WithOpenAILLM(openaiKey).
     Build()
 ```
 
@@ -1293,10 +1358,10 @@ agent, err := builder.NewAgentBuilder().
 |--------|--------|---------|
 | **Endpoint** | `api.openai.com` | `api.mistral.ai` |
 | **API Key Source** | platform.openai.com | console.mistral.ai |
-| **Default Model** | `gpt-3.5-turbo` | `mistral-large-latest` |
-| **Open Models** | None | Yes (Apache 2.0) |
-| **Pricing** | $0.15-$60/1M | $0.25-$12/1M |
-| **Context Window** | 8K-128K | 32K-64K |
+| **Default Model** | `gpt-4.1` | `mistral-large-latest` |
+| **Reasoning Models** | o3, o4-mini | Magistral Medium/Small |
+| **Pricing** | $0.10-$40/1M | $0.10-$8.00/1M |
+| **Context Window** | 200K-1M | 32K-256K |
 | **Provider Location** | US | France (EU) |
 
 
@@ -1318,14 +1383,17 @@ The message format, tool calling, and response structure remain identical.
 
 ### LLM Provider Documentation
 - [LLM Provider Overview](./llm-providers.md) - All supported LLM providers
-- [OpenAI Integration](./llm-openai.md) - Similar API structure
-- [Azure OpenAI Integration](./llm-azure-openai.md) - Enterprise alternative
-- [Ollama Integration](./llm-ollama.md) - Local/open-source models
+- [Anthropic Integration](./llm-anthropic.md) - Claude models (direct API)
+- [OpenAI Integration](./llm-openai.md) - Similar OpenAI-compatible API structure
+- [Gemini Integration](./llm-gemini.md) - Google Gemini models
+- [Azure OpenAI Integration](./llm-azure-openai.md) - Azure-hosted OpenAI models
+- [Bedrock Integration](./llm-bedrock.md) - AWS Bedrock (Claude models)
+- [Ollama Integration](./llm-ollama.md) - Local/self-hosted models
+- [HuggingFace Integration](./llm-huggingface.md) - HuggingFace Inference API
 
 ### Integration Guides
 - [Agent Configuration](./agent-configuration.md) - Complete agent setup
-- [Builder API Reference](../guides/builder-api.md) - Programmatic agent creation
-- [Cost Tracking Guide](../guides/cost-tracking.md) - Monitor LLM costs
+- [Quickstart Guide](../guides/quickstart.md) - Getting started with Loom
 
 ### External Resources
 - [Mistral AI Documentation](https://docs.mistral.ai/)

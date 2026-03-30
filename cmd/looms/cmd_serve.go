@@ -49,6 +49,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
@@ -421,6 +422,9 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 
 	case "huggingface":
 		key := apiKey(cfg.HuggingFaceToken, "HUGGINGFACE_API_KEY")
+		if key == "" {
+			key = os.Getenv("HUGGINGFACE_TOKEN") // backward compat
+		}
 		if key == "" {
 			return nil, fmt.Errorf("huggingface token not configured (set llm.huggingface_token or HUGGINGFACE_API_KEY)")
 		}
@@ -805,8 +809,16 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
 	errorStore := storageBackend.ErrorStore()
+
+	// Extract graph memory store if available (optional interface)
+	var graphMemoryStore memory.GraphMemoryStore
+	if gmp, ok := storageBackend.(backend.GraphMemoryProvider); ok {
+		graphMemoryStore = gmp.GraphMemoryStore()
+	}
+
 	logger.Info("Storage backend initialized",
-		zap.String("backend", config.Storage.Backend))
+		zap.String("backend", config.Storage.Backend),
+		zap.Bool("graph_memory_available", graphMemoryStore != nil))
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -1329,6 +1341,23 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
+
+				// Wire graph memory (opt-out: enabled by default when store is available).
+				// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
+				if graphMemoryStore != nil {
+					gmCfg := cfg.Memory.GetGraphMemory()
+					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
+					if !explicitlyDisabled {
+						if gmCfg == nil {
+							gmCfg = &loomv1.GraphMemoryConfig{Enabled: true}
+						}
+						agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+						logger.Info("    Graph memory enabled",
+							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
+					} else {
+						logger.Info("    Graph memory explicitly disabled")
+					}
+				}
 
 				// Add PermissionChecker if configured
 				if permissionChecker != nil {

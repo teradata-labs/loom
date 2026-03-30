@@ -1,11 +1,11 @@
 
 # Tool Registry Reference
 
-Complete specification for Loom's tool indexing and search system. The tool registry maintains an FTS5 index of all available tools (builtin, MCP, custom) and supports LLM-assisted search for high-accuracy tool discovery.
+Reference for Loom's tool indexing and search system. The tool registry maintains an FTS5 index of all available tools (builtin, MCP, custom) and supports LLM-assisted search for tool discovery.
 
-**Version**: v1.0.0-beta.2
+**Version**: v1.2.0
 **Package**: `pkg/tools/registry`
-**Status**: Implemented with FTS5 indexing, LLM-assisted search
+**Status**: ✅ Implemented with FTS5 indexing, LLM-assisted search
 
 
 ## Table of Contents
@@ -14,7 +14,9 @@ Complete specification for Loom's tool indexing and search system. The tool regi
 - [Architecture](#architecture)
 - [Registry API](#registry-api)
   - [New](#new)
+  - [Close](#close)
   - [IndexAll](#indexall)
+  - [RegisterTool](#registertool)
   - [Search](#search)
   - [GetTool](#gettool)
   - [GetToolsByCapability](#gettoolsbycapability)
@@ -35,11 +37,13 @@ Complete specification for Loom's tool indexing and search system. The tool regi
 
 The Tool Registry provides:
 
-1. **FTS5 Full-Text Search**: SQLite FTS5 virtual table with BM25 ranking and Porter stemmer
-2. **LLM-Assisted Search**: Query expansion and result re-ranking using LLM
-3. **Multi-Source Indexing**: Builtin tools, MCP servers, and custom YAML definitions
-4. **Capability Tagging**: Automatic capability extraction for filtering
-5. **Agent Integration**: `tool_search` builtin tool for agent use
+1. ✅ **FTS5 Full-Text Search**: SQLite FTS5 virtual table with BM25 ranking and Porter stemmer
+2. ✅ **LLM-Assisted Search**: Query expansion and result re-ranking using LLM
+3. ✅ **Multi-Source Indexing**: Builtin tools and MCP servers
+4. ⚠️ **Custom YAML Indexing**: `CustomIndexer` constructor exists but `Index()` is not yet implemented (returns nil)
+5. ✅ **Capability Tagging**: Automatic capability extraction for filtering
+6. ✅ **Agent Integration**: `tool_search` builtin tool for agent use
+7. ✅ **gRPC API**: `ToolRegistryService` in `proto/loom/v1/tools.proto` provides remote access via `SearchTools`, `IndexTools`, `ListToolSources`, `GetIndexedTool`, and `GetToolsByCapability` RPCs
 
 **Key Features**:
 - BM25 ranking with weighted columns (name: 10x, description: 5x, capabilities: 3x, keywords: 2x)
@@ -56,7 +60,7 @@ The Tool Registry provides:
 │                                                                         │
 │  ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐  │
 │  │ BuiltinIndexer   │    │   MCPIndexer     │    │  CustomIndexer   │  │
-│  │ (shuttle.Tool)   │    │ (MCP Manager)    │    │ (YAML configs)   │  │
+│  │ (shuttle.Tool)   │    │ (MCP Manager)    │    │ (stub, pending)  │  │
 │  └────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘  │
 │           │                       │                       │            │
 │           └───────────────────────┼───────────────────────┘            │
@@ -116,6 +120,22 @@ registry, err := registry.New(registry.Config{
 - `tool_sources` - Tracking table for indexer status
 
 
+### Close
+
+**Function**: `Close() error`
+
+Closes the registry and its underlying SQLite database connection.
+
+**Example**:
+```go
+registry, err := registry.New(cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer registry.Close()
+```
+
+
 ### IndexAll
 
 **Function**: `IndexAll(ctx context.Context) (*loomv1.IndexToolsResponse, error)`
@@ -144,6 +164,28 @@ resp, err := registry.IndexAll(ctx)
 ```
 
 
+### RegisterTool
+
+**Function**: `RegisterTool(ctx context.Context, tool *loomv1.IndexedTool) error`
+
+Registers or updates a single tool in the database. This is the exported entry point for registering custom tools via the gRPC API. Thread-safe: acquires write lock before database access.
+
+**Parameters**:
+- `ctx` (`context.Context`) - Context for cancellation
+- `tool` (`*loomv1.IndexedTool`) - The tool definition to register (see [IndexedTool](#indexedtool))
+
+**Example**:
+```go
+err := registry.RegisterTool(ctx, &loomv1.IndexedTool{
+    Id:          "custom:my_tool",
+    Name:        "my_tool",
+    Description: "A custom tool",
+    Source:      loomv1.ToolSource_TOOL_SOURCE_CUSTOM,
+    IndexedAt:   time.Now().Format(time.RFC3339),
+})
+```
+
+
 ### Search
 
 **Function**: `Search(ctx context.Context, req *loomv1.SearchToolsRequest) (*loomv1.SearchToolsResponse, error)`
@@ -157,7 +199,7 @@ type SearchToolsRequest struct {
     Mode              SearchMode       // FAST, BALANCED, ACCURATE
     CapabilityFilters []string         // Filter by capabilities
     SourceFilters     []ToolSource     // Filter by source type
-    MaxResults        int32            // Max results (default: 5)
+    MaxResults        int32            // Max results (default: 5, max: 20)
     IncludeSchema     bool             // Include input/output schemas
     TaskContext       string           // Optional task context for ranking
 }
@@ -217,8 +259,8 @@ Retrieves a specific tool by ID.
 ```go
 tool, err := registry.GetTool(ctx, "builtin:http_request")
 // tool.Name = "http_request"
-// tool.Description = "Make HTTP requests to APIs"
-// tool.Capabilities = ["http", "search"]
+// tool.Description = "Makes HTTP requests to APIs and websites. ..."
+// tool.Capabilities = ["http", "web_search"]
 ```
 
 
@@ -303,7 +345,7 @@ func NewBuiltinIndexer(tracer observability.Tracer, tools ...shuttle.Tool) *Buil
 indexer := registry.NewBuiltinIndexer(tracer)
 tools, err := indexer.Index(ctx)
 // tools[0].Id = "builtin:http_request"
-// tools[0].Capabilities = ["http"]
+// tools[0].Capabilities = ["http", "web_search"]
 ```
 
 
@@ -343,9 +385,19 @@ tools, err := indexer.Index(ctx)
 
 **Purpose**: Indexes custom tool definitions from YAML files.
 
-**Status**: Scaffolded, implementation pending.
+**Status**: ⚠️ Scaffolded - constructor and interface exist, but `Index()` returns nil (not yet implemented).
 
-**Planned Features**:
+**Implementation** (`pkg/tools/registry/indexers.go`):
+```go
+type CustomIndexer struct {
+    configPath string
+    tracer     observability.Tracer
+}
+
+func NewCustomIndexer(configPath string, tracer observability.Tracer) *CustomIndexer
+```
+
+**Planned Features** (not yet implemented):
 - Load tool definitions from `$LOOM_DATA_DIR/tools/*.yaml`
 - Support custom capability tagging
 - Support rate limiting configuration
@@ -409,25 +461,25 @@ func (t *SearchTool) Name() string { return "tool_search" }
   "properties": {
     "query": {
       "type": "string",
-      "description": "Natural language description of what you want to do"
+      "description": "Natural language description of what you want to do. Be specific about the task."
     },
     "mode": {
       "type": "string",
       "enum": ["fast", "balanced", "accurate"],
-      "description": "Search accuracy mode"
+      "description": "Search accuracy mode: 'fast' (keyword only), 'balanced' (default, FTS + LLM re-ranking), 'accurate' (full LLM pipeline)"
     },
     "capabilities": {
       "type": "array",
       "items": {"type": "string"},
-      "description": "Capability filters (e.g., ['notification', 'database'])"
+      "description": "Optional capability filters to narrow results (e.g., ['notification', 'database'])"
     },
     "max_results": {
       "type": "integer",
-      "description": "Maximum results (default: 5, max: 10)"
+      "description": "Maximum number of results to return (default: 5, max: 10)"
     },
     "task_context": {
       "type": "string",
-      "description": "Optional context for ranking"
+      "description": "Optional context about your current task to improve ranking accuracy"
     }
   },
   "required": ["query"]
@@ -444,7 +496,7 @@ func (t *SearchTool) Name() string { return "tool_search" }
       "name": "slack_send",
       "description": "Send messages to Slack channels",
       "confidence": "95%",
-      "source": "MCP",
+      "source": "TOOL_SOURCE_MCP",
       "mcp_server": "slack",
       "match_reason": "Exact match for Slack notification",
       "capabilities": ["notification"],
@@ -454,7 +506,7 @@ func (t *SearchTool) Name() string { return "tool_search" }
       }
     }
   ],
-  "search_mode": "BALANCED",
+  "search_mode": "SEARCH_MODE_BALANCED",
   "search_time_ms": 234,
   "total_tools_indexed": 45
 }
@@ -541,21 +593,23 @@ CREATE VIRTUAL TABLE tools_fts USING fts5(
 
 ## Performance
 
-### Latency Benchmarks
+> **Note**: These are estimated values based on architecture expectations. No benchmark tests exist in the codebase yet. Actual latency depends on hardware, LLM provider, and dataset size.
 
-| Mode | P50 | P99 | Notes |
-|------|-----|-----|-------|
-| FAST | 8ms | 25ms | FTS5 only, no LLM |
-| BALANCED | 250ms | 500ms | FTS5 + LLM re-ranking |
-| ACCURATE | 600ms | 1200ms | Query expansion + FTS5 + re-ranking |
+### Estimated Latency
 
-### Throughput
+| Mode | P50 (est.) | P99 (est.) | Notes |
+|------|------------|------------|-------|
+| FAST | ~8ms | ~25ms | FTS5 only, no LLM |
+| BALANCED | ~250ms | ~500ms | FTS5 + LLM re-ranking |
+| ACCURATE | ~600ms | ~1200ms | Query expansion + FTS5 + re-ranking |
+
+### Estimated Throughput
 
 - Indexing: ~500 tools/second
 - Search (FAST): ~100 searches/second
 - Search (BALANCED): ~4 searches/second (LLM-bound)
 
-### Resource Usage
+### Estimated Resource Usage
 
 - Database size: ~50KB per 100 tools
 - Memory: ~10MB for registry instance
@@ -587,8 +641,8 @@ for _, r := range resp.Results {
     fmt.Printf("%s (%.0f%%): %s\n", r.Tool.Name, r.Confidence*100, r.Tool.Description)
 }
 // Output:
-// http_request (95%): Make HTTP requests to REST APIs
-// web_search (72%): Search the web using Tavily
+// http_request (95%): Makes HTTP requests to APIs and websites. Supports GET, POST, PUT, DELETE, PATCH.
+// web_search (72%): Search the web for current information beyond the model's training cutoff.
 ```
 
 ### Example 2: Agent Using SearchTool
@@ -633,6 +687,6 @@ tools, _ := registry.GetToolsByCapability(ctx, "database",
 
 ## See Also
 
-- [Shuttle (Tool System) Reference](./shuttle.md) - Tool execution system
-- [MCP Integration Guide](../guides/integration/mcp.md) - MCP server setup
+- [MCP Integration Guide](../guides/integration/mcp-readme.md) - MCP server setup
 - [Agent Configuration Reference](./agent-configuration.md) - Tool configuration in agents
+- [Tool Registry Source](../../pkg/tools/registry/) - Implementation source code

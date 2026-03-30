@@ -125,6 +125,7 @@ func runChatCommand(cmd *cobra.Command, args []string) {
 func streamChat(ctx context.Context, c *client.Client, message string) error {
 	var lastMessage string
 	var totalTokens int32
+	var totalCost float64
 	// Track streamed content length so we only print new tokens incrementally
 	var streamedLen int
 	var lastStreamedContent string // last PartialContent we streamed, for dedup at COMPLETED
@@ -133,6 +134,11 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 		// Capture running token count
 		if progress.TokenCount > 0 {
 			totalTokens = progress.TokenCount
+		}
+
+		// Capture cost from progress events
+		if progress.Cost != nil && progress.Cost.TotalCostUsd > 0 {
+			totalCost = progress.Cost.TotalCostUsd
 		}
 
 		// Only show progress if --stream flag is set
@@ -232,9 +238,9 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 		fmt.Fprintf(os.Stderr, "\n[Session: %s]\n", sessionID)
 	}
 
-	// Print token count if available
+	// Print cost and token count if available
 	if totalTokens > 0 {
-		fmt.Fprintf(os.Stderr, "[Cost: $0.000000 | Tokens: %d]\n", totalTokens)
+		fmt.Fprintf(os.Stderr, "[Cost: $%.6f | Tokens: %d]\n", totalCost, totalTokens)
 	}
 
 	return nil

@@ -363,3 +363,51 @@ func TestConvertToolWithNilSchema(t *testing.T) {
 		t.Errorf("Expected empty schema JSON, got %s", protoTool.InputSchemaJson)
 	}
 }
+
+func TestSanitizeUTF8(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "valid ASCII",
+			input: "hello world",
+			want:  "hello world",
+		},
+		{
+			name:  "valid multibyte UTF-8",
+			input: "こんにちは 🌴",
+			want:  "こんにちは 🌴",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "invalid byte sequence",
+			input: "hello\x80world",
+			want:  "hello\uFFFDworld",
+		},
+		{
+			name:  "truncated multibyte char",
+			input: "data\xc3",
+			want:  "data\uFFFD",
+		},
+		{
+			name:  "contiguous invalid bytes replaced as one",
+			input: "\xfe\xff bad \x80\x81",
+			want:  "\uFFFD bad \uFFFD",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeUTF8(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeUTF8(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

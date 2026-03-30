@@ -1,7 +1,14 @@
 
 # Judge DSPy Integration Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
+
+**Feature Status:**
+- ✅ BootstrapFewShot (CLI + library)
+- ✅ MIPRO (CLI + library)
+- ⚠️ TextGrad (library only; CLI prints guidance but is not integrated with the gRPC TeleprompterService)
+- ✅ Multi-judge metrics with dimension weighting
+- ✅ 6 aggregation strategies
 
 ## Table of Contents
 
@@ -27,7 +34,7 @@ Use Loom judges as evaluation metrics for DSPy-style prompt optimization with Bo
 
 ## Prerequisites
 
-- Loom v1.0.0-beta.1+
+- Loom v1.2.0+
 - Loom server running: `looms serve`
 - At least one judge registered
 - Training examples in JSONL format
@@ -56,31 +63,44 @@ Trainset format (`examples.jsonl`):
 
 ### Judge Configuration
 
-Create `config/judges.yaml`:
+Judges are registered individually via `looms judge register`. Create one YAML file per judge under `config/judges/`:
 
+`config/judges/quality-judge.yaml`:
 ```yaml
-judges:
-  - name: quality-judge
-    criteria: "Evaluate SQL query accuracy and completeness"
-    dimensions:
-      - JUDGE_DIMENSION_QUALITY
-    weight: 2.0
-    min_passing_score: 80
+name: quality-judge
+criteria: "Evaluate SQL query accuracy and completeness"
+dimensions:
+  - JUDGE_DIMENSION_QUALITY
+weight: 2.0
+min_passing_score: 80
+```
 
-  - name: safety-judge
-    criteria: "Check for SQL injection and unsafe operations"
-    dimensions:
-      - JUDGE_DIMENSION_SAFETY
-    weight: 3.0
-    min_passing_score: 90
-    criticality: JUDGE_CRITICALITY_SAFETY_CRITICAL
+`config/judges/safety-judge.yaml`:
+```yaml
+name: safety-judge
+criteria: "Check for SQL injection and unsafe operations"
+dimensions:
+  - JUDGE_DIMENSION_SAFETY
+weight: 3.0
+min_passing_score: 90
+criticality: JUDGE_CRITICALITY_SAFETY_CRITICAL
+```
 
-  - name: cost-judge
-    criteria: "Evaluate token efficiency"
-    dimensions:
-      - JUDGE_DIMENSION_COST
-    weight: 1.0
-    min_passing_score: 75
+`config/judges/cost-judge.yaml`:
+```yaml
+name: cost-judge
+criteria: "Evaluate token efficiency"
+dimensions:
+  - JUDGE_DIMENSION_COST
+weight: 1.0
+min_passing_score: 75
+```
+
+Register each judge:
+```bash
+looms judge register config/judges/quality-judge.yaml
+looms judge register config/judges/safety-judge.yaml
+looms judge register config/judges/cost-judge.yaml
 ```
 
 ### Dimension Weights
@@ -103,7 +123,9 @@ Balance optimization across dimensions:
 | `WEIGHTED_AVERAGE` | General evaluation (default) |
 | `ALL_MUST_PASS` | Safety-critical systems |
 | `MAJORITY_PASS` | Consensus-based |
-| `MIN_SCORE` | Conservative evaluation |
+| `ANY_PASS` | Permissive evaluation (at least one judge passes) |
+| `MIN_SCORE` | Conservative evaluation (lowest judge score wins) |
+| `MAX_SCORE` | Optimistic evaluation (highest judge score wins) |
 
 ## Common Tasks
 
@@ -218,6 +240,8 @@ fmt.Printf("Best instruction: %s\n", result.OptimizedPrompts["system"])
 ```
 
 ### TextGrad Iterative Improvement
+
+> **Note:** TextGrad is available as a Go library only. The `looms teleprompter textgrad` CLI command prints guidance but is not yet integrated with the gRPC TeleprompterService. Use the library API shown below.
 
 ```go
 engine, _ := teleprompter.NewJudgeGradientEngine(&teleprompter.JudgeGradientConfig{
@@ -373,18 +397,18 @@ Check judge criteria aren't too strict.
 
 ### No Dimension Scores
 
-Ensure judges have dimensions configured:
+Ensure judges have dimensions configured in their YAML config:
 
 ```yaml
-# Wrong
-- name: my-judge
-  criteria: "..."
+# Wrong (missing dimensions)
+name: my-judge
+criteria: "..."
 
 # Correct
-- name: my-judge
-  criteria: "..."
-  dimensions:
-    - JUDGE_DIMENSION_QUALITY
+name: my-judge
+criteria: "..."
+dimensions:
+  - JUDGE_DIMENSION_QUALITY
 ```
 
 ### Safety Filtering Too Aggressive
@@ -408,10 +432,10 @@ looms teleprompter bootstrap \
 
 ### Judge Timeouts
 
-Increase timeout:
+Judge timeouts are configured on the `EvaluateRequest` (set to 30 seconds by default in the metric implementation), not on `TeleprompterConfig`. When using the CLI, increase the overall request timeout:
 
-```go
-Config: &loomv1.TeleprompterConfig{
-    TimeoutSeconds: 60,  // Default is 30
-}
+```bash
+looms teleprompter bootstrap \
+  --timeout=600 \  # Overall request timeout in seconds (default: 300)
+  ...
 ```

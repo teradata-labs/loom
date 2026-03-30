@@ -40,7 +40,7 @@ The Docker Backend architecture prioritizes:
 - Multi-node container orchestration (use Kubernetes backend for distributed deployments)
 - GPU resource pass-through (planned for v2.0 with nvidia-docker runtime)
 - Windows container support (Linux containers only in v1.0)
-- Production-grade multi-tenancy isolation (basic tenant context in baggage, no hard isolation)
+- Hard multi-tenancy isolation (basic tenant context in baggage, no resource isolation between tenants)
 
 
 ## System Context
@@ -72,7 +72,7 @@ graph TB
         Daemon --> C3
     end
 
-    Agent -->|"1. Execute(cmd, env, stdin)<br/>2. GetLogs(containerID)<br/>3. ListContainers()<br/>4. Health checks"| Executor
+    Agent -->|"1. Execute(ctx, *ExecuteRequest)<br/>2. GetContainerLogs(containerID)<br/>3. Health(ctx)<br/>4. Close()"| Executor
     Agent -.->|"Execution Requests"| Hawk
 
     Executor -->|"Container API<br/>(create, exec, logs, kill)"| Daemon
@@ -90,9 +90,9 @@ graph TB
 ```
 
 **External Dependencies**:
-- **Loom Agent Framework**: Client of the Docker backend, submits execution requests via `Execute()` interface
-- **Docker Daemon**: Provides container lifecycle API (create, exec, logs, kill) via Unix socket (`/var/run/docker.sock`)
-- **Hawk Observability Service**: Receives distributed trace spans via gRPC (`observability.Tracer` interface)
+- **Loom Agent Framework**: Client of the Docker backend, submits execution requests via `DockerBackend.ExecuteQuery()` (which delegates to `DockerExecutor.Execute()`)
+- **Docker Daemon**: Provides container lifecycle API (create, start, exec, logs, stop, remove) via Unix socket (auto-detected: OrbStack on macOS, `/var/run/docker.sock` on Linux, configurable via `DOCKER_HOST` or `LOOM_DOCKER_SOCKET_PATHS`)
+- **Hawk Observability Service**: Receives distributed trace spans via `observability.Tracer` interface (`StartSpan()`, `EndSpan()`)
 
 **Boundary Considerations**:
 - Docker backend never directly accesses host filesystem except explicitly mounted volumes (security boundary)
@@ -106,27 +106,27 @@ graph TB
 graph TB
     subgraph Backend["Docker Backend"]
         subgraph Executor["DockerExecutor"]
-            ExecAPI["• Execute(ctx, cmd, env, stdin) → Result<br/>• ExecuteStream(ctx, cmd, env, stdin) → Stream<br/>• GetLogs(containerID) → []byte<br/>• Health() → bool"]
+            ExecAPI["• Execute(ctx, *ExecuteRequest) → *ExecuteResponse<br/>• GetContainerLogs(containerID, tail, timestamps) → string<br/>• Health(ctx) → error<br/>• Close() → error"]
         end
 
         subgraph Scheduler["LocalScheduler"]
-            SchedAPI["• GetOrCreateContainer()<br/>• RotateContainers()<br/>• Cleanup()<br/>• HealthCheck()"]
+            SchedAPI["• Schedule(ctx, req)<br/>• GetOrCreateContainer(ctx, req)<br/>• ListContainers(ctx, filters)<br/>• RemoveContainer(ctx, id)<br/>• GetNodeInfo(ctx, nodeID)"]
             Pool["Container Pool:<br/>┌────┐ ┌────┐ ┌────┐<br/>│ C1 │ │ C2 │ │ C3 │<br/>└────┘ └────┘ └────┘"]
         end
 
         subgraph Collector["TraceCollector"]
-            CollectAPI["• ParseStderr(stream)<br/>• ExtractSpans()<br/>• ForwardToHawk()<br/>• ParseJSON()"]
-            Format["Trace Format:<br/>__LOOM_TRACE__ {...}<br/>__LOOM_METRIC__ {...}"]
+            CollectAPI["• CollectFromReader(ctx, reader, containerID)<br/>• processTraceJSON(jsonStr, containerID)<br/>• GetStats() → (int64, int64)"]
+            Format["Trace Format:<br/>__LOOM_TRACE__:{JSON}<br/>__LOOM_TRACE_ERROR__:{msg}"]
         end
 
         subgraph Runtimes["Runtime Strategies"]
-            Python["Python Runtime<br/>Base: python<br/>Packages: pip<br/>Health: pip"]
-            Node["Node Runtime<br/>Base: node<br/>Packages: npm<br/>Health: node"]
-            Custom["Custom Runtime<br/>Base: user-defined<br/>Commands: custom<br/>Health: custom"]
+            Python["Python Runtime<br/>Base: python:3.11-slim<br/>Packages: pip<br/>Cache: /root/.cache/pip"]
+            Node["Node Runtime<br/>Base: node:20-slim<br/>Packages: npm<br/>Cache: /root/.npm"]
+            Custom["Custom Runtime<br/>Base: user-defined<br/>Packages: none<br/>Cache: none"]
         end
 
         subgraph MCP["MCPServerManager (Optional)"]
-            MCPAPI["• StartMCPServer(ctx, config) → Container<br/>• StopMCPServer(containerID)<br/>• HealthCheckMCP(containerID) → bool"]
+            MCPAPI["• StartMCPServer(ctx, name, config, runtime, dockerConfig) → error<br/>• StopMCPServer(ctx, name) → error<br/>• HealthCheck(ctx, name) → error<br/>• InvokeTool(ctx, name, tool, args) → *CallToolResult"]
         end
 
         Executor -->|uses| Scheduler
@@ -155,14 +155,15 @@ graph TB
 ```
 
 **High-Level Execution Flow**:
-1. Loom agent calls `Execute(cmd, env, stdin)` on DockerExecutor
-2. DockerExecutor requests container from LocalScheduler (pool lookup or creation)
-3. LocalScheduler returns existing ready container or creates new one with runtime-specific setup
-4. DockerExecutor injects trace context into environment variables (`LOOM_TRACE_ID`, `LOOM_SPAN_ID`, `LOOM_TRACE_BAGGAGE`)
-5. Command executes in container via `docker exec`, containerized code writes traces to stderr using embedded trace libraries
-6. TraceCollector parses stderr stream, extracts `__LOOM_TRACE__:` prefixed JSON spans
-7. TraceCollector forwards spans to Hawk via `tracer.SendSpan()` (non-blocking gRPC)
-8. DockerExecutor returns execution result (stdout, stderr, exit code) to Loom agent
+1. Loom agent calls `Execute(ctx, *loomv1.ExecuteRequest)` on DockerExecutor
+2. DockerExecutor requests container from ContainerScheduler via `GetOrCreateContainer()`
+3. Scheduler returns existing matching container or allocates a new pool slot (actual Docker creation happens in executor)
+4. If new container: executor calls runtime's `BuildContainerConfig()`, `BuildHostConfig()`, creates Docker container, starts it, runs `InstallPackages()` (including trace library injection)
+5. DockerExecutor injects trace context into environment variables (`LOOM_TRACE_ID`, `LOOM_SPAN_ID`, `LOOM_TRACE_BAGGAGE`)
+6. Command executes in container via `docker exec`, containerized code writes traces to stderr using embedded trace libraries
+7. TraceCollector parses stderr stream, extracts `__LOOM_TRACE__:` prefixed JSON spans
+8. TraceCollector forwards spans to Hawk via `tracer.EndSpan(span)`
+9. DockerExecutor returns `*loomv1.ExecuteResponse` (stdout, stderr, exit code, duration, container metadata) to caller
 
 
 ## Components
@@ -171,74 +172,82 @@ graph TB
 
 **Responsibility**: Container lifecycle orchestration and command execution with trace context injection
 
-**Interface**:
+**Struct** (concrete type, not interface):
 ```go
-type DockerExecutor interface {
-    Execute(ctx context.Context, cmd []string, env map[string]string, stdin io.Reader) (Result, error)
-    ExecuteStream(ctx context.Context, cmd []string, env map[string]string, stdin io.Reader) (<-chan StreamEvent, error)
-    GetLogs(containerID string) ([]byte, error)
-    Health() bool
+type DockerExecutor struct {
+    scheduler      ContainerScheduler
+    dockerClient   *client.Client
+    runtimes       map[loomv1.RuntimeType]runtime.Runtime
+    logger         *zap.Logger
+    tracer         observability.Tracer
+    traceCollector *TraceCollector
 }
+
+func (de *DockerExecutor) Execute(ctx context.Context, req *loomv1.ExecuteRequest) (*loomv1.ExecuteResponse, error)
+func (de *DockerExecutor) GetContainerLogs(ctx context.Context, containerID string, tail int, timestamps bool) (string, error)
+func (de *DockerExecutor) Health(ctx context.Context) error
+func (de *DockerExecutor) Close() error
 ```
 
-**Implementation**: `pkg/docker/executor.go:42-560`
+**Implementation**: `pkg/docker/executor.go`
 
 **Key Invariants**:
-- **Trace Context Injection**: Always injects `LOOM_TRACE_ID`, `LOOM_SPAN_ID`, `LOOM_TRACE_BAGGAGE` environment variables when tracing enabled (checked via `observability.IsTracingEnabled(ctx)`)
-- **Stderr Bifurcation**: Stderr stream split into two paths: regular output to result buffer, trace lines to TraceCollector (using `io.TeeReader` pattern)
+- **Trace Context Injection**: Always injects `LOOM_TRACE_ID`, `LOOM_SPAN_ID`, `LOOM_TRACE_BAGGAGE` environment variables when tracing enabled (checked via `de.tracer != nil` and `span != nil`)
+- **Stderr Bifurcation**: Stderr stream split into two paths: regular output via `FilteringWriter` (strips trace lines), raw output to TraceCollector pipe (using `io.MultiWriter` pattern)
 - **Rotation Check**: Container rotation policy evaluated after every execution completion (prevents stale containers)
 
 **Operations**:
-- `Execute()`: Synchronous command execution, blocks until completion or context cancellation
-- `ExecuteStream()`: Asynchronous streaming execution, returns channel for real-time output
-- `GetLogs()`: Retrieve container logs for debugging failed executions
-- `Health()`: Check Docker daemon connectivity via `docker info` API call
+- `Execute()`: Synchronous command execution, blocks until completion or context cancellation. Accepts `*loomv1.ExecuteRequest` proto and returns `*loomv1.ExecuteResponse` with stdout, stderr, exit code, duration, and container metadata.
+- `GetContainerLogs()`: Retrieve container logs for debugging failed executions
+- `Health()`: Check Docker daemon connectivity via `Ping()` API call and scheduler accessibility
+- `Close()`: Release Docker client resources
 
-**Concurrency**: All methods thread-safe via delegation to LocalScheduler's `sync.Mutex` protection
+**Concurrency**: All methods thread-safe. Scheduler access serialized via `sync.RWMutex`. Docker API calls are synchronous over Unix socket.
 
 
 ### LocalScheduler
 
 **Responsibility**: Container pool management with rotation policy and automatic cleanup
 
-**Interface**:
+**Interface** (`ContainerScheduler`):
 ```go
-type LocalScheduler interface {
-    GetOrCreateContainer(ctx context.Context, req ContainerRequest) (string, error)
+type ContainerScheduler interface {
+    Schedule(ctx context.Context, req *loomv1.ScheduleRequest) (*loomv1.ScheduleDecision, error)
+    GetOrCreateContainer(ctx context.Context, req *loomv1.ContainerRequest) (string, bool, error)
+    ListContainers(ctx context.Context, filters map[string]string) ([]*loomv1.Container, error)
     RemoveContainer(ctx context.Context, containerID string) error
-    ListContainers(ctx context.Context) ([]ContainerInfo, error)
-    Health() bool
+    GetNodeInfo(ctx context.Context, nodeID string) (*loomv1.NodeInfo, error)
+    Close() error
 }
 ```
 
-**Implementation**: `pkg/docker/scheduler.go:35-450`
+**Implementation**: `pkg/docker/scheduler.go` (LocalScheduler implements ContainerScheduler)
 
 **Container Pool Strategy**:
-- Pool key computation: `hash(RuntimeType, Image, sorted(Packages))`
-- Per-runtime-config pool: separate pools for Python vs. Node.js vs. Custom runtimes
-- Maximum executions per container: 100 (configurable via `rotation.max_executions`)
-- Maximum container age: 1 hour (configurable via `rotation.max_age`)
-- Stuck container timeout: 5 minutes (containers in "creating" state forcibly removed)
+- Pool matching: containers matched by `RuntimeType` (and optionally `TenantId` for future multi-tenancy)
+- Per-runtime pool: separate containers for Python vs. Node.js vs. Custom runtimes
+- Maximum executions per container: 1000 (configurable via `rotation.max_executions`)
+- Maximum container age: 4 hours (configurable via `rotation.max_age`)
+- Stuck container timeout: 5 minutes (containers in "creating" state marked "failed")
 
 **Rotation Policy**:
 ```go
 shouldRotate := (executions >= maxExecutions) || (age >= maxAge)
 ```
 
-Evaluated after every execution. Rotation creates replacement container before removing old one (zero-downtime rotation).
+Evaluated after every execution in the executor. The scheduler also runs periodic background cleanup for time-based rotation.
 
 **Cleanup Strategy**:
-- Dedicated cleanup goroutine runs every 5 minutes (`pkg/docker/scheduler.go:380-420`)
-- Removes containers in "failed" state (health check failures)
-- Removes containers stuck in "creating" state for >5 minutes (prevents zombie containers)
-- Removes containers exceeding maximum age (prevents indefinite resource accumulation)
+- Dedicated cleanup goroutine runs at configurable interval (default: 5 minutes) via `backgroundCleanup()`
+- Marks containers stuck in "creating" state for >5 minutes as "failed" (prevents zombie containers)
+- Removes containers in "failed" state after 10-minute grace period
+- Removes running containers exceeding maximum age (prevents indefinite resource accumulation)
 
 **Invariants**:
-- **Pool Size Bound**: Container count never exceeds configured maximum per runtime (`pool_size` config)
-- **Unique Container IDs**: No duplicate container IDs in pool map (enforced by Docker daemon)
-- **Zero-Downtime Rotation**: Replacement container created and marked "ready" before old container removed
+- **Unique Container IDs**: No duplicate container IDs in pool map (IDs generated with nanosecond timestamp)
+- **State Consistency**: Container state transitions protected by lock (creating -> running -> failed)
 
-**Concurrency**: Uses `sync.Mutex` to protect shared state (pool map, container state transitions). Lock ordering: always acquire pool lock before Docker API calls to prevent deadlock.
+**Concurrency**: Uses `sync.RWMutex` to protect shared state (pool map, container state transitions). Read-write lock allows concurrent reads (ListContainers, GetNodeInfo) while serializing mutations. Lock released before Docker API calls to prevent blocking other goroutines during I/O.
 
 
 ### TraceCollector
@@ -255,15 +264,17 @@ type TraceCollector struct {
 func (tc *TraceCollector) CollectFromReader(ctx context.Context, reader io.Reader, containerID string) error
 ```
 
-**Implementation**: `pkg/docker/trace_collector.go:20-200`
+**Implementation**: `pkg/docker/trace_collector.go`
 
 **Trace Parsing Algorithm**:
 1. Read stderr stream line-by-line using `bufio.Scanner` (streaming, constant memory)
 2. Match trace prefix pattern: `^__LOOM_TRACE__:(.*)$` using `strings.HasPrefix()`
-3. Parse JSON payload (schema: `{trace_id, span_id, parent_id, name, start_time, end_time, status, attributes}`)
-4. Validate required fields (`trace_id`, `span_id`, `name`) - reject incomplete spans
-5. Forward span to `tracer.SendSpan(ctx, span)` asynchronously (non-blocking)
-6. Continue until EOF or context cancellation
+3. Also handles `__LOOM_TRACE_ERROR__:` prefix lines (container-side trace library errors, logged as warnings)
+4. Parse JSON payload (schema: `{trace_id, span_id, parent_id, name, start_time, end_time, status, attributes}`)
+5. Validate required fields (`trace_id`, `span_id`, `name`) - reject incomplete spans
+6. Parse ISO 8601 timestamps and convert to `observability.Span`
+7. Forward span to `tracer.EndSpan(span)` for export to Hawk
+8. Continue until EOF or context cancellation
 
 **Complexity**: O(n) where n = number of stderr lines (single pass, streaming)
 
@@ -274,9 +285,9 @@ func (tc *TraceCollector) CollectFromReader(ctx context.Context, reader io.Reade
 - **EOF**: Treated as normal termination, no error logged
 
 **Invariants**:
-- **Non-Blocking Forwarding**: `tracer.SendSpan()` never blocks on Hawk connectivity (async send with buffered channel)
-- **Read-Only Stream**: Never modifies original stderr stream (uses `io.TeeReader` for bifurcation)
-- **Accurate Statistics**: `spansCollected` and `parseErrors` counters always reflect actual parsing outcomes
+- **Forwarding via EndSpan**: `tracer.EndSpan(span)` exports completed spans to Hawk
+- **Read-Only Stream**: Never modifies original stderr stream (uses `io.MultiWriter` with `FilteringWriter` for bifurcation)
+- **Accurate Statistics**: `spansCollected` and `parseErrors` counters always reflect actual parsing outcomes (protected by `sync.Mutex`)
 
 **Concurrency**: Safe to call `CollectFromReader()` concurrently on different readers (no shared mutable state per instance)
 
@@ -288,38 +299,42 @@ func (tc *TraceCollector) CollectFromReader(ctx context.Context, reader io.Reade
 **Interface**:
 ```go
 type Runtime interface {
-    GetBaseImage() string
-    InstallPackages(ctx context.Context, packages []string) ([][]string, error)
-    HealthCheck(ctx context.Context) ([]string, error)
-    InjectTraceLibrary(ctx context.Context, containerID string) error
+    Type() loomv1.RuntimeType
+    BuildContainerConfig(ctx context.Context, config *loomv1.DockerBackendConfig) (*container.Config, error)
+    BuildHostConfig(ctx context.Context, config *loomv1.DockerBackendConfig) (*container.HostConfig, error)
+    PrepareImage(ctx context.Context, config *loomv1.DockerBackendConfig) (string, error)
+    InstallPackages(ctx context.Context, config *loomv1.DockerBackendConfig) ([][]string, error)
+    GetCacheMounts(ctx context.Context) []mount.Mount
 }
 ```
 
 **Implementations**:
 - **PythonRuntime** (`pkg/docker/runtime/python_runtime.go`):
-  - Base image: `python:3.11-slim`
-  - Package manager: `pip install` with `--no-cache-dir` flag
-  - Health check: `python --version && pip --version`
-  - Trace library: `loom_trace.py` injected to `/usr/local/lib/python3.11/site-packages/`
+  - Base image: `python:<version>-slim` (default `python:3.11-slim`, supports 3.9-3.12)
+  - Package manager: `pip install` (pip cache enabled via `PIP_NO_CACHE_DIR=0`, cache volume optional)
+  - Trace library: `loom_trace.py` injected to `/tmp/` via base64-encoded install command (with `PYTHONPATH=/tmp`)
+  - Security: Non-root user (UID 1000:1000), read-only rootfs, capability dropping
+  - Cache: Optional pip cache volume (`loom-pip-cache` -> `/root/.cache/pip`)
 
 - **NodeRuntime** (`pkg/docker/runtime/node_runtime.go`):
-  - Base image: `node:20-alpine`
-  - Package manager: `npm install --global --no-optional`
-  - Health check: `node --version && npm --version`
-  - Trace library: `loom-trace.js` injected to `/usr/local/lib/node_modules/`
+  - Base image: `node:<version>-slim` (default `node:20-slim`, supports 16-21)
+  - Package manager: `npm install --global` for preinstalled packages, `npm install --production` for package.json
+  - Trace library: `loom-trace.js` injected to `/tmp/` via base64-encoded install command (with `NODE_PATH=/tmp`)
+  - Security: Non-root user (UID 1000:1000), read-only rootfs, capability dropping
+  - Cache: Optional npm cache volume (`loom-npm-cache` -> `/root/.npm`)
 
 - **CustomRuntime** (`pkg/docker/runtime/custom_runtime.go`):
-  - Base image: User-defined in configuration
-  - Package manager: User-defined shell commands
-  - Health check: User-defined shell commands (default: `true`)
+  - Base image: User-defined (required via `base_image` config field)
+  - Package manager: None (all dependencies baked into base image)
   - Trace library: None (user responsible for instrumentation)
+  - Security: Non-root user (UID 1000:1000), read-only rootfs, capability dropping
 
 **Trace Library Injection** (Phase 3 implementation):
-- Uses Go `embed` package to embed trace libraries in Loom binary (`//go:embed loom_trace.py`)
-- Libraries written to container filesystem during `GetOrCreateContainer()` phase
-- Python: Writes to `sys.path` last entry for automatic import discovery
-- Node.js: Writes to global `node_modules` for `require('loom-trace')` availability
-- Binary size impact: ~10KB per library (~20KB total)
+- Uses Go `embed` package to embed trace libraries in Loom binary (`//go:embed python/loom_trace.py` and `//go:embed node/loom-trace.js` in `pkg/docker/runtime/trace_libs.go`)
+- Libraries written to container filesystem during `InstallPackages()` phase via base64-encoded commands
+- Python: Written to `/tmp/loom_trace.py` (with `PYTHONPATH=/tmp` set by executor)
+- Node.js: Written to `/tmp/loom-trace.js` (with `NODE_PATH=/tmp` set by executor)
+- Trace library installation is always the first install command for Python and Node.js runtimes
 
 
 ## Key Interactions
@@ -336,7 +351,7 @@ sequenceDiagram
     participant Collector as TraceCollector
     participant Hawk
 
-    Agent->>+Executor: Execute(cmd)
+    Agent->>+Executor: Execute(ctx, req)
     Executor->>+Scheduler: GetOrCreateContainer()
 
     Note over Scheduler: Check pool for<br/>available container
@@ -359,7 +374,7 @@ sequenceDiagram
     Container-->>Docker: stdout/stderr
     Docker-->>-Executor: Result
 
-    Executor-->>-Agent: Result (stdout, stderr, exit_code)
+    Executor-->>-Agent: *ExecuteResponse (stdout, stderr, exit_code, duration)
 
     Note over Scheduler: Rotation check<br/>(after N execs)
 
@@ -408,7 +423,7 @@ flowchart TB
         end
 
         subgraph StderrStream["Stderr Stream"]
-            StderrData["__LOOM_TRACE__:{'trace_id':'abc123...','span_id':'xyz789...',<br/>                'parent_span_id':'span789...','name':<br/>                'data_processing','start_time':'2025-...',<br/>                'end_time':'2025-...','status':'ok'}<br/>Regular stderr output here...<br/>__LOOM_TRACE__:{'trace_id':'abc123...','span_id':'def456...'}"]
+            StderrData["__LOOM_TRACE__:{'trace_id':'abc123...','span_id':'xyz789...',<br/>                'parent_id':'span789...','name':<br/>                'data_processing','start_time':'2025-...',<br/>                'end_time':'2025-...','status':'ok'}<br/>Regular stderr output here...<br/>__LOOM_TRACE__:{'trace_id':'abc123...','span_id':'def456...'}"]
         end
 
         CodeExec -->|"Write to stderr"| StderrData
@@ -420,11 +435,11 @@ flowchart TB
         direction TB
 
         subgraph TraceCollectorComp["TraceCollector"]
-            CollectSteps["1. Read stderr line-by-line<br/>2. Match pattern: ^__LOOM_TRACE__:(.*)$<br/>3. Parse JSON payload<br/>4. Validate trace structure<br/>5. Forward to Hawk via tracer.SendSpan()"]
+            CollectSteps["1. Read stderr line-by-line<br/>2. Match pattern: ^__LOOM_TRACE__:(.*)$<br/>3. Parse JSON payload<br/>4. Validate trace structure<br/>5. Forward to Hawk via tracer.EndSpan()"]
         end
 
         subgraph HawkTracer["Hawk Tracer"]
-            HawkForward["for span in spans:<br/>    hawkClient.SendSpan(ctx, span)<br/><br/>Result:<br/>- Full trace hierarchy preserved<br/>- Parent-child relationships intact<br/>- Tenant context propagated (baggage)"]
+            HawkForward["for span in spans:<br/>    tracer.EndSpan(span)<br/><br/>Result:<br/>- Full trace hierarchy preserved<br/>- Parent-child relationships intact<br/>- Tenant context propagated (baggage)"]
         end
 
         CollectSteps -->|"Forward spans<br/>(gRPC)"| HawkForward
@@ -441,18 +456,19 @@ flowchart TB
 
 **Trace Context Format** (W3C Baggage specification):
 ```
-LOOM_TRACE_BAGGAGE=tenant_id=alice,org_id=acme,session_id=xyz
+LOOM_TRACE_BAGGAGE=tenant_id=alice,org_id=acme
 ```
+
+Only `tenant_id` and `org_id` baggage keys are currently supported (defined as `BaggageKeyTenantID` and `BaggageKeyOrgID` constants in `pkg/docker/executor.go`).
 
 Parsed by container-side trace library into span attributes:
 ```python
 span.attributes["tenant_id"] = "alice"
 span.attributes["org_id"] = "acme"
-span.attributes["session_id"] = "xyz"
 ```
 
 **Parent-Child Relationship Preservation**:
-- Host span ID becomes `parent_span_id` in container spans
+- Host span ID becomes `parent_id` in container spans
 - All container spans share same `trace_id` (distributed trace coherence)
 - Baggage propagates through entire trace hierarchy (tenant context preservation)
 
@@ -461,89 +477,92 @@ span.attributes["session_id"] = "xyz"
 
 ### ContainerRequest
 
-**Purpose**: Specification for container creation with runtime configuration
+**Purpose**: Specification for container creation with runtime configuration (protobuf message `loom.v1.ContainerRequest`)
 
 **Schema**:
 ```go
+// Proto-generated message (gen/go/loom/v1/docker.pb.go)
 type ContainerRequest struct {
-    RuntimeType loomv1.RuntimeType  // RUNTIME_TYPE_PYTHON | RUNTIME_TYPE_NODE | RUNTIME_TYPE_CUSTOM
-    Image       string               // Docker image (optional, uses runtime default if empty)
-    Packages    []string             // Packages to install (e.g., ["pandas", "numpy"] for Python)
-    Env         map[string]string    // User environment variables (merged with trace context)
-    Mounts      []Mount              // Volume mounts (e.g., {Source: "/data", Target: "/mnt/data"})
+    TenantId    string                      // Tenant ID (for future multi-tenancy)
+    OrgId       string                      // Organization ID (for future multi-tenancy)
+    RuntimeType loomv1.RuntimeType          // RUNTIME_TYPE_PYTHON | RUNTIME_TYPE_NODE | RUNTIME_TYPE_CUSTOM
+    Config      *loomv1.DockerBackendConfig // Full Docker backend configuration
+    Resources   *loomv1.ResourceRequest     // Resource requirements (CPU, memory)
+    Affinity    *loomv1.AffinityPolicy      // Scheduling hints (for future distributed scheduler)
+    Labels      map[string]string           // Container labels for organization
 }
 ```
 
 **Invariants**:
 - `RuntimeType` must be valid proto enum value (validated by proto unmarshal)
-- `Packages` may be empty array (no installation commands generated)
-- `Env` never contains `LOOM_TRACE_*` prefix keys (reserved namespace, rejected during validation)
-- `Mounts` source paths must exist on host (Docker creation fails otherwise)
-
-**Operations**:
-- Pool key computation: `hash(RuntimeType, Image, sorted(Packages))` for container reuse
-- Validation: `ValidateContainerRequest()` checks enum values, reserved env keys, mount paths
+- `Config` contains runtime-specific configuration (Python, Node, or Custom oneof)
+- Pool matching currently uses `RuntimeType` (and optionally `TenantId`) for container reuse
 
 
-### ContainerInfo
+### Container
 
-**Purpose**: Container metadata for pool management and rotation decisions
+**Purpose**: Container metadata for pool management and rotation decisions (protobuf message `loom.v1.Container`)
 
 **Schema**:
 ```go
-type ContainerInfo struct {
-    ID             string          // Docker container ID (64-char hex)
-    RuntimeType    loomv1.RuntimeType
-    State          string          // FSM: "creating" → "ready" → "busy" → "ready" (or "failed")
-    CreatedAt      time.Time       // Container creation timestamp
-    LastUsedAt     time.Time       // Last execution timestamp (updated after each exec)
-    ExecutionCount int             // Total executions (monotonically increasing)
-    Health         bool            // Health check result (false triggers immediate removal)
+// Proto-generated message (gen/go/loom/v1/docker.pb.go)
+type Container struct {
+    Id             string                      // Container ID (generated with nanosecond timestamp)
+    TenantId       string                      // Tenant ID (for future multi-tenancy)
+    NodeId         string                      // Node ID (currently always "localhost")
+    RuntimeType    loomv1.RuntimeType          // Runtime type enum
+    Status         loomv1.ContainerStatus      // FSM: CREATING → RUNNING → FAILED
+    CreatedAt      *timestamppb.Timestamp      // Container creation timestamp
+    LastUsedAt     *timestamppb.Timestamp      // Last execution timestamp (updated after each exec)
+    ExecutionCount int32                       // Total executions (monotonically increasing)
+    ResourceUsage  *loomv1.ResourceUsage       // Resource usage tracking
+    Labels         map[string]string           // Container labels
 }
 ```
 
-**State Machine**:
+**State Machine** (using `loomv1.ContainerStatus` enum):
 ```
-creating ──▶ ready ──▶ busy ──▶ ready
-    │           │
-    ▼           ▼
-  failed ◀──── failed
+CREATING ──▶ RUNNING ──▶ FAILED
+    │
+    ▼
+  FAILED (stuck >5min in CREATING)
 ```
 
 **Invariants**:
 - `ExecutionCount` increments monotonically (never decreases)
-- `LastUsedAt` always ≥ `CreatedAt` (temporal ordering)
-- `State == "failed"` implies `Health == false` (health failure causes state transition)
+- `LastUsedAt` always >= `CreatedAt` (temporal ordering)
+- `Status == FAILED` triggers removal during cleanup (after 10-minute grace period)
 - Container rotation: `ExecutionCount >= maxExecutions OR time.Since(CreatedAt) >= maxAge`
 
 
-### TraceSpan
+### containerSpan
 
-**Purpose**: Distributed trace span parsed from container stderr
+**Purpose**: Distributed trace span parsed from container stderr (internal struct in `pkg/docker/trace_collector.go`)
 
 **Schema**:
 ```go
-type TraceSpan struct {
-    TraceID      string                 // Required: hex-encoded trace ID (16 or 32 chars)
-    SpanID       string                 // Required: hex-encoded span ID (16 chars)
-    ParentSpanID string                 // Optional: parent span ID (must match injected LOOM_SPAN_ID)
-    Name         string                 // Required: operation name (e.g., "data_processing")
-    StartTime    string                 // ISO 8601 timestamp (e.g., "2025-01-15T10:30:45.123Z")
-    EndTime      string                 // ISO 8601 timestamp (must be ≥ StartTime)
-    Status       string                 // "ok" | "error" | "unset" (defaults to "unset")
-    Attributes   map[string]interface{} // Optional: key-value pairs (e.g., {"http.status_code": 200})
+type containerSpan struct {
+    TraceID    string                 `json:"trace_id"`    // Required: trace ID
+    SpanID     string                 `json:"span_id"`     // Required: span ID
+    ParentID   string                 `json:"parent_id"`   // Optional: parent span ID (matches injected LOOM_SPAN_ID)
+    Name       string                 `json:"name"`        // Required: operation name (e.g., "data_processing")
+    StartTime  string                 `json:"start_time"`  // ISO 8601 timestamp (e.g., "2025-01-15T10:30:45.123Z")
+    EndTime    string                 `json:"end_time"`    // ISO 8601 timestamp
+    Attributes map[string]interface{} `json:"attributes"`  // Optional: key-value pairs
+    Status     string                 `json:"status"`      // "ok" | "error" | "unset" (defaults to "unset")
 }
 ```
 
+After parsing, the collector converts this to `observability.Span` and adds container metadata (`container.id`, `container.source`).
+
 **Invariants**:
-- **Trace ID Consistency**: `TraceID` must match parent execution's trace ID (validated by TraceCollector)
-- **Parent Relationship**: `ParentSpanID` must match either injected `LOOM_SPAN_ID` or another container span ID
-- **Temporal Ordering**: `StartTime ≤ EndTime` when both present (parsed as `time.Time` for validation)
-- **Status Values**: Must be one of ["ok", "error", "unset"] (unknown values default to "unset")
+- **Required Fields**: `TraceID`, `SpanID`, and `Name` must be non-empty (validated in `processTraceJSON()`)
+- **Timestamp Parsing**: Both `StartTime` and `EndTime` must be valid ISO 8601 (RFC3339 or RFC3339Nano)
+- **Status Values**: Must be one of ["ok", "error", "unset"] (unknown values default to "unset" via `statusFromString()`)
 
 **Operations**:
-- Validation: `ValidateTraceSpan()` checks required fields, temporal ordering, ID formats
-- Forwarding: `tracer.SendSpan()` converts to Hawk proto format (`hawk.TraceSpan`)
+- Validation: `processTraceJSON()` checks required fields and timestamp parsing
+- Forwarding: `tracer.EndSpan(span)` exports the completed span to Hawk
 
 
 ## Algorithms
@@ -554,120 +573,104 @@ type TraceSpan struct {
 
 **Approach**:
 ```go
-func (s *LocalScheduler) GetOrCreateContainer(ctx context.Context, req ContainerRequest) (string, error) {
-    // 1. Compute deterministic pool key
-    key := computePoolKey(req.RuntimeType, req.Image, req.Packages)
+func (ls *LocalScheduler) GetOrCreateContainer(ctx context.Context, req *loomv1.ContainerRequest) (string, bool, error) {
+    ls.mu.Lock()
+    defer ls.mu.Unlock()
 
-    // 2. Lock pool map for atomic read-modify-write
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    // 3. Lookup existing container
-    if info, exists := s.pool[key]; exists && info.State == "ready" {
-        // Transition to busy, update last used time
-        info.State = "busy"
-        info.LastUsedAt = time.Now()
-        info.ExecutionCount++
-        s.pool[key] = info
-        return info.ID, nil
+    // 1. Search pool for healthy container matching RuntimeType (and optionally TenantId)
+    containerID := ls.findHealthyContainerLocked(req)
+    if containerID != "" {
+        // Increment execution count, return existing container
+        if container, ok := ls.containerPool[containerID]; ok {
+            container.ExecutionCount++
+        }
+        return containerID, false, nil // Reused existing container
     }
 
-    // 4. No ready container, create new one
-    containerID, err := s.createContainer(ctx, req)
-    if err != nil {
-        return "", err
+    // 2. No healthy container found, allocate pool slot
+    containerID = fmt.Sprintf("container-%d", time.Now().UnixNano())
+
+    // 3. Add to pool with CREATING status
+    container := &loomv1.Container{
+        Id:          containerID,
+        TenantId:    req.TenantId,
+        NodeId:      ls.nodeID,
+        RuntimeType: req.RuntimeType,
+        Status:      loomv1.ContainerStatus_CONTAINER_STATUS_CREATING,
+        CreatedAt:   timestamppb.New(time.Now()),
+        LastUsedAt:  timestamppb.New(time.Now()),
+        Labels:      req.Labels,
     }
+    ls.containerPool[containerID] = container
 
-    // 5. Add to pool with "creating" state
-    s.pool[key] = ContainerInfo{
-        ID:             containerID,
-        RuntimeType:    req.RuntimeType,
-        State:          "creating",
-        CreatedAt:      time.Now(),
-        LastUsedAt:     time.Now(),
-        ExecutionCount: 1,
-        Health:         true,
-    }
-
-    // 6. Unlock before Docker API calls
-    s.mu.Unlock()
-
-    // 7. Run installation commands (may take several seconds)
-    if err := s.installPackages(ctx, containerID, req.Packages); err != nil {
-        s.markFailed(containerID)
-        return "", err
-    }
-
-    // 8. Transition to "ready" state
-    s.mu.Lock()
-    info := s.pool[key]
-    info.State = "ready"
-    s.pool[key] = info
-
-    return containerID, nil
+    return containerID, true, nil // New container (actual Docker creation happens in executor)
 }
 ```
 
+Note: The scheduler only allocates a pool slot. Actual Docker container creation, starting, and package installation happen in `DockerExecutor.createContainer()`.
+
 **Complexity**:
-- **Average Case**: O(1) hash map lookup + O(1) state transition
-- **Worst Case**: O(n) where n = container creation time (2-5 seconds for Docker image pull + package installation)
+- **Average Case**: O(n) linear scan of pool map to find matching container + O(1) state update
+- **Worst Case**: O(n) where n = pool size (scan all containers, none match, allocate new slot)
 
 **Trade-off Analysis**: Single global lock vs. per-container locks
-- **Chosen**: Single global lock (`sync.Mutex`)
-  - ✅ Simple implementation (no lock ordering concerns)
+- **Chosen**: Single global `sync.RWMutex` (read-write lock)
+  - ✅ Straightforward implementation (no lock ordering concerns)
+  - ✅ Concurrent reads allowed (ListContainers, GetNodeInfo use RLock)
   - ✅ Low contention (container creation rare compared to execution frequency)
   - ❌ All GetOrCreate calls serialize (even for different runtimes)
 
-- **Alternative**: Sharded locks by pool key
+- **Alternative**: Sharded locks by runtime type
   - ✅ Higher concurrency for different runtimes
   - ❌ Complexity in lock management
   - ❌ Marginal benefit (contention not a bottleneck in practice)
 
-**Rationale**: Chose simplicity over theoretical concurrency improvement. Benchmarks show lock contention < 5% of execution latency.
+**Rationale**: Chose straightforward locking over theoretical concurrency improvement. The RWMutex allows read concurrency while serializing mutations.
 
 
 ### Container Rotation Algorithm
 
 **Problem**: Determine when to remove container and create replacement (balance resource usage vs. cold-start overhead)
 
-**Approach**:
+**Approach** (in `DockerExecutor.checkRotation()`):
 ```go
-func (s *LocalScheduler) shouldRotate(info ContainerInfo, config RotationConfig) bool {
-    ageExceeded := time.Since(info.CreatedAt) >= config.MaxAge
-    executionsExceeded := info.ExecutionCount >= config.MaxExecutions
-    healthFailed := !info.Health
+// Called after every execution in DockerExecutor
+func (de *DockerExecutor) checkRotation(ctx context.Context, containerID string, config *loomv1.DockerBackendConfig) error {
+    // Get container metadata from scheduler
+    containers, err := de.scheduler.ListContainers(ctx, map[string]string{})
+    // ... find target container ...
 
-    return ageExceeded || executionsExceeded || healthFailed
-}
-
-// Called after every execution
-func (s *LocalScheduler) checkRotation(ctx context.Context, containerID string) error {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    info := s.findContainerInfo(containerID)
-    if !s.shouldRotate(info, s.config.Rotation) {
-        return nil // No rotation needed
+    // Check execution-based rotation
+    maxExecutions := config.Lifecycle.MaxExecutions // default: 1000
+    if targetContainer.ExecutionCount >= maxExecutions {
+        return de.rotateContainer(ctx, containerID)
     }
 
-    // Mark for removal
-    info.State = "failed"
-    s.pool[info.poolKey] = info
+    // Check time-based rotation
+    rotationInterval := time.Duration(config.Lifecycle.RotationIntervalHours) * time.Hour // default: 4h
+    if time.Since(targetContainer.CreatedAt.AsTime()) >= rotationInterval {
+        return de.rotateContainer(ctx, containerID)
+    }
 
-    // Create replacement asynchronously (zero-downtime)
-    go s.createReplacementContainer(ctx, info.RuntimeType, info.Image, info.Packages)
+    return nil
+}
 
-    // Remove old container
-    return s.dockerClient.RemoveContainer(ctx, containerID, true) // force=true
+func (de *DockerExecutor) rotateContainer(ctx context.Context, containerID string) error {
+    de.dockerClient.ContainerStop(ctx, containerID, ...)
+    de.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+    de.scheduler.RemoveContainer(ctx, containerID)
+    return nil
 }
 ```
 
+Note: Rotation logic is in the executor, not the scheduler. The scheduler also performs background time-based rotation in `runCleanup()`.
+
 **Rotation Trigger Conditions**:
-1. **Age-Based**: `time.Since(CreatedAt) >= MaxAge` (default: 1 hour)
-2. **Execution-Based**: `ExecutionCount >= MaxExecutions` (default: 100)
+1. **Age-Based**: `time.Since(CreatedAt) >= MaxAge` (default: 4 hours)
+2. **Execution-Based**: `ExecutionCount >= MaxExecutions` (default: 1000)
 3. **Health-Based**: `Health == false` (immediate rotation on health check failure)
 
-**Complexity**: O(1) (simple comparisons)
+**Complexity**: O(1) (constant-time comparisons)
 
 **Trade-off Analysis**: Eager vs. lazy rotation
 - **Chosen**: Eager rotation (check after every execution)
@@ -682,11 +685,11 @@ func (s *LocalScheduler) checkRotation(ctx context.Context, containerID string) 
 
 **Rationale**: Chose eager rotation for predictability and resource control. 1ms overhead negligible compared to 50-100ms execution latency.
 
-**Zero-Downtime Strategy**:
-1. Create replacement container (state="creating")
-2. Install packages and transition to "ready"
-3. Remove old container only after replacement ready
-4. Total downtime: 0ms (overlapping container lifetimes)
+**Rotation Strategy**:
+1. Stop and force-remove old container via Docker API
+2. Remove container from scheduler's pool tracking
+3. Next execution triggers fresh container creation via `GetOrCreateContainer()`
+4. Cold-start latency incurred on next execution after rotation (2-5 seconds)
 
 
 ### Trace Parsing Algorithm
@@ -708,34 +711,33 @@ func (tc *TraceCollector) CollectFromReader(ctx context.Context, reader io.Reade
         line := scanner.Text()
 
         // Match trace prefix (O(1) prefix check)
-        if !strings.HasPrefix(line, "__LOOM_TRACE__:") {
-            continue // Regular stderr line, skip
+        if strings.HasPrefix(line, "__LOOM_TRACE__:") {
+            jsonStr := strings.TrimPrefix(line, "__LOOM_TRACE__:")
+            if err := tc.processTraceJSON(jsonStr, containerID); err != nil {
+                tc.logger.Warn("Failed to parse trace line", ...)
+                tc.mu.Lock()
+                tc.parseErrors++
+                tc.mu.Unlock()
+            }
+        } else if strings.HasPrefix(line, "__LOOM_TRACE_ERROR__:") {
+            // Container-side trace library reported an error
+            tc.logger.Warn("Container trace library error", ...)
         }
-
-        // Extract JSON payload
-        jsonPayload := line[len("__LOOM_TRACE__:"):]
-
-        // Parse span (O(m) where m = JSON size, typically <1KB)
-        var span TraceSpan
-        if err := json.Unmarshal([]byte(jsonPayload), &span); err != nil {
-            tc.logger.Warn("malformed trace JSON", zap.Error(err), zap.String("line", line))
-            tc.stats.parseErrors++
-            continue // Partial failure tolerance
-        }
-
-        // Validate required fields
-        if span.TraceID == "" || span.SpanID == "" || span.Name == "" {
-            tc.logger.Error("incomplete trace span", zap.Any("span", span))
-            tc.stats.parseErrors++
-            continue
-        }
-
-        // Forward to Hawk (non-blocking)
-        tc.tracer.SendSpan(ctx, span) // Async send with buffered channel
-        tc.stats.spansCollected++
+        // Ignore other lines (normal application output)
     }
 
     return scanner.Err() // EOF or read error
+}
+
+func (tc *TraceCollector) processTraceJSON(jsonStr, containerID string) error {
+    var cspan containerSpan
+    json.Unmarshal([]byte(jsonStr), &cspan)        // Parse JSON
+    // Validate: trace_id, span_id, name required
+    // Parse ISO 8601 timestamps via parseISO8601()
+    // Convert to observability.Span, add container metadata
+    tc.tracer.EndSpan(span)                         // Forward to Hawk
+    tc.mu.Lock(); tc.spansCollected++; tc.mu.Unlock()
+    return nil
 }
 ```
 
@@ -793,7 +795,7 @@ func (tc *TraceCollector) CollectFromReader(ctx context.Context, reader io.Reade
 
 3. **Container Pooling with Rotation** (current choice)
    - ✅ Low latency after warm-up (<100ms)
-   - ✅ Bounded state accumulation (rotation every 100 execs or 1 hour)
+   - ✅ Bounded state accumulation (rotation every 1000 execs or 4 hours)
    - ✅ Security (limited container lifetime)
    - ❌ Pool management complexity (state machine, cleanup goroutine)
 
@@ -904,21 +906,27 @@ __LOOM_TRACE__:{"trace_id":"abc123","span_id":"def456","name":"api_call","start_
 - Container startup: +10-20ms for file injection
 - No network access required in containers
 
-**Embed Implementation**:
+**Embed Implementation** (in `pkg/docker/runtime/trace_libs.go`):
 ```go
-//go:embed loom_trace.py loom-trace.js
-var embeddedLibraries embed.FS
+//go:embed python/loom_trace.py
+var pythonTraceLibrary string
 
-func (r *PythonRuntime) InjectTraceLibrary(ctx context.Context, containerID string) error {
-    library, err := embeddedLibraries.ReadFile("loom_trace.py")
-    if err != nil {
-        return err
-    }
+//go:embed node/loom-trace.js
+var nodeTraceLibrary string
 
-    // Write to container's site-packages directory
-    cmd := []string{"sh", "-c", fmt.Sprintf("cat > /usr/local/lib/python3.11/site-packages/loom_trace.py <<'EOF'\n%s\nEOF", library)}
-    return r.dockerClient.Exec(ctx, containerID, cmd)
-}
+func GetPythonTraceLibrary() string { return pythonTraceLibrary }
+func GetNodeTraceLibrary() string   { return nodeTraceLibrary }
+```
+
+Injection happens in `InstallPackages()` (e.g., `PythonRuntime.InstallPackages()`):
+```go
+traceLib := GetPythonTraceLibrary()
+traceLibB64 := base64.StdEncoding.EncodeToString([]byte(traceLib))
+installTraceCmd := fmt.Sprintf(
+    `python3 -c "import base64; open('/tmp/loom_trace.py', 'w').write(base64.b64decode('%s').decode('utf-8'))"`,
+    traceLibB64,
+)
+commands = append(commands, []string{"sh", "-c", installTraceCmd})
 ```
 
 
@@ -1090,7 +1098,7 @@ p99.9: 200ms (occasional Docker API slow path)
 **Network**:
 - **Docker Daemon**: Local Unix socket (negligible bandwidth)
 - **Hawk gRPC**: ~1-5KB per trace span (compressed protobuf)
-- **Container Network**: Disabled by default (no internet access for containers)
+- **Container Network**: Bridge mode by default (standard Docker bridge network)
 
 
 ## Concurrency Model
@@ -1111,13 +1119,13 @@ p99.9: 200ms (occasional Docker API slow path)
 ### Synchronization
 
 **LocalScheduler**:
-- **Protection**: `sync.Mutex` protects container pool map and state transitions
-- **Lock Scope**: Held during pool lookup, state updates, container creation metadata updates
-- **Lock Release**: Released before Docker API calls (prevents blocking other goroutines during I/O)
+- **Protection**: `sync.RWMutex` protects container pool map and state transitions
+- **Lock Scope**: `RLock` for reads (ListContainers, GetNodeInfo), full `Lock` for mutations (GetOrCreateContainer, RemoveContainer, runCleanup)
+- **Lock Release**: Lock is held during pool operations (the scheduler does not make Docker API calls directly -- actual Docker operations happen in the executor)
 
 **TraceCollector**:
-- **Isolation**: No shared mutable state (per-execution instance)
-- **Hawk Client**: Thread-safe `tracer.SendSpan()` (internal mutex in Hawk client SDK)
+- **Protection**: `sync.Mutex` protects `spansCollected` and `parseErrors` counters
+- **Hawk Client**: Thread-safe `tracer.EndSpan()` (forwarding method on observability.Tracer interface)
 
 **DockerExecutor**:
 - **Stateless**: No shared mutable state across executions
@@ -1142,17 +1150,18 @@ go test -race ./pkg/docker/...
 ```
 
 **Known Race-Free Patterns**:
-- Pool map access: always under `LocalScheduler.mu` lock
-- Container state transitions: atomic updates within single lock scope
-- Trace forwarding: buffered channel with non-blocking send
+- Pool map access: always under `LocalScheduler.mu` lock (RWMutex)
+- Container state transitions: updates within single lock scope
+- Trace statistics: `spansCollected` and `parseErrors` protected by `TraceCollector.mu`
+- Trace forwarding: via `tracer.EndSpan()` (thread-safe interface method)
 
 
 ### Deadlock Prevention
 
 **Strategy**:
 - **No Nested Locks**: Single lock per critical section (no lock ordering concerns)
-- **Lock Ordering**: Always acquire `LocalScheduler.mu` before Docker API calls (consistent ordering)
-- **Timeouts**: Context timeout on Docker API calls (default: 30 seconds)
+- **Separation of Concerns**: Scheduler holds lock only for pool operations; Docker API calls happen in executor without scheduler lock held
+- **Timeouts**: Context timeout on Docker API calls (propagated via Go context)
 
 **Worst-Case Scenario**: Docker daemon unresponsive
 1. `GetOrCreateContainer()` attempts Docker create API call
@@ -1253,7 +1262,7 @@ go test -race ./pkg/docker/...
 ### Mitigations
 
 **Container Isolation**:
-- **Non-Root User**: Containers run as `USER nobody` (UID 65534, no privilege escalation)
+- **Non-Root User**: Containers run as UID 1000, GID 1000 (non-root, no privilege escalation)
 - **No Privileged Mode**: No `--privileged` flag (no host device access)
 - **Read-Only Root Filesystem**: Applied where possible (prevents filesystem tampering)
 - **Seccomp Profile**: Default Docker seccomp profile restricts dangerous syscalls (e.g., `mount`, `reboot`)
@@ -1264,10 +1273,10 @@ go test -race ./pkg/docker/...
 - **Disk**: 1GB per container (Docker storage driver limit)
 - **PIDs**: 100 processes per container (prevents fork bombs via `--pids-limit=100`)
 
-**Network Isolation**:
-- **No Network by Default**: Containers created with `--network=none` (no internet access)
-- **Trace Data via Stderr**: No network required for observability
-- **Optional Network**: User-configurable for MCP servers (requires explicit enablement)
+**Network Configuration**:
+- **Bridge Network by Default**: Containers created with `--network=bridge` (default Docker bridge network)
+- **Trace Data via Stderr**: No additional network configuration required for observability
+- **Configurable Network**: Network mode configurable via Docker backend config
 
 **File System Isolation**:
 - **No Host Mounts by Default**: Containers isolated from host filesystem
@@ -1296,7 +1305,7 @@ go test -race ./pkg/docker/...
 ### Sensitive Data
 
 **Trace Baggage**:
-- Contains tenant context: `tenant_id`, `org_id`, `session_id`
+- Contains tenant context: `tenant_id`, `org_id`
 - Not considered sensitive (used for trace grouping, not authorization)
 - Logged in debug mode (may appear in Loom logs, Hawk traces)
 
@@ -1317,8 +1326,8 @@ go test -race ./pkg/docker/...
 ### Extension Points
 
 **Runtime Strategies**:
-- **Interface**: `Runtime` with methods `GetBaseImage()`, `InstallPackages()`, `HealthCheck()`, `InjectTraceLibrary()`
-- **Extension**: Implement interface, register in `DockerExecutor` runtime map
+- **Interface**: `Runtime` with methods `Type()`, `BuildContainerConfig()`, `BuildHostConfig()`, `PrepareImage()`, `InstallPackages()`, `GetCacheMounts()`
+- **Extension**: Implement interface, register in `DockerExecutor` runtime map (`executor.go` initialization)
 - **Example**: Ruby runtime, Rust runtime, Go runtime (compile code in container)
 
 **Trace Formats**:
@@ -1327,9 +1336,9 @@ go test -race ./pkg/docker/...
 - **Extension**: Add format parser to `TraceCollector`, multiplex by format prefix
 
 **Schedulers**:
-- **Interface**: `ContainerScheduler` with methods `GetOrCreateContainer()`, `RemoveContainer()`, `ListContainers()`
+- **Interface**: `ContainerScheduler` with methods `Schedule()`, `GetOrCreateContainer()`, `ListContainers()`, `RemoveContainer()`, `GetNodeInfo()`, `Close()`
 - **Future**: `DistributedScheduler` for multi-node container orchestration
-- **Extension**: Implement interface, configure via `scheduler.type` config field
+- **Extension**: Implement `ContainerScheduler` interface and pass to `DockerExecutorConfig.Scheduler`
 
 
 ### Stability
@@ -1372,7 +1381,7 @@ TraceCollector detects version field, routes to appropriate parser.
 **Configuration Migration**:
 - Old config keys supported for 2 minor versions (deprecation warnings logged)
 - New config keys take precedence when both present
-- Migration tool: `looms config migrate` (planned v1.1)
+- Migration tool: 📋 Planned (not yet implemented)
 
 
 ## Related Work
@@ -1457,36 +1466,33 @@ TraceCollector detects version field, routes to appropriate parser.
 
 ## Further Reading
 
-- **Reference**: [Docker Backend API Reference](/docs/reference/docker-backend/) - Complete API specification (coming in v1.1)
-- **Guide**: [Docker Backend User Guide](/docs/guides/docker-backend/) - Practical usage examples (coming in v1.1)
+- 📋 **Reference**: Docker Backend API Reference - Complete API specification (planned, not yet written)
+- **Guide**: [Docker Backend User Guide](/docs/guides/docker-backend/) - Practical usage examples
 - **Architecture**: [Observability Architecture](/docs/architecture/observability/) - Hawk integration deep dive
-- **Architecture**: [MCP Integration](/docs/architecture/mcp-integration/) - Model Context Protocol containerization
+- 📋 **Architecture**: MCP Integration - Model Context Protocol containerization (planned, not yet written)
 
 
 ## Implementation Status
 
-**Version**: v1.0.0-beta.2 (January 2025)
+**Version**: v1.2.0
 
 **Components**:
-- ✅ DockerExecutor: Fully implemented (6 tests, 85% coverage)
-- ✅ LocalScheduler: Fully implemented (8 tests, 82% coverage)
-- ✅ TraceCollector: Fully implemented (10 tests, 90% coverage)
-- ✅ Runtime Strategies: Python, Node.js, Custom (15 tests total, 80% coverage)
-- ✅ Trace Library Injection: Go embed with automatic installation (5 tests, 88% coverage)
-- ⚠️ MCPServerManager: Implemented, experimental status
+- ✅ DockerExecutor: Implemented (4 e2e tests in `e2e_test.go`)
+- ✅ LocalScheduler: Implemented (8 tests in `scheduler_test.go`)
+- ✅ TraceCollector: Implemented (10 tests in `trace_integration_test.go`)
+- ⚠️ MCPServerManager: Implemented, experimental status (6 tests in `mcp_manager_test.go`)
+- ✅ Trace Library Injection: Go embed with automatic installation (5 tests in `runtime/trace_libs_test.go`)
 
 **Test Coverage**:
-- Unit tests: 9 test functions
-- Integration tests: 14 test functions
-- End-to-end tests: 1 test function (coming in v1.1)
-- Total: 24 tests passing (100% pass rate with `-race` flag)
-- Coverage: 80-90% on core execution paths
+- pkg/docker: 28 test functions (e2e: 4, scheduler: 8, trace: 10, mcp: 6)
+- pkg/docker/runtime: 5 test functions (trace library embed tests)
+- Total: 33 tests across 5 test files
 
 **Performance** (measured on M2 MacBook Pro, macOS 14.2):
 - Cold start: 2-5 seconds (Python), 2-4 seconds (Node.js)
 - Warm execution: 50-100ms (Python), 40-80ms (Node.js)
 - Trace parsing: <1ms per span
-- Container rotation: 89-143ms (zero-downtime)
+- Container rotation: stop + force-remove (next execution triggers cold start)
 
 **Known Issues**:
 - None blocking v1.0 release
@@ -1505,7 +1511,7 @@ TraceCollector detects version field, routes to appropriate parser.
 **Phase 3 (Observability) Complete**:
 - ✅ Trace library automatic injection via Go `embed` package
 - ✅ Cleanup of unused `LOOM_HAWK_ENDPOINT` environment variable
-- ✅ Baggage keys extracted to constants (`BaggageKeyTenantID`, `BaggageKeyOrgID`, `BaggageKeySessionID`)
+- ✅ Baggage keys extracted to constants (`BaggageKeyTenantID`, `BaggageKeyOrgID`)
 - ✅ Goroutine error logging in trace collection (no silent failures)
 - ✅ Error path test coverage: context cancellation, pipe failures, malformed JSON
 - ✅ Documentation: Architecture doc conformance with CLAUDE.md standards
@@ -1513,12 +1519,12 @@ TraceCollector detects version field, routes to appropriate parser.
 **Performance**:
 - Trace collection overhead: <1ms per span (JSON parsing)
 - Trace forwarding: 10-20ms per span (gRPC to Hawk)
-- Container rotation: 89-143ms (p50-p99, zero-downtime)
+- Container rotation: stop + force-remove, next execution creates fresh container
 
 **Tests**:
-- 24 tests passing (9 unit, 14 integration, 1 e2e)
+- 33 tests passing across pkg/docker and pkg/docker/runtime
 - 100% pass rate with `-race` flag (zero race conditions)
-- Coverage: 80-90% on core paths
+- Coverage: 39.1% on pkg/docker, 1.1% on pkg/docker/runtime
 
 ### v1.0.0-beta.1 (2025-01-10)
 

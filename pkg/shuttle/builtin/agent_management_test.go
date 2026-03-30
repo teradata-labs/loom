@@ -7,6 +7,7 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -477,6 +478,174 @@ spec:
 	data, ok := result.Data.(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, 1, data["count"])
+}
+
+func TestAgentManagementTool_SkillReadRoutesToSkillsDir(t *testing.T) {
+	tool := NewAgentManagementTool()
+	ctx := session.WithAgentID(context.Background(), "weaver")
+
+	tmpDir := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", tmpDir)
+
+	// Create a skill file in the skills directory
+	skillsDir := config.GetLoomSubDir("skills")
+	err := os.MkdirAll(skillsDir, 0755)
+	require.NoError(t, err)
+
+	skillContent := `apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: read-skill-test
+spec:
+  description: "A test skill"
+`
+	filePath := filepath.Join(skillsDir, "read-skill-test.yaml")
+	err = os.WriteFile(filePath, []byte(skillContent), 0644)
+	require.NoError(t, err)
+
+	// Also create a file with the same name in workflows dir to prove we are NOT hitting workflows
+	workflowsDir := config.GetLoomSubDir("workflows")
+	err = os.MkdirAll(workflowsDir, 0755)
+	require.NoError(t, err)
+	workflowContent := "this is a workflow, not a skill"
+	err = os.WriteFile(filepath.Join(workflowsDir, "read-skill-test.yaml"), []byte(workflowContent), 0644)
+	require.NoError(t, err)
+
+	// Read with type=skill should return the skill content, not the workflow content
+	params := map[string]interface{}{
+		"action": "read",
+		"type":   "skill",
+		"name":   "read-skill-test",
+	}
+
+	result, err := tool.Execute(ctx, params)
+	require.NoError(t, err)
+	assert.True(t, result.Success, "Expected success but got: %v", result.Error)
+
+	data, ok := result.Data.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, skillContent, data["content"])
+	assert.Contains(t, data["path"].(string), "skills")
+	assert.NotContains(t, data["path"].(string), "workflows")
+}
+
+func TestAgentManagementTool_SkillListRoutesToSkillsDir(t *testing.T) {
+	tool := NewAgentManagementTool()
+	ctx := session.WithAgentID(context.Background(), "weaver")
+
+	tmpDir := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", tmpDir)
+
+	// Create skills in the skills directory
+	skillsDir := config.GetLoomSubDir("skills")
+	err := os.MkdirAll(skillsDir, 0755)
+	require.NoError(t, err)
+
+	skillFiles := []string{"skill1.yaml", "skill2.yaml", "skill3.yml"}
+	for _, name := range skillFiles {
+		err := os.WriteFile(filepath.Join(skillsDir, name), []byte("test"), 0644)
+		require.NoError(t, err)
+	}
+
+	// Create agents and workflows in their respective directories to prove isolation
+	agentsDir := config.GetLoomSubDir("agents")
+	err = os.MkdirAll(agentsDir, 0755)
+	require.NoError(t, err)
+	for i := 0; i < 5; i++ {
+		err := os.WriteFile(filepath.Join(agentsDir, fmt.Sprintf("agent%d.yaml", i)), []byte("test"), 0644)
+		require.NoError(t, err)
+	}
+
+	workflowsDir := config.GetLoomSubDir("workflows")
+	err = os.MkdirAll(workflowsDir, 0755)
+	require.NoError(t, err)
+	for i := 0; i < 4; i++ {
+		err := os.WriteFile(filepath.Join(workflowsDir, fmt.Sprintf("workflow%d.yaml", i)), []byte("test"), 0644)
+		require.NoError(t, err)
+	}
+
+	// List with type=skill should return exactly 3 skill files
+	params := map[string]interface{}{
+		"action": "list",
+		"type":   "skill",
+	}
+
+	result, err := tool.Execute(ctx, params)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+
+	data, ok := result.Data.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, 3, data["count"], "Expected 3 skills, not agents or workflows")
+	assert.Equal(t, "skill", data["type"])
+}
+
+func TestAgentManagementTool_SkillDeleteRoutesToSkillsDir(t *testing.T) {
+	tool := NewAgentManagementTool()
+	ctx := session.WithAgentID(context.Background(), "weaver")
+
+	tmpDir := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", tmpDir)
+
+	// Create a skill file in the skills directory
+	skillsDir := config.GetLoomSubDir("skills")
+	err := os.MkdirAll(skillsDir, 0755)
+	require.NoError(t, err)
+
+	skillPath := filepath.Join(skillsDir, "delete-skill-test.yaml")
+	err = os.WriteFile(skillPath, []byte("test skill"), 0644)
+	require.NoError(t, err)
+
+	// Also create a file with the same name in workflows dir to prove we are NOT deleting from workflows
+	workflowsDir := config.GetLoomSubDir("workflows")
+	err = os.MkdirAll(workflowsDir, 0755)
+	require.NoError(t, err)
+	workflowPath := filepath.Join(workflowsDir, "delete-skill-test.yaml")
+	err = os.WriteFile(workflowPath, []byte("test workflow"), 0644)
+	require.NoError(t, err)
+
+	// Delete with type=skill should only delete from skills dir
+	params := map[string]interface{}{
+		"action": "delete",
+		"type":   "skill",
+		"name":   "delete-skill-test",
+	}
+
+	result, err := tool.Execute(ctx, params)
+	require.NoError(t, err)
+	assert.True(t, result.Success, "Expected success but got: %v", result.Error)
+
+	data, ok := result.Data.(map[string]interface{})
+	require.True(t, ok)
+	assert.Contains(t, data["path"].(string), "skills")
+
+	// Skill file should be gone
+	assert.NoFileExists(t, skillPath)
+
+	// Workflow file with same name should still exist (not deleted by mistake)
+	assert.FileExists(t, workflowPath)
+}
+
+func TestAgentManagementTool_SkillListEmptyDir(t *testing.T) {
+	tool := NewAgentManagementTool()
+	ctx := session.WithAgentID(context.Background(), "weaver")
+
+	tmpDir := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", tmpDir)
+
+	// List skills when skills directory does not exist should return empty list, not error
+	params := map[string]interface{}{
+		"action": "list",
+		"type":   "skill",
+	}
+
+	result, err := tool.Execute(ctx, params)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+
+	data, ok := result.Data.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, 0, data["count"])
 }
 
 func TestAgentManagementTool_ConcurrentOperations(t *testing.T) {

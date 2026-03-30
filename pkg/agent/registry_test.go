@@ -1203,3 +1203,122 @@ func TestToolFiltering_ErrorDetailVariation(t *testing.T) {
 	//     allowedTools["get_error_details"] = true
 	// }
 }
+
+// TestBuildAgent_PatternConfigFromProto verifies that pattern config values from
+// the proto AgentConfig (parsed from YAML) are applied to the agent, rather than
+// silently falling back to DefaultPatternConfig().
+func TestBuildAgent_PatternConfigFromProto(t *testing.T) {
+	tests := []struct {
+		name           string
+		patterns       *loomv1.PatternConfig
+		wantEnabled    bool
+		wantMinConf    float64
+		wantMaxPerTurn int
+		wantTracking   bool
+		wantLLMClass   bool
+	}{
+		{
+			name: "custom values applied",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0.9,
+				MaxPatternsPerTurn: 3,
+				EnableTracking:     false,
+				UseLlmClassifier:   false,
+			},
+			wantEnabled:    true,
+			wantMinConf:    0.9,
+			wantMaxPerTurn: 3,
+			wantTracking:   false,
+			wantLLMClass:   false,
+		},
+		{
+			name: "disabled patterns",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            false,
+				MinConfidence:      0.5,
+				MaxPatternsPerTurn: 2,
+				EnableTracking:     true,
+				UseLlmClassifier:   true,
+			},
+			wantEnabled:    false,
+			wantMinConf:    0.5,
+			wantMaxPerTurn: 2,
+			wantTracking:   true,
+			wantLLMClass:   true,
+		},
+		{
+			name:           "nil patterns uses defaults",
+			patterns:       nil,
+			wantEnabled:    DefaultPatternConfig().Enabled,
+			wantMinConf:    DefaultPatternConfig().MinConfidence,
+			wantMaxPerTurn: DefaultPatternConfig().MaxPatternsPerTurn,
+			wantTracking:   DefaultPatternConfig().EnableTracking,
+			wantLLMClass:   DefaultPatternConfig().UseLLMClassifier,
+		},
+		{
+			name: "zero min_confidence uses default",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0, // zero should keep default
+				MaxPatternsPerTurn: 5,
+				EnableTracking:     true,
+				UseLlmClassifier:   false,
+			},
+			wantEnabled:    true,
+			wantMinConf:    DefaultPatternConfig().MinConfidence,
+			wantMaxPerTurn: 5,
+			wantTracking:   true,
+			wantLLMClass:   false,
+		},
+		{
+			name: "zero max_patterns_per_turn uses default",
+			patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0.85,
+				MaxPatternsPerTurn: 0, // zero should keep default
+				EnableTracking:     true,
+				UseLlmClassifier:   true,
+			},
+			wantEnabled:    true,
+			wantMinConf:    0.85,
+			wantMaxPerTurn: DefaultPatternConfig().MaxPatternsPerTurn,
+			wantTracking:   true,
+			wantLLMClass:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry, _ := createTestRegistry(t)
+			ctx := context.Background()
+
+			config := &loomv1.AgentConfig{
+				Name:        "pattern-test",
+				Description: "Test agent for pattern config",
+				Llm: &loomv1.LLMConfig{
+					Provider: "",
+					Model:    "",
+				},
+				SystemPrompt: "test",
+				Behavior: &loomv1.BehaviorConfig{
+					MaxToolExecutions: 10,
+					MaxTurns:          5,
+					Patterns:          tc.patterns,
+				},
+			}
+
+			agent, err := registry.buildAgent(ctx, config)
+			require.NoError(t, err)
+			require.NotNil(t, agent)
+			require.NotNil(t, agent.config.PatternConfig, "PatternConfig should never be nil")
+
+			pc := agent.config.PatternConfig
+			assert.Equal(t, tc.wantEnabled, pc.Enabled, "Enabled mismatch")
+			assert.InDelta(t, tc.wantMinConf, pc.MinConfidence, 0.001, "MinConfidence mismatch")
+			assert.Equal(t, tc.wantMaxPerTurn, pc.MaxPatternsPerTurn, "MaxPatternsPerTurn mismatch")
+			assert.Equal(t, tc.wantTracking, pc.EnableTracking, "EnableTracking mismatch")
+			assert.Equal(t, tc.wantLLMClass, pc.UseLLMClassifier, "UseLLMClassifier mismatch")
+		})
+	}
+}

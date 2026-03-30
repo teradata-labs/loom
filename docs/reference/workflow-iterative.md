@@ -1,7 +1,7 @@
 
 # Iterative Workflow Pattern Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 Complete technical reference for Loom's iterative workflow pattern - multi-stage pipelines with autonomous restart coordination, validation retry with fresh agent context, and hybrid context passing for hallucination prevention.
 
@@ -91,7 +91,7 @@ workflow_pattern:
 | `restart_policy.restartable_stages` | []string | [] (all) | Which stages can be restarted |
 | `restart_policy.cooldown_seconds` | int32 | 0 | Minimum seconds between restarts |
 | `restart_policy.reset_shared_memory` | bool | false | Clear SharedMemory on restart |
-| `restart_policy.preserve_outputs` | bool | true | Keep previous iteration outputs |
+| `restart_policy.preserve_outputs` | bool | true* | Keep previous iteration outputs (*YAML config default; proto3 wire default is false) |
 | `restart_policy.max_validation_retries` | int32 | 2 | Retry count with fresh agent context |
 | `restart_triggers` | []string | [] (all) | Which stages can trigger restarts |
 | `restart_topic` | string | "workflow.restart" | Pub/sub topic for restart messages |
@@ -135,12 +135,12 @@ Restarts from stage1 with iteration=3
 The **Iterative Workflow Pattern** extends the standard pipeline pattern with **autonomous restart capabilities**, enabling agents to refine their approach by restarting earlier stages based on validation results or discovered insights.
 
 **Key Features**:
-- **Autonomous Restart Coordination**: Stages can request restarts of earlier stages via pub/sub messaging
-- **Validation Retry with Fresh Context**: Retry failed validations with new session IDs to reset conversation history
-- **Hybrid Context Passing**: Truncated summaries in prompts + full outputs in SharedMemory for hallucination prevention
-- **Structured Output Parsing**: JSON/XML schemas for evidence-based reasoning
-- **Iteration Protection**: Maximum iteration limit prevents infinite loops
-- **Per-Stage Cooldown**: Rate limiting for restart requests
+- ✅ **Autonomous Restart Coordination**: Stages can request restarts of earlier stages via pub/sub messaging
+- ✅ **Validation Retry with Fresh Context**: Retry failed validations with new session IDs to reset conversation history
+- ✅ **Hybrid Context Passing**: Truncated summaries in prompts + full outputs in SharedMemory for hallucination prevention
+- ✅ **Structured Output Parsing**: JSON/XML schemas for evidence-based reasoning
+- ✅ **Iteration Protection**: Maximum iteration limit prevents infinite loops
+- ✅ **Per-Stage Cooldown**: Rate limiting for restart requests
 
 **Use Cases**:
 - **Data Discovery**: Discover schema, refine based on analysis needs
@@ -562,7 +562,8 @@ func PublishRestartRequest(ctx context.Context, req *RestartRequest) error {
         },
     }
 
-    return messageBus.Publish(ctx, "workflow.restart", msg)
+    _, _, err = messageBus.Publish(ctx, "workflow.restart", msg)
+    return err
 }
 ```
 
@@ -585,7 +586,7 @@ msg := &loomv1.BusMessage{
     },
 }
 
-messageBus.Publish(ctx, "workflow.restart", msg)
+_, _, err = messageBus.Publish(ctx, "workflow.restart", msg)
 ```
 
 
@@ -663,9 +664,14 @@ for retryNum := 0; retryNum <= maxRetries; retryNum++ {
     // Continue to next retry with new session ID...
 }
 
-// All retries exhausted - return last validation error
-return nil, "", fmt.Errorf("validation failed after %d retries: %w",
-    maxRetries, validationErr)
+// All retries exhausted - log error and continue workflow with failed validation.
+// The workflow is NOT aborted; it proceeds with the last output even if validation failed.
+logger.Error("Stage output failed structure validation after max retries",
+    zap.String("stage_id", stage.AgentId),
+    zap.Int("retries_attempted", maxRetries),
+    zap.Error(validationErr),
+    zap.String("hint", "Agent must output valid JSON or XML with required structure"))
+// Continue workflow with failed validation
 ```
 
 
@@ -717,35 +723,47 @@ if retryNum > 0 {
 
 **Purpose**: Parse and validate structured output (JSON/XML).
 
-**Validation Rules**:
+**Implementation**: `pkg/orchestration/structured_context.go`
+
+**Supported Formats**:
+- **JSON flat format (v3.9)**: `{"stage_id": "...", "outputs": {...}}`
+- **JSON nested format (v3.8)**: `{"stage_outputs": {"stage-N": {"stage_id": "...", "outputs": {...}}}}`
+- **XML format (v3.10)**: `<stage_output><outputs>...</outputs></stage_output>`
+
+**Pre-processing**:
+- Strips `<thinking>...</thinking>` tags before parsing
+- Extracts JSON from markdown code blocks (` ```json ... ``` `) or raw `{...}` delimiters
+
+**Validation Rules (flat JSON format)**:
 
 1. **Valid JSON or XML**: Must parse without syntax errors
-2. **Required Fields Present**: Check for mandatory fields (e.g., `"inputs"`, `"outputs"`, `"evidence"`)
-3. **Field Types Correct**: Ensure fields have expected types
-4. **Schema Versioning**: Check `"schema_version"` if present
+2. **Required Fields**: `stage_id` and `outputs` must be present
+3. **Field Types**: `outputs` must be an object
+4. **Evidence Optional**: If `evidence` is present, `evidence.tool_calls` must be an array
 
-**Example Implementation**:
-```go
-func ValidateOutputStructure(output string) error {
-    var stageOutput StageOutput
-    if err := json.Unmarshal([]byte(output), &stageOutput); err != nil {
-        return fmt.Errorf("invalid JSON: %w", err)
-    }
+**Validation Rules (nested JSON format)**:
 
-    if stageOutput.Inputs == nil {
-        return fmt.Errorf("missing required field: inputs")
-    }
+1. **Required Fields**: `stage_outputs` must be a non-empty object
+2. **Per-stage**: Each stage entry must have `stage_id`, `status`, and `outputs`
+3. **Evidence Optional**: Same as flat format
 
-    if stageOutput.Outputs == nil {
-        return fmt.Errorf("missing required field: outputs")
-    }
-
-    if stageOutput.Evidence == nil {
-        return fmt.Errorf("missing required field: evidence")
-    }
-
-    return nil
+**Example** (flat format validated successfully):
+```json
+{
+  "stage_id": "discover_events",
+  "status": "completed",
+  "outputs": {
+    "events": ["page_view", "add_to_cart", "purchase"]
+  }
 }
+```
+
+**Example** (validation failure):
+```json
+{
+  "stage_id": "discover_events"
+}
+// Error: missing required field: 'outputs'
 ```
 
 
@@ -822,19 +840,24 @@ restart_policy:
 ```go
 const MaxStageOutputBytes = 8192
 
-func truncateStageOutput(output string, stageKey string) string {
-    if len(output) <= MaxStageOutputBytes {
-        return output  // No truncation needed
+func truncateStageOutput(output string, maxBytes int, memoryKey string) (string, bool) {
+    if len(output) <= maxBytes {
+        return output, false  // No truncation needed
     }
 
-    // Truncate and add reference message
-    truncated := output[:MaxStageOutputBytes]
+    // Try to truncate at a sensible boundary (newline)
+    truncated := output[:maxBytes]
+    if lastNewline := strings.LastIndex(truncated, "\n"); lastNewline > maxBytes/2 {
+        truncated = truncated[:lastNewline]
+    }
+
+    // Include reference to SharedMemory key
     notice := fmt.Sprintf(
         StageOutputTruncationNoticeTemplate,
-        stageKey,  // e.g., "stage-1-output"
+        memoryKey,  // e.g., "stage-1-output"
     )
 
-    return truncated + notice
+    return truncated + notice, true
 }
 ```
 
@@ -880,6 +903,7 @@ func (e *IterativePipelineExecutor) storeStageOutputInMemory(
         AgentId:   agentID,
         Metadata: map[string]string{
             "type":       "stage_output",
+            "agent_id":   agentID,
             "stored_at":  time.Now().Format(time.RFC3339),
             "full_size":  fmt.Sprintf("%d", len(output)),
             "compressed": "auto",  // Auto-compress if > 1KB
@@ -919,38 +943,36 @@ stageKey := fmt.Sprintf("stage-%d-output", stageNum)
 
 ### Prompt Context Construction
 
-**Building Current Prompt with Previous Outputs**:
+The pipeline executor's `buildStagePromptWithContext` substitutes template variables in `prompt_template`:
 
 ```go
-// Start with stage's prompt template
-currentPrompt := stage.PromptTemplate
-
-// Substitute {{previous}} with last stage's output (truncated)
-if len(stageOutputs) > 0 {
-    lastOutput := stageOutputs[lastStageID]
-    currentPrompt = strings.ReplaceAll(
-        currentPrompt,
-        "{{previous}}",
-        lastOutput,  // Already truncated when stored
-    )
+// Replace {{previous}} placeholder with the previous stage's output
+if strings.Contains(prompt, "{{previous}}") {
+    prompt = strings.ReplaceAll(prompt, "{{previous}}", previousOutput)
 }
 
-// Substitute {{stage-N-output}} with specific stage's output
-for stageID, output := range stageOutputs {
-    placeholder := fmt.Sprintf("{{"+"%s"+"}}", stageID)
-    currentPrompt = strings.ReplaceAll(
-        currentPrompt,
-        placeholder,
-        output,  // Already truncated
-    )
+// Replace {{history}} placeholder with all previous outputs
+if strings.Contains(prompt, "{{history}}") {
+    history := e.buildHistoryString(allOutputs)
+    prompt = strings.ReplaceAll(prompt, "{{history}}", history)
+}
+
+// Replace {{structured_context}} placeholder with JSON context
+if strings.Contains(prompt, "{{structured_context}}") {
+    contextJSON, _ := structuredCtx.ToJSON()
+    prompt = strings.ReplaceAll(prompt, "{{structured_context}}", contextJSON)
 }
 ```
 
-**Template Variables**:
-- `{{previous}}`: Last stage's output (truncated)
-- `{{stage-1-output}}`: Stage 1's output (truncated)
-- `{{stage-2-output}}`: Stage 2's output (truncated)
-- `{{all-outputs}}`: All outputs concatenated (truncated)
+**Built-in Template Variables** (substituted by pipeline executor):
+- `{{previous}}`: Last stage's output (truncated to 8KB)
+- `{{history}}`: All previous outputs formatted with stage numbers
+- `{{structured_context}}`: Full structured context as JSON
+
+**User-defined Template Variables** (substituted by `InterpolateVariables` from `ExecuteWorkflowRequest.variables`):
+- `{{table_name}}`, `{{database}}`, etc. - any key in the `variables` map
+
+**Note**: There is no `{{stage-N-output}}` template variable. To access specific previous stage outputs, agents should use the `shared_memory_read` tool with key `"stage-N-output"`.
 
 
 ### Retrieval Pattern
@@ -981,9 +1003,12 @@ func (t *SharedMemoryReadTool) Execute(ctx context.Context, params map[string]in
     if err != nil {
         return nil, err
     }
+    if !resp.Found {
+        return nil, fmt.Errorf("key not found: %s", key)
+    }
 
     return &ToolResult{
-        Output: string(resp.Value),  // Full output, decompressed
+        Output: string(resp.Value.Value),  // Full output, decompressed
     }, nil
 }
 ```
@@ -993,31 +1018,31 @@ func (t *SharedMemoryReadTool) Execute(ctx context.Context, params map[string]in
 
 **Namespace Reset** (when `reset_shared_memory = true`):
 
+The actual implementation lists all keys in the WORKFLOW namespace, then deletes each one individually. There is no bulk-delete-by-prefix operation in the `DeleteSharedMemoryRequest` proto.
+
 ```go
-func (e *IterativePipelineExecutor) resetSharedMemory(ctx context.Context) error {
-    req := &loomv1.DeleteSharedMemoryRequest{
+func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) error {
+    // List all keys in the WORKFLOW namespace
+    listReq := &loomv1.ListSharedMemoryKeysRequest{
         Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-        KeyPrefix: "",  // Delete all keys in WORKFLOW namespace
     }
 
-    _, err := e.orchestrator.sharedMemory.Delete(ctx, req)
-    return err
+    listResp, err := e.orchestrator.sharedMemory.List(ctx, listReq)
+    if err != nil {
+        return fmt.Errorf("failed to list workflow namespace keys: %w", err)
+    }
+
+    // Delete each key in the namespace
+    for _, key := range listResp.Keys {
+        deleteReq := &loomv1.DeleteSharedMemoryRequest{
+            Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
+            Key:       key,
+        }
+        _, _ = e.orchestrator.sharedMemory.Delete(ctx, deleteReq)
+    }
+
+    return nil
 }
-```
-
-**Automatic Cleanup** (on workflow completion):
-
-```go
-defer func() {
-    // Clean up SharedMemory on completion
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-
-    e.orchestrator.sharedMemory.Delete(ctx, &loomv1.DeleteSharedMemoryRequest{
-        Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-        KeyPrefix: "",
-    })
-}()
 ```
 
 
@@ -1032,10 +1057,11 @@ defer func() {
 
 ### StageOutput Schema
 
-**Standard Format**:
+**Standard Format** (flat v3.9):
 ```json
 {
-  "schema_version": "1.0",
+  "stage_id": "discover_events",
+  "status": "completed",
   "inputs": {
     "table_name": "web_events",
     "event_column": "event_type"
@@ -1046,38 +1072,43 @@ defer func() {
   },
   "evidence": {
     "tool_calls": [
-      {"tool": "query_database", "query": "SELECT DISTINCT event_type FROM web_events"}
+      {"tool_name": "query_database", "parameters": {"query": "SELECT DISTINCT event_type FROM web_events"}, "result_summary": "3 rows returned"}
     ],
-    "queries_executed": 1,
-    "result_summaries": [
-      {"query": "SELECT...", "rows_returned": 3}
-    ]
-  },
-  "reasoning": "Discovered 3 distinct event types by querying the event_type column",
-  "confidence": 0.95
+    "queries_executed": ["SELECT DISTINCT event_type FROM web_events"]
+  }
 }
 ```
+
+**Note**: The `stage_id` and `outputs` fields are required by `ValidateOutputStructure`. The `inputs`, `evidence`, and `status` fields are optional but recommended.
 
 
 ### Schema Fields
 
-#### schema_version
+**Note**: `schema_version` is a workflow-level field on `ContextMetadata`, not on individual `StageOutput`. The `StructuredContext.WorkflowContext.SchemaVer` is set to `"1.0"` at workflow initialization.
+
+#### stage_id
 
 **Type**: `string`
-**Required**: No
-**Default**: `"1.0"`
+**Required**: Yes
 
-**Description**: Schema version for forward compatibility.
+**Description**: Agent ID that produced this output. Required by `ValidateOutputStructure`.
 
-**Future**: Enables schema evolution (e.g., `"2.0"` with additional fields).
+**Example**: `"discover_events"`
+
+#### status
+
+**Type**: `string`
+**Required**: No (but recommended)
+
+**Description**: Stage completion status. Values: `"completed"`, `"failed"`, `"skipped"`.
 
 
 #### inputs
 
 **Type**: `object`
-**Required**: Yes
+**Required**: No (optional, for traceability)
 
-**Description**: Inputs provided to this stage (for traceability).
+**Description**: Inputs provided to this stage. Not enforced by `ValidateOutputStructure`, but useful for debugging.
 
 **Example**:
 ```json
@@ -1092,9 +1123,9 @@ defer func() {
 #### outputs
 
 **Type**: `object`
-**Required**: Yes
+**Required**: Yes (enforced by `ValidateOutputStructure`)
 
-**Description**: Outputs produced by this stage (results).
+**Description**: Outputs produced by this stage (results). Must be a JSON object.
 
 **Example**:
 ```json
@@ -1108,77 +1139,42 @@ defer func() {
 #### evidence
 
 **Type**: `object`
-**Required**: Yes (for hallucination prevention)
+**Required**: No (optional but recommended for hallucination prevention)
 
-**Description**: Evidence supporting outputs (tool calls, queries, data summaries).
+**Description**: Evidence supporting outputs (tool calls, queries). If present, `ValidateOutputStructure` validates that `tool_calls` is an array.
 
 **Subfields**:
 
 ##### tool_calls
 
 **Type**: `array of objects`
-**Required**: Yes
+**Required**: No (optional but recommended)
 
 **Description**: All tool calls made during stage execution.
+
+**Fields per entry**: `tool_name` (string), `parameters` (object), `result_summary` (string)
 
 **Example**:
 ```json
 "tool_calls": [
-  {"tool": "get_table_schema", "table": "web_events"},
-  {"tool": "query_database", "query": "SELECT DISTINCT ..."}
+  {"tool_name": "get_table_schema", "parameters": {"table": "web_events"}, "result_summary": "Schema with 5 columns"},
+  {"tool_name": "query_database", "parameters": {"query": "SELECT DISTINCT ..."}, "result_summary": "3 rows returned"}
 ]
 ```
 
 
 ##### queries_executed
 
-**Type**: `integer`
-**Required**: Yes
+**Type**: `array of strings`
+**Required**: No (optional)
 
-**Description**: Count of queries executed (for cost tracking).
-
-
-##### result_summaries
-
-**Type**: `array of objects`
-**Required**: Yes
-
-**Description**: Summary of query results (not full data).
-
-**Example**:
-```json
-"result_summaries": [
-  {
-    "query": "SELECT DISTINCT event_type FROM web_events",
-    "rows_returned": 3,
-    "columns": ["event_type"],
-    "sample_rows": [
-      {"event_type": "page_view"},
-      {"event_type": "add_to_cart"}
-    ]
-  }
-]
-```
+**Description**: List of queries executed during stage (for cost tracking and traceability).
 
 
-#### reasoning
-
-**Type**: `string`
-**Required**: Yes
-
-**Description**: Human-readable explanation of how outputs were derived from evidence.
-
-**Example**: `"Based on schema inspection, discovered 3 event types. Verified these exist in table with DISTINCT query."`
+**Note**: Result summaries are captured per-tool-call in the `result_summary` field of each `tool_calls` entry (see above), not as a separate top-level evidence field.
 
 
-#### confidence
-
-**Type**: `float` (0.0 - 1.0)
-**Required**: No
-
-**Description**: Confidence score for outputs (self-assessment).
-
-**Example**: `0.95` (95% confident)
+**Note**: The `reasoning` and `confidence` fields shown in some prompt templates are conventions for agent instructions, not enforced by `ValidateOutputStructure` or present in the Go `StageOutput` struct. Agents may include them in freeform `outputs` data if desired.
 
 
 ### StructuredContext Manager
@@ -1187,31 +1183,35 @@ defer func() {
 
 **Implementation**:
 ```go
+// StructuredContext has no mutex -- it is not designed for concurrent access.
+// Pipeline stages execute sequentially, so no synchronization is needed.
 type StructuredContext struct {
-    workflowID   string
-    workflowType string
-    stageOutputs map[string]*StageOutput
-    mutex        sync.RWMutex
+    WorkflowContext ContextMetadata        `json:"workflow_context"`
+    StageOutputs    map[string]StageOutput `json:"stage_outputs"`
+}
+
+type ContextMetadata struct {
+    WorkflowID   string    `json:"workflow_id"`
+    WorkflowType string    `json:"workflow_type"`
+    SchemaVer    string    `json:"schema_version"`
+    StartedAt    time.Time `json:"started_at"`
 }
 
 func NewStructuredContext(workflowID, workflowType string) *StructuredContext {
     return &StructuredContext{
-        workflowID:   workflowID,
-        workflowType: workflowType,
-        stageOutputs: make(map[string]*StageOutput),
+        WorkflowContext: ContextMetadata{
+            WorkflowID:   workflowID,
+            WorkflowType: workflowType,
+            SchemaVer:    "1.0",
+            StartedAt:    time.Now(),
+        },
+        StageOutputs: make(map[string]StageOutput),
     }
 }
 
-func (sc *StructuredContext) AddStageOutput(stageID string, output *StageOutput) {
-    sc.mutex.Lock()
-    defer sc.mutex.Unlock()
-    sc.stageOutputs[stageID] = output
-}
-
-func (sc *StructuredContext) GetStageOutput(stageID string) (*StageOutput, bool) {
-    sc.mutex.RLock()
-    defer sc.mutex.RUnlock()
-    output, exists := sc.stageOutputs[stageID]
+// GetStageOutput retrieves output from a specific stage
+func (ctx *StructuredContext) GetStageOutput(stageKey string) (StageOutput, bool) {
+    output, exists := ctx.StageOutputs[stageKey]
     return output, exists
 }
 ```
@@ -1229,16 +1229,16 @@ stages:
 
       **IMPORTANT**: Return output in structured JSON format:
       {
-        "schema_version": "1.0",
+        "stage_id": "discover_events",
+        "status": "completed",
         "inputs": { ... },
         "outputs": { ... },
         "evidence": {
-          "tool_calls": [...],
-          "queries_executed": N,
-          "result_summaries": [...]
-        },
-        "reasoning": "...",
-        "confidence": 0.95
+          "tool_calls": [
+            {"tool_name": "...", "parameters": {...}, "result_summary": "..."}
+          ],
+          "queries_executed": ["..."]
+        }
       }
 
       Use the schema inspection and query tools to gather evidence.
@@ -1250,29 +1250,31 @@ stages:
 
 **Enforced by `ValidateOutputStructure()`**:
 
-1. **Valid JSON**: Must parse without errors
-2. **Required Fields**: `inputs`, `outputs`, `evidence` present
-3. **Evidence Required**: `evidence.tool_calls` not empty
-4. **Evidence Matches Outputs**: Tool calls support claimed outputs
+1. **Valid JSON or XML**: Must parse without syntax errors
+2. **Required Fields (flat format)**: `stage_id` and `outputs` must be present
+3. **Required Fields (nested format)**: `stage_outputs` with per-stage `stage_id`, `status`, and `outputs`
+4. **Evidence Optional**: If `evidence` is present, `evidence.tool_calls` must be an array (but evidence itself is not required)
 
-**Example Validation Failure**:
+**Example Validation Failure** (flat format):
 ```json
 {
-  "outputs": {"events": ["purchase", "add_to_cart"]},
-  "evidence": {"tool_calls": []}  ❌ No evidence for claimed events
+  "stage_id": "discover_events"
 }
+// ❌ Error: missing required field: 'outputs'
 ```
 
-**Valid Output**:
+**Valid Output** (flat format):
 ```json
 {
+  "stage_id": "discover_events",
   "outputs": {"events": ["purchase", "add_to_cart"]},
   "evidence": {
     "tool_calls": [
-      {"tool": "query_database", "query": "SELECT DISTINCT event_type ..."}
+      {"tool_name": "query_database", "parameters": {}, "result_summary": "Found 2 events"}
     ]
-  }  ✅ Evidence supports output claim
+  }
 }
+// ✅ stage_id and outputs present, evidence is valid
 ```
 
 
@@ -1297,10 +1299,12 @@ stages:
 ```protobuf
 enum SharedMemoryNamespace {
   SHARED_MEMORY_NAMESPACE_UNSPECIFIED = 0;
-  SHARED_MEMORY_NAMESPACE_SESSION = 1;     // Per-session data
-  SHARED_MEMORY_NAMESPACE_AGENT = 2;       // Per-agent data
-  SHARED_MEMORY_NAMESPACE_GLOBAL = 3;      // Cross-agent global
-  SHARED_MEMORY_NAMESPACE_WORKFLOW = 4;    // Workflow-scoped (iterative)
+  SHARED_MEMORY_NAMESPACE_GLOBAL = 1;      // Global namespace accessible to all agents
+  SHARED_MEMORY_NAMESPACE_WORKFLOW = 2;    // Workflow-scoped (isolated per workflow instance)
+  SHARED_MEMORY_NAMESPACE_SWARM = 3;       // Swarm-scoped (isolated per agent swarm)
+  SHARED_MEMORY_NAMESPACE_DEBATE = 4;      // Debate-scoped (isolated per debate session)
+  SHARED_MEMORY_NAMESPACE_SESSION = 5;     // Session-scoped (isolated per user session)
+  SHARED_MEMORY_NAMESPACE_AGENT = 6;       // Agent-private (isolated per agent instance)
 }
 ```
 
@@ -1344,36 +1348,48 @@ req := &loomv1.GetSharedMemoryRequest{
 
 resp, err := sharedMemory.Get(ctx, req)
 if err != nil {
-    // Handle not found
+    // Handle error
+}
+if !resp.Found {
+    // Key not found
 }
 
-fullOutput := string(resp.Value)  // Automatically decompressed
-metadata := resp.Metadata
+fullOutput := string(resp.Value.Value)      // Automatically decompressed
+metadata := resp.Value.Metadata             // map[string]string
+version := resp.Value.Version               // Optimistic concurrency version
 ```
 
 
 ### Delete Operation
-
-**Clear Namespace** (on restart or completion):
-
-```go
-req := &loomv1.DeleteSharedMemoryRequest{
-    Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    KeyPrefix: "",  // Delete all keys
-}
-
-_, err := sharedMemory.Delete(ctx, req)
-```
 
 **Delete Specific Key**:
 
 ```go
 req := &loomv1.DeleteSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    KeyPrefix: "stage-1-output",
+    Key:       "stage-1-output",
 }
 
 _, err := sharedMemory.Delete(ctx, req)
+```
+
+**Clear Namespace** (on restart or completion):
+
+There is no bulk-delete operation. List keys first, then delete each one:
+
+```go
+listReq := &loomv1.ListSharedMemoryKeysRequest{
+    Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
+}
+listResp, err := sharedMemory.List(ctx, listReq)
+
+for _, key := range listResp.Keys {
+    deleteReq := &loomv1.DeleteSharedMemoryRequest{
+        Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
+        Key:       key,
+    }
+    _, _ = sharedMemory.Delete(ctx, deleteReq)
+}
 ```
 
 
@@ -1382,23 +1398,24 @@ _, err := sharedMemory.Delete(ctx, req)
 **Enumerate All Stage Outputs**:
 
 ```go
-req := &loomv1.ListSharedMemoryRequest{
-    Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    KeyPrefix: "stage-",  // List all stage outputs
+req := &loomv1.ListSharedMemoryKeysRequest{
+    Namespace:  loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
+    KeyPattern: "stage-*",  // List all stage outputs
 }
 
 resp, err := sharedMemory.List(ctx, req)
-for _, item := range resp.Items {
-    fmt.Printf("Key: %s, Size: %d, Stored: %s\n",
-        item.Key, item.Size, item.Metadata["stored_at"])
+for _, key := range resp.Keys {
+    fmt.Printf("Key: %s\n", key)
 }
 ```
 
 **Output**:
 ```
-Key: stage-1-output, Size: 12345, Stored: 2025-12-11T10:00:00Z
-Key: stage-2-output, Size: 5678, Stored: 2025-12-11T10:00:15Z
+Key: stage-1-output
+Key: stage-2-output
 ```
+
+**Note**: `ListSharedMemoryKeysResponse` returns key names only (not values or metadata). To get metadata for a specific key, use a separate `Get` call.
 
 
 ### Metadata Conventions
@@ -1470,7 +1487,7 @@ message IterativeWorkflowPattern {
 
 **Description**: Base pipeline configuration (stages, initial prompt).
 
-**See**: [Pipeline Pattern Reference](./pipeline.md) for complete pipeline configuration.
+**See**: Proto definition in `proto/loom/v1/orchestration.proto` (`PipelinePattern` message) for pipeline configuration.
 
 **Example**:
 ```yaml
@@ -1682,7 +1699,7 @@ restart_policy:
 ### preserve_outputs
 
 **Type**: `bool`
-**Default**: `true`
+**Default**: `true` (applied by YAML config layer; proto3 wire default is `false`)
 **Required**: No
 
 **Description**: Whether to keep previous iteration's stage outputs in `stageOutputs` map.
@@ -1733,17 +1750,13 @@ restart_policy:
 **Proto Definition**:
 ```protobuf
 message BusMessage {
-  string topic = 1;
-  MessagePayload payload = 2;
-  int64 timestamp_ms = 3;
-  string message_id = 4;
-}
-
-message MessagePayload {
-  oneof data {
-    bytes value = 1;
-    string error = 2;
-  }
+  string id = 1;                      // Unique message ID for tracking and deduplication
+  string topic = 2;                   // Topic this message is published to
+  string from_agent = 3;              // Source agent ID that published this message
+  MessagePayload payload = 4;         // Message payload (value or reference)
+  map<string, string> metadata = 5;   // Arbitrary key/value pairs for filtering and routing
+  int64 timestamp = 6;                // Publish timestamp (Unix milliseconds)
+  int32 ttl_seconds = 7;              // Message TTL in seconds (0 = no expiry)
 }
 ```
 
@@ -1753,15 +1766,15 @@ restartReq := &loomv1.RestartRequest{...}
 payload, _ := json.Marshal(restartReq)
 
 msg := &loomv1.BusMessage{
+    Id:    uuid.NewString(),
     Topic: "workflow.restart",
     Payload: &loomv1.MessagePayload{
         Data: &loomv1.MessagePayload_Value{Value: payload},
     },
-    TimestampMs: time.Now().UnixMilli(),
-    MessageId:   uuid.NewString(),
+    Timestamp: time.Now().UnixMilli(),
 }
 
-messageBus.Publish(ctx, "workflow.restart", msg)
+_, _, err = messageBus.Publish(ctx, "workflow.restart", msg)
 ```
 
 
@@ -1884,7 +1897,7 @@ ExecuteStage(stage, currentPrompt)
      │   }
      │
      ├─ 3. All retries exhausted
-     │   return error: "validation failed after N retries: {lastError}"
+     │   Log error and continue workflow (does NOT return error)
      │
      └─ 4. End span
 ```
@@ -2051,15 +2064,28 @@ func TestIterativePipeline_RestartCoordination(t *testing.T) {
 
     // Execute workflow in background
     go func() {
-        executor := NewIterativePipelineExecutor(orchestrator, pattern, messageBus)
+        executor := NewIterativePipelineExecutor(orchestrator, pattern, messageBus, "test-workflow-123")
         result, err := executor.Execute(ctx)
         // ...
     }()
 
-    // Publish restart request
+    // Publish restart request (wrapped in BusMessage)
     time.Sleep(100 * time.Millisecond)  // Wait for subscription
-    restartReq := &loomv1.RestartRequest{...}
-    messageBus.Publish(ctx, "workflow.restart", restartReq)
+    restartReq := &loomv1.RestartRequest{
+        RequesterStageId: "stage2",
+        TargetStageId:    "stage1",
+        Reason:           "Need different data",
+        Iteration:        1,
+        TimestampMs:      time.Now().UnixMilli(),
+    }
+    payload, _ := json.Marshal(restartReq)
+    msg := &loomv1.BusMessage{
+        Topic: "workflow.restart",
+        Payload: &loomv1.MessagePayload{
+            Data: &loomv1.MessagePayload_Value{Value: payload},
+        },
+    }
+    _, _, _ = messageBus.Publish(ctx, "workflow.restart", msg)
 
     // Verify restart executed
     // ...
@@ -2091,16 +2117,25 @@ stages:
 
 ### 10. Clean Up SharedMemory on Completion
 
-**Automatic cleanup**:
+**Cleanup** (list keys then delete each):
 ```go
 defer func() {
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
 
-    sharedMemory.Delete(ctx, &loomv1.DeleteSharedMemoryRequest{
+    listResp, err := sharedMemory.List(ctx, &loomv1.ListSharedMemoryKeysRequest{
         Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-        KeyPrefix: "",  // Delete all workflow keys
     })
+    if err != nil {
+        return
+    }
+
+    for _, key := range listResp.Keys {
+        _, _ = sharedMemory.Delete(ctx, &loomv1.DeleteSharedMemoryRequest{
+            Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
+            Key:       key,
+        })
+    }
 }()
 ```
 
@@ -2410,12 +2445,12 @@ fmt.Printf("Average iterations: %.2f\n", avgIterations)
 - Stages cannot access previous outputs
 
 **Diagnosis**:
-```bash
-# Check SharedMemory contents
-looms shared-memory list --namespace workflow
 
-# Check specific key
-looms shared-memory get --namespace workflow --key stage-1-output
+Use the `shared_memory_read` tool from within an agent, or check logs for SharedMemory errors:
+```bash
+# Check logs for SharedMemory errors
+grep "SharedMemory" loom.log
+grep "shared_memory" loom.log
 ```
 
 **Causes**:
@@ -2442,7 +2477,7 @@ looms shared-memory get --namespace workflow --key stage-1-output
    ```
    **Resolution**: Ensure SharedMemory initialized before workflow execution:
    ```go
-   executor := NewIterativePipelineExecutor(orchestrator, pattern, messageBus)
+   executor := NewIterativePipelineExecutor(orchestrator, pattern, messageBus, "my-workflow-id")
    // Executor initializes WORKFLOW namespace automatically
    ```
 
@@ -2495,14 +2530,14 @@ Error: restart validation failed: cannot restart forward (stage2 -> stage3)
 ### ERR_VALIDATION_RETRY_EXHAUSTED
 
 **Code**: `validation_retry_exhausted`
-**HTTP Status**: 500 Internal Server Error
-**gRPC Code**: `FAILED_PRECONDITION`
 
 **Cause**: All validation retries failed for stage.
 
-**Example**:
+**Behavior**: The workflow does NOT abort. It logs an error and continues with the last (invalid) output. This is a non-fatal condition -- downstream stages receive the unvalidated output.
+
+**Log Example**:
 ```
-Error: validation failed after 2 retries: missing required field: evidence
+ERROR: Stage output failed structure validation after max retries (stage_id=discover_events, retries_attempted=2)
 ```
 
 **Resolution**:
@@ -2510,7 +2545,7 @@ Error: validation failed after 2 retries: missing required field: evidence
 2. Increase `max_validation_retries` if needed
 3. Fix validation logic if too strict
 
-**Retry behavior**: Retryable after fixing prompt or validation logic
+**Note**: This is logged as an error, not returned as an RPC error to the caller.
 
 
 ### ERR_RESTART_COOLDOWN_NOT_ELAPSED
@@ -2604,19 +2639,19 @@ Error: shared memory key not found: stage-1-output
 ## See Also
 
 ### Reference Documentation
-- [Pipeline Pattern Reference](./patterns.md#pipeline-pattern) - Base pipeline pattern
-- [Communication Reference](./communication.md) - MessageBus pub/sub system
-- [SharedMemory Reference](./shared-memory.md) - Cross-stage data sharing
-- [Observability Reference](./observability.md) - Hawk tracing integration
+- [Pattern Reference](./patterns.md) - Pattern library system
+- [Agent Configuration Reference](./agent-configuration.md) - Agent configuration options
+- [Tool Registry Reference](./tool-registry.md) - Tool system and registration
 
 ### Guides
-- [Workflow Orchestration Guide](../guides/workflow-orchestration.md) - Using workflow patterns
 - [Pattern Library Guide](../guides/pattern-library-guide.md) - Building domain patterns
-- [Agent Configuration Guide](../guides/agent-configuration.md) - Configuring agents for workflows
+- [Structured Context Pattern Guide](../guides/structured-context-pattern.md) - Structured context usage
 
 ### Architecture Documentation
 - [Agent System Design](../architecture/agent-system-design.md) - Agent conversation loops
-- [Orchestration Architecture](../architecture/orchestration-patterns.md) - Workflow pattern design
+- [Communication System Design](../architecture/communication-system-design.md) - MessageBus pub/sub system
+- [Multi-Agent Architecture](../architecture/multi-agent.md) - Workflow pattern design and orchestration
+- [Memory Systems](../architecture/memory-systems.md) - SharedMemory architecture
 
 ### External Resources
 - [Pub/Sub Pattern](https://en.wikipedia.org/wiki/Publish%E2%80%93subscribe_pattern) - Messaging architecture

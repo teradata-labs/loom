@@ -1,15 +1,15 @@
 
 # Weaver Usage Guide
 
-**Version**: v1.1.0
+**Version**: v1.2.0
 **Status**: ✅ Implemented
 
-> **What's New in v1.1.0**:
+> **What's New in v1.2.0**:
 > - ✨ /agent-plan mode - Guided planning with 5 structured phases
 > - ✨ Skills recommendations - Intelligent skill suggestions based on problem domain
 > - ✨ Custom skill creation - Weaver can create skills with user consent
 
-*Note: This guide is maintained separately. For the full weaver documentation that includes architecture details and the 9-stage pipeline description, see [Meta-Agent Usage Guide](./meta-agent-usage.md).*
+*Note: This guide is maintained separately. For the full weaver documentation that includes architecture details, see [Meta-Agent Usage Guide](./meta-agent-usage.md).*
 
 ## Table of Contents
 
@@ -26,7 +26,6 @@
   - [Single Agent](#single-agent)
   - [Multi-Agent Workflow](#multi-agent-workflow)
   - [With Artifact Context](#with-artifact-context)
-- [Conflict Resolution](#conflict-resolution)
 - [Examples](#examples)
   - [Example 1: SQL Optimizer](#example-1-sql-optimizer)
   - [Example 2: Multi-Agent Debate](#example-2-multi-agent-debate)
@@ -49,20 +48,19 @@ The Weaver creates complete agent configurations from natural language requireme
 **Key characteristics:**
 - **Intelligent**: Uses LLM-powered analysis (not keyword matching)
 - **Metadata-Driven**: Reads self-describing tool and pattern metadata
-- **Conflict Detection**: Catches contradictions before generating config
 - **Interactive**: Pauses for user decisions on ambiguous requirements
 
 ## Prerequisites
 
-- Loom v1.0.0+
-- LLM provider configured (Anthropic, Bedrock, or Ollama)
+- Loom v1.2.0+
+- LLM provider configured (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, or HuggingFace)
 - Running Loom server: `bin/looms serve`
 
 Verify setup:
 
 ```bash
-# Check LLM configuration
-bin/looms config get anthropic_api_key
+# Check LLM configuration (retrieve key from system keyring)
+bin/looms config get-key anthropic_api_key
 
 # Start server if not running
 bin/looms serve
@@ -101,7 +99,7 @@ The agent is now available immediately (hot-reloaded).
 
 ## Planning Modes
 
-> **New in v1.1.0**: Weaver now offers two planning modes - Quick Start for immediate creation, or /agent-plan mode for structured guidance.
+> **New in v1.2.0**: Weaver now offers two planning modes - Quick Start for immediate creation, or /agent-plan mode for structured guidance.
 
 When you first interact with Weaver, it will offer you a choice:
 
@@ -219,7 +217,7 @@ User: "/agent-plan"
 
 ## Skills Recommendations
 
-> **New in v1.1.0**: Weaver recommends and creates skills to enhance your agents.
+> **New in v1.2.0**: Weaver recommends and creates skills to enhance your agents.
 
 Skills are LLM-agnostic prompt injections that provide domain expertise. Weaver automatically recommends relevant skills based on your problem domain.
 
@@ -227,14 +225,14 @@ Skills are LLM-agnostic prompt injections that provide domain expertise. Weaver 
 
 Weaver knows about these existing skills:
 
-| Skill | Activation | Use Case |
-|-------|-----------|----------|
-| `sql-optimization` | `/optimize` or "slow query" | Database performance analysis |
-| `code-review` | `/review` or "review code" | Security and quality checks |
-| `data-quality-check` | `/check` or "validate data" | Data validation and cleaning |
-| `multi-agent-coordinator` | `/coordinate` | Task delegation across agents |
-| `agent-discovery` | `/find` | Locate specialist agents |
-| `request-response-coordinator` | Auto | Synchronous agent communication |
+| Skill | Activation | Use Case | Status |
+|-------|-----------|----------|--------|
+| `sql-optimization` | `/optimize` or "slow query" | Database performance analysis | ✅ Implemented |
+| `code-review` | `/review` or "review code" | Security and quality checks | ✅ Implemented |
+| `data-quality-check` | `/dq` or "validate data" | Data validation and cleaning | ✅ Implemented |
+| `multi-agent-coordinator` | `/coordinate` | Task delegation across agents | ⚠️ Catalog only |
+| `agent-discovery` | `/find-agent` | Locate specialist agents | ⚠️ Catalog only |
+| `request-response-coordinator` | `/ask-agent` | Synchronous agent communication | ⚠️ Catalog only |
 
 **Example recommendation:**
 
@@ -342,11 +340,11 @@ Weaver generates:
 
 ### With Artifact Context
 
-Provide file context to inform generation:
+Provide file context to inform generation. Attach files by dragging them into the TUI or pasting a file path:
 
 ```
-# Upload a CSV file first
-User: "/upload sales_data.csv"
+# Attach a CSV file (drag into TUI or paste file path)
+[Attached: sales_data.csv]
 
 # Generate agent with context
 User: "Create an agent to analyze this sales data"
@@ -364,46 +362,6 @@ Weaver:
 - Data quality suggestions (handle NULLs, outliers)
 
 **Privacy note:** Artifact content sent to LLM for analysis. Avoid sensitive data.
-
-
-## Conflict Resolution
-
-The Weaver detects contradictions and pauses for your decision.
-
-**Conflict types:**
-1. **Tool Redundancy**: Multiple tools with overlapping functionality
-2. **Pattern Overlap**: Patterns addressing similar concerns
-3. **Contradictory Requirements**: Conflicting instructions (e.g., "enable caching" + "disable caching")
-
-**Example conflict flow:**
-
-```
-User: "Create an agent with aggressive caching and no caching for fresh data"
-
-Weaver detects conflict:
-
-⚠️ Detected 1 conflict that needs your input:
-
-Conflict: Pattern Contradiction (confidence: 85%)
-  - aggressive_caching (recommended)
-  - no_caching
-
-  These patterns have contradictory approaches to caching.
-  Which should we use?
-
-Your choice:
-  [1] aggressive_caching (cache everything, faster but may be stale)
-  [2] no_caching (always fresh, slower but accurate)
-  [3] hybrid_caching (cache with TTL, balanced approach)
-
-User: 3
-
-Weaver: Selected hybrid_caching. Continuing generation...
-
-✓ Agent generated with hybrid caching strategy
-```
-
-**Auto-resolution:** If confidence > 90%, Weaver auto-resolves with recommendation (no user input needed).
 
 
 ## Examples
@@ -527,8 +485,8 @@ User: "Optimize this slow query: SELECT * FROM large_table JOIN another_table...
 **Requirements:**
 
 ```
-# Upload CSV first
-User: "/upload customer_data.csv"
+# Attach CSV (drag into TUI or paste file path)
+[Attached: customer_data.csv]
 
 # Generate with context
 User: "Create an agent to process this customer data"
@@ -638,7 +596,7 @@ Weaver: [Creates skill at $LOOM_DATA_DIR/skills/python-performance-analysis.yaml
 ✅ Created python-performance-analyzer!
 
 To use it:
-loom python-performance-analyzer
+loom --thread python-performance-analyzer
 
 The python-performance-analysis skill activates when you:
 - Use /perf command
@@ -671,54 +629,27 @@ Weaver: "Let's plan your agent. What specific problem are you solving?"
 
 See [/agent-plan Mode](#agent-plan-mode-guided-planning) for details.
 
-### /list - List Woven Agents
+### /agents - Open Agents Dialog
+
+Opens the agents selection dialog (also accessible via `ctrl+e`). The dialog shows all available agents and lets you switch between them.
 
 ```
-User: "/list"
+User: "/agents"
 
-Currently Woven Agents:
+# Opens interactive agent picker dialog
+# Select an agent to switch to it
+# Press esc to close
+```
 
-1. postgres-optimizer (domain: sql) - Status: running, Active Sessions: 2
-2. file-analyzer (domain: file) - Status: stopped
-3. sql-debate-optimizer (workflow) - Status: running, Active Sessions: 1
+To list agents from the CLI without opening the TUI:
 
-Total: 3 agents
-
-Commands:
-- Connect to an agent: loom --thread <agent-name>
-- Create a new agent: Just describe what you need!
+```bash
+loom agents
 ```
 
 ### /help - Show Help
 
-```
-User: "/help"
-
-# Weaver Help
-
-I'm the Weaver - I create AI agents from natural language descriptions!
-
-How to Use Me:
-Just tell me what kind of agent you need, and I'll generate a complete configuration.
-
-Examples:
-- "Create a SQL query optimizer for PostgreSQL"
-- "I need an agent to monitor REST API health"
-- "Build a multi-agent system to analyze customer feedback"
-
-What I Can Do:
-- Analyze requirements (domain, capabilities)
-- Match existing examples when appropriate
-- Design multi-agent workflows for complex tasks
-- Generate complete YAML configurations
-- Select optimal patterns and tools
-- Validate configurations before deployment
-
-Advanced Features:
-- Judge evaluation: "with quality evaluation"
-- Self-learning: "that improves over time"
-- Multi-agent: "coordinate multiple agents"
-```
+The `/help` command opens a generic help dialog listing available slash commands and keyboard shortcuts. It is not weaver-specific; it shows the same help content regardless of which agent is active.
 
 
 ## Troubleshooting
@@ -740,8 +671,8 @@ curl https://api.anthropic.com/v1/messages
 # Reduce artifact size
 # Upload summarized data instead of full file
 
-# Check server logs
-tail -f $LOOM_DATA_DIR/logs/server.log
+# Check server logs (logs go to stdout by default)
+# If you configured logging.file in looms.yaml, check that file instead
 ```
 
 ### Weaver Generates Wrong Domain
@@ -762,27 +693,9 @@ Weaver: Generates file-based agent
 ✅ Specific: "MySQL slow query analysis"
 ```
 
-### Conflicts Never Resolve
-
-**Problem:** Weaver keeps detecting conflicts, never generates config.
-
-**Example:**
-```
-User: "Create an agent that is fast and accurate and handles errors and never fails"
-
-Weaver: Detects 5 conflicts...
-```
-
-**Solution:** Simplify requirements or clarify priorities:
-
-```
-✅ "Create a PostgreSQL optimizer that prioritizes accuracy over speed"
-✅ "Create an API monitor with basic error handling and 3 retries"
-```
-
 ### Generated Agent Doesn't Load
 
-**Problem:** Configuration saved but agent doesn't appear in `/list`.
+**Problem:** Configuration saved but agent doesn't appear in agent list.
 
 **Debugging:**
 
@@ -794,10 +707,10 @@ ls -la $LOOM_DATA_DIR/agents/
 cat $LOOM_DATA_DIR/agents/your-agent.yaml
 
 # Check server logs for validation errors
-grep "validation failed" $LOOM_DATA_DIR/logs/server.log
+# (logs go to stdout by default; check logging.file path if configured)
 
 # Manual validation
-bin/looms validate $LOOM_DATA_DIR/agents/your-agent.yaml
+looms validate file $LOOM_DATA_DIR/agents/your-agent.yaml
 ```
 
 **Common causes:**
@@ -812,29 +725,29 @@ bin/looms validate $LOOM_DATA_DIR/agents/your-agent.yaml
 **Solutions:**
 
 ```bash
-# List available agents
-bin/looms agent list
+# List available agents (uses the TUI client, not the server binary)
+loom agents
 
 # Check exact agent name (case-sensitive)
 ls $LOOM_DATA_DIR/agents/
 
 # Restart server to force reload
 pkill looms
-bin/looms serve
+looms serve
 
 # Wait 2-3 seconds for hot-reload
 sleep 3
-bin/loom --thread postgres-optimizer
+loom --thread postgres-optimizer
 ```
 
 
 ## Next Steps
 
-- **Architecture Details**: See [Weaver Architecture](../architecture/weaver.md) for 6-stage pipeline and sub-agent design
+- **Architecture Details**: See [Weaver Architecture](../architecture/weaver.md) for design philosophy and tool-based approach
 - **Advanced Features**: See [Meta-Agent Usage Guide](./meta-agent-usage.md) for full documentation
 - **Pattern Library**: See [Pattern Library Guide](./pattern-library-guide.md) for available patterns
 
 **Related Guides**:
 - [Zero-Code Implementation](./zero-code-implementation-guide.md) - Manual agent configuration
 - [Artifact Management](./artifacts-usage.md) - Upload files for context
-- [MCP Integration](./mcp-integration.md) - External tool integration
+- [MCP Integration](./integration/mcp-readme.md) - External tool integration

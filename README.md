@@ -41,7 +41,7 @@ Weaver: Analyzing requirements... selecting patterns... activating agent.
 ```
 
 **API endpoints** after `looms serve`:
-- **gRPC**: `localhost:60051` (111 RPCs)
+- **gRPC**: `localhost:60051` (127 RPCs)
 - **HTTP/REST**: `localhost:5006` (with SSE streaming)
 - **Swagger UI**: `localhost:5006/swagger-ui`
 - **MCP Apps**: `localhost:5006/apps/`
@@ -68,7 +68,7 @@ Patterns are plain-English YAML files anyone can write. They turn generic LLMs i
 
 Describe what you need; the Weaver builds it:
 - Analyzes requirements to determine domain and capabilities
-- Selects patterns from the library (104 patterns across 17 domains)
+- Selects patterns from the library (104 patterns across 16 domains)
 - Generates YAML configuration and activates the agent
 - Automatically selects workflow patterns for multi-agent tasks
 - **/agent-plan mode** for guided requirement gathering with skills-based recommendations
@@ -103,7 +103,7 @@ See [Learning Agent Guide](docs/guides/learning-agent-guide.md).
 
 ### Pattern Library
 
-104 YAML patterns across 17 domains, installed to `$LOOM_DATA_DIR/patterns/`:
+104 YAML patterns across 16 domains, installed to `$LOOM_DATA_DIR/patterns/`:
 
 | Domain | Count | Examples |
 |--------|-------|----------|
@@ -115,7 +115,7 @@ See [Learning Agent Guide](docs/guides/learning-agent-guide.md).
 | `fun/` | 5 | Entertainment patterns |
 | `prompt_engineering/` | 4 | Chain-of-thought, few-shot, structured output |
 | `documents/` | 4 | PDF extraction, Excel analysis, CSV import |
-| Others | 12 | Vision, code, text, debugging, REST API, NASA, evaluation |
+| Others | 12 | Vision, code, text, document, debugging, REST API, NASA, evaluation |
 
 Write your own patterns in plain English YAML to make Loom agents into domain experts for your specific use cases.
 
@@ -144,7 +144,7 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 
 | Tool | Description |
 |------|-------------|
-| `web_search` | Web search ([Tavily](https://www.tavily.com) or [Brave](https://brave.com/search/api/)) |
+| `web_search` | Web search ([Tavily](https://www.tavily.com), [Brave](https://brave.com/search/api/), SerpAPI, or DuckDuckGo) |
 | `file_read` / `file_write` | File system operations |
 | `http_request` / `grpc_call` | External service calls |
 | `shell_execute` | Sandboxed command execution |
@@ -153,10 +153,36 @@ looms config set mcp.servers.github.env.GITHUB_TOKEN "${GITHUB_TOKEN}"
 | `send_message` / `publish` | Inter-agent messaging (event-driven delivery) |
 | `shared_memory_read` / `shared_memory_write` | Key-value store for multi-agent shared state |
 | `workspace` | Session-scoped artifact management with FTS5 search |
+| `graph_memory` | Persistent cross-session knowledge graph (remember/recall/supersede/consolidate/relate) |
 | `conversation_memory` | Query conversation history with recall/search/clear |
 | `session_memory` | Persist/restore agent session state with FTS5 search |
 | `agent_management` | Spawn, list, pause, resume agents with structured JSON API |
 | `contact_human` | Request human-in-the-loop intervention |
+
+### Graph Memory
+
+Salience-driven graph-backed episodic memory for persistent, cross-session knowledge. Agents automatically build a knowledge graph of entities, relationships, and memories that survives across sessions.
+
+- **Entities** (mutable nodes) represent people, tools, projects, concepts
+- **Edges** (directed relationships) link entities: USES, WORKS_ON, KNOWS_ABOUT, etc.
+- **Memories** (immutable records) store facts, decisions, preferences, experiences, failures
+- **Salience scoring** with time decay and access boosting ranks memories by importance
+- **Lineage tracking** for corrections (SUPERSEDES) and merges (CONSOLIDATES)
+- **FTS5 search** over memory content, summaries, and tags
+- **Token-budgeted context injection** per turn (default 10% of context window)
+- **Enabled by default** (opt-out) when storage backend supports it
+
+```yaml
+# Agent config
+agent:
+  memory:
+    graph_memory:
+      enabled: true              # default when store available
+      context_budget_percent: 10 # % of context window
+      decay_rate: 0.995          # salience decay per day
+```
+
+See [Graph Memory Architecture](docs/architecture/graph-memory.md).
 
 ### Artifact Management
 
@@ -172,7 +198,7 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 
 ### LLM Providers
 
-7 providers, 44 models with mid-session switching:
+8 providers, 44 cataloged models with mid-session switching:
 
 | Provider | Models |
 |----------|--------|
@@ -182,13 +208,14 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 | **Azure OpenAI** | GPT-5, GPT-4.1, GPT-4.1 Mini, o3, o4-mini |
 | **Google Gemini** | Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite |
 | **Mistral** | Mistral Large, Mistral Small, Magistral Medium, Magistral Small, Codestral, Devstral |
-| **Ollama** | Llama 3.3, Llama 3.2, Llama 3.1, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4, Gemma 3 (+ any local model) |
+| **Ollama** | Llama 3.3, Llama 3.2, Llama 3.2 Vision, Llama 3.1, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4, Gemma 3 (+ any local model) |
+| **HuggingFace** | Any model via HuggingFace Inference API (Llama, Mixtral, Gemma, Qwen, etc.) |
 
 ---
 
 ## TUI
 
-The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracelet/bubbletea) with [Crush](https://github.com/charmbracelet/crush)-inspired aesthetics.
+The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracelet/bubbletea) with a Crush-inspired color theme.
 
 - **Guide agent** greets you and helps find the right agent for your task
 - **Slash commands** — `/clear`, `/quit`, `/sessions`, `/model`, `/agents`, `/workflows`, `/patterns`, `/help`, and more
@@ -221,17 +248,21 @@ The terminal UI (`loom`) is built on [Bubbletea](https://github.com/charmbracele
 │  │ Judges      │ │ Skills       │ │ MCP Apps   │ │ Comms  │ │
 │  │ (6 strats)  │ │ (hot-reload) │ │ (4 apps)   │ │ (3-way)│ │
 │  └─────────────┘ └──────────────┘ └────────────┘ └────────┘ │
+│  ┌─────────────┐                                             │
+│  │ Graph Memory│                                             │
+│  │ (salience)  │                                             │
+│  └─────────────┘                                             │
 └──────────────────────────────────────────────────────────────┘
          │                     │                      │
          v                     v                      v
 ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
 │   Observability  │  │  LLM Providers   │  │  SQLite/FTS5     │
-│   (self-contained│  │  (7 providers)   │  │  or PostgreSQL   │
+│   (self-contained│  │  (8 providers)   │  │  or PostgreSQL   │
 │    + Hawk opt.)  │  │                  │  │  (persistence)   │
 └──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-**Proto is law**: All APIs defined in `proto/loom/v1/` first. 111 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, skills, and scheduling. HTTP/REST via gRPC-gateway.
+**Proto is law**: All APIs defined in `proto/loom/v1/` first. 127 RPCs covering agents, workflows, patterns, sessions, artifacts, MCP, judges, skills, and scheduling. HTTP/REST via gRPC-gateway.
 
 ---
 
@@ -307,6 +338,7 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 | Judge System | [docs/guides/judge_cli_guide.md](docs/guides/judge_cli_guide.md) |
 | Learning Agents | [docs/guides/learning-agent-guide.md](docs/guides/learning-agent-guide.md) |
 | Observability (Hawk) | [docs/guides/integration/observability.md](docs/guides/integration/observability.md) |
+| Graph Memory | [docs/architecture/graph-memory.md](docs/architecture/graph-memory.md) |
 | Streaming | [docs/reference/streaming.md](docs/reference/streaming.md) |
 | MCP Apps Guide | [docs/guides/mcp-apps-guide.md](docs/guides/mcp-apps-guide.md) |
 | MCP Apps Reference | [docs/reference/mcp-apps.md](docs/reference/mcp-apps.md) |
@@ -335,7 +367,7 @@ Releases are GPG-signed with SLSA provenance starting v1.1.0. See [docs/installa
 
 ## Quality
 
-- 3,112 test functions across 319 test files
+- 3,230 test functions across 342 test files
 - All tests run with `-race` detector; 0 race conditions
 - CI: proto lint, golangci-lint, race detection, fuzz tests, gosec, CodeQL, multi-platform build
 

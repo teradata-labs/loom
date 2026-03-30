@@ -1,8 +1,8 @@
 # Artifact Management Usage Guide
 
-**Version**: v1.0.2
+**Version**: v1.2.0
 **Status**: ✅ Implemented
-**Last Updated**: 2026-01-21
+**Last Updated**: 2026-03-28
 
 ## Table of Contents
 
@@ -52,7 +52,7 @@ Artifact Management provides **session-aware file storage** for agents and users
 - ✅ Automatic CASCADE cleanup on session deletion
 - ✅ Unified `workspace` tool (replaced 5+ separate tools)
 - ✅ Scratchpad for ephemeral notes
-- ✅ Shell sandboxing to session directories
+- ✅ Shell working directory restricted to `LOOM_DATA_DIR` and `/tmp`
 - ✅ New `loom artifacts` CLI commands
 
 ## Architecture
@@ -103,13 +103,13 @@ $LOOM_DATA_DIR/artifacts/
 │   └── <session-id-2>/
 │       └── agent/
 │           └── result.txt
-└── temp/                          # Fallback for no-session context
-    └── <uuid>.tmp
+└── temp/                          # Fallback when no session context
+    └── <filename>
 ```
 
 ## Prerequisites
 
-- Loom v1.0.2+
+- Loom v1.2.0+
 - FTS5-enabled SQLite (included with `just build`)
 - Running Loom server (`looms serve`)
 
@@ -117,7 +117,7 @@ $LOOM_DATA_DIR/artifacts/
 
 ```bash
 # Check Loom version
-loom --version  # Should show v1.0.2 or later
+loom --version  # Should show v1.2.0 or later
 
 # Verify artifacts directory exists
 ls -la $LOOM_DATA_DIR/artifacts/
@@ -407,17 +407,19 @@ workspace({
 
 ### Shell Execute Tool
 
-**Session-aware shell execution with path restrictions.**
+**Session-aware shell execution with working directory restrictions.**
 
 **Features:**
-- Default working directory: Session artifact directory
-- Read access: Session artifacts + scratchpad + documentation
-- Write access: Only session directories (artifacts, scratchpad)
-- Automatic path validation - commands outside session boundaries are blocked
+- Default working directory: `LOOM_SANDBOX_DIR` (defaults to `LOOM_DATA_DIR`)
+- Working directory must be within `LOOM_DATA_DIR` or `/tmp` (on Unix)
+- System directories (`/etc`, `/bin`, `/sbin`, `/boot`, `/sys`, `/proc`) are blocked
+- Sensitive environment variables (API keys, passwords) are filtered
+- Command size validation prevents output token exhaustion
 
-**Environment variables available:**
+**Environment variables injected (when session active):**
 ```bash
 $LOOM_DATA_DIR             # Loom data directory
+$SESSION_ID                # Current session ID
 $SESSION_ARTIFACT_DIR      # $LOOM_DATA_DIR/artifacts/sessions/<session>/agent/
 $SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/
 ```
@@ -426,32 +428,32 @@ $SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratch
 
 **Read artifact in current session:**
 ```bash
-shell_execute(command="cat data.csv")  # ✅ Works (in session dir)
+shell_execute(command="cat $SESSION_ARTIFACT_DIR/data.csv")  # Works
 ```
 
 **Write to session artifact dir:**
 ```bash
-shell_execute(command="echo 'results' > analysis.txt")  # ✅ Works
+shell_execute(command="echo 'results' > $SESSION_ARTIFACT_DIR/analysis.txt")  # Works
 ```
 
 **Write to scratchpad:**
 ```bash
-shell_execute(command="echo 'notes' > $SESSION_SCRATCHPAD_DIR/notes.md")  # ✅ Works
+shell_execute(command="echo 'notes' > $SESSION_SCRATCHPAD_DIR/notes.md")  # Works
 ```
 
-**Read documentation (always allowed):**
+**Write to /tmp (allowed on Unix):**
 ```bash
-shell_execute(command="cat $LOOM_DATA_DIR/documentation/guides.md")  # ✅ Works
+shell_execute(command="echo 'temp data' > /tmp/scratch.txt")  # Works
 ```
 
-**Attempt to access other session (blocked):**
+**Attempt to execute in system directory (blocked):**
 ```bash
-shell_execute(command="cat ../other-session/data.csv")  # ❌ Blocked
+shell_execute(command="ls", working_dir="/etc")  # Blocked (system directory)
 ```
 
-**Attempt to write outside session (blocked):**
+**Attempt to work outside LOOM_DATA_DIR (blocked):**
 ```bash
-shell_execute(command="echo 'test' > /tmp/file.txt")  # ❌ Blocked
+shell_execute(command="ls", working_dir="/home/user/private")  # Blocked (outside LOOM_DATA_DIR)
 ```
 
 ## Common Tasks
@@ -539,13 +541,13 @@ loom --thread data-analyst
 **Scenario:** Agent analyzes data and generates a report artifact.
 
 ```bash
-# Start session
-loom --thread sql-analyst --session my-analysis
+# Start session (a new session ID is auto-generated)
+loom --thread sql-analyst
 
 # Agent conversation
 User: "Analyze sales trends and generate a report"
 
-Agent: "I'll analyze the sales data and create a comprehensive report."
+Agent: "I'll analyze the sales data and create a detailed report."
 # Agent internally uses:
 # workspace({
 #   action: "write",
@@ -564,31 +566,31 @@ loom artifacts show sales-trend-report.md
 loom artifacts download sales-trend-report.md --output ~/Downloads/report.md
 ```
 
-**Result:** Artifact at `$LOOM_DATA_DIR/artifacts/sessions/my-analysis/agent/sales-trend-report.md`
+**Result:** Artifact at `$LOOM_DATA_DIR/artifacts/sessions/<session-id>/agent/sales-trend-report.md`
 
 ### Example 2: Multi-Session Data Analysis
 
 **Scenario:** Run multiple analysis sessions, each with isolated artifacts.
 
 ```bash
-# Session 1: Q3 analysis
-loom --thread data-analyst --session q3-analysis
+# Session 1: Q3 analysis (auto-generated session ID)
+loom --thread data-analyst
 > "Analyze Q3 sales and save to q3-results.csv"
-# Creates: $LOOM_DATA_DIR/artifacts/sessions/q3-analysis/agent/q3-results.csv
+# Creates: $LOOM_DATA_DIR/artifacts/sessions/<session-id-1>/agent/q3-results.csv
 
-# Session 2: Q4 analysis (isolated from Q3)
-loom --thread data-analyst --session q4-analysis
+# Session 2: Q4 analysis (new session, isolated from Q3)
+loom --thread data-analyst
 > "Analyze Q4 sales and save to q4-results.csv"
-# Creates: $LOOM_DATA_DIR/artifacts/sessions/q4-analysis/agent/q4-results.csv
+# Creates: $LOOM_DATA_DIR/artifacts/sessions/<session-id-2>/agent/q4-results.csv
 
-# List artifacts per session
-loom artifacts list  # Shows artifacts from current session only
+# Resume a previous session using its ID
+loom --thread data-analyst --session <session-id-1>
 
 # Search across all artifacts
 loom artifacts search "Q3 OR Q4"  # Finds both
 ```
 
-**Result:** Each session has isolated artifacts, but all searchable.
+**Result:** Each session has isolated artifacts, but all are searchable via FTS5.
 
 ### Example 3: Scratchpad for Ephemeral Notes
 
@@ -630,24 +632,27 @@ Agent: "Bug report saved to bug-report.md (searchable), debug notes in scratchpa
 
 ```bash
 # Create session with artifacts
-loom --thread test-agent --session temp-session
+loom --thread test-agent
 > "Create test files: test1.txt, test2.txt, test3.txt"
 
 # Verify artifacts exist
 loom artifacts list  # Shows 3 files
 
-# Delete session
-loom sessions delete temp-session
+# Find the session ID
+loom sessions list
+
+# Delete session (replace <session-id> with actual ID from sessions list)
+loom sessions delete <session-id>
 
 # Verify artifacts are gone (CASCADE delete)
-ls $LOOM_DATA_DIR/artifacts/sessions/temp-session/  # Directory removed
+ls $LOOM_DATA_DIR/artifacts/sessions/<session-id>/  # Directory removed
 
 # Database records also removed (foreign key CASCADE)
-sqlite3 $LOOM_DATA_DIR/loom.db "SELECT COUNT(*) FROM artifacts WHERE session_id='temp-session';"
+sqlite3 $LOOM_DATA_DIR/loom.db "SELECT COUNT(*) FROM artifacts WHERE session_id='<session-id>';"
 # Returns: 0
 ```
 
-**Result:** Session deletion automatically removes all associated artifacts.
+**Result:** Session deletion automatically removes all associated artifacts (via `ON DELETE CASCADE`).
 
 ## Troubleshooting
 
@@ -705,19 +710,20 @@ sqlite3 $LOOM_DATA_DIR/loom.db "SELECT * FROM artifacts_fts5 WHERE name MATCH '<
 
 **Symptom:** Agent can't create artifacts, directory missing
 
-**Cause:** Session ID not propagated to tools.
+**Cause:** Session ID not propagated to tools, or artifact directory creation failed.
 
 **Solution:**
 ```bash
 # Verify session is active
 loom sessions list
 
-# Check server logs
-looms serve  # Look for "context propagation" errors
+# Check that LOOM_DATA_DIR is set and writable
+echo $LOOM_DATA_DIR
+ls -la $LOOM_DATA_DIR/artifacts/
 
-# Restart server with fresh session
+# Restart server and start a fresh session
 looms serve &
-loom --thread agent-name --session new-session
+loom --thread agent-name
 ```
 
 ### Disk Space Issues
@@ -746,13 +752,11 @@ df -h $LOOM_DATA_DIR/
 ## Next Steps
 
 - **[Artifact Architecture](../architecture/artifacts.md)** - Deep dive into implementation details
-- **[Session Management](sessions.md)** - Managing conversation sessions
-- **[Agent Configuration](agent-configuration.md)** - Configuring agent tools and permissions
-- **[Multi-Agent Workflows](multi-agent-usage.md)** - Sharing artifacts between agents
-- **[Shell Execute Guide](shell-execute.md)** - Advanced shell command usage with session sandboxing
+- **[Agent Configuration](../reference/agent-configuration.md)** - Configuring agent tools and permissions
+- **[Memory Management](memory-management.md)** - Managing agent memory and sessions
 
 ---
 
-**Documentation Version:** v1.0.2
-**Last Updated:** 2026-01-21
-**Verified:** ✅ All commands tested and working
+**Documentation Version:** v1.2.0
+**Last Updated:** 2026-03-28
+**Status:** ✅ Audited against codebase

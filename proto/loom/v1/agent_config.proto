@@ -254,6 +254,40 @@ message MemoryConfig {
   // Maximum number of tool results to keep in the conversation kernel.
   // 0 = use default (5). Higher values give the LLM more context from recent tool calls.
   int32 max_tool_results = 7;
+
+  // Graph memory configuration for salience-driven episodic memory.
+  GraphMemoryConfig graph_memory = 8;
+}
+
+// GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer.
+message GraphMemoryConfig {
+  // Whether graph memory is enabled.
+  bool enabled = 1;
+
+  // Memory budget as percentage of max context window (0-100).
+  // Default: 10 (10% of context). For 200K context -> 20K tokens.
+  // Set to 0 to use max_context_tokens instead.
+  int32 context_budget_percent = 2;
+
+  // Fixed token budget (overrides context_budget_percent if > 0).
+  // Default: 0 (use percentage-based budget).
+  int32 max_context_tokens = 3;
+
+  // Salience decay rate per day. Default: 0.995.
+  // 0.995^138 ~ 0.5 (half-life ~138 days).
+  float decay_rate = 4;
+
+  // Salience boost per access. Default: 0.05.
+  float boost_amount = 5;
+
+  // Minimum salience for recall. Default: 0.1.
+  float min_salience_threshold = 6;
+
+  // Max memories to consider during recall. Default: 50.
+  int32 max_recall_candidates = 7;
+
+  // Default salience for new memories. Default: 0.5.
+  float default_salience = 8;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases

@@ -1,11 +1,11 @@
 
 # Observability Architecture
 
-Comprehensive architecture of Loom's observability system with distributed tracing, metrics collection, privacy-aware PII redaction, and Hawk integration.
+Architecture of Loom's observability system with distributed tracing, metrics collection, privacy-aware PII redaction, and Hawk integration.
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -18,8 +18,10 @@ Comprehensive architecture of Loom's observability system with distributed traci
   - [Tracer Interface](#tracer-interface)
   - [Span Lifecycle](#span-lifecycle)
   - [Hawk Tracer](#hawk-tracer)
-  - [Embedded Hawk](#embedded-hawk)
+  - [Embedded Tracer](#embedded-tracer)
   - [NoOp Tracer](#noop-tracer)
+  - [SpanExporter Interface](#spanexporter-interface)
+  - [Auto-Select Tracer](#auto-select-tracer)
   - [Privacy Redaction](#privacy-redaction)
   - [Trace Buffer](#trace-buffer)
   - [Retry Logic](#retry-logic)
@@ -57,7 +59,9 @@ Traces can be stored in three modes:
 2. **Service**: HTTP export to Hawk or other observability services
 3. **None**: Zero-overhead no-op tracer
 
-**Key Innovation**: Self-contained embedded observability with SQLite persistence, privacy-aware tracing with automatic PII redaction, and pluggable storage backends.
+**Design Approach**: Self-contained embedded observability with SQLite persistence, privacy-aware tracing with automatic PII redaction, and pluggable storage backends.
+
+> **Build Tags**: HawkTracer requires `-tags hawk` (see `//go:build hawk` in `pkg/observability/hawk.go`). SQLite storage requires `-tags fts5` (see `//go:build fts5` in `pkg/observability/storage/sqlite.go`). The EmbeddedTracer and NoOpTracer have no build tag requirements.
 
 
 ## Design Goals
@@ -147,8 +151,8 @@ graph TB
 │            │               │               │                  │              │
 │            ▼               ▼               ▼                  ▼              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  HawkTracer   │  │ EmbeddedHawk │  │ NoOpTracer│  │ OTLPTracer │       │  │
-│  │   (HTTP)      │  │   (SQLite)   │  │  (Noop)  │  │  (future)  │        │  │
+│  │  HawkTracer   │  │EmbeddedTracer│  │ NoOpTracer│  │ OTLPTracer │       │  │
+│  │   (HTTP)      │  │(Memory/SQLite)│  │  (Noop)  │  │  (future)  │       │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │          │                 │                                                 │
 │          ▼                 ▼                                                 │
@@ -168,12 +172,12 @@ graph TB
 │  │                                                              │         │  │
 │  │  3. EndSpan                                                  │         │  │
 │  │     ├─ Calculate duration                                    │         │  │
-│  │     ├─ Privacy redaction                                     │         │  │
+│  │     ├─ Privacy redaction (HawkTracer ONLY)                   │         │  │
 │  │     │   ├─ Remove credentials (password, api_key, token)     │         │  │
 │  │     │   ├─ Redact PII (email, phone, SSN, credit card)       │         │  │
 │  │     │   └─ Allowlist bypass (session.id, llm.model, etc.)    │         │  │
-│  │     ├─ Buffer span                                           │         │  │
-│  │     └─ Trigger flush if buffer full                          │         │  │
+│  │     ├─ Buffer span (HawkTracer) / Store (EmbeddedTracer)     │         │  │
+│  │     └─ Trigger flush if buffer full (HawkTracer)             │         │  │
 │  │                                                              │         │  │
 │  │  4. Background Flusher (goroutine)                           │         │  │
 │  │     ├─ Ticker (10s interval)                                 │         │  │
@@ -208,7 +212,7 @@ graph TB
 
 **Responsibility**: Unified API for instrumenting operations with distributed tracing.
 
-**Core Interface** (`pkg/observability/interface.go:11`):
+**Core Interface** (`pkg/observability/interface.go`):
 ```go
 type Tracer interface {
     StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span)
@@ -243,7 +247,7 @@ defer tracer.EndSpan(child)
 
 **Responsibility**: Represent a single unit of work with timing, metadata, and parent-child relationships.
 
-**Core Structure** (`pkg/observability/types.go:59`):
+**Core Structure** (`pkg/observability/types.go`):
 ```go
 type Span struct {
     // Identifiers
@@ -254,6 +258,9 @@ type Span struct {
     // Metadata
     Name       string                 // Operation name (e.g., "llm.completion")
     Attributes map[string]interface{} // Key-value pairs
+
+    // ResourceAttributes describe the entity producing spans (service.name, user.id, etc.)
+    ResourceAttributes map[string]string
 
     // Timing
     StartTime time.Time
@@ -294,7 +301,9 @@ Created (StartSpan) → Running (user code) → Ended (EndSpan) → Exported (Fl
 
 **Responsibility**: Export traces to Hawk service via HTTP with batching, retry, and privacy redaction.
 
-**Core Structure** (`pkg/observability/hawk.go:64`):
+**Build Requirement**: Requires `-tags hawk` build tag (`//go:build hawk`).
+
+**Core Structure** (`pkg/observability/hawk.go`):
 ```go
 type HawkTracer struct {
     config HawkConfig
@@ -343,38 +352,49 @@ Span N ──┘
 
 **Responsibility**: In-process trace storage with pluggable backends (memory or SQLite).
 
-**Core Structure** (`pkg/observability/embedded.go:45`):
+**Privacy Note**: EmbeddedTracer does **not** perform PII redaction. Only HawkTracer applies the `redact()` function on EndSpan. If privacy redaction is required, use HawkTracer or implement a custom SpanExporter that handles redaction.
+
+**Core Structure** (`pkg/observability/embedded.go`):
 ```go
 type EmbeddedTracer struct {
-    storage storage.Storage // Pluggable storage backend
-    config  *EmbeddedConfig
-    logger  *zap.Logger
-    mu      sync.RWMutex
+    storage              storage.Storage           // Pluggable storage backend
+    config               *EmbeddedConfig
+    logger               *zap.Logger
+    mu                   sync.RWMutex
+    activeSpans          map[string]*Span          // Currently open spans
+    closed               bool                      // Shutdown flag
+    flushTicker          *time.Ticker              // Periodic metric flush
+    flushDone            chan struct{}              // Flush goroutine shutdown
+    currentEvalID        string                    // Current evaluation session
+    spanExporter         SpanExporter              // Optional external exporter
+    defaultResourceAttrs map[string]string         // Default resource attributes
 }
 
 type EmbeddedConfig struct {
-    StorageType   string        // "memory" or "sqlite"
-    SQLitePath    string        // Path for SQLite database
-    FlushInterval time.Duration // Metric calculation interval
-    Logger        *zap.Logger
+    StorageType     string        // "memory" or "sqlite"
+    SQLitePath      string        // Path for SQLite database
+    MaxMemoryTraces int           // Max traces in memory (default: 10000)
+    FlushInterval   time.Duration // Metric calculation interval (default: 30s)
+    Logger          *zap.Logger
 }
 ```
 
 **Storage Backends**:
 
-1. **Memory Storage** (`pkg/observability/storage/memory.go:20`):
+1. **Memory Storage** (`pkg/observability/storage/memory.go`):
 ```go
 type MemoryStorage struct {
-    mu             sync.RWMutex
-    maxTraces      int
-    evals          map[string]*Eval
-    runs           map[string]*EvalRun
-    runsByEval     map[string][]string
-    metrics        map[string]*EvalMetrics
+    mu         sync.RWMutex
+    maxTraces  int
+    evals      map[string]*Eval
+    runs       map[string]*EvalRun       // All runs by ID
+    runsByEval map[string][]string       // Run IDs grouped by eval ID
+    metrics    map[string]*EvalMetrics
+    closed     bool
 }
 ```
 
-2. **SQLite Storage** (`pkg/observability/storage/sqlite.go:30`):
+2. **SQLite Storage** (`pkg/observability/storage/sqlite.go`, requires `-tags fts5`):
 ```sql
 CREATE TABLE evals (
     id TEXT PRIMARY KEY,
@@ -384,20 +404,27 @@ CREATE TABLE evals (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+CREATE INDEX idx_evals_status ON evals(status);
+CREATE INDEX idx_evals_created_at ON evals(created_at);
 
 CREATE TABLE eval_runs (
     id TEXT PRIMARY KEY,
     eval_id TEXT NOT NULL,
     query TEXT,
     model TEXT,
+    configuration_json TEXT,
     response TEXT,
     execution_time_ms INTEGER NOT NULL,
     token_count INTEGER NOT NULL,
     success INTEGER NOT NULL,
+    error_message TEXT,
     session_id TEXT,
     timestamp INTEGER NOT NULL,
-    FOREIGN KEY (eval_id) REFERENCES evals(id)
+    FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
 );
+CREATE INDEX idx_eval_runs_eval_id ON eval_runs(eval_id);
+CREATE INDEX idx_eval_runs_timestamp ON eval_runs(timestamp);
+CREATE INDEX idx_eval_runs_session_id ON eval_runs(session_id);
 
 CREATE TABLE eval_metrics (
     eval_id TEXT PRIMARY KEY,
@@ -407,7 +434,12 @@ CREATE TABLE eval_metrics (
     success_rate REAL NOT NULL,
     avg_execution_time_ms REAL NOT NULL,
     total_tokens INTEGER NOT NULL,
-    FOREIGN KEY (eval_id) REFERENCES evals(id)
+    avg_tokens_per_run REAL NOT NULL,
+    total_cost REAL NOT NULL,
+    first_run_timestamp INTEGER NOT NULL,
+    last_run_timestamp INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
 );
 ```
 
@@ -425,31 +457,50 @@ CREATE TABLE eval_metrics (
 
 **Responsibility**: Zero-overhead tracing for testing (no export, no storage).
 
-**Core Structure** (`pkg/observability/noop.go:11`):
+**Core Structure** (`pkg/observability/noop.go`):
 ```go
 type NoOpTracer struct{}
 
 func (t *NoOpTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
-    // Create minimal span for context propagation
+    // Determine trace ID: parent > context override > new UUID
+    traceID := uuid.New().String()
+    if override := traceIDFromContextOverride(ctx); override != "" {
+        traceID = override
+    }
+
     span := &Span{
-        TraceID:    uuid.New().String(),
+        TraceID:    traceID,
         SpanID:     uuid.New().String(),
         Name:       name,
         StartTime:  time.Now(),
         Attributes: make(map[string]interface{}),
     }
-    // Link to parent (same as real tracer)
+
+    // Apply options
+    for _, opt := range opts {
+        opt(span)
+    }
+
+    // Link to parent (same as real tracer, parent trace ID takes priority)
     if parent := SpanFromContext(ctx); parent != nil {
         span.TraceID = parent.TraceID
         span.ParentID = parent.SpanID
+        // Inherit resource attributes from parent when child has none set
+        if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
+            span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
+            for k, v := range parent.ResourceAttributes {
+                span.ResourceAttributes[k] = v
+            }
+        }
     }
     return ContextWithSpan(ctx, span), span
 }
 
 func (t *NoOpTracer) EndSpan(span *Span) {
+    if span == nil { return }
     span.EndTime = time.Now()
     span.Duration = span.EndTime.Sub(span.StartTime)
-    // No export, no storage
+    // No export, no storage, no redaction
 }
 
 func (t *NoOpTracer) RecordMetric(name string, value float64, labels map[string]string) {}
@@ -463,11 +514,82 @@ func (t *NoOpTracer) Flush(ctx context.Context) error { return nil }
 - **Context propagation still works**: Spans still linked, just not exported
 
 
+### SpanExporter Interface
+
+**Responsibility**: Export completed spans to an external store (e.g., PostgreSQL, cloud storage). Decouples span production from export destination.
+
+**Core Interface** (`pkg/observability/interface.go`):
+```go
+// SpanExporter exports completed spans to an external store (e.g., PostgreSQL).
+// Implementations must be goroutine-safe.
+//
+// The tracer calls ExportSpans synchronously on each EndSpan with a single-span
+// batch. Implementations that buffer spans internally should flush on
+// ForceFlush and drain remaining spans on Shutdown.
+type SpanExporter interface {
+    ExportSpans(ctx context.Context, spans []*Span) error
+    ForceFlush(ctx context.Context) error
+    Shutdown(ctx context.Context) error
+}
+```
+
+**Usage with EmbeddedTracer**:
+```go
+exporter := mycloud.NewSpanExporter(config)
+tracer, _ := observability.NewEmbeddedTracer(embeddedConfig,
+    observability.WithSpanExporter(exporter),
+)
+```
+
+When a SpanExporter is attached to EmbeddedTracer via `WithSpanExporter`, completed spans are sent to both the embedded storage and the external exporter on each `EndSpan` call. The exporter is called outside the tracer's lock to avoid blocking concurrent spans during potentially slow network I/O.
+
+**Lifecycle**: On `EmbeddedTracer.Close()`, the tracer calls `ForceFlush` then `Shutdown` on the exporter with a 10-second timeout.
+
+
+### Auto-Select Tracer
+
+**Responsibility**: Automatically select the best tracer implementation based on configuration or environment variables.
+
+**Core Functions** (`pkg/observability/auto_select.go`):
+
+1. **NewAutoSelectTracer(config)**: Creates a tracer based on explicit configuration.
+2. **NewAutoSelectTracerFromEnv(logger)**: Creates a tracer from environment variables.
+
+**Tracer Modes**:
+- `auto`: Selects based on available configuration (default)
+- `service`: Forces HawkTracer (HTTP export)
+- `embedded`: Forces EmbeddedTracer (in-process storage)
+- `none`: Forces NoOpTracer (zero overhead)
+
+**Auto-Selection Priority** (when Mode=auto):
+```
+If PreferEmbedded=true:  embedded -> service -> none
+If PreferEmbedded=false: service -> embedded -> none
+```
+
+**Environment Variables** (for `NewAutoSelectTracerFromEnv`):
+```
+LOOM_TRACER_MODE          = auto|service|embedded|none (default: auto)
+LOOM_TRACER_PREFER_EMBEDDED = true|false (default: true)
+HAWK_URL                  = http://localhost:8090 (service endpoint)
+HAWK_API_KEY              = your-key (service authentication)
+LOOM_EMBEDDED_STORAGE     = memory|sqlite (default: memory)
+LOOM_EMBEDDED_SQLITE_PATH = /tmp/loom-traces.db (required for sqlite)
+```
+
+**Rationale**:
+- **Zero-config startup**: Default auto mode with embedded memory storage works out-of-the-box
+- **Environment-driven**: 12-factor app style configuration via env vars
+- **Preference control**: `PreferEmbedded` flag resolves ambiguity when both are available
+
+
 ### Privacy Redaction
 
 **Responsibility**: Remove sensitive data (credentials, PII) from spans before export.
 
-**Configuration** (`pkg/observability/hawk.go:50`):
+**Scope**: Privacy redaction is performed **only by HawkTracer**. EmbeddedTracer and NoOpTracer do not call `redact()`. If you need redaction with embedded storage, use HawkTracer as the export path or implement a SpanExporter with custom redaction.
+
+**Configuration** (`pkg/observability/hawk.go`):
 ```go
 type PrivacyConfig struct {
     RedactCredentials bool     // Remove password, api_key, token
@@ -506,7 +628,7 @@ Before: {"session.id": "sess_abc123"} (in allowlist)
 After:  {"session.id": "sess_abc123"} // Not redacted
 ```
 
-**Algorithm** (`pkg/observability/hawk.go:320`):
+**Algorithm** (`pkg/observability/hawk.go`, HawkTracer.redact method):
 ```go
 func (t *HawkTracer) redact(span *Span) *Span {
     allowed := make(map[string]bool)
@@ -556,7 +678,7 @@ func (t *HawkTracer) redact(span *Span) *Span {
 
 **Responsibility**: Thread-safe buffer for spans awaiting export.
 
-**Core Structure** (`pkg/observability/hawk.go:417`):
+**Core Structure** (`pkg/observability/hawk.go`, traceBuffer type):
 ```go
 type traceBuffer struct {
     mu       sync.Mutex
@@ -616,7 +738,7 @@ Attempt 4: 4s delay
 → Fail (all retries exhausted)
 ```
 
-**Algorithm** (`pkg/observability/hawk.go:223`):
+**Algorithm** (`pkg/observability/hawk.go`, HawkTracer.flushNow method):
 ```go
 func (t *HawkTracer) flushNow() error {
     spans := t.buffer.drain()
@@ -646,16 +768,15 @@ func (t *HawkTracer) flushNow() error {
 }
 ```
 
-**Non-Retryable Errors**:
+**Non-Retryable Errors** (any 4xx client error):
 - 400 Bad Request → Immediate failure (malformed payload)
 - 401 Unauthorized → Immediate failure (invalid API key)
 - 403 Forbidden → Immediate failure (permission denied)
+- Any other 4xx → Immediate failure (client error, retrying won't help)
 
 **Retryable Errors**:
-- 500 Internal Server Error → Retry
-- 502 Bad Gateway → Retry
-- 503 Service Unavailable → Retry
-- Network timeouts → Retry
+- 5xx Server Errors (500, 502, 503, etc.) → Retry
+- Network timeouts / connection errors → Retry
 
 **Rationale**:
 - **Transient failures**: Network blips, temporary Hawk downtime
@@ -689,15 +810,15 @@ Agent Code         Tracer           Context         Span Tree
   │◀─ (ctx2, child)──┤                 │                │                       
   │                  │                 │                │                       
   ├─ Child operation │                 │                │                       
-  ├─ child.EndSpan() │                 │                │                       
-  │                  ├─ Calculate duration              │                       
-  │                  ├─ Redact PII                      │                       
-  │                  ├─ Buffer span                     │                       
-  │                  │                 │                │                       
-  ├─ parent.EndSpan()│                 │                │                       
-  │                  ├─ Calculate duration              │                       
-  │                  ├─ Redact PII                      │                       
-  │                  ├─ Buffer span                     │                       
+  ├─ child.EndSpan() │                 │                │
+  │                  ├─ Calculate duration              │
+  │                  ├─ Redact PII (HawkTracer only)    │
+  │                  ├─ Buffer/Store span               │
+  │                  │                 │                │
+  ├─ parent.EndSpan()│                 │                │
+  │                  ├─ Calculate duration              │
+  │                  ├─ Redact PII (HawkTracer only)    │
+  │                  ├─ Buffer/Store span               │
   │                  │                 │                │                       
 ```
 
@@ -809,7 +930,7 @@ After redaction:
 
 ### Span
 
-**Definition** (`pkg/observability/types.go:59`):
+**Definition** (`pkg/observability/types.go`):
 ```go
 type Span struct {
     // Identifiers
@@ -820,6 +941,9 @@ type Span struct {
     // Metadata
     Name       string                 // "llm.completion", "tool.execute"
     Attributes map[string]interface{} // Key-value pairs
+
+    // ResourceAttributes describe the entity producing spans (service.name, user.id, etc.)
+    ResourceAttributes map[string]string
 
     // Timing
     StartTime time.Time     // Set on StartSpan
@@ -842,7 +966,7 @@ span.Duration = span.EndTime - span.StartTime
 
 ### Event
 
-**Definition** (`pkg/observability/types.go:52`):
+**Definition** (`pkg/observability/types.go`):
 ```go
 type Event struct {
     Timestamp  time.Time
@@ -856,7 +980,7 @@ type Event struct {
 
 ### Status
 
-**Definition** (`pkg/observability/types.go:21`):
+**Definition** (`pkg/observability/types.go`):
 ```go
 type StatusCode int
 
@@ -1088,7 +1212,7 @@ Total time: 7s (max)
 - ✅ Works out-of-the-box (embedded mode requires no setup)
 - ✅ Flexible deployment (choose mode per environment)
 - ✅ Easy onboarding (no external services to configure)
-- ✅ Production-ready (service mode for multi-server)
+- ✅ Service mode for multi-server deployments
 - ✅ SQL queryable (embedded SQLite storage)
 - ❌ More code to maintain (storage layer + 3 tracer implementations)
 - ❌ Limited to single-server for embedded mode
@@ -1327,10 +1451,8 @@ Export Failure ───▶ Log Error ───▶ Retry (3 attempts) ───�
 
 ### Reference Documentation
 
-- [Observability API Reference](/docs/reference/observability-api.md) - Tracer interface details
 - [Hawk Integration Guide](/docs/guides/integration/observability.md) - Setting up Hawk
 
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Observability Best Practices](/docs/guides/observability-best-practices.md) - Using tracing effectively

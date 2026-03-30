@@ -5,7 +5,20 @@ Autonomous self-improvement system that monitors runtime pattern performance acr
 
 **Target Audience**: Architects, academics, and advanced developers
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
+
+**Implementation Status**:
+- ✅ LearningAgentService gRPC (all 7 RPCs defined in proto and implemented)
+- ✅ Pattern Effectiveness Tracker (buffered in-memory, flush to SQLite)
+- ✅ Learning Engine (GetBestPatterns, SuggestImprovements, GetDomainInsights)
+- ✅ Metrics Collector (RecordDeployment, GetPatternPerformance, GetTemplatePerformance, GetRecentFailures)
+- ✅ Circuit Breaker (3-state: closed/open/half-open)
+- ✅ Declarative YAML Configuration (config_loader.go)
+- ✅ Interrupt-driven learning triggers (7 learning signals)
+- ✅ Pattern priority tuning with YAML file updates (tuning.go)
+- ⚠️ Canary Testing Engine (proto messages defined, no runtime implementation)
+- ⚠️ Multi-Dimensional Optimization (proto `dimension_weights` defined, no scoring function implemented)
+- ⚠️ Notification System (NotificationConfig parsed from YAML, no delivery implementation)
 
 
 ## Table of Contents
@@ -16,7 +29,7 @@ Autonomous self-improvement system that monitors runtime pattern performance acr
 - [Architecture Overview](#architecture-overview)
 - [Components](#components)
   - [Learning Agent Service](#learning-agent-service)
-  - [Pattern Effectiveness Analyzer](#pattern-effectiveness-analyzer)
+  - [Pattern Effectiveness Tracker](#pattern-effectiveness-tracker)
   - [Improvement Generator](#improvement-generator)
   - [Canary Testing Engine](#canary-testing-engine)
   - [Circuit Breaker](#circuit-breaker)
@@ -58,7 +71,7 @@ The Learning Agent autonomously improves Loom agents by analyzing **runtime patt
 **Improvement Outputs**:
 - **Pattern Recommendations**: KEEP, PROMOTE, DEMOTE, REMOVE, INVESTIGATE
 - **Improvement Proposals**: Pattern add/remove, parameter tuning, template adjustments
-- **Canary Tests**: 10% traffic split, 30 min duration, statistical significance testing
+- **Canary Tests**: 10% traffic split, 30 min duration, statistical significance testing (⚠️ proto defined, not yet implemented)
 - **Applied Changes**: Automatic or human-approved pattern library updates
 
 **Key Innovation**: Autonomous self-improvement with 3 autonomy levels (manual, human approval, full autonomy), multi-judge integration for multi-dimensional optimization, canary testing with statistical validation, and circuit breaker for safety.
@@ -71,7 +84,7 @@ The Learning Agent autonomously improves Loom agents by analyzing **runtime patt
 3. **Judge Integration**: Leverage multi-judge evaluation for improvement signals
 4. **Safety Mechanisms**: Circuit breaker, canary testing, protected agents, max daily changes
 5. **3 Autonomy Levels**: Manual (human approves all), human approval (notify + approve), full autonomy (auto-apply with circuit breaker)
-6. **Confidence-Based Decisions**: Sigmoid confidence function based on sample size (reaches 0.9 at 50 uses)
+6. **Confidence-Based Decisions**: Sigmoid confidence function based on sample size (reaches ~0.92 at 50 uses)
 7. **Declarative Configuration**: Full YAML-based configuration (no server flags)
 
 **Non-goals**:
@@ -86,7 +99,7 @@ The Learning Agent autonomously improves Loom agents by analyzing **runtime patt
 graph TB
     subgraph External["External Environment"]
         Agents[Agents<br/>runtime]
-        PatternLib[Pattern Library<br/>60 patterns]
+        PatternLib[Pattern Library<br/>100+ patterns]
         JudgeSystem[Judge System<br/>evaluation]
         Hawk[Hawk<br/>metrics]
     end
@@ -112,7 +125,7 @@ graph TB
         subgraph Engine["Learning Engine"]
             BestPatterns[GetBestPatterns<br/>sigmoid confidence]
             Suggest[SuggestImprovements<br/>multi-source analysis]
-            Insights[GetDomainInsights<br/>comprehensive report]
+            Insights[GetDomainInsights<br/>domain report]
         end
 
         subgraph Canary["Canary Testing Engine"]
@@ -181,10 +194,11 @@ graph TB
 │  │     │   └─ Error patterns                                   │          │  │
 │  │     ├─ Calculate confidence (sigmoid: f(usage_count))       │          │  │
 │  │     ├─ Determine recommendations                            │          │  │
-│  │     │   ├─ PROMOTE: success_rate ≥ 0.9, confidence ≥ 0.3   │           │  │
-│  │     │   ├─ REMOVE: success_rate < 0.5, confidence ≥ 0.3    │           │  │
-│  │     │   ├─ KEEP: performing well                            │          │  │
-│  │     │   └─ INVESTIGATE: inconsistent or insufficient data   │          │  │
+│  │     │   ├─ INVESTIGATE: confidence < 0.3                    │           │  │
+│  │     │   ├─ PROMOTE: success_rate ≥ 0.9                     │           │  │
+│  │     │   ├─ KEEP: success_rate ≥ 0.7                        │           │  │
+│  │     │   ├─ DEMOTE: success_rate ≥ 0.5                      │           │  │
+│  │     │   └─ REMOVE: success_rate < 0.5                      │           │  │
 │  │     └─ Store analysis results                               │          │  │
 │  │                                                              │         │  │
 │  │  2. Improvement Generation                                  │          │  │
@@ -265,33 +279,33 @@ graph TB
 
 **Responsibility**: gRPC service endpoint for learning agent operations.
 
-**Core Interface** (`proto/loom/v1/learning.proto:12`):
+**Core Interface** (`proto/loom/v1/learning.proto:25`):
 ```protobuf
 service LearningAgentService {
-  // Analyze runtime pattern performance across agents
+  // AnalyzePatternEffectiveness analyzes runtime pattern performance across agents
   rpc AnalyzePatternEffectiveness(AnalyzePatternEffectivenessRequest) returns (PatternAnalysisResponse);
 
-  // Generate improvement proposals based on pattern analysis
+  // GenerateImprovements generates improvement proposals based on pattern analysis
   rpc GenerateImprovements(GenerateImprovementsRequest) returns (ImprovementsResponse);
 
-  // Apply an improvement proposal (respects autonomy level)
+  // ApplyImprovement applies an improvement proposal (respects autonomy level)
   rpc ApplyImprovement(ApplyImprovementRequest) returns (ApplyImprovementResponse);
 
-  // Rollback a failed improvement
+  // RollbackImprovement rolls back a failed improvement
   rpc RollbackImprovement(RollbackImprovementRequest) returns (RollbackImprovementResponse);
 
-  // Retrieve improvement history for an agent or domain
+  // GetImprovementHistory retrieves improvement history for an agent or domain
   rpc GetImprovementHistory(GetImprovementHistoryRequest) returns (ImprovementHistoryResponse);
 
-  // Stream real-time pattern effectiveness metrics
+  // StreamPatternMetrics streams real-time pattern effectiveness metrics
   rpc StreamPatternMetrics(StreamPatternMetricsRequest) returns (stream PatternMetricEvent);
 
-  // Automatically adjust pattern parameters based on effectiveness analysis
+  // TunePatterns automatically adjusts pattern parameters based on effectiveness analysis
   rpc TunePatterns(TunePatternsRequest) returns (TunePatternsResponse);
 }
 ```
 
-**AnalyzePatternEffectiveness Request** (`proto/loom/v1/learning.proto:40`):
+**AnalyzePatternEffectiveness Request** (`proto/loom/v1/learning.proto:53`):
 ```protobuf
 message AnalyzePatternEffectivenessRequest {
   string domain = 1;      // sql, rest, file, document, etc.
@@ -300,7 +314,7 @@ message AnalyzePatternEffectivenessRequest {
 }
 ```
 
-**Pattern Analysis Response** (`proto/loom/v1/learning.proto:47`):
+**Pattern Analysis Response** (`proto/loom/v1/learning.proto:60`):
 ```protobuf
 message PatternAnalysisResponse {
   repeated PatternMetric patterns = 1;
@@ -330,9 +344,10 @@ message PatternMetric {
 }
 ```
 
-**Pattern Recommendations** (`proto/loom/v1/learning.proto:76`):
+**Pattern Recommendations** (`proto/loom/v1/learning.proto:89`):
 ```protobuf
 enum PatternRecommendation {
+  PATTERN_RECOMMENDATION_UNSPECIFIED = 0;
   PATTERN_KEEP = 1;        // Pattern performing well
   PATTERN_PROMOTE = 2;     // High success rate, use more
   PATTERN_DEMOTE = 3;      // Moderate issues, use less
@@ -349,97 +364,74 @@ enum PatternRecommendation {
 - **Judge integration**: Multi-dimensional optimization via judge scores
 
 
-### Pattern Effectiveness Analyzer
+### Pattern Effectiveness Tracker
 
-**Responsibility**: Analyze runtime pattern performance and generate recommendations.
+**Responsibility**: Track and analyze runtime pattern performance and generate recommendations.
 
-**Core Structure** (planned in `pkg/metaagent/learning/analyzer.go`):
+**Core Structure** (`pkg/metaagent/learning/pattern_tracker.go:35`):
 ```go
-type PatternEffectivenessAnalyzer struct {
-    metricsCollector *MetricsCollector
-    judgeClient      *judge.Client
-    tracer           observability.Tracer
+type PatternEffectivenessTracker struct {
+    db     *sql.DB
+    tracer observability.Tracer
+    bus    *communication.MessageBus
+
+    windowSize    time.Duration // Aggregation window (default: 1 hour)
+    flushInterval time.Duration // Batch write interval (default: 5 minutes)
+
+    // In-memory buffer: key = "pattern:variant:agent:window_start" -> stats
+    buffer   map[string]*patternStats
+    bufferMu sync.RWMutex
+
+    // Background goroutine control
+    stopChan chan struct{}
+    wg       sync.WaitGroup
+    started  bool
+    mu       sync.Mutex // Protects started flag
 }
 
-func (pea *PatternEffectivenessAnalyzer) Analyze(ctx context.Context, domain DomainType, windowHours int64) (*PatternAnalysisResponse, error) {
-    ctx, span := pea.tracer.StartSpan(ctx, "learning.pattern_effectiveness.analyze")
-    defer pea.tracer.EndSpan(span)
-
-    // 1. Collect pattern metrics from agent runtime
-    patternMetrics, err := pea.metricsCollector.GetPatternPerformance(ctx, domain, windowHours)
-    if err != nil {
-        return nil, fmt.Errorf("failed to collect pattern metrics: %w", err)
-    }
-
-    // 2. Enrich with judge evaluation scores
-    for _, metric := range patternMetrics {
-        judgeScores, _ := pea.judgeClient.GetPatternJudgeScores(ctx, metric.Pattern, windowHours)
-        if judgeScores != nil {
-            metric.JudgePassRate = judgeScores.PassRate
-            metric.JudgeAvgScore = judgeScores.AvgScore
-            metric.JudgeCriterionScores = judgeScores.CriterionScores
-        }
-    }
-
-    // 3. Calculate confidence for each pattern
-    for _, metric := range patternMetrics {
-        metric.Confidence = calculateConfidence(metric.TotalUsages)
-    }
-
-    // 4. Generate recommendations
-    for _, metric := range patternMetrics {
-        metric.Recommendation = pea.generateRecommendation(metric)
-    }
-
-    // 5. Build summary statistics
-    summary := pea.buildSummary(patternMetrics)
-
-    return &PatternAnalysisResponse{
-        Patterns: patternMetrics,
-        Summary:  summary,
-    }, nil
+func (t *PatternEffectivenessTracker) RecordUsage(
+    ctx context.Context,
+    patternName string,
+    variant string,
+    domain string,
+    agentID string,
+    success bool,
+    costUSD float64,
+    latency time.Duration,
+    errorType string,
+    llmProvider string,
+    llmModel string,
+    judgeResult *loomv1.EvaluateResponse, // Optional: multi-judge evaluation result
+) {
+    // Thread-safe: buffers in-memory, flushes periodically to DB and MessageBus
+    t.bufferMu.Lock()
+    defer t.bufferMu.Unlock()
+    // ... accumulate into buffer map keyed by "pattern:variant:agent:window_start"
 }
 ```
 
-**Recommendation Logic** (`pkg/metaagent/learning/analyzer.go`):
+**Recommendation Logic** (implemented in `pkg/metaagent/learning/learning_agent.go:1713`):
 ```go
-func (pea *PatternEffectivenessAnalyzer) generateRecommendation(metric *PatternMetric) PatternRecommendation {
-    // Insufficient data
-    if metric.TotalUsages < 3 || metric.Confidence < 0.3 {
+func determineRecommendation(successRate, confidence float64) loomv1.PatternRecommendation {
+    if confidence < 0.3 {
         return loomv1.PatternRecommendation_PATTERN_INVESTIGATE
     }
 
-    // High success rate → PROMOTE
-    if metric.SuccessRate >= 0.9 && metric.Confidence >= 0.3 {
-        // Also check judge scores if available
-        if metric.JudgePassRate > 0 && metric.JudgePassRate >= 0.85 {
-            return loomv1.PatternRecommendation_PATTERN_PROMOTE
-        } else if metric.JudgePassRate == 0 {
-            // No judge data, rely on success rate only
-            return loomv1.PatternRecommendation_PATTERN_PROMOTE
-        }
-    }
-
-    // Low success rate → REMOVE
-    if metric.SuccessRate < 0.5 && metric.Confidence >= 0.3 {
+    if successRate >= 0.9 {
+        return loomv1.PatternRecommendation_PATTERN_PROMOTE
+    } else if successRate >= 0.7 {
+        return loomv1.PatternRecommendation_PATTERN_KEEP
+    } else if successRate >= 0.5 {
+        return loomv1.PatternRecommendation_PATTERN_DEMOTE
+    } else {
         return loomv1.PatternRecommendation_PATTERN_REMOVE
     }
-
-    // Moderate success rate → DEMOTE or KEEP
-    if metric.SuccessRate >= 0.7 && metric.SuccessRate < 0.9 {
-        return loomv1.PatternRecommendation_PATTERN_KEEP
-    } else if metric.SuccessRate >= 0.5 && metric.SuccessRate < 0.7 {
-        return loomv1.PatternRecommendation_PATTERN_DEMOTE
-    }
-
-    // Default
-    return loomv1.PatternRecommendation_PATTERN_KEEP
 }
 ```
 
 **Rationale**:
 - **Data-driven**: Recommendations based on actual runtime metrics, not intuition
-- **Judge integration**: Multi-dimensional evaluation (quality, safety, domain) informs recommendations
+- **Judge data collection**: Tracker records multi-dimensional judge scores (pass rate, avg score, criterion scores) for future use in recommendations. Note: the current `determineRecommendation` function uses only `successRate` and `confidence`, not judge scores directly.
 - **Confidence-gated**: Only recommend changes when sample size is sufficient (confidence ≥ 0.3)
 
 
@@ -447,7 +439,7 @@ func (pea *PatternEffectivenessAnalyzer) generateRecommendation(metric *PatternM
 
 **Responsibility**: Generate improvement proposals based on pattern analysis, template performance, and failure patterns.
 
-**Core Structure** (`pkg/metaagent/learning/engine.go:96`):
+**Core Structure** (`pkg/metaagent/learning/engine.go:26`):
 ```go
 type LearningEngine struct {
     collector *MetricsCollector
@@ -499,7 +491,7 @@ func (le *LearningEngine) SuggestImprovements(ctx context.Context, domain Domain
 }
 ```
 
-**Pattern Analysis** (`pkg/metaagent/learning/engine.go:155`):
+**Pattern Analysis** (`pkg/metaagent/learning/engine.go:168`):
 ```go
 func (le *LearningEngine) analyzePatterns(scores []PatternScore) []Improvement {
     var improvements []Improvement
@@ -544,9 +536,10 @@ func (le *LearningEngine) analyzePatterns(scores []PatternScore) []Improvement {
 }
 ```
 
-**Improvement Types** (`proto/loom/v1/learning.proto:144`):
+**Improvement Types** (`proto/loom/v1/learning.proto:157`):
 ```protobuf
 enum ImprovementType {
+  IMPROVEMENT_TYPE_UNSPECIFIED = 0;
   IMPROVEMENT_PATTERN_ADD = 1;       // Add new pattern usage
   IMPROVEMENT_PATTERN_REMOVE = 2;    // Deprecate failing pattern
   IMPROVEMENT_PARAMETER_TUNE = 3;    // Adjust LLM parameters
@@ -555,9 +548,10 @@ enum ImprovementType {
 }
 ```
 
-**Impact Levels** (`proto/loom/v1/learning.proto:154`):
+**Impact Levels** (`proto/loom/v1/learning.proto:167`):
 ```protobuf
 enum ImpactLevel {
+  IMPACT_LEVEL_UNSPECIFIED = 0;
   IMPACT_LOW = 1;      // Minor optimization
   IMPACT_MEDIUM = 2;   // Moderate improvement
   IMPACT_HIGH = 3;     // Major enhancement
@@ -575,7 +569,9 @@ enum ImpactLevel {
 
 **Responsibility**: Test improvements with 10% traffic split before full rollout.
 
-**Core Structure** (planned in `pkg/metaagent/learning/canary.go`):
+> **Status**: Canary testing is designed but NOT yet implemented. The structures and logic below represent the planned design.
+
+**Core Structure** (planned -- file does not yet exist):
 ```go
 type CanaryTestEngine struct {
     metricsCollector *MetricsCollector
@@ -606,7 +602,7 @@ type CanaryTestResult struct {
 }
 ```
 
-**Canary Test Execution** (planned):
+**Canary Test Execution** (planned -- not yet implemented):
 ```go
 func (cte *CanaryTestEngine) RunCanaryTest(ctx context.Context, improvement *Improvement) (*CanaryTest, error) {
     ctx, span := cte.tracer.StartSpan(ctx, "learning.canary.run_test")
@@ -636,7 +632,7 @@ func (cte *CanaryTestEngine) RunCanaryTest(ctx context.Context, improvement *Imp
 }
 ```
 
-**Canary Monitoring** (planned):
+**Canary Monitoring** (planned -- not yet implemented):
 ```go
 func (cte *CanaryTestEngine) monitorCanary(ctx context.Context, canary *CanaryTest) {
     duration := time.Duration(canary.DurationSeconds) * time.Second
@@ -683,93 +679,83 @@ func (cte *CanaryTestEngine) monitorCanary(ctx context.Context, canary *CanaryTe
 
 **Responsibility**: Prevent runaway improvements by tracking consecutive failures and opening circuit.
 
-**Core Structure** (planned in `pkg/metaagent/learning/circuit_breaker.go`):
+**Core Structure** (embedded in `pkg/metaagent/learning/learning_agent.go:92`):
 ```go
 type CircuitBreaker struct {
-    state            CircuitState
-    failureCount     int
-    successCount     int
-    lastFailureTime  time.Time
-    config           *CircuitBreakerConfig
-    mu               sync.Mutex
-}
-
-type CircuitState int
-
-const (
-    StateClosed CircuitState = iota // Normal operation
-    StateOpen                        // Failing, reject improvements
-    StateHalfOpen                    // Testing recovery
-)
-
-type CircuitBreakerConfig struct {
-    FailureThreshold int           // 5 consecutive failures → open
-    CooldownPeriod   time.Duration // 30 minutes
-    SuccessThreshold int           // 3 consecutive successes → close
+    failureCount    int
+    successCount    int
+    lastFailureTime time.Time
+    state           string // "closed", "open", "half-open"
+    threshold       int    // Number of failures before opening
+    cooldownPeriod  time.Duration
 }
 ```
 
-**Circuit Breaker Logic**:
+**Circuit Breaker Logic** (methods on `LearningAgent`, not on `CircuitBreaker` directly):
+
+The circuit breaker check is performed via `canProceed()` (`learning_agent.go:1630`), and state updates via `recordCircuitBreakerSuccess()` (`learning_agent.go:1677`) and `recordCircuitBreakerFailure()` (`learning_agent.go:1661`). All three methods hold `la.cbMu` (a `sync.RWMutex`) for thread safety.
+
 ```go
-func (cb *CircuitBreaker) CanApplyImprovement(ctx context.Context) error {
-    cb.mu.Lock()
-    defer cb.mu.Unlock()
+func (la *LearningAgent) canProceed() bool {
+    la.cbMu.RLock()
+    defer la.cbMu.RUnlock()
+
+    cb := la.circuitBreaker
 
     switch cb.state {
-    case StateClosed:
-        return nil // Allow improvement
+    case "closed":
+        return true
 
-    case StateOpen:
-        // Check if cooldown elapsed
-        if time.Since(cb.lastFailureTime) < cb.config.CooldownPeriod {
-            return ErrCircuitOpen
+    case "open":
+        // Check if cooldown period has elapsed
+        if time.Since(cb.lastFailureTime) > cb.cooldownPeriod {
+            // Transition to half-open (upgrades to write lock internally)
+            cb.state = "half-open"
+            return true
         }
+        return false
 
-        // Transition to HalfOpen
-        cb.state = StateHalfOpen
+    case "half-open":
+        return true
+
+    default:
+        return true
+    }
+}
+
+func (la *LearningAgent) recordCircuitBreakerSuccess() {
+    la.cbMu.Lock()
+    defer la.cbMu.Unlock()
+
+    cb := la.circuitBreaker
+    cb.successCount++
+
+    if cb.state == "half-open" && cb.successCount >= 3 {
+        // Close circuit after 3 consecutive successes in half-open state
+        cb.state = "closed"
+        cb.failureCount = 0
         cb.successCount = 0
-        return nil
-
-    case StateHalfOpen:
-        return nil // Allow improvement (testing recovery)
-    }
-
-    return ErrUnknownState
-}
-
-func (cb *CircuitBreaker) RecordSuccess() {
-    cb.mu.Lock()
-    defer cb.mu.Unlock()
-
-    cb.failureCount = 0
-
-    if cb.state == StateHalfOpen {
-        cb.successCount++
-        if cb.successCount >= cb.config.SuccessThreshold {
-            cb.state = StateClosed // Close circuit
-        }
     }
 }
 
-func (cb *CircuitBreaker) RecordFailure() {
-    cb.mu.Lock()
-    defer cb.mu.Unlock()
+func (la *LearningAgent) recordCircuitBreakerFailure() {
+    la.cbMu.Lock()
+    defer la.cbMu.Unlock()
 
+    cb := la.circuitBreaker
     cb.failureCount++
     cb.lastFailureTime = time.Now()
 
-    if cb.state == StateHalfOpen {
-        // Failed in HalfOpen, reopen circuit
-        cb.state = StateOpen
-        cb.successCount = 0
-    } else if cb.failureCount >= cb.config.FailureThreshold {
-        // Open circuit
-        cb.state = StateOpen
+    if cb.state == "half-open" {
+        // Immediately reopen on failure in half-open state
+        cb.state = "open"
+    } else if cb.failureCount >= cb.threshold {
+        cb.state = "open"
     }
 }
 ```
 
-**Circuit Breaker Configuration** (`proto/loom/v1/learning.proto:462`):
+**Circuit Breaker Configuration** (`proto/loom/v1/learning.proto:475`):
 ```protobuf
 message LearningCircuitBreakerConfig {
   bool enabled = 1;                    // default: true
@@ -807,28 +793,25 @@ HalfOpen (test recovery)
 
 **Responsibility**: Collect pattern usage metrics, template performance, and failure data from agent runtime.
 
-**Core Structure** (`pkg/metaagent/learning/metrics_collector.go`):
+**Core Structure** (`pkg/metaagent/learning/collector.go`):
 ```go
 type MetricsCollector struct {
-    db     *sql.DB // SQLite metrics database
+    db     *sql.DB
+    mu     sync.RWMutex
     tracer observability.Tracer
 }
 
 type PatternMetrics struct {
     Pattern      string
-    Domain       string
     UsageCount   int
     SuccessCount int
-    FailureCount int
     SuccessRate  float64
+    TotalCost    float64
     AvgCost      float64
-    AvgLatency   time.Duration
-    ErrorTypes   map[string]int
 }
 
 type TemplateMetrics struct {
     Template     string
-    Domain       string
     UsageCount   int
     SuccessCount int
     SuccessRate  float64
@@ -836,108 +819,76 @@ type TemplateMetrics struct {
 }
 
 type DeploymentMetric struct {
-    Timestamp        time.Time
-    Domain           string
-    Pattern          string
-    SelectedTemplate string
+    AgentID          string
+    Domain           DomainType
+    Templates        []string // Which templates were considered
+    SelectedTemplate string   // Which template was chosen
+    Patterns         []string // Which patterns were selected
     Success          bool
-    Cost             float64
-    Latency          time.Duration
     ErrorMessage     string
+    CostUSD          float64
+    TurnsUsed        int
+    CreatedAt        time.Time
+    Metadata         map[string]string
 }
 ```
 
-**SQLite Schema** (planned):
+**SQLite Schema** (two tables -- `metaagent_deployments` in `collector.go` and `pattern_effectiveness` in `schema.go`):
 ```sql
-CREATE TABLE pattern_metrics (
-    pattern TEXT NOT NULL,
+-- Main deployment tracking (collector.go)
+CREATE TABLE IF NOT EXISTS metaagent_deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
     domain TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    success BOOLEAN NOT NULL,
-    cost_usd REAL NOT NULL,
-    latency_ms INTEGER NOT NULL,
+    templates TEXT,              -- JSON array of template names
+    selected_template TEXT,
+    patterns TEXT,               -- JSON array of pattern names
+    success INTEGER NOT NULL,
     error_message TEXT,
-    PRIMARY KEY (pattern, domain, timestamp)
+    cost_usd REAL,
+    turns_used INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata TEXT                -- JSON object
 );
 
-CREATE INDEX idx_pattern_domain ON pattern_metrics(pattern, domain);
-CREATE INDEX idx_timestamp ON pattern_metrics(timestamp);
-
-CREATE TABLE template_metrics (
-    template TEXT NOT NULL,
+-- Runtime pattern effectiveness (schema.go, supports A/B testing variants)
+CREATE TABLE IF NOT EXISTS pattern_effectiveness (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_name TEXT NOT NULL,
+    variant TEXT DEFAULT 'default',
     domain TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    success BOOLEAN NOT NULL,
-    cost_usd REAL NOT NULL,
-    PRIMARY KEY (template, domain, timestamp)
+    agent_id TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    window_end INTEGER NOT NULL,
+    total_usages INTEGER NOT NULL,
+    success_count INTEGER NOT NULL,
+    failure_count INTEGER NOT NULL,
+    success_rate REAL NOT NULL,
+    avg_cost_usd REAL,
+    avg_latency_ms INTEGER,
+    error_types_json TEXT,
+    judge_pass_rate REAL,
+    judge_avg_score REAL,
+    judge_criterion_scores_json TEXT,
+    llm_provider TEXT,
+    llm_model TEXT,
+    UNIQUE(pattern_name, variant, agent_id, window_start)
 );
 ```
 
-**Metrics Collection** (`pkg/metaagent/learning/metrics_collector.go`):
+**Metrics Collection** (`pkg/metaagent/learning/collector.go`):
+
+`RecordDeployment` inserts into `metaagent_deployments` with JSON-serialized templates, patterns, and metadata fields. `GetPatternPerformance` returns `map[string]*PatternMetrics` (keyed by pattern name), not a slice, and does not accept a `windowHours` parameter -- it queries all records for the given domain:
+
 ```go
-func (mc *MetricsCollector) RecordDeployment(ctx context.Context, metric *DeploymentMetric) error {
+func (mc *MetricsCollector) GetPatternPerformance(ctx context.Context, domain DomainType) (map[string]*PatternMetrics, error) {
     query := `
-        INSERT INTO pattern_metrics (pattern, domain, timestamp, success, cost_usd, latency_ms, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        SELECT patterns, success, cost_usd
+        FROM metaagent_deployments
+        WHERE domain = ?
     `
-    _, err := mc.db.ExecContext(ctx, query,
-        metric.Pattern,
-        metric.Domain,
-        metric.Timestamp.Unix(),
-        metric.Success,
-        metric.Cost,
-        metric.Latency.Milliseconds(),
-        metric.ErrorMessage,
-    )
-    return err
-}
-
-func (mc *MetricsCollector) GetPatternPerformance(ctx context.Context, domain DomainType, windowHours int64) ([]*PatternMetrics, error) {
-    query := `
-        SELECT
-            pattern,
-            COUNT(*) as total_usages,
-            SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
-            SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count,
-            AVG(cost_usd) as avg_cost,
-            AVG(latency_ms) as avg_latency
-        FROM pattern_metrics
-        WHERE domain = ? AND timestamp >= ?
-        GROUP BY pattern
-        ORDER BY total_usages DESC
-    `
-
-    cutoff := time.Now().Add(-time.Duration(windowHours) * time.Hour).Unix()
-    rows, err := mc.db.QueryContext(ctx, query, string(domain), cutoff)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-
-    var metrics []*PatternMetrics
-    for rows.Next() {
-        var m PatternMetrics
-        var totalUsages, successCount, failureCount int
-        var avgCost float64
-        var avgLatency int64
-
-        err := rows.Scan(&m.Pattern, &totalUsages, &successCount, &failureCount, &avgCost, &avgLatency)
-        if err != nil {
-            return nil, err
-        }
-
-        m.Domain = string(domain)
-        m.UsageCount = totalUsages
-        m.SuccessCount = successCount
-        m.FailureCount = failureCount
-        m.SuccessRate = float64(successCount) / float64(totalUsages)
-        m.AvgCost = avgCost
-        m.AvgLatency = time.Duration(avgLatency) * time.Millisecond
-
-        metrics = append(metrics, &m)
-    }
-
-    return metrics, nil
+    rows, err := mc.db.QueryContext(ctx, query, string(domain))
+    // ... deserialize JSON patterns array, aggregate per-pattern stats
 }
 ```
 
@@ -951,7 +902,7 @@ func (mc *MetricsCollector) GetPatternPerformance(ctx context.Context, domain Do
 
 **Responsibility**: High-level orchestration of pattern analysis, improvement generation, and domain insights.
 
-**Core Structure** (`pkg/metaagent/learning/engine.go:38`):
+**Core Structure** (`pkg/metaagent/learning/engine.go:26`):
 ```go
 type LearningEngine struct {
     collector *MetricsCollector
@@ -966,7 +917,7 @@ func NewLearningEngine(collector *MetricsCollector, tracer observability.Tracer)
 }
 ```
 
-**Get Best Patterns** (`pkg/metaagent/learning/engine.go:46`):
+**Get Best Patterns** (`pkg/metaagent/learning/engine.go:59`):
 ```go
 func (le *LearningEngine) GetBestPatterns(ctx context.Context, domain DomainType) ([]PatternScore, error) {
     ctx, span := le.tracer.StartSpan(ctx, "metaagent.learning.get_best_patterns")
@@ -1016,7 +967,7 @@ func (le *LearningEngine) GetBestPatterns(ctx context.Context, domain DomainType
 
 **See [Algorithms](#algorithms) section for sigmoid confidence calculation.**
 
-**Domain Insights** (`pkg/metaagent/learning/engine.go:338`):
+**Domain Insights** (`pkg/metaagent/learning/engine.go:351`):
 ```go
 func (le *LearningEngine) GetDomainInsights(ctx context.Context, domain DomainType) (*DomainInsights, error) {
     ctx, span := le.tracer.StartSpan(ctx, "metaagent.learning.get_domain_insights")
@@ -1029,16 +980,31 @@ func (le *LearningEngine) GetDomainInsights(ctx context.Context, domain DomainTy
     }
 
     // Get success rate
-    successRate, _ := le.collector.GetSuccessRate(ctx, domain)
-    insights.SuccessRate = successRate
+    successRate, err := le.collector.GetSuccessRate(ctx, domain)
+    if err != nil {
+        span.RecordError(err)
+        // Continue even if this fails
+    } else {
+        insights.SuccessRate = successRate
+    }
 
     // Get best patterns
-    bestPatterns, _ := le.GetBestPatterns(ctx, domain)
-    insights.BestPatterns = bestPatterns
+    bestPatterns, err := le.GetBestPatterns(ctx, domain)
+    if err != nil {
+        span.RecordError(err)
+    } else {
+        insights.BestPatterns = bestPatterns
+    }
 
     // Get improvements
-    improvements, _ := le.SuggestImprovements(ctx, domain)
-    insights.Improvements = improvements
+    improvements, err := le.SuggestImprovements(ctx, domain)
+    if err != nil {
+        span.RecordError(err)
+    } else {
+        insights.Improvements = improvements
+    }
+
+    span.Status = observability.Status{Code: observability.StatusOK, Message: "Domain insights generated"}
 
     return insights, nil
 }
@@ -1074,11 +1040,12 @@ Learning Agent    Metrics Collector    Judge System    Pattern Library
   ├─ Calculate Confidence (sigmoid)          │               │                  
   │  confidence = 1 / (1 + e^(-0.1*(count-25)))              │                  
   │                     │                    │               │                  
-  ├─ Generate Recommendations                │               │                  
-  │  ├─ PROMOTE: success ≥ 0.9, confidence ≥ 0.3            │                   
-  │  ├─ REMOVE: success < 0.5, confidence ≥ 0.3             │                   
-  │  ├─ KEEP: performing well                │               │                  
-  │  └─ INVESTIGATE: insufficient data       │               │                  
+  ├─ Generate Recommendations                │               │
+  │  ├─ INVESTIGATE: confidence < 0.3        │               │
+  │  ├─ PROMOTE: success ≥ 0.9              │               │
+  │  ├─ KEEP: success ≥ 0.7                 │               │
+  │  ├─ DEMOTE: success ≥ 0.5               │               │
+  │  └─ REMOVE: success < 0.5               │               │                  
   │                     │                    │               │                  
   │◀─ PatternAnalysisResponse ──────────────┤               │                   
   │  (patterns with recommendations)         │               │                  
@@ -1170,7 +1137,9 @@ Learning Agent    Improvement Store    Notification    Human Operator
 **Properties**:
 - **Zero autonomy**: All improvements require human approval
 - **Stored pending**: Improvements stored but not applied
-- **Notification**: Operator notified (Slack, email) when improvements ready for review
+- **Notification**: Operator notified when improvements ready for review
+
+> **Status**: The notification system (Slack webhook, email) is NOT yet implemented. The `NotificationConfig` YAML is parsed by `config_loader.go` and mapped to the proto message, but no code exists to actually send notifications. This is a planned feature.
 
 **Use Case**: Production systems where human oversight required (regulatory, safety-critical).
 
@@ -1285,7 +1254,7 @@ Learning Agent    Circuit Breaker    Canary Engine    Pattern Library
 
 ### PatternMetric
 
-**Definition** (`proto/loom/v1/learning.proto:53`):
+**Definition** (`proto/loom/v1/learning.proto:66`):
 ```protobuf
 message PatternMetric {
   string pattern_name = 1;
@@ -1322,7 +1291,7 @@ success_rate = success_count / total_usages
 
 ### Improvement
 
-**Definition** (`proto/loom/v1/learning.proto:127`):
+**Definition** (`proto/loom/v1/learning.proto:140`):
 ```protobuf
 message Improvement {
   string id = 1;                      // UUID
@@ -1341,9 +1310,10 @@ message Improvement {
 }
 ```
 
-**ImprovementStatus** (`proto/loom/v1/learning.proto:180`):
+**ImprovementStatus** (`proto/loom/v1/learning.proto:193`):
 ```protobuf
 enum ImprovementStatus {
+  IMPROVEMENT_STATUS_UNSPECIFIED = 0;
   IMPROVEMENT_PENDING = 1;           // Awaiting approval
   IMPROVEMENT_APPROVED = 2;          // Approved, not yet applied
   IMPROVEMENT_APPLYING = 3;          // Currently being applied
@@ -1357,7 +1327,7 @@ enum ImprovementStatus {
 
 ### CanaryTest
 
-**Definition** (`proto/loom/v1/learning.proto:210`):
+**Definition** (`proto/loom/v1/learning.proto:223`):
 ```protobuf
 message CanaryTest {
   string test_id = 1;
@@ -1385,7 +1355,7 @@ message CanaryTestResult {
 
 ### LearningAgentConfig
 
-**Definition** (`proto/loom/v1/learning.proto:406`):
+**Definition** (`proto/loom/v1/learning.proto:419`):
 ```protobuf
 message LearningAgentConfig {
   string name = 1;
@@ -1402,9 +1372,10 @@ message LearningAgentConfig {
 }
 ```
 
-**AutonomyLevel** (`proto/loom/v1/learning.proto:445`):
+**AutonomyLevel** (`proto/loom/v1/learning.proto:458`):
 ```protobuf
 enum AutonomyLevel {
+  AUTONOMY_LEVEL_UNSPECIFIED = 0;
   AUTONOMY_MANUAL = 1;           // Requires human approval for all
   AUTONOMY_HUMAN_APPROVAL = 2;   // Improvements queued for approval
   AUTONOMY_FULL = 3;             // Auto-apply with circuit breaker
@@ -1418,9 +1389,9 @@ enum AutonomyLevel {
 
 **Problem**: Determine confidence score based on sample size (usage count).
 
-**Solution**: Sigmoid function that increases with usage count, reaching ~0.9 at 50 uses and ~0.99 at 100 uses.
+**Solution**: Sigmoid function that increases with usage count, reaching ~0.92 at 50 uses and ~0.999 at 100 uses.
 
-**Algorithm** (`pkg/metaagent/learning/engine.go:317`):
+**Algorithm** (`pkg/metaagent/learning/engine.go:330`):
 ```go
 func (le *LearningEngine) calculateConfidence(usageCount int) float64 {
     if usageCount == 0 {
@@ -1448,21 +1419,21 @@ func (le *LearningEngine) calculateConfidence(usageCount int) float64 {
 **Confidence Curve**:
 ```
 Usage Count → Confidence
-0  → 0.0
-1  → 0.3 (capped)
-2  → 0.3 (capped)
-3  → 0.17
-5  → 0.27
-10 → 0.47
-25 → 0.50 (midpoint)
-50 → 0.92
-100 → 0.998
+0   → 0.000
+1   → 0.083 (capped at 0.3, actual sigmoid ~0.083)
+2   → 0.091 (capped at 0.3, actual sigmoid ~0.091)
+3   → 0.100 (cap no longer applies)
+5   → 0.119
+10  → 0.182
+25  → 0.500 (midpoint)
+50  → 0.924
+100 → 0.999
 ```
 
 **Rationale**:
 - **Sigmoid shape**: Gradual increase, not linear
 - **Midpoint at 25**: Reasonable confidence at 25 uses
-- **Cap for small samples**: < 3 uses capped at 0.3 (low confidence)
+- **Cap for small samples**: < 3 uses capped at 0.3 (safety net; with current parameters sigmoid is already below 0.3 at < 3 uses)
 - **Asymptotic approach**: Never reaches 1.0 (always some uncertainty)
 
 
@@ -1472,51 +1443,32 @@ Usage Count → Confidence
 
 **Solution**: Rule-based logic with confidence gating.
 
-**Algorithm** (from analyzer):
+**Algorithm** (from `pkg/metaagent/learning/learning_agent.go:1713`):
 ```go
-func generateRecommendation(metric *PatternMetric) PatternRecommendation {
-    // Insufficient data → INVESTIGATE
-    if metric.TotalUsages < 3 || metric.Confidence < 0.3 {
+func determineRecommendation(successRate, confidence float64) loomv1.PatternRecommendation {
+    if confidence < 0.3 {
         return loomv1.PatternRecommendation_PATTERN_INVESTIGATE
     }
 
-    // High success rate → PROMOTE (also check judge scores if available)
-    if metric.SuccessRate >= 0.9 && metric.Confidence >= 0.3 {
-        if metric.JudgePassRate > 0 && metric.JudgePassRate >= 0.85 {
-            return loomv1.PatternRecommendation_PATTERN_PROMOTE
-        } else if metric.JudgePassRate == 0 {
-            // No judge data, rely on success rate only
-            return loomv1.PatternRecommendation_PATTERN_PROMOTE
-        }
-    }
-
-    // Low success rate → REMOVE
-    if metric.SuccessRate < 0.5 && metric.Confidence >= 0.3 {
+    if successRate >= 0.9 {
+        return loomv1.PatternRecommendation_PATTERN_PROMOTE
+    } else if successRate >= 0.7 {
+        return loomv1.PatternRecommendation_PATTERN_KEEP
+    } else if successRate >= 0.5 {
+        return loomv1.PatternRecommendation_PATTERN_DEMOTE
+    } else {
         return loomv1.PatternRecommendation_PATTERN_REMOVE
     }
-
-    // Moderate success rate → KEEP or DEMOTE
-    if metric.SuccessRate >= 0.7 && metric.SuccessRate < 0.9 {
-        return loomv1.PatternRecommendation_PATTERN_KEEP
-    } else if metric.SuccessRate >= 0.5 && metric.SuccessRate < 0.7 {
-        return loomv1.PatternRecommendation_PATTERN_DEMOTE
-    }
-
-    // Default
-    return loomv1.PatternRecommendation_PATTERN_KEEP
 }
 ```
 
 **Decision Tree**:
 ```
-usageCount < 3 OR confidence < 0.3
+confidence < 0.3
   → INVESTIGATE
 
-successRate ≥ 0.9 AND confidence ≥ 0.3 AND (judge_pass_rate ≥ 0.85 OR no_judge_data)
+successRate ≥ 0.9
   → PROMOTE
-
-successRate < 0.5 AND confidence ≥ 0.3
-  → REMOVE
 
 successRate ≥ 0.7 AND successRate < 0.9
   → KEEP
@@ -1524,8 +1476,8 @@ successRate ≥ 0.7 AND successRate < 0.9
 successRate ≥ 0.5 AND successRate < 0.7
   → DEMOTE
 
-else
-  → KEEP (default)
+successRate < 0.5
+  → REMOVE
 ```
 
 **Complexity**: O(1)
@@ -1538,11 +1490,13 @@ else
 
 ### Multi-Dimensional Optimization
 
+> **Status**: ⚠️ The `dimension_weights` field is defined in the proto (`OptimizationGoal.dimension_weights` and `TunePatternsRequest.dimension_weights`), but no `calculateMultiDimensionalScore` function exists in the codebase. The algorithm below represents the planned design.
+
 **Problem**: Optimize improvements across multiple dimensions (quality, cost, safety, domain, performance, usability) with user-defined weights.
 
 **Solution**: Weighted score calculation using judge dimension scores.
 
-**Algorithm** (planned):
+**Algorithm** (planned -- not yet implemented):
 ```go
 func calculateMultiDimensionalScore(metric *PatternMetric, dimensionWeights map[string]float64) float64 {
     if len(dimensionWeights) == 0 || len(metric.JudgeCriterionScores) == 0 {
@@ -1596,17 +1550,19 @@ score = (0.85 * 0.7) + (0.90 * 0.2) + (0.95 * 0.1) / (0.7 + 0.2 + 0.1)
 
 **Rationale**:
 - **User-defined weights**: Customize optimization priorities (quality vs cost vs safety)
-- **Judge integration**: Leverages multi-judge evaluation for comprehensive assessment
+- **Judge integration**: Leverages multi-judge evaluation for thorough assessment
 - **Fallback**: Uses success rate if judge scores unavailable
 
 
 ### Canary Statistical Significance Test
 
+> **Status**: ⚠️ Planned -- not yet implemented. See [Canary Testing Engine](#canary-testing-engine) for status.
+
 **Problem**: Determine if treatment (new pattern) significantly outperforms control (current pattern).
 
 **Solution**: Independent samples t-test with p-value < 0.05 threshold.
 
-**Algorithm** (planned):
+**Algorithm** (planned -- not yet implemented):
 ```go
 func (cte *CanaryTestEngine) evaluateCanary(ctx context.Context, canary *CanaryTest) *CanaryTestResult {
     // Collect metrics
@@ -1729,7 +1685,7 @@ Decision: p-value (0.119) > 0.05 → NOT statistically significant → EXTEND ca
 **Rationale**:
 - **Gradual increase**: More intuitive than linear or step function
 - **Never reaches 1.0**: Always some uncertainty (conservative)
-- **Reasonable thresholds**: 0.9 confidence at 50 uses, 0.3 confidence at 3 uses
+- **Reasonable thresholds**: ~0.92 confidence at 50 uses, ~0.1 confidence at 3 uses
 
 **Alternatives**:
 1. **Linear confidence** (confidence = usageCount / 100):
@@ -1915,26 +1871,23 @@ Decision: p-value (0.119) > 0.05 → NOT statistically significant → EXTEND ca
 
 ### Background Analysis Loop
 
+The analysis loop is started via `la.Start(ctx)` and runs in a background goroutine (`analysisLoop`). Each tick calls `la.runAnalysis(ctx)`, which iterates configured domains, calls `AnalyzePatternEffectiveness` and `GenerateImprovements` for each, and applies improvements based on autonomy level.
+
 ```go
-func (la *LearningAgent) Run(ctx context.Context) {
-    ticker := time.NewTicker(la.config.AnalysisInterval)
+func (la *LearningAgent) analysisLoop() {
+    defer la.wg.Done()
+
+    ticker := time.NewTicker(la.analysisInterval)
     defer ticker.Stop()
 
     for {
         select {
         case <-ticker.C:
-            // Analyze patterns
-            analysis, _ := la.analyzer.Analyze(ctx, la.config.Domains)
-
-            // Generate improvements
-            improvements, _ := la.generator.Generate(ctx, analysis)
-
-            // Apply improvements (based on autonomy level)
-            for _, improvement := range improvements {
-                la.applyImprovement(ctx, improvement)
+            ctx := context.Background()
+            if err := la.runAnalysis(ctx); err != nil {
+                // Log error via tracer, continue loop
             }
-
-        case <-ctx.Done():
+        case <-la.stopChan:
             return
         }
     }
@@ -2049,13 +2002,7 @@ Improvement Failure ───▶ Record in Circuit Breaker ───▶ Check Th
 - [Agent Runtime Architecture](agent-runtime.md) - Agent conversation loop and metrics collection
 - [Loom System Architecture](loom-system-architecture.md) - Overall system design
 
-### Reference Documentation
-
-- [Learning Agent API Reference](/docs/reference/learning-agent-api.md) - LearningAgentService RPC details
-- [Learning Agent Configuration Reference](/docs/reference/learning-agent-config.md) - YAML configuration spec
-
 ### Guides
 
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Learning Agent Configuration Guide](/docs/guides/learning-agent-configuration.md) - Configuring learning agent
-- [Multi-Dimensional Optimization Guide](/docs/guides/multi-dimensional-optimization.md) - Using judge scores for optimization
+- [Learning Agent Guide](/docs/guides/learning-agent-guide.md) - Using the learning agent

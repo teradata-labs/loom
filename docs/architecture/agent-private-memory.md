@@ -1,4 +1,6 @@
 
+> **Status**: ✅ Fully implemented. The AGENT namespace provides automatic agent-private memory isolation with key scoping. See `pkg/communication/shared_memory.go` for the implementation.
+
 ## Problem Statement
 
 ### User Report
@@ -6,7 +8,7 @@
 
 ### Concrete Example: D&D Adventure
 
-In the D&D adventure example with 5 player agents, all agents share the same `namespace="workflow"`:
+In a D&D adventure example with 5 player agents, all agents sharing the same `namespace="workflow"` leads to identity confusion:
 
 ```yaml
 # Agent 1: Player Eldrin (Elf Wizard)
@@ -34,216 +36,121 @@ shared_memory_read(
 
 **Result**: All agents experience identity confusion - they can't distinguish their own state from other agents' state.
 
-## Current Architecture
+## Architecture
 
-### What Works (Conversation Memory)
-
-```
-┌─────────────────────────────────────────────────────┐
-│ Session Memory (Per Agent)                          │
-│ - Message history                                   │
-│ - Conversation context                              │
-│ - Tool execution history                            │
-│ Location: pkg/agent/memory.go:37                    │
-│ Status: ✅ Works correctly                          │
-└─────────────────────────────────────────────────────┘
-```
-
-### What Doesn't Work (Agent Identity)
+### Memory Namespace Hierarchy
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ Shared Memory (Workflow-scoped)                     │
-│ - namespace="workflow" → ALL agents see same data   │
-│ - namespace="global"   → ALL agents see same data   │
-│ - namespace="swarm"    → ALL agents in swarm share  │
-│ Location: pkg/shuttle/builtin/shared_memory.go      │
-│ Status: ❌ No agent-private isolation               │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ Session Memory (Per Agent)                      │
+│ - Message history                               │
+│ - Conversation context                          │
+│ - Tool execution history                        │
+│ Location: pkg/agent/memory.go                   │
+│ Status: ✅ Implemented                          │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│ Shared Memory (Namespace-scoped)                │
+│ - namespace="global"   → ALL agents see data    │
+│ - namespace="workflow" → Workflow agents share   │
+│ - namespace="swarm"    → Swarm agents share     │
+│ - namespace="debate"   → Debate agents share    │
+│ - namespace="session"  → User session scoped    │
+│ - namespace="agent"    → Per-agent isolation     │
+│ Location: pkg/communication/shared_memory.go    │
+│ Status: ✅ Implemented (including AGENT)        │
+└─────────────────────────────────────────────────┘
 ```
 
-### The Architectural Gap
+### Three-Layer Memory Model
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ What Agents Need                                    │
-├─────────────────────────────────────────────────────┤
-│ 1. Session Memory (conversation history)           │
-│    ✅ EXISTS - pkg/agent/memory.go                  │
-│                                                     │
-│ 2. Shared Memory (workflow collaboration)          │
-│    ✅ EXISTS - pkg/communication/shared_memory.go   │
-│                                                     │
-│ 3. Agent-Private Memory (identity, goals, context) │
-│    ❌ MISSING - agents can't store private state!   │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ What Agents Need                                │
+├─────────────────────────────────────────────────┤
+│ 1. Session Memory (conversation history)        │
+│    ✅ Implemented - pkg/agent/memory.go         │
+│                                                 │
+│ 2. Shared Memory (workflow collaboration)       │
+│    ✅ Implemented - pkg/communication/          │
+│                     shared_memory.go            │
+│                                                 │
+│ 3. Agent-Private Memory (identity, goals)       │
+│    ✅ Implemented - AGENT namespace with        │
+│       automatic key scoping via scopeKey()      │
+└─────────────────────────────────────────────────┘
 ```
 
-## Discovered Solution: SESSION Namespace Exists!
+## Implementation: AGENT Namespace
 
-### Proto Definition (Already Exists!)
+### Proto Definition
 
 ```protobuf
-// proto/loom/v1/shared_memory.proto:19-20
+// proto/loom/v1/shared_memory.proto:22-37
 enum SharedMemoryNamespace {
   SHARED_MEMORY_NAMESPACE_UNSPECIFIED = 0;
   SHARED_MEMORY_NAMESPACE_GLOBAL = 1;
   SHARED_MEMORY_NAMESPACE_WORKFLOW = 2;
   SHARED_MEMORY_NAMESPACE_SWARM = 3;
   SHARED_MEMORY_NAMESPACE_DEBATE = 4;
-  SHARED_MEMORY_NAMESPACE_SESSION = 5;  // ← EXISTS BUT NOT EXPOSED!
+  SHARED_MEMORY_NAMESPACE_SESSION = 5;
+  // Agent-private namespace (isolated per agent instance)
+  // Keys are automatically scoped to the agent ID that writes them.
+  // This provides strict isolation - agents cannot read each other's private data.
+  SHARED_MEMORY_NAMESPACE_AGENT = 6;
 }
 ```
 
-### Storage Layer (Already Supports It!)
+### Storage Layer: Automatic Key Scoping
+
+The `scopeKey()` function in `pkg/communication/shared_memory.go:140-145` automatically prefixes keys with the agent ID for the AGENT namespace:
 
 ```go
-// pkg/communication/shared_memory.go:107-116
+// scopeKey automatically prefixes the key with agent ID for AGENT namespace.
+// For other namespaces, returns the key unchanged.
+// This ensures strict isolation - agents cannot access each other's private data.
+func scopeKey(namespace loomv1.SharedMemoryNamespace, agentID string, key string) string {
+    if namespace == loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_AGENT {
+        return fmt.Sprintf("agent:%s:%s", agentID, key)
+    }
+    return key
+}
+```
+
+This function is called in all storage operations: `Put`, `Get`, `Delete`, `List`, and `Watch`. For the AGENT namespace, `List` and `Watch` additionally filter results so agents only see their own keys (with the prefix stripped from returned keys).
+
+### Storage Layer Initialization
+
+All namespaces, including AGENT, are initialized at store creation (`pkg/communication/shared_memory.go:122-132`):
+
+```go
 for _, ns := range []loomv1.SharedMemoryNamespace{
     loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_GLOBAL,
     loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
     loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_SWARM,
     loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_DEBATE,
-    loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_SESSION,  // ← INITIALIZED!
+    loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_SESSION,
+    loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_AGENT,
 } {
     store.stats[ns] = &SharedMemoryNamespaceStats{namespace: ns}
     store.data[ns] = make(map[string]*loomv1.SharedMemoryValue)
 }
 ```
 
-### Builtin Tools (NOT Exposed!)
+### Builtin Tools
+
+Both `shared_memory_write` and `shared_memory_read` expose the `agent` namespace (`pkg/shuttle/builtin/shared_memory.go:52-54`):
 
 ```go
-// pkg/shuttle/builtin/shared_memory.go:64-66
-"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', or 'agent' (default: global)").
-    WithEnum("global", "workflow", "swarm").  // ← SESSION missing!
+"namespace": shuttle.NewStringSchema("Memory namespace. Use 'agent' for private data.").
+    WithEnum("global", "workflow", "swarm", "agent").
     WithDefault("global"),
 ```
 
-**Key Finding**: The SESSION namespace exists in proto and storage, but the builtin `shared_memory_read`/`shared_memory_write` tools don't expose it!
+### Usage Pattern
 
-## Solution Options
-
-### Option 1: Expose SESSION Namespace (Quickest Fix)
-
-**Implementation**: Add "session" to builtin tool enum
-
-```diff
-// pkg/shuttle/builtin/shared_memory.go:64-66
-"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', 'swarm', or 'session' (default: global)").
--   WithEnum("global", "workflow", "swarm").
-+   WithEnum("global", "workflow", "swarm", "session").
-    WithDefault("global"),
-```
-
-**Usage Pattern**: Agents manually prefix keys with agent ID
-
-```yaml
-# Agent YAML config includes agent name
-apiVersion: loom/v1
-kind: Agent
-metadata:
-  name: player_eldrin  # Agent knows its own ID
-  version: "1.0.0"
-spec:
-  # ... rest of agent spec
-
-# Agent uses SESSION namespace with scoped keys
-shared_memory_write(
-  key="agent:player_eldrin:character_sheet",  # Manual prefix
-  namespace="session",
-  value="Name: Eldrin, Race: Elf, Class: Wizard"
-)
-
-shared_memory_read(
-  key="agent:player_eldrin:character_sheet",
-  namespace="session"
-)
-```
-
-**Pros**:
-- ✅ Zero proto changes (SESSION already exists!)
-- ✅ Storage layer already supports it (no changes)
-- ✅ 1-line code change in builtin tools
-- ✅ Backwards compatible (existing workflows unaffected)
-- ✅ Can ship today
-
-**Cons**:
-- ⚠️ Agents must manually prefix keys with agent ID
-- ⚠️ "session" name is misleading (means user session, not agent session)
-- ⚠️ No automatic isolation - agents can read each other's keys if they know the pattern
-- ⚠️ Error-prone (typos in agent ID prefix)
-
-**Recommendation**: **Immediate workaround** for D&D adventure, but not ideal long-term.
-
-
-### Option 2: Add AGENT Namespace (Proper Solution)
-
-**Implementation**: Add new namespace to proto with automatic key scoping
-
-#### Step 1: Proto Definition
-
-```diff
-// proto/loom/v1/shared_memory.proto:21 (ADD)
-enum SharedMemoryNamespace {
-  ...
-  SHARED_MEMORY_NAMESPACE_SESSION = 5;
-+ // Agent-private namespace (isolated per agent instance)
-+ // Keys are automatically scoped to the agent ID that writes them.
-+ SHARED_MEMORY_NAMESPACE_AGENT = 6;
-}
-```
-
-#### Step 2: Storage Layer Auto-Scoping
-
-```go
-// pkg/communication/shared_memory.go:165-170 (MODIFY Put method)
-func (s *SharedMemoryStore) Put(ctx context.Context, req *loomv1.PutSharedMemoryRequest) (*loomv1.PutSharedMemoryResponse, error) {
-    // ... validation ...
-
-    // AUTO-SCOPE: Automatically prefix keys with agent_id for AGENT namespace
-    key := req.Key
-    if req.Namespace == loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_AGENT {
-        key = fmt.Sprintf("agent:%s:%s", req.AgentId, req.Key)
-    }
-
-    // Get namespace data
-    nsData := s.data[req.Namespace]
-
-    // ... rest of Put logic uses auto-scoped key ...
-}
-```
-
-```go
-// pkg/communication/shared_memory.go:310-320 (MODIFY Get method)
-func (s *SharedMemoryStore) Get(ctx context.Context, req *loomv1.GetSharedMemoryRequest) (*loomv1.GetSharedMemoryResponse, error) {
-    // ... validation ...
-
-    // AUTO-SCOPE: Automatically prefix keys with agent_id for AGENT namespace
-    key := req.Key
-    if req.Namespace == loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_AGENT {
-        key = fmt.Sprintf("agent:%s:%s", req.AgentId, req.Key)
-    }
-
-    // Read from shared memory
-    nsData := s.data[req.Namespace]
-    value, exists := nsData[key]
-
-    // ... rest of Get logic ...
-}
-```
-
-#### Step 3: Builtin Tools Exposure
-
-```diff
-// pkg/shuttle/builtin/shared_memory.go:64-66
-"namespace": shuttle.NewStringSchema("Namespace: 'global', 'workflow', 'swarm', or 'agent' (default: global)").
--   WithEnum("global", "workflow", "swarm").
-+   WithEnum("global", "workflow", "swarm", "agent").
-    WithDefault("global"),
-```
-
-**Usage Pattern**: Clean and simple
+Agents use `namespace="agent"` for private data with automatic key scoping:
 
 ```yaml
 # Agent uses "agent" namespace - automatic scoping!
@@ -261,191 +168,54 @@ shared_memory_read(
 # Other agents cannot read this agent's "character_sheet"
 ```
 
-**Pros**:
-- ✅ Clear semantics ("agent" = private to this agent)
-- ✅ Automatic key scoping (no manual prefixing)
-- ✅ Built-in isolation guarantee (agents can't accidentally cross-read)
-- ✅ Type-safe (impossible to read another agent's private data)
-- ✅ Consistent with Loom's design philosophy (agent-centric)
+**Properties**:
+- ✅ Automatic key scoping (no manual prefixing by the agent)
+- ✅ Built-in isolation guarantee (agents cannot accidentally cross-read)
+- ✅ Consistent with other namespaces (uses the same tools and storage layer)
+- ✅ Backwards compatible (existing workflows using global/workflow/swarm are unaffected)
 
-**Cons**:
-- ⚠️ Requires proto change (`buf generate`)
-- ⚠️ Requires storage layer modification (~20 lines)
-- ⚠️ Requires builtin tool update (1 line)
-- ⚠️ Needs comprehensive testing (namespace isolation)
+## Design Decisions
 
-**Recommendation**: **Best long-term solution** - proper architectural fix.
+### Decision 1: Storage-Layer Scoping vs. Tool-Layer Scoping
 
+**Chosen Approach**: Storage layer auto-scoping via `scopeKey()`.
 
-### Option 3: Session Context Map (Not Recommended)
+**Rationale**: Placing the scoping logic in the storage layer guarantees consistent behavior regardless of how the AGENT namespace is accessed (builtin tools, gRPC API, or direct Go calls). A single source of truth prevents bugs where one access path forgets to scope.
 
-**Implementation**: Use `Session.Context` for agent-specific data
+**Alternative Considered**: Scoping in the builtin tool layer. Rejected because it would only protect one access path and leave the gRPC API and programmatic access unprotected.
 
-```go
-// pkg/types/session.go (ALREADY EXISTS)
-type Session struct {
-    ID       string
-    Messages []Message
-    Context  map[string]interface{}  // Use this for agent-private data
-}
+### Decision 2: AGENT Namespace vs. SESSION Namespace with Manual Prefixing
 
-// Agent reads/writes to session context
-session.Context["agent_private:character_sheet"] = characterSheet
-```
+**Chosen Approach**: Dedicated AGENT namespace with value `6` in the proto enum.
 
-**Pros**:
-- ✅ No proto changes
-- ✅ No shared memory changes
-- ✅ Data persists in SessionStore
+**Rationale**: Manual key prefixing (e.g., `agent:{id}:character_sheet`) is error-prone - agents can typo the prefix or accidentally read other agents' data. The AGENT namespace makes isolation a structural guarantee rather than a convention.
 
-**Cons**:
-- ❌ Not accessible via `shared_memory_read`/`shared_memory_write` tools
-- ❌ Agents can't programmatically query via LLM
-- ❌ Requires custom tool: `get_my_context(key="character_sheet")`
-- ❌ Doesn't leverage existing shared memory infrastructure
-- ❌ Breaks tool abstraction (why have two memory systems?)
+**Alternative Considered**: Reusing the SESSION namespace (value `5`) with a convention of prefixing keys with agent IDs. This was considered as a quick workaround but rejected as the long-term solution because:
+- "session" semantics are misleading for agent-private data
+- No automatic isolation - agents could read each other's keys if they guessed the pattern
+- Error-prone manual prefixing
 
-**Recommendation**: **Not recommended** - violates separation of concerns.
+### Decision 3: Session Context Map
 
+**Not Chosen**: Using `Session.Context` (`pkg/types/types.go:263`) for agent-specific data.
 
-## Recommended Implementation Approach
+**Rationale**: The `Session.Context map[string]interface{}` field exists but is not accessible via `shared_memory_read`/`shared_memory_write` tools. Using it for agent-private data would require a separate tool, breaking the unified memory abstraction and creating two parallel memory systems.
 
-### Phase 1: Immediate Fix (This Week)
+## Test Coverage
 
-**Goal**: Unblock D&D adventure development
+The AGENT namespace has dedicated tests in `pkg/communication/shared_memory_test.go`:
 
-**Action**: **Option 1** - Expose SESSION namespace
-
-```bash
-# 1. Update builtin tools (1 line change)
-vim pkg/shuttle/builtin/shared_memory.go
-# Add "session" to WithEnum on line 65
-
-# 2. Test
-go test ./pkg/shuttle/builtin -run TestSharedMemory -v
-
-# 3. Update D&D agent configs to use SESSION namespace
-# agents/player_*.yaml:
-#   Use: namespace="session", key="agent:{agent_name}:character_sheet"
-```
-
-**Documentation**: Add convention to docs
-
-```markdown
-## Agent-Private Data Convention (Temporary)
-
-Until AGENT namespace is implemented, use SESSION namespace with manual key prefixing:
-
-shared_memory_write(
-  key="agent:{your_agent_name}:{key}",
-  namespace="session",
-  value="..."
-)
-```
-
-
-### Phase 2: Architectural Fix (Next Sprint)
-
-**Goal**: Proper agent-private memory with automatic isolation
-
-**Action**: **Option 2** - Add AGENT namespace
-
-**Implementation Checklist**:
-
-1. **Proto Changes**
-   ```bash
-   vim proto/loom/v1/shared_memory.proto
-   # Add SHARED_MEMORY_NAMESPACE_AGENT = 6
-   buf generate
-   ```
-
-2. **Storage Layer Auto-Scoping**
-   ```bash
-   vim pkg/communication/shared_memory.go
-   # Modify Put() to auto-scope AGENT namespace keys
-   # Modify Get() to auto-scope AGENT namespace keys
-   # Modify Delete() to auto-scope AGENT namespace keys
-   # Modify List() to auto-scope AGENT namespace keys
-   ```
-
-3. **Builtin Tools Update**
-   ```bash
-   vim pkg/shuttle/builtin/shared_memory.go
-   # Add "agent" to WithEnum
-   # Update tool descriptions
-   ```
-
-4. **Testing**
-   ```bash
-   vim pkg/communication/shared_memory_test.go
-   # Add TestAgentNamespaceIsolation()
-   # Verify agents can't read each other's data
-   go test -race ./pkg/communication
-   ```
-
-5. **Documentation**
-   ```bash
-   vim website/content/en/docs/architecture/memory-systems.md
-   # Add "Agent-Private Memory" section
-   # Document namespace scoping behavior
-   # Update examples
-   ```
-
-6. **Integration Testing**
-   ```bash
-   # Test with D&D adventure 5-agent scenario
-   cd examples/03-advanced/dnd-adventure
-   # Run workflow with AGENT namespace
-   # Verify no identity confusion
-   ```
-
-**Estimated Effort**: 4-6 hours
-
-
-## Decision Matrix
-
-| Criteria | Option 1: SESSION | Option 2: AGENT | Option 3: Context |
-|----------|-------------------|-----------------|-------------------|
-| **Implementation Time** | 1 hour | 4-6 hours | 2-3 hours |
-| **Proto Changes** | None | Yes | None |
-| **Storage Changes** | None | Yes (~20 lines) | None |
-| **Tool Changes** | 1 line | 1 line | New tool |
-| **Automatic Isolation** | ❌ No | ✅ Yes | ❌ No |
-| **Clear Semantics** | ⚠️ Misleading | ✅ Clear | ⚠️ Confusing |
-| **Long-term Maintainability** | ⚠️ Workaround | ✅ Proper | ❌ Fragmentation |
-| **Backwards Compatible** | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Recommendation** | Quick fix | Long-term solution | Avoid |
-
-## Next Steps
-
-1. **Get architectural approval** for Option 2 (AGENT namespace) as long-term solution
-2. **Implement Option 1 (SESSION)** as immediate workaround:
-   - Update `pkg/shuttle/builtin/shared_memory.go:65`
-   - Test with `go test ./pkg/shuttle/builtin -v`
-   - Update D&D agent configs to use `namespace="session"`
-3. **Schedule Option 2** for next sprint:
-   - Create GitHub issue with proto/storage/tool changes
-   - Assign to sprint after D&D example is working
-
-## Open Questions
-
-1. **Session vs Agent Semantics**: Should SESSION namespace eventually be deprecated in favor of AGENT?
-   - **Answer**: No - keep both. SESSION = user session (multi-agent), AGENT = per-agent private.
-
-2. **Cross-Agent Reads**: Should agents ever be able to read another agent's private data?
-   - **Answer**: No for AGENT namespace (strict isolation). Use WORKFLOW for shared data.
-
-3. **Migration Path**: How do we migrate workflows using SESSION workaround to AGENT namespace?
-   - **Answer**: Both namespaces coexist. No breaking changes. Document migration pattern.
-
-4. **Key Scoping Implementation**: Should auto-scoping be in storage layer or tool layer?
-   - **Answer**: Storage layer (single source of truth, consistent behavior across all APIs).
+- `TestAgentNamespaceIsolation` - Verifies agents cannot access each other's private data
+- `TestAgentNamespaceList` - Verifies `List` only returns keys for the requesting agent
+- `TestAgentNamespaceDelete` - Verifies `Delete` only affects the requesting agent's data
+- `TestAgentNamespaceWatch` - Verifies `Watch` only notifies for the requesting agent's updates
+- `TestAgentNamespaceConcurrentAccess` - Verifies concurrent access from different agents is race-free
 
 ## References
 
-- **Proto**: `proto/loom/v1/shared_memory.proto:9-21`
-- **Storage**: `pkg/communication/shared_memory.go:107-250`
-- **Builtin Tools**: `pkg/shuttle/builtin/shared_memory.go:34-398`
-- **Agent Types**: `pkg/agent/types.go:26-77`
-- **Session Store**: `pkg/agent/session_store.go:17-150`
-- **Memory Documentation**: `website/content/en/docs/architecture/memory-systems.md`
+- **Proto**: `proto/loom/v1/shared_memory.proto:22-37`
+- **Storage**: `pkg/communication/shared_memory.go` (707 lines)
+- **Builtin Tools**: `pkg/shuttle/builtin/shared_memory.go` (377 lines)
+- **Agent Types**: `pkg/agent/types.go`
+- **Session Store**: `pkg/agent/session_store.go`
+- **Memory Documentation**: `docs/architecture/memory-systems.md`

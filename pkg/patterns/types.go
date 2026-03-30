@@ -18,6 +18,31 @@ import (
 	"strings"
 )
 
+// UnmarshalYAML implements custom YAML unmarshalling for Pattern to support
+// legacy "teradata_function" key as an alias for "backend_function".
+// Many existing pattern YAML files use "teradata_function" which does not match
+// the struct tag "backend_function", causing silent data loss during unmarshalling.
+func (p *Pattern) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type patternAlias Pattern
+	var alias patternAlias
+	if err := unmarshal(&alias); err != nil {
+		return err
+	}
+	*p = Pattern(alias)
+
+	// Support legacy "teradata_function" key as alias for "backend_function".
+	// If backend_function is already set, it takes precedence.
+	if p.BackendFunction == "" {
+		var raw map[string]interface{}
+		if err := unmarshal(&raw); err == nil {
+			if tf, ok := raw["teradata_function"].(string); ok {
+				p.BackendFunction = tf
+			}
+		}
+	}
+	return nil
+}
+
 // Pattern represents a comprehensive execution pattern definition.
 // Patterns encapsulate domain knowledge for complex operations (SQL, REST APIs, document processing, etc.).
 // This is backend-agnostic - SQL patterns, REST API patterns, document patterns all use this structure.

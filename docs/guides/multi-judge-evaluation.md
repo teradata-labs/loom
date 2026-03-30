@@ -1,7 +1,7 @@
 
 # Multi-Judge Evaluation Guide
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -16,9 +16,21 @@
   - [Create Eval Suite](#create-eval-suite)
 - [Examples](#examples)
   - [Example 1: CLI Multi-Judge Evaluation](#example-1-cli-multi-judge-evaluation)
-  - [Example 2: YAML Eval Suite](#example-2-yaml-eval-suite)
+  - [Example 2: Streaming Multi-Judge Evaluation](#example-2-streaming-multi-judge-evaluation)
+  - [Example 3: YAML Eval Suite](#example-3-yaml-eval-suite)
 - [Troubleshooting](#troubleshooting)
 
+## Feature Status
+
+- ✅ Multi-judge evaluation via CLI (`looms judge evaluate`)
+- ✅ Streaming evaluation via CLI (`looms judge evaluate-stream`)
+- ✅ Judge registration from YAML (`looms judge register`)
+- ✅ Judge evaluation history (`looms judge history`)
+- ✅ 6 aggregation strategies (weighted-average, all-must-pass, majority-pass, any-pass, min-score, max-score)
+- ✅ 3 execution modes (synchronous, asynchronous, hybrid)
+- ✅ 7 judge dimensions (quality, cost, safety, domain, performance, usability, custom)
+- ✅ Eval suite runner with multi-judge support (requires `hawk` build tag)
+- ✅ Retry and circuit breaker support for judge registration
 
 ## Overview
 
@@ -65,33 +77,43 @@ Overall: PASS (score: 88.3/100)
 
 ### Judge Configuration
 
-Create `config/judges.yaml`:
+Each judge is defined in its own YAML file, matching the `JudgeConfig` proto message.
+The `looms judge register` command accepts one file per judge.
+
+Create `config/judges/quality-judge.yaml`:
 
 ```yaml
-judges:
-  - name: quality-judge
-    criteria: "Evaluate SQL query accuracy and completeness"
-    dimensions:
-      - JUDGE_DIMENSION_QUALITY
-    weight: 2.0
-    min_passing_score: 80
-    criticality: JUDGE_CRITICALITY_CRITICAL
+name: quality-judge
+criteria: "Evaluate SQL query accuracy and completeness"
+dimensions:
+  - JUDGE_DIMENSION_QUALITY
+weight: 2.0
+min_passing_score: 80
+criticality: JUDGE_CRITICALITY_CRITICAL
+```
 
-  - name: safety-judge
-    criteria: "Check for SQL injection and unsafe operations"
-    dimensions:
-      - JUDGE_DIMENSION_SAFETY
-    weight: 3.0
-    min_passing_score: 90
-    criticality: JUDGE_CRITICALITY_SAFETY_CRITICAL
+Create `config/judges/safety-judge.yaml`:
 
-  - name: cost-judge
-    criteria: "Evaluate token efficiency"
-    dimensions:
-      - JUDGE_DIMENSION_COST
-    weight: 1.0
-    min_passing_score: 75
-    criticality: JUDGE_CRITICALITY_NON_CRITICAL
+```yaml
+name: safety-judge
+criteria: "Check for SQL injection and unsafe operations"
+dimensions:
+  - JUDGE_DIMENSION_SAFETY
+weight: 3.0
+min_passing_score: 90
+criticality: JUDGE_CRITICALITY_SAFETY_CRITICAL
+```
+
+Create `config/judges/cost-judge.yaml`:
+
+```yaml
+name: cost-judge
+criteria: "Evaluate token efficiency"
+dimensions:
+  - JUDGE_DIMENSION_COST
+weight: 1.0
+min_passing_score: 75
+criticality: JUDGE_CRITICALITY_NON_CRITICAL
 ```
 
 ### Aggregation Strategies
@@ -109,20 +131,21 @@ judges:
 
 | Mode | Description |
 |------|-------------|
-| `SYNCHRONOUS` | All judges run in parallel, block until complete |
-| `ASYNCHRONOUS` | All judges run in background |
-| `HYBRID` | Critical judges sync, non-critical async |
+| `EXECUTION_MODE_SYNCHRONOUS` | All judges run synchronously (blocks response until complete) |
+| `EXECUTION_MODE_ASYNCHRONOUS` | All judges run asynchronously (background) |
+| `EXECUTION_MODE_HYBRID` | Critical judges sync, non-critical async (balanced) |
 
 ### Judge Dimensions
 
 | Dimension | What It Measures |
 |-----------|------------------|
 | `JUDGE_DIMENSION_QUALITY` | Accuracy, completeness |
+| `JUDGE_DIMENSION_COST` | Cost efficiency |
 | `JUDGE_DIMENSION_SAFETY` | Security, compliance |
-| `JUDGE_DIMENSION_COST` | Token efficiency |
 | `JUDGE_DIMENSION_DOMAIN` | Domain-specific rules |
 | `JUDGE_DIMENSION_PERFORMANCE` | Latency, throughput |
 | `JUDGE_DIMENSION_USABILITY` | Clarity, user experience |
+| `JUDGE_DIMENSION_CUSTOM` | User-defined dimensions (requires `custom_dimension_name` field) |
 
 ## Common Tasks
 
@@ -142,6 +165,9 @@ For safety-critical systems:
 
 ```bash
 looms judge evaluate \
+  --agent=sql-agent \
+  --prompt="Generate a query" \
+  --response="SELECT * FROM users" \
   --judges=quality-judge,safety-judge \
   --aggregation=all-must-pass
 ```
@@ -150,6 +176,9 @@ For general evaluation:
 
 ```bash
 looms judge evaluate \
+  --agent=sql-agent \
+  --prompt="Generate a query" \
+  --response="SELECT * FROM users" \
   --judges=quality-judge,cost-judge \
   --aggregation=weighted-average
 ```
@@ -219,7 +248,7 @@ spec:
         - "DROP"
 ```
 
-Run the eval suite:
+Run the eval suite (requires `hawk` build tag):
 
 ```bash
 looms eval run eval-suites/sql-evaluation.yaml --store ./results.db
@@ -239,16 +268,54 @@ looms judge evaluate \
   --export-to-hawk
 ```
 
-### Example 2: YAML Eval Suite
+### Example 2: Streaming Multi-Judge Evaluation
 
-Create `examples/eval-suites/comprehensive.yaml`:
+Use `evaluate-stream` for real-time progress updates during long-running evaluations:
+
+```bash
+looms judge evaluate-stream \
+  --agent=sql-agent \
+  --prompt="Generate a query to find top customers by revenue" \
+  --response="SELECT customer_id, SUM(amount) as revenue FROM orders GROUP BY customer_id ORDER BY revenue DESC LIMIT 10" \
+  --judges=quality-judge,safety-judge,cost-judge \
+  --aggregation=weighted-average \
+  --export-to-hawk
+```
+
+Expected output (streamed incrementally):
+```
+Streaming evaluation with 3 judges...
+   Agent: sql-agent
+   Judges: quality-judge, safety-judge, cost-judge
+   Aggregation: weighted-average
+
+────────────────────────────────────────
+Judge quality-judge started (example 1)
+Judge quality-judge completed (320ms, score: 92/100)
+Judge safety-judge started (example 1)
+Judge safety-judge completed (280ms, score: 95/100)
+Judge cost-judge started (example 1)
+Judge cost-judge completed (150ms, score: 78/100)
+Example 1/1 completed (score: 88/100)
+
+────────────────────────────────────────
+Evaluation completed! (750ms total)
+```
+
+The streaming variant accepts the same flags as `evaluate` but provides incremental progress via gRPC server-side streaming (`EvaluateWithJudgesStream` RPC).
+
+### Example 3: YAML Eval Suite
+
+> **Note:** The `looms eval` command requires the `hawk` build tag. Build with: `go build -tags hawk,fts5 ./cmd/looms`
+
+Create `examples/eval-suites/sql-safety-quality.yaml`:
 
 ```yaml
 apiVersion: loom/v1
 kind: EvalSuite
 
 metadata:
-  name: "Comprehensive SQL Evaluation"
+  name: "SQL Safety and Quality Evaluation"
 
 spec:
   agent_id: "sql-agent"
@@ -291,13 +358,13 @@ spec:
 Run:
 
 ```bash
-looms eval run examples/eval-suites/comprehensive.yaml
+looms eval run examples/eval-suites/sql-safety-quality.yaml
 ```
 
-View results:
+View results (default store path is `./evals.db`):
 
 ```bash
-sqlite3 ./results.db "SELECT test_name, passed, cost_usd FROM test_case_results"
+sqlite3 ./evals.db "SELECT test_name, passed, cost_usd FROM test_case_results"
 ```
 
 ## Troubleshooting

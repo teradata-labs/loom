@@ -472,6 +472,30 @@ func (c *Client) calculateCost(inputTokens, outputTokens int) float64 {
 	case "o1-mini":
 		inputCostPerM = 3.00
 		outputCostPerM = 12.00
+	case "gpt-5":
+		inputCostPerM = 2.50
+		outputCostPerM = 10.00
+	case "gpt-5-mini":
+		inputCostPerM = 0.40
+		outputCostPerM = 1.60
+	case "gpt-4.1":
+		inputCostPerM = 2.00
+		outputCostPerM = 8.00
+	case "gpt-4.1-mini":
+		inputCostPerM = 0.40
+		outputCostPerM = 1.60
+	case "gpt-4.1-nano":
+		inputCostPerM = 0.10
+		outputCostPerM = 0.40
+	case "o3":
+		inputCostPerM = 10.00
+		outputCostPerM = 40.00
+	case "o3-mini":
+		inputCostPerM = 1.10
+		outputCostPerM = 4.40
+	case "o4-mini":
+		inputCostPerM = 1.10
+		outputCostPerM = 4.40
 	default:
 		// Default to gpt-4o pricing
 		inputCostPerM = 2.50

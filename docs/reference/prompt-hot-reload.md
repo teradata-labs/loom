@@ -1,9 +1,9 @@
 
 # Pattern Hot-Reload Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete technical reference for Loom's pattern hot-reload system - zero-downtime pattern updates via filesystem watching.
+Technical reference for Loom's pattern hot-reload system - zero-downtime pattern updates via filesystem watching.
 
 
 ## Table of Contents
@@ -67,22 +67,21 @@ defer reloader.Stop()
 | Parameter | Type | Required | Default | Constraints |
 |-----------|------|----------|---------|-------------|
 | `Enabled` | `bool` | No | `false` | Enable/disable hot-reload |
-| `DebounceMs` | `int` | No | `500` | 100-5000ms |
+| `DebounceMs` | `int` | No | `500` | Recommended: 100-5000ms (not enforced) |
 | `Logger` | `*zap.Logger` | No | No-op logger | For reload events |
 | `OnUpdate` | `PatternUpdateCallback` | No | `nil` | Callback for updates |
 
 ### Common Commands
 
 ```bash
-# Watch pattern library for changes (server mode)
-looms serve --hot-reload
+# Watch for real-time pattern updates
+looms pattern watch
 
-# Manual reload of specific pattern (CLI)
-looms patterns reload npath_analysis
-
-# Check reload status
-looms patterns status
+# Create a new pattern (auto-detected by hot-reload)
+looms pattern create my-pattern --thread sql-thread --file pattern.yaml
 ```
+
+> **Note**: Hot-reload is enabled automatically by the server for all agents that have a `patterns_dir` configured. There is no `--hot-reload` CLI flag.
 
 
 ## Overview
@@ -90,8 +89,7 @@ looms patterns status
 The Pattern Hot-Reload system enables **zero-downtime pattern updates** by watching the filesystem for changes and atomically updating the pattern cache. This allows pattern developers to edit patterns and see changes immediately without restarting the server or agent.
 
 **Implementation**: `pkg/patterns/hotreload.go`
-**Test Coverage**: 85.7% (487 lines, 419 covered)
-**Available Since**: v0.8.0
+**Tests**: `pkg/patterns/hotreload_test.go` (10 test functions including race condition tests)
 
 **Key Features**:
 - Zero-downtime updates (atomic cache swaps)
@@ -107,19 +105,16 @@ The Pattern Hot-Reload system enables **zero-downtime pattern updates** by watch
 
 1. **Filesystem Pattern Directory**: Hot-reload requires patterns stored on filesystem (not just embedded)
 2. **Writable Directory**: Pattern directory must be watchable by fsnotify
-3. **Go 1.21+**: Required for fsnotify v1.7+
+3. **Go 1.25+**: Required for fsnotify v1.9.0
 
 **Verification**:
 
 ```go
-library := patterns.NewLibrary(patterns.LibraryConfig{
-    PatternsDir: "/path/to/patterns",  // Required for hot-reload
-})
+// NewLibrary takes an optional embed.FS and a filesystem patterns directory
+library := patterns.NewLibrary(nil, "/path/to/patterns")
 
-// Verify directory is watchable
-if library.patternsDir == "" {
-    log.Fatal("Hot-reload requires filesystem patterns directory")
-}
+// The library must have a non-empty patternsDir for hot-reload to work
+// NewHotReloader will return an error if patternsDir is empty
 ```
 
 
@@ -149,7 +144,7 @@ if library.patternsDir == "" {
 
 ### HotReloadConfig Structure
 
-**Definition** (`pkg/patterns/hotreload.go:20`):
+**Definition** (`pkg/patterns/hotreload.go:34`):
 
 ```go
 type HotReloadConfig struct {
@@ -184,7 +179,7 @@ config := patterns.HotReloadConfig{
 
 **Type**: `int`
 **Default**: `500` (milliseconds)
-**Range**: `100`-`5000`
+**Recommended Range**: `100`-`5000` (not enforced; 0 uses default of 500)
 **Description**: Delay before reloading after file change detected
 
 **Rationale**: Prevents reload storms from:
@@ -324,9 +319,7 @@ func NewHotReloader(
 
 **Example**:
 ```go
-library := patterns.NewLibrary(patterns.LibraryConfig{
-    PatternsDir: "/opt/loom/patterns",
-})
+library := patterns.NewLibrary(nil, "/opt/loom/patterns")
 
 config := patterns.HotReloadConfig{
     Enabled:    true,
@@ -568,7 +561,7 @@ vim patterns/analytics/npath_analysis.yaml
 # Hot-reloader detects WRITE event
 # Validates updated npath_analysis
 # Removes from cache
-# Next library.GetPattern("npath_analysis") loads fresh version
+# Next library.Load("npath_analysis") loads fresh version
 ```
 
 
@@ -590,7 +583,7 @@ rm patterns/analytics/old_pattern.yaml
 # Hot-reloader detects REMOVE event
 # Removes old_pattern from cache
 # Clears index
-# library.GetPattern("old_pattern") returns error
+# library.Load("old_pattern") returns error
 ```
 
 
@@ -641,7 +634,7 @@ Without debounce, this would trigger 3 reloads for 1 edit.
 
 **Solution**: Per-file debounce timer with reset logic
 
-**Implementation** (`pkg/patterns/hotreload.go:200`):
+**Implementation** (`pkg/patterns/hotreload.go:214`):
 ```go
 func (hr *HotReloader) debounce(key string, callback func()) {
     hr.debounceMu.Lock()
@@ -729,7 +722,7 @@ Before reloading, patterns are validated:
 3. **Field Validation**: Types match expected values
 4. **Warning Checks**: Optional best practices
 
-**Validation Function** (`pkg/patterns/hotreload.go:409`):
+**Validation Function** (`pkg/patterns/hotreload.go:422`):
 ```go
 func (hr *HotReloader) validatePattern(filePath string) error {
     // Load pattern (bypasses cache)
@@ -796,7 +789,7 @@ ERROR: Pattern validation failed, skipping reload
   error: pattern.name is required
 ```
 
-**Agent Behavior**: Uses cached version of `broken` (if previously loaded) or returns error on `GetPattern("broken")`
+**Agent Behavior**: Uses cached version of `broken` (if previously loaded) or returns error on `Load("broken")`
 
 
 ## Callback System
@@ -1008,9 +1001,7 @@ Error: hot-reload requires filesystem patterns directory
 **Resolution**:
 1. Configure patterns directory:
    ```go
-   library := patterns.NewLibrary(patterns.LibraryConfig{
-       PatternsDir: "/path/to/patterns",
-   })
+   library := patterns.NewLibrary(nil, "/path/to/patterns")
    ```
 2. Verify directory exists and is readable
 
@@ -1098,61 +1089,88 @@ Error: pattern file not found: npath_analysis
 
 ### Unit Tests
 
-**Test Coverage**: 85.7% (419 of 487 lines)
-
 **Run Tests**:
 ```bash
-go test ./pkg/patterns -run TestHotReload
+go test -tags fts5 -race ./pkg/patterns -run TestHotReloader
 ```
 
-**Key Tests**:
-- `TestHotReloader_Start`
-- `TestHotReloader_ModifyPattern`
-- `TestHotReloader_CreatePattern`
-- `TestHotReloader_DeletePattern`
-- `TestHotReloader_ValidationFailure`
-- `TestHotReloader_Debounce`
-- `TestHotReloader_ManualReload`
+**Key Tests** (10 test functions in `pkg/patterns/hotreload_test.go`):
+- `TestHotReloader_Create` - New pattern file detection
+- `TestHotReloader_Modify` - Existing pattern modification
+- `TestHotReloader_Delete` - Pattern file deletion
+- `TestHotReloader_InvalidPattern` - Validation failure handling
+- `TestHotReloader_Debouncing` - Rapid-fire edit debounce
+- `TestHotReloader_ManualReload` - Programmatic reload trigger
+- `TestHotReloader_Subdirectories` - Subdirectory watching
+- `TestHotReloader_RaceConditions` - Concurrent access safety
+- `TestHotReloader_Disabled` - Disabled config behavior
+- `TestHotReloader_StopTimeout` - Graceful shutdown and idempotent stop
 
-**Example Test**:
+**Example Test** (simplified from actual test):
 ```go
-func TestHotReloader_ModifyPattern(t *testing.T) {
-    // Setup
-    tempDir := t.TempDir()
-    library := patterns.NewLibrary(patterns.LibraryConfig{
-        PatternsDir: tempDir,
-    })
+func TestHotReloader_Modify(t *testing.T) {
+    tmpDir := t.TempDir()
 
-    config := patterns.HotReloadConfig{
+    // Create initial pattern file
+    patternYAML := `name: modifiable_pattern
+title: Original Title
+description: Original description
+category: analytics
+difficulty: beginner
+templates:
+  default:
+    content: SELECT 1
+`
+    patternPath := filepath.Join(tmpDir, "modifiable_pattern.yaml")
+    err := os.WriteFile(patternPath, []byte(patternYAML), 0644)
+    require.NoError(t, err)
+
+    // Create library (signature: embeddedFS, patternsDir)
+    library := patterns.NewLibrary(nil, tmpDir)
+
+    // Load pattern (caches it)
+    pattern1, err := library.Load("modifiable_pattern")
+    require.NoError(t, err)
+    assert.Equal(t, "Original Title", pattern1.Title)
+
+    // Create hot-reloader
+    hr, err := patterns.NewHotReloader(library, patterns.HotReloadConfig{
         Enabled:    true,
-        DebounceMs: 100,  // Fast for tests
-    }
-
-    reloader, err := patterns.NewHotReloader(library, config)
+        DebounceMs: 100,  // Short debounce for testing
+        Logger:     zap.NewNop(),
+    })
     require.NoError(t, err)
 
-    ctx := context.Background()
-    err = reloader.Start(ctx)
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+
+    err = hr.Start(ctx)
     require.NoError(t, err)
-    defer reloader.Stop()
+    defer func() { _ = hr.Stop() }()
 
-    // Create initial pattern
-    patternFile := filepath.Join(tempDir, "test.yaml")
-    writePattern(t, patternFile, "test", "v1")
-
-    // Wait for initial load
     time.Sleep(200 * time.Millisecond)
 
-    // Modify pattern
-    writePattern(t, patternFile, "test", "v2")
+    // Modify pattern file
+    modifiedYAML := `name: modifiable_pattern
+title: Modified Title
+description: Modified description
+category: analytics
+difficulty: intermediate
+templates:
+  default:
+    content: SELECT 2
+`
+    err = os.WriteFile(patternPath, []byte(modifiedYAML), 0644)
+    require.NoError(t, err)
 
     // Wait for reload
-    time.Sleep(200 * time.Millisecond)
+    time.Sleep(500 * time.Millisecond)
 
-    // Verify new version loaded
-    pattern, err := library.GetPattern("test")
+    // Load pattern again - should get new version
+    pattern2, err := library.Load("modifiable_pattern")
     require.NoError(t, err)
-    assert.Equal(t, "v2", pattern.Version)
+    assert.Equal(t, "Modified Title", pattern2.Title)
+    assert.Equal(t, "intermediate", pattern2.Difficulty)
 }
 ```
 
@@ -1161,43 +1179,39 @@ func TestHotReloader_ModifyPattern(t *testing.T) {
 
 **Integration Test**: `pkg/server/hot_reload_integration_test.go`
 
-**Purpose**: Test hot-reload in multi-agent server environment
+**Purpose**: Test hot-reload in multi-agent server environment (requires `ANTHROPIC_API_KEY`)
 
 **Run Test**:
 ```bash
-go test ./pkg/server -run TestHotReloadIntegration
+ANTHROPIC_API_KEY=your-key go test -tags fts5 -race ./pkg/server -run TestHotReloadIntegration
 ```
 
-**Test Scenario**:
-1. Start server with hot-reload enabled
-2. Agent executes query using pattern A
-3. Edit pattern A on filesystem
-4. Wait for reload (500ms debounce)
-5. Agent executes query again
-6. Verify new pattern version used
+**Additional Integration Tests**: `pkg/server/pattern_integration_test.go`
+- `TestCreatePattern_WithHotReload` - End-to-end pattern creation via RPC with hot-reload
+- `TestCreatePattern_WithHotReload_InvalidPattern` - Invalid pattern rejection
 
 
 ### Manual Testing
 
 **Setup**:
 ```bash
-# Start server with hot-reload
-looms serve --hot-reload --patterns-dir ./patterns
+# Start server (hot-reload is automatic for agents with patterns_dir configured)
+looms serve
 
-# In another terminal, edit pattern
+# In another terminal, watch for pattern updates
+looms pattern watch
+
+# In yet another terminal, edit a pattern
 vim patterns/analytics/npath_analysis.yaml
 
-# Save and watch server logs
+# Save and watch server logs or the pattern watch output
 # Should see: "Pattern reloaded successfully: npath_analysis"
 ```
 
 **Verification**:
 ```bash
-# Query agent to verify new pattern active
-looms query sql-agent "Analyze customer journey"
-
-# Check pattern version
-looms patterns get npath_analysis
+# Create a new pattern via CLI (hot-reload detects it automatically)
+looms pattern create my-pattern --thread sql-thread --file pattern.yaml
 ```
 
 
@@ -1305,10 +1319,13 @@ go func() {
 ### 7. Validate Patterns Before Deployment
 
 ```bash
-# Run validation before deploying patterns
+# Validate YAML syntax before deploying patterns
 for file in patterns/**/*.yaml; do
-    looms patterns validate "$file" || exit 1
+    yamllint "$file" || exit 1
 done
+
+# Or use a Go test that loads each pattern through the library
+# to validate required fields (name, category)
 ```
 
 
@@ -1326,10 +1343,11 @@ done
 //go:embed patterns/*
 var embeddedPatterns embed.FS
 
-// Use filesystem for hot-reload
-library := patterns.NewLibrary(patterns.LibraryConfig{
-    PatternsDir: "/opt/loom/patterns",  // Required for hot-reload
-})
+// Use both: embedded for defaults, filesystem for hot-reload
+library := patterns.NewLibrary(&embeddedPatterns, "/opt/loom/patterns")
+
+// Or filesystem only for hot-reload
+library := patterns.NewLibrary(nil, "/opt/loom/patterns")
 ```
 
 
@@ -1393,7 +1411,7 @@ for _, patternName := range updatedPatterns {
 
 **Symptoms**:
 - Edit pattern, no reload logged
-- `GetPattern()` returns old version
+- `Load()` returns old version
 
 **Possible Causes**:
 1. Hot-reload disabled
@@ -1402,9 +1420,8 @@ for _, patternName := range updatedPatterns {
 
 **Resolution**:
 ```bash
-# 1. Verify hot-reload enabled
-looms config get patterns.hot_reload
-# Expected: enabled: true
+# 1. Verify hot-reload is running by checking server logs for:
+#    "Hot-reload enabled for agent" and "Hot-reload initialization complete"
 
 # 2. Check which editor you're using
 # Some editors (e.g., Vim) use backup files that aren't detected
@@ -1413,8 +1430,11 @@ looms config get patterns.hot_reload
 # 3. Verify pattern in watched directory
 ls -la patterns/analytics/pattern.yaml
 
-# 4. Check logs for watch errors
+# 4. Check server logs for watch errors
 grep "watcher error" server.log
+
+# 5. Use the pattern watch command to monitor events
+looms pattern watch
 ```
 
 
@@ -1437,11 +1457,11 @@ yamllint patterns/analytics/pattern.yaml
 # 2. Check required fields
 cat patterns/analytics/pattern.yaml | grep -E "^name:|^category:"
 
-# 3. Load pattern manually for detailed error
-looms patterns validate patterns/analytics/pattern.yaml
-
-# 4. Compare with working pattern
+# 3. Compare with working pattern
 diff patterns/analytics/working.yaml patterns/analytics/broken.yaml
+
+# 4. Use pattern watch to see validation errors in real-time
+looms pattern watch
 ```
 
 
@@ -1490,11 +1510,12 @@ config.Enabled = (os.Getenv("ENV") != "production")
 
 **Resolution**:
 ```bash
-# Trigger manual reload
-looms patterns reload pattern_name
-
+# Use ManualReload programmatically (no CLI command for manual reload)
 # Or restart server (ensures clean state)
-looms serve --hot-reload
+looms serve
+
+# Alternatively, re-save the file to trigger a new fsnotify event
+touch patterns/analytics/pattern_name.yaml
 ```
 
 
@@ -1502,16 +1523,15 @@ looms serve --hot-reload
 
 ### Reference Documentation
 - [Pattern Configuration Reference](./patterns.md) - Pattern YAML schema
-- [Pattern Library API](./pattern-library-api.md) - Programmatic pattern access
-- [CLI Reference](./cli.md) - `looms patterns` commands
+- [Pattern Recommendations](./pattern-recommendations.md) - Pattern selection and recommendations
+- [CLI Reference](./cli.md) - `looms pattern` commands
 
 ### Architecture Documentation
 - [Pattern System Architecture](/docs/architecture/pattern-system.md) - Design deep dive
 
 ### Guides
-- [Pattern Authoring Guide](/docs/guides/pattern-authoring.md) - Writing custom patterns
-- [Getting Started with Patterns](/docs/guides/getting-started-patterns.md) - Quick introduction
+- [Pattern Library Guide](/docs/guides/pattern-library-guide.md) - Using the pattern library
 
 ### External Resources
-- [fsnotify Documentation](https://github.com/fsnotify/fsnotify) - Filesystem watcher library
+- [fsnotify Documentation](https://github.com/fsnotify/fsnotify) - Filesystem watcher library (v1.9.0)
 - [YAML Specification](https://yaml.org/spec/1.2/spec.html) - YAML format reference

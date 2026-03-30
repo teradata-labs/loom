@@ -149,7 +149,7 @@ spec:
 ```yaml
 spec:
   type: conditional
-  classifier_agent: classifier             # REQUIRED
+  condition_agent_id: classifier            # REQUIRED
   branches:                                # REQUIRED: map of branch → sub-workflow
     positive: {type: pipeline, ...}
     negative: {type: pipeline, ...}

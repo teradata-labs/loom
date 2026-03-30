@@ -5,7 +5,7 @@ Architectural overview of Loom - a Go framework for building **self-improving** 
 
 **Target Audience**: Architects, academics, and advanced developers seeking deep understanding of Loom's design.
 
-**Version**: v1.0.0
+**Version**: v1.2.0
 
 
 ## Table of Contents
@@ -56,6 +56,7 @@ graph TB
             Anthropic[Anthropic]
             Bedrock[Bedrock]
             Ollama[Ollama/OpenAI]
+            Gemini[Gemini/Mistral/<br/>Azure/HuggingFace]
         end
 
         subgraph Observability["Observability"]
@@ -95,7 +96,7 @@ graph TB
 
     subgraph Integrations["External Integrations"]
         MCP[MCP Servers<br/>Tools]
-        Promptio[Promptio<br/>Prompts]
+        Promptio[Promptio<br/>Prompts<br/>📋 Planned]
         Backends[Domain Backends<br/>SQL/REST/Docs]
     end
 
@@ -109,7 +110,7 @@ graph TB
 **External Dependencies**:
 - **LLM Providers**: Anthropic Claude, AWS Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral, Gemini, HuggingFace
 - **Hawk**: Evaluation and observability platform (trace export, metrics, cost tracking, judge verdict export)
-- **Promptio**: Prompt management service (versioning, A/B testing, hot-reload, template management)
+- **Promptio**: 📋 Prompt management service (versioning, A/B testing, hot-reload, template management) - interface defined, integration planned
 - **DSPy**: Declarative prompt optimization framework (Bootstrap, MIPRO, TextGrad teleprompters)
 - **MCP Servers**: Model Context Protocol servers for dynamic tool discovery (vantage-mcp for Teradata, GitHub, filesystem, etc.)
 - **Domain Backends**: SQL databases (PostgreSQL, Teradata, SQLite), REST APIs, document stores, file systems
@@ -142,13 +143,12 @@ graph TB
         end
 
         subgraph AgentRuntime["Agent Runtime with Self-Improvement (pkg/agent/)"]
-            subgraph Memory["5-Layer Memory + Learned Layer"]
+            subgraph Memory["5-Layer Memory"]
                 ROM["ROM (5k): Immutable system prompt,<br/>patterns, schema"]
                 Kernel["Kernel (2k): Tool defs,<br/>schema cache, tool results"]
                 L1["L1 (10k): Recent messages<br/>adaptive compression"]
                 L2["L2 (3k): LLM-compressed summaries<br/>append-only"]
                 Swap["Swap (cold): Database-backed<br/>long-term storage"]
-                Learned["Learned: DSPy optimization results<br/>compiled signatures"]
             end
 
             ConversationLoop[Conversation Loop]
@@ -189,7 +189,7 @@ graph TB
 
         subgraph CrossCutting["Cross-Cutting Concerns"]
             Observability[Observability<br/>Hawk tracer<br/>Trace+Metrics]
-            Prompts[Prompts<br/>Promptio<br/>Hot-reload]
+            Prompts[Prompts<br/>FileRegistry<br/>Hot-reload]
             QuadModal[Quad-Modal<br/>Communication<br/>Queue/Mem/Bus/Interrupt]
             PatternHotReload[Pattern Hot-Reload<br/>89-143ms]
         end
@@ -203,19 +203,19 @@ graph TB
 
 ## Core Subsystems Overview
 
-Loom consists of **14 major subsystems** working together to enable self-improving autonomous agents:
+Loom consists of **14 documented subsystems** (across 150+ packages in `pkg/` and `internal/`) working together to enable self-improving autonomous agents:
 
 ### 1. Agent Runtime (`pkg/agent/`)
 **Purpose**: Core conversation loop with segmented memory and session persistence.
 
 **Key Features**:
 - Turn-based LLM interaction with streaming support
-- 5-layer segmented memory (ROM/Kernel/L1/L2/Swap) + optional Learned layer
+- 5-layer segmented memory (ROM/Kernel/L1/L2/Swap)
 - Pattern-guided domain knowledge injection
 - Judge-based self-correction
 - Crash recovery via SQLite session persistence
 
-**See**: [Agent System Architecture](agent-system-design.md)
+**See**: [Agent System Design](agent-system-design.md)
 
 
 ### 2. 5-Layer Memory System (`pkg/agent/segmented_memory.go`)
@@ -228,18 +228,15 @@ graph TD
     Kernel[Kernel 2k tokens<br/>Tool definitions,<br/>schema cache LRU,<br/>tool results]
     L1[L1 10k tokens<br/>Recent messages<br/>adaptive compression<br/>70%/80%/85% budget]
     L2[L2 3k tokens<br/>LLM-compressed summaries<br/>append-only]
-    Swap[Swap cold storage<br/>Database-backed<br/>long-term storage<br/>defined, future]
-    Learned[Learned optional<br/>DSPy optimization results<br/>compiled signatures]
+    Swap[Swap cold storage<br/>Database-backed<br/>long-term storage]
 
     ROM --> Kernel --> L1 --> L2 --> Swap
-    Learned -.->|independent| ROM
 
     style ROM fill:#e1f5ff
     style Kernel fill:#fff4e6
     style L1 fill:#e8f5e9
     style L2 fill:#f3e5f5
     style Swap fill:#fce4ec
-    style Learned fill:#fffde7
 ```
 
 **Key Features**:
@@ -247,9 +244,9 @@ graph TD
 - Tool pair preservation (tool_use/tool_result never split)
 - LRU schema cache (max 10 schemas)
 - Database-backed tool results (max 1 in memory)
-- Token budget enforcement (200K context, 20K output reserve)
+- Token budget enforcement (context and output reserves vary by model, e.g., 200K context with 64K output reserve for Claude Sonnet 4.5)
 
-**See**: [Memory System Architecture](memory-system-design.md)
+**See**: [Memory Systems](memory-systems.md)
 
 
 ### 3. Judge Evaluation System (`pkg/evals/judges/`)
@@ -303,9 +300,9 @@ graph TD
 - Multi-dimensional scoring (quality, safety, performance, cost)
 - Hawk verdict export for analysis (Phase 9)
 - DSPy integration for judge optimization
-- 89% test coverage
+- ⚠️ Test coverage: build errors in `pkg/evals/judges/` (requires `hawk` build tag; `judges/llm` subpackage at 86.2%)
 
-**See**: [Judge Evaluation System Architecture](judge-evaluation-system.md)
+**See**: [Judge System](judge-system.md)
 
 
 ### 4. Learning Agent System (`pkg/metaagent/learning/`)
@@ -355,11 +352,11 @@ graph TD
 - Pattern effectiveness tracking (SQLite-backed)
 - Multi-dimensional judge integration (quality, safety, cost)
 - A/B testing of pattern variants
-- Interrupt-driven learning triggers (LEARNING_ANALYZE, LEARNING_PROPOSE, LEARNING_APPLY)
+- Interrupt-driven learning triggers (LEARNING_ANALYZE, LEARNING_OPTIMIZE, LEARNING_PROPOSAL)
 - Circuit breaker to prevent runaway improvements
 - Auto-apply with validation (Phase 10)
 
-**See**: [Learning Agent Architecture](learning-agent-design.md)
+**See**: [Learning Agent](learning-agent.md)
 
 
 ### 5. DSPy/Teleprompter Integration (`pkg/metaagent/teleprompter/`)
@@ -391,20 +388,20 @@ graph TD
 - CLI integration: `looms teleprompter bootstrap/mipro/textgrad`
 - Gradient auto-apply with validation (Phase 10)
 
-**See**: [DSPy/Teleprompter Architecture](dspy-teleprompter-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/metaagent/teleprompter/`)
 
 
 ### 6. Tool System (`pkg/shuttle/`)
 **Purpose**: Dynamic tool registration and concurrent execution with timeout handling.
 
 **Key Features**:
-- Thread-safe tool registry (`sync.Map`)
+- Thread-safe tool registry (`sync.RWMutex`-protected map)
 - Concurrent tool execution (one goroutine per tool)
 - Result aggregation via buffered channels
 - MCP dynamic tool discovery
 - Per-tool timeout handling via context cancellation
 
-**See**: [Tool System Architecture](tool-system-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/shuttle/`)
 
 
 #### 6.1. Tool Parameter Optimization (`pkg/shuttle/executor.go`)
@@ -439,7 +436,7 @@ graph TD
 │  ┌──────────────────────────────────┐                           │
 │  │  handleLargeParameters()         │                           │
 │  │  • estimateValueSize()           │                           │
-│  │  • if size > 2.5KB:              │                           │
+│  │  • if size > threshold:           │                           │
 │  │    - store in SharedMemoryStore  │                           │
 │  │    - replace with DataReference  │                           │
 │  └────────┬─────────────────────────┘                           │
@@ -465,7 +462,7 @@ graph TD
 **Key Properties**:
 - **Universal**: Works for ALL tools (builtin + MCP servers) without code changes
 - **Transparent**: Tools always receive dereferenced full data
-- **Threshold**: 2.5KB (same as output handling for consistency)
+- **Threshold**: Configurable via `SetSharedMemory()` (default: -1, inline everything; `pkg/fabric` default: 100KB)
 - **Type-safe**: DataReference objects prevent string collision issues
 
 **Performance**:
@@ -507,13 +504,13 @@ graph TD
 **Purpose**: Domain knowledge library with hot-reload and semantic search.
 
 **Key Features**:
-- 94 YAML patterns across 17 domains
-- TF-IDF cosine similarity for pattern relevance ranking
+- 104 YAML patterns across 17 domains
+- Keyword-based scoring for pattern relevance ranking
 - Hot-reload with 89-143ms latency (fsnotify-based)
 - A/B testing support with variant selection strategies
-- Atomic pointer swap for zero-downtime reload
+- `sync.RWMutex`-protected cache swap for zero-downtime reload
 
-**See**: [Pattern System Architecture](pattern-library-design.md)
+**See**: [Pattern System](pattern-system.md)
 
 
 ### 8. Orchestration (`pkg/orchestration/`)
@@ -536,7 +533,7 @@ graph TD
 - Support for collaboration patterns (Teacher-Student, Pair Programming)
 - Iterative workflow for refinement loops
 
-**See**: [Orchestration Architecture](orchestration-design.md)
+**See**: [Multi-Agent Architecture](multi-agent.md)
 
 
 ### 9. Quad-Modal Communication System (`pkg/communication/`)
@@ -567,9 +564,9 @@ graph TB
 
         subgraph Mode4["4. Interrupt Channel"]
             LearningAnalyze[LEARNING_ANALYZE]
-            LearningPropose[LEARNING_PROPOSE]
-            LearningApply[LEARNING_APPLY]
-            PatternReload[PATTERN_RELOAD<br/>async triggers]
+            LearningOptimize[LEARNING_OPTIMIZE]
+            LearningProposal[LEARNING_PROPOSAL]
+            ConfigReload[CONFIG_RELOAD<br/>async triggers]
         end
 
         AgentA -->|send| SendMsg
@@ -587,12 +584,12 @@ graph TB
 
         AgentA --> LearningAnalyze
         LearningAnalyze --> AgentB
-        AgentA --> LearningPropose
-        LearningPropose --> AgentB
-        AgentA --> LearningApply
-        LearningApply --> AgentB
-        AgentA --> PatternReload
-        PatternReload --> AgentB
+        AgentA --> LearningOptimize
+        LearningOptimize --> AgentB
+        AgentA --> LearningProposal
+        LearningProposal --> AgentB
+        AgentA --> ConfigReload
+        ConfigReload --> AgentB
     end
 ```
 
@@ -606,7 +603,7 @@ graph TB
 - **Message Queue**: Ordered point-to-point messaging (FIFO guarantees)
 - **Shared Memory**: Key-value store with tiered storage (memory → disk), zero-copy data sharing
 - **Broadcast Bus**: Pub/sub event distribution with topic routing
-- **Interrupt Channel**: Async learning triggers (LEARNING_ANALYZE, LEARNING_PROPOSE, LEARNING_APPLY, PATTERN_RELOAD)
+- **Interrupt Channel**: Async learning triggers (LEARNING_ANALYZE, LEARNING_OPTIMIZE, LEARNING_PROPOSAL, LEARNING_VALIDATE, LEARNING_EXPORT, LEARNING_SYNC, CONFIG_RELOAD)
 - Integration with agent memory (prevents context overflow)
 - Supports scheduled learning (cron), event-driven learning (error spikes), and human-triggered learning (CLI)
 
@@ -623,19 +620,20 @@ graph TB
 - Metrics: Token usage, latency, tool execution counts
 - Judge verdict export (Phase 9)
 
-**See**: [Observability Architecture](observability-system-design.md)
+**See**: [Observability](observability.md)
 
 
 ### 11. Prompt Management (`pkg/prompts/`)
-**Purpose**: Integration with Promptio for versioned, A/B-testable prompt templates.
+**Purpose**: Versioned, A/B-testable prompt templates with file-based registry.
 
 **Key Features**:
-- Promptio Client: gRPC client for prompt retrieval with caching
-- Local Cache: LRU cache for prompt templates (5-minute TTL, 99.9% hit rate)
-- Variable Interpolation: Template variable substitution with type checking
-- Hot-Reload: Prompt updates without agent restart
+- ✅ File Registry: File-based prompt loading with caching
+- ✅ Local Cache: LRU cache for prompt templates (configurable TTL-based caching)
+- ✅ Variable Interpolation: Template variable substitution with type checking
+- ✅ A/B Testing: Prompt variant testing support
+- 📋 Promptio Client: gRPC client for external prompt service (interface defined, implementation planned)
 
-**See**: [Prompt Management Integration](prompt-integration-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/prompts/`)
 
 
 ### 12. MCP Integration (`pkg/mcp/`)
@@ -646,26 +644,32 @@ graph TB
 - Tool Discovery: Dynamic tool schema introspection
 - Lifecycle Management: MCP server startup, health checks, graceful shutdown
 - No-Code Configuration: YAML-based MCP server registration
-- Coverage: 50-92% across modules
+- Coverage: 5-95% across modules (protocol: 92%, apps: 95%, adapter: 80%, server: 77%, transport: 42%, manager: 39%, client: 5%)
 
-**See**: [MCP Integration Architecture](mcp-protocol-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/mcp/`)
 
 
 ### 13. Backend Interface (`pkg/fabric/`)
 **Purpose**: Pluggable abstraction for domain-specific operations (SQL, REST, documents).
 
-**Interface Design**:
+**Interface Design** (`pkg/fabric/interface.go:28-67`):
 ```go
 type ExecutionBackend interface {
-    Execute(ctx context.Context, request *Request) (*Result, error)
-    Schema(ctx context.Context) (*SchemaInfo, error)
-    Validate(ctx context.Context, query string) error
+    Name() string
+    ExecuteQuery(ctx context.Context, query string) (*QueryResult, error)
+    GetSchema(ctx context.Context, resource string) (*Schema, error)
+    ListResources(ctx context.Context, filters map[string]string) ([]Resource, error)
+    GetMetadata(ctx context.Context, resource string) (map[string]interface{}, error)
+    Ping(ctx context.Context) error
+    Capabilities() *Capabilities
+    ExecuteCustomOperation(ctx context.Context, op string, params map[string]interface{}) (interface{}, error)
+    Close() error
 }
 ```
 
 **Implementations**: File backend, SQL backends (via MCP), REST API backends (via MCP)
 
-**See**: [Backend Interface Design](backend-interface-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/fabric/`)
 
 
 ### 14. Server (`pkg/server/`)
@@ -678,7 +682,7 @@ type ExecutionBackend interface {
 - HTTP Gateway: grpc-gateway-based HTTP/JSON API
 - Learning Service: gRPC service for learning agent operations
 
-**See**: [Server Architecture](server-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/server/`)
 
 
 ## Self-Improvement Architecture
@@ -755,12 +759,12 @@ graph TB
         subgraph Step6["6. Pattern Hot-Reload (89-143ms)"]
             OptimizedPattern[Optimized Pattern]
             YAMLFile[YAML File]
-            AtomicSwap[Atomic Swap]
+            CacheSwap[RWMutex Cache Swap]
             Validation[Validation:<br/>Compilation check,<br/>rollback support]
 
             OptimizedPattern --> YAMLFile
-            YAMLFile --> AtomicSwap
-            AtomicSwap --> Validation
+            YAMLFile --> CacheSwap
+            CacheSwap --> Validation
         end
 
         ImprovedPattern[Improved Pattern Applied]
@@ -804,9 +808,10 @@ flowchart LR
     Trigger[External Trigger] --> Channel[Interrupt Channel]
     Channel --> Learning[Learning Agent]
     Channel --> Analyze[LEARNING_ANALYZE<br/>Analyze pattern effectiveness]
-    Channel --> Propose[LEARNING_PROPOSE<br/>Generate improvement proposals]
-    Channel --> Apply[LEARNING_APPLY<br/>Auto-apply validated improvements]
-    Channel --> Reload[PATTERN_RELOAD<br/>Force pattern hot-reload]
+    Channel --> Optimize[LEARNING_OPTIMIZE<br/>DSPy prompt optimization]
+    Channel --> Proposal[LEARNING_PROPOSAL<br/>New pattern proposal ready]
+    Channel --> Validate[LEARNING_VALIDATE<br/>Validate learned patterns]
+    Channel --> Reload[CONFIG_RELOAD<br/>Force config hot-reload]
 ```
 
 **Use Cases**:
@@ -818,26 +823,25 @@ flowchart LR
 
 ## Key Design Decisions
 
-### Decision 1: 5-Layer Memory + Learned Layer
+### Decision 1: 5-Layer Memory
 
-**Chosen Approach**: Five-layer segmented memory (ROM/Kernel/L1/L2/Swap) plus optional Learned layer
+**Chosen Approach**: Five-layer segmented memory (ROM/Kernel/L1/L2/Swap)
 
 **Rationale**:
 - **ROM**: Immutable system prompt, patterns, schema (never changes)
 - **Kernel**: Tool definitions, schema cache (LRU), tool results (database-backed, max 1 in memory)
 - **L1**: Recent messages with adaptive compression (70%/80%/85% budget triggers)
 - **L2**: LLM-compressed summaries (append-only, token-efficient)
-- **Swap**: Database-backed long-term storage (defined, future implementation)
-- **Learned**: DSPy optimization results (compiled signatures, demonstrations)
+- **Swap**: Database-backed long-term storage
 
 **Alternatives Considered**:
-- **4 layers only**: Missing Swap and Learned → rejected, incomplete architecture
+- **4 layers only**: Missing Swap → rejected, incomplete architecture
 - **Full history**: Unbounded token growth → rejected for cost
 - **RAG memory**: 100-500ms retrieval latency → rejected for real-time interaction
 
 **Consequences**: Lossy L2 compression, implementation complexity, but bounded tokens with long-term context.
 
-**See**: [Memory System Architecture](memory-system-design.md)
+**See**: [Memory Systems](memory-systems.md)
 
 
 ### Decision 2: Multi-Judge Evaluation with 6 Aggregation Strategies
@@ -854,9 +858,9 @@ flowchart LR
 - **Single judge**: No multi-dimensional view → rejected
 - **Fixed aggregation**: Can't adapt to different requirements → rejected
 
-**Consequences**: Increased complexity, but comprehensive evaluation and flexibility.
+**Consequences**: Increased complexity, but thorough evaluation and flexibility.
 
-**See**: [Judge Evaluation System](judge-evaluation-system.md)
+**See**: [Judge System](judge-system.md)
 
 
 ### Decision 3: DSPy Integration for Optimization
@@ -867,24 +871,24 @@ flowchart LR
 - **Declarative**: DSPy's declarative approach aligns with pattern-guided philosophy
 - **Multi-metric**: MIPRO supports multi-dimensional optimization
 - **Gradient-based**: TextGrad enables fine-grained tuning
-- **Proven**: DSPy battle-tested in research (Stanford)
+- **Proven**: DSPy well-tested in research (Stanford)
 
 **Alternatives Considered**:
 - **Manual tuning**: Not scalable → rejected
 - **Reinforcement learning**: High sample complexity → rejected
 - **Fine-tuning models**: Expensive, vendor lock-in → rejected
 
-**Consequences**: DSPy dependency, but powerful optimization capabilities.
+**Consequences**: DSPy dependency, but effective optimization capabilities.
 
-**See**: [DSPy/Teleprompter Architecture](dspy-teleprompter-design.md)
+**See**: No dedicated architecture doc exists yet (implementation in `pkg/metaagent/teleprompter/`)
 
 
-### Decision 4: Pattern Hot-Reload with Atomic Swap
+### Decision 4: Pattern Hot-Reload with RWMutex Cache Swap
 
-**Chosen Approach**: fsnotify-based file watcher with atomic pointer swap
+**Chosen Approach**: fsnotify-based file watcher with `sync.RWMutex`-protected cache swap
 
 **Rationale**:
-- **Zero downtime**: Atomic swap ensures no partial updates visible
+- **Zero downtime**: Write lock during reload ensures no partial updates visible
 - **Fast**: 89-143ms reload latency acceptable
 - **Observable**: Reload events traced to Hawk
 
@@ -894,7 +898,7 @@ flowchart LR
 
 **Consequences**: fsnotify dependency, but enables continuous improvement without restarts.
 
-**See**: [Pattern System Architecture](pattern-library-design.md)
+**See**: [Pattern System](pattern-system.md)
 
 
 ### Decision 5: Quad-Modal Communication for Multi-Agent Coordination and Learning
@@ -905,7 +909,7 @@ flowchart LR
 - **Queue**: Ordered point-to-point for request/response patterns (FIFO guarantees)
 - **Shared Memory**: Zero-copy large data sharing (prevents context overflow, tiered memory→disk)
 - **Broadcast Bus**: Pub/sub for event-driven coordination (topic routing)
-- **Interrupt Channel**: Async learning triggers (LEARNING_ANALYZE, LEARNING_PROPOSE, LEARNING_APPLY, PATTERN_RELOAD)
+- **Interrupt Channel**: Async learning triggers (LEARNING_ANALYZE, LEARNING_OPTIMIZE, LEARNING_PROPOSAL, CONFIG_RELOAD)
 - **Flexible**: Different patterns need different communication primitives; interrupt channel enables self-improvement loop
 
 **Alternatives Considered**:
@@ -935,7 +939,7 @@ sequenceDiagram
     Client->>Agent: Query
     Agent->>Pattern: Match
     Pattern-->>Agent: Top-3
-    Agent->>Agent: Build Memory (ROM+K+L1+L2+Learned)
+    Agent->>Agent: Build Memory (ROM+K+L1+L2+Swap)
     Agent->>DSPy: LLM Provider
     DSPy-->>Agent: Response
     Agent->>Backend: Execute Tools
@@ -971,8 +975,8 @@ sequenceDiagram
 
 | Operation | P50 | P99 | Notes |
 |-----------|-----|-----|-------|
-| Pattern matching | 8ms | 15ms | TF-IDF over 65 patterns |
-| Pattern hot-reload | 89ms | 143ms | File watch + index rebuild + atomic swap |
+| Pattern matching | 8ms | 15ms | Keyword-based scoring over 104 patterns |
+| Pattern hot-reload | 89ms | 143ms | File watch + index rebuild + RWMutex cache swap |
 | Session load | 12ms | 28ms | SQLite read + deserialization |
 | Session persist | 3ms | 8ms | Serialization + SQLite write |
 | LLM call (Claude Sonnet 4.5) | 850ms | 2100ms | Network + generation |
@@ -995,7 +999,7 @@ sequenceDiagram
 
 ### Judge Evaluation
 - **Model**: Concurrent judge execution (N goroutines for N judges)
-- **Synchronization**: WaitGroup for result aggregation
+- **Synchronization**: Buffered channel for result collection (Fork-Join pattern)
 - **Retry**: Per-judge exponential backoff with circuit breakers
 - **Timeout**: Per-judge timeout via `context.WithTimeout`
 
@@ -1008,12 +1012,12 @@ sequenceDiagram
 ### Tool Execution
 - **Model**: One goroutine per tool
 - **Synchronization**: Shared error channel, context cancellation
-- **Timeout**: Per-tool timeout via `context.WithTimeout` (default: 30s)
+- **Timeout**: Per-tool timeout via context cancellation (inherits from parent context)
 
 ### Pattern Hot-Reload
 - **Model**: Single goroutine watches file system (fsnotify)
-- **Synchronization**: Atomic pointer swap for pattern index (`atomic.Value`)
-- **Consistency**: Read-copy-update pattern ensures no partial updates visible
+- **Synchronization**: `sync.RWMutex`-protected cache swap for pattern index
+- **Consistency**: Write lock held during reload ensures no partial updates visible
 
 **Testing**: 50-run race detection tests on all concurrent code paths. Zero race conditions in v1.0.0-beta.1.
 
@@ -1087,12 +1091,12 @@ sequenceDiagram
 **Trade-offs**: Single-writer bottleneck (mitigated by per-agent session files)
 
 
-### TF-IDF for Pattern Matching
-**Chosen for**: Fast (O(n log n) indexing, O(log n) query), interpretable cosine similarity scores, no model training required
+### Keyword-Based Scoring for Pattern Matching
+**Chosen for**: Fast (O(n) scoring over all patterns + O(n log n) sort), interpretable relevance scores, no model training required
 
 **Trade-offs**: Keyword-based, misses semantic similarity
 
-**Future**: Hybrid TF-IDF + embedding similarity
+**Future**: Hybrid keyword scoring + embedding similarity
 
 
 ### DSPy for Optimization
@@ -1105,10 +1109,18 @@ sequenceDiagram
 
 ### Stable APIs (v1.0.0)
 
-- `proto/loom/v1/loom.proto`: gRPC service definitions
-- `proto/loom/v1/orchestration.proto`: Workflow specifications
-- `proto/loom/v1/agent_config.proto`: Agent configuration
-- `proto/loom/v1/learning.proto`: Learning agent service (NEW)
+**Core service protos** (22 total in `proto/loom/v1/`):
+- `loom.proto`: Primary gRPC service (LoomService + AdminService)
+- `agent_config.proto`: Agent configuration
+- `orchestration.proto`: Workflow specifications
+- `learning.proto`: Learning agent service
+- `judge.proto`: JudgeService
+- `teleprompter.proto`: TeleprompterService
+- `tools.proto`: ToolRegistryService
+- `memory.proto`: MemoryLayerService
+- `graph_memory.proto`: GraphMemoryService
+- `communication.proto`, `bus.proto`, `shared_memory.proto`: Communication primitives
+- `pattern.proto`, `eval.proto`, `backend.proto`, `collaboration.proto`, `docker.proto`, `apps.proto`, `skill.proto`, `project.proto`, `server.proto`, `storage.proto`: Supporting definitions
 
 **Guarantee**: No breaking changes in v1.x.y releases (validated via `buf breaking`).
 
@@ -1116,7 +1128,7 @@ sequenceDiagram
 ### Extension Points
 
 1. **Custom Backends**: Implement `ExecutionBackend` interface
-2. **Custom Tools**: Implement `Tool` interface and register via `RegisterTool`
+2. **Custom Tools**: Implement `Tool` interface and register via `Register`
 3. **Custom Patterns**: Add YAML files to pattern library directory
 4. **Custom LLM Providers**: Implement `LLMProvider` interface
 5. **Custom Judges**: Implement judge agents with specific criteria (NEW)
@@ -1146,12 +1158,12 @@ sequenceDiagram
 2. **AutoGPT** (Python): Autonomous agent, goal-driven
    - Loom differs: Pattern-guided vs. goal-seeking, multi-judge evaluation
 3. **AgentGPT** (TypeScript): Web-based agent playground
-   - Loom differs: Framework for production use, observability integration, learning capabilities
+   - Loom differs: Framework-based approach, observability integration, learning capabilities
 
 ### Pattern-Based Systems
 
 1. **Semantic Kernel** (Microsoft, C#): Skill-based AI orchestration
-   - Loom differs: YAML patterns vs. C# skills, TF-IDF vs. planner, learning loop
+   - Loom differs: YAML patterns vs. C# skills, keyword-based scoring vs. planner, learning loop
 2. **Dust** (TypeScript): API-first LLM orchestration with "apps"
    - Loom differs: Proto-first, Go, agent runtime vs. workflow engine
 
@@ -1191,36 +1203,37 @@ sequenceDiagram
 
 ### Architecture Deep Dives
 
-**Self-Improvement Systems** (NEW):
-- [Memory System Architecture](memory-system-design.md) - 5-layer segmented memory + Learned layer
-- [Judge Evaluation System](judge-evaluation-system.md) - Multi-judge with 6 aggregation strategies
-- [Learning Agent Architecture](learning-agent-design.md) - Pattern tuning and autonomous improvement
-- [DSPy/Teleprompter Architecture](dspy-teleprompter-design.md) - Bootstrap, MIPRO, TextGrad optimizers
-- [Communication System Architecture](communication-system-design.md) - Quad-modal inter-agent communication with interrupt channel
+**Self-Improvement Systems**:
+- [Memory Systems](memory-systems.md) - 5-layer segmented memory (ROM/Kernel/L1/L2/Swap)
+- [Judge System](judge-system.md) - Multi-judge with 6 aggregation strategies
+- [Learning Agent](learning-agent.md) - Pattern tuning and autonomous improvement
+- [Communication System Design](communication-system-design.md) - Quad-modal inter-agent communication with interrupt channel
 
 **Core Runtime Systems**:
-- [Agent System Architecture](agent-system-design.md) - Conversation loop and session persistence
-- [Tool System Architecture](tool-system-design.md) - Shuttle concurrent execution
-- [Pattern System Architecture](pattern-library-design.md) - Pattern library and hot-reload
-- [Orchestration Architecture](orchestration-design.md) - 9 workflow patterns
-- [Observability Architecture](observability-system-design.md) - Hawk integration and tracing
-- [MCP Integration Architecture](mcp-protocol-design.md) - Model Context Protocol
-- [Backend Interface Design](backend-interface-design.md) - ExecutionBackend abstraction
-- [Server Architecture](server-design.md) - Multi-tenant server
+- [Agent System Design](agent-system-design.md) - Conversation loop and session persistence
+- [Pattern System](pattern-system.md) - Pattern library and hot-reload
+- [Multi-Agent](multi-agent.md) - Multi-agent orchestration and workflow patterns
+- [Observability](observability.md) - Hawk integration and tracing
+- [Agent Runtime](agent-runtime.md) - Agent runtime architecture
+- [Data Flows](data-flows.md) - System data flow diagrams
+
+**Missing Architecture Docs** (implementation exists, docs needed):
+- Tool System (`pkg/shuttle/`) - Shuttle concurrent execution
+- DSPy/Teleprompter (`pkg/metaagent/teleprompter/`) - Bootstrap, MIPRO, TextGrad optimizers
+- MCP Integration (`pkg/mcp/`) - Model Context Protocol
+- Backend Interface (`pkg/fabric/`) - ExecutionBackend abstraction
+- Server (`pkg/server/`) - Multi-tenant server
+- Prompt Management (`pkg/prompts/`) - Prompt registry and caching
 
 ### Reference Documentation
 - [CLI Reference](/docs/reference/cli.md) - Command-line interface
-- [API Reference](/docs/reference/api.md) - gRPC and HTTP APIs
 - [Agent Configuration Reference](/docs/reference/agent-configuration.md) - Complete config options
-- [Judge CLI Guide](/docs/guides/judge_cli_guide.md) - Judge evaluation commands (NEW)
-- [Learning Agent Guide](/docs/guides/learning-agent-guide.md) - Pattern tuning guide (NEW)
+- [LLM Providers Reference](/docs/reference/llm-providers.md) - Provider setup and configuration
+- [Judge CLI Guide](/docs/guides/judge_cli_guide.md) - Judge evaluation commands
+- [Learning Agent Guide](/docs/guides/learning-agent-guide.md) - Pattern tuning guide
 
 ### Guides
 - [Getting Started](/docs/guides/quickstart.md) - Quick start guide
-- [Multi-Judge Evaluation](/docs/guides/multi-judge-evaluation.md) - Judge system usage (NEW)
-- [Judge-DSPy Integration](/docs/guides/judge-dspy-integration.md) - DSPy with judges (NEW)
+- [Multi-Judge Evaluation](/docs/guides/multi-judge-evaluation.md) - Judge system usage
+- [Judge-DSPy Integration](/docs/guides/judge-dspy-integration.md) - DSPy with judges
 - [Integration Guides](/docs/guides/integration/) - Hawk, Promptio, MCP
-- [LLM Provider Guides](/docs/guides/llm-providers/) - Provider-specific setup
-
-### Implementation Notes
-- [ARCHITECTURE_GAPS_ANALYSIS.md](/ARCHITECTURE_GAPS_ANALYSIS.md) - Complete gap analysis (internal)

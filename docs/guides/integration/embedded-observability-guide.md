@@ -1,7 +1,7 @@
 
 # Embedded Observability Guide
 
-**Version**: v1.0.2
+**Version**: v1.2.0
 
 ## Table of Contents
 
@@ -21,6 +21,8 @@
 
 ## Overview
 
+✅ **Status: Implemented** — Embedded observability is fully working with memory and SQLite storage backends.
+
 Use in-process trace storage instead of an external service. Embedded mode provides zero-setup tracing with no network latency and no external dependencies.
 
 **Benefits:**
@@ -32,7 +34,7 @@ Use in-process trace storage instead of an external service. Embedded mode provi
 
 ## Prerequisites
 
-- Loom v1.0.2+
+- Loom v1.2.0+
 - Build with FTS5 tag for SQLite: `go build -tags fts5`
 - No external dependencies required
 
@@ -75,7 +77,7 @@ looms serve --config looms.yaml
 ```yaml
 observability:
   enabled: true
-  mode: embedded           # embedded, service, or none
+  mode: embedded           # embedded, service, auto, or none
 
   # Storage configuration
   storage_type: sqlite     # "memory" or "sqlite"
@@ -98,11 +100,17 @@ observability:
 
 ### Environment Variables
 
+When using `looms serve`, Viper maps YAML keys to environment variables with the `LOOM_` prefix (dots become underscores):
+
 ```bash
 export LOOM_OBSERVABILITY_MODE=embedded
 export LOOM_OBSERVABILITY_STORAGE_TYPE=sqlite
 export LOOM_OBSERVABILITY_SQLITE_PATH=./traces.db
 ```
+
+> **Note:** The library API (`NewAutoSelectTracerFromEnv`) uses different env var names:
+> `LOOM_TRACER_MODE`, `LOOM_EMBEDDED_STORAGE`, `LOOM_EMBEDDED_SQLITE_PATH`.
+> The env vars above are for the `looms serve` command specifically.
 
 
 ## Common Tasks
@@ -123,7 +131,7 @@ observability:
 - ✅ Fast (no disk I/O)
 - ✅ Zero setup
 - ❌ Traces lost on restart
-- ❌ Limited capacity (10,000 spans default)
+- ❌ Limited capacity (10,000 spans, not configurable via YAML)
 
 **Use cases**:
 - Local development
@@ -187,10 +195,9 @@ observability:
   sqlite_path: ./traces.db
 ```
 
-**Selection logic**:
+**Selection logic** (when `mode` is omitted or set to `auto`):
 1. If `hawk_endpoint` is set → service mode
-2. If `storage_type` is set → embedded mode
-3. Default → embedded mode with memory storage
+2. Otherwise → embedded mode (uses `storage_type` if set, defaults to memory)
 
 
 ## Examples
@@ -206,7 +213,7 @@ server:
 llm:
   provider: anthropic
   anthropic_api_key: ${ANTHROPIC_API_KEY}
-  model: claude-sonnet-4-5
+  anthropic_model: claude-sonnet-4-5-20250929
 
 observability:
   enabled: true
@@ -234,7 +241,7 @@ server:
 llm:
   provider: bedrock
   bedrock_region: us-west-2
-  bedrock_model: anthropic.claude-sonnet-4-5-20250929-v1:0
+  bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
 
 database:
   path: /var/lib/loom/sessions.db
@@ -382,6 +389,7 @@ CREATE TABLE eval_runs (
     eval_id TEXT NOT NULL,
     query TEXT,
     model TEXT,
+    configuration_json TEXT,
     response TEXT,
     execution_time_ms INTEGER NOT NULL,
     token_count INTEGER NOT NULL,
@@ -389,7 +397,7 @@ CREATE TABLE eval_runs (
     error_message TEXT,
     session_id TEXT,
     timestamp INTEGER NOT NULL,
-    FOREIGN KEY (eval_id) REFERENCES evals(id)
+    FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
 );
 ```
 
@@ -405,6 +413,9 @@ CREATE TABLE eval_metrics (
     total_tokens INTEGER NOT NULL,
     avg_tokens_per_run REAL NOT NULL,
     total_cost REAL NOT NULL,
-    FOREIGN KEY (eval_id) REFERENCES evals(id)
+    first_run_timestamp INTEGER NOT NULL,
+    last_run_timestamp INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
 );
 ```

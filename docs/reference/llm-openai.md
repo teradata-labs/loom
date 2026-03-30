@@ -1,9 +1,9 @@
 
 # OpenAI Integration Reference
 
-**Version**: v1.0.0-beta.1
+**Version**: v1.2.0
 
-Complete technical reference for integrating Loom with OpenAI's API.
+Technical reference for integrating Loom with OpenAI's API.
 
 
 ## Table of Contents
@@ -35,7 +35,7 @@ Complete technical reference for integrating Loom with OpenAI's API.
 ### Configuration Summary
 
 ```go
-// Builder API (Default Model: gpt-4o)
+// Builder API (Default Model: gpt-4.1)
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
     WithOpenAILLM(apiKey).
@@ -44,13 +44,13 @@ agent, err := builder.NewAgentBuilder().
 // Builder API (Custom Model)
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
-    WithOpenAILLMCustomModel(apiKey, "gpt-4-turbo").
+    WithOpenAILLMCustomModel(apiKey, "gpt-5").
     Build()
 
 // Direct Client
 client := openai.NewClient(openai.Config{
     APIKey:      "sk-proj-...",              // Required
-    Model:       "gpt-4o",                   // Default: gpt-4o
+    Model:       "gpt-4.1",                  // Default: gpt-4.1
     Endpoint:    "https://api.openai.com/v1/chat/completions", // Default
     MaxTokens:   4096,                       // Default: 4096
     Temperature: 1.0,                        // Default: 1.0
@@ -62,22 +62,23 @@ client := openai.NewClient(openai.Config{
 
 #### Standard Models
 
-| Model | ID | Input Cost | Output Cost | Context | Features |
-|-------|----|-----------:|------------:|---------|----------|
-| **GPT-4o** | `gpt-4o` | $2.50/1M | $10.00/1M | 128K | Tools, vision, fast (default) |
-| **GPT-4o mini** | `gpt-4o-mini` | $0.15/1M | $0.60/1M | 128K | Tools, vision, very fast |
-| **GPT-4 Turbo** | `gpt-4-turbo` | $10.00/1M | $30.00/1M | 128K | Tools, vision, high quality |
-| **GPT-4** | `gpt-4` | $30.00/1M | $60.00/1M | 8K | Tools, stable |
-| **GPT-3.5 Turbo** | `gpt-3.5-turbo` | $0.50/1M | $1.50/1M | 16K | Tools, budget |
+| Model | ID | Input Cost | Output Cost | Context | Output | Features |
+|-------|----|-----------:|------------:|---------|--------|----------|
+| **GPT-5** | `gpt-5` | $2.50/1M | $10.00/1M | 272K | 128K | Reasoning, vision, tools |
+| **GPT-5 Mini** | `gpt-5-mini` | $0.40/1M | $1.60/1M | 272K | 128K | Reasoning, vision, tools |
+| **GPT-4.1** | `gpt-4.1` | $2.00/1M | $8.00/1M | 1M | 32K | Vision, tools (default) |
+| **GPT-4.1 Mini** | `gpt-4.1-mini` | $0.40/1M | $1.60/1M | 1M | 32K | Vision, tools, cost-effective |
+| **GPT-4.1 Nano** | `gpt-4.1-nano` | $0.10/1M | $0.40/1M | 1M | 32K | Vision, tools, budget |
 
 #### Reasoning Models
 
-| Model | ID | Input Cost | Output Cost | Context | Best For |
-|-------|----|-----------:|------------:|---------|----------|
-| **o1-preview** | `o1-preview` | $15.00/1M | $60.00/1M | 128K | Complex reasoning, STEM |
-| **o1-mini** | `o1-mini` | $3.00/1M | $12.00/1M | 128K | Reasoning, cost-effective |
+| Model | ID | Input Cost | Output Cost | Context | Output | Best For |
+|-------|----|-----------:|------------:|---------|--------|----------|
+| **o3** | `o3` | $10.00/1M | $40.00/1M | 200K | 100K | Complex reasoning, vision, tools |
+| **o3-mini** | `o3-mini` | $1.10/1M | $4.40/1M | 200K | 100K | Reasoning, tools, budget (no vision) |
+| **o4-mini** | `o4-mini` | $1.10/1M | $4.40/1M | 200K | 100K | Reasoning, vision, tools, cost-effective |
 
-*Prices as of November 2024. Check [openai.com/pricing](https://openai.com/pricing) for current rates.*
+*Prices as of March 2026. Check [openai.com/pricing](https://openai.com/pricing) for current rates.*
 
 ### Common Commands
 
@@ -92,7 +93,7 @@ open https://platform.openai.com/api-keys
 curl https://api.openai.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "gpt-4.1-nano", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ### Configuration Parameters
@@ -100,7 +101,7 @@ curl https://api.openai.com/v1/chat/completions \
 | Parameter | Type | Required | Default | Constraints |
 |-----------|------|----------|---------|-------------|
 | `APIKey` | `string` | Yes | - | Format: `sk-proj-...` or `sk-...` |
-| `Model` | `string` | No | `gpt-4o` | See available models |
+| `Model` | `string` | No | `gpt-4.1` | See available models |
 | `Endpoint` | `string` | No | `https://api.openai.com/v1/chat/completions` | Valid HTTPS URL |
 | `MaxTokens` | `int` | No | `4096` | 1-128000 (model dependent) |
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 |
@@ -109,17 +110,18 @@ curl https://api.openai.com/v1/chat/completions \
 
 ## Overview
 
-OpenAI provides access to GPT-4 and other models through their API. The integration offers:
+OpenAI provides access to GPT-5, GPT-4.1, and reasoning models through their API. The integration offers:
 - Native tool calling support (function calling)
-- Multiple model options (GPT-4o, GPT-4, GPT-3.5)
-- Reasoning models (o1-preview, o1-mini)
+- Multiple model options (GPT-5, GPT-5 Mini, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano)
+- Reasoning models (o3, o3-mini, o4-mini)
 - Vision support (image input)
 - Cost tracking for all models
 
 **Implementation**: `pkg/llm/openai/client.go`
-**Test Coverage**: 80.9% (1046 lines of tests)
+**Types**: `pkg/llm/openai/types.go`
+**Test Coverage**: 48.2% (801 lines of tests)
 **API Endpoint**: `https://api.openai.com/v1/chat/completions`
-**Interface**: Full `LLMProvider` compliance
+**Interfaces**: `LLMProvider` and `StreamingLLMProvider` compliance
 
 
 ## Prerequisites
@@ -145,7 +147,7 @@ curl https://api.openai.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
-    "model": "gpt-4o-mini",
+    "model": "gpt-4.1-nano",
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
@@ -157,7 +159,7 @@ curl https://api.openai.com/v1/chat/completions \
   "id": "chatcmpl-123",
   "object": "chat.completion",
   "created": 1677652288,
-  "model": "gpt-4o-mini",
+  "model": "gpt-4.1-nano",
   "choices": [{
     "message": {"role": "assistant", "content": "Hello! How can I assist you today?"},
     "finish_reason": "stop"
@@ -171,29 +173,28 @@ curl https://api.openai.com/v1/chat/completions \
 
 ### Implemented ✅
 
-- Full LLMProvider interface implementation (`pkg/llm/openai/client.go`)
+- Full `LLMProvider` and `StreamingLLMProvider` interface implementation (`pkg/llm/openai/client.go`)
 - Message conversion (system, user, assistant, tool roles)
 - Tool calling with JSON schema conversion (function calling)
-- Cost calculation for all major models
+- Cost calculation for legacy models (gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo, o1-preview, o1-mini)
 - Custom model selection
 - Temperature and max tokens configuration
-- Vision support (image input for GPT-4o, GPT-4 Turbo)
+- `max_completion_tokens` for modern models, `max_tokens` for legacy models
+- Vision support (image input via ContentBlocks)
 - Multi-modal content (text + images)
-- 80.9% test coverage (1046 lines of tests)
-- Rate limiting (configurable)
+- 48.2% test coverage (801 lines of tests)
+- Rate limiting (configurable via `llm.RateLimiterConfig`)
+- Streaming support (SSE-based token streaming via `ChatStream`)
+- Tool name sanitization (MCP namespace colon replacement)
 
-### Partial ⚠️
+### In Progress ⚠️
 
-- Server integration (available via Builder API only, not in `looms serve` CLI yet)
-- Keyring storage (not integrated with `looms config` commands)
-- Streaming (infrastructure exists, not fully exposed)
+- Cost calculation pricing data for newer models (gpt-4.1, gpt-5, o3, o4-mini) -- currently falls back to gpt-4o pricing
 
 ### Planned 📋
 
-- Full CLI integration with `looms config` (v1.1.0)
-- Response streaming support (v1.1.0)
-- Automatic retry with exponential backoff (v1.1.0)
-- Circuit breaker integration (v1.2.0)
+- Automatic retry with exponential backoff
+- Circuit breaker integration
 
 
 ## Configuration
@@ -203,12 +204,9 @@ curl https://api.openai.com/v1/chat/completions \
 The OpenAI provider is currently available through the Builder API for programmatic agent creation:
 
 ```go
-import (
-    "github.com/teradata-labs/loom/pkg/builder"
-    "github.com/teradata-labs/loom/pkg/llm/openai"
-)
+import "github.com/teradata-labs/loom/pkg/builder"
 
-// Option 1: Using builder with default model (gpt-4o)
+// Option 1: Using builder with default model (gpt-4.1)
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
     WithOpenAILLM(apiKey).
@@ -221,7 +219,7 @@ if err != nil {
 // Option 2: Using builder with custom model
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
-    WithOpenAILLMCustomModel(apiKey, "gpt-4-turbo").
+    WithOpenAILLMCustomModel(apiKey, "gpt-5").
     Build()
 ```
 
@@ -241,12 +239,15 @@ Error: API key is required
 For full configuration control, instantiate the client directly:
 
 ```go
-import "github.com/teradata-labs/loom/pkg/llm/openai"
+import (
+    "github.com/teradata-labs/loom/pkg/llm/openai"
+    llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+)
 
 // Create client with custom configuration
 client := openai.NewClient(openai.Config{
     APIKey:      "sk-proj-...",
-    Model:       "gpt-4o",
+    Model:       "gpt-4.1",
     Endpoint:    "https://api.openai.com/v1/chat/completions", // Optional
     MaxTokens:   8192,        // Increase for longer responses
     Temperature: 0.7,         // Lower for more deterministic
@@ -258,20 +259,30 @@ var provider llmtypes.LLMProvider = client
 
 // Get provider info
 fmt.Printf("Provider: %s\n", provider.Name())  // "openai"
-fmt.Printf("Model: %s\n", provider.Model())    // "gpt-4o"
+fmt.Printf("Model: %s\n", provider.Model())    // "gpt-4.1"
 ```
 
 **Expected Output**:
 
 ```
 Provider: openai
-Model: gpt-4o
+Model: gpt-4.1
 ```
 
 
 ### Environment Variables
 
-While not integrated with `looms serve` yet, the OpenAI client can accept API keys from environment variables:
+The OpenAI client reads API keys from environment variables. The model and endpoint can also be overridden via environment variables:
+
+| Variable | Purpose | Checked By |
+|----------|---------|------------|
+| `OPENAI_API_KEY` | API key (must be passed explicitly) | User code |
+| `OPENAI_DEFAULT_MODEL` | Override default model | `NewClient()` (when `Config.Model` is empty) |
+| `LOOM_LLM_OPENAI_MODEL` | Override default model (Loom-prefixed) | `NewClient()` and `WithOpenAILLM()` builder |
+| `OPENAI_API_ENDPOINT` | Override API endpoint | `NewClient()` (when `Config.Endpoint` is empty) |
+| `LOOM_LLM_OPENAI_ENDPOINT` | Override API endpoint (Loom-prefixed) | `NewClient()` (when `Config.Endpoint` is empty) |
+
+**Priority**: Loom-prefixed variables (`LOOM_LLM_OPENAI_*`) are checked after standard OpenAI variables. First non-empty value wins.
 
 ```go
 apiKey := os.Getenv("OPENAI_API_KEY")
@@ -290,7 +301,7 @@ agent, err := builder.NewAgentBuilder().
 | Parameter | Type | Required | Default | Range | Description |
 |-----------|------|----------|---------|-------|-------------|
 | `APIKey` | `string` | Yes | - | - | OpenAI API key (sk-proj- or sk-) |
-| `Model` | `string` | No | `gpt-4o` | See models table | Model identifier |
+| `Model` | `string` | No | `gpt-4.1` | See models table | Model identifier |
 | `Endpoint` | `string` | No | `https://api.openai.com/v1/chat/completions` | Valid HTTPS URL | API endpoint |
 | `MaxTokens` | `int` | No | `4096` | 1-128000 | Maximum tokens in response |
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 | Sampling temperature |
@@ -299,139 +310,147 @@ agent, err := builder.NewAgentBuilder().
 
 ## Model Support and Pricing
 
-Pricing as of November 2024 (per million tokens):
+Pricing as of March 2026 (per million tokens):
 
 ### Standard Models
 
-| Model | ID | Input Cost | Output Cost | Context | Tool Calling | Vision | Best For |
-|-------|----|-----------:|------------:|---------|--------------|--------|----------|
-| **GPT-4o** | `gpt-4o` | $2.50 | $10.00 | 128K | ✅ | ✅ | General tasks, balanced (default) |
-| **GPT-4o mini** | `gpt-4o-mini` | $0.15 | $0.60 | 128K | ✅ | ✅ | High-volume, simple tasks |
-| **GPT-4 Turbo** | `gpt-4-turbo` | $10.00 | $30.00 | 128K | ✅ | ✅ | Complex reasoning, long context |
-| **GPT-4** | `gpt-4` | $30.00 | $60.00 | 8K | ✅ | ❌ | Original GPT-4, stable |
-| **GPT-3.5 Turbo** | `gpt-3.5-turbo` | $0.50 | $1.50 | 16K | ✅ | ❌ | Budget option, fast |
+| Model | ID | Input Cost | Output Cost | Context | Output | Tool Calling | Vision | Best For |
+|-------|----|-----------:|------------:|---------|--------|--------------|--------|----------|
+| **GPT-5** | `gpt-5` | $2.50 | $10.00 | 272K | 128K | ✅ | ✅ | Reasoning + general tasks |
+| **GPT-5 Mini** | `gpt-5-mini` | $0.40 | $1.60 | 272K | 128K | ✅ | ✅ | Cost-effective reasoning |
+| **GPT-4.1** | `gpt-4.1` | $2.00 | $8.00 | 1M | 32K | ✅ | ✅ | General tasks, large context (default) |
+| **GPT-4.1 Mini** | `gpt-4.1-mini` | $0.40 | $1.60 | 1M | 32K | ✅ | ✅ | Cost-effective, large context |
+| **GPT-4.1 Nano** | `gpt-4.1-nano` | $0.10 | $0.40 | 1M | 32K | ✅ | ✅ | Budget, large context |
 
 ### Model Details
 
-#### GPT-4o (Omni)
+#### GPT-5
 
-- **Parameters**: Not disclosed
-- **Context**: 128K tokens
-- **Released**: May 2024
-- **Features**: Text, vision, tool calling
-- **Speed**: 2x faster than GPT-4 Turbo
-- **Best For**: General-purpose tasks, balanced cost/quality
+- **Context**: 272K tokens
+- **Max Output**: 128K tokens
+- **Features**: Reasoning, text, vision, tool calling
+- **Best For**: Tasks requiring both reasoning and general capability
 
 **Use Cases**:
-- Customer support chatbots
+- Complex multi-step reasoning with tool use
 - Code generation and debugging
-- Content creation
+- Research and technical writing
 - Data analysis with tool calling
 
 
-#### GPT-4o mini
+#### GPT-5 Mini
 
-- **Parameters**: Not disclosed
-- **Context**: 128K tokens
-- **Released**: July 2024
+- **Context**: 272K tokens
+- **Max Output**: 128K tokens
+- **Features**: Reasoning, text, vision, tool calling
+- **Best For**: Cost-effective reasoning tasks
+
+**Use Cases**:
+- Classification and categorization with reasoning
+- Code generation with reasoning
+- Content creation
+- High-throughput applications needing reasoning
+
+
+#### GPT-4.1
+
+- **Context**: 1M tokens
+- **Max Output**: 32K tokens
 - **Features**: Text, vision, tool calling
-- **Speed**: Fastest OpenAI model
-- **Best For**: High-volume, cost-sensitive tasks
+- **Best For**: Large context tasks, balanced cost/quality (default model)
+
+**Use Cases**:
+- Long document analysis (up to 1M context)
+- Code review of large codebases
+- Customer support chatbots
+- General-purpose tasks
+
+
+#### GPT-4.1 Mini
+
+- **Context**: 1M tokens
+- **Max Output**: 32K tokens
+- **Features**: Text, vision, tool calling
+- **Best For**: Cost-effective large context tasks
+
+**Use Cases**:
+- High-volume document processing
+- Simple question answering over large contexts
+- Text extraction and summarization
+- Budget-conscious applications
+
+
+#### GPT-4.1 Nano
+
+- **Context**: 1M tokens
+- **Max Output**: 32K tokens
+- **Features**: Text, vision, tool calling
+- **Best For**: Budget tasks with large context
 
 **Use Cases**:
 - Classification and categorization
-- Simple question answering
-- Text extraction and summarization
-- High-throughput applications
-
-
-#### GPT-4 Turbo
-
-- **Parameters**: Not disclosed
-- **Context**: 128K tokens
-- **Released**: November 2023
-- **Features**: Text, vision, tool calling, JSON mode
-- **Best For**: Complex reasoning with long context
-
-**Use Cases**:
-- Long document analysis
-- Complex multi-step reasoning
-- Research and technical writing
-- Code review of large codebases
-
-
-#### GPT-4
-
-- **Parameters**: Not disclosed (estimated ~1.7T)
-- **Context**: 8K tokens
-- **Released**: March 2023
-- **Features**: Text, tool calling
-- **Best For**: Stable production workloads
-
-**Use Cases**:
-- Production applications requiring consistency
-- Legal and compliance document analysis
-- High-stakes decision support
-
-
-#### GPT-3.5 Turbo
-
-- **Parameters**: Not disclosed
-- **Context**: 16K tokens
-- **Released**: March 2023 (updates ongoing)
-- **Features**: Text, tool calling
-- **Best For**: Budget-conscious applications
-
-**Use Cases**:
-- Chatbots with budget constraints
-- Simple code generation
-- Text summarization
+- Simple text extraction
+- High-throughput, low-cost processing
 - Rapid prototyping
 
 
 ## Reasoning Models
 
-OpenAI's o1 series models are optimized for complex reasoning tasks.
+OpenAI's o-series models are optimized for complex reasoning tasks.
 
-### o1-preview
+### Reasoning Models Table
 
-- **Parameters**: Not disclosed
-- **Context**: 128K tokens
-- **Released**: September 2024
-- **Features**: Extended chain-of-thought reasoning
-- **Cost**: $15/1M input, $60/1M output
-- **Best For**: STEM, coding, complex problem-solving
+| Model | ID | Input Cost | Output Cost | Context | Output | Tool Calling | Vision | Best For |
+|-------|----|-----------:|------------:|---------|--------|--------------|--------|----------|
+| **o3** | `o3` | $10.00 | $40.00 | 200K | 100K | ✅ | ✅ | Complex reasoning, STEM, coding |
+| **o3-mini** | `o3-mini` | $1.10 | $4.40 | 200K | 100K | ✅ | ❌ | Budget reasoning, tools |
+| **o4-mini** | `o4-mini` | $1.10 | $4.40 | 200K | 100K | ✅ | ✅ | Reasoning with vision, cost-effective |
+
+### o3
+
+- **Context**: 200K tokens
+- **Max Output**: 100K tokens
+- **Cost**: $10.00/1M input, $40.00/1M output
+- **Features**: Reasoning, vision, tool calling
+- **Best For**: Complex reasoning, STEM, coding
 
 **Use Cases**:
 - Mathematical proofs and problem-solving
 - Complex code debugging
 - Scientific research analysis
-- Multi-step logical reasoning
-
-**Limitations**:
-- No tool calling support
-- No vision support
-- No streaming
-- Slower response times
+- Multi-step logical reasoning with tool use
 
 
-### o1-mini
+### o3-mini
 
-- **Parameters**: Not disclosed
-- **Context**: 128K tokens
-- **Released**: September 2024
-- **Features**: Efficient reasoning, faster than o1-preview
-- **Cost**: $3/1M input, $12/1M output
-- **Best For**: Reasoning at lower cost
+- **Context**: 200K tokens
+- **Max Output**: 100K tokens
+- **Cost**: $1.10/1M input, $4.40/1M output
+- **Features**: Reasoning, tool calling (no vision)
+- **Best For**: Budget reasoning tasks
 
 **Use Cases**:
 - STEM education and tutoring
 - Code generation with reasoning
 - Logical puzzle solving
-- Math homework assistance
+- Cost-effective reasoning workflows
 
-**Limitations**:
-- Same as o1-preview (no tools, vision, streaming)
+**Note**: o3-mini does not support vision input.
+
+
+### o4-mini
+
+- **Context**: 200K tokens
+- **Max Output**: 100K tokens
+- **Cost**: $1.10/1M input, $4.40/1M output
+- **Features**: Reasoning, vision, tool calling
+- **Best For**: Cost-effective reasoning with vision
+
+**Use Cases**:
+- Image analysis with reasoning
+- Multi-modal reasoning tasks
+- Code generation with visual context
+- Cost-effective alternative to o3
 
 
 ## Request and Response Format
@@ -474,7 +493,7 @@ Authorization: Bearer sk-proj-...
 Content-Type: application/json
 
 {
-  "model": "gpt-4o",
+  "model": "gpt-4.1",
   "messages": [
     {"role": "system", "content": "You are a helpful coding assistant."},
     {"role": "user", "content": "Explain Go interfaces."}
@@ -489,17 +508,21 @@ Content-Type: application/json
 
 ```go
 type LLMResponse struct {
-    Content   string        // Assistant response
-    Usage     TokenUsage    // Token counts and cost
-    ToolCalls []ToolCall    // Tool calls (if any)
-    Metadata  map[string]interface{} // Provider metadata
+    Content    string                 // Assistant response
+    ToolCalls  []ToolCall             // Tool calls (if any)
+    StopReason string                 // Why the LLM stopped ("end_turn", "max_tokens", "tool_use")
+    Usage      Usage                  // Token counts and cost
+    Metadata   map[string]interface{} // Provider metadata
+    Thinking   string                 // Internal reasoning (for thinking-enabled models)
 }
 
-type TokenUsage struct {
-    InputTokens  int
-    OutputTokens int
-    TotalTokens  int
-    CostUSD      float64
+type Usage struct {
+    InputTokens              int
+    OutputTokens             int
+    TotalTokens              int
+    CostUSD                  float64
+    CacheReadInputTokens     int     // Tokens served from prompt cache
+    CacheCreationInputTokens int     // Tokens written to prompt cache
 }
 ```
 
@@ -508,11 +531,12 @@ type TokenUsage struct {
 ```go
 response := &types.LLMResponse{
     Content: "In Go, an interface is a type that specifies a method set...",
-    Usage: types.TokenUsage{
+    StopReason: "end_turn",
+    Usage: types.Usage{
         InputTokens:  42,
         OutputTokens: 287,
         TotalTokens:  329,
-        CostUSD:      0.002975,  // $2.50/1M input + $10/1M output (gpt-4o)
+        CostUSD:      0.002954,  // $2.00/1M input + $8.00/1M output (gpt-4.1)
     },
 }
 ```
@@ -522,13 +546,17 @@ response := &types.LLMResponse{
 ```
 Response: In Go, an interface is a type that specifies a method set...
 Tokens: 42 input, 287 output (329 total)
-Cost: $0.002975
+Cost: $0.002954
 ```
 
 
 ## Cost Tracking
 
-The OpenAI provider automatically calculates costs based on token usage:
+The OpenAI provider calculates costs based on token usage.
+
+**Note**: The `calculateCost()` function currently has pricing data for: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1-preview`, `o1-mini`. Models not in this list (including `gpt-4.1`, `gpt-5`, `o3`, `o4-mini`) fall back to `gpt-4o` pricing ($2.50/$10.00 per 1M tokens). ⚠️ Pricing data for newer models needs to be added to `pkg/llm/openai/client.go`.
+
+Usage example:
 
 ```go
 response, err := agent.Chat(ctx, "Analyze this code...")
@@ -562,57 +590,58 @@ Cost = (InputTokens / 1,000,000 * InputPrice) + (OutputTokens / 1,000,000 * Outp
 
 ### Example Costs by Model
 
-**GPT-4o** ($2.50/$10 per 1M tokens):
+**GPT-5** ($2.50/$10.00 per 1M tokens):
 - Simple query (100 input, 200 output): $0.002250
 - Medium task (1000 input, 2000 output): $0.022500
 - Large task (10000 input, 20000 output): $0.225000
 
-**GPT-4o mini** ($0.15/$0.60 per 1M tokens):
-- Simple query (100 input, 200 output): $0.000135
-- Medium task (1000 input, 2000 output): $0.001350
-- Large task (10000 input, 20000 output): $0.013500
+**GPT-4.1** ($2.00/$8.00 per 1M tokens):
+- Simple query (100 input, 200 output): $0.001800
+- Medium task (1000 input, 2000 output): $0.018000
+- Large task (10000 input, 20000 output): $0.180000
 
-**GPT-4 Turbo** ($10/$30 per 1M tokens):
-- Simple query (100 input, 200 output): $0.007000
-- Medium task (1000 input, 2000 output): $0.070000
-- Large task (10000 input, 20000 output): $0.700000
+**GPT-4.1 Nano** ($0.10/$0.40 per 1M tokens):
+- Simple query (100 input, 200 output): $0.000090
+- Medium task (1000 input, 2000 output): $0.000900
+- Large task (10000 input, 20000 output): $0.009000
 
-**o1-preview** ($15/$60 per 1M tokens):
-- Simple query (100 input, 200 output): $0.013500
-- Medium task (1000 input, 2000 output): $0.135000
-- Large task (10000 input, 20000 output): $1.350000
+**o3** ($10.00/$40.00 per 1M tokens):
+- Simple query (100 input, 200 output): $0.009000
+- Medium task (1000 input, 2000 output): $0.090000
+- Large task (10000 input, 20000 output): $0.900000
 
 
 ## Tool Calling Support
 
-The OpenAI provider fully supports tool calling (function calling):
+The OpenAI provider supports tool calling (function calling):
 
 ```go
 import "github.com/teradata-labs/loom/pkg/shuttle"
 
-// Define custom tool
+// Define custom tool implementing shuttle.Tool interface
 type CalculatorTool struct{}
 
 func (t *CalculatorTool) Name() string { return "calculator" }
 func (t *CalculatorTool) Description() string {
     return "Perform mathematical calculations"
 }
-func (t *CalculatorTool) Parameters() interface{} {
-    return map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "expression": map[string]interface{}{
-                "type": "string",
-                "description": "Mathematical expression to evaluate",
-            },
+func (t *CalculatorTool) InputSchema() *shuttle.JSONSchema {
+    return shuttle.NewObjectSchema(
+        "Calculator parameters",
+        map[string]*shuttle.JSONSchema{
+            "expression": shuttle.NewStringSchema("Mathematical expression to evaluate"),
         },
-        "required": []string{"expression"},
-    }
+        []string{"expression"},
+    )
 }
-func (t *CalculatorTool) Execute(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+func (t *CalculatorTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
     // Implementation
-    return map[string]interface{}{"result": 42}, nil
+    return &shuttle.Result{
+        Success: true,
+        Data:    map[string]interface{}{"result": 42},
+    }, nil
 }
+func (t *CalculatorTool) Backend() string { return "" } // backend-agnostic
 
 // Use tool with agent
 tools := []shuttle.Tool{&CalculatorTool{}}
@@ -638,7 +667,7 @@ Arguments: map[expression:2+2]
 
 ### Tool Calling Features
 
-1. **Parallel Tool Calls**: GPT-4o can call multiple tools simultaneously
+1. **Parallel Tool Calls**: GPT-5 and GPT-4.1 can call multiple tools simultaneously
    ```go
    // OpenAI may call get_weather AND get_time in one response
    response.ToolCalls // Contains multiple tool calls
@@ -649,21 +678,22 @@ Arguments: map[expression:2+2]
    - `none`: Never use tools
    - `required`: Must use tools
 
-3. **Structured Outputs**: JSON mode for structured data
+3. **Structured Outputs**: JSON mode for structured data (via internal request type)
    ```go
-   // Force JSON output format
-   req.ResponseFormat = "json_object"
+   // Force JSON output format (internal ChatCompletionRequest field)
+   // ResponseFormat is map[string]interface{}, not a plain string
+   req.ResponseFormat = map[string]interface{}{"type": "json_object"}
    ```
 
 
 ## Vision Support
 
-GPT-4o and GPT-4 Turbo support image inputs:
+GPT-5, GPT-5 Mini, GPT-4.1 family, o3, and o4-mini support image inputs:
 
 ```go
-import "github.com/teradata-labs/loom/pkg/llm/types"
+import "github.com/teradata-labs/loom/pkg/types"
 
-// Create message with image
+// Create message with image (ContentBlock, ImageContent, ImageSource are in pkg/types)
 messages := []types.Message{
     {
         Role: "user",
@@ -673,8 +703,15 @@ messages := []types.Message{
                 Text: "What's in this image?",
             },
             {
-                Type:     "image_url",
-                ImageURL: "https://example.com/image.jpg",
+                Type: "image",
+                Image: &types.ImageContent{
+                    Type: "image",
+                    Source: types.ImageSource{
+                        Type:      "url",
+                        MediaType: "image/jpeg",
+                        URL:       "https://example.com/image.jpg",
+                    },
+                },
             },
         },
     },
@@ -749,7 +786,7 @@ Error: OpenAI API error (401): Invalid API key provided
 Error: OpenAI API error (429): Rate limit reached for requests
 
 // Model access
-Error: OpenAI API error (404): The model 'gpt-4' does not exist or you do not have access to it
+Error: OpenAI API error (404): The model 'invalid-model' does not exist or you do not have access to it
 
 // Service unavailable
 Error: OpenAI API error (503): The engine is currently overloaded
@@ -812,20 +849,20 @@ Error: OpenAI API error (429): You exceeded your current quota, please check you
 
 **Example**:
 ```
-Error: OpenAI API error (404): The model 'gpt-4' does not exist or you do not have access to it
+Error: OpenAI API error (404): The model 'invalid-model' does not exist or you do not have access to it
 ```
 
 **Resolution**:
 1. Verify model ID from available models list
 2. Check for typos in model name
-3. Ensure account tier has access (GPT-4 requires paid account)
-4. Use `gpt-4o` or `gpt-3.5-turbo` as alternatives
+3. Ensure account tier has access
+4. Use `gpt-4.1-nano` or `gpt-4.1-mini` as budget alternatives
 
 **Retry behavior**: Not retryable (fix model name or upgrade account)
 
 **Valid Model IDs**:
-- Always accessible: `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo`
-- Paid only: `gpt-4`, `gpt-4-turbo`, `o1-preview`, `o1-mini`
+- Standard: `gpt-5`, `gpt-5-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`
+- Reasoning: `o3`, `o3-mini`, `o4-mini`
 
 
 ### ERR_RATE_LIMIT
@@ -848,7 +885,7 @@ Error: OpenAI API error (429): Rate limit reached for requests in organization o
 
 **Retry behavior**: Retryable with exponential backoff
 
-**Rate Limits by Tier** (as of November 2024):
+**Rate Limits by Tier** (as of March 2026):
 
 | Tier | RPM | TPM | Description |
 |------|-----|-----|-------------|
@@ -913,9 +950,9 @@ Error: OpenAI API error (400): 'temperature' must be between 0 and 2
 
 **Resolution**:
 1. Validate temperature: 0.0-2.0
-2. Validate max_tokens: 1 to model's max (128K for gpt-4o)
-3. Verify message format (required fields: role, content)
-4. Check tool schemas match OpenAI format
+2. Validate max_tokens: 1 to model's max (128K for gpt-5, 32K for gpt-4.1, 100K for o3)
+4. Verify message format (required fields: role, content)
+5. Check tool schemas match OpenAI format
 
 **Retry behavior**: Not retryable (fix request parameters)
 
@@ -936,7 +973,7 @@ Error: OpenAI API error (503): The engine is currently overloaded, please try ag
 **Resolution**:
 1. **Immediate**: Retry with exponential backoff
 2. **Check status**: [status.openai.com](https://status.openai.com/)
-3. **Fallback**: Switch to alternate model (e.g., gpt-3.5-turbo)
+3. **Fallback**: Switch to alternate model (e.g., `gpt-4.1-nano`)
 4. **Monitor**: Set up alerting for service health
 
 **Retry behavior**: Retryable with exponential backoff (transient error)
@@ -959,7 +996,7 @@ Error: HTTP request failed: context deadline exceeded
 1. **Increase timeout**: `Timeout: 120 * time.Second`
 2. **Reduce complexity**: Smaller prompts, fewer tools, lower max_tokens
 3. **Check network**: Ensure stable connectivity
-4. **Use faster model**: Switch to gpt-4o-mini or gpt-3.5-turbo
+4. **Use faster model**: Switch to `gpt-4.1-nano` or `gpt-4.1-mini`
 
 **Retry behavior**: Retryable with same request
 
@@ -981,10 +1018,9 @@ Error: OpenAI API error (400): This model's maximum context length is 8192 token
 1. Reduce prompt length (truncate conversation history)
 2. Reduce max_tokens parameter
 3. Switch to model with larger context:
-   - GPT-3.5 Turbo: 16K
-   - GPT-4: 8K
-   - GPT-4 Turbo: 128K
-   - GPT-4o: 128K
+   - o3/o3-mini/o4-mini: 200K
+   - GPT-5/GPT-5 Mini: 272K
+   - GPT-4.1/GPT-4.1 Mini/GPT-4.1 Nano: 1M
 4. Implement sliding window for long conversations
 
 **Retry behavior**: Not retryable until prompt reduced
@@ -1024,7 +1060,7 @@ OpenAI applies rate limits based on account tier and usage:
 
 ### Rate Limits by Tier
 
-| Tier | Qualification | RPM | TPM (GPT-4o) | TPD |
+| Tier | Qualification | RPM | TPM (GPT-4.1) | TPD |
 |------|---------------|-----|--------------|-----|
 | **Free** | $0 spent | 3 | 40K | 200K |
 | **Tier 1** | $5+ spent | 500 | 200K | 2M |
@@ -1048,11 +1084,10 @@ import "github.com/teradata-labs/loom/pkg/llm"
 // Configure client with rate limiter
 client := openai.NewClient(openai.Config{
     APIKey:  apiKey,
-    Model:   "gpt-4o",
+    Model:   "gpt-4.1",
     RateLimiterConfig: llm.RateLimiterConfig{
         Enabled:         true,
         TokensPerMinute: 180000,  // 180K TPM (below 200K limit for Tier 1)
-        RefillInterval:  time.Minute,
     },
 })
 ```
@@ -1065,21 +1100,21 @@ client := openai.NewClient(openai.Config{
 
 ## Testing
 
-The OpenAI provider has 80.9% test coverage:
+The OpenAI provider has 48.2% test coverage:
 
 ```bash
-# Run tests
+# Run tests (fts5 tag required for loom project)
 cd /path/to/loom
-go test ./pkg/llm/openai/
+go test -tags fts5 ./pkg/llm/openai/
 
-# With coverage (80.9%)
-go test -cover ./pkg/llm/openai/
+# With coverage (48.2%)
+go test -tags fts5 -cover ./pkg/llm/openai/
 
 # With race detection
-go test -race ./pkg/llm/openai/
+go test -tags fts5 -race ./pkg/llm/openai/
 
 # Verbose output
-go test -v ./pkg/llm/openai/
+go test -tags fts5 -v ./pkg/llm/openai/
 ```
 
 **Expected Output**:
@@ -1093,7 +1128,7 @@ go test -v ./pkg/llm/openai/
 --- PASS: TestCalculateCost (0.00s)
 ...
 PASS
-coverage: 80.9% of statements
+coverage: 48.2% of statements
 ok  	github.com/teradata-labs/loom/pkg/llm/openai	0.198s
 ```
 
@@ -1115,7 +1150,7 @@ func TestOpenAI_Integration(t *testing.T) {
 
     client := openai.NewClient(openai.Config{
         APIKey: apiKey,
-        Model:  "gpt-4o-mini",  // Use cheaper model for tests
+        Model:  "gpt-4.1-nano",  // Use cheapest model for tests
     })
 
     ctx := context.Background()
@@ -1135,7 +1170,7 @@ func TestOpenAI_Integration(t *testing.T) {
 
 ```bash
 export OPENAI_API_KEY="sk-proj-..."
-go test -v ./pkg/llm/openai -run Integration
+go test -tags fts5 -v ./pkg/llm/openai -run Integration
 ```
 
 
@@ -1144,33 +1179,34 @@ go test -v ./pkg/llm/openai -run Integration
 ### 1. Model Selection Strategy
 
 ```go
-// High-volume simple tasks: Use gpt-4o-mini
+// Budget tasks: Use gpt-4.1-nano
 agent, err := builder.NewAgentBuilder().
-    WithOpenAILLMCustomModel(apiKey, "gpt-4o-mini").
+    WithOpenAILLMCustomModel(apiKey, "gpt-4.1-nano").
     Build()
 
-// General tasks: Use gpt-4o (default, best balance)
+// General tasks: Use gpt-4.1 (default, best balance)
 agent, err := builder.NewAgentBuilder().
     WithOpenAILLM(apiKey).
     Build()
 
-// Complex reasoning: Use gpt-4-turbo
+// Reasoning + general: Use gpt-5
 agent, err := builder.NewAgentBuilder().
-    WithOpenAILLMCustomModel(apiKey, "gpt-4-turbo").
+    WithOpenAILLMCustomModel(apiKey, "gpt-5").
     Build()
 
-// Advanced reasoning: Use o1-preview (no tools)
+// Advanced reasoning: Use o3 (with tools and vision)
 agent, err := builder.NewAgentBuilder().
-    WithOpenAILLMCustomModel(apiKey, "o1-preview").
+    WithOpenAILLMCustomModel(apiKey, "o3").
     Build()
 ```
 
 **Decision Tree**:
-1. **Budget-Conscious**: → `gpt-3.5-turbo` ($0.50/$1.50)
-2. **High-Volume Simple**: → `gpt-4o-mini` ($0.15/$0.60)
-3. **General Purpose**: → `gpt-4o` ($2.50/$10)
-4. **Complex Reasoning**: → `gpt-4-turbo` ($10/$30)
-5. **STEM/Coding**: → `o1-mini` or `o1-preview`
+1. **Budget**: → `gpt-4.1-nano` ($0.10/$0.40)
+2. **Cost-Effective**: → `gpt-4.1-mini` or `gpt-5-mini` ($0.40/$1.60)
+3. **General Purpose**: → `gpt-4.1` ($2.00/$8.00) (default)
+4. **Reasoning + General**: → `gpt-5` ($2.50/$10.00)
+5. **Advanced Reasoning**: → `o3` ($10.00/$40.00)
+6. **Cost-Effective Reasoning**: → `o3-mini` or `o4-mini` ($1.10/$4.40)
 
 
 ### 2. Cost Management
@@ -1211,7 +1247,7 @@ for _, turn := range conversation {
 ```go
 import "time"
 
-func chatWithRobustRetry(client *openai.Client, ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
+func chatWithRetryAndBackoff(client *openai.Client, ctx context.Context, messages []types.Message) (*types.LLMResponse, error) {
     maxRetries := 5
     baseDelay := 1 * time.Second
     maxDelay := 32 * time.Second
@@ -1267,10 +1303,8 @@ if err != nil {
     return fmt.Errorf("failed to get API key: %w", err)
 }
 
-// ✅ Best - Loom keyring integration (coming in v1.1.0)
-agent, err := builder.NewAgentBuilder().
-    WithOpenAILLMFromKeyring("openai_key").
-    Build()
+// ✅ Best - Loom keyring integration
+// looms config set-key openai_api_key
 ```
 
 
@@ -1290,7 +1324,9 @@ config.MaxTokens = 2048
 config.MaxTokens = 8192
 
 // Never exceed model's context window
-// gpt-4o: 128K total (prompt + completion)
+// gpt-4.1: 1M context, 32K max output
+// gpt-5: 272K context, 128K max output
+// o3: 200K context, 100K max output
 ```
 
 
@@ -1303,7 +1339,7 @@ logger, _ := zap.NewProduction()
 
 // Log before request
 logger.Info("OpenAI request",
-    zap.String("model", "gpt-4o"),
+    zap.String("model", "gpt-4.1"),
     zap.Int("input_message_count", len(messages)),
 )
 
@@ -1326,7 +1362,7 @@ logger.Info("OpenAI response",
 {
   "level": "info",
   "msg": "OpenAI request",
-  "model": "gpt-4o",
+  "model": "gpt-4.1",
   "input_message_count": 3
 }
 {
@@ -1343,40 +1379,25 @@ logger.Info("OpenAI response",
 
 ## Comparison with Other Providers
 
-| Feature | OpenAI | Anthropic | Azure OpenAI | Mistral | Ollama |
-|---------|--------|-----------|--------------|---------|---------|
-| **API Format** | Native | Native | OpenAI-compatible | OpenAI-compatible | OpenAI-compatible |
-| **Tool Calling** | Native | Native | Native | Native | Limited |
-| **Cost** | $0.15-$60/M | $3-$15/M | $0.15-$60/M | $0.25-$12/M | Free (local) |
-| **Models** | GPT-4, o1 | Claude 4.5 | GPT-4 (Azure) | Mistral, Mixtral | Open models |
-| **Context** | 8K-128K | 200K | 8K-128K | 32K-64K | Model-dependent |
-| **Vision** | ✅ GPT-4o | ✅ Claude | ✅ GPT-4o | ⚠️ Limited | ⚠️ Limited |
-| **Speed** | Fast | Fast | Fast | Fast | Hardware-dependent |
-| **Privacy** | API call | API call | VPC/Private | API call | Full (local) |
-| **Deployment** | Cloud | Cloud | Azure regions | Cloud | Self-hosted |
+| Feature | OpenAI | Anthropic | Azure OpenAI | Bedrock | Gemini | HuggingFace | Mistral | Ollama |
+|---------|--------|-----------|--------------|---------|--------|-------------|---------|---------|
+| **API Format** | Native | Native | OpenAI-compatible | AWS SDK | Native | Native | OpenAI-compatible | OpenAI-compatible |
+| **Tool Calling** | Native | Native | Native | Native | Native | Limited | Native | Limited |
+| **Models** | GPT-5, GPT-4.1, o3 | Claude Sonnet 4.5 | GPT-5, GPT-4.1 (Azure) | Claude (via AWS) | Gemini 3 | Open models | Mistral, Mixtral | Open models |
+| **Context** | 200K-1M | 200K | 200K-1M | 200K | Model-dependent | Model-dependent | 32K-128K | Model-dependent |
+| **Vision** | ✅ Most models | ✅ Claude | ✅ Most models | ✅ Claude | ✅ | ⚠️ Limited | ⚠️ Limited | ⚠️ Limited |
+| **Privacy** | API call | API call | VPC/Private | VPC/Private | API call | API call | API call | Full (local) |
+| **Deployment** | Cloud | Cloud | Azure regions | AWS regions | Cloud | Cloud | Cloud | Self-hosted |
 
 
 ## Limitations
 
-1. **Server Integration**: Not yet integrated with `looms serve` configuration
-   - **Workaround**: Use Builder API programmatically
-   - **ETA**: v1.1.0
-
-2. **Keyring Storage**: API keys must be provided programmatically
-   - **Workaround**: Use environment variables
-   - **ETA**: v1.1.0
-
-3. **Streaming**: Response streaming infrastructure exists but not fully exposed
-   - **Workaround**: Use non-streaming mode
-   - **ETA**: v1.1.0
-
-4. **Vision (GPT-4V)**: Image input supported but requires ContentBlocks
+1. **Vision**: Image input supported but requires ContentBlocks
    - **Workaround**: Use ContentBlocks API (see Vision Support section)
    - **Status**: Implemented ✅
 
-5. **Rate Limit Handling**: No built-in automatic retry
+2. **Rate Limit Handling**: No built-in automatic retry
    - **Workaround**: Implement exponential backoff manually (see Best Practices)
-   - **ETA**: v1.1.0
 
 
 ## Migration to Azure OpenAI
@@ -1390,7 +1411,7 @@ import "github.com/teradata-labs/loom/pkg/builder"
 
 agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
-    WithOpenAILLM(openaiKey).
+    WithOpenAILLM(apiKey).
     Build()
 ```
 
@@ -1404,7 +1425,7 @@ agent, err := builder.NewAgentBuilder().
     WithBackend(backend).
     WithAzureOpenAILLM(
         "https://myresource.openai.azure.com",  // Azure endpoint
-        "gpt-4o-deployment",                    // Deployment name
+        "gpt-4.1-deployment",                   // Deployment name
         azureKey,                              // Azure API key
     ).
     Build()
@@ -1417,7 +1438,7 @@ agent, err := builder.NewAgentBuilder().
 |--------|---------------|--------------|
 | **Endpoint** | `api.openai.com` | `{resource}.openai.azure.com` |
 | **Authentication** | API key only | API key or Entra ID |
-| **Model Selector** | Model name (`gpt-4o`) | Deployment name (`gpt-4o-prod`) |
+| **Model Selector** | Model name (`gpt-4.1`) | Deployment name (`gpt-4.1-prod`) |
 | **Rate Limits** | Per-org (tier-based) | Per-deployment (TPM quotas) |
 | **Regions** | Global (single endpoint) | Regional (multiple endpoints) |
 | **Compliance** | SOC 2 | Azure certifications (ISO, HIPAA) |
@@ -1445,14 +1466,16 @@ The message format, tool calling, and response structure remain identical.
 
 ### LLM Provider Documentation
 - [LLM Provider Overview](./llm-providers.md) - All supported LLM providers
+- [Anthropic Integration](./llm-anthropic.md) - Anthropic Claude provider
 - [Azure OpenAI Integration](./llm-azure-openai.md) - Enterprise deployment
-- [Mistral Integration](./llm-mistral.md) - OpenAI-compatible alternative
+- [Bedrock Integration](./llm-bedrock.md) - AWS Bedrock provider
+- [Gemini Integration](./llm-gemini.md) - Google Gemini provider
+- [HuggingFace Integration](./llm-huggingface.md) - HuggingFace Inference API
+- [Mistral Integration](./llm-mistral.md) - Mistral AI provider
 - [Ollama Integration](./llm-ollama.md) - Local/on-premise models
 
 ### Integration Guides
 - [Agent Configuration](./agent-configuration.md) - Complete agent setup
-- [Builder API Reference](../guides/builder-api.md) - Programmatic agent creation
-- [Cost Tracking Guide](../guides/cost-tracking.md) - Monitor LLM costs
 
 ### External Resources
 - [OpenAI Documentation](https://platform.openai.com/docs)
