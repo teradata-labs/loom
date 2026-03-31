@@ -282,9 +282,11 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 					// server restart. session.Messages has the full DB-loaded history, but
 					// SegmentedMem was just initialized empty. Without this, GetMessagesForLLM()
 					// returns only the system prompt (no history).
-					for _, msg := range session.Messages {
-						segMem.AddMessage(ctx, msg)
-					}
+					//
+					// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
+					// compression from firing between an assistant tool_use and its tool_result
+					// — see ReplayMessages doc for details.
+					segMem.ReplayMessages(ctx, session.Messages)
 				}
 			}
 

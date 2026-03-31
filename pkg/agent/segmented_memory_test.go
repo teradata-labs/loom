@@ -868,3 +868,174 @@ func TestSegmentedMemory_ResetContext_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestSegmentedMemory_ReplayMessages_ToolPairIntegrity verifies that replaying
+// a session from the database does not split tool_use/tool_result pairs during
+// compression. This was the root cause of Anthropic API 400 errors:
+//
+//	"unexpected tool_use_id found in tool_result blocks"
+//
+// The bug: AddMessage in a loop fires compression BETWEEN adding an assistant
+// tool_use and its tool_result. The tool_result hasn't been replayed yet, so
+// adjustCompressionBoundary can't see it, and the tool_use gets compressed to
+// L2 text while the orphaned tool_result stays in L1.
+func TestSegmentedMemory_ReplayMessages_ToolPairIntegrity(t *testing.T) {
+	// Use DATA_INTENSIVE profile — the most aggressive compression settings.
+	// Warning at 50%, MinL1Messages=3, NormalBatchSize=2.
+	profile := CompressionProfile{
+		Name:                     "data_intensive",
+		MaxL1Tokens:              4000,
+		MinL1Messages:            3,
+		WarningThresholdPercent:  50,
+		CriticalThresholdPercent: 70,
+		NormalBatchSize:          2,
+		WarningBatchSize:         4,
+		CriticalBatchSize:        6,
+	}
+	sm := NewSegmentedMemoryWithCompression("ROM", 16000, 4000, profile)
+
+	ctx := context.Background()
+
+	// Build a realistic session: multiple tool_search + activate_tool rounds,
+	// similar to the failing Teradata session with 19+ messages.
+	messages := []Message{
+		{Role: "user", Content: "what's in my teradata", Timestamp: time.Now()},
+		{Role: "assistant", Content: "I'll search for tools.", ToolCalls: []ToolCall{
+			{ID: "tc_1", Name: "tool_search", Input: map[string]interface{}{"query": "Teradata"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat("tool_search result with long description ", 50), ToolUseID: "tc_1", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Let me activate tools.", ToolCalls: []ToolCall{
+			{ID: "tc_2", Name: "activate_tool", Input: map[string]interface{}{"tool": "databaseList"}},
+			{ID: "tc_3", Name: "activate_tool", Input: map[string]interface{}{"tool": "readQuery"}},
+			{ID: "tc_4", Name: "tool_search", Input: map[string]interface{}{"query": "execute SQL"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: "Tool activated", ToolUseID: "tc_2", Timestamp: time.Now()},
+		{Role: "tool", Content: "Tool activated", ToolUseID: "tc_3", Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat("tool_search result ", 50), ToolUseID: "tc_4", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Searching more.", ToolCalls: []ToolCall{
+			{ID: "tc_5", Name: "tool_search", Input: map[string]interface{}{"query": "run SQL"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat("more search results ", 50), ToolUseID: "tc_5", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Activating more tools.", ToolCalls: []ToolCall{
+			{ID: "tc_6", Name: "activate_tool", Input: map[string]interface{}{"tool": "tablePreview"}},
+			{ID: "tc_7", Name: "activate_tool", Input: map[string]interface{}{"tool": "columnDesc"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: "Tool activated", ToolUseID: "tc_6", Timestamp: time.Now()},
+		{Role: "tool", Content: "Tool activated", ToolUseID: "tc_7", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Now querying.", ToolCalls: []ToolCall{
+			{ID: "tc_8", Name: "base_databaseList", Input: map[string]interface{}{}},
+			{ID: "tc_9", Name: "conversation_memory", Input: map[string]interface{}{"action": "search"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: `{"action":"search","count":0}`, ToolUseID: "tc_9", Timestamp: time.Now()},
+		{Role: "tool", Content: "Tool error: decode_error", ToolUseID: "tc_8", Timestamp: time.Now()},
+		{Role: "user", Content: "try again", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Retrying.", ToolCalls: []ToolCall{
+			{ID: "tc_10", Name: "base_readQuery", Input: map[string]interface{}{"sql": "SELECT * FROM DBC.DatabasesV"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"DatabaseName":"DB","PermSpace":"1000"}`, 20), ToolUseID: "tc_10", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Here are your databases: ...", Timestamp: time.Now()},
+	}
+
+	// ReplayMessages should load all messages and compress without splitting pairs.
+	sm.ReplayMessages(ctx, messages)
+
+	// Verify: L1 must not start with a tool message (orphaned tool_result).
+	l1 := sm.GetMessages()
+	require.NotEmpty(t, l1, "L1 should have messages after replay")
+	assert.NotEqual(t, "tool", l1[0].Role,
+		"L1 must not start with a tool message — that would mean a tool_use/tool_result pair was split")
+
+	// Verify: every tool message in L1 must have a preceding assistant with the matching tool_use.
+	for i, msg := range l1 {
+		if msg.Role != "tool" {
+			continue
+		}
+		// Walk backwards to find the matching assistant message.
+		found := false
+		for j := i - 1; j >= 0; j-- {
+			if l1[j].Role == "assistant" {
+				for _, tc := range l1[j].ToolCalls {
+					if tc.ID == msg.ToolUseID {
+						found = true
+						break
+					}
+				}
+				break // Only check the nearest preceding assistant.
+			}
+		}
+		assert.True(t, found, "tool message with ToolUseID=%q at L1[%d] has no matching tool_use in preceding assistant", msg.ToolUseID, i)
+	}
+}
+
+// TestSegmentedMemory_ReplayMessages_vs_AddMessageLoop proves the bug exists
+// with AddMessage-in-a-loop and is fixed by ReplayMessages.
+func TestSegmentedMemory_ReplayMessages_vs_AddMessageLoop(t *testing.T) {
+	profile := CompressionProfile{
+		Name:                     "data_intensive",
+		MaxL1Tokens:              4000,
+		MinL1Messages:            3,
+		WarningThresholdPercent:  50,
+		CriticalThresholdPercent: 70,
+		NormalBatchSize:          2,
+		WarningBatchSize:         4,
+		CriticalBatchSize:        6,
+	}
+
+	ctx := context.Background()
+
+	// Build messages with tool pairs and large content to trigger compression.
+	messages := []Message{
+		{Role: "user", Content: "hello", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Searching.", ToolCalls: []ToolCall{
+			{ID: "tc_a", Name: "tool_search", Input: map[string]interface{}{"q": "test"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat("search result data ", 100), ToolUseID: "tc_a", Timestamp: time.Now()},
+		{Role: "assistant", Content: "More work.", ToolCalls: []ToolCall{
+			{ID: "tc_b", Name: "tool_search", Input: map[string]interface{}{"q": "test2"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat("more result data ", 100), ToolUseID: "tc_b", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Activating.", ToolCalls: []ToolCall{
+			{ID: "tc_c", Name: "activate_tool", Input: map[string]interface{}{"t": "x"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: "Activated", ToolUseID: "tc_c", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Running query.", ToolCalls: []ToolCall{
+			{ID: "tc_d", Name: "readQuery", Input: map[string]interface{}{"sql": "SELECT 1"}},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat("query result row ", 100), ToolUseID: "tc_d", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Done.", Timestamp: time.Now()},
+	}
+
+	// Test with ReplayMessages — should be safe.
+	smReplay := NewSegmentedMemoryWithCompression("ROM", 16000, 4000, profile)
+	smReplay.ReplayMessages(ctx, messages)
+	l1Replay := smReplay.GetMessages()
+	require.NotEmpty(t, l1Replay)
+
+	// Check no orphaned tool results in ReplayMessages path.
+	for i, msg := range l1Replay {
+		if msg.Role != "tool" {
+			continue
+		}
+		found := false
+		for j := i - 1; j >= 0; j-- {
+			if l1Replay[j].Role == "assistant" {
+				for _, tc := range l1Replay[j].ToolCalls {
+					if tc.ID == msg.ToolUseID {
+						found = true
+					}
+				}
+				break
+			}
+		}
+		assert.True(t, found, "ReplayMessages: orphaned tool_result %q at L1[%d]", msg.ToolUseID, i)
+	}
+}
+
+// TestSegmentedMemory_ReplayMessages_Empty verifies empty replay is a no-op.
+func TestSegmentedMemory_ReplayMessages_Empty(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 0, 0)
+	sm.ReplayMessages(context.Background(), nil)
+	assert.Equal(t, 0, sm.GetL1MessageCount())
+	sm.ReplayMessages(context.Background(), []Message{})
+	assert.Equal(t, 0, sm.GetL1MessageCount())
+}
