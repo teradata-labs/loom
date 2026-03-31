@@ -39,6 +39,13 @@ type ExtractedEntity struct {
 	Name       string `json:"name"`
 	EntityType string `json:"entity_type"`
 	Properties string `json:"properties"`
+	IsUser     bool   `json:"is_user"` // true if this person entity IS the human speaking
+}
+
+// ExtractedEntityRole pairs an entity name with its role in a memory.
+type ExtractedEntityRole struct {
+	Name string `json:"name"`
+	Role string `json:"role"` // "about" = primary subject, "mentions" = referenced
 }
 
 // ExtractedRelationship represents a relationship between two entities.
@@ -50,12 +57,12 @@ type ExtractedRelationship struct {
 
 // ExtractedMemory represents a memory worth remembering.
 type ExtractedMemory struct {
-	Content    string   `json:"content"`
-	Summary    string   `json:"summary"`
-	MemoryType string   `json:"memory_type"`
-	Tags       []string `json:"tags"`
-	Salience   float64  `json:"salience"`
-	Entities   []string `json:"entities"`
+	Content    string                `json:"content"`
+	Summary    string                `json:"summary"`
+	MemoryType string                `json:"memory_type"`
+	Tags       []string              `json:"tags"`
+	Salience   float64               `json:"salience"`
+	Entities   []ExtractedEntityRole `json:"entities"`
 }
 
 // buildGraphMemoryExtractionPrompt creates a prompt for the LLM to extract
@@ -79,9 +86,9 @@ func buildGraphMemoryExtractionPrompt(messages []types.Message, maxEntities int)
 
 	sb.WriteString(fmt.Sprintf("\nExtract up to %d entities. Return a single JSON object:\n", maxEntities))
 	sb.WriteString(`{
-  "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system", "properties": "{}"}],
+  "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system", "properties": "{}", "is_user": false}],
   "relationships": [{"source": "entity_name", "target": "entity_name", "relation": "USES|WORKS_ON|KNOWS_ABOUT|CREATED|DEPENDS_ON|RELATED_TO|CONTAINS|PRODUCES"}],
-  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": ["entity_name"]}]
+  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}]}]
 }
 
 Rules:
@@ -93,6 +100,14 @@ Rules:
 - Skip redundant or trivial information
 - Return ONLY the JSON object, no explanation
 - If nothing worth extracting, return {"entities":[],"relationships":[],"memories":[]}
+
+Entity roles:
+- Each memory entity has a role: "about" = the entity is the primary subject of the memory, "mentions" = the entity is referenced but not the subject
+- Messages from [user] are from the human speaking. If they reveal their identity ("I am X", "my name is X"), mark that person entity with "is_user": true
+- People the user references ("my colleague Y", "Y told me") are separate entities with "is_user": false
+- Non-person entities (datasets, tools, systems) always have "is_user": false
+- A memory like "Ilsun works on Team Phoenix" has ilsun as "about" and team_phoenix as "mentions"
+- A memory like "Marcus focuses on fraud detection" has marcus as "about", not the user
 `)
 
 	return sb.String()
@@ -180,7 +195,12 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		if entityType == "" {
 			entityType = "concept"
 		}
-		entity, err := a.getOrCreateEntity(extractCtx, agentID, name, entityType)
+		// Set properties for user-identity entities.
+		props := e.Properties
+		if e.IsUser {
+			props = `{"is_user":true}`
+		}
+		entity, err := a.getOrCreateEntity(extractCtx, agentID, name, entityType, props)
 		if err != nil {
 			continue
 		}
@@ -200,7 +220,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		if !ok {
 			// Entity not extracted this cycle; try to get-or-create.
 			var err error
-			source, err = a.getOrCreateEntity(extractCtx, agentID, sourceName, "concept")
+			source, err = a.getOrCreateEntity(extractCtx, agentID, sourceName, "concept", "")
 			if err != nil {
 				continue
 			}
@@ -210,7 +230,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		target, ok := entityMap[targetName]
 		if !ok {
 			var err error
-			target, err = a.getOrCreateEntity(extractCtx, agentID, targetName, "concept")
+			target, err = a.getOrCreateEntity(extractCtx, agentID, targetName, "concept", "")
 			if err != nil {
 				continue
 			}
@@ -246,12 +266,20 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			salience = 0.5
 		}
 
-		// Resolve entity names to IDs.
-		var entityIDs []string
-		for _, eName := range m.Entities {
-			name := normalizeEntityName(eName)
+		// Resolve entity names to IDs with roles.
+		var entityRoles []memory.EntityIDRole
+		for _, er := range m.Entities {
+			name := normalizeEntityName(er.Name)
 			if e, ok := entityMap[name]; ok {
-				entityIDs = append(entityIDs, e.ID)
+				role := er.Role
+				if role != memory.RoleAbout && role != memory.RoleMentions &&
+					role != memory.RoleBy && role != memory.RoleFor {
+					role = memory.RoleAbout
+				}
+				entityRoles = append(entityRoles, memory.EntityIDRole{
+					ID:   e.ID,
+					Role: role,
+				})
 			}
 		}
 
@@ -264,7 +292,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			MemoryAgentID: agentID,
 			Tags:          m.Tags,
 			Salience:      salience,
-			EntityIDs:     entityIDs,
+			EntityRoles:   entityRoles,
 		}
 		_, err := a.graphMemoryStore.Remember(extractCtx, mem)
 		if err != nil {
@@ -276,17 +304,27 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 }
 
 // getOrCreateEntity retrieves an entity by name, creating it if it doesn't exist.
-func (a *Agent) getOrCreateEntity(ctx context.Context, agentID, name, entityType string) (*memory.Entity, error) {
+// If propertiesJSON is non-empty and the entity already exists, it updates properties
+// (used to mark is_user on existing entities).
+func (a *Agent) getOrCreateEntity(ctx context.Context, agentID, name, entityType, propertiesJSON string) (*memory.Entity, error) {
 	entity, err := a.graphMemoryStore.GetEntity(ctx, agentID, name)
 	if err == nil {
+		// If is_user property needs to be set on an existing entity, update it.
+		if propertiesJSON != "" && propertiesJSON != "{}" && entity.PropertiesJSON != propertiesJSON {
+			entity.PropertiesJSON = propertiesJSON
+			if updated, err := a.graphMemoryStore.UpdateEntity(ctx, entity); err == nil {
+				return updated, nil
+			}
+		}
 		return entity, nil
 	}
 
 	// Entity doesn't exist, create it.
 	entity, err = a.graphMemoryStore.CreateEntity(ctx, &memory.Entity{
-		AgentID:    agentID,
-		Name:       name,
-		EntityType: entityType,
+		AgentID:        agentID,
+		Name:           name,
+		EntityType:     entityType,
+		PropertiesJSON: propertiesJSON,
 	})
 	if err != nil {
 		// Possible race: another goroutine created it between our Get and Create.

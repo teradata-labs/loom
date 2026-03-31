@@ -98,6 +98,8 @@ func TestBuildGraphMemoryExtractionPrompt(t *testing.T) {
 	assert.Contains(t, prompt, `"entities"`)
 	assert.Contains(t, prompt, `"relationships"`)
 	assert.Contains(t, prompt, `"memories"`)
+	assert.Contains(t, prompt, `"is_user"`)
+	assert.Contains(t, prompt, `"role": "about|mentions"`)
 }
 
 func TestBuildGraphMemoryExtractionPrompt_Truncation(t *testing.T) {
@@ -165,7 +167,7 @@ func TestExtractGraphMemoryAsync_ParseJSON(t *testing.T) {
 				MemoryType: "fact",
 				Tags:       []string{"schema"},
 				Salience:   0.7,
-				Entities:   []string{"users_table"},
+				Entities:   []ExtractedEntityRole{{Name: "users_table", Role: "about"}},
 			},
 		},
 	}
@@ -378,6 +380,96 @@ func TestIsValidMemoryType(t *testing.T) {
 	assert.True(t, isValidMemoryType("consolidation"))
 	assert.False(t, isValidMemoryType("note"))
 	assert.False(t, isValidMemoryType(""))
+}
+
+func TestExtractGraphMemoryAsync_EntityRolesAndUserMarker(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+
+	extractedData := ExtractedGraphData{
+		Entities: []ExtractedEntity{
+			{Name: "ilsun", EntityType: "person", IsUser: true},
+			{Name: "marcus", EntityType: "person", IsUser: false},
+			{Name: "cc_transactions", EntityType: "dataset"},
+		},
+		Relationships: []ExtractedRelationship{
+			{Source: "ilsun", Target: "cc_transactions", Relation: "WORKS_ON"},
+		},
+		Memories: []ExtractedMemory{
+			{
+				Content:    "Ilsun is analyzing cc_transactions for fraud patterns",
+				Summary:    "Ilsun analyzing fraud",
+				MemoryType: "fact",
+				Tags:       []string{"fraud"},
+				Salience:   0.8,
+				Entities: []ExtractedEntityRole{
+					{Name: "ilsun", Role: "about"},
+					{Name: "cc_transactions", Role: "mentions"},
+				},
+			},
+			{
+				Content:    "Marcus focuses on fraud detection for transactions over 500 dollars",
+				Summary:    "Marcus fraud focus",
+				MemoryType: "fact",
+				Salience:   0.7,
+				Entities: []ExtractedEntityRole{
+					{Name: "marcus", Role: "about"},
+				},
+			},
+		},
+	}
+	responseJSON, err := json.Marshal(extractedData)
+	require.NoError(t, err)
+
+	mockLLM := &extractionMockLLM{response: string(responseJSON)}
+	mem := NewMemory()
+	session := mem.GetOrCreateSession(ctx, "test-session")
+	segMem := NewSegmentedMemory("", 200000, 20000)
+	segMem.AddMessage(ctx, types.Message{Role: "user", Content: "I am Ilsun. My colleague Marcus focuses on fraud."})
+	segMem.AddMessage(ctx, types.Message{Role: "assistant", Content: "Got it."})
+	session.SegmentedMem = segMem
+
+	a := &Agent{
+		llm:                         mockLLM,
+		graphMemoryStore:            store,
+		enableGraphMemoryExtraction: true,
+		graphExtractionCadence:      5,
+		graphMemoryConfig: &loomv1.GraphMemoryConfig{
+			Enabled:                  true,
+			EnableExtraction:         true,
+			MaxEntitiesPerExtraction: 10,
+		},
+		memory: mem,
+		config: &Config{Name: "test-agent"},
+	}
+
+	a.extractGraphMemoryAsync(ctx, "test-session")
+
+	// Verify user marker: ilsun should have is_user property.
+	ilsun, err := store.GetEntity(ctx, "test-agent", "ilsun")
+	require.NoError(t, err)
+	assert.Equal(t, "person", ilsun.EntityType)
+	assert.Contains(t, ilsun.PropertiesJSON, `"is_user":true`)
+
+	// Verify marcus does NOT have is_user property.
+	marcus, err := store.GetEntity(ctx, "test-agent", "marcus")
+	require.NoError(t, err)
+	assert.Equal(t, "person", marcus.EntityType)
+	assert.NotContains(t, marcus.PropertiesJSON, `"is_user":true`)
+
+	// Verify dataset entity has no is_user.
+	ccTx, err := store.GetEntity(ctx, "test-agent", "cc_transactions")
+	require.NoError(t, err)
+	assert.Equal(t, "dataset", ccTx.EntityType)
+
+	// Verify memories were stored with entity roles.
+	memories, err := store.Recall(ctx, memory.RecallOpts{
+		AgentID: "test-agent",
+		Query:   "fraud",
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(memories), 2)
 }
 
 func TestTruncate(t *testing.T) {

@@ -401,7 +401,7 @@ func (s *GraphMemoryStore) Remember(ctx context.Context, mem *memory.Memory) (*m
 	if err := insertMemoryTx(ctx, tx, mem); err != nil {
 		return nil, err
 	}
-	if err := linkEntitiesTx(ctx, tx, mem.ID, mem.EntityIDs); err != nil {
+	if err := linkEntitiesTx(ctx, tx, mem); err != nil {
 		return nil, err
 	}
 
@@ -607,7 +607,7 @@ func (s *GraphMemoryStore) Supersede(ctx context.Context, oldMemoryID string, ne
 	if err := insertMemoryTx(ctx, tx, newMem); err != nil {
 		return nil, err
 	}
-	if err := linkEntitiesTx(ctx, tx, newMem.ID, newMem.EntityIDs); err != nil {
+	if err := linkEntitiesTx(ctx, tx, newMem); err != nil {
 		return nil, err
 	}
 
@@ -666,7 +666,7 @@ func (s *GraphMemoryStore) Consolidate(ctx context.Context, memoryIDs []string, 
 	if err := insertMemoryTx(ctx, tx, consolidated); err != nil {
 		return nil, err
 	}
-	if err := linkEntitiesTx(ctx, tx, consolidated.ID, consolidated.EntityIDs); err != nil {
+	if err := linkEntitiesTx(ctx, tx, consolidated); err != nil {
 		return nil, err
 	}
 
@@ -793,6 +793,9 @@ func (s *GraphMemoryStore) ContextFor(ctx context.Context, opts memory.ContextFo
 	}
 	tokensUsed += budget.GraphBudget // Reserve for graph.
 
+	// Phase 2b: Resolve entity names for edge endpoints.
+	result.EntityNames = s.resolveEntityNames(ctx, result.EdgesOut, result.EdgesIn)
+
 	// Phase 3: Memories within remaining budget.
 	remainingBudget := budget.MaxTokens - tokensUsed
 	if remainingBudget <= 0 {
@@ -837,6 +840,46 @@ func (s *GraphMemoryStore) ContextFor(ctx context.Context, opts memory.ContextFo
 	result.TotalTokensUsed = tokensUsed + memTokens
 
 	return result, nil
+}
+
+// resolveEntityNames batch-queries entity names for all IDs referenced in edges.
+// Returns a map of entity ID -> entity name for use in EntityRecall.Format().
+func (s *GraphMemoryStore) resolveEntityNames(ctx context.Context, edgesOut, edgesIn []*memory.Edge) map[string]string {
+	ids := make(map[string]bool)
+	for _, e := range edgesOut {
+		ids[e.TargetID] = true
+	}
+	for _, e := range edgesIn {
+		ids[e.SourceID] = true
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for id := range ids {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`SELECT id, name FROM graph_entities WHERE id IN (%s)`, // #nosec G201 -- placeholders are "?" only; values passed via args
+		strings.Join(placeholders, ","))
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close() //nolint:errcheck
+
+	names := make(map[string]string, len(ids))
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			continue
+		}
+		names[id] = name
+	}
+	return names
 }
 
 func (s *GraphMemoryStore) GetStats(ctx context.Context, agentID string) (*memory.GraphStats, error) {
@@ -950,11 +993,30 @@ func insertMemoryTx(ctx context.Context, tx *sql.Tx, mem *memory.Memory) error {
 }
 
 // linkEntitiesTx links entity IDs to a memory via the junction table within a transaction.
-func linkEntitiesTx(ctx context.Context, tx *sql.Tx, memoryID string, entityIDs []string) error {
-	for _, eid := range entityIDs {
+// If mem.EntityRoles is populated, it takes precedence (includes per-entity roles).
+// Otherwise falls back to mem.EntityIDs with default RoleAbout.
+func linkEntitiesTx(ctx context.Context, tx *sql.Tx, mem *memory.Memory) error {
+	if len(mem.EntityRoles) > 0 {
+		for _, er := range mem.EntityRoles {
+			role := er.Role
+			if role == "" {
+				role = memory.RoleAbout
+			}
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)`,
+				mem.ID, er.ID, role,
+			)
+			if err != nil {
+				return fmt.Errorf("link entity %s (role %s): %w", er.ID, role, err)
+			}
+		}
+		return nil
+	}
+	// Fallback: EntityIDs without explicit roles → default to RoleAbout.
+	for _, eid := range mem.EntityIDs {
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO graph_memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)`,
-			memoryID, eid, memory.RoleAbout,
+			mem.ID, eid, memory.RoleAbout,
 		)
 		if err != nil {
 			return fmt.Errorf("link entity %s: %w", eid, err)
