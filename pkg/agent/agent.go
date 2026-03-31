@@ -260,6 +260,15 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// It registers automatically after first L2 swap event.
 	// See checkAndRegisterConversationMemoryTool() for implementation.
 
+	// Register graph_memory tool eagerly (not progressive disclosure).
+	// Unlike conversation_memory which depends on runtime state (L2 swap events),
+	// graph_memory only depends on graphMemoryStore + graphMemoryConfig — both known
+	// at construction time. Registering here ensures the tool is in the LLM's tool
+	// list from the very first conversation turn, matching the system prompt supplement
+	// that references it. The post-loop calls in Chat/ChatWithProgress are harmless
+	// no-ops since checkAndRegisterGraphMemoryTool early-returns if already registered.
+	a.checkAndRegisterGraphMemoryTool()
+
 	return a
 }
 
