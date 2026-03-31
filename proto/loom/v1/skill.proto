@@ -57,7 +57,7 @@ message SkillTrigger {
   repeated string slash_commands = 1;
   // Keywords for auto-detection from user messages
   repeated string keywords = 2;
-  // Maps to patterns.IntentCategory for intent-based activation
+  // Freeform intent labels for intent-based activation
   repeated string intent_categories = 3;
   // How this skill can be activated
   SkillActivationMode mode = 4;

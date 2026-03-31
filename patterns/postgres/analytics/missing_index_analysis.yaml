@@ -9,6 +9,10 @@ priority: 90
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Identify missing indexes on JOIN columns"
   - "Recommend indexes for WHERE filters"

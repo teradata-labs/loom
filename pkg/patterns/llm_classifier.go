@@ -60,7 +60,7 @@ func NewLLMIntentClassifier(config *LLMClassifierConfig) IntentClassifierFunc {
 		cache = newClassificationCache(5000, config.CacheTTL)
 	}
 
-	return func(userMessage string, contextData map[string]any) (IntentCategory, float64) {
+	return func(userMessage string, contextData map[string]any) (string, float64) {
 		// Check cache first
 		if cache != nil {
 			if result := cache.Get(userMessage); result != nil {
@@ -81,7 +81,7 @@ func NewLLMIntentClassifier(config *LLMClassifierConfig) IntentClassifierFunc {
 }
 
 // classifyWithLLM performs the actual LLM classification
-func classifyWithLLM(config *LLMClassifierConfig, userMessage string, contextData map[string]any) (IntentCategory, float64) {
+func classifyWithLLM(config *LLMClassifierConfig, userMessage string, contextData map[string]any) (string, float64) {
 	prompt := buildClassificationPrompt(userMessage, contextData)
 
 	ctx := context.Background()
@@ -112,9 +112,8 @@ func classifyWithLLM(config *LLMClassifierConfig, userMessage string, contextDat
 	return result.Intent, result.Confidence
 }
 
-// buildClassificationPrompt constructs the LLM prompt
+// buildClassificationPrompt constructs the LLM prompt for freeform intent classification.
 func buildClassificationPrompt(userMessage string, contextData map[string]any) string {
-	// Extract backend type if available
 	backendType := "unknown"
 	if bt, ok := contextData["backend_type"].(string); ok {
 		backendType = bt
@@ -122,56 +121,42 @@ func buildClassificationPrompt(userMessage string, contextData map[string]any) s
 
 	prompt := fmt.Sprintf(`Classify the user's intent for a %s backend system.
 
-Available intent categories:
-1. schema_discovery - User wants to explore database structure, tables, columns, metadata
-   Examples: "show me all tables", "what columns are in orders table", "describe the schema"
+Return a short, descriptive intent label (1-3 words, snake_case) that captures the user's primary goal.
 
-2. data_quality - User wants to validate data, find duplicates, check completeness, integrity
-   Examples: "find duplicate records", "check for null values", "validate data quality"
-
-3. data_transform - User wants to move, copy, transform, or migrate data (ETL operations)
-   Examples: "move data from A to B", "transform customer records", "migrate the database"
-
-4. analytics - User wants aggregations, metrics, reports, statistical analysis
-   Examples: "analyze sales trends", "calculate average revenue", "show top 10 customers"
-
-5. relationship_query - User wants to understand foreign keys, relationships, joins between tables
-   Examples: "how are these tables related", "find foreign keys", "what connects orders to customers"
-
-6. query_generation - User wants to generate or write queries
-   Examples: "write a query to find X", "generate SQL for Y", "select all customers where Z"
-
-7. document_search - User wants to search documents or perform text searches
-   Examples: "search for documents containing X", "find text matching Y", "full-text search"
-
-8. api_call - User wants to make HTTP/REST API calls
-   Examples: "call the user API", "make a GET request to X", "post data to the endpoint"
-
-9. unknown - Intent doesn't clearly match any category
+Common intents include (but you may return any label that best describes the intent):
+- schema_discovery: explore database structure, tables, columns, metadata
+- data_quality: validate data, find duplicates, check completeness
+- data_transform: move, copy, transform, or migrate data (ETL)
+- analytics: aggregations, metrics, reports, statistical analysis
+- relationship_query: foreign keys, relationships, joins between tables
+- query_generation: generate or write queries
+- document_search: search documents, full-text search
+- api_call: HTTP/REST API calls
 
 User message: "%s"
 
-Classify this intent. Respond ONLY with valid JSON (no markdown, no code blocks):
+Respond ONLY with valid JSON (no markdown, no code blocks):
 {
-  "intent": "<category_name>",
+  "intent": "<intent_label>",
   "confidence": <0.0-1.0>,
   "reasoning": "<brief explanation>"
 }
 
 Guidelines:
+- Use snake_case for the intent label.
 - Be conservative with confidence scores. Only use >0.9 for very clear, unambiguous intents.
 - Use 0.7-0.9 for probable intents with some ambiguity.
 - Use <0.7 for uncertain or multi-intent queries.
-- If the message is greeting/chitchat/off-topic, use "unknown" with low confidence.`, backendType, userMessage)
+- If the message is greeting/chitchat/off-topic, return "" with 0.0 confidence.`, backendType, userMessage)
 
 	return prompt
 }
 
 // classificationResult holds parsed LLM response
 type classificationResult struct {
-	Intent     IntentCategory `json:"intent"`
-	Confidence float64        `json:"confidence"`
-	Reasoning  string         `json:"reasoning"`
+	Intent     string  `json:"intent"`
+	Confidence float64 `json:"confidence"`
+	Reasoning  string  `json:"reasoning"`
 }
 
 // parseClassificationResponse parses the LLM JSON response
@@ -188,21 +173,10 @@ func parseClassificationResponse(content string) *classificationResult {
 		return nil
 	}
 
-	// Validate intent category
-	validIntents := map[IntentCategory]bool{
-		IntentSchemaDiscovery:   true,
-		IntentDataQuality:       true,
-		IntentDataTransform:     true,
-		IntentAnalytics:         true,
-		IntentRelationshipQuery: true,
-		IntentQueryGeneration:   true,
-		IntentDocumentSearch:    true,
-		IntentAPICall:           true,
-		IntentUnknown:           true,
-	}
-
-	if !validIntents[result.Intent] {
-		return nil
+	// Normalize "unknown" to empty string
+	if result.Intent == "unknown" {
+		result.Intent = ""
+		result.Confidence = 0.0
 	}
 
 	// Clamp confidence to [0.0, 1.0]
@@ -211,6 +185,11 @@ func parseClassificationResponse(content string) *classificationResult {
 	}
 	if result.Confidence > 1.0 {
 		result.Confidence = 1.0
+	}
+
+	// Empty intent always has 0.0 confidence
+	if result.Intent == "" {
+		result.Confidence = 0.0
 	}
 
 	return &result
@@ -225,7 +204,7 @@ type classificationCache struct {
 }
 
 type cacheEntry struct {
-	Intent     IntentCategory
+	Intent     string
 	Confidence float64
 	Timestamp  time.Time
 }
@@ -255,7 +234,7 @@ func (c *classificationCache) Get(message string) *cacheEntry {
 	return entry
 }
 
-func (c *classificationCache) Set(message string, intent IntentCategory, confidence float64) {
+func (c *classificationCache) Set(message string, intent string, confidence float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

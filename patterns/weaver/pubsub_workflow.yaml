@@ -5,6 +5,8 @@ category: weaver
 difficulty: advanced
 backend_type: workflow
 
+intents:
+  - weaver
 use_cases:
   - "peer to peer communication"
   - "broadcast to all agents"

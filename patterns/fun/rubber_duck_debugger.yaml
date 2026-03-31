@@ -30,6 +30,8 @@ tags: [debugging, fun, rubber-duck, problem-solving]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - debugging
 use_cases:
   - Debug logic errors by explaining them out loud
   - Understand complex code flow

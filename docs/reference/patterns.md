@@ -39,7 +39,7 @@ Specification for Loom's pattern library system. Patterns encode domain knowledg
   - [GetLibrary](#getlibrary)
   - [RecordPatternUsage](#recordpatternusage)
   - [NewLLMIntentClassifier](#newllmintentclassifier)
-- [Intent Categories](#intent-categories)
+- [Intent Classification](#intent-classification)
 - [Hot Reload](#hot-reload)
   - [NewHotReloader](#newhotreloader)
   - [Start](#start)
@@ -75,19 +75,23 @@ Specification for Loom's pattern library system. Patterns encode domain knowledg
 | `vision` | Image and visual analysis | Image description, chart analysis |
 | `evaluation` | Evaluation and assessment | Quality scoring, benchmarking |
 
-### Intent Categories
+### Intent Classification
+
+Intents are **freeform snake_case strings** — the classifier can return any label. Common built-in intents used by the default keyword classifier:
 
 | Intent | Description | Tool Guidance |
 |--------|-------------|---------------|
-| `IntentSchemaDiscovery` | Exploring data structure | Use schema discovery tools |
-| `IntentRelationshipQuery` | Analyzing relationships | Use relationship analysis tools |
-| `IntentDataQuality` | Quality validation | Use validation tools |
-| `IntentDataTransform` | ETL operations | Use transformation tools |
-| `IntentAnalytics` | Metrics and reporting | Use aggregation/query tools |
-| `IntentQueryGeneration` | Query creation | Use code generation tools |
-| `IntentDocumentSearch` | Document retrieval | Use vector search tools |
-| `IntentAPICall` | API interaction | Use HTTP client tools |
-| `IntentUnknown` | Cannot classify | Use general-purpose tools |
+| `"schema_discovery"` | Exploring data structure | Use schema discovery tools |
+| `"relationship_query"` | Analyzing relationships | Use relationship analysis tools |
+| `"data_quality"` | Quality validation | Use validation tools |
+| `"data_transform"` | ETL operations | Use transformation tools |
+| `"analytics"` | Metrics and reporting | Use aggregation/query tools |
+| `"query_generation"` | Query creation | Use code generation tools |
+| `"document_search"` | Document retrieval | Use vector search tools |
+| `"api_call"` | API interaction | Use HTTP client tools |
+| `""` (empty) | Cannot classify | Use general-purpose tools |
+
+Patterns declare which intents they serve via the `intents` YAML field. Custom classifiers can return any string — matching is done by set intersection against pattern-declared intents, with fallback to category matching.
 
 ### Library Functions
 
@@ -110,7 +114,7 @@ Specification for Loom's pattern library system. Patterns encode domain knowledg
 | Function | Purpose | Returns |
 |----------|---------|---------|
 | `NewOrchestrator(library)` | Create orchestrator | `*Orchestrator` |
-| `ClassifyIntent(msg, ctx)` | Classify user intent | `IntentCategory, float64` |
+| `ClassifyIntent(msg, ctx)` | Classify user intent | `string, float64` |
 | `RecommendPattern(msg, intent)` | Recommend pattern (hybrid keyword + optional LLM) | `string, float64` |
 | `GetRoutingRecommendation(intent)` | Get tool guidance | `string` |
 | `PlanExecution(intent, msg, ctx)` | Generate execution plan | `*ExecutionPlan, error` |
@@ -240,6 +244,23 @@ use_cases:
   - "revenue by region"
   - "sales aggregation"
   - "group by analysis"
+```
+
+
+#### intents
+
+**Type**: `[]string`
+**Default**: `[]`
+**Constraints**: Freeform snake_case strings
+
+**Description**: Freeform intent labels this pattern serves. Used by the orchestrator to match classified intents to patterns. If omitted, the orchestrator falls back to matching the classified intent against the pattern's `category` field.
+
+**Example**:
+```yaml
+intents:
+  - analytics
+  - reporting
+  - query_generation
 ```
 
 
@@ -877,23 +898,23 @@ orchestrator := patterns.NewOrchestrator(library)
 ### ClassifyIntent
 
 ```go
-func (o *Orchestrator) ClassifyIntent(message string, context map[string]interface{}) (IntentCategory, float64)
+func (o *Orchestrator) ClassifyIntent(message string, context map[string]interface{}) (string, float64)
 ```
 
-**Description**: Classify user message into intent category.
+**Description**: Classify user message into a freeform intent label.
 
 **Parameters**:
 - `message` (`string`) - User message to classify
 - `context` (`map[string]interface{}`) - Additional context (user_id, session_data, etc.)
 
 **Returns**:
-- `IntentCategory` - Classified intent (see [Intent Categories](#intent-categories))
+- `string` - Freeform intent label (e.g., `"analytics"`, `"schema_discovery"`, or any custom label). Empty string means unclassified.
 - `float64` - Confidence score (0.0-1.0)
 
 **Classification algorithm**:
 - Keyword matching on intent-specific terms
 - Context-aware scoring
-- Default fallback to `IntentUnknown`
+- Default fallback to `""` (empty string) with 0.0 confidence
 
 **Example**:
 ```go
@@ -914,30 +935,31 @@ fmt.Printf("Intent: %v (%.2f confidence)\n", intent, confidence)
 ### RecommendPattern
 
 ```go
-func (o *Orchestrator) RecommendPattern(message string, intent IntentCategory) (string, float64)
+func (o *Orchestrator) RecommendPattern(message string, intent string) (string, float64)
 ```
 
 **Description**: Recommend best pattern for user message and intent.
 
 **Parameters**:
 - `message` (`string`) - User message
-- `intent` (`IntentCategory`) - Classified intent
+- `intent` (`string`) - Classified intent label
 
 **Returns**:
 - `string` - Pattern name
 - `float64` - Confidence score (0.0-1.0)
 
 **Recommendation algorithm**:
-1. Filter patterns by intent-appropriate category
-2. Match message against pattern use_cases[]
-3. Score by keyword overlap
-4. Return highest-scoring pattern
+1. Match classified intent against pattern declared `intents` (set intersection), falling back to `category` match
+2. Match message keywords against pattern metadata (name, title, description, use_cases, intents)
+3. Score by intent match (+0.5) and keyword overlap (up to +0.5)
+4. Optionally re-rank top candidates with LLM for ambiguous cases
+5. Return highest-scoring pattern
 
 **Example**:
 ```go
 patternName, confidence := orchestrator.RecommendPattern(
     "Show me revenue by region",
-    patterns.IntentAnalytics,
+    "analytics",
 )
 
 if confidence > 0.7 {
@@ -954,21 +976,21 @@ if confidence > 0.7 {
 ### GetRoutingRecommendation
 
 ```go
-func (o *Orchestrator) GetRoutingRecommendation(intent IntentCategory) string
+func (o *Orchestrator) GetRoutingRecommendation(intent string) string
 ```
 
 **Description**: Get tool guidance string for LLM system prompt.
 
 **Parameters**:
-- `intent` (`IntentCategory`) - Classified intent
+- `intent` (`string`) - Classified intent label
 
-**Returns**: `string` - Tool guidance text
+**Returns**: `string` - Tool guidance text. Returns generic fallback for unrecognized intents.
 
 **Example**:
 ```go
-guidance := orchestrator.GetRoutingRecommendation(patterns.IntentAnalytics)
+guidance := orchestrator.GetRoutingRecommendation("analytics")
 fmt.Println(guidance)
-// Output: "Use aggregation and query tools to analyze metrics"
+// Output: "For analytics queries, validate and estimate cost before execution..."
 
 // Include in LLM system prompt
 systemPrompt := fmt.Sprintf(`
@@ -988,13 +1010,13 @@ Available tools: execute_query, get_schema
 ### PlanExecution
 
 ```go
-func (o *Orchestrator) PlanExecution(intent IntentCategory, message string, context map[string]interface{}) (*ExecutionPlan, error)
+func (o *Orchestrator) PlanExecution(intent string, message string, context map[string]interface{}) (*ExecutionPlan, error)
 ```
 
-**Description**: Generate execution plan from intent and message.
+**Description**: Generate execution plan from intent and message. For known intents (the 8 built-in labels), returns a domain-specific plan. For unknown freeform intents, returns a generic execution plan. For empty string intent, returns an error.
 
 **Parameters**:
-- `intent` (`IntentCategory`) - Classified intent
+- `intent` (`string`) - Classified intent label
 - `message` (`string`) - User message
 - `context` (`map[string]interface{}`) - Execution context
 
@@ -1005,11 +1027,11 @@ func (o *Orchestrator) PlanExecution(intent IntentCategory, message string, cont
 **ExecutionPlan schema**:
 ```go
 type ExecutionPlan struct {
-    Intent      IntentCategory `json:"intent"`
-    Description string         `json:"description"`
-    Steps       []PlannedStep  `json:"steps"`
-    Reasoning   string         `json:"reasoning"`
-    PatternName string         `json:"pattern_name,omitempty"`
+    Intent      string        `json:"intent"`
+    Description string        `json:"description"`
+    Steps       []PlannedStep `json:"steps"`
+    Reasoning   string        `json:"reasoning"`
+    PatternName string        `json:"pattern_name,omitempty"`
 }
 
 type PlannedStep struct {
@@ -1023,7 +1045,7 @@ type PlannedStep struct {
 **Example**:
 ```go
 plan, err := orchestrator.PlanExecution(
-    patterns.IntentAnalytics,
+    "analytics",
     "Show me revenue by region",
     map[string]interface{}{"user_context": "sales_team"},
 )
@@ -1050,13 +1072,13 @@ for i, step := range plan.Steps {
 ### SetIntentClassifier
 
 ```go
-func (o *Orchestrator) SetIntentClassifier(classifier func(string, map[string]interface{}) (IntentCategory, float64))
+func (o *Orchestrator) SetIntentClassifier(classifier func(string, map[string]interface{}) (string, float64))
 ```
 
 **Description**: Override default intent classifier with custom function.
 
 **Parameters**:
-- `classifier` (`func(string, map[string]interface{}) (IntentCategory, float64)`) - Custom classifier function
+- `classifier` (`func(string, map[string]interface{}) (string, float64)`) - Custom classifier function returning a freeform intent label and confidence
 
 **Use cases**:
 - LLM-based classification
@@ -1065,12 +1087,12 @@ func (o *Orchestrator) SetIntentClassifier(classifier func(string, map[string]in
 
 **Example**:
 ```go
-customClassifier := func(msg string, ctx map[string]interface{}) (patterns.IntentCategory, float64) {
-    // Use LLM for classification
+customClassifier := func(msg string, ctx map[string]interface{}) (string, float64) {
+    // Return any domain-specific intent label
     if strings.Contains(strings.ToLower(msg), "teradata") {
-        return patterns.IntentAnalytics, 0.95
+        return "analytics", 0.95
     }
-    return patterns.IntentUnknown, 0.0
+    return "", 0.0
 }
 
 orchestrator.SetIntentClassifier(customClassifier)
@@ -1088,7 +1110,7 @@ func (o *Orchestrator) SetExecutionPlanner(planner ExecutionPlannerFunc)
 **Description**: Override default execution planner with custom function. Backends can provide domain-specific planners for optimized execution strategies.
 
 **Parameters**:
-- `planner` (`ExecutionPlannerFunc`) - Custom planner: `func(IntentCategory, string, map[string]interface{}) (*ExecutionPlan, error)`
+- `planner` (`ExecutionPlannerFunc`) - Custom planner: `func(string, string, map[string]interface{}) (*ExecutionPlan, error)`
 
 **Thread safety**: Not safe during concurrent use (set during initialization)
 
@@ -1158,7 +1180,7 @@ func (o *Orchestrator) RecordPatternUsage(
 func NewLLMIntentClassifier(config *LLMClassifierConfig) IntentClassifierFunc
 ```
 
-**Description**: Create an LLM-based intent classifier. Returns an `IntentClassifierFunc` that can be plugged into the orchestrator via `SetIntentClassifier()`. Uses the LLM to classify intent with higher accuracy than keyword matching.
+**Description**: Create an LLM-based intent classifier. Returns an `IntentClassifierFunc` that can be plugged into the orchestrator via `SetIntentClassifier()`. Uses the LLM to classify intent into freeform labels with higher accuracy than keyword matching. The LLM is prompted to return any descriptive snake_case label — not limited to the 8 built-in intents.
 
 **Parameters**:
 - `config` (`*LLMClassifierConfig`) - LLM classifier configuration
@@ -1175,89 +1197,51 @@ orchestrator.SetIntentClassifier(classifier)
 ```
 
 
-## Intent Categories
+## Intent Classification
 
-IntentCategory is a `string` type (not integer). Values are human-readable strings.
+Intents are **freeform snake_case strings**. The classifier (keyword-based or LLM-based) returns any descriptive label, and patterns declare which intents they serve via the `intents` YAML field.
 
-### IntentSchemaDiscovery
+### How Intent Matching Works
 
-**Value**: `"schema_discovery"`
-**Description**: Exploring data structure (tables, columns, relationships)
-**Tool guidance**: Use schema discovery tools with caching
+1. The classifier returns an intent string (e.g., `"analytics"`, `"predict_churn"`, `"schema_discovery"`)
+2. The orchestrator checks each pattern's declared `intents` list for a case-insensitive match
+3. If no declared intents match, falls back to matching against the pattern's `category` field
+4. Empty string (`""`) means unclassified — confidence is always 0.0
 
-**Trigger keywords**: "what tables", "list tables", "show tables", "what columns", "schema", "table structure", "describe"
+### Built-in Intents (Default Keyword Classifier)
 
+The default keyword-based classifier recognizes these intents:
 
-### IntentRelationshipQuery
+| Intent | Trigger Keywords |
+|--------|-----------------|
+| `"schema_discovery"` | "what tables", "list tables", "schema", "table structure", "describe" |
+| `"relationship_query"` | "related", "foreign key", "relationship", "connected to", "joins" |
+| `"data_quality"` | "data quality", "duplicates", "null", "validate", "check quality" |
+| `"data_transform"` | "move data", "copy", "load data", "extract", "etl", "migrate" |
+| `"analytics"` | "aggregate", "sum", "count", "average", "group by", "analyze", "report" |
+| `"query_generation"` | "write query", "generate query", "query for", "select", "find" |
+| `"document_search"` | "search document", "find in document", "text search", "full text" |
+| `"api_call"` | "api call", "http request", "rest api", "endpoint", "webhook" |
 
-**Value**: `"relationship_query"`
-**Description**: Analyzing relationships between entities
-**Tool guidance**: Use relationship inference tools with FK detection
+The LLM-based classifier can return any intent label, not just these 8. Custom classifiers can also return domain-specific labels like `"predict_churn"`, `"code_review"`, or `"deploy_pipeline"`.
 
-**Trigger keywords**: "related", "foreign key", "relationship", "connected to", "references", "joins"
+### Declaring Pattern Intents
 
+Patterns declare what intents they serve via the `intents` YAML field:
 
-### IntentDataQuality
+```yaml
+name: linear_regression
+category: ml
+intents:
+  - analytics
+  - prediction
+  - model_training
+use_cases:
+  - Sales forecasting
+  - Customer lifetime value prediction
+```
 
-**Value**: `"data_quality"`
-**Description**: Quality validation and data profiling
-**Tool guidance**: Use validation tools and quality check workflows
-
-**Trigger keywords**: "data quality", "duplicates", "null", "completeness", "validate", "check quality", "integrity"
-
-
-### IntentDataTransform
-
-**Value**: `"data_transform"`
-**Description**: ETL operations and data transformation
-**Tool guidance**: Use ETL workflow patterns with validation gates
-
-**Trigger keywords**: "move data", "copy", "load data", "extract", "transform", "etl", "migrate", "transfer"
-
-
-### IntentAnalytics
-
-**Value**: `"analytics"`
-**Description**: Metrics, aggregations, and reporting
-**Tool guidance**: Validate and estimate cost before execution; use pattern library for advanced aggregations
-
-**Trigger keywords**: "aggregate", "sum", "count", "average", "group by", "analyze", "report", "metrics", "statistics"
-
-
-### IntentQueryGeneration
-
-**Value**: `"query_generation"`
-**Description**: Generate code or queries
-**Tool guidance**: Validate syntax and estimate cost before execution; use patterns for structure
-
-**Trigger keywords**: "write query", "generate query", "query for", "select", "find", "get data"
-
-
-### IntentDocumentSearch
-
-**Value**: `"document_search"`
-**Description**: Document retrieval and search
-**Tool guidance**: Use appropriate indexing and search patterns (full-text, vector, hybrid)
-
-**Trigger keywords**: "search document", "find in document", "document query", "text search", "full text"
-
-
-### IntentAPICall
-
-**Value**: `"api_call"`
-**Description**: External API interactions
-**Tool guidance**: Validate request structure; use retry patterns for transient failures
-
-**Trigger keywords**: "api call", "http request", "rest api", "endpoint", "webhook"
-
-
-### IntentUnknown
-
-**Value**: `"unknown"`
-**Description**: Cannot classify intent
-**Tool guidance**: Use general-purpose tools
-
-**Trigger keywords**: None (default fallback, confidence 0.0)
+If `intents` is omitted, the orchestrator falls back to matching the classified intent against the pattern's `category` field. This provides backward compatibility with patterns that predate the `intents` field.
 
 
 ## Hot Reload
@@ -1687,7 +1671,7 @@ template: pattern:3:5: executing "pattern" at <.missing_var>: map has no entry f
 ### Execution Planning Error
 
 **Message**: `"cannot plan execution for unknown intent"`
-**Cause**: `PlanExecution()` called with `IntentUnknown`
+**Cause**: `PlanExecution()` called with empty string intent
 
 **Resolution**:
 1. Classify intent first with `ClassifyIntent()`
@@ -1853,23 +1837,23 @@ func main() {
     orchestrator := patterns.NewOrchestrator(library)
 
     // Define custom classifier using domain knowledge
-    customClassifier := func(msg string, ctx map[string]interface{}) (patterns.IntentCategory, float64) {
+    customClassifier := func(msg string, ctx map[string]interface{}) (string, float64) {
         msgLower := strings.ToLower(msg)
 
         // Teradata-specific keywords
         if strings.Contains(msgLower, "teradata") ||
            strings.Contains(msgLower, "spool space") ||
            strings.Contains(msgLower, "amp") {
-            return patterns.IntentAnalytics, 0.95
+            return "analytics", 0.95
         }
 
         // ML keywords
         if strings.Contains(msgLower, "train model") ||
            strings.Contains(msgLower, "predict") {
-            return patterns.IntentQueryGeneration, 0.90
+            return "query_generation", 0.90
         }
 
-        return patterns.IntentUnknown, 0.0
+        return "", 0.0
     }
 
     orchestrator.SetIntentClassifier(customClassifier)

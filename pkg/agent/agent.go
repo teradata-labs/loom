@@ -1554,13 +1554,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Step 1: Classify intent
 			intent, intentConf := a.orchestrator.ClassifyIntent(lastUserMessage, contextData)
 
-			patternSpan.SetAttribute("intent.category", string(intent))
+			patternSpan.SetAttribute("intent.category", intent)
 			patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
 
 			// Step 2: Recommend pattern based on keyword matching and intent
 			// Always attempt pattern recommendation regardless of intent classification.
 			// RecommendPattern uses its own keyword-based search which can find relevant
-			// patterns even when the intent classifier returns IntentUnknown (e.g., for
+			// patterns even when the intent classifier returns an empty string (e.g., for
 			// meta-agent workflows or domain-specific queries not covered by the default
 			// intent classifier).
 			{
@@ -1591,7 +1591,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						// Record metrics
 						a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
 							"pattern":    patternName,
-							"intent":     string(intent),
+							"intent":     intent,
 							"confidence": fmt.Sprintf("%.0f", patternConf*100),
 						})
 					} else {

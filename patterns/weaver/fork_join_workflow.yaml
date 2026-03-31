@@ -5,6 +5,8 @@ category: weaver
 difficulty: intermediate
 backend_type: workflow
 
+intents:
+  - weaver
 use_cases:
   - "fork and join analysis"
   - "parallel analysis of same question"

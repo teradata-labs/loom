@@ -9,6 +9,10 @@ priority: 95
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Identify slow queries doing full table scans"
   - "Recommend indexes for filtered columns"

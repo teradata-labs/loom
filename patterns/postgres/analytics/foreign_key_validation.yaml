@@ -53,6 +53,10 @@ examples:
       table_name: orders
     expected_result: "Find user_id FK, recommend index"
 
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Audit referential integrity"
   - "Identify missing FK indexes"

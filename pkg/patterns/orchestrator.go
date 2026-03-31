@@ -90,7 +90,7 @@ func (o *Orchestrator) SetLLMProvider(provider types.LLMProvider) {
 // ClassifyIntent analyzes user message and determines intent category.
 // Returns intent category and confidence score (0.0-1.0).
 // Uses pluggable classifier if set, otherwise uses default keyword-based classifier.
-func (o *Orchestrator) ClassifyIntent(userMessage string, ctxData map[string]interface{}) (IntentCategory, float64) {
+func (o *Orchestrator) ClassifyIntent(userMessage string, ctxData map[string]interface{}) (string, float64) {
 	startTime := time.Now()
 	_, span := o.tracer.StartSpan(context.Background(), "patterns.orchestrator.classify_intent")
 	defer o.tracer.EndSpan(span)
@@ -104,13 +104,13 @@ func (o *Orchestrator) ClassifyIntent(userMessage string, ctxData map[string]int
 
 	duration := time.Since(startTime)
 	if span != nil {
-		span.SetAttribute("intent.category", string(intent))
+		span.SetAttribute("intent.category", intent)
 		span.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", confidence))
 		span.SetAttribute("duration_ms", fmt.Sprintf("%.2f", duration.Seconds()*1000))
 	}
 
 	o.tracer.RecordMetric("patterns.orchestrator.classify_intent", 1.0, map[string]string{
-		"intent":     string(intent),
+		"intent":     intent,
 		"confidence": fmt.Sprintf("%.1f", confidence*100),
 	})
 
@@ -119,13 +119,13 @@ func (o *Orchestrator) ClassifyIntent(userMessage string, ctxData map[string]int
 
 // PlanExecution creates an execution plan based on classified intent.
 // Uses pluggable planner if set, otherwise uses default generic planner.
-func (o *Orchestrator) PlanExecution(intent IntentCategory, userMessage string, ctxData map[string]interface{}) (*ExecutionPlan, error) {
+func (o *Orchestrator) PlanExecution(intent string, userMessage string, ctxData map[string]interface{}) (*ExecutionPlan, error) {
 	startTime := time.Now()
 	_, span := o.tracer.StartSpan(context.Background(), "patterns.orchestrator.plan_execution")
 	defer o.tracer.EndSpan(span)
 
 	if span != nil {
-		span.SetAttribute("intent.category", string(intent))
+		span.SetAttribute("intent.category", intent)
 		span.SetAttribute("message.length", fmt.Sprintf("%d", len(userMessage)))
 		span.SetAttribute("context.keys", fmt.Sprintf("%d", len(ctxData)))
 	}
@@ -140,7 +140,7 @@ func (o *Orchestrator) PlanExecution(intent IntentCategory, userMessage string, 
 			span.RecordError(err)
 		}
 		o.tracer.RecordMetric("patterns.orchestrator.plan_execution", 1.0, map[string]string{
-			"intent": string(intent),
+			"intent": intent,
 			"result": "error",
 		})
 		return nil, err
@@ -164,30 +164,30 @@ func (o *Orchestrator) PlanExecution(intent IntentCategory, userMessage string, 
 
 // GetRoutingRecommendation provides intelligent routing suggestions.
 // This helps the LLM choose the most efficient tool/pattern combination.
-func (o *Orchestrator) GetRoutingRecommendation(intent IntentCategory) string {
-	recommendations := map[IntentCategory]string{
-		IntentSchemaDiscovery: "For schema discovery, prefer comprehensive discovery tools with caching. " +
+func (o *Orchestrator) GetRoutingRecommendation(intent string) string {
+	recommendations := map[string]string{
+		"schema_discovery": "For schema discovery, prefer comprehensive discovery tools with caching. " +
 			"Check if schema is already cached before making expensive calls.",
 
-		IntentDataQuality: "For data quality assessment, consider using workflow patterns for comprehensive checks. " +
+		"data_quality": "For data quality assessment, consider using workflow patterns for comprehensive checks. " +
 			"For single validation rules, use individual quality check tools.",
 
-		IntentDataTransform: "For data transformation, use ETL workflow patterns with validation gates. " +
+		"data_transform": "For data transformation, use ETL workflow patterns with validation gates. " +
 			"Include source validation, transformation logic, and result verification.",
 
-		IntentAnalytics: "For analytics queries, validate and estimate cost before execution. " +
+		"analytics": "For analytics queries, validate and estimate cost before execution. " +
 			"Consider using pattern library for complex analytics (ML, time series, advanced aggregations).",
 
-		IntentRelationshipQuery: "For relationship queries, use schema inference tools with FK detection. " +
+		"relationship_query": "For relationship queries, use schema inference tools with FK detection. " +
 			"Results include confidence scores for inferred relationships.",
 
-		IntentQueryGeneration: "For query generation, validate syntax and estimate cost before execution. " +
+		"query_generation": "For query generation, validate syntax and estimate cost before execution. " +
 			"Use patterns from library for complex query structures.",
 
-		IntentDocumentSearch: "For document search, use appropriate indexing and search patterns. " +
+		"document_search": "For document search, use appropriate indexing and search patterns. " +
 			"Consider full-text search, vector similarity, or hybrid approaches.",
 
-		IntentAPICall: "For API calls, validate request structure and handle responses with proper error handling. " +
+		"api_call": "For API calls, validate request structure and handle responses with proper error handling. " +
 			"Use retry patterns for transient failures.",
 	}
 
@@ -199,13 +199,13 @@ func (o *Orchestrator) GetRoutingRecommendation(intent IntentCategory) string {
 
 // RecommendPattern suggests a pattern from the library based on user message and intent.
 // Returns pattern name and confidence score (0.0-1.0).
-func (o *Orchestrator) RecommendPattern(userMessage string, intent IntentCategory) (string, float64) {
+func (o *Orchestrator) RecommendPattern(userMessage string, intent string) (string, float64) {
 	startTime := time.Now()
 	_, span := o.tracer.StartSpan(context.Background(), "patterns.orchestrator.recommend_pattern")
 	defer o.tracer.EndSpan(span)
 
 	if span != nil {
-		span.SetAttribute("intent.category", string(intent))
+		span.SetAttribute("intent.category", intent)
 		span.SetAttribute("message.length", fmt.Sprintf("%d", len(userMessage)))
 	}
 
@@ -225,7 +225,7 @@ func (o *Orchestrator) RecommendPattern(userMessage string, intent IntentCategor
 			span.SetAttribute("duration_ms", fmt.Sprintf("%.2f", duration.Seconds()*1000))
 		}
 		o.tracer.RecordMetric("patterns.orchestrator.recommend_pattern", 1.0, map[string]string{
-			"intent": string(intent),
+			"intent": intent,
 			"result": "no_match",
 		})
 		return "", 0.0
@@ -265,10 +265,10 @@ func (o *Orchestrator) RecommendPattern(userMessage string, intent IntentCategor
 			searchText += " " + strings.ToLower(useCase)
 		}
 
-		// Boost if category matches intent (strong signal)
-		if matchesIntent(summary.Category, intent) {
+		// Boost if intent matches pattern's declared intents or category (strong signal)
+		if matchesIntent(summary.Category, summary.Intents, intent) {
 			score += 0.5
-		} else if intent == IntentUnknown {
+		} else if intent == "" {
 			// When intent is unknown, give partial boost to relevant categories
 			// This helps ML, analytics, and data patterns rank higher
 			categoryLower := strings.ToLower(summary.Category)
@@ -322,7 +322,7 @@ func (o *Orchestrator) RecommendPattern(userMessage string, intent IntentCategor
 			span.SetAttribute("duration_ms", fmt.Sprintf("%.2f", duration.Seconds()*1000))
 		}
 		o.tracer.RecordMetric("patterns.orchestrator.recommend_pattern", 1.0, map[string]string{
-			"intent": string(intent),
+			"intent": intent,
 			"result": "no_scored_match",
 		})
 		return "", 0.0
@@ -494,70 +494,70 @@ func (o *Orchestrator) RecordPatternUsage(
 
 // defaultIntentClassifier is the default keyword-based intent classifier.
 // Backends should provide custom classifiers for better accuracy.
-func defaultIntentClassifier(userMessage string, context map[string]interface{}) (IntentCategory, float64) {
+func defaultIntentClassifier(userMessage string, context map[string]interface{}) (string, float64) {
 	messageLower := strings.ToLower(userMessage)
 
 	// Schema discovery keywords
 	schemaKeywords := []string{"what tables", "list tables", "show tables", "what columns", "schema", "table structure", "describe"}
 	if containsAny(messageLower, schemaKeywords) {
-		return IntentSchemaDiscovery, 0.90
+		return "schema_discovery", 0.90
 	}
 
 	// Relationship query keywords
 	relationshipKeywords := []string{"related", "foreign key", "relationship", "connected to", "references", "joins"}
 	if containsAny(messageLower, relationshipKeywords) {
-		return IntentRelationshipQuery, 0.85
+		return "relationship_query", 0.85
 	}
 
 	// Data quality keywords
 	dqKeywords := []string{"data quality", "duplicates", "null", "completeness", "validate", "check quality", "integrity"}
 	if containsAny(messageLower, dqKeywords) {
-		return IntentDataQuality, 0.90
+		return "data_quality", 0.90
 	}
 
 	// Data transform keywords
 	transformKeywords := []string{"move data", "copy", "load data", "extract", "transform", "etl", "migrate", "transfer"}
 	if containsAny(messageLower, transformKeywords) {
-		return IntentDataTransform, 0.85
+		return "data_transform", 0.85
 	}
 
 	// Analytics keywords
 	analyticsKeywords := []string{"aggregate", "sum", "count", "average", "group by", "analyze", "report", "metrics", "statistics"}
 	if containsAny(messageLower, analyticsKeywords) {
-		return IntentAnalytics, 0.80
+		return "analytics", 0.80
 	}
 
 	// Query generation keywords
 	queryKeywords := []string{"write query", "generate query", "query for", "select", "find", "get data"}
 	if containsAny(messageLower, queryKeywords) {
-		return IntentQueryGeneration, 0.75
+		return "query_generation", 0.75
 	}
 
 	// Document search keywords
 	docKeywords := []string{"search document", "find in document", "document query", "text search", "full text"}
 	if containsAny(messageLower, docKeywords) {
-		return IntentDocumentSearch, 0.80
+		return "document_search", 0.80
 	}
 
 	// API call keywords
 	apiKeywords := []string{"api call", "http request", "rest api", "endpoint", "webhook"}
 	if containsAny(messageLower, apiKeywords) {
-		return IntentAPICall, 0.85
+		return "api_call", 0.85
 	}
 
-	return IntentUnknown, 0.0
+	return "", 0.0
 }
 
 // defaultExecutionPlanner is the default generic execution planner.
 // Backends should provide custom planners for domain-specific optimization.
-func defaultExecutionPlanner(intent IntentCategory, userMessage string, context map[string]interface{}) (*ExecutionPlan, error) {
+func defaultExecutionPlanner(intent string, userMessage string, context map[string]interface{}) (*ExecutionPlan, error) {
 	plan := &ExecutionPlan{
 		Intent: intent,
 		Steps:  make([]PlannedStep, 0),
 	}
 
 	switch intent {
-	case IntentSchemaDiscovery:
+	case "schema_discovery":
 		plan.Description = "Discover data schema"
 		plan.Reasoning = "User wants to explore data structure. Using schema discovery tools."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -566,7 +566,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentRelationshipQuery:
+	case "relationship_query":
 		plan.Description = "Analyze data relationships"
 		plan.Reasoning = "User wants to understand data relationships. Using relationship inference."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -575,7 +575,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentDataQuality:
+	case "data_quality":
 		plan.Description = "Execute data quality assessment"
 		plan.Reasoning = "User needs quality validation. Using quality check tools."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -584,7 +584,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentDataTransform:
+	case "data_transform":
 		plan.Description = "Execute data transformation"
 		plan.Reasoning = "User wants to transform data. Using ETL workflow."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -593,7 +593,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentAnalytics:
+	case "analytics":
 		plan.Description = "Generate and execute analytics"
 		plan.Reasoning = "User wants analytics. Using query generation and execution."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -602,7 +602,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentQueryGeneration:
+	case "query_generation":
 		plan.Description = "Generate query"
 		plan.Reasoning = "User wants query generation. Creating query from requirements."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -611,7 +611,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentDocumentSearch:
+	case "document_search":
 		plan.Description = "Search documents"
 		plan.Reasoning = "User wants document search. Using search tools."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -620,7 +620,7 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
-	case IntentAPICall:
+	case "api_call":
 		plan.Description = "Execute API call"
 		plan.Reasoning = "User wants API interaction. Using HTTP client."
 		plan.Steps = append(plan.Steps, PlannedStep{
@@ -629,33 +629,42 @@ func defaultExecutionPlanner(intent IntentCategory, userMessage string, context 
 			Params:      make(map[string]string),
 		})
 
+	case "":
+		return nil, fmt.Errorf("cannot plan execution for empty intent")
+
 	default:
-		return nil, fmt.Errorf("cannot plan execution for unknown intent")
+		// Freeform intents get a generic plan
+		plan.Description = fmt.Sprintf("Execute %s operation", intent)
+		plan.Reasoning = fmt.Sprintf("User intent classified as %q. Using default execution strategy.", intent)
+		plan.Steps = append(plan.Steps, PlannedStep{
+			ToolName:    "execute",
+			Description: fmt.Sprintf("Execute %s operation", intent),
+			Params:      make(map[string]string),
+		})
 	}
 
 	return plan, nil
 }
 
-// matchesIntent checks if a pattern category matches an intent.
-func matchesIntent(category string, intent IntentCategory) bool {
-	categoryLower := strings.ToLower(category)
-	intentStr := strings.ToLower(string(intent))
+// matchesIntent checks if a classified intent matches a pattern's declared intents or category.
+// Uses case-insensitive comparison. Falls back to category match for backward compatibility
+// with patterns that don't declare explicit intents.
+func matchesIntent(category string, declaredIntents []string, classifiedIntent string) bool {
+	if classifiedIntent == "" {
+		return false
+	}
+	intentLower := strings.ToLower(classifiedIntent)
 
-	// Direct match
-	if categoryLower == intentStr {
-		return true
+	// Check declared intents first (new freeform field)
+	for _, di := range declaredIntents {
+		if strings.ToLower(di) == intentLower {
+			return true
+		}
 	}
 
-	// Fuzzy matches
-	switch intent {
-	case IntentAnalytics:
-		return categoryLower == "analytics" || categoryLower == "aggregation" || categoryLower == "reporting"
-	case IntentDataQuality:
-		return categoryLower == "data_quality" || categoryLower == "validation" || categoryLower == "quality"
-	case IntentDataTransform:
-		return categoryLower == "etl" || categoryLower == "transform" || categoryLower == "data_transform"
-	case IntentSchemaDiscovery:
-		return categoryLower == "schema" || categoryLower == "metadata" || categoryLower == "discovery"
+	// Backward compatibility: match against category
+	if strings.ToLower(category) == intentLower {
+		return true
 	}
 
 	return false

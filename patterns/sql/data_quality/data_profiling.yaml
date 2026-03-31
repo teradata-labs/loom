@@ -33,6 +33,9 @@ teradata_function: SQL_AGGREGATE_FUNCTIONS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_quality
+  - data_validation
 use_cases:
   - Initial data exploration and understanding
   - Data quality assessment before ML modeling

@@ -5,6 +5,8 @@ category: weaver
 difficulty: advanced
 backend_type: workflow
 
+intents:
+  - weaver
 use_cases:
   - "conditional routing"
   - "if then else workflow"

@@ -33,6 +33,9 @@ teradata_function: COLLECT STATISTICS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - query_generation
+  - analytics
 use_cases:
   # --- Use Case 1: New Table Stats ---
   - Initial statistics collection for newly loaded tables

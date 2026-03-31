@@ -466,6 +466,7 @@ func (lib *Library) ListAll() []PatternSummary {
 				BackendType:     p.BackendType,
 				BackendFunction: p.BackendFunction,
 				UseCases:        p.UseCases,
+				Intents:         p.Intents,
 			})
 		}
 	}
@@ -581,6 +582,7 @@ func (lib *Library) createSummary(pattern *Pattern) PatternSummary {
 		Difficulty:      pattern.Difficulty,
 		BackendType:     pattern.BackendType,
 		UseCases:        pattern.UseCases,
+		Intents:         pattern.Intents,
 		BackendFunction: pattern.BackendFunction,
 	}
 }
@@ -809,6 +811,11 @@ func (lib *Library) Search(query string) []PatternSummary {
 		// Add use cases to searchable text
 		for _, useCase := range p.UseCases {
 			searchText += " " + strings.ToLower(useCase)
+		}
+
+		// Add declared intents to searchable text
+		for _, intent := range p.Intents {
+			searchText += " " + strings.ToLower(intent)
 		}
 
 		// Count keyword matches

@@ -35,6 +35,9 @@ teradata_function: SIGNATURE, UDA
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Profile columns across entire database
   - Generate signatures for data discovery

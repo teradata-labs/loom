@@ -56,6 +56,10 @@ examples:
       table_name: orders
     expected_result: "VACUUM ANALYZE orders if needed"
 
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Identify bloated tables"
   - "Update query planner statistics"

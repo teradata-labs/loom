@@ -36,6 +36,9 @@ teradata_function: VALIDTIME, TRANSACTIONTIME
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - data_transform
 use_cases:
   - Design slowly changing dimension (SCD) tables
   - Track employee history (salary, position, department)

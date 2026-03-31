@@ -12,6 +12,8 @@ author: Loom Framework
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data-import
 use_cases:
   - Import and summarize CSV data files
   - Analyze data structure and column types

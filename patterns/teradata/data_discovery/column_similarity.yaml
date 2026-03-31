@@ -41,6 +41,9 @@ teradata_function: Pearson, Cosine, L1Dist, L2Dist, ChiSquare
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Find columns containing same domain across tables
   - Detect duplicate or near-duplicate columns

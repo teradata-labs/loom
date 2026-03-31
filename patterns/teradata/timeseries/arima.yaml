@@ -17,6 +17,10 @@ teradata_function: ARIMA
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - forecasting
+  - query_generation
 use_cases:
   - Sales forecasting
   - Demand planning

@@ -5,6 +5,8 @@ category: weaver
 difficulty: beginner
 backend_type: workflow
 
+intents:
+  - weaver
 use_cases:
   - "parallel independent tasks"
   - "concurrent analysis"

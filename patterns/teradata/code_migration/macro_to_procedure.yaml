@@ -39,6 +39,9 @@ teradata_function: CREATE PROCEDURE, CREATE MACRO
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_transform
+  - query_generation
 use_cases:
   - Migrate legacy MACROs to modern Stored Procedures
   - Add error handling to simple MACROs

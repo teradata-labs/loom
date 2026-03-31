@@ -19,6 +19,9 @@ teradata_function: SQL_WINDOW_FUNCTIONS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_quality
+  - data_validation
 use_cases:
   - Fraud detection (unusual transaction amounts)
   - Data quality checks (invalid values)

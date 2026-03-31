@@ -13,6 +13,8 @@ backend_type: vision
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - extraction
 use_cases:
   - Invoice processing
   - Receipt parsing

@@ -19,6 +19,10 @@ teradata_function: Attribution
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   # --- Use Case 1: Marketing ROI ---
   - Marketing ROI analysis across channels
