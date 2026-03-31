@@ -5188,6 +5188,20 @@
           "type": "number",
           "format": "float",
           "description": "Default salience for new memories. Default: 0.5."
+        },
+        "enableExtraction": {
+          "type": "boolean",
+          "description": "Enable automatic memory extraction from conversation context.\nWhen enabled, an LLM subprocess periodically extracts entities,\nrelationships, and memories from recent conversation turns.\nDefault: true (when graph memory is enabled)."
+        },
+        "extractionCadence": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of tool executions between automatic graph memory extractions.\nDefault: 5."
+        },
+        "maxEntitiesPerExtraction": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum entities to extract per extraction cycle.\nDefault: 10."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."

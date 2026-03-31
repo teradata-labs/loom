@@ -1120,8 +1120,19 @@ type GraphMemoryConfig struct {
 	MaxRecallCandidates int32 `protobuf:"varint,7,opt,name=max_recall_candidates,json=maxRecallCandidates,proto3" json:"max_recall_candidates,omitempty"`
 	// Default salience for new memories. Default: 0.5.
 	DefaultSalience float32 `protobuf:"fixed32,8,opt,name=default_salience,json=defaultSalience,proto3" json:"default_salience,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Enable automatic memory extraction from conversation context.
+	// When enabled, an LLM subprocess periodically extracts entities,
+	// relationships, and memories from recent conversation turns.
+	// Default: true (when graph memory is enabled).
+	EnableExtraction bool `protobuf:"varint,9,opt,name=enable_extraction,json=enableExtraction,proto3" json:"enable_extraction,omitempty"`
+	// Number of tool executions between automatic graph memory extractions.
+	// Default: 5.
+	ExtractionCadence int32 `protobuf:"varint,10,opt,name=extraction_cadence,json=extractionCadence,proto3" json:"extraction_cadence,omitempty"`
+	// Maximum entities to extract per extraction cycle.
+	// Default: 10.
+	MaxEntitiesPerExtraction int32 `protobuf:"varint,11,opt,name=max_entities_per_extraction,json=maxEntitiesPerExtraction,proto3" json:"max_entities_per_extraction,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *GraphMemoryConfig) Reset() {
@@ -1206,6 +1217,27 @@ func (x *GraphMemoryConfig) GetMaxRecallCandidates() int32 {
 func (x *GraphMemoryConfig) GetDefaultSalience() float32 {
 	if x != nil {
 		return x.DefaultSalience
+	}
+	return 0
+}
+
+func (x *GraphMemoryConfig) GetEnableExtraction() bool {
+	if x != nil {
+		return x.EnableExtraction
+	}
+	return false
+}
+
+func (x *GraphMemoryConfig) GetExtractionCadence() int32 {
+	if x != nil {
+		return x.ExtractionCadence
+	}
+	return 0
+}
+
+func (x *GraphMemoryConfig) GetMaxEntitiesPerExtraction() int32 {
+	if x != nil {
+		return x.MaxEntitiesPerExtraction
 	}
 	return 0
 }
@@ -2028,7 +2060,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x12memory_compression\x18\x05 \x01(\v2 .loom.v1.MemoryCompressionConfigR\x11memoryCompression\x12A\n" +
 	"\x1dshared_memory_threshold_bytes\x18\x06 \x01(\x03R\x1asharedMemoryThresholdBytes\x12(\n" +
 	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\x12=\n" +
-	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\"\xe8\x02\n" +
+	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\"\x83\x04\n" +
 	"\x11GraphMemoryConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
 	"\x16context_budget_percent\x18\x02 \x01(\x05R\x14contextBudgetPercent\x12,\n" +
@@ -2038,7 +2070,11 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\fboost_amount\x18\x05 \x01(\x02R\vboostAmount\x124\n" +
 	"\x16min_salience_threshold\x18\x06 \x01(\x02R\x14minSalienceThreshold\x122\n" +
 	"\x15max_recall_candidates\x18\a \x01(\x05R\x13maxRecallCandidates\x12)\n" +
-	"\x10default_salience\x18\b \x01(\x02R\x0fdefaultSalience\"k\n" +
+	"\x10default_salience\x18\b \x01(\x02R\x0fdefaultSalience\x12+\n" +
+	"\x11enable_extraction\x18\t \x01(\bR\x10enableExtraction\x12-\n" +
+	"\x12extraction_cadence\x18\n" +
+	" \x01(\x05R\x11extractionCadence\x12=\n" +
+	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\"k\n" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
