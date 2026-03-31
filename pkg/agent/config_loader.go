@@ -793,6 +793,21 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 	return config
 }
 
+// DefaultGraphMemoryConfig returns a GraphMemoryConfig with sane defaults.
+// Used when graph memory is enabled but no explicit config is provided (e.g., pre-existing agents).
+func DefaultGraphMemoryConfig() *loomv1.GraphMemoryConfig {
+	return &loomv1.GraphMemoryConfig{
+		Enabled:              true,
+		ContextBudgetPercent: 20,
+		MaxContextTokens:     0, // 0 = use ContextBudgetPercent instead of absolute cap
+		DecayRate:            0.95,
+		BoostAmount:          0.1,
+		MinSalienceThreshold: 0.1,
+		MaxRecallCandidates:  50,
+		DefaultSalience:      0.5,
+	}
+}
+
 // parseGraphMemoryConfig converts YAML graph memory config to proto.
 // Graph memory is opt-out: if Enabled is nil (not specified), it defaults to true.
 func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConfig {

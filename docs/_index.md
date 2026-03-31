@@ -63,8 +63,8 @@ Pattern matching and loading.
 **[Multi-Agent System →](architecture/multi-agent/)**
 Agent communication and orchestration.
 
-**[Graph Memory →](architecture/graph-memory/)** 🚧
-Cross-session salience-driven knowledge graph (on `graph-memory` branch).
+**[Graph Memory →](architecture/graph-memory/)** ✅
+Cross-session salience-driven knowledge graph. Enabled by default for all agents.
 
 **[Memory Systems →](architecture/memory-systems/)**
 5-layer segmented memory hierarchy.
