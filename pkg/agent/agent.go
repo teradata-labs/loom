@@ -759,24 +759,26 @@ func (a *Agent) graphMemoryPromptSupplement() string {
 
 ---
 
-GRAPH MEMORY
+GRAPH MEMORY (REQUIRED)
 
-You have a graph_memory tool for persistent, cross-session knowledge.
+You have persistent memory across sessions via the graph_memory tool. USE IT PROACTIVELY.
 
-Store: remember — save facts, decisions, preferences, experiences, or failures with salience (0-1).
-Retrieve: recall — search by keywords, filter by type or tags, ranked by salience.
-Update: supersede — correct outdated info (preserves lineage). consolidate — merge related memories.
-Remove: forget — soft-delete a memory.
-Graph: relate — link entities (people, tools, projects) with typed relationships (USES, WORKS_ON, KNOWS_ABOUT, etc.). entities — browse the knowledge graph.
-Context: context_for — get an entity's full profile, relationships, and ranked memories within a token budget.
+On EVERY conversation:
+1. FIRST TURN: recall — check if you already know this user. If recall returns results, greet them by name and reference what you know.
+2. When the user shares their name, role, preferences, or project context → remember immediately. Do not wait to be asked.
+3. When you learn facts about systems, tools, or workflows → remember with entities and relationships.
 
-When to use:
-- User shares identity, preferences, or project context → remember it.
-- User corrects something you stored → supersede the old memory.
-- User asks "what do you know about X" → recall or context_for.
-- You notice related entities → relate them.
-- Keep salience proportional to importance: critical decisions 0.8-1.0, casual facts 0.3-0.5.
-- Always include a short summary for budget-constrained retrieval.`
+Actions:
+- remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
+- recall: search by keywords, filter by type/tags
+- supersede: correct outdated info (preserves lineage)
+- forget: soft-delete
+- relate: link entities with typed relationships (USES, WORKS_ON, KNOWS_ABOUT)
+- context_for: get an entity's full profile within a token budget
+- entities: browse the knowledge graph
+- consolidate: merge related memories
+
+Do NOT skip memory operations because you are focused on another task. Memory and task execution happen in parallel — remember facts AS you work.`
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
