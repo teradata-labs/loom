@@ -261,11 +261,15 @@
   function buildSafeChartConfig(props) {
     const chartType = CHART_ALLOWED_TYPES.has(props.chartType) ? props.chartType : 'bar';
 
-    const labels = Array.isArray(props.labels) ? props.labels.map(String) : [];
+    // LLMs may nest labels/datasets under props.data or at the top level of props.
+    // Accept both: props.labels / props.datasets AND props.data.labels / props.data.datasets.
+    const src = (props.data && typeof props.data === 'object' && !Array.isArray(props.data)) ? props.data : props;
+
+    const labels = Array.isArray(src.labels) ? src.labels.map(String) : [];
 
     const datasets = [];
-    if (Array.isArray(props.datasets)) {
-      for (const ds of props.datasets) {
+    if (Array.isArray(src.datasets)) {
+      for (const ds of src.datasets) {
         if (!ds || typeof ds !== 'object') continue;
         const safeDS = {
           data: Array.isArray(ds.data) ? ds.data.map(Number) : [],
