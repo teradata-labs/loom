@@ -759,14 +759,14 @@ func (a *Agent) graphMemoryPromptSupplement() string {
 
 ---
 
-GRAPH MEMORY (REQUIRED)
+GRAPH MEMORY
 
-You have persistent memory across sessions via the graph_memory tool. USE IT PROACTIVELY.
+You have persistent memory across sessions via the graph_memory tool. Relevant memories are automatically loaded into context each turn — you do not need to recall them manually.
 
-On EVERY conversation:
-1. FIRST TURN: recall — check if you already know this user. If recall returns results, greet them by name and reference what you know.
-2. When the user shares their name, role, preferences, or project context → remember immediately. Do not wait to be asked.
-3. When you learn facts about systems, tools, or workflows → remember with entities and relationships.
+When to use the graph_memory tool:
+- When the user shares their name, role, preferences, or project context → remember immediately. Do not wait to be asked.
+- When you learn facts about systems, tools, or workflows → remember with entities and relationships.
+- When you need deeper context beyond what was auto-loaded → use recall or context_for.
 
 Actions:
 - remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
@@ -778,7 +778,7 @@ Actions:
 - entities: browse the knowledge graph
 - consolidate: merge related memories
 
-Do NOT skip memory operations because you are focused on another task. Memory and task execution happen in parallel — remember facts AS you work.`
+Focus on the user's request first. Memory operations happen alongside your work, not instead of it.`
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
