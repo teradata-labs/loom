@@ -49,6 +49,8 @@ templates:
           - voter-3
         strategy: majority
         confidence_threshold: 0.7
+        retry_policy:
+          max_retries: 2
 
 examples:
   - name: deploy_decision
@@ -73,3 +75,4 @@ best_practices: |
   - Optional: share_votes: true to let agents see each other's votes
   - Optional: judge_agent_id for a final arbiter
   - Give each voter agent different expertise in their system_prompt
+  - Use retry_policy to handle agents that don't follow VOTE:/CONFIDENCE:/REASONING: format

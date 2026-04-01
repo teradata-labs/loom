@@ -41,8 +41,14 @@ templates:
         stages:
           - agent_id: stage-1-agent
             prompt_template: "Analyze and plan: {{previous}}"
+            output_schema: '{"type":"object","required":["plan"],"properties":{"plan":{"type":"string"}}}'
+            retry_policy:
+              max_retries: 2
           - agent_id: stage-2-agent
             prompt_template: "Implement based on plan: {{previous}}"
+            validation_prompt: "Does the output contain a complete implementation? Answer yes or no."
+            retry_policy:
+              max_retries: 1
           - agent_id: stage-3-agent
             prompt_template: "Review and refine: {{previous}}"
 

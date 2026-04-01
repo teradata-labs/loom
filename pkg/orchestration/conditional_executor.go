@@ -8,6 +8,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +82,39 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 
 	// Select branch based on condition result
 	selectedBranch, branchKey := e.selectBranch(conditionResult)
+
+	// If no match, try output coercion (cheap, no LLM call)
+	if selectedBranch == nil {
+		if coerced, ok := coerceBranchKey(conditionResult, e.getBranchKeys()); ok {
+			selectedBranch, branchKey = e.selectBranch(coerced)
+			if selectedBranch != nil {
+				e.orchestrator.logger.Info("Branch matched after output coercion",
+					zap.String("original", conditionResult),
+					zap.String("coerced", coerced))
+			}
+		}
+	}
+
+	// If still no match and retry policy configured, retry with feedback
+	if selectedBranch == nil && e.pattern.RetryPolicy != nil && e.pattern.RetryPolicy.MaxRetries > 0 {
+		var retryBranch *loomv1.WorkflowPattern
+		var retryKey, retryResult string
+		retryBranch, retryKey, retryResult = e.retryConditionEvaluation(ctx, conditionAgent, conditionResult)
+		if retryBranch != nil {
+			selectedBranch = retryBranch
+			branchKey = retryKey
+			conditionResult = retryResult
+		}
+	}
+
+	// Fall back to default branch after coercion and retry have been attempted
+	if selectedBranch == nil && e.pattern.DefaultBranch != nil {
+		selectedBranch = e.pattern.DefaultBranch
+		branchKey = "default"
+		e.orchestrator.logger.Info("Using default branch after all matching attempts",
+			zap.String("condition_result", conditionResult))
+	}
+
 	if selectedBranch == nil {
 		return nil, fmt.Errorf("no matching branch found for condition: %s", conditionResult)
 	}
@@ -203,10 +237,114 @@ func (e *ConditionalExecutor) selectBranch(conditionResult string) (*loomv1.Work
 		}
 	}
 
-	// Fall back to default branch if available
-	if e.pattern.DefaultBranch != nil {
-		return e.pattern.DefaultBranch, "default"
+	// NOTE: Default branch is NOT checked here. It is handled in Execute()
+	// after coercion and retry, so retry_policy is not silently ignored
+	// when default_branch is also configured.
+	return nil, ""
+}
+
+// getBranchKeys returns a sorted list of branch keys for deterministic ordering.
+func (e *ConditionalExecutor) getBranchKeys() []string {
+	keys := make([]string, 0, len(e.pattern.Branches))
+	for k := range e.pattern.Branches {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// maxOutputRetries is the hard cap on retry attempts to prevent runaway costs.
+const maxOutputRetries = 10
+
+// cappedRetries returns the retry count capped at maxOutputRetries.
+func cappedRetries(requested int32) int {
+	n := int(requested)
+	if n > maxOutputRetries {
+		return maxOutputRetries
+	}
+	return n
+}
+
+// retryConditionEvaluation retries the condition agent with a prompt that lists
+// valid branch keys and the agent's previous failed output. Each retry uses a
+// fresh session ID to avoid anchoring on previous bad output.
+func (e *ConditionalExecutor) retryConditionEvaluation(
+	ctx context.Context,
+	conditionAgent *agent.Agent,
+	lastResult string,
+) (*loomv1.WorkflowPattern, string, string) {
+	branchKeys := e.getBranchKeys()
+	maxRetries := cappedRetries(e.pattern.RetryPolicy.MaxRetries)
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, "", lastResult
+		}
+		// Build retry prompt with valid branch keys
+		retryPrompt := e.buildConditionRetryPrompt(lastResult, branchKeys, attempt, maxRetries)
+
+		// Use fresh session ID for each retry
+		sessionID := fmt.Sprintf("%s-condition-%s-retry%d",
+			e.workflowID, e.pattern.ConditionAgentId, attempt)
+
+		e.orchestrator.logger.Info("Retrying condition evaluation",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+			zap.String("last_result", truncateForLog(lastResult, 100)))
+
+		response, err := conditionAgent.Chat(ctx, sessionID, retryPrompt)
+		if err != nil {
+			e.orchestrator.logger.Warn("Condition retry failed",
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			continue
+		}
+
+		result := strings.TrimSpace(strings.ToLower(response.Content))
+
+		// Try coercion on the retry output
+		if coerced, ok := coerceBranchKey(result, branchKeys); ok {
+			result = strings.ToLower(coerced)
+		}
+
+		branch, key := e.selectBranch(result)
+		if branch != nil {
+			e.orchestrator.logger.Info("Condition matched after retry",
+				zap.Int("attempt", attempt),
+				zap.String("branch", key))
+			return branch, key, result
+		}
+		lastResult = result
 	}
 
-	return nil, ""
+	e.orchestrator.logger.Warn("Condition retry exhausted, no branch matched",
+		zap.Int("attempts", maxRetries),
+		zap.String("last_result", truncateForLog(lastResult, 100)))
+	return nil, "", lastResult
+}
+
+// buildConditionRetryPrompt constructs a retry prompt that explains what went wrong
+// and lists the valid branch values the agent should output.
+func (e *ConditionalExecutor) buildConditionRetryPrompt(lastResult string, branchKeys []string, attempt, maxRetries int) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Your previous response was: %q\n\n", lastResult))
+	sb.WriteString("This output could not be matched to any valid workflow branch.\n\n")
+	sb.WriteString("REASON: The condition evaluator must respond with exactly one of the allowed\n")
+	sb.WriteString("branch values. Your response did not match any of them (even after\n")
+	sb.WriteString("case-insensitive and substring matching).\n\n")
+
+	// For conditionals, valid values are always included — they ARE the instruction.
+	// The include_valid_values field has no effect here (unlike pipeline/swarm).
+	sb.WriteString("VALID VALUES (respond with exactly one of these, nothing else):\n")
+	for _, key := range branchKeys {
+		sb.WriteString(fmt.Sprintf("- %s\n", key))
+	}
+	sb.WriteString("\nRULES:\n")
+	sb.WriteString("1. Respond with ONLY one of the valid values above.\n")
+	sb.WriteString("2. No explanation, no formatting, no punctuation, no quotes.\n")
+	sb.WriteString("3. Just the single word/phrase from the list.\n\n")
+	sb.WriteString(fmt.Sprintf("This is retry %d of %d.\n", attempt, maxRetries))
+
+	return sb.String()
 }

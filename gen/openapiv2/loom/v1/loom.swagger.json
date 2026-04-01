@@ -4332,6 +4332,10 @@
         "defaultBranch": {
           "$ref": "#/definitions/v1WorkflowPattern",
           "title": "Optional: Default branch if condition doesn't match any branch"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when condition output doesn't match any branch key.\nOn retry, the agent receives a prompt listing valid branch keys and its\nprevious failed output. Each retry uses a fresh session ID."
         }
       },
       "description": "ConditionalPattern routes execution based on an agent's decision.\nA classifier agent evaluates the condition and selects the workflow branch."
@@ -6301,6 +6305,21 @@
       },
       "description": "NewMessageUpdate indicates a new message was added to the conversation."
     },
+    "v1OutputRetryPolicy": {
+      "type": "object",
+      "properties": {
+        "maxRetries": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum retries before falling back to default branch or graceful degradation.\n0 = no retries (default behavior, preserves backwards compatibility)."
+        },
+        "includeValidValues": {
+          "type": "boolean",
+          "description": "Whether to include valid output values in the retry prompt.\nFor conditionals: lists valid branch keys.\nFor pipelines: includes the JSON schema or validation criteria.\nFor swarms: includes the vote format template.\nCode treats unset (false) as true (include values by default)."
+        }
+      },
+      "description": "OutputRetryPolicy defines retry behavior when agent output doesn't match expectations.\nUsed by conditional executors (branch matching fails), pipeline executors\n(validation_prompt or output_schema fails), and swarm executors (vote parsing fails).\nEach retry uses a fresh session ID to avoid anchoring on previous bad output."
+    },
     "v1PairProgrammingPattern": {
       "type": "object",
       "properties": {
@@ -6632,7 +6651,15 @@
         },
         "validationPrompt": {
           "type": "string",
-          "title": "Optional: Validation function to check output before proceeding"
+          "description": "Optional: LLM-based validation — asks an LLM if the output meets criteria.\nUse {{output}} placeholder to reference the stage output."
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when validation fails (schema or LLM validation).\nEach retry includes the failure reason and expected format in the prompt.\nEach retry uses a fresh session ID."
+        },
+        "outputSchema": {
+          "type": "string",
+          "description": "Optional: JSON Schema for validating stage output.\nInstant, free, deterministic validation — no LLM call required.\nWhen both output_schema and validation_prompt are set, schema is checked\nfirst (cheap), then validation_prompt only if schema passes (semantic check)."
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
@@ -8225,6 +8252,10 @@
         "judgeAgentId": {
           "type": "string",
           "title": "Optional: Judge agent to break ties"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when vote parsing fails (agent doesn't output\nVOTE:/CONFIDENCE:/REASONING: format). Each retry includes the expected\nformat template and the agent's failed output."
         }
       },
       "description": "SwarmPattern orchestrates multiple agents to vote on decisions.\nAgents independently evaluate a question and vote, with configurable\nconsensus thresholds for decision-making."

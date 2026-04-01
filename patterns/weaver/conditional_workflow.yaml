@@ -55,7 +55,13 @@ templates:
             type: fork-join
             prompt: "Answer: {{previous}}"
             agent_ids: [expert-1, expert-2]
-        default_branch: question
+        default_branch:
+          type: fork-join
+          prompt: "Answer: {{previous}}"
+          agent_ids: [expert-1, expert-2]
+        retry_policy:
+          max_retries: 2
+          include_valid_values: true
 
 examples:
   - name: support_router
@@ -78,3 +84,4 @@ best_practices: |
   - Classifier agent should return ONLY the branch key name
   - Branches can be any workflow type (pipeline, fork-join, parallel, etc.)
   - Keep branch names simple and descriptive
+  - Use retry_policy to handle verbose classifier output (retries with valid keys listed)

@@ -753,3 +753,136 @@ spec:
 		})
 	}
 }
+
+func TestLoadWorkflowFromYAML_ConditionalWithRetryPolicy(t *testing.T) {
+	yaml := `
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: test-conditional-retry
+spec:
+  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: "Classify this issue"
+  branches:
+    bug:
+      type: fork-join
+      prompt: "Fix the bug"
+      agent_ids: [debugger]
+      merge_strategy: first
+    feature:
+      type: fork-join
+      prompt: "Build the feature"
+      agent_ids: [builder]
+      merge_strategy: first
+  retry_policy:
+    max_retries: 3
+    include_valid_values: true
+`
+	tmpFile := createTempYAMLFile(t, yaml)
+	pattern, err := LoadWorkflowFromYAML(tmpFile)
+	require.NoError(t, err)
+
+	conditional := pattern.GetConditional()
+	require.NotNil(t, conditional)
+	require.NotNil(t, conditional.RetryPolicy)
+	assert.Equal(t, int32(3), conditional.RetryPolicy.MaxRetries)
+	assert.True(t, conditional.RetryPolicy.IncludeValidValues)
+}
+
+func TestLoadWorkflowFromYAML_PipelineWithRetryAndSchema(t *testing.T) {
+	yaml := `
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: test-pipeline-retry
+spec:
+  type: pipeline
+  initial_prompt: "Extract data"
+  stages:
+    - agent_id: extractor
+      prompt_template: "Extract structured data from: {{previous}}"
+      output_schema: '{"type":"object","required":["result"]}'
+      retry_policy:
+        max_retries: 2
+    - agent_id: formatter
+      prompt_template: "Format: {{previous}}"
+      validation_prompt: "Is the output a valid table?"
+      retry_policy:
+        max_retries: 1
+    - agent_id: reviewer
+      prompt_template: "Review: {{previous}}"
+`
+	tmpFile := createTempYAMLFile(t, yaml)
+	pattern, err := LoadWorkflowFromYAML(tmpFile)
+	require.NoError(t, err)
+
+	pipeline := pattern.GetPipeline()
+	require.NotNil(t, pipeline)
+	require.Len(t, pipeline.Stages, 3)
+
+	// Stage 1: schema + retry
+	assert.Equal(t, `{"type":"object","required":["result"]}`, pipeline.Stages[0].OutputSchema)
+	require.NotNil(t, pipeline.Stages[0].RetryPolicy)
+	assert.Equal(t, int32(2), pipeline.Stages[0].RetryPolicy.MaxRetries)
+
+	// Stage 2: validation_prompt + retry
+	assert.Equal(t, "Is the output a valid table?", pipeline.Stages[1].ValidationPrompt)
+	require.NotNil(t, pipeline.Stages[1].RetryPolicy)
+	assert.Equal(t, int32(1), pipeline.Stages[1].RetryPolicy.MaxRetries)
+
+	// Stage 3: no retry policy
+	assert.Nil(t, pipeline.Stages[2].RetryPolicy)
+	assert.Empty(t, pipeline.Stages[2].OutputSchema)
+}
+
+func TestLoadWorkflowFromYAML_SwarmWithRetryPolicy(t *testing.T) {
+	yaml := `
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: test-swarm-retry
+spec:
+  type: swarm
+  question: "Which database?"
+  agent_ids: [voter1, voter2, voter3]
+  strategy: majority
+  confidence_threshold: 0.6
+  retry_policy:
+    max_retries: 2
+`
+	tmpFile := createTempYAMLFile(t, yaml)
+	pattern, err := LoadWorkflowFromYAML(tmpFile)
+	require.NoError(t, err)
+
+	swarm := pattern.GetSwarm()
+	require.NotNil(t, swarm)
+	require.NotNil(t, swarm.RetryPolicy)
+	assert.Equal(t, int32(2), swarm.RetryPolicy.MaxRetries)
+}
+
+func TestLoadWorkflowFromYAML_ConditionalWithoutRetryPolicy(t *testing.T) {
+	yaml := `
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: test-conditional-no-retry
+spec:
+  type: conditional
+  condition_agent_id: classifier
+  condition_prompt: "Classify this issue"
+  branches:
+    bug:
+      type: fork-join
+      prompt: "Fix the bug"
+      agent_ids: [debugger]
+      merge_strategy: first
+`
+	tmpFile := createTempYAMLFile(t, yaml)
+	pattern, err := LoadWorkflowFromYAML(tmpFile)
+	require.NoError(t, err)
+
+	conditional := pattern.GetConditional()
+	require.NotNil(t, conditional)
+	assert.Nil(t, conditional.RetryPolicy)
+}

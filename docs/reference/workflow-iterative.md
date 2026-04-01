@@ -35,7 +35,8 @@ Complete technical reference for Loom's iterative workflow pattern - multi-stage
 | **Stage Sequence** | Linear, one-pass | Linear with restart capability |
 | **Iterations** | 1 (single pass) | Configurable (default: 3 max) |
 | **Restart Coordination** | No | Yes (pub/sub messaging) |
-| **Validation Retry** | No | Yes (fresh agent context per retry) |
+| **Validation Retry** | Yes (via `retry_policy` per stage) | Yes (fresh agent context per retry) |
+| **JSON Schema Validation** | Yes (via `output_schema` per stage) | No (uses structural JSON/XML check) |
 | **Context Management** | Simple concatenation | Hybrid (truncated + SharedMemory) |
 | **Structured Output** | Optional | Recommended (JSON/XML) |
 | **Use Case** | Simple workflows | Complex discovery/refinement |

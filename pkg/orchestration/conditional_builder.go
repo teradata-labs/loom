@@ -20,6 +20,7 @@ type ConditionalBuilder struct {
 	conditionPrompt string
 	branches        map[string]*loomv1.WorkflowPattern
 	defaultBranch   *loomv1.WorkflowPattern
+	retryPolicy     *loomv1.OutputRetryPolicy
 }
 
 // When adds a conditional branch.
@@ -34,6 +35,17 @@ func (b *ConditionalBuilder) When(condition string, pattern *loomv1.WorkflowPatt
 // This is optional but recommended to handle unexpected classifier outputs.
 func (b *ConditionalBuilder) Default(pattern *loomv1.WorkflowPattern) *ConditionalBuilder {
 	b.defaultBranch = pattern
+	return b
+}
+
+// WithRetry configures retry behavior when the classifier output doesn't match any
+// branch key. On retry, the agent receives a prompt listing valid branch keys and
+// its previous failed output. Each retry uses a fresh session ID.
+func (b *ConditionalBuilder) WithRetry(maxRetries int32) *ConditionalBuilder {
+	b.retryPolicy = &loomv1.OutputRetryPolicy{
+		MaxRetries:         maxRetries,
+		IncludeValidValues: true,
+	}
 	return b
 }
 
@@ -58,6 +70,7 @@ func (b *ConditionalBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResul
 				ConditionPrompt:  b.conditionPrompt,
 				Branches:         b.branches,
 				DefaultBranch:    b.defaultBranch,
+				RetryPolicy:      b.retryPolicy,
 			},
 		},
 	}

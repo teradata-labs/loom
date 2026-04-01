@@ -319,7 +319,11 @@ spec:
   stages:                                 # REQUIRED
     - agent_id: spec-writer
       prompt_template: "Write spec: {{previous}}"
-      validation_prompt: "Check completeness"  # OPTIONAL
+      validation_prompt: "Check completeness"  # OPTIONAL: LLM-based validation
+      output_schema: '{"type":"object","required":["spec"]}'  # OPTIONAL: JSON Schema validation (instant, no LLM call)
+      retry_policy:                       # OPTIONAL: Retry on validation failure
+        max_retries: 2                    # Max retries (capped at 10). 0 = no retry.
+        include_valid_values: true        # Include schema/criteria in retry prompt (default: true)
     - agent_id: implementer
       prompt_template: "Implement: {{previous}}"
   pass_full_history: true                 # OPTIONAL: default false
@@ -364,11 +368,14 @@ spec:
       stages:
         - agent_id: architect
           prompt_template: "Design"
-  default_branch:                         # OPTIONAL: Fallback
+  default_branch:                         # OPTIONAL: Fallback (used after retries exhaust)
     type: fork-join
     prompt: "Handle unknown"
     agent_ids: [team-lead]
     merge_strategy: first
+  retry_policy:                           # OPTIONAL: Retry when classifier output doesn't match any branch
+    max_retries: 2                        # Retries with valid branch keys listed in prompt (capped at 10)
+    include_valid_values: true            # Always true for conditionals (branch keys are the instruction)
 
 ---
 # --- ITERATIVE PATTERN ---
@@ -391,6 +398,9 @@ spec:
   confidence_threshold: 0.7               # OPTIONAL: 0.0-1.0 (default: 0.5)
   share_votes: false                      # OPTIONAL: Show votes to agents (default: false)
   judge_agent_id: principal-engineer      # OPTIONAL: Tie-breaker
+  retry_policy:                           # OPTIONAL: Retry when vote format parsing fails
+    max_retries: 2                        # Retries with VOTE:/CONFIDENCE:/REASONING: format in prompt (capped at 10)
+    include_valid_values: true            # Include format template and example in retry prompt (default: true)
 
 ---
 # ============================================================================

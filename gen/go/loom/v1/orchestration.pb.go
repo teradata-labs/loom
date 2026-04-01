@@ -587,10 +587,20 @@ type PipelineStage struct {
 	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	// Prompt template (can include {{previous}} or {{history}} placeholders)
 	PromptTemplate string `protobuf:"bytes,2,opt,name=prompt_template,json=promptTemplate,proto3" json:"prompt_template,omitempty"`
-	// Optional: Validation function to check output before proceeding
+	// Optional: LLM-based validation — asks an LLM if the output meets criteria.
+	// Use {{output}} placeholder to reference the stage output.
 	ValidationPrompt string `protobuf:"bytes,3,opt,name=validation_prompt,json=validationPrompt,proto3" json:"validation_prompt,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Optional: Retry policy when validation fails (schema or LLM validation).
+	// Each retry includes the failure reason and expected format in the prompt.
+	// Each retry uses a fresh session ID.
+	RetryPolicy *OutputRetryPolicy `protobuf:"bytes,4,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
+	// Optional: JSON Schema for validating stage output.
+	// Instant, free, deterministic validation — no LLM call required.
+	// When both output_schema and validation_prompt are set, schema is checked
+	// first (cheap), then validation_prompt only if schema passes (semantic check).
+	OutputSchema  string `protobuf:"bytes,5,opt,name=output_schema,json=outputSchema,proto3" json:"output_schema,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PipelineStage) Reset() {
@@ -640,6 +650,20 @@ func (x *PipelineStage) GetPromptTemplate() string {
 func (x *PipelineStage) GetValidationPrompt() string {
 	if x != nil {
 		return x.ValidationPrompt
+	}
+	return ""
+}
+
+func (x *PipelineStage) GetRetryPolicy() *OutputRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
+	}
+	return nil
+}
+
+func (x *PipelineStage) GetOutputSchema() string {
+	if x != nil {
+		return x.OutputSchema
 	}
 	return ""
 }
@@ -1140,6 +1164,10 @@ type ConditionalPattern struct {
 	Branches map[string]*WorkflowPattern `protobuf:"bytes,3,rep,name=branches,proto3" json:"branches,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Optional: Default branch if condition doesn't match any branch
 	DefaultBranch *WorkflowPattern `protobuf:"bytes,4,opt,name=default_branch,json=defaultBranch,proto3" json:"default_branch,omitempty"`
+	// Optional: Retry policy when condition output doesn't match any branch key.
+	// On retry, the agent receives a prompt listing valid branch keys and its
+	// previous failed output. Each retry uses a fresh session ID.
+	RetryPolicy   *OutputRetryPolicy `protobuf:"bytes,5,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1198,6 +1226,13 @@ func (x *ConditionalPattern) GetBranches() map[string]*WorkflowPattern {
 func (x *ConditionalPattern) GetDefaultBranch() *WorkflowPattern {
 	if x != nil {
 		return x.DefaultBranch
+	}
+	return nil
+}
+
+func (x *ConditionalPattern) GetRetryPolicy() *OutputRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
 	}
 	return nil
 }
@@ -2349,11 +2384,13 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x0fPipelinePattern\x12%\n" +
 	"\x0einitial_prompt\x18\x01 \x01(\tR\rinitialPrompt\x12.\n" +
 	"\x06stages\x18\x02 \x03(\v2\x16.loom.v1.PipelineStageR\x06stages\x12*\n" +
-	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\x80\x01\n" +
+	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\xe4\x01\n" +
 	"\rPipelineStage\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12'\n" +
 	"\x0fprompt_template\x18\x02 \x01(\tR\x0epromptTemplate\x12+\n" +
-	"\x11validation_prompt\x18\x03 \x01(\tR\x10validationPrompt\"\x86\x02\n" +
+	"\x11validation_prompt\x18\x03 \x01(\tR\x10validationPrompt\x12=\n" +
+	"\fretry_policy\x18\x04 \x01(\v2\x1a.loom.v1.OutputRetryPolicyR\vretryPolicy\x12#\n" +
+	"\routput_schema\x18\x05 \x01(\tR\foutputSchema\"\x86\x02\n" +
 	"\x18IterativeWorkflowPattern\x124\n" +
 	"\bpipeline\x18\x01 \x01(\v2\x18.loom.v1.PipelinePatternR\bpipeline\x12%\n" +
 	"\x0emax_iterations\x18\x02 \x01(\x05R\rmaxIterations\x12=\n" +
@@ -2395,12 +2432,13 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\bmetadata\x18\x03 \x03(\v2 .loom.v1.AgentTask.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8b\x03\n" +
 	"\x12ConditionalPattern\x12,\n" +
 	"\x12condition_agent_id\x18\x01 \x01(\tR\x10conditionAgentId\x12)\n" +
 	"\x10condition_prompt\x18\x02 \x01(\tR\x0fconditionPrompt\x12E\n" +
 	"\bbranches\x18\x03 \x03(\v2).loom.v1.ConditionalPattern.BranchesEntryR\bbranches\x12?\n" +
-	"\x0edefault_branch\x18\x04 \x01(\v2\x18.loom.v1.WorkflowPatternR\rdefaultBranch\x1aU\n" +
+	"\x0edefault_branch\x18\x04 \x01(\v2\x18.loom.v1.WorkflowPatternR\rdefaultBranch\x12=\n" +
+	"\fretry_policy\x18\x05 \x01(\v2\x1a.loom.v1.OutputRetryPolicyR\vretryPolicy\x1aU\n" +
 	"\rBranchesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12.\n" +
 	"\x05value\x18\x02 \x01(\v2\x18.loom.v1.WorkflowPatternR\x05value:\x028\x01\"\xfe\x06\n" +
@@ -2584,11 +2622,12 @@ var file_loom_v1_orchestration_proto_goTypes = []any{
 	(*SwarmPattern)(nil),             // 34: loom.v1.SwarmPattern
 	(*PairProgrammingPattern)(nil),   // 35: loom.v1.PairProgrammingPattern
 	(*TeacherStudentPattern)(nil),    // 36: loom.v1.TeacherStudentPattern
-	(*SwarmResult)(nil),              // 37: loom.v1.SwarmResult
-	(*PairProgrammingResult)(nil),    // 38: loom.v1.PairProgrammingResult
-	(*TeacherStudentResult)(nil),     // 39: loom.v1.TeacherStudentResult
-	(*CollaborationMetrics)(nil),     // 40: loom.v1.CollaborationMetrics
-	(*DebateRound)(nil),              // 41: loom.v1.DebateRound
+	(*OutputRetryPolicy)(nil),        // 37: loom.v1.OutputRetryPolicy
+	(*SwarmResult)(nil),              // 38: loom.v1.SwarmResult
+	(*PairProgrammingResult)(nil),    // 39: loom.v1.PairProgrammingResult
+	(*TeacherStudentResult)(nil),     // 40: loom.v1.TeacherStudentResult
+	(*CollaborationMetrics)(nil),     // 41: loom.v1.CollaborationMetrics
+	(*DebateRound)(nil),              // 42: loom.v1.DebateRound
 }
 var file_loom_v1_orchestration_proto_depIdxs = []int32{
 	3,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
@@ -2603,43 +2642,45 @@ var file_loom_v1_orchestration_proto_depIdxs = []int32{
 	0,  // 9: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
 	0,  // 10: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
 	6,  // 11: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
-	5,  // 12: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	8,  // 13: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
-	25, // 14: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
-	12, // 15: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
-	0,  // 16: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	26, // 17: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
-	27, // 18: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
-	2,  // 19: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
-	16, // 20: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
-	28, // 21: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
-	18, // 22: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
-	15, // 23: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
-	37, // 24: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
-	38, // 25: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
-	39, // 26: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
-	40, // 27: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
-	29, // 28: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
-	41, // 29: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
-	30, // 30: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
-	17, // 31: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
-	31, // 32: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
-	2,  // 33: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
-	14, // 34: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
-	2,  // 35: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	32, // 36: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	14, // 37: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
-	33, // 38: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
-	1,  // 39: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
-	2,  // 40: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
-	22, // 41: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
-	24, // 42: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
-	2,  // 43: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
-	44, // [44:44] is the sub-list for method output_type
-	44, // [44:44] is the sub-list for method input_type
-	44, // [44:44] is the sub-list for extension type_name
-	44, // [44:44] is the sub-list for extension extendee
-	0,  // [0:44] is the sub-list for field type_name
+	37, // 12: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	5,  // 13: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	8,  // 14: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
+	25, // 15: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
+	12, // 16: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
+	0,  // 17: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	26, // 18: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
+	27, // 19: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
+	2,  // 20: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
+	37, // 21: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	16, // 22: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
+	28, // 23: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
+	18, // 24: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
+	15, // 25: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
+	38, // 26: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
+	39, // 27: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
+	40, // 28: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
+	41, // 29: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
+	29, // 30: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
+	42, // 31: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
+	30, // 32: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
+	17, // 33: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
+	31, // 34: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
+	2,  // 35: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
+	14, // 36: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
+	2,  // 37: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	32, // 38: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	14, // 39: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
+	33, // 40: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
+	1,  // 41: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
+	2,  // 42: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
+	22, // 43: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
+	24, // 44: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
+	2,  // 45: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
+	46, // [46:46] is the sub-list for method output_type
+	46, // [46:46] is the sub-list for method input_type
+	46, // [46:46] is the sub-list for extension type_name
+	46, // [46:46] is the sub-list for extension extendee
+	0,  // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_orchestration_proto_init() }
