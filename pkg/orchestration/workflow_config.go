@@ -730,7 +730,7 @@ func parseOutputRetryPolicy(raw map[string]interface{}) *loomv1.OutputRetryPolic
 		case int64:
 			policy.MaxRetries = types.SafeInt32FromInt64(v)
 		case float64:
-			policy.MaxRetries = int32(int(v))
+			policy.MaxRetries = types.SafeInt32(int(v))
 		}
 	}
 
