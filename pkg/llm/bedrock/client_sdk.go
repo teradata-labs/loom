@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/smithy-go/auth/bearer"
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -71,12 +72,18 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 		cfg.Temperature = DefaultBedrockTemperature
 	}
 
-	// Build AWS config for Bedrock
+	// Build AWS config for Bedrock.
+	// Bearer token is highest priority — skip SigV4 credential loading entirely.
 	var awsCfg aws.Config
 	var err error
 
-	// Option 1: Explicit credentials provided
-	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+	if cfg.BearerToken != "" {
+		// Option 0: Bearer token (bypasses SigV4 — no credentials needed)
+		awsCfg, err = config.LoadDefaultConfig(context.Background(),
+			config.WithRegion(cfg.Region),
+		)
+	} else if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+		// Option 1: Explicit credentials provided
 		awsCfg, err = config.LoadDefaultConfig(context.Background(),
 			config.WithRegion(cfg.Region),
 			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -100,6 +107,18 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// When bearer token is set, configure it on aws.Config so
+	// bedrock.WithConfig() passes it through, bypassing SigV4 signing.
+	if cfg.BearerToken != "" {
+		token := cfg.BearerToken
+		awsCfg.BearerAuthTokenProvider = bearer.TokenProviderFunc(
+			func(ctx context.Context) (bearer.Token, error) {
+				return bearer.Token{Value: token}, nil
+			},
+		)
+		awsCfg.AuthSchemePreference = []string{"httpBearerAuth"}
 	}
 
 	// Initialize rate limiter if enabled

@@ -50,6 +50,7 @@ type FactoryConfig struct {
 	BedrockSecretAccessKey string
 	BedrockSessionToken    string
 	BedrockProfile         string
+	BedrockBearerToken     string
 	BedrockModelID         string
 
 	// Ollama configuration
@@ -181,6 +182,7 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 		SecretAccessKey: f.config.BedrockSecretAccessKey,
 		SessionToken:    f.config.BedrockSessionToken,
 		Profile:         f.config.BedrockProfile,
+		BearerToken:     f.config.BedrockBearerToken,
 		ModelID:         model,
 		MaxTokens:       f.config.MaxTokens,
 		Temperature:     f.config.Temperature,
