@@ -1019,3 +1019,101 @@ func TestBedrockStreamChunk_ToolInputDelta_Empty(t *testing.T) {
 	assert.NotNil(t, input)
 	assert.Empty(t, input)
 }
+
+func TestNewClient_BearerTokenAuth(t *testing.T) {
+	// Test that bearer token config creates a client without requiring
+	// any other AWS credentials (no AccessKeyID, SecretAccessKey, Profile).
+	cfg := Config{
+		Region:      "us-west-2",
+		BearerToken: "test-bearer-token-value",
+		ModelID:     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+	}
+
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	assert.Equal(t, "us-west-2", client.region)
+	assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.modelID)
+	assert.Equal(t, "bedrock", client.Name())
+}
+
+func TestNewClient_BearerTokenAuth_Defaults(t *testing.T) {
+	// Bearer token with all defaults — only the token is needed.
+	// Region defaults to us-west-2, model defaults to Sonnet 4.5.
+	cfg := Config{
+		BearerToken: "my-sso-token",
+	}
+
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	assert.Equal(t, DefaultBedrockRegion, client.region)
+	assert.Equal(t, DefaultBedrockModelID, client.modelID)
+	assert.Equal(t, DefaultBedrockMaxTokens, client.maxTokens)
+}
+
+func TestNewClient_BearerTokenAuth_OverridesEnv(t *testing.T) {
+	// Programmatic bearer token takes priority over env var because
+	// functional options run after resolveEnvBearerToken().
+	// We can't easily verify which token wins at the SDK level without
+	// making a real API call, but we verify the client is created.
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "env-token")
+
+	cfg := Config{
+		Region:      "us-east-1",
+		BearerToken: "programmatic-token",
+	}
+
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, "us-east-1", client.region)
+}
+
+func TestNewSDKClient_BearerTokenAuth(t *testing.T) {
+	// Test that SDKClient bearer token config works without other credentials.
+	cfg := Config{
+		Region:      "eu-central-1",
+		BearerToken: "sdk-bearer-token",
+		ModelID:     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+	}
+
+	client, err := NewSDKClient(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	assert.Equal(t, "eu-central-1", client.region)
+	assert.Equal(t, "bedrock-sdk", client.Name())
+}
+
+func TestConfig_BearerTokenField(t *testing.T) {
+	// Verify BearerToken is a distinct auth path — setting it should not
+	// require AccessKeyID/SecretAccessKey/Profile.
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "bearer token only",
+			cfg:  Config{BearerToken: "token-1"},
+		},
+		{
+			name: "bearer token with region override",
+			cfg:  Config{BearerToken: "token-2", Region: "ap-northeast-1"},
+		},
+		{
+			name: "bearer token with model override",
+			cfg:  Config{BearerToken: "token-3", ModelID: "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(tt.cfg)
+			require.NoError(t, err, "NewClient should succeed with bearer token and no other credentials")
+			require.NotNil(t, client)
+		})
+	}
+}

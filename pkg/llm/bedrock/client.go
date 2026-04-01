@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go/auth/bearer"
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -76,6 +77,7 @@ type Config struct {
 	SecretAccessKey string // Optional: if not using IAM role/profile
 	SessionToken    string // Optional: for temporary credentials
 	Profile         string // Optional: AWS profile name from ~/.aws/config
+	BearerToken     string // Optional: bearer token for IAM Identity Center / SSO auth (bypasses SigV4)
 
 	// Model Configuration
 	ModelID     string  // Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
@@ -126,12 +128,18 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.Temperature = DefaultBedrockTemperature
 	}
 
-	// Build AWS config
+	// Build AWS config.
+	// Bearer token is highest priority — skip SigV4 credential loading entirely.
 	var awsCfg aws.Config
 	var err error
 
-	// Option 1: Explicit credentials provided
-	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+	if cfg.BearerToken != "" {
+		// Option 0: Bearer token (bypasses SigV4 — no credentials needed)
+		awsCfg, err = config.LoadDefaultConfig(context.Background(),
+			config.WithRegion(cfg.Region),
+		)
+	} else if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+		// Option 1: Explicit credentials provided
 		awsCfg, err = config.LoadDefaultConfig(context.Background(),
 			config.WithRegion(cfg.Region),
 			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -155,6 +163,20 @@ func NewClient(cfg Config) (*Client, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// When bearer token is set programmatically, configure it on the aws.Config
+	// so the bedrockruntime client uses bearer auth instead of SigV4 signing.
+	// This is consistent with client_sdk.go and makes the token visible in
+	// the config object for debugging.
+	if cfg.BearerToken != "" {
+		token := cfg.BearerToken
+		awsCfg.BearerAuthTokenProvider = bearer.TokenProviderFunc(
+			func(ctx context.Context) (bearer.Token, error) {
+				return bearer.Token{Value: token}, nil
+			},
+		)
+		awsCfg.AuthSchemePreference = []string{"httpBearerAuth"}
 	}
 
 	// Initialize rate limiter - use global singleton shared across all Bedrock clients.

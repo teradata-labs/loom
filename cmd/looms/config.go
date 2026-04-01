@@ -258,6 +258,7 @@ type LLMConfig struct {
 	BedrockAccessKeyID     string `mapstructure:"bedrock_access_key_id"`     // From CLI/env/keyring only
 	BedrockSecretAccessKey string `mapstructure:"bedrock_secret_access_key"` // From CLI/env/keyring only
 	BedrockSessionToken    string `mapstructure:"bedrock_session_token"`     // From CLI/env/keyring only
+	BedrockBearerToken     string `mapstructure:"bedrock_bearer_token"`      // From CLI/env/keyring only
 	BedrockProfile         string `mapstructure:"bedrock_profile"`
 	BedrockModelID         string `mapstructure:"bedrock_model_id"`
 
@@ -1170,6 +1171,11 @@ func GetSecretMappings() []SecretMapping {
 			IsSet:      func(c *Config) bool { return c.LLM.BedrockSessionToken != "" },
 		},
 		{
+			KeyringKey: "bedrock_bearer_token",
+			Setter:     func(c *Config, val string) { c.LLM.BedrockBearerToken = val },
+			IsSet:      func(c *Config) bool { return c.LLM.BedrockBearerToken != "" },
+		},
+		{
 			KeyringKey: "hawk_api_key",
 			Setter:     func(c *Config, val string) { c.Observability.HawkAPIKey = val },
 			IsSet:      func(c *Config) bool { return c.Observability.HawkAPIKey != "" },
@@ -1583,6 +1589,7 @@ llm:
   # bedrock_access_key_id: set via keyring or env (LOOM_LLM_BEDROCK_ACCESS_KEY_ID)
   # bedrock_secret_access_key: set via keyring or env (LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY)
   # bedrock_session_token: set via keyring or env (LOOM_LLM_BEDROCK_SESSION_TOKEN)
+  # bedrock_bearer_token: set via keyring or env (AWS_BEARER_TOKEN_BEDROCK)
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434
