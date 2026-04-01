@@ -222,9 +222,6 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockSessionToken == "" {
 		dst.BedrockSessionToken = src.BedrockSessionToken
 	}
-	if dst.BedrockBearerToken == "" {
-		dst.BedrockBearerToken = src.BedrockBearerToken
-	}
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
@@ -324,7 +321,6 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,
 			SessionToken:      cfg.BedrockSessionToken,
-			BearerToken:       cfg.BedrockBearerToken,
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
 			MaxTokens:         cfg.MaxTokens,
@@ -560,7 +556,6 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
 			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
 			SessionToken:    serverConfig.LLM.BedrockSessionToken,
-			BearerToken:     serverConfig.LLM.BedrockBearerToken,
 			Profile:         serverConfig.LLM.BedrockProfile,
 			ModelID:         modelID,
 			MaxTokens:       maxTokens,
@@ -1110,7 +1105,6 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockAccessKeyID:     config.LLM.BedrockAccessKeyID,
 		BedrockSecretAccessKey: config.LLM.BedrockSecretAccessKey,
 		BedrockSessionToken:    config.LLM.BedrockSessionToken,
-		BedrockBearerToken:     config.LLM.BedrockBearerToken,
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
 

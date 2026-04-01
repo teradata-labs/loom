@@ -659,7 +659,6 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				AccessKeyID:     config.LLM.BedrockAccessKeyID,
 				SecretAccessKey: config.LLM.BedrockSecretAccessKey,
 				SessionToken:    config.LLM.BedrockSessionToken,
-				BearerToken:     config.LLM.BedrockBearerToken,
 				MaxTokens:       config.LLM.MaxTokens,
 				Temperature:     config.LLM.Temperature,
 			})
