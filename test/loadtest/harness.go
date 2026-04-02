@@ -59,6 +59,15 @@ type HarnessConfig struct {
 	// 0 means use the server default (5). Set high (e.g., 10000) to effectively
 	// disable the limiter for load testing.
 	LLMConcurrencyLimit int
+
+	// SessionID, if set, is used for all requests (session reuse/contention testing).
+	// Empty means each request creates a new session.
+	SessionID string
+
+	// NumAgents controls how many agents to register in the multi-agent server.
+	// 0 or 1 means a single default agent. >1 creates N agents, and requests
+	// are round-robined across them via agent_id.
+	NumAgents int
 }
 
 // DefaultHarnessConfig returns sensible defaults for a quick load test.
@@ -167,6 +176,8 @@ type Harness struct {
 	listener net.Listener
 	conn     *grpc.ClientConn
 	client   loomv1.LoomServiceClient
+	agentIDs []string      // GUIDs of registered agents (for round-robin)
+	reqCount atomic.Uint64 // monotonic counter for round-robin
 }
 
 // NewHarness creates a new load test harness. Call Setup() to start the server.
@@ -185,16 +196,26 @@ func (h *Harness) Setup() (string, error) {
 	// Create mock backend
 	backend := &noopBackend{}
 
-	// Create agent with mock LLM
-	ag := agent.NewAgent(backend, h.provider, agent.WithConfig(&agent.Config{
-		Name:        "loadtest-agent",
-		Description: "Agent for load testing",
-	}))
-
-	// Create multi-agent server
-	agents := map[string]*agent.Agent{
-		"default": ag,
+	// Create agents
+	numAgents := h.config.NumAgents
+	if numAgents < 1 {
+		numAgents = 1
 	}
+	agents := make(map[string]*agent.Agent, numAgents)
+	h.agentIDs = make([]string, 0, numAgents)
+	for i := range numAgents {
+		name := fmt.Sprintf("loadtest-agent-%d", i)
+		if i == 0 {
+			name = "default"
+		}
+		ag := agent.NewAgent(backend, h.provider, agent.WithConfig(&agent.Config{
+			Name:        name,
+			Description: fmt.Sprintf("Load test agent %d", i),
+		}))
+		agents[name] = ag
+		h.agentIDs = append(h.agentIDs, ag.GetID())
+	}
+
 	multiSrv := server.NewMultiAgentServer(agents, nil)
 	multiSrv.SetLogger(zap.NewNop())
 
@@ -342,6 +363,17 @@ func (h *Harness) doRequest(ctx context.Context) result {
 
 	req := &loomv1.WeaveRequest{
 		Query: h.config.Query,
+	}
+
+	// Session reuse: use fixed session ID if configured
+	if h.config.SessionID != "" {
+		req.SessionId = h.config.SessionID
+	}
+
+	// Multi-agent: round-robin across agents
+	if len(h.agentIDs) > 1 {
+		idx := h.reqCount.Add(1) - 1
+		req.AgentId = h.agentIDs[idx%uint64(len(h.agentIDs))]
 	}
 
 	start := time.Now()

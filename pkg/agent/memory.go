@@ -185,14 +185,11 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// Check write-lock path: existing session that needs metadata update
 	m.mu.Lock()
 
-	// Double-check: another goroutine may have created it while we waited for the write lock
+	// Double-check: another goroutine may have created it while we waited for the write lock.
+	// Sessions are always inserted fully built (SegmentedMem != nil), so we only need to
+	// update metadata under the lock — never mutate SegmentedMem on a live session.
 	if session, ok := m.sessions[sessionID]; ok {
 		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
-		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
-			sharedMem, store, tracer, llmProv, maxToolRes, ctx)
-		if session.FailureTracker == nil {
-			session.FailureTracker = newConsecutiveFailureTracker()
-		}
 		m.mu.Unlock()
 		return session
 	}
@@ -220,24 +217,12 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		}
 	}
 
-	// Reserve the slot in the map immediately, then release the lock so other
-	// goroutines working on different sessions aren't blocked while we build
-	// the SegmentedMemory (which involves tiktoken calls).
-	session := &Session{
-		ID:              sessionID,
-		AgentID:         agentID,
-		ParentSessionID: parentSessionID,
-		Messages:        []Message{},
-		Context:         make(map[string]interface{}),
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
-	}
-	m.sessions[sessionID] = session
+	// Not found in cache or store. Release the lock so other goroutines
+	// working on different sessions aren't blocked while we build the
+	// SegmentedMemory (which involves tiktoken calls).
 	m.mu.Unlock()
 
-	// Build SegmentedMemory OUTSIDE the lock — this is the expensive part
-	// (tiktoken calls in fullRecount). Other goroutines creating different
-	// sessions can proceed in parallel.
+	// Build SegmentedMemory OUTSIDE any lock — this is the expensive part.
 	romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
 	if sysFn != nil {
 		romContent = sysFn(ctx)
@@ -267,10 +252,31 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		segMem.maxToolResults = maxToolRes
 	}
 
-	session.SegmentedMem = segMem
-	session.FailureTracker = newConsecutiveFailureTracker()
+	session := &Session{
+		ID:              sessionID,
+		AgentID:         agentID,
+		ParentSessionID: parentSessionID,
+		Messages:        []Message{},
+		Context:         make(map[string]interface{}),
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+		SegmentedMem:    segMem,
+		FailureTracker:  newConsecutiveFailureTracker(),
+	}
 
-	// Persist to store if configured
+	// Insert fully-built session under write lock.
+	// Double-check: another goroutine may have created the same session
+	// while we were building SegmentedMemory.
+	m.mu.Lock()
+	if existing, ok := m.sessions[sessionID]; ok {
+		// Another goroutine beat us — use theirs, discard ours.
+		m.mu.Unlock()
+		return existing
+	}
+	m.sessions[sessionID] = session
+	m.mu.Unlock()
+
+	// Persist to store if configured (outside lock)
 	if store != nil {
 		_ = store.SaveSession(ctx, session)
 	}
