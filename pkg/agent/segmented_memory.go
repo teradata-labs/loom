@@ -378,8 +378,11 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 			sm.l1Messages = sm.l1Messages[toCompressCount:]
 
 			sm.compressToL2(ctx, toCompress)
-			// Full recount after compression: L1 shrunk, L2 changed
-			sm.fullRecount()
+			// Recount only the layers that changed: L1 (shrunk) and L2 (grew)
+			sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+			sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
+			sm.l1Dirty = false
+			sm.updateTokenCount()
 			sm.tokenCountDirty = false
 
 			// Log compression event with token savings
