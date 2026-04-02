@@ -2,7 +2,8 @@
 
 **Date**: 2026-04-01
 **Branch**: `feat/load-testing`
-**Test Runner**: `go test -tags fts5 -race`
+**Test Runner**: `go test -tags fts5` (load tests: `just load-test`, perf tests: `just load-test-perf`)
+**Race Detector**: Load tests use `-race` for correctness. Performance/scalability tests run **without** `-race` for accurate latency (the race detector adds ~10x overhead to mutex-heavy paths).
 
 ## Test Environment
 
@@ -250,20 +251,20 @@ Zero errors at all concurrency levels.
 
 **Implementation**: Sends 200 sequential requests to a single session ID. Measures latency in 6 buckets (5-20, 20-50, 50-80, 80-120, 120-160, 160-200). Starts CPU profiling at turn 80 (where the interesting behavior begins). Reports average latency per bucket and the delta between consecutive buckets.
 
-**Results** (with `-race` enabled):
+**Results**:
 
 | Turns | Last Latency | Avg (bucket) | Delta from prev |
 |-------|-------------|--------------|-----------------|
-| 5-20 | 3.8ms | 4.0ms | — |
-| 20-50 | 45.5ms | 12.1ms | +8.1ms |
-| 50-80 | 53.3ms | 49.0ms | +36.9ms |
-| 80-120 | 64.0ms | 59.2ms | +10.2ms |
-| 120-160 | 74.3ms | 69.7ms | +10.5ms |
-| 160-200 | 85.9ms | 80.7ms | +11.0ms |
+| 5-20 | 2.5ms | 2.5ms | — |
+| 20-50 | 5.0ms | 3.2ms | +0.6ms |
+| 50-80 | 5.4ms | 5.3ms | +2.2ms |
+| 80-120 | 6.0ms | 5.9ms | +0.6ms |
+| 120-160 | 6.7ms | 6.4ms | +0.6ms |
+| 160-200 | 7.2ms | 7.1ms | +0.6ms |
 
-Per-turn latency grows from 4ms (turn 5-20) to 81ms (turn 160-200). The growth is approximately linear after turn 50: ~10ms per 40-turn bucket, or ~250µs per turn. The jump between turns 20-50 and 50-80 (+37ms) coincides with the first compression trigger — when L1 messages exceed the balanced profile's 6,400-token budget, the compression path runs for the first time.
+Per-turn latency grows from 2.5ms (turn 5-20) to 7.1ms (turn 160-200). Growth after turn 50 is approximately linear: ~0.6ms per 40-turn bucket, or **~15µs per turn**. The step between turns 20-50 and 50-80 (+2.2ms) coincides with the first compression trigger — when L1 messages exceed the balanced profile's 6,400-token budget, the compression path runs for the first time. After that initial step, per-turn growth is flat.
 
-**Important context**: These measurements include race detector overhead, which adds ~10x instrumentation cost to mutex operations. The profiled code path has high mutex density (SegmentedMemory, TokenCounter, Session). Without `-race`, per-turn latency at turn 200 is ~7ms rather than ~81ms.
+At turn 200, total framework overhead is ~6ms (7.1ms measured minus 1ms LLM). For reference, a real LLM call takes 500ms-3s, making this overhead negligible.
 
 **CPU profile** (turns 80-200): 35% of CPU time is in tiktoken token encoding (regexp2 matching inside `pkoukk/tiktoken-go`). The remainder is runtime (goroutine scheduling, GC, memory allocation). No application-level hotspot dominates — the cost is distributed across the token counting operations that run on each AddMessage call.
 
@@ -298,16 +299,16 @@ Throughput is flat at ~2,400 req/s across the full range. Go's built-in map hand
 
 **Implementation**: Runs 4 levels (10, 50, 100, 200 turns), each with a fresh harness using a fixed session ID. All requests go to the same session, building up conversation depth.
 
-**Results** (with `-race`):
+**Results**:
 
 | Turns | Req/s | P50 | P99 | Errors |
 |-------|-------|-----|-----|--------|
-| 10 | 340 | 2.5ms | 6.7ms | 0% |
-| 50 | 146 | 2.6ms | 44.2ms | 0% |
-| 100 | 35 | 43.9ms | 58.2ms | 0% |
-| 200 | 20 | 56.3ms | 82.2ms | 0% |
+| 10 | 636 | 1.4ms | 3.3ms | 0% |
+| 50 | 588 | 1.4ms | 4.4ms | 0% |
+| 100 | 336 | 3.8ms | 5.9ms | 0% |
+| 200 | 237 | 4.6ms | 7.3ms | 0% |
 
-Throughput degrades from 340 to 20 req/s as turn count increases. The P50 jump between turn 50 and turn 100 (2.6ms → 43.9ms) coincides with the first compression cycle. The profiler confirms this is dominated by race detector overhead on the mutex-heavy token counting path — without `-race`, turn 200 latency is ~7ms rather than ~56ms.
+Throughput degrades from 636 to 237 req/s as turn count increases — a 2.7x reduction over 200 turns. The P50 step between turn 50 and turn 100 (1.4ms → 3.8ms) coincides with the first compression trigger (L1 exceeds the balanced profile's 6,400-token budget). After the initial compression step, per-turn growth is ~15µs per turn — effectively O(1).
 
 ---
 
@@ -323,13 +324,13 @@ Throughput degrades from 340 to 20 req/s as turn count increases. The P50 jump b
 
 | Workers | Req/s | P50 | P99 | Errors |
 |---------|-------|-----|-----|--------|
-| 1 | 20.3 | 56.9ms | 82.1ms | 0% |
-| 5 | 21.4 | 255.9ms | 542.8ms | 0% |
-| 10 | 22.3 | 528.8ms | 795.1ms | 0% |
-| 20 | 21.6 | 1.04s | 1.55s | 0% |
-| 50 | 20.5 | 2.60s | 3.92s | 0% |
+| 1 | 230 | 4.6ms | 8.6ms | 0% |
+| 5 | 344 | 15.8ms | 30.5ms | 0% |
+| 10 | 356 | 29.7ms | 56.1ms | 0% |
+| 20 | 359 | 60.3ms | 101.9ms | 0% |
+| 50 | 349 | 147.3ms | 240.3ms | 0% |
 
-Throughput is flat at ~21 req/s regardless of worker count. This is the serialized throughput of a single session — the conversation loop (LLM call + message persistence + token counting) must complete before the next turn can begin. P50 scales linearly with worker count because workers queue up: at 50 workers, each request waits behind ~25 others on average (25 × ~100ms = 2.5s ≈ measured 2.6s P50).
+Throughput plateaus at ~350 req/s regardless of worker count beyond 5. This is the serialized throughput of a single session — the conversation loop (LLM call + message persistence + token counting) must complete before the next turn can begin. P50 scales linearly with worker count because workers queue up: at 50 workers, each request waits behind ~25 others on average (25 × ~5ms = ~125ms ≈ measured 147ms P50).
 
 This is expected and architecturally correct — you cannot have two LLM responses writing to the same conversation history concurrently without producing incoherent context. The serialization is at the session level, not the server level, so different sessions run fully in parallel.
 
@@ -390,12 +391,12 @@ The 5,000-session heap (76 MB) being lower than 1,000-session (109 MB) is a GC t
 
 | Mode | Req/s | P50 | P99 |
 |------|-------|-----|-----|
-| Fresh (new each) | 2,316 | 8.2ms | 13.5ms |
-| Reused (shared) | 11.1 | 1.76s | 3.31s |
+| Fresh (new each) | 11,023 | 1.6ms | 3.4ms |
+| Reused (shared) | 187 | 114.3ms | 189.3ms |
 
-Fresh sessions: **2,316 req/s**. Shared session: **11 req/s**. A 209x difference.
+Fresh sessions: **11,023 req/s**. Shared session: **187 req/s**. A 59x difference.
 
-This is not a bug — it's a fundamental property of conversation-based systems. A shared session means all 20 workers are writing to the same conversation history, which must be serialized to maintain coherent context. Each request must wait for the previous one's LLM call, message persistence, and token counting to complete. The 11 req/s represents the serial throughput of a single conversation.
+This is not a bug — it's a fundamental property of conversation-based systems. A shared session means all 20 workers are writing to the same conversation history, which must be serialized to maintain coherent context. Each request must wait for the previous one's LLM call, message persistence, and token counting to complete. The 187 req/s represents the serial throughput of a single conversation at 200 accumulated turns.
 
 The fresh session path has no contention: each worker has its own session with its own locks, and all 20 run fully in parallel.
 
@@ -457,11 +458,11 @@ Per-request allocation is ~215 KB / 2,614 allocations, dominated by gRPC seriali
 | StreamWeave | ~2.5x slower than unary due to chunk streaming overhead |
 | Latency profiles | Framework overhead is constant (3-7ms) regardless of LLM speed |
 | Concurrency scaling | Near-linear to 40 workers, peaks at 2,200 req/s at 160 |
-| Multi-turn profiler | ~250µs overhead per turn; race detector adds ~10x |
+| Multi-turn profiler | ~15µs overhead per turn; 7ms total at turn 200 |
 | Session count | Flat throughput from 100 to 5,000 sessions |
-| Multi-turn | Throughput degrades 340→20 req/s over 200 turns (race detector dominated) |
-| Session contention | Serialized at ~21 req/s per session (architecturally correct) |
+| Multi-turn | Throughput degrades 636→237 req/s over 200 turns; ~15µs overhead per turn |
+| Session contention | Serialized at ~350 req/s per session (architecturally correct) |
 | Multi-agent | Flat throughput from 1 to 20 agents |
 | Memory pressure | Flat throughput through 10,000 sessions / 119 MB heap / 15 GC pauses |
-| Fresh vs reused | 209x gap: parallel fresh (2,316 req/s) vs serialized shared (11 req/s) |
+| Fresh vs reused | 59x gap: parallel fresh (11,023 req/s) vs serialized shared (187 req/s) |
 | Token regression | 11 tests pin exact token counts for known inputs |

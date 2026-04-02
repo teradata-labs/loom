@@ -393,6 +393,11 @@ load-test-bench:
     @echo "Running load test benchmarks..."
     GOWORK=off go test -tags fts5 -bench=. -benchmem -run=^$ ./test/loadtest/
 
+# Run load/scalability tests without race detector (accurate latency numbers)
+load-test-perf:
+    @echo "Running performance tests (no race detector)..."
+    GOWORK=off go test -tags fts5 -v -run "TestScalability|TestProfile" ./test/loadtest/
+
 # Run a specific load test by name
 load-test-run pattern:
     GOWORK=off go test -tags fts5 -race -v -run {{pattern}} ./test/loadtest/
