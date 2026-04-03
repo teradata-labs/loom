@@ -122,7 +122,7 @@ func TestProfile_MultiTurn_Latency(t *testing.T) {
 	// Stop CPU profile
 	if cpuFile != nil {
 		pprof.StopCPUProfile()
-		cpuFile.Close()
+		require.NoError(t, cpuFile.Close())
 		t.Logf("CPU profile written to /tmp/loom_multiturn_cpu.prof")
 	}
 
@@ -130,6 +130,6 @@ func TestProfile_MultiTurn_Latency(t *testing.T) {
 	memFile, err := os.Create("/tmp/loom_multiturn_mem.prof")
 	require.NoError(t, err)
 	require.NoError(t, pprof.WriteHeapProfile(memFile))
-	memFile.Close()
+	require.NoError(t, memFile.Close())
 	t.Logf("Memory profile written to /tmp/loom_multiturn_mem.prof")
 }
