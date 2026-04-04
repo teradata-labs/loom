@@ -549,3 +549,69 @@ backup:
             exit 1
         fi
     fi
+
+# =============================================================================
+# Benchmark (AKS publication-grade)
+# =============================================================================
+
+# Build benchmark Docker image and push to ACR
+bench-build:
+    @echo "Building and pushing benchmark image..."
+    bash deploy/benchmark/poc-run.sh
+
+# Run PoC benchmark on AKS (quick validation: 3 runs + 1 warmup)
+bench-poc:
+    bash deploy/benchmark/poc-run.sh
+
+# Create benchmark AKS cluster (one-time setup)
+bench-setup:
+    bash deploy/benchmark/setup-cluster.sh
+
+# Scale benchmark node pools to 0 (cost savings)
+bench-scale-down:
+    bash deploy/benchmark/scale-down.sh
+
+# Pull all results from AKS PVC to local disk
+bench-pull-results dir="./results":
+    bash deploy/benchmark/pull-results.sh {{dir}}
+
+# Tear down benchmark cluster entirely
+bench-teardown:
+    bash deploy/benchmark/teardown-cluster.sh
+
+# Run full publication-grade benchmark suite on AKS (~6 hours)
+load-test-publish server_addr http_addr:
+    @echo "Running full benchmark suite against {{server_addr}}..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{server_addr}} \
+        --http-addr={{http_addr}} \
+        --scenario=all \
+        --runs=10 \
+        --warmup-runs=2 \
+        --output-dir=./results
+
+# Run LangGraph head-to-head comparison
+load-test-comparison loom_addr loom_http langgraph_addr:
+    @echo "Running Loom vs LangGraph comparison..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{loom_addr}} \
+        --http-addr={{loom_http}} \
+        --langgraph-addr={{langgraph_addr}} \
+        --scenario=comparison \
+        --runs=10 \
+        --warmup-runs=2 \
+        --output-dir=./results
+
+# Run a single benchmark scenario on AKS
+load-test-publish-single server_addr http_addr scenario:
+    @echo "Running scenario {{scenario}} against {{server_addr}}..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{server_addr}} \
+        --http-addr={{http_addr}} \
+        --scenario={{scenario}} \
+        --runs=5 \
+        --warmup-runs=1 \
+        --output-dir=./results

@@ -68,6 +68,11 @@ type HarnessConfig struct {
 	// 0 or 1 means a single default agent. >1 creates N agents, and requests
 	// are round-robined across them via agent_id.
 	NumAgents int
+
+	// ServerAddr, if set, connects to a remote gRPC server instead of starting
+	// an in-process one. Setup() will only establish the client connection.
+	// The mock LLM provider will be nil in this mode.
+	ServerAddr string
 }
 
 // DefaultHarnessConfig returns sensible defaults for a quick load test.
@@ -189,7 +194,21 @@ func NewHarness(config HarnessConfig) *Harness {
 
 // Setup starts the gRPC server with a mock LLM provider.
 // Returns the server address for external clients (e.g., ghz).
+// If HarnessConfig.ServerAddr is set, connects to a remote server instead.
 func (h *Harness) Setup() (string, error) {
+	// Remote mode: connect to existing server, no local server startup
+	if h.config.ServerAddr != "" {
+		var err error
+		h.conn, err = grpc.NewClient(h.config.ServerAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			return "", fmt.Errorf("dial remote server: %w", err)
+		}
+		h.client = loomv1.NewLoomServiceClient(h.conn)
+		return h.config.ServerAddr, nil
+	}
+
 	// Create mock LLM provider
 	h.provider = loadtest.NewProvider(h.config.LLMConfig)
 
@@ -254,8 +273,18 @@ func (h *Harness) Setup() (string, error) {
 
 // Run executes the load test and returns a report.
 func (h *Harness) Run(ctx context.Context) (*Report, error) {
+	results, wallTime, err := h.RunRaw(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return h.buildReport(results, wallTime), nil
+}
+
+// RunRaw executes the load test and returns the raw results and wall time.
+// Use this when you need access to per-request data for time-series analysis.
+func (h *Harness) RunRaw(ctx context.Context) ([]result, time.Duration, error) {
 	if h.client == nil {
-		return nil, fmt.Errorf("harness not set up; call Setup() first")
+		return nil, 0, fmt.Errorf("harness not set up; call Setup() first")
 	}
 
 	cfg := h.config
@@ -349,7 +378,7 @@ func (h *Harness) Run(ctx context.Context) (*Report, error) {
 	wg.Wait()
 	wallTime := time.Since(start)
 
-	return h.buildReport(results, wallTime), nil
+	return results, wallTime, nil
 }
 
 // doRequest makes a single Weave or StreamWeave request.
@@ -381,7 +410,7 @@ func (h *Harness) doRequest(ctx context.Context) result {
 	if h.config.UseStreaming {
 		stream, err := h.client.StreamWeave(reqCtx, req)
 		if err != nil {
-			return result{latency: time.Since(start), err: err}
+			return result{latency: time.Since(start), err: err, startedAt: start}
 		}
 		// Drain the stream
 		for {
@@ -390,16 +419,17 @@ func (h *Harness) doRequest(ctx context.Context) result {
 				break
 			}
 		}
-		return result{latency: time.Since(start)}
+		return result{latency: time.Since(start), startedAt: start}
 	}
 
 	_, err := h.client.Weave(reqCtx, req)
-	return result{latency: time.Since(start), err: err}
+	return result{latency: time.Since(start), err: err, startedAt: start}
 }
 
 type result struct {
-	latency time.Duration
-	err     error
+	latency   time.Duration
+	err       error
+	startedAt time.Time // when the request started (for time-series bucketing)
 }
 
 // buildReport computes statistics from the results.
@@ -412,7 +442,11 @@ func (h *Harness) buildReport(results []result, wallTime time.Duration) *Report 
 			h.config.LLMConfig.BaseLatency, h.config.LLMConfig.LatencyJitter),
 		WallTime:          wallTime,
 		RequestsCompleted: int64(len(results)),
-		LLMMetrics:        h.provider.GetMetrics().Snapshot(),
+	}
+
+	// LLM metrics are only available in local mode (provider is nil in remote mode)
+	if h.provider != nil {
+		report.LLMMetrics = h.provider.GetMetrics().Snapshot()
 	}
 
 	if len(results) == 0 {
@@ -451,6 +485,16 @@ func (h *Harness) buildReport(results []result, wallTime time.Duration) *Report 
 	report.P99 = percentile(latencies, 0.99)
 
 	return report
+}
+
+// PercentileExported computes the p-th percentile from an unsorted slice.
+// It sorts the input in place.
+func PercentileExported(values []time.Duration, p float64) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return percentile(values, p)
 }
 
 // percentile returns the p-th percentile from a sorted slice.
