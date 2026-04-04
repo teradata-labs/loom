@@ -383,6 +383,25 @@ race-check:
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/transport
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/apps
 
+# Run load tests against gRPC server with mock LLM (zero tokens consumed)
+load-test:
+    @echo "Running load tests with mock LLM provider..."
+    GOWORK=off go test -tags fts5 -race -v ./test/loadtest/
+
+# Run load test benchmarks (throughput measurement)
+load-test-bench:
+    @echo "Running load test benchmarks..."
+    GOWORK=off go test -tags fts5 -bench=. -benchmem -run=^$ ./test/loadtest/
+
+# Run load/scalability tests without race detector (accurate latency numbers)
+load-test-perf:
+    @echo "Running performance tests (no race detector)..."
+    GOWORK=off go test -tags fts5 -v -run "TestScalability|TestProfile" ./test/loadtest/
+
+# Run a specific load test by name
+load-test-run pattern:
+    GOWORK=off go test -tags fts5 -race -v -run {{pattern}} ./test/loadtest/
+
 # Run specific tests matching pattern
 test-run pattern:
     GOWORK=off go test -tags fts5 -race -v -run {{pattern}} ./...
