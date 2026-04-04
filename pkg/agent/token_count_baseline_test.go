@@ -66,9 +66,9 @@ func TestBaseline_EstimateMessagesTokens_ExactValues(t *testing.T) {
 	require.NotNil(t, tc.encoder)
 
 	msgs := []Message{
-		{Role: "user", Content: baselineUserMsg},      // 10 + 7 = 17
+		{Role: "user", Content: baselineUserMsg},           // 10 + 7 = 17
 		{Role: "assistant", Content: baselineAssistantMsg}, // 10 + 12 = 22
-		{Role: "user", Content: baselineToolMsg},       // 10 + 11 = 21
+		{Role: "user", Content: baselineToolMsg},           // 10 + 11 = 21
 	}
 
 	total := tc.EstimateMessagesTokens(msgs)

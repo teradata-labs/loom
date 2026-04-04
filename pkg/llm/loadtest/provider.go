@@ -146,7 +146,7 @@ type Provider struct {
 func NewProvider(config ProviderConfig) *Provider {
 	p := &Provider{
 		config: config,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:    rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- load test mock, not crypto
 	}
 	// Initialize min latency to max int64 sentinel
 	p.metrics.MinLatencyNs.Store(int64(^uint64(0) >> 1))
