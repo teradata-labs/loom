@@ -27,6 +27,10 @@ teradata_function: aggregation
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   # --- Use Case 1: Capacity Planning ---
   - CPU and storage capacity planning and expansion identification

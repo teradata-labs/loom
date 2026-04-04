@@ -91,7 +91,7 @@ func TestLLMClassifier_Analytics(t *testing.T) {
 
 	intent, confidence := classifier("analyze sales trends", map[string]any{})
 
-	assert.Equal(t, IntentAnalytics, intent)
+	assert.Equal(t, "analytics", intent)
 	assert.Equal(t, 0.9, confidence)
 	assert.Equal(t, 1, mock.callCount, "LLM should be called once")
 }
@@ -115,7 +115,7 @@ func TestLLMClassifier_SchemaDiscovery(t *testing.T) {
 
 	intent, confidence := classifier("show me all tables", map[string]any{})
 
-	assert.Equal(t, IntentSchemaDiscovery, intent)
+	assert.Equal(t, "schema_discovery", intent)
 	assert.Equal(t, 0.95, confidence)
 	assert.Equal(t, 1, mock.callCount)
 }
@@ -139,13 +139,13 @@ func TestLLMClassifier_CacheHit(t *testing.T) {
 
 	// First call - should hit LLM
 	intent1, conf1 := classifier("find duplicate records", map[string]any{})
-	assert.Equal(t, IntentDataQuality, intent1)
+	assert.Equal(t, "data_quality", intent1)
 	assert.Equal(t, 0.85, conf1)
 	assert.Equal(t, 1, mock.callCount, "First call should hit LLM")
 
 	// Second call with same message - should hit cache
 	intent2, conf2 := classifier("find duplicate records", map[string]any{})
-	assert.Equal(t, IntentDataQuality, intent2)
+	assert.Equal(t, "data_quality", intent2)
 	assert.Equal(t, 0.85, conf2)
 	assert.Equal(t, 1, mock.callCount, "Second call should hit cache, not LLM")
 
@@ -156,7 +156,7 @@ func TestLLMClassifier_CacheHit(t *testing.T) {
 		"reasoning": "User wants aggregation"
 	}`
 	intent3, conf3 := classifier("calculate average revenue", map[string]any{})
-	assert.Equal(t, IntentAnalytics, intent3)
+	assert.Equal(t, "analytics", intent3)
 	assert.Equal(t, 0.8, conf3)
 	assert.Equal(t, 2, mock.callCount, "Different message should hit LLM")
 }
@@ -177,7 +177,7 @@ func TestLLMClassifier_FallbackOnError(t *testing.T) {
 	intent, confidence := classifier("show tables in database", map[string]any{})
 
 	// Keyword classifier should return schema_discovery with 0.90 confidence
-	assert.Equal(t, IntentSchemaDiscovery, intent)
+	assert.Equal(t, "schema_discovery", intent)
 	assert.Equal(t, 0.90, confidence)
 }
 
@@ -198,7 +198,7 @@ func TestLLMClassifier_FallbackOnInvalidJSON(t *testing.T) {
 	intent, confidence := classifier("analyze sales", map[string]any{})
 
 	// Keyword classifier should match "analyze"
-	assert.Equal(t, IntentAnalytics, intent)
+	assert.Equal(t, "analytics", intent)
 	assert.Equal(t, 0.80, confidence)
 }
 
@@ -206,7 +206,7 @@ func TestParseClassificationResponse(t *testing.T) {
 	tests := []struct {
 		name       string
 		input      string
-		wantIntent IntentCategory
+		wantIntent string
 		wantConf   float64
 		wantNil    bool
 	}{
@@ -217,7 +217,7 @@ func TestParseClassificationResponse(t *testing.T) {
 				"confidence": 0.9,
 				"reasoning": "test"
 			}`,
-			wantIntent: IntentAnalytics,
+			wantIntent: "analytics",
 			wantConf:   0.9,
 			wantNil:    false,
 		},
@@ -228,7 +228,7 @@ func TestParseClassificationResponse(t *testing.T) {
 				"confidence": 0.95,
 				"reasoning": "test"
 			}` + "\n```",
-			wantIntent: IntentSchemaDiscovery,
+			wantIntent: "schema_discovery",
 			wantConf:   0.95,
 			wantNil:    false,
 		},
@@ -238,13 +238,26 @@ func TestParseClassificationResponse(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name: "invalid intent category",
+			name: "freeform intent is valid",
 			input: `{
-				"intent": "invalid_category",
+				"intent": "custom_domain_intent",
 				"confidence": 0.9,
 				"reasoning": "test"
 			}`,
-			wantNil: true,
+			wantIntent: "custom_domain_intent",
+			wantConf:   0.9,
+			wantNil:    false,
+		},
+		{
+			name: "unknown normalized to empty",
+			input: `{
+				"intent": "unknown",
+				"confidence": 0.5,
+				"reasoning": "test"
+			}`,
+			wantIntent: "",
+			wantConf:   0.0,
+			wantNil:    false,
 		},
 		{
 			name: "confidence clamping - too high",
@@ -253,7 +266,7 @@ func TestParseClassificationResponse(t *testing.T) {
 				"confidence": 1.5,
 				"reasoning": "test"
 			}`,
-			wantIntent: IntentAnalytics,
+			wantIntent: "analytics",
 			wantConf:   1.0,
 			wantNil:    false,
 		},
@@ -264,7 +277,7 @@ func TestParseClassificationResponse(t *testing.T) {
 				"confidence": -0.5,
 				"reasoning": "test"
 			}`,
-			wantIntent: IntentDataQuality,
+			wantIntent: "data_quality",
 			wantConf:   0.0,
 			wantNil:    false,
 		},
@@ -289,11 +302,11 @@ func TestClassificationCache(t *testing.T) {
 	cache := newClassificationCache(100, 5*time.Minute)
 
 	// Test Set and Get
-	cache.Set("message1", IntentAnalytics, 0.9)
+	cache.Set("message1", "analytics", 0.9)
 
 	entry := cache.Get("message1")
 	require.NotNil(t, entry)
-	assert.Equal(t, IntentAnalytics, entry.Intent)
+	assert.Equal(t, "analytics", entry.Intent)
 	assert.Equal(t, 0.9, entry.Confidence)
 
 	// Test cache miss
@@ -304,7 +317,7 @@ func TestClassificationCache(t *testing.T) {
 func TestClassificationCache_TTL(t *testing.T) {
 	cache := newClassificationCache(100, 100*time.Millisecond)
 
-	cache.Set("message1", IntentAnalytics, 0.9)
+	cache.Set("message1", "analytics", 0.9)
 
 	// Should be available immediately
 	entry := cache.Get("message1")
@@ -323,7 +336,7 @@ func TestClassificationCache_Eviction(t *testing.T) {
 
 	// Fill cache beyond capacity
 	for i := 0; i < 15; i++ {
-		cache.Set(fmt.Sprintf("message%d", i), IntentAnalytics, 0.9)
+		cache.Set(fmt.Sprintf("message%d", i), "analytics", 0.9)
 	}
 
 	// Cache should not exceed max size (eviction should occur)

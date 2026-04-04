@@ -363,17 +363,17 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 
 ### Graph Memory Configuration
 
-Salience-driven graph-backed episodic memory. Stores entities, relationships, and memories with FTS5 full-text search. **Opt-out by default**: if `graph_memory` is present but `enabled` is not specified, it defaults to `true`.
+Salience-driven graph-backed episodic memory. Stores entities, relationships, and memories with FTS5 full-text search. **Enabled by default**: graph memory is automatically enabled for all agents when the storage backend provides a `GraphMemoryStore`. No YAML changes required -- pre-existing agents get graph memory on server restart via `DefaultGraphMemoryConfig()`.
 
 Under `spec.memory.graph_memory`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `*bool` | `true` (opt-out) | Enable graph memory |
-| `context_budget_percent` | `int` | `10` | % of max context window for memory budget |
+| `context_budget_percent` | `int` | `20` | % of max context window for memory budget |
 | `max_context_tokens` | `int` | `0` | Fixed token budget (overrides percent if > 0) |
-| `decay_rate` | `float64` | `0.995` | Salience decay rate per day (~138-day half-life) |
-| `boost_amount` | `float64` | `0.05` | Salience boost per access |
+| `decay_rate` | `float64` | `0.95` | Salience decay rate per day (~14-day half-life) |
+| `boost_amount` | `float64` | `0.1` | Salience boost per access |
 | `min_salience_threshold` | `float64` | `0.1` | Minimum salience for recall |
 | `max_recall_candidates` | `int` | `50` | Max memories to consider during recall |
 | `default_salience` | `float64` | `0.5` | Initial salience for new memories |

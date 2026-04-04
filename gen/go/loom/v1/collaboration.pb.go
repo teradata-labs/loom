@@ -150,6 +150,69 @@ func (AssessmentStrategy) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{1}
 }
 
+// OutputRetryPolicy defines retry behavior when agent output doesn't match expectations.
+// Used by conditional executors (branch matching fails), pipeline executors
+// (validation_prompt or output_schema fails), and swarm executors (vote parsing fails).
+// Each retry uses a fresh session ID to avoid anchoring on previous bad output.
+type OutputRetryPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Maximum retries before falling back to default branch or graceful degradation.
+	// 0 = no retries (default behavior, preserves backwards compatibility).
+	MaxRetries int32 `protobuf:"varint,1,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`
+	// Whether to include valid output values in the retry prompt.
+	// For conditionals: lists valid branch keys.
+	// For pipelines: includes the JSON schema or validation criteria.
+	// For swarms: includes the vote format template.
+	// Code treats unset (false) as true (include values by default).
+	IncludeValidValues bool `protobuf:"varint,2,opt,name=include_valid_values,json=includeValidValues,proto3" json:"include_valid_values,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *OutputRetryPolicy) Reset() {
+	*x = OutputRetryPolicy{}
+	mi := &file_loom_v1_collaboration_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OutputRetryPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OutputRetryPolicy) ProtoMessage() {}
+
+func (x *OutputRetryPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_collaboration_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OutputRetryPolicy.ProtoReflect.Descriptor instead.
+func (*OutputRetryPolicy) Descriptor() ([]byte, []int) {
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *OutputRetryPolicy) GetMaxRetries() int32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
+}
+
+func (x *OutputRetryPolicy) GetIncludeValidValues() bool {
+	if x != nil {
+		return x.IncludeValidValues
+	}
+	return false
+}
+
 // SwarmPattern orchestrates multiple agents to vote on decisions.
 // Agents independently evaluate a question and vote, with configurable
 // consensus thresholds for decision-making.
@@ -166,14 +229,18 @@ type SwarmPattern struct {
 	// Whether to share votes between agents during evaluation
 	ShareVotes bool `protobuf:"varint,5,opt,name=share_votes,json=shareVotes,proto3" json:"share_votes,omitempty"`
 	// Optional: Judge agent to break ties
-	JudgeAgentId  string `protobuf:"bytes,6,opt,name=judge_agent_id,json=judgeAgentId,proto3" json:"judge_agent_id,omitempty"`
+	JudgeAgentId string `protobuf:"bytes,6,opt,name=judge_agent_id,json=judgeAgentId,proto3" json:"judge_agent_id,omitempty"`
+	// Optional: Retry policy when vote parsing fails (agent doesn't output
+	// VOTE:/CONFIDENCE:/REASONING: format). Each retry includes the expected
+	// format template and the agent's failed output.
+	RetryPolicy   *OutputRetryPolicy `protobuf:"bytes,7,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SwarmPattern) Reset() {
 	*x = SwarmPattern{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[0]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -185,7 +252,7 @@ func (x *SwarmPattern) String() string {
 func (*SwarmPattern) ProtoMessage() {}
 
 func (x *SwarmPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[0]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -198,7 +265,7 @@ func (x *SwarmPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwarmPattern.ProtoReflect.Descriptor instead.
 func (*SwarmPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{0}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *SwarmPattern) GetQuestion() string {
@@ -243,6 +310,13 @@ func (x *SwarmPattern) GetJudgeAgentId() string {
 	return ""
 }
 
+func (x *SwarmPattern) GetRetryPolicy() *OutputRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
+	}
+	return nil
+}
+
 // PairProgrammingPattern orchestrates driver/navigator collaboration.
 // One agent writes code while another reviews in real-time.
 type PairProgrammingPattern struct {
@@ -267,7 +341,7 @@ type PairProgrammingPattern struct {
 
 func (x *PairProgrammingPattern) Reset() {
 	*x = PairProgrammingPattern{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[1]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -279,7 +353,7 @@ func (x *PairProgrammingPattern) String() string {
 func (*PairProgrammingPattern) ProtoMessage() {}
 
 func (x *PairProgrammingPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[1]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -292,7 +366,7 @@ func (x *PairProgrammingPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PairProgrammingPattern.ProtoReflect.Descriptor instead.
 func (*PairProgrammingPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PairProgrammingPattern) GetTask() string {
@@ -366,7 +440,7 @@ type TeacherStudentPattern struct {
 
 func (x *TeacherStudentPattern) Reset() {
 	*x = TeacherStudentPattern{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[2]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -378,7 +452,7 @@ func (x *TeacherStudentPattern) String() string {
 func (*TeacherStudentPattern) ProtoMessage() {}
 
 func (x *TeacherStudentPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[2]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -391,7 +465,7 @@ func (x *TeacherStudentPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TeacherStudentPattern.ProtoReflect.Descriptor instead.
 func (*TeacherStudentPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{2}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TeacherStudentPattern) GetObjective() string {
@@ -453,7 +527,7 @@ type CurriculumStep struct {
 
 func (x *CurriculumStep) Reset() {
 	*x = CurriculumStep{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[3]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -465,7 +539,7 @@ func (x *CurriculumStep) String() string {
 func (*CurriculumStep) ProtoMessage() {}
 
 func (x *CurriculumStep) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[3]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -478,7 +552,7 @@ func (x *CurriculumStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurriculumStep.ProtoReflect.Descriptor instead.
 func (*CurriculumStep) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{3}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CurriculumStep) GetName() string {
@@ -526,7 +600,7 @@ type DebateRound struct {
 
 func (x *DebateRound) Reset() {
 	*x = DebateRound{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[4]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -538,7 +612,7 @@ func (x *DebateRound) String() string {
 func (*DebateRound) ProtoMessage() {}
 
 func (x *DebateRound) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[4]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -551,7 +625,7 @@ func (x *DebateRound) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebateRound.ProtoReflect.Descriptor instead.
 func (*DebateRound) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{4}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DebateRound) GetRoundNumber() int32 {
@@ -611,7 +685,7 @@ type AgentPosition struct {
 
 func (x *AgentPosition) Reset() {
 	*x = AgentPosition{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[5]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -623,7 +697,7 @@ func (x *AgentPosition) String() string {
 func (*AgentPosition) ProtoMessage() {}
 
 func (x *AgentPosition) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[5]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -636,7 +710,7 @@ func (x *AgentPosition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentPosition.ProtoReflect.Descriptor instead.
 func (*AgentPosition) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{5}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AgentPosition) GetAgentId() string {
@@ -728,7 +802,7 @@ type SwarmVote struct {
 
 func (x *SwarmVote) Reset() {
 	*x = SwarmVote{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[6]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -740,7 +814,7 @@ func (x *SwarmVote) String() string {
 func (*SwarmVote) ProtoMessage() {}
 
 func (x *SwarmVote) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[6]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -753,7 +827,7 @@ func (x *SwarmVote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwarmVote.ProtoReflect.Descriptor instead.
 func (*SwarmVote) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{6}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SwarmVote) GetAgentId() string {
@@ -812,7 +886,7 @@ type SwarmResult struct {
 
 func (x *SwarmResult) Reset() {
 	*x = SwarmResult{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[7]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -824,7 +898,7 @@ func (x *SwarmResult) String() string {
 func (*SwarmResult) ProtoMessage() {}
 
 func (x *SwarmResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[7]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -837,7 +911,7 @@ func (x *SwarmResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwarmResult.ProtoReflect.Descriptor instead.
 func (*SwarmResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{7}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SwarmResult) GetDecision() string {
@@ -901,7 +975,7 @@ type PairProgrammingResult struct {
 
 func (x *PairProgrammingResult) Reset() {
 	*x = PairProgrammingResult{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[8]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -913,7 +987,7 @@ func (x *PairProgrammingResult) String() string {
 func (*PairProgrammingResult) ProtoMessage() {}
 
 func (x *PairProgrammingResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[8]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -926,7 +1000,7 @@ func (x *PairProgrammingResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PairProgrammingResult.ProtoReflect.Descriptor instead.
 func (*PairProgrammingResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{8}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PairProgrammingResult) GetCode() string {
@@ -985,7 +1059,7 @@ type ReviewCycle struct {
 
 func (x *ReviewCycle) Reset() {
 	*x = ReviewCycle{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[9]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -997,7 +1071,7 @@ func (x *ReviewCycle) String() string {
 func (*ReviewCycle) ProtoMessage() {}
 
 func (x *ReviewCycle) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[9]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1010,7 +1084,7 @@ func (x *ReviewCycle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewCycle.ProtoReflect.Descriptor instead.
 func (*ReviewCycle) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{9}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ReviewCycle) GetCycleNumber() int32 {
@@ -1074,7 +1148,7 @@ type ReviewComment struct {
 
 func (x *ReviewComment) Reset() {
 	*x = ReviewComment{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[10]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1086,7 +1160,7 @@ func (x *ReviewComment) String() string {
 func (*ReviewComment) ProtoMessage() {}
 
 func (x *ReviewComment) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[10]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1099,7 +1173,7 @@ func (x *ReviewComment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewComment.ProtoReflect.Descriptor instead.
 func (*ReviewComment) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{10}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReviewComment) GetType() string {
@@ -1158,7 +1232,7 @@ type TeacherStudentResult struct {
 
 func (x *TeacherStudentResult) Reset() {
 	*x = TeacherStudentResult{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[11]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1170,7 +1244,7 @@ func (x *TeacherStudentResult) String() string {
 func (*TeacherStudentResult) ProtoMessage() {}
 
 func (x *TeacherStudentResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[11]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1183,7 +1257,7 @@ func (x *TeacherStudentResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TeacherStudentResult.ProtoReflect.Descriptor instead.
 func (*TeacherStudentResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TeacherStudentResult) GetAchievementScore() float32 {
@@ -1249,7 +1323,7 @@ type StepResult struct {
 
 func (x *StepResult) Reset() {
 	*x = StepResult{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[12]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1261,7 +1335,7 @@ func (x *StepResult) String() string {
 func (*StepResult) ProtoMessage() {}
 
 func (x *StepResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[12]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1274,7 +1348,7 @@ func (x *StepResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepResult.ProtoReflect.Descriptor instead.
 func (*StepResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *StepResult) GetStepName() string {
@@ -1340,7 +1414,7 @@ type CollaborationMetrics struct {
 
 func (x *CollaborationMetrics) Reset() {
 	*x = CollaborationMetrics{}
-	mi := &file_loom_v1_collaboration_proto_msgTypes[13]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1352,7 +1426,7 @@ func (x *CollaborationMetrics) String() string {
 func (*CollaborationMetrics) ProtoMessage() {}
 
 func (x *CollaborationMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_collaboration_proto_msgTypes[13]
+	mi := &file_loom_v1_collaboration_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1365,7 +1439,7 @@ func (x *CollaborationMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollaborationMetrics.ProtoReflect.Descriptor instead.
 func (*CollaborationMetrics) Descriptor() ([]byte, []int) {
-	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_collaboration_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CollaborationMetrics) GetPerspectiveDiversity() float32 {
@@ -1414,7 +1488,11 @@ var File_loom_v1_collaboration_proto protoreflect.FileDescriptor
 
 const file_loom_v1_collaboration_proto_rawDesc = "" +
 	"\n" +
-	"\x1bloom/v1/collaboration.proto\x12\aloom.v1\"\xf6\x01\n" +
+	"\x1bloom/v1/collaboration.proto\x12\aloom.v1\"f\n" +
+	"\x11OutputRetryPolicy\x12\x1f\n" +
+	"\vmax_retries\x18\x01 \x01(\x05R\n" +
+	"maxRetries\x120\n" +
+	"\x14include_valid_values\x18\x02 \x01(\bR\x12includeValidValues\"\xb5\x02\n" +
 	"\fSwarmPattern\x12\x1a\n" +
 	"\bquestion\x18\x01 \x01(\tR\bquestion\x12\x1b\n" +
 	"\tagent_ids\x18\x02 \x03(\tR\bagentIds\x123\n" +
@@ -1422,7 +1500,8 @@ const file_loom_v1_collaboration_proto_rawDesc = "" +
 	"\x14confidence_threshold\x18\x04 \x01(\x02R\x13confidenceThreshold\x12\x1f\n" +
 	"\vshare_votes\x18\x05 \x01(\bR\n" +
 	"shareVotes\x12$\n" +
-	"\x0ejudge_agent_id\x18\x06 \x01(\tR\fjudgeAgentId\"\x8d\x02\n" +
+	"\x0ejudge_agent_id\x18\x06 \x01(\tR\fjudgeAgentId\x12=\n" +
+	"\fretry_policy\x18\a \x01(\v2\x1a.loom.v1.OutputRetryPolicyR\vretryPolicy\"\x8d\x02\n" +
 	"\x16PairProgrammingPattern\x12\x12\n" +
 	"\x04task\x18\x01 \x01(\tR\x04task\x12&\n" +
 	"\x0fdriver_agent_id\x18\x02 \x01(\tR\rdriverAgentId\x12,\n" +
@@ -1557,43 +1636,45 @@ func file_loom_v1_collaboration_proto_rawDescGZIP() []byte {
 }
 
 var file_loom_v1_collaboration_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_loom_v1_collaboration_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_loom_v1_collaboration_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_loom_v1_collaboration_proto_goTypes = []any{
 	(VotingStrategy)(0),            // 0: loom.v1.VotingStrategy
 	(AssessmentStrategy)(0),        // 1: loom.v1.AssessmentStrategy
-	(*SwarmPattern)(nil),           // 2: loom.v1.SwarmPattern
-	(*PairProgrammingPattern)(nil), // 3: loom.v1.PairProgrammingPattern
-	(*TeacherStudentPattern)(nil),  // 4: loom.v1.TeacherStudentPattern
-	(*CurriculumStep)(nil),         // 5: loom.v1.CurriculumStep
-	(*DebateRound)(nil),            // 6: loom.v1.DebateRound
-	(*AgentPosition)(nil),          // 7: loom.v1.AgentPosition
-	(*SwarmVote)(nil),              // 8: loom.v1.SwarmVote
-	(*SwarmResult)(nil),            // 9: loom.v1.SwarmResult
-	(*PairProgrammingResult)(nil),  // 10: loom.v1.PairProgrammingResult
-	(*ReviewCycle)(nil),            // 11: loom.v1.ReviewCycle
-	(*ReviewComment)(nil),          // 12: loom.v1.ReviewComment
-	(*TeacherStudentResult)(nil),   // 13: loom.v1.TeacherStudentResult
-	(*StepResult)(nil),             // 14: loom.v1.StepResult
-	(*CollaborationMetrics)(nil),   // 15: loom.v1.CollaborationMetrics
-	nil,                            // 16: loom.v1.AgentPosition.ResponsesEntry
-	nil,                            // 17: loom.v1.SwarmResult.VoteDistributionEntry
+	(*OutputRetryPolicy)(nil),      // 2: loom.v1.OutputRetryPolicy
+	(*SwarmPattern)(nil),           // 3: loom.v1.SwarmPattern
+	(*PairProgrammingPattern)(nil), // 4: loom.v1.PairProgrammingPattern
+	(*TeacherStudentPattern)(nil),  // 5: loom.v1.TeacherStudentPattern
+	(*CurriculumStep)(nil),         // 6: loom.v1.CurriculumStep
+	(*DebateRound)(nil),            // 7: loom.v1.DebateRound
+	(*AgentPosition)(nil),          // 8: loom.v1.AgentPosition
+	(*SwarmVote)(nil),              // 9: loom.v1.SwarmVote
+	(*SwarmResult)(nil),            // 10: loom.v1.SwarmResult
+	(*PairProgrammingResult)(nil),  // 11: loom.v1.PairProgrammingResult
+	(*ReviewCycle)(nil),            // 12: loom.v1.ReviewCycle
+	(*ReviewComment)(nil),          // 13: loom.v1.ReviewComment
+	(*TeacherStudentResult)(nil),   // 14: loom.v1.TeacherStudentResult
+	(*StepResult)(nil),             // 15: loom.v1.StepResult
+	(*CollaborationMetrics)(nil),   // 16: loom.v1.CollaborationMetrics
+	nil,                            // 17: loom.v1.AgentPosition.ResponsesEntry
+	nil,                            // 18: loom.v1.SwarmResult.VoteDistributionEntry
 }
 var file_loom_v1_collaboration_proto_depIdxs = []int32{
 	0,  // 0: loom.v1.SwarmPattern.strategy:type_name -> loom.v1.VotingStrategy
-	5,  // 1: loom.v1.TeacherStudentPattern.steps:type_name -> loom.v1.CurriculumStep
-	1,  // 2: loom.v1.TeacherStudentPattern.assessment:type_name -> loom.v1.AssessmentStrategy
-	7,  // 3: loom.v1.DebateRound.positions:type_name -> loom.v1.AgentPosition
-	16, // 4: loom.v1.AgentPosition.responses:type_name -> loom.v1.AgentPosition.ResponsesEntry
-	8,  // 5: loom.v1.SwarmResult.votes:type_name -> loom.v1.SwarmVote
-	17, // 6: loom.v1.SwarmResult.vote_distribution:type_name -> loom.v1.SwarmResult.VoteDistributionEntry
-	11, // 7: loom.v1.PairProgrammingResult.cycles:type_name -> loom.v1.ReviewCycle
-	12, // 8: loom.v1.ReviewCycle.comments:type_name -> loom.v1.ReviewComment
-	14, // 9: loom.v1.TeacherStudentResult.steps:type_name -> loom.v1.StepResult
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	2,  // 1: loom.v1.SwarmPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	6,  // 2: loom.v1.TeacherStudentPattern.steps:type_name -> loom.v1.CurriculumStep
+	1,  // 3: loom.v1.TeacherStudentPattern.assessment:type_name -> loom.v1.AssessmentStrategy
+	8,  // 4: loom.v1.DebateRound.positions:type_name -> loom.v1.AgentPosition
+	17, // 5: loom.v1.AgentPosition.responses:type_name -> loom.v1.AgentPosition.ResponsesEntry
+	9,  // 6: loom.v1.SwarmResult.votes:type_name -> loom.v1.SwarmVote
+	18, // 7: loom.v1.SwarmResult.vote_distribution:type_name -> loom.v1.SwarmResult.VoteDistributionEntry
+	12, // 8: loom.v1.PairProgrammingResult.cycles:type_name -> loom.v1.ReviewCycle
+	13, // 9: loom.v1.ReviewCycle.comments:type_name -> loom.v1.ReviewComment
+	15, // 10: loom.v1.TeacherStudentResult.steps:type_name -> loom.v1.StepResult
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_collaboration_proto_init() }
@@ -1607,7 +1688,7 @@ func file_loom_v1_collaboration_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_collaboration_proto_rawDesc), len(file_loom_v1_collaboration_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

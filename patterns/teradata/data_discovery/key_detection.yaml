@@ -37,6 +37,9 @@ teradata_function: Count_Estimate, IsSurrogate
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Automatically discover primary keys in undocumented tables
   - Validate existing primary index choices

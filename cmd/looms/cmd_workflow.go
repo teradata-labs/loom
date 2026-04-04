@@ -224,19 +224,69 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	}
 	defer func() { _ = logger.Sync() }()
 
-	// Create tracer (use Hawk if observability enabled)
+	// Create tracer based on observability mode (matches cmd_serve.go logic)
 	var tracer observability.Tracer
-	if config.Observability.Enabled && config.Observability.HawkEndpoint != "" {
-		hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
-			Endpoint: config.Observability.HawkEndpoint,
-			APIKey:   config.Observability.HawkAPIKey,
-		})
-		if err != nil {
-			logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))
+	if config.Observability.Enabled {
+		mode := config.Observability.Mode
+		if mode == "" {
+			if config.Observability.HawkEndpoint != "" {
+				mode = "service"
+			} else {
+				mode = "embedded"
+			}
+		}
+
+		switch mode {
+		case "embedded":
+			logger.Info("Observability enabled with embedded storage",
+				zap.String("storage_type", config.Observability.StorageType),
+				zap.String("sqlite_path", config.Observability.SQLitePath))
+
+			storageType := config.Observability.StorageType
+			if storageType == "" {
+				storageType = "memory"
+			}
+
+			flushInterval := 5 * time.Second // Shorter flush for workflows
+			if config.Observability.FlushInterval != "" {
+				if duration, err := time.ParseDuration(config.Observability.FlushInterval); err == nil {
+					flushInterval = duration
+				}
+			}
+
+			embeddedTracer, err := observability.NewEmbeddedTracer(&observability.EmbeddedConfig{
+				StorageType:   storageType,
+				SQLitePath:    config.Observability.SQLitePath,
+				FlushInterval: flushInterval,
+				Logger:        logger,
+			})
+			if err != nil {
+				logger.Warn("Failed to create embedded tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = embeddedTracer
+				defer func() {
+					if err := embeddedTracer.Close(); err != nil {
+						logger.Warn("Failed to close embedded tracer", zap.Error(err))
+					}
+				}()
+			}
+
+		case "service":
+			hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
+				Endpoint: config.Observability.HawkEndpoint,
+				APIKey:   config.Observability.HawkAPIKey,
+			})
+			if err != nil {
+				logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))
+				tracer = observability.NewNoOpTracer()
+			} else {
+				tracer = hawkTracer
+				logger.Info("Observability enabled for workflow", zap.String("endpoint", config.Observability.HawkEndpoint))
+			}
+
+		default:
 			tracer = observability.NewNoOpTracer()
-		} else {
-			tracer = hawkTracer
-			logger.Info("Observability enabled for workflow", zap.String("endpoint", config.Observability.HawkEndpoint))
 		}
 	} else {
 		tracer = observability.NewNoOpTracer()
@@ -659,6 +709,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				AccessKeyID:     config.LLM.BedrockAccessKeyID,
 				SecretAccessKey: config.LLM.BedrockSecretAccessKey,
 				SessionToken:    config.LLM.BedrockSessionToken,
+				BearerToken:     config.LLM.BedrockBearerToken,
 				MaxTokens:       config.LLM.MaxTokens,
 				Temperature:     config.LLM.Temperature,
 			})
@@ -829,6 +880,19 @@ func extractAgentIDs(pattern *loomv1.WorkflowPattern) []string {
 				ids[id] = true
 			}
 		}
+	case *loomv1.WorkflowPattern_Swarm:
+		for _, id := range p.Swarm.AgentIds {
+			ids[id] = true
+		}
+		if p.Swarm.JudgeAgentId != "" {
+			ids[p.Swarm.JudgeAgentId] = true
+		}
+	case *loomv1.WorkflowPattern_Iterative:
+		if p.Iterative.Pipeline != nil {
+			for _, stage := range p.Iterative.Pipeline.Stages {
+				ids[stage.AgentId] = true
+			}
+		}
 	}
 
 	result := make([]string, 0, len(ids))
@@ -851,6 +915,10 @@ func getPatternType(pattern *loomv1.WorkflowPattern) string {
 		return "parallel"
 	case *loomv1.WorkflowPattern_Conditional:
 		return "conditional"
+	case *loomv1.WorkflowPattern_Swarm:
+		return "swarm"
+	case *loomv1.WorkflowPattern_Iterative:
+		return "iterative"
 	default:
 		return "unknown"
 	}

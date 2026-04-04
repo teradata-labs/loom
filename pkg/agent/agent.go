@@ -112,6 +112,17 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.extractionCadence = a.config.ExtractionCadence
 	a.toolExecutionsSinceExtraction = 0
 
+	// Initialize automatic graph memory extraction if graph memory is enabled.
+	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
+		a.graphMemoryConfig.Enabled && a.graphMemoryConfig.EnableExtraction {
+		a.enableGraphMemoryExtraction = true
+		a.graphExtractionCadence = int(a.graphMemoryConfig.ExtractionCadence)
+		if a.graphExtractionCadence <= 0 {
+			a.graphExtractionCadence = 5
+		}
+		a.graphToolExecutionsSinceExtraction = 0
+	}
+
 	// Initialize pattern orchestrator
 	patternLibrary := patterns.NewLibrary(nil, a.config.PatternsDir)
 	a.orchestrator = patterns.NewOrchestrator(patternLibrary)
@@ -248,6 +259,15 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// NOTE: conversation_memory tool (unified recall/search/clear) uses progressive disclosure.
 	// It registers automatically after first L2 swap event.
 	// See checkAndRegisterConversationMemoryTool() for implementation.
+
+	// Register graph_memory tool eagerly (not progressive disclosure).
+	// Unlike conversation_memory which depends on runtime state (L2 swap events),
+	// graph_memory only depends on graphMemoryStore + graphMemoryConfig — both known
+	// at construction time. Registering here ensures the tool is in the LLM's tool
+	// list from the very first conversation turn, matching the system prompt supplement
+	// that references it. The post-loop calls in Chat/ChatWithProgress are harmless
+	// no-ops since checkAndRegisterGraphMemoryTool early-returns if already registered.
+	a.checkAndRegisterGraphMemoryTool()
 
 	return a
 }
@@ -741,22 +761,24 @@ func (a *Agent) graphMemoryPromptSupplement() string {
 
 GRAPH MEMORY
 
-You have a graph_memory tool for persistent, cross-session knowledge.
+You have persistent memory across sessions via the graph_memory tool. Relevant memories are automatically loaded into context each turn — you do not need to recall them manually.
 
-Store: remember — save facts, decisions, preferences, experiences, or failures with salience (0-1).
-Retrieve: recall — search by keywords, filter by type or tags, ranked by salience.
-Update: supersede — correct outdated info (preserves lineage). consolidate — merge related memories.
-Remove: forget — soft-delete a memory.
-Graph: relate — link entities (people, tools, projects) with typed relationships (USES, WORKS_ON, KNOWS_ABOUT, etc.). entities — browse the knowledge graph.
-Context: context_for — get an entity's full profile, relationships, and ranked memories within a token budget.
+When to use the graph_memory tool:
+- When the user shares their name, role, preferences, or project context → remember immediately. Do not wait to be asked.
+- When you learn facts about systems, tools, or workflows → remember with entities and relationships.
+- When you need deeper context beyond what was auto-loaded → use recall or context_for.
 
-When to use:
-- User shares identity, preferences, or project context → remember it.
-- User corrects something you stored → supersede the old memory.
-- User asks "what do you know about X" → recall or context_for.
-- You notice related entities → relate them.
-- Keep salience proportional to importance: critical decisions 0.8-1.0, casual facts 0.3-0.5.
-- Always include a short summary for budget-constrained retrieval.`
+Actions:
+- remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
+- recall: search by keywords, filter by type/tags
+- supersede: correct outdated info (preserves lineage)
+- forget: soft-delete
+- relate: link entities with typed relationships (USES, WORKS_ON, KNOWS_ABOUT)
+- context_for: get an entity's full profile within a token budget
+- entities: browse the knowledge graph
+- consolidate: merge related memories
+
+Focus on the user's request first. Memory operations happen alongside your work, not instead of it.`
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
@@ -1543,13 +1565,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Step 1: Classify intent
 			intent, intentConf := a.orchestrator.ClassifyIntent(lastUserMessage, contextData)
 
-			patternSpan.SetAttribute("intent.category", string(intent))
+			patternSpan.SetAttribute("intent.category", intent)
 			patternSpan.SetAttribute("intent.confidence", fmt.Sprintf("%.2f", intentConf))
 
 			// Step 2: Recommend pattern based on keyword matching and intent
 			// Always attempt pattern recommendation regardless of intent classification.
 			// RecommendPattern uses its own keyword-based search which can find relevant
-			// patterns even when the intent classifier returns IntentUnknown (e.g., for
+			// patterns even when the intent classifier returns an empty string (e.g., for
 			// meta-agent workflows or domain-specific queries not covered by the default
 			// intent classifier).
 			{
@@ -1580,7 +1602,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						// Record metrics
 						a.tracer.RecordMetric("patterns.recommended", 1.0, map[string]string{
 							"pattern":    patternName,
-							"intent":     string(intent),
+							"intent":     intent,
 							"confidence": fmt.Sprintf("%.0f", patternConf*100),
 						})
 					} else {
@@ -2143,6 +2165,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					// Run extraction in background (non-blocking)
 					go a.extractFindingsAsync(ctx, session.ID)
 					a.toolExecutionsSinceExtraction = 0
+				}
+			}
+
+			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
+			// After each tool execution, check if we should extract graph memories
+			if a.enableGraphMemoryExtraction {
+				a.graphToolExecutionsSinceExtraction++
+				if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
+					go a.extractGraphMemoryAsync(ctx, session.ID)
+					a.graphToolExecutionsSinceExtraction = 0
 				}
 			}
 		}

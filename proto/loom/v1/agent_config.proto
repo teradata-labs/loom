@@ -288,6 +288,20 @@ message GraphMemoryConfig {
 
   // Default salience for new memories. Default: 0.5.
   float default_salience = 8;
+
+  // Enable automatic memory extraction from conversation context.
+  // When enabled, an LLM subprocess periodically extracts entities,
+  // relationships, and memories from recent conversation turns.
+  // Default: true (when graph memory is enabled).
+  bool enable_extraction = 9;
+
+  // Number of tool executions between automatic graph memory extractions.
+  // Default: 5.
+  int32 extraction_cadence = 10;
+
+  // Maximum entities to extract per extraction cycle.
+  // Default: 10.
+  int32 max_entities_per_extraction = 11;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases

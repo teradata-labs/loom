@@ -25,35 +25,35 @@ func TestPatternSelectionIntegration(t *testing.T) {
 	// Test realistic scenarios
 	scenarios := []struct {
 		userMessage       string
-		expectedIntent    IntentCategory
+		expectedIntent    string
 		expectPattern     bool
 		minConfidence     float64
 		expectedInResults []string // Pattern names that should be in top results
 	}{
 		{
 			userMessage:       "analyze customer churn to predict at-risk customers",
-			expectedIntent:    IntentAnalytics,
+			expectedIntent:    "analytics",
 			expectPattern:     true,
 			minConfidence:     0.50,
 			expectedInResults: []string{"churn_analysis", "customer_health_scoring"},
 		},
 		{
 			userMessage:       "find sequences in user clickstream data",
-			expectedIntent:    IntentAnalytics,
+			expectedIntent:    "analytics",
 			expectPattern:     true,
 			minConfidence:     0.50,
 			expectedInResults: []string{"npath", "sessionize"},
 		},
 		{
 			userMessage:       "check for duplicate records and data quality issues",
-			expectedIntent:    IntentDataQuality,
+			expectedIntent:    "data_quality",
 			expectPattern:     true,
 			minConfidence:     0.50,
 			expectedInResults: []string{"duplicate_detection", "data_profiling"},
 		},
 		{
 			userMessage:       "predict customer lifetime value using machine learning",
-			expectedIntent:    IntentAnalytics,
+			expectedIntent:    "analytics",
 			expectPattern:     true,
 			minConfidence:     0.50,
 			expectedInResults: []string{"linear_regression", "logistic_regression"},

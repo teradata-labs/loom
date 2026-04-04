@@ -9,6 +9,23 @@ package loom.v1;
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
+// OutputRetryPolicy defines retry behavior when agent output doesn't match expectations.
+// Used by conditional executors (branch matching fails), pipeline executors
+// (validation_prompt or output_schema fails), and swarm executors (vote parsing fails).
+// Each retry uses a fresh session ID to avoid anchoring on previous bad output.
+message OutputRetryPolicy {
+  // Maximum retries before falling back to default branch or graceful degradation.
+  // 0 = no retries (default behavior, preserves backwards compatibility).
+  int32 max_retries = 1;
+
+  // Whether to include valid output values in the retry prompt.
+  // For conditionals: lists valid branch keys.
+  // For pipelines: includes the JSON schema or validation criteria.
+  // For swarms: includes the vote format template.
+  // Code treats unset (false) as true (include values by default).
+  bool include_valid_values = 2;
+}
+
 // SwarmPattern orchestrates multiple agents to vote on decisions.
 // Agents independently evaluate a question and vote, with configurable
 // consensus thresholds for decision-making.
@@ -30,6 +47,11 @@ message SwarmPattern {
 
   // Optional: Judge agent to break ties
   string judge_agent_id = 6;
+
+  // Optional: Retry policy when vote parsing fails (agent doesn't output
+  // VOTE:/CONFIDENCE:/REASONING: format). Each retry includes the expected
+  // format template and the agent's failed output.
+  OutputRetryPolicy retry_policy = 7;
 }
 
 // VotingStrategy defines how swarm votes are aggregated.

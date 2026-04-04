@@ -9,6 +9,10 @@ priority: 75
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Speed up COUNT(*) on large tables (10+ million rows)"
   - "Optimize existence checks (has any rows?)"

@@ -34,6 +34,8 @@ teradata_function: FASTLOAD
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_transform
 use_cases:
   - Generate FastLoad script from table schema
   - Bulk load CSV/flat files into Teradata tables

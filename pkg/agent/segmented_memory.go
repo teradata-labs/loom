@@ -454,6 +454,84 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	return toCompressCount
 }
 
+// ReplayMessages bulk-loads messages into L1 without per-message compression.
+// This MUST be used instead of calling AddMessage in a loop when restoring a
+// session from the database. Per-message AddMessage triggers compression after
+// each addition, which can fire BETWEEN an assistant tool_use message and its
+// corresponding tool_result — the tool_result hasn't been replayed yet so
+// adjustCompressionBoundary can't protect the pair. The result is an orphaned
+// tool_result in L1 whose tool_use was already compressed to L2 text, causing
+// the Anthropic/Bedrock API to reject the request.
+//
+// ReplayMessages loads all messages first, then runs a single compression pass
+// where the full history is present and tool pairs can be properly preserved.
+func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Message) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if len(messages) == 0 {
+		return
+	}
+
+	// Bulk-load all messages into L1 without triggering per-message compression.
+	sm.l1Messages = append(sm.l1Messages, messages...)
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+
+	// Now run compression with the complete message set so
+	// adjustCompressionBoundary can see all tool_use/tool_result pairs.
+	l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+	budgetUsage := sm.tokenBudget.UsagePercentage()
+	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
+	shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
+
+	if shouldCompress && len(sm.l1Messages) > sm.minL1Messages {
+		criticalThreshold := float64(sm.compressionProfile.CriticalThresholdPercent)
+
+		// Compress in batches (same adaptive logic as AddMessage) until we're
+		// under budget or can't compress further. A single giant batch could
+		// overwhelm the LLM summarizer, so we iterate.
+		for {
+			var toCompressCount int
+			budgetUsage = sm.tokenBudget.UsagePercentage()
+			l1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+			if l1Tokens <= sm.maxL1Tokens && budgetUsage <= warningThreshold {
+				break
+			}
+			if len(sm.l1Messages) <= sm.minL1Messages {
+				break
+			}
+
+			if budgetUsage > criticalThreshold {
+				toCompressCount = min(sm.compressionProfile.CriticalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
+			} else if budgetUsage > warningThreshold {
+				toCompressCount = min(sm.compressionProfile.WarningBatchSize, len(sm.l1Messages)-sm.minL1Messages)
+			} else {
+				toCompressCount = min(sm.compressionProfile.NormalBatchSize, len(sm.l1Messages)-sm.minL1Messages)
+			}
+
+			if toCompressCount <= 0 {
+				break
+			}
+
+			toCompressCount = sm.adjustCompressionBoundary(toCompressCount)
+			if toCompressCount <= 0 {
+				break // adjustCompressionBoundary reduced to 0 — nothing safe to compress
+			}
+
+			tokensBefore := sm.tokenCount
+			toCompress := sm.l1Messages[:toCompressCount]
+			sm.l1Messages = sm.l1Messages[toCompressCount:]
+			sm.compressToL2(ctx, toCompress)
+			sm.updateTokenCount()
+			sm.tokenCountDirty = false
+
+			tokensSaved := tokensBefore - sm.tokenCount
+			sm.logCompressionEvent(len(toCompress), tokensSaved)
+		}
+	}
+}
+
 // AddToolResult adds a tool execution result to kernel layer.
 // Database-backed optimization: Keeps ONLY immediate previous result in memory.
 // All historical results should be persisted to database and retrievable via tools.

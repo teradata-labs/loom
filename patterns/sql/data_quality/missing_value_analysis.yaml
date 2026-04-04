@@ -23,6 +23,9 @@ teradata_function: SQL_COALESCE
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_quality
+  - data_validation
 use_cases:
   - Pre-ML data preparation
   - Data quality reporting

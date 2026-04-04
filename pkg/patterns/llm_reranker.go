@@ -166,7 +166,7 @@ func reRankPatternsWithLLM(
 // With accuracy preference, we invoke LLM more aggressively.
 func shouldInvokeLLMReRanker(
 	scored []scoredPattern,
-	intent IntentCategory,
+	intent string,
 	llmProvider types.LLMProvider,
 ) bool {
 	// No LLM provider available
@@ -182,7 +182,7 @@ func shouldInvokeLLMReRanker(
 	// AGGRESSIVE TRIGGERS (accuracy over speed)
 
 	// 1. Always use LLM for unknown intent
-	if intent == IntentUnknown {
+	if intent == "" {
 		return true
 	}
 

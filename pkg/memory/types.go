@@ -66,6 +66,7 @@ type Memory struct {
 	SummaryTokenCount int
 	AccessCount       int
 	EntityIDs         []string
+	EntityRoles       []EntityIDRole // takes precedence over EntityIDs when present
 	PropertiesJSON    string
 	CreatedAt         time.Time
 	AccessedAt        *time.Time // nil = never accessed
@@ -96,6 +97,7 @@ type EntityRecall struct {
 	Memories        []ScoredMemory
 	EdgesOut        []*Edge
 	EdgesIn         []*Edge
+	EntityNames     map[string]string // ID -> name lookup for edge endpoints
 	TotalTokensUsed int
 	TotalCandidates int
 }
@@ -107,18 +109,28 @@ func (er *EntityRecall) Format() string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Graph Memory: %s (%s)\n", er.Entity.Name, er.Entity.EntityType)
-	if er.Entity.PropertiesJSON != "" && er.Entity.PropertiesJSON != "{}" {
+
+	// Annotate user entities for clear disambiguation.
+	entityLabel := er.Entity.EntityType
+	if strings.Contains(er.Entity.PropertiesJSON, `"is_user":true`) ||
+		strings.Contains(er.Entity.PropertiesJSON, `"is_user": true`) {
+		entityLabel += ", user"
+	}
+	fmt.Fprintf(&b, "## Graph Memory: %s (%s)\n", er.Entity.Name, entityLabel)
+	if er.Entity.PropertiesJSON != "" && er.Entity.PropertiesJSON != "{}" &&
+		er.Entity.PropertiesJSON != `{"is_user":true}` {
 		fmt.Fprintf(&b, "Properties: %s\n", er.Entity.PropertiesJSON)
 	}
 
 	if len(er.EdgesOut) > 0 || len(er.EdgesIn) > 0 {
 		b.WriteString("\n### Relationships\n")
 		for _, e := range er.EdgesOut {
-			fmt.Fprintf(&b, "- %s -> [%s] -> %s\n", er.Entity.Name, e.Relation, e.TargetID)
+			target := er.resolveName(e.TargetID)
+			fmt.Fprintf(&b, "- %s -> [%s] -> %s\n", er.Entity.Name, e.Relation, target)
 		}
 		for _, e := range er.EdgesIn {
-			fmt.Fprintf(&b, "- %s -> [%s] -> %s\n", e.SourceID, e.Relation, er.Entity.Name)
+			source := er.resolveName(e.SourceID)
+			fmt.Fprintf(&b, "- %s -> [%s] -> %s\n", source, e.Relation, er.Entity.Name)
 		}
 	}
 
@@ -135,6 +147,16 @@ func (er *EntityRecall) Format() string {
 	}
 
 	return b.String()
+}
+
+// resolveName looks up an entity ID in the EntityNames map, falling back to the raw ID.
+func (er *EntityRecall) resolveName(id string) string {
+	if er.EntityNames != nil {
+		if name, ok := er.EntityNames[id]; ok {
+			return name
+		}
+	}
+	return id
 }
 
 // GraphStats provides entity/memory/token counts.
@@ -171,3 +193,10 @@ const (
 	RoleFor      = "for"
 	RoleMentions = "mentions"
 )
+
+// EntityIDRole pairs an entity ID with its role in a memory.
+// Used by linkEntitiesTx to store the correct role per entity.
+type EntityIDRole struct {
+	ID   string
+	Role string // RoleAbout, RoleMentions, etc.
+}

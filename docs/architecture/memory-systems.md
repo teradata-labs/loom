@@ -1585,9 +1585,9 @@ Graph memory operates alongside the segmented memory system. While segmented mem
 | Structure | Linear message history | Graph (entities + edges + memories) |
 | Mutability | Messages evicted/compressed | Memories immutable; entities mutable |
 | Retrieval | Chronological (L1/L2/Swap) | Salience-ranked + FTS search |
-| Budget | Manages full context window | Consumes ~10% of context budget |
+| Budget | Manages full context window | Consumes ~20% of context budget (default) |
 
-**Integration**: Graph memory context is injected as a system message at each conversation turn, alongside the segmented memory layers. The token budget for graph memory injection is configurable (default 10% of context window).
+**Integration**: Graph memory context is injected as a system message at each conversation turn, alongside the segmented memory layers. The token budget for graph memory injection is configurable (default 20% of context window via `DefaultGraphMemoryConfig()`).
 
 See [Graph Memory Architecture](graph-memory.md) for the full design.
 

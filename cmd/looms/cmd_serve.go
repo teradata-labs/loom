@@ -222,6 +222,9 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockSessionToken == "" {
 		dst.BedrockSessionToken = src.BedrockSessionToken
 	}
+	if dst.BedrockBearerToken == "" {
+		dst.BedrockBearerToken = src.BedrockBearerToken
+	}
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
@@ -321,6 +324,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			AccessKeyID:       cfg.BedrockAccessKeyID,
 			SecretAccessKey:   cfg.BedrockSecretAccessKey,
 			SessionToken:      cfg.BedrockSessionToken,
+			BearerToken:       cfg.BedrockBearerToken,
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
 			MaxTokens:         cfg.MaxTokens,
@@ -556,6 +560,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			AccessKeyID:     serverConfig.LLM.BedrockAccessKeyID,
 			SecretAccessKey: serverConfig.LLM.BedrockSecretAccessKey,
 			SessionToken:    serverConfig.LLM.BedrockSessionToken,
+			BearerToken:     serverConfig.LLM.BedrockBearerToken,
 			Profile:         serverConfig.LLM.BedrockProfile,
 			ModelID:         modelID,
 			MaxTokens:       maxTokens,
@@ -1105,6 +1110,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockAccessKeyID:     config.LLM.BedrockAccessKeyID,
 		BedrockSecretAccessKey: config.LLM.BedrockSecretAccessKey,
 		BedrockSessionToken:    config.LLM.BedrockSessionToken,
+		BedrockBearerToken:     config.LLM.BedrockBearerToken,
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
 
@@ -1349,7 +1355,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
 					if !explicitlyDisabled {
 						if gmCfg == nil {
-							gmCfg = &loomv1.GraphMemoryConfig{Enabled: true}
+							gmCfg = agent.DefaultGraphMemoryConfig()
 						}
 						agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
 						logger.Info("    Graph memory enabled",
@@ -2420,6 +2426,23 @@ func runServe(cmd *cobra.Command, args []string) {
 				agent.WithErrorStore(errorStore),
 				agent.WithSharedMemory(globalSharedMem), // Use global storage SharedMemoryStore, not communication one
 				agent.WithConfig(cfg),
+			}
+
+			// Wire graph memory (opt-out: enabled by default when store is available).
+			// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
+			if graphMemoryStore != nil {
+				gmCfg := agentConfig.GetMemory().GetGraphMemory()
+				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
+				if !explicitlyDisabled {
+					if gmCfg == nil {
+						gmCfg = agent.DefaultGraphMemoryConfig()
+					}
+					agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+					logger.Info("    Graph memory enabled (hot-reload)",
+						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
+				} else {
+					logger.Info("    Graph memory explicitly disabled (hot-reload)")
+				}
 			}
 
 			// Add PermissionChecker if configured

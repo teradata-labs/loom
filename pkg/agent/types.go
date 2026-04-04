@@ -152,6 +152,11 @@ type Agent struct {
 	// Graph-backed episodic memory (optional).
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
+
+	// Graph memory automatic extraction (mirrors finding extraction pattern).
+	enableGraphMemoryExtraction        bool
+	graphExtractionCadence             int
+	graphToolExecutionsSinceExtraction int
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts

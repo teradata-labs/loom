@@ -24,6 +24,9 @@ teradata_function: SQL_WINDOW_FUNCTIONS
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - data_quality
+  - data_validation
 use_cases:
   - Customer data deduplication (merge CRM records)
   - Product catalog cleanup (remove duplicate SKUs)

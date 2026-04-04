@@ -340,11 +340,15 @@ func convertPipelinePattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 		}
 
 		validationPrompt, _ := stageMap["validation_prompt"].(string)
+		outputSchema, _ := stageMap["output_schema"].(string)
+		retryPolicy := parseOutputRetryPolicy(stageMap)
 
 		stages[i] = &loomv1.PipelineStage{
 			AgentId:          agentID,
 			PromptTemplate:   promptTemplate,
 			ValidationPrompt: validationPrompt,
+			OutputSchema:     outputSchema,
+			RetryPolicy:      retryPolicy,
 		}
 	}
 
@@ -493,6 +497,9 @@ func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPat
 		}
 	}
 
+	// Extract optional retry_policy
+	retryPolicy := parseOutputRetryPolicy(spec)
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Conditional{
 			Conditional: &loomv1.ConditionalPattern{
@@ -500,6 +507,7 @@ func convertConditionalPattern(spec map[string]interface{}) (*loomv1.WorkflowPat
 				ConditionPrompt:  conditionPrompt,
 				Branches:         branches,
 				DefaultBranch:    defaultBranch,
+				RetryPolicy:      retryPolicy,
 			},
 		},
 	}, nil
@@ -667,6 +675,9 @@ func convertSwarmPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, 
 	// Extract optional judge_agent_id
 	judgeAgentID, _ := spec["judge_agent_id"].(string)
 
+	// Extract optional retry_policy
+	retryPolicy := parseOutputRetryPolicy(spec)
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Swarm{
 			Swarm: &loomv1.SwarmPattern{
@@ -676,6 +687,7 @@ func convertSwarmPattern(spec map[string]interface{}) (*loomv1.WorkflowPattern, 
 				ConfidenceThreshold: confidenceThreshold,
 				ShareVotes:          shareVotes,
 				JudgeAgentId:        judgeAgentID,
+				RetryPolicy:         retryPolicy,
 			},
 		},
 	}, nil
@@ -697,6 +709,45 @@ func parseVotingStrategy(strategy string) loomv1.VotingStrategy {
 	default:
 		return loomv1.VotingStrategy_VOTING_STRATEGY_UNSPECIFIED
 	}
+}
+
+// parseOutputRetryPolicy parses an optional retry_policy from YAML config.
+// Returns nil if no retry_policy is present or if max_retries is 0/negative.
+func parseOutputRetryPolicy(raw map[string]interface{}) *loomv1.OutputRetryPolicy {
+	retryRaw, ok := raw["retry_policy"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	policy := &loomv1.OutputRetryPolicy{}
+
+	if maxRetries, ok := retryRaw["max_retries"]; ok {
+		switch v := maxRetries.(type) {
+		case int:
+			policy.MaxRetries = types.SafeInt32(v)
+		case int32:
+			policy.MaxRetries = v
+		case int64:
+			policy.MaxRetries = types.SafeInt32FromInt64(v)
+		case float64:
+			policy.MaxRetries = types.SafeInt32(int(v))
+		}
+	}
+
+	// Return nil if max_retries is 0 or negative — same as "no retry policy"
+	if policy.MaxRetries <= 0 {
+		return nil
+	}
+
+	// Default to true — proto3 bool defaults to false, but including valid values
+	// in retry prompts is the safe default (helps the LLM produce correct output).
+	// Only set to false if explicitly configured.
+	policy.IncludeValidValues = true
+	if includeValues, ok := retryRaw["include_valid_values"].(bool); ok {
+		policy.IncludeValidValues = includeValues
+	}
+
+	return policy
 }
 
 // parseMergeStrategy converts string to MergeStrategy enum

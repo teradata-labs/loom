@@ -20,6 +20,10 @@ teradata_function: TD_LinReg
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - prediction
+  - model_training
 use_cases:
   # --- Use Case 1: Sales Forecasting ---
   - Sales and revenue forecasting

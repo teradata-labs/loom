@@ -55,8 +55,9 @@ type Pattern struct {
 	Difficulty  string `yaml:"difficulty" json:"difficulty"`     // "beginner", "intermediate", "advanced"
 	BackendType string `yaml:"backend_type" json:"backend_type"` // "sql", "rest", "document", etc.
 
-	// Use cases and related patterns
+	// Use cases, intents, and related patterns
 	UseCases        []string `yaml:"use_cases" json:"use_cases"`
+	Intents         []string `yaml:"intents,omitempty" json:"intents,omitempty"` // Freeform intent labels this pattern serves
 	RelatedPatterns []string `yaml:"related_patterns,omitempty" json:"related_patterns,omitempty"`
 
 	// Pattern definition
@@ -237,6 +238,7 @@ type PatternSummary struct {
 	Difficulty      string   `json:"difficulty"`
 	BackendType     string   `json:"backend_type"`
 	UseCases        []string `json:"use_cases"`
+	Intents         []string `json:"intents,omitempty"` // Freeform intent labels this pattern serves
 	BackendFunction string   `json:"backend_function,omitempty"`
 }
 
@@ -246,31 +248,14 @@ type scoredPattern struct {
 	score float64
 }
 
-// IntentCategory represents the classified intent of a user request.
-// This is used by the orchestrator for routing and pattern selection.
-type IntentCategory string
-
-const (
-	// Generic intent categories (backend-agnostic)
-	IntentSchemaDiscovery   IntentCategory = "schema_discovery"
-	IntentDataQuality       IntentCategory = "data_quality"
-	IntentDataTransform     IntentCategory = "data_transform"
-	IntentAnalytics         IntentCategory = "analytics"
-	IntentRelationshipQuery IntentCategory = "relationship_query"
-	IntentQueryGeneration   IntentCategory = "query_generation"
-	IntentDocumentSearch    IntentCategory = "document_search"
-	IntentAPICall           IntentCategory = "api_call"
-	IntentUnknown           IntentCategory = "unknown"
-)
-
 // ExecutionPlan represents a planned sequence of operations.
 // The orchestrator creates this plan based on classified intent.
 type ExecutionPlan struct {
-	Intent      IntentCategory `json:"intent"`
-	Description string         `json:"description"`
-	Steps       []PlannedStep  `json:"steps"`
-	Reasoning   string         `json:"reasoning"`
-	PatternName string         `json:"pattern_name,omitempty"` // Recommended pattern to use
+	Intent      string        `json:"intent"` // Freeform intent label from classifier
+	Description string        `json:"description"`
+	Steps       []PlannedStep `json:"steps"`
+	Reasoning   string        `json:"reasoning"`
+	PatternName string        `json:"pattern_name,omitempty"` // Recommended pattern to use
 }
 
 // PlannedStep represents a single step in an execution plan.
@@ -282,9 +267,10 @@ type PlannedStep struct {
 }
 
 // IntentClassifierFunc is a pluggable function for intent classification.
+// Returns a freeform intent label and confidence score (0.0-1.0).
 // Backends can provide custom classifiers for domain-specific intent detection.
-type IntentClassifierFunc func(userMessage string, context map[string]interface{}) (IntentCategory, float64)
+type IntentClassifierFunc func(userMessage string, context map[string]interface{}) (string, float64)
 
 // ExecutionPlannerFunc is a pluggable function for execution planning.
 // Backends can provide custom planners for domain-specific execution strategies.
-type ExecutionPlannerFunc func(intent IntentCategory, userMessage string, context map[string]interface{}) (*ExecutionPlan, error)
+type ExecutionPlannerFunc func(intent string, userMessage string, context map[string]interface{}) (*ExecutionPlan, error)

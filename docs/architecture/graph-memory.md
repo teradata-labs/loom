@@ -6,7 +6,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session agent
 
 **Version**: v1.2.0
 
-**Status**: Implemented on `graph-memory` branch
+**Status**: ✅ Implemented (merged to main)
 
 
 ## Table of Contents
@@ -318,7 +318,7 @@ Uses multiplicative combination (`CombineScores` in `pkg/memory/salience.go:122`
 3. Format result via `EntityRecall.Format()` into structured text
 4. Inject as system message: `[Graph Memory Context]\n{formatted_recall}`
 
-**Token Budget**: Controlled by config. Default: 10% of context window (200K * 10% = 20K tokens). Can be overridden with absolute `max_context_tokens`. Within `ContextFor()`, the budget is allocated in three phases: entity profile (200 tokens reserved), graph neighborhood (300 tokens reserved), and remaining budget for ranked memories via `AllocateMemoryBudget()` in `pkg/memory/budget.go`.
+**Token Budget**: Controlled by config. Default: 20% of context window (200K * 20% = 40K tokens). Can be overridden with absolute `max_context_tokens`. Within `ContextFor()`, the budget is allocated in three phases: entity profile (200 tokens reserved), graph neighborhood (300 tokens reserved), and remaining budget for ranked memories via `AllocateMemoryBudget()` in `pkg/memory/budget.go`.
 
 **System Prompt Supplement**: When graph memory is enabled, `graphMemoryPromptSupplement()` appends usage instructions to the agent's system prompt. This teaches the agent when and how to use the `graph_memory` tool (store, retrieve, update, remove, graph, context actions) without requiring manual prompt engineering.
 
@@ -521,7 +521,7 @@ Chat Loop      Agent              GraphMemoryStore    Session
 
 **Level 1 -- Agent-level budget** (`graphMemoryTokenBudget()` in `pkg/agent/agent.go`):
 1. If `max_context_tokens > 0`, use it directly
-2. Otherwise: `context_window * context_budget_percent / 100` (default: 200K * 10% = 20K tokens)
+2. Otherwise: `context_window * context_budget_percent / 100` (default: 200K * 20% = 40K tokens)
 
 **Level 2 -- Phased allocation** (`ContextFor()` in `pkg/storage/sqlite/graph_memory_store.go`, using `BudgetConfig` from `pkg/memory/budget.go`):
 1. **Phase 1**: Reserve 200 tokens for entity profile
@@ -675,19 +675,23 @@ agent:
   memory:
     type: sqlite
     graph_memory:
-      enabled: true                    # opt-out (default: true if section exists)
-      context_budget_percent: 10       # % of context window for injection (default: 10)
+      enabled: true                    # opt-out (default: true when store available)
+      context_budget_percent: 20       # % of context window for injection (default: 20)
       max_context_tokens: 0            # absolute override (0 = use percentage)
-      decay_rate: 0.995                # salience decay per day (default: 0.995)
-      boost_amount: 0.05               # salience boost per access (default: 0.05)
+      decay_rate: 0.95                 # salience decay per day (default: 0.95)
+      boost_amount: 0.1               # salience boost per access (default: 0.1)
       min_salience_threshold: 0.1      # recall filter threshold (default: 0.1)
       max_recall_candidates: 50        # max memories to consider (default: 50)
       default_salience: 0.5            # new memory salience (default: 0.5)
 ```
 
+**No YAML required**: Graph memory is enabled by default for all agents when the storage backend provides a `GraphMemoryStore`. Agents created before graph memory was added get it automatically on server restart -- the server applies `DefaultGraphMemoryConfig()` (20% budget, 0.95 decay) when no explicit config exists.
+
 **Proto definition**: `loomv1.GraphMemoryConfig` in `proto/loom/v1/agent_config.proto` (field 8 of `MemoryConfig`). The graph memory gRPC service is in `proto/loom/v1/graph_memory.proto`.
 
-**Wiring**: Server checks if storage backend implements `GraphMemoryProvider`, then calls `WithGraphMemoryStore(store, config)` during agent initialization.
+**Wiring**: Server checks if storage backend implements `GraphMemoryProvider`, then calls `WithGraphMemoryStore(store, config)` during both initial agent loading and hot-reload. Pre-existing agents without a `graph_memory` config section receive `DefaultGraphMemoryConfig()` automatically.
+
+**Database migrations**: Graph memory tables are created automatically via migration 002 (SQLite) / 010 (Postgres) when `auto_migrate: true` (default). No manual migration steps required.
 
 
 ## Related Work

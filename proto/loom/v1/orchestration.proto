@@ -91,8 +91,20 @@ message PipelineStage {
   // Prompt template (can include {{previous}} or {{history}} placeholders)
   string prompt_template = 2;
 
-  // Optional: Validation function to check output before proceeding
+  // Optional: LLM-based validation — asks an LLM if the output meets criteria.
+  // Use {{output}} placeholder to reference the stage output.
   string validation_prompt = 3;
+
+  // Optional: Retry policy when validation fails (schema or LLM validation).
+  // Each retry includes the failure reason and expected format in the prompt.
+  // Each retry uses a fresh session ID.
+  OutputRetryPolicy retry_policy = 4;
+
+  // Optional: JSON Schema for validating stage output.
+  // Instant, free, deterministic validation — no LLM call required.
+  // When both output_schema and validation_prompt are set, schema is checked
+  // first (cheap), then validation_prompt only if schema passes (semantic check).
+  string output_schema = 5;
 }
 
 // IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
@@ -221,6 +233,11 @@ message ConditionalPattern {
 
   // Optional: Default branch if condition doesn't match any branch
   WorkflowPattern default_branch = 4;
+
+  // Optional: Retry policy when condition output doesn't match any branch key.
+  // On retry, the agent receives a prompt listing valid branch keys and its
+  // previous failed output. Each retry uses a fresh session ID.
+  OutputRetryPolicy retry_policy = 5;
 }
 
 // MergeStrategy defines how to combine multiple agent outputs.

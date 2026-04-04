@@ -12,6 +12,8 @@ backend_type: evaluation
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - quality_assurance
 use_cases:
   - A/B test prompt variations
   - Regression test prompt changes

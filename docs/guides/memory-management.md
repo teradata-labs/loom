@@ -55,7 +55,7 @@ Loom organizes conversation context into five tiers:
 - ✅ **Dynamic Memory Allocation**: Automatically calculates L1/L2 token budgets based on model context window size (e.g., Ollama 4K vs Claude 200K). Uses `CalculateDynamicMemoryAllocation` internally.
 - ✅ **Shared Memory**: Large tool results can be stored in a `SharedMemoryStore` to save context tokens.
 - ✅ **Session Memory Tool**: Unified access to session lifecycle, cross-session memory, and compact operations.
-- 🚧 **Graph Memory** (on `graph-memory` branch): Salience-driven graph-backed episodic memory with entities, edges, and FTS5 search. Configured via `graph_memory` in the memory config. See [Graph Memory Architecture](/docs/architecture/graph-memory/).
+- ✅ **Graph Memory**: Salience-driven graph-backed episodic memory with entities, edges, and FTS5 search. Enabled by default for all agents -- no config changes needed. Pre-existing agents get graph memory automatically on server restart. Configure via `graph_memory` in the memory config. See [Graph Memory Architecture](/docs/architecture/graph-memory/).
 
 
 ## Workload Profiles
@@ -459,7 +459,7 @@ memory:
 - [Agent Configuration](/docs/reference/agent-configuration/)
 - [Observability Integration](/docs/guides/integration/observability/)
 - [Memory Systems Architecture](/docs/architecture/memory-systems/)
-- [Graph Memory Architecture](/docs/architecture/graph-memory/) (🚧 in development on `graph-memory` branch)
+- [Graph Memory Architecture](/docs/architecture/graph-memory/)
 
 
 ## Feedback

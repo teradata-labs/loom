@@ -9,6 +9,10 @@ priority: 65
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Reduce table size by 20-60%"
   - "Improve query performance"

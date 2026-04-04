@@ -54,61 +54,61 @@ func TestOrchestrator_ClassifyIntent(t *testing.T) {
 	tests := []struct {
 		name           string
 		message        string
-		expectedIntent IntentCategory
+		expectedIntent string
 		minConfidence  float64
 	}{
 		{
 			name:           "schema discovery",
 			message:        "what tables are in the database",
-			expectedIntent: IntentSchemaDiscovery,
+			expectedIntent: "schema_discovery",
 			minConfidence:  0.85,
 		},
 		{
 			name:           "relationship query",
 			message:        "show me the foreign key relationships",
-			expectedIntent: IntentRelationshipQuery,
+			expectedIntent: "relationship_query",
 			minConfidence:  0.80,
 		},
 		{
 			name:           "data quality",
 			message:        "check data quality and find duplicates",
-			expectedIntent: IntentDataQuality,
+			expectedIntent: "data_quality",
 			minConfidence:  0.85,
 		},
 		{
 			name:           "data transform",
 			message:        "move data from source to target table",
-			expectedIntent: IntentDataTransform,
+			expectedIntent: "data_transform",
 			minConfidence:  0.80,
 		},
 		{
 			name:           "analytics",
 			message:        "calculate sum and average by group",
-			expectedIntent: IntentAnalytics,
+			expectedIntent: "analytics",
 			minConfidence:  0.75,
 		},
 		{
 			name:           "query generation",
 			message:        "write a query to find all customers",
-			expectedIntent: IntentQueryGeneration,
+			expectedIntent: "query_generation",
 			minConfidence:  0.70,
 		},
 		{
 			name:           "document search",
 			message:        "search documents for keyword",
-			expectedIntent: IntentDocumentSearch,
+			expectedIntent: "document_search",
 			minConfidence:  0.75,
 		},
 		{
 			name:           "api call",
 			message:        "make a REST API call to the endpoint",
-			expectedIntent: IntentAPICall,
+			expectedIntent: "api_call",
 			minConfidence:  0.80,
 		},
 		{
 			name:           "unknown intent",
 			message:        "xyz abc random words",
-			expectedIntent: IntentUnknown,
+			expectedIntent: "",
 			minConfidence:  0.0,
 		},
 	}
@@ -134,70 +134,70 @@ func TestOrchestrator_PlanExecution(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		intent      IntentCategory
+		intent      string
 		message     string
 		expectError bool
 		minSteps    int
 	}{
 		{
 			name:        "schema discovery plan",
-			intent:      IntentSchemaDiscovery,
+			intent:      "schema_discovery",
 			message:     "show schema",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "relationship query plan",
-			intent:      IntentRelationshipQuery,
+			intent:      "relationship_query",
 			message:     "show relationships",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "data quality plan",
-			intent:      IntentDataQuality,
+			intent:      "data_quality",
 			message:     "check quality",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "data transform plan",
-			intent:      IntentDataTransform,
+			intent:      "data_transform",
 			message:     "transform data",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "analytics plan",
-			intent:      IntentAnalytics,
+			intent:      "analytics",
 			message:     "run analytics",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "query generation plan",
-			intent:      IntentQueryGeneration,
+			intent:      "query_generation",
 			message:     "generate query",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "document search plan",
-			intent:      IntentDocumentSearch,
+			intent:      "document_search",
 			message:     "search documents",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "api call plan",
-			intent:      IntentAPICall,
+			intent:      "api_call",
 			message:     "call api",
 			expectError: false,
 			minSteps:    1,
 		},
 		{
 			name:        "unknown intent",
-			intent:      IntentUnknown,
+			intent:      "",
 			message:     "unknown",
 			expectError: true,
 			minSteps:    0,
@@ -248,17 +248,17 @@ func TestOrchestrator_GetRoutingRecommendation(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		intent IntentCategory
+		intent string
 	}{
-		{"schema discovery", IntentSchemaDiscovery},
-		{"data quality", IntentDataQuality},
-		{"data transform", IntentDataTransform},
-		{"analytics", IntentAnalytics},
-		{"relationship query", IntentRelationshipQuery},
-		{"query generation", IntentQueryGeneration},
-		{"document search", IntentDocumentSearch},
-		{"api call", IntentAPICall},
-		{"unknown", IntentUnknown},
+		{"schema discovery", "schema_discovery"},
+		{"data quality", "data_quality"},
+		{"data transform", "data_transform"},
+		{"analytics", "analytics"},
+		{"relationship query", "relationship_query"},
+		{"query generation", "query_generation"},
+		{"document search", "document_search"},
+		{"api call", "api_call"},
+		{"unknown", ""},
 	}
 
 	for _, tt := range tests {
@@ -323,28 +323,28 @@ use_cases:
 	tests := []struct {
 		name            string
 		message         string
-		intent          IntentCategory
+		intent          string
 		expectedPattern string
 		minConfidence   float64
 	}{
 		{
 			name:            "time series keyword",
 			message:         "time series",
-			intent:          IntentAnalytics,
+			intent:          "analytics",
 			expectedPattern: "time_series",
 			minConfidence:   0.5,
 		},
 		{
 			name:            "validation keyword",
 			message:         "validation",
-			intent:          IntentDataQuality,
+			intent:          "data_quality",
 			expectedPattern: "data_validation",
 			minConfidence:   0.5,
 		},
 		{
 			name:            "no match",
 			message:         "xyz random words",
-			intent:          IntentUnknown,
+			intent:          "",
 			expectedPattern: "",
 			minConfidence:   0.0,
 		},
@@ -386,9 +386,9 @@ func TestOrchestrator_SetCustomClassifier(t *testing.T) {
 
 	// Set custom classifier
 	customCalled := false
-	customClassifier := func(msg string, ctx map[string]interface{}) (IntentCategory, float64) {
+	customClassifier := func(msg string, ctx map[string]interface{}) (string, float64) {
 		customCalled = true
-		return IntentAnalytics, 0.95
+		return "analytics", 0.95
 	}
 
 	orch.SetIntentClassifier(customClassifier)
@@ -400,8 +400,8 @@ func TestOrchestrator_SetCustomClassifier(t *testing.T) {
 		t.Error("Custom classifier was not called")
 	}
 
-	if intent != IntentAnalytics {
-		t.Errorf("Expected IntentAnalytics from custom classifier, got %s", intent)
+	if intent != "analytics" {
+		t.Errorf("Expected analytics from custom classifier, got %s", intent)
 	}
 
 	if confidence != 0.95 {
@@ -415,7 +415,7 @@ func TestOrchestrator_SetCustomPlanner(t *testing.T) {
 
 	// Set custom planner
 	customCalled := false
-	customPlanner := func(intent IntentCategory, msg string, ctx map[string]interface{}) (*ExecutionPlan, error) {
+	customPlanner := func(intent string, msg string, ctx map[string]interface{}) (*ExecutionPlan, error) {
 		customCalled = true
 		return &ExecutionPlan{
 			Intent:      intent,
@@ -433,7 +433,7 @@ func TestOrchestrator_SetCustomPlanner(t *testing.T) {
 	orch.SetExecutionPlanner(customPlanner)
 
 	// Verify custom planner is used
-	plan, err := orch.PlanExecution(IntentAnalytics, "test message", nil)
+	plan, err := orch.PlanExecution("analytics", "test message", nil)
 
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -454,26 +454,29 @@ func TestOrchestrator_SetCustomPlanner(t *testing.T) {
 
 func TestMatchesIntent(t *testing.T) {
 	tests := []struct {
-		name     string
-		category string
-		intent   IntentCategory
-		expected bool
+		name             string
+		category         string
+		declaredIntents  []string
+		classifiedIntent string
+		expected         bool
 	}{
-		{"exact match", "analytics", IntentAnalytics, true},
-		{"fuzzy match", "aggregation", IntentAnalytics, true},
-		{"fuzzy match", "data_quality", IntentDataQuality, true},
-		{"fuzzy match", "validation", IntentDataQuality, true},
-		{"fuzzy match", "etl", IntentDataTransform, true},
-		{"fuzzy match", "schema", IntentSchemaDiscovery, true},
-		{"no match", "random", IntentAnalytics, false},
-		{"no match", "etl", IntentAnalytics, false},
+		{"category exact match", "analytics", nil, "analytics", true},
+		{"declared intent match", "ml", []string{"analytics", "prediction"}, "analytics", true},
+		{"declared intent match second", "ml", []string{"analytics", "prediction"}, "prediction", true},
+		{"category fallback when no declared intents", "data_quality", nil, "data_quality", true},
+		{"case insensitive", "Analytics", []string{"ANALYTICS"}, "analytics", true},
+		{"empty intent never matches", "analytics", []string{"analytics"}, "", false},
+		{"no match", "random", []string{"other"}, "analytics", false},
+		{"no match without declared intents", "etl", nil, "analytics", false},
+		{"declared intents override category mismatch", "etl", []string{"analytics"}, "analytics", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := matchesIntent(tt.category, tt.intent)
+			result := matchesIntent(tt.category, tt.declaredIntents, tt.classifiedIntent)
 			if result != tt.expected {
-				t.Errorf("matchesIntent(%q, %s) = %v, expected %v", tt.category, tt.intent, result, tt.expected)
+				t.Errorf("matchesIntent(%q, %v, %q) = %v, expected %v",
+					tt.category, tt.declaredIntents, tt.classifiedIntent, result, tt.expected)
 			}
 		})
 	}

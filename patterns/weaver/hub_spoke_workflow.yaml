@@ -5,6 +5,8 @@ category: weaver
 difficulty: advanced
 backend_type: workflow
 
+intents:
+  - weaver
 use_cases:
   - "coordinator with specialists"
   - "hub and spoke"
