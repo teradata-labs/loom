@@ -27,6 +27,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 )
 
 // Backend implements backend.StorageBackend using PostgreSQL with pgx.
@@ -40,6 +41,7 @@ type Backend struct {
 	artifactStore     *ArtifactStore
 	resultStore       *ResultStore
 	humanRequestStore *HumanRequestStore
+	taskStore         *TaskStore
 	migrator          *Migrator
 	tracer            observability.Tracer
 	logger            *zap.Logger
@@ -80,6 +82,7 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 		artifactStore:     NewArtifactStore(pool, tracer),
 		resultStore:       NewResultStore(pool, tracer),
 		humanRequestStore: NewHumanRequestStore(pool, tracer),
+		taskStore:         NewTaskStore(pool, tracer),
 		migrator:          migrator,
 		tracer:            tracer,
 		logger:            logger,
@@ -109,6 +112,11 @@ func (b *Backend) ResultStore() storage.ResultStore {
 // HumanRequestStore returns the PostgreSQL human request store implementation.
 func (b *Backend) HumanRequestStore() shuttle.HumanRequestStore {
 	return b.humanRequestStore
+}
+
+// TaskStore implements backend.TaskStoreProvider.
+func (b *Backend) TaskStore() task.TaskStore {
+	return b.taskStore
 }
 
 // Migrate runs all pending PostgreSQL migrations.

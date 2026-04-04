@@ -1,0 +1,614 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+import "google/api/annotations.proto";
+import "loom/v1/collaboration.proto";
+
+// TaskService provides persistent, dependency-aware task decomposition and
+// kanban-style work management for agents. Tasks are domain-agnostic units
+// of cognitive work — research, analysis, writing, decisions, implementation,
+// review, or any decomposable objective.
+//
+// Inspired by beads (https://github.com/gastownhall/beads) but integrated
+// natively into loom's agent, workflow, and graph memory systems.
+service TaskService {
+  // ─── Task CRUD ───
+
+  // CreateTask creates a new task on a board.
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks"
+      body: "*"
+    };
+  }
+
+  // GetTask retrieves a task by ID.
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse) {
+    option (google.api.http) = {get: "/v1/tasks/{task_id}"};
+  }
+
+  // UpdateTask updates mutable task fields (title, description, notes, etc.).
+  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse) {
+    option (google.api.http) = {
+      patch: "/v1/tasks/{task.id}"
+      body: "*"
+    };
+  }
+
+  // DeleteTask soft-deletes a task.
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse) {
+    option (google.api.http) = {delete: "/v1/tasks/{task_id}"};
+  }
+
+  // ListTasks lists tasks with filtering and pagination.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse) {
+    option (google.api.http) = {get: "/v1/tasks"};
+  }
+
+  // ─── Workflow Operations ───
+
+  // ClaimTask atomically claims a task for an agent session.
+  // Fails if already claimed or not in OPEN status.
+  rpc ClaimTask(ClaimTaskRequest) returns (ClaimTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks/{task_id}:claim"
+      body: "*"
+    };
+  }
+
+  // ReleaseTask releases a claim, returning the task to OPEN status.
+  rpc ReleaseTask(ReleaseTaskRequest) returns (ReleaseTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks/{task_id}:release"
+      body: "*"
+    };
+  }
+
+  // CloseTask marks a task as DONE with a reason.
+  // If the task has an OutputPolicy, validates output before closing.
+  rpc CloseTask(CloseTaskRequest) returns (CloseTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks/{task_id}:close"
+      body: "*"
+    };
+  }
+
+  // TransitionTask changes task status with validation.
+  rpc TransitionTask(TransitionTaskRequest) returns (TransitionTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks/{task_id}:transition"
+      body: "*"
+    };
+  }
+
+  // ─── Dependency Graph ───
+
+  // AddDependency creates a dependency edge between tasks.
+  // Rejects if the edge would create a cycle.
+  rpc AddDependency(AddTaskDependencyRequest) returns (AddTaskDependencyResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks/dependencies"
+      body: "*"
+    };
+  }
+
+  // RemoveDependency removes a dependency edge.
+  rpc RemoveDependency(RemoveTaskDependencyRequest) returns (RemoveTaskDependencyResponse) {
+    option (google.api.http) = {delete: "/v1/tasks/dependencies/{from_task_id}/{to_task_id}"};
+  }
+
+  // GetReadyFront returns tasks with all dependencies satisfied (ready to work on).
+  rpc GetReadyFront(GetReadyFrontRequest) returns (GetReadyFrontResponse) {
+    option (google.api.http) = {get: "/v1/boards/{board_id}/ready"};
+  }
+
+  // GetBlockedTasks returns tasks waiting on unfinished dependencies.
+  rpc GetBlockedTasks(GetBlockedTasksRequest) returns (GetBlockedTasksResponse) {
+    option (google.api.http) = {get: "/v1/boards/{board_id}/blocked"};
+  }
+
+  // ─── Board Management ───
+
+  // CreateBoard creates a new kanban board.
+  rpc CreateBoard(CreateBoardRequest) returns (CreateBoardResponse) {
+    option (google.api.http) = {
+      post: "/v1/boards"
+      body: "*"
+    };
+  }
+
+  // GetBoard retrieves a board with its lanes and task counts.
+  rpc GetBoard(GetBoardRequest) returns (GetBoardResponse) {
+    option (google.api.http) = {get: "/v1/boards/{board_id}"};
+  }
+
+  // ListBoards lists all boards.
+  rpc ListBoards(ListBoardsRequest) returns (ListBoardsResponse) {
+    option (google.api.http) = {get: "/v1/boards"};
+  }
+
+  // ─── LLM-Assisted Decomposition ───
+
+  // DecomposeTask uses an LLM to break a goal into a dependency DAG of subtasks.
+  rpc DecomposeTask(DecomposeTaskRequest) returns (DecomposeTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks:decompose"
+      body: "*"
+    };
+  }
+
+  // ─── Agent Context ───
+
+  // GetTaskContext returns the current task context for an agent,
+  // including claimed tasks, ready front, and board summary.
+  rpc GetTaskContext(GetTaskContextRequest) returns (TaskContext) {
+    option (google.api.http) = {get: "/v1/agents/{agent_id}/task-context"};
+  }
+
+  // ─── Streaming ───
+
+  // StreamTaskUpdates streams real-time task status changes.
+  rpc StreamTaskUpdates(StreamTaskUpdatesRequest) returns (stream TaskUpdate) {
+    option (google.api.http) = {get: "/v1/boards/{board_id}/updates:stream"};
+  }
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+// TaskStatus represents the lifecycle state of a task.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_OPEN = 1;          // Ready to be picked up
+  TASK_STATUS_IN_PROGRESS = 2;   // Claimed and being worked on
+  TASK_STATUS_BLOCKED = 3;       // Waiting on dependencies
+  TASK_STATUS_DONE = 4;          // Completed
+  TASK_STATUS_DEFERRED = 5;      // Parked intentionally
+  TASK_STATUS_CANCELLED = 6;     // Won't do
+}
+
+// TaskPriority indicates urgency. Lower number = higher urgency.
+enum TaskPriority {
+  TASK_PRIORITY_UNSPECIFIED = 0;
+  TASK_PRIORITY_CRITICAL = 1;    // P0: drop everything
+  TASK_PRIORITY_HIGH = 2;        // P1: do next
+  TASK_PRIORITY_MEDIUM = 3;      // P2: normal work
+  TASK_PRIORITY_LOW = 4;         // P3: when time permits
+  TASK_PRIORITY_BACKLOG = 5;     // P4: someday
+}
+
+// TaskCategory classifies the type of cognitive work. Domain-agnostic.
+enum TaskCategory {
+  TASK_CATEGORY_UNSPECIFIED = 0;
+  TASK_CATEGORY_RESEARCH = 1;        // Information gathering, literature review
+  TASK_CATEGORY_ANALYSIS = 2;        // Data analysis, investigation, diagnosis
+  TASK_CATEGORY_IMPLEMENTATION = 3;  // Building, coding, creating artifacts
+  TASK_CATEGORY_REVIEW = 4;          // Evaluating, auditing, quality checking
+  TASK_CATEGORY_WRITING = 5;         // Documentation, reports, communication
+  TASK_CATEGORY_DECISION = 6;        // Architectural decisions, trade-off evaluation
+  TASK_CATEGORY_INVESTIGATION = 7;   // Debugging, root cause analysis
+  TASK_CATEGORY_PLANNING = 8;        // Strategy, roadmap, decomposition
+  TASK_CATEGORY_OTHER = 9;
+}
+
+// TaskDependencyType classifies dependency edges in the task graph.
+enum TaskDependencyType {
+  TASK_DEPENDENCY_TYPE_UNSPECIFIED = 0;
+  // to_task blocks from_task (from_task cannot start until to_task is DONE).
+  TASK_DEPENDENCY_TYPE_BLOCKS = 1;
+  // Hierarchical: from_task is a child of to_task.
+  TASK_DEPENDENCY_TYPE_PARENT_CHILD = 2;
+  // Informational: from_task was discovered while working on to_task.
+  TASK_DEPENDENCY_TYPE_DISCOVERED_FROM = 3;
+  // Informational: tasks are related but neither blocks the other.
+  TASK_DEPENDENCY_TYPE_RELATED = 4;
+}
+
+// DecomposeStrategy controls how the LLM decomposes a goal.
+enum DecomposeStrategy {
+  DECOMPOSE_STRATEGY_UNSPECIFIED = 0;
+  // Walk backward from the goal to prerequisites (beads model).
+  DECOMPOSE_STRATEGY_BACKWARD = 1;
+  // Plan sequentially from current state toward the goal.
+  DECOMPOSE_STRATEGY_FORWARD = 2;
+  // Maximize tasks that can run concurrently.
+  DECOMPOSE_STRATEGY_PARALLEL = 3;
+}
+
+// =============================================================================
+// Core Messages
+// =============================================================================
+
+// Task is a unit of cognitive work — domain-agnostic.
+// It can represent research, analysis, writing, decision-making, implementation,
+// review, or any decomposable objective.
+message Task {
+  // SHA256 content-hash ID (merge-safe across agents/sessions).
+  string id = 1;
+
+  // Short title (< 120 chars).
+  string title = 2;
+
+  // Detailed description of what needs to be done.
+  string description = 3;
+
+  // What "done" looks like — the desired end state.
+  string objective = 4;
+
+  // How to accomplish the objective (filled by agent or decomposer).
+  string approach = 5;
+
+  // Verifiable completion conditions.
+  string acceptance_criteria = 6;
+
+  // Running progress log. Agents append structured notes at milestones.
+  // Survives context window compaction (rebuilt from DB each turn).
+  string notes = 7;
+
+  TaskStatus status = 8;
+  TaskPriority priority = 9;
+  TaskCategory category = 10;
+
+  // Freeform tags for classification beyond the category enum.
+  repeated string tags = 11;
+
+  // Agent that created this task.
+  string owner_agent_id = 12;
+
+  // Agent currently working on this task.
+  string assignee_agent_id = 13;
+
+  // Session ID holding the claim lock.
+  string claimed_by_session = 14;
+
+  // Timestamps (Unix milliseconds).
+  int64 created_at = 15;
+  int64 updated_at = 16;
+  int64 claimed_at = 17;
+  int64 closed_at = 18;
+
+  // Reason for closing (completion summary, cancellation reason, etc.).
+  string close_reason = 19;
+
+  // Parent task ID (for hierarchical decomposition: epic → task → subtask).
+  string parent_id = 20;
+
+  // Child task IDs (populated by server on read).
+  repeated string child_ids = 21;
+
+  // Graph memory entity IDs linked to this task.
+  repeated string entity_ids = 22;
+
+  // Arbitrary key-value metadata.
+  map<string, string> metadata = 23;
+
+  // Board this task belongs to.
+  string board_id = 24;
+
+  // Compaction level: 0=full, 1=summarized, 2=archived.
+  int32 compaction_level = 25;
+
+  // Summary created during compaction (replaces full description/notes).
+  string compacted_summary = 26;
+
+  // Output validation policy — validated before task can be closed as DONE.
+  OutputPolicy output_policy = 27;
+
+  // Freeform effort estimate (e.g., "5 min", "2 hours", "multi-session").
+  string estimated_effort = 28;
+}
+
+// TaskDependency is a directed edge in the task dependency graph.
+message TaskDependency {
+  // This task...
+  string from_task_id = 1;
+  // ...depends on this task.
+  string to_task_id = 2;
+  TaskDependencyType type = 3;
+  int64 created_at = 4;
+  // Agent that created this dependency.
+  string created_by = 5;
+  map<string, string> metadata = 6;
+}
+
+// TaskBoard is a kanban board that groups tasks into lanes.
+message TaskBoard {
+  string id = 1;
+  string name = 2;
+  // Optional: tie this board to a workflow execution.
+  string workflow_id = 3;
+  repeated TaskLane lanes = 4;
+  map<string, string> metadata = 5;
+  int64 created_at = 6;
+}
+
+// TaskLane is a column in a kanban board, mapped to a task status.
+message TaskLane {
+  string name = 1;
+  // Status that tasks in this lane have.
+  TaskStatus status = 2;
+  // Task IDs in display order within this lane.
+  repeated string task_ids = 3;
+  // Work-in-progress limit (0 = unlimited).
+  int32 wip_limit = 4;
+}
+
+// TaskBoardStats provides aggregate counts for a board.
+message TaskBoardStats {
+  int32 total = 1;
+  int32 open = 2;
+  int32 in_progress = 3;
+  int32 blocked = 4;
+  int32 done = 5;
+  int32 deferred = 6;
+  int32 cancelled = 7;
+}
+
+// TaskContext is the agent's current awareness of its work state.
+// Injected into the system prompt each turn, rebuilt from the database.
+message TaskContext {
+  // Task(s) the agent currently has claimed.
+  repeated Task current_tasks = 1;
+  // Tasks in the ready front (all deps satisfied, available to claim).
+  repeated Task ready_tasks = 2;
+  // Tasks blocked by the agent's current task(s).
+  repeated Task blocked_by_me = 3;
+  // Tasks blocking the agent's current task(s).
+  repeated Task blocking_me = 4;
+  // Board-level aggregate stats.
+  TaskBoardStats stats = 5;
+  // Compact text summary of board state (for LLM context injection).
+  string board_summary = 6;
+}
+
+// TaskHistoryEntry records an audit trail event for a task.
+message TaskHistoryEntry {
+  string id = 1;
+  string task_id = 2;
+  // Action: "created", "claimed", "released", "transitioned", "closed", "updated", "dependency_added", "dependency_removed".
+  string action = 3;
+  string old_status = 4;
+  string new_status = 5;
+  string agent_id = 6;
+  string session_id = 7;
+  int64 timestamp = 8;
+  // JSON blob with action-specific details.
+  string details_json = 9;
+}
+
+// TaskUpdate is a streaming event for real-time task monitoring.
+message TaskUpdate {
+  Task task = 1;
+  string action = 2;
+  string agent_id = 3;
+  int64 timestamp = 4;
+}
+
+// =============================================================================
+// Request / Response Messages
+// =============================================================================
+
+// ─── CRUD ───
+
+message CreateTaskRequest {
+  Task task = 1;
+}
+
+message CreateTaskResponse {
+  Task task = 1;
+}
+
+message GetTaskRequest {
+  string task_id = 1;
+}
+
+message GetTaskResponse {
+  Task task = 1;
+  // Dependencies where this task is the from_task (things it depends on).
+  repeated TaskDependency dependencies = 2;
+  // Dependencies where this task is the to_task (things depending on it).
+  repeated TaskDependency dependents = 3;
+}
+
+message UpdateTaskRequest {
+  Task task = 1;
+  // Fields to update. If empty, all mutable fields are updated.
+  repeated string update_mask = 2;
+}
+
+message UpdateTaskResponse {
+  Task task = 1;
+}
+
+message DeleteTaskRequest {
+  string task_id = 1;
+}
+
+message DeleteTaskResponse {}
+
+message ListTasksRequest {
+  string board_id = 1;
+  TaskStatus status = 2;
+  TaskPriority priority = 3;
+  TaskCategory category = 4;
+  string assignee_agent_id = 5;
+  string parent_id = 6;
+  string query = 7;         // Full-text search
+  int32 limit = 8;
+  int32 offset = 9;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  int32 total_count = 2;
+}
+
+// ─── Workflow Operations ───
+
+message ClaimTaskRequest {
+  string task_id = 1;
+  string agent_id = 2;
+  string session_id = 3;
+}
+
+message ClaimTaskResponse {
+  Task task = 1;
+  // False if task was already claimed or not in OPEN status.
+  bool success = 2;
+  string error = 3;
+}
+
+message ReleaseTaskRequest {
+  string task_id = 1;
+  string session_id = 2;
+}
+
+message ReleaseTaskResponse {
+  Task task = 1;
+}
+
+message CloseTaskRequest {
+  string task_id = 1;
+  string close_reason = 2;
+  // Output to validate against the task's output_policy (if set).
+  string output = 3;
+}
+
+message CloseTaskResponse {
+  Task task = 1;
+  // If output validation failed, this contains the feedback.
+  string validation_feedback = 2;
+  bool validation_passed = 3;
+}
+
+message TransitionTaskRequest {
+  string task_id = 1;
+  TaskStatus new_status = 2;
+  string reason = 3;
+}
+
+message TransitionTaskResponse {
+  Task task = 1;
+}
+
+// ─── Dependencies ───
+
+message AddTaskDependencyRequest {
+  TaskDependency dependency = 1;
+}
+
+message AddTaskDependencyResponse {
+  TaskDependency dependency = 1;
+}
+
+message RemoveTaskDependencyRequest {
+  string from_task_id = 1;
+  string to_task_id = 2;
+}
+
+message RemoveTaskDependencyResponse {}
+
+message GetReadyFrontRequest {
+  string board_id = 1;
+  // Optional: filter by agent capability (only tasks the agent can work on).
+  string agent_id = 2;
+  TaskPriority min_priority = 3;
+  int32 max_results = 4;
+}
+
+message GetReadyFrontResponse {
+  repeated Task ready_tasks = 1;
+  TaskBoardStats stats = 2;
+}
+
+message GetBlockedTasksRequest {
+  string board_id = 1;
+}
+
+message GetBlockedTasksResponse {
+  repeated Task blocked_tasks = 1;
+  // For each blocked task, the IDs of tasks blocking it.
+  map<string, BlockerList> blockers = 2;
+}
+
+// BlockerList is a helper for the blocked tasks response.
+message BlockerList {
+  repeated string task_ids = 1;
+}
+
+// ─── Board Management ───
+
+message CreateBoardRequest {
+  TaskBoard board = 1;
+}
+
+message CreateBoardResponse {
+  TaskBoard board = 1;
+}
+
+message GetBoardRequest {
+  string board_id = 1;
+}
+
+message GetBoardResponse {
+  TaskBoard board = 1;
+  TaskBoardStats stats = 2;
+}
+
+message ListBoardsRequest {}
+
+message ListBoardsResponse {
+  repeated TaskBoard boards = 1;
+}
+
+// ─── LLM-Assisted Decomposition ───
+
+message DecomposeTaskRequest {
+  // High-level goal to decompose.
+  string goal = 1;
+  // Additional context for the LLM.
+  string context = 2;
+  // Target board for the created tasks.
+  string board_id = 3;
+  // Optional: create subtasks under this parent task.
+  string parent_task_id = 4;
+  // Maximum decomposition depth (default: 3).
+  int32 max_depth = 5;
+  DecomposeStrategy strategy = 6;
+  // Agent ID performing the decomposition (for LLM selection).
+  string agent_id = 7;
+}
+
+message DecomposeTaskResponse {
+  repeated Task tasks = 1;
+  repeated TaskDependency dependencies = 2;
+  // LLM's decomposition rationale.
+  string reasoning = 3;
+  TaskBoard board = 4;
+}
+
+// ─── Agent Context ───
+
+message GetTaskContextRequest {
+  string agent_id = 1;
+  string board_id = 2;
+  // Maximum tokens for the context block (default: 500).
+  int32 max_tokens = 3;
+}
+
+// ─── Streaming ───
+
+message StreamTaskUpdatesRequest {
+  string board_id = 1;
+  // Optional: filter by agent.
+  string agent_id = 2;
+}
