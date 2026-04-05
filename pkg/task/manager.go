@@ -607,7 +607,7 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 
 	_, err := m.graphMemory.Remember(ctx, mem)
 	if err != nil {
-		m.logger.Debug("failed to create task completion memory",
+		m.logger.Warn("failed to create task completion memory",
 			zap.String("task_id", t.ID),
 			zap.Error(err))
 	}

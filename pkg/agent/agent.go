@@ -833,7 +833,7 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 	if a.taskManager == nil {
 		return
 	}
-	if a.taskBoardConfig != nil && !a.taskBoardConfig.Enabled {
+	if a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
 		return
 	}
 

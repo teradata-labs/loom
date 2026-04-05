@@ -42,6 +42,9 @@ type Decomposer struct {
 
 // NewDecomposer creates a new LLM-assisted task decomposer.
 func NewDecomposer(manager *Manager, tracer observability.Tracer, logger *zap.Logger) *Decomposer {
+	if manager == nil {
+		panic("task.NewDecomposer: manager must not be nil")
+	}
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}

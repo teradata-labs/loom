@@ -115,6 +115,16 @@ func (v *OutputValidator) ValidateAndRetry(
 			// First attempt: always execute with original prompt.
 			result, err = execute(ctx, currentSessionID, originalPrompt)
 		} else {
+			// Apply cooldown before retry execution (not after).
+			if retryPolicy != nil && retryPolicy.CooldownMs > 0 {
+				time.Sleep(time.Duration(retryPolicy.CooldownMs) * time.Millisecond)
+			}
+
+			lastOutput := ""
+			if lastResult != nil {
+				lastOutput = lastResult.Output
+			}
+
 			// Retry: behavior depends on session mode.
 			switch effectiveMode(sessionMode, attempt) {
 			case loomv1.RetrySessionMode_RETRY_SESSION_MODE_CONTINUE:
@@ -123,18 +133,13 @@ func (v *OutputValidator) ValidateAndRetry(
 				} else {
 					// Fallback to fresh if no feedback function provided.
 					currentSessionID = fmt.Sprintf("%s-retry%d", workflowID, attempt)
-					prompt := buildRetryPrompt(originalPrompt, warnings[len(warnings)-1], retryPolicy, attempt, maxRetries)
+					prompt := buildRetryPromptWithOutput(originalPrompt, warnings[len(warnings)-1], lastOutput, retryPolicy, attempt, maxRetries)
 					result, err = execute(ctx, currentSessionID, prompt)
 				}
 			case loomv1.RetrySessionMode_RETRY_SESSION_MODE_FRESH:
 				currentSessionID = fmt.Sprintf("%s-retry%d", workflowID, attempt)
-				prompt := buildRetryPrompt(originalPrompt, warnings[len(warnings)-1], retryPolicy, attempt, maxRetries)
+				prompt := buildRetryPromptWithOutput(originalPrompt, warnings[len(warnings)-1], lastOutput, retryPolicy, attempt, maxRetries)
 				result, err = execute(ctx, currentSessionID, prompt)
-			}
-
-			// Apply cooldown if configured.
-			if retryPolicy != nil && retryPolicy.CooldownMs > 0 {
-				time.Sleep(time.Duration(retryPolicy.CooldownMs) * time.Millisecond)
 			}
 		}
 
@@ -220,12 +225,12 @@ func effectiveMode(mode loomv1.RetrySessionMode, attempt int) loomv1.RetrySessio
 }
 
 // buildRetryPrompt constructs a retry prompt with validation feedback.
-func buildRetryPrompt(originalPrompt, lastWarning string, retryPolicy *loomv1.OutputRetryPolicy, attempt, maxRetries int) string {
+func buildRetryPromptWithOutput(originalPrompt, lastWarning, previousOutput string, retryPolicy *loomv1.OutputRetryPolicy, attempt, maxRetries int) string {
 	if retryPolicy != nil && retryPolicy.FeedbackTemplate != "" {
 		// Use custom feedback template with all documented variables.
 		prompt := retryPolicy.FeedbackTemplate
 		prompt = strings.ReplaceAll(prompt, "{{error}}", lastWarning)
-		prompt = strings.ReplaceAll(prompt, "{{previous_output}}", "") // not available in fresh mode
+		prompt = strings.ReplaceAll(prompt, "{{previous_output}}", previousOutput)
 		prompt = strings.ReplaceAll(prompt, "{{attempt}}", fmt.Sprintf("%d", attempt))
 		prompt = strings.ReplaceAll(prompt, "{{max_retries}}", fmt.Sprintf("%d", maxRetries))
 		return originalPrompt + "\n\n" + prompt
