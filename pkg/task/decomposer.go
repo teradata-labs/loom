@@ -75,6 +75,12 @@ func (d *Decomposer) Decompose(ctx context.Context, llm types.LLMProvider, req *
 	ctx, span := d.tracer.StartSpan(ctx, "task_decomposer.decompose")
 	defer d.tracer.EndSpan(span)
 
+	if req.Goal == "" {
+		return nil, fmt.Errorf("decompose: goal is required")
+	}
+	if llm == nil {
+		return nil, fmt.Errorf("decompose: LLM provider is required")
+	}
 	if req.MaxDepth <= 0 {
 		req.MaxDepth = defaultDecomposeMaxDepth
 	}
@@ -182,7 +188,7 @@ func (d *Decomposer) buildPrompt(req *DecomposeRequest) string {
 }`)
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Rules:\n"))
+	b.WriteString("Rules:\n")
 	b.WriteString(fmt.Sprintf("- Keep decomposition depth within %d levels\n", req.MaxDepth))
 	b.WriteString("- Each task must have a clear, verifiable objective\n")
 	b.WriteString("- Dependencies must be acyclic (no circular references)\n")
@@ -225,8 +231,9 @@ func (d *Decomposer) callWithRetry(ctx context.Context, llm types.LLMProvider, p
 				types.Message{Role: "assistant", Content: raw},
 				types.Message{Role: "user", Content: fmt.Sprintf(
 					"Your output was not valid JSON. Error: %s\n\n"+
-						"Output ONLY a valid JSON object matching the schema above. "+
-						"No markdown fences, no extra text before or after the JSON.",
+						"Output ONLY a valid JSON object with a \"tasks\" array and a \"reasoning\" string. "+
+						"No markdown fences, no extra text before or after the JSON. "+
+						"Each task needs: title, description, objective, acceptance_criteria, category, priority, estimated_effort, depends_on (array of 0-based indices), tags.",
 					err.Error(),
 				)},
 			)
@@ -264,8 +271,8 @@ type decomposeTaskOutput struct {
 // parseDecomposeOutput extracts structured tasks from LLM output.
 // Handles common LLM quirks: markdown fences, leading/trailing text.
 func parseDecomposeOutput(raw string) (*decomposeOutput, error) {
-	// Strip markdown code fences if present.
-	cleaned := stripMarkdownFences(raw)
+	// Extract JSON, handling markdown fences and leading/trailing text.
+	cleaned := extractJSON(raw)
 
 	var output decomposeOutput
 	if err := json.Unmarshal([]byte(cleaned), &output); err != nil {
@@ -276,39 +283,104 @@ func parseDecomposeOutput(raw string) (*decomposeOutput, error) {
 		return nil, fmt.Errorf("decomposition produced zero tasks")
 	}
 
-	// Validate dependency indices.
-	for _, t := range output.Tasks {
+	// Validate dependency indices using array position (ignore LLM's index field).
+	for i, t := range output.Tasks {
 		for _, dep := range t.DependsOn {
 			if dep < 0 || dep >= len(output.Tasks) {
 				return nil, fmt.Errorf("task %d (%q) has invalid depends_on index %d (max: %d)",
-					t.Index, t.Title, dep, len(output.Tasks)-1)
+					i, t.Title, dep, len(output.Tasks)-1)
 			}
-			if dep == t.Index {
-				return nil, fmt.Errorf("task %d (%q) depends on itself", t.Index, t.Title)
+			if dep == i {
+				return nil, fmt.Errorf("task %d (%q) depends on itself", i, t.Title)
 			}
 		}
+	}
+
+	// Detect cycles in the parsed dependency graph before materialization.
+	if err := detectLocalCycles(output.Tasks); err != nil {
+		return nil, err
 	}
 
 	return &output, nil
 }
 
-// stripMarkdownFences removes ```json ... ``` wrappers.
-func stripMarkdownFences(s string) string {
+// detectLocalCycles checks the parsed task array for dependency cycles using
+// topological sort (Kahn's algorithm). This catches cycles before any tasks
+// are created in the store, preventing orphaned partial materializations.
+func detectLocalCycles(tasks []decomposeTaskOutput) error {
+	n := len(tasks)
+
+	// Build adjacency list and in-degree counts.
+	// Edge: depends_on[j] → i means "task i depends on task j" (j blocks i).
+	inDegree := make([]int, n)
+	adj := make([][]int, n) // adj[j] = list of tasks that j blocks
+	for i := range adj {
+		adj[i] = []int{}
+	}
+
+	for i, t := range tasks {
+		for _, dep := range t.DependsOn {
+			adj[dep] = append(adj[dep], i)
+			inDegree[i]++
+		}
+	}
+
+	// Kahn's algorithm: process nodes with in-degree 0.
+	queue := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		if inDegree[i] == 0 {
+			queue = append(queue, i)
+		}
+	}
+
+	processed := 0
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		processed++
+
+		for _, neighbor := range adj[node] {
+			inDegree[neighbor]--
+			if inDegree[neighbor] == 0 {
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+
+	if processed != n {
+		return fmt.Errorf("decomposition contains a dependency cycle (%d of %d tasks have circular dependencies)", n-processed, n)
+	}
+	return nil
+}
+
+// extractJSON finds and returns the first JSON object in the string.
+// Handles: bare JSON, ```json fences, leading/trailing text around JSON.
+func extractJSON(s string) string {
 	s = strings.TrimSpace(s)
 
-	// Remove leading ```json or ```
-	if strings.HasPrefix(s, "```json") {
-		s = strings.TrimPrefix(s, "```json")
-	} else if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```")
+	// Try 1: strip markdown fences (```json ... ``` or ``` ... ```)
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		start := idx + len("```json")
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+	}
+	if idx := strings.Index(s, "```"); idx >= 0 {
+		start := idx + len("```")
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
 	}
 
-	// Remove trailing ```
-	if strings.HasSuffix(s, "```") {
-		s = strings.TrimSuffix(s, "```")
+	// Try 2: find the first { and last } to extract the JSON object.
+	firstBrace := strings.Index(s, "{")
+	lastBrace := strings.LastIndex(s, "}")
+	if firstBrace >= 0 && lastBrace > firstBrace {
+		return s[firstBrace : lastBrace+1]
 	}
 
-	return strings.TrimSpace(s)
+	// Fallback: return as-is and let json.Unmarshal report the error.
+	return s
 }
 
 func truncate(s string, n int) string {
@@ -319,19 +391,33 @@ func truncate(s string, n int) string {
 }
 
 // =============================================================================
-// Materialization (create tasks + deps in store)
+// Materialization (create tasks + deps in store, with rollback)
 // =============================================================================
 
 // materialize creates the decomposed tasks and dependencies in the store.
+// If any step fails, already-created tasks are cleaned up (best-effort rollback).
 func (d *Decomposer) materialize(ctx context.Context, req *DecomposeRequest, parsed *decomposeOutput) (*DecomposeResponse, error) {
 	resp := &DecomposeResponse{
 		Reasoning: parsed.Reasoning,
 	}
 
-	// Create tasks (index → task ID mapping for dependency wiring).
-	taskIDs := make(map[int]string, len(parsed.Tasks))
+	// Track created task IDs for rollback on failure.
+	// Uses array position as the index key (ignoring LLM's index field).
+	createdIDs := make([]string, 0, len(parsed.Tasks))
 
-	for _, pt := range parsed.Tasks {
+	rollback := func() {
+		for _, id := range createdIDs {
+			if err := d.manager.DeleteTask(ctx, id); err != nil {
+				d.logger.Warn("rollback: failed to delete task", zap.String("task_id", id), zap.Error(err))
+			}
+		}
+	}
+
+	// Create tasks using array position as the canonical index.
+	for i, pt := range parsed.Tasks {
+		if pt.Tags == nil {
+			pt.Tags = []string{}
+		}
 		t := &Task{
 			Title:              pt.Title,
 			Description:        pt.Description,
@@ -352,25 +438,27 @@ func (d *Decomposer) materialize(ctx context.Context, req *DecomposeRequest, par
 
 		created, err := d.manager.CreateTask(ctx, t)
 		if err != nil {
-			return nil, fmt.Errorf("create task %d (%q): %w", pt.Index, pt.Title, err)
+			rollback()
+			return nil, fmt.Errorf("create task %d (%q): %w", i, pt.Title, err)
 		}
 
-		taskIDs[pt.Index] = created.ID
+		createdIDs = append(createdIDs, created.ID)
 		resp.Tasks = append(resp.Tasks, created)
 	}
 
-	// Wire dependencies using the index→ID map.
-	for _, pt := range parsed.Tasks {
+	// Wire dependencies using array position → created ID mapping.
+	for i, pt := range parsed.Tasks {
 		for _, depIdx := range pt.DependsOn {
 			dep := &TaskDependency{
-				FromTaskID: taskIDs[pt.Index],
-				ToTaskID:   taskIDs[depIdx],
+				FromTaskID: createdIDs[i],
+				ToTaskID:   createdIDs[depIdx],
 				Type:       loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS,
 				CreatedBy:  req.AgentID,
 			}
 
 			if err := d.manager.AddDependency(ctx, dep); err != nil {
-				return nil, fmt.Errorf("add dependency %d→%d: %w", pt.Index, depIdx, err)
+				rollback()
+				return nil, fmt.Errorf("add dependency %d→%d: %w", i, depIdx, err)
 			}
 
 			resp.Dependencies = append(resp.Dependencies, dep)
