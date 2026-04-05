@@ -66,6 +66,12 @@ func (m *Manager) Store() TaskStore {
 	return m.store
 }
 
+// SetBus sets the message bus for event publishing. This supports two-phase
+// initialization where the Manager is created before the bus is available.
+func (m *Manager) SetBus(bus *communication.MessageBus) {
+	m.bus = bus
+}
+
 // =============================================================================
 // Task CRUD (delegates to store, adds events + history)
 // =============================================================================

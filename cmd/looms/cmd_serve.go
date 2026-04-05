@@ -1893,6 +1893,11 @@ func runServe(cmd *cobra.Command, args []string) {
 		messageBus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
 		logger.Info("Broadcast bus initialized")
 
+		// Wire message bus into task manager for event publishing (two-phase init).
+		if taskManager != nil {
+			taskManager.SetBus(messageBus)
+		}
+
 		// 2. Message Queue for point-to-point async messaging
 		queuePath := config.Communication.Store.Path
 		if queuePath == "" {
