@@ -748,12 +748,13 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Append graph memory instructions if graph memory is enabled
 	basePrompt += a.graphMemoryPromptSupplement()
 
-	// Append task board instructions if task board is enabled
-	basePrompt += a.taskBoardPromptSupplement()
-
 	// Inject live task context (current tasks, ready front, board stats).
 	// Rebuilt from DB each turn — survives context compaction.
 	basePrompt += a.buildTaskContext(ctx)
+
+	// Append task board tool instructions after the context block,
+	// so the agent sees "here's your state" before "here's how to manage it".
+	basePrompt += a.taskBoardPromptSupplement()
 
 	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
 }
@@ -843,36 +844,58 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 // buildTaskContext queries the task store and builds a compact context block
 // for injection into the system prompt. Rebuilt from DB each turn, so it
 // survives context compaction — the agent never forgets what it's working on.
-// Returns empty string if task board is not enabled or no tasks exist.
+// Returns empty string if task board is not enabled, budget is 0, or no tasks exist.
 func (a *Agent) buildTaskContext(ctx context.Context) string {
 	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
 		return ""
 	}
 
+	// context_budget_tokens = 0 means disable context injection (per proto doc).
+	// Negative values also disable. Unset (proto default 0) disables; users must
+	// explicitly set a positive value or rely on the default below.
 	budgetTokens := int(a.taskBoardConfig.ContextBudgetTokens)
+	if budgetTokens < 0 {
+		return ""
+	}
 	if budgetTokens == 0 {
-		budgetTokens = 500 // default
+		budgetTokens = 500 // default when not explicitly set
 	}
 
 	boardID := a.taskBoardConfig.DefaultBoardId
 
 	// Query current claimed tasks for this agent.
-	claimed, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+	claimed, _, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
 		AssigneeAgentID: a.id,
 		Status:          loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
 		BoardID:         boardID,
 		Limit:           5,
 	})
+	if err != nil {
+		zap.L().Warn("task context: failed to list claimed tasks", zap.Error(err))
+	}
 
 	// Query ready front.
-	ready, _ := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
+	ready, err := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
 		MaxResults: 5,
 	})
+	if err != nil {
+		zap.L().Warn("task context: failed to get ready front", zap.Error(err))
+	}
 
 	// Query board stats.
-	allTasks, total, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+	allTasks, total, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
 		BoardID: boardID,
 		Limit:   1000,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to list board tasks", zap.Error(err))
+	}
+
+	// Query recent completions (last 3 closed tasks for momentum/context).
+	recentDone, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		BoardID: boardID,
+		Status:  loomv1.TaskStatus_TASK_STATUS_DONE,
+		Limit:   3,
 	})
 
 	// If no tasks exist anywhere, skip the context block entirely.
@@ -889,7 +912,7 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 	var b strings.Builder
 	b.WriteString("\n\n--- TASK CONTEXT ---\n")
 
-	// Current tasks
+	// Current tasks with dependency info.
 	if len(claimed) > 0 {
 		for _, t := range claimed {
 			fmt.Fprintf(&b, "CURRENT TASK: [%s] %q (%s, %s)\n",
@@ -901,13 +924,14 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 				fmt.Fprintf(&b, "  Approach: %s\n", t.Approach)
 			}
 			if t.Notes != "" {
-				// Show last ~200 chars of notes to stay within budget.
 				notes := t.Notes
 				if len(notes) > 200 {
 					notes = "..." + notes[len(notes)-200:]
 				}
 				fmt.Fprintf(&b, "  Notes: %s\n", notes)
 			}
+			// Show dependency info for current task.
+			a.writeTaskDeps(&b, ctx, t.ID)
 		}
 	} else {
 		b.WriteString("NO CURRENT TASK — use task_board ready to find work\n")
@@ -923,6 +947,14 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 			}
 			fmt.Fprintf(&b, "  [%s] %q (%s%s)\n",
 				truncateID(t.ID), t.Title, task.PriorityName(t.Priority), effort)
+		}
+	}
+
+	// Recent completions
+	if len(recentDone) > 0 {
+		fmt.Fprintf(&b, "\nRECENT COMPLETIONS (%d):\n", len(recentDone))
+		for _, t := range recentDone {
+			fmt.Fprintf(&b, "  [%s] %q — %s\n", truncateID(t.ID), t.Title, t.CloseReason)
 		}
 	}
 
@@ -951,6 +983,40 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 	}
 
 	return result
+}
+
+// writeTaskDeps appends blocked-by and blocking info for a task to the builder.
+func (a *Agent) writeTaskDeps(b *strings.Builder, ctx context.Context, taskID string) {
+	deps, _ := a.taskManager.Store().GetDependencies(ctx, taskID)
+	dependents, _ := a.taskManager.Store().GetDependents(ctx, taskID)
+
+	blockedBy := []string{}
+	for _, d := range deps {
+		if d.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			blocker, err := a.taskManager.Store().GetTask(ctx, d.ToTaskID)
+			if err == nil && !task.IsTerminal(blocker.Status) {
+				blockedBy = append(blockedBy, fmt.Sprintf("[%s] %q", truncateID(blocker.ID), blocker.Title))
+			}
+		}
+	}
+	blocking := []string{}
+	for _, d := range dependents {
+		if d.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			blocked, err := a.taskManager.Store().GetTask(ctx, d.FromTaskID)
+			if err == nil {
+				blocking = append(blocking, fmt.Sprintf("[%s] %q", truncateID(blocked.ID), blocked.Title))
+			}
+		}
+	}
+
+	if len(blockedBy) > 0 {
+		fmt.Fprintf(b, "  Blocked by: %s\n", strings.Join(blockedBy, ", "))
+	} else {
+		b.WriteString("  Blocked by: (none)\n")
+	}
+	if len(blocking) > 0 {
+		fmt.Fprintf(b, "  Blocking: %s\n", strings.Join(blocking, ", "))
+	}
 }
 
 // truncateID returns the first 8 chars of an ID for compact display.

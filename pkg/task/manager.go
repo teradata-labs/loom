@@ -264,7 +264,7 @@ func (m *Manager) AddDependency(ctx context.Context, dep *TaskDependency) error 
 	// transition the dependent task to BLOCKED (from OPEN or IN_PROGRESS).
 	if dep.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
 		blocker, err := m.store.GetTask(ctx, dep.ToTaskID)
-		if err == nil && !isTerminal(blocker.Status) {
+		if err == nil && !IsTerminal(blocker.Status) {
 			dependent, err := m.store.GetTask(ctx, dep.FromTaskID)
 			if err == nil && (dependent.Status == loomv1.TaskStatus_TASK_STATUS_OPEN ||
 				dependent.Status == loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS) {
@@ -494,7 +494,7 @@ func (m *Manager) tryAutoCompleteParent(ctx context.Context, parentID string) {
 
 	allDone := true
 	for _, child := range children {
-		if !isTerminal(child.Status) {
+		if !IsTerminal(child.Status) {
 			allDone = false
 			break
 		}
@@ -502,7 +502,7 @@ func (m *Manager) tryAutoCompleteParent(ctx context.Context, parentID string) {
 
 	if allDone {
 		parent, err := m.store.GetTask(ctx, parentID)
-		if err != nil || isTerminal(parent.Status) {
+		if err != nil || IsTerminal(parent.Status) {
 			return
 		}
 		oldStatus := StatusName(parent.Status)
@@ -544,7 +544,7 @@ func (m *Manager) tryUnblock(ctx context.Context, taskID string) {
 		if err != nil {
 			return // can't determine, stay blocked
 		}
-		if !isTerminal(blocker.Status) {
+		if !IsTerminal(blocker.Status) {
 			return // still blocked
 		}
 	}
@@ -635,8 +635,8 @@ func (m *Manager) publishEvent(ctx context.Context, topic string, t *Task, agent
 	}
 }
 
-// isTerminal returns true if the status is a terminal state (DONE, DEFERRED, CANCELLED).
-func isTerminal(status loomv1.TaskStatus) bool {
+// IsTerminal returns true if the status is a terminal state (DONE, DEFERRED, CANCELLED).
+func IsTerminal(status loomv1.TaskStatus) bool {
 	switch status {
 	case loomv1.TaskStatus_TASK_STATUS_DONE,
 		loomv1.TaskStatus_TASK_STATUS_DEFERRED,
