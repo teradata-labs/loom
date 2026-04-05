@@ -61,6 +61,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/tui/components"
@@ -821,9 +822,21 @@ func runServe(cmd *cobra.Command, args []string) {
 		graphMemoryStore = gmp.GraphMemoryStore()
 	}
 
+	// Extract task store if available (optional interface)
+	var taskManager *task.Manager
+	var taskDecomposer *task.Decomposer
+	if tsp, ok := storageBackend.(backend.TaskStoreProvider); ok {
+		ts := tsp.TaskStore()
+		if ts != nil {
+			taskManager = task.NewManager(ts, nil, tracer, logger.Named("task"))
+			taskDecomposer = task.NewDecomposer(taskManager, tracer, logger.Named("task.decompose"))
+		}
+	}
+
 	logger.Info("Storage backend initialized",
 		zap.String("backend", config.Storage.Backend),
-		zap.Bool("graph_memory_available", graphMemoryStore != nil))
+		zap.Bool("graph_memory_available", graphMemoryStore != nil),
+		zap.Bool("task_store_available", taskManager != nil))
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -1362,6 +1375,16 @@ func runServe(cmd *cobra.Command, args []string) {
 							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
 					} else {
 						logger.Info("    Graph memory explicitly disabled")
+					}
+				}
+
+				// Wire task board (opt-in: disabled by default).
+				// To enable for a specific agent, set task_board.enabled: true in its YAML.
+				if taskManager != nil {
+					tbCfg := cfg.Memory.GetTaskBoard()
+					if tbCfg != nil && tbCfg.Enabled {
+						agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+						logger.Info("    Task board enabled")
 					}
 				}
 
@@ -2442,6 +2465,15 @@ func runServe(cmd *cobra.Command, args []string) {
 						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
 				} else {
 					logger.Info("    Graph memory explicitly disabled (hot-reload)")
+				}
+			}
+
+			// Wire task board (opt-in: disabled by default).
+			if taskManager != nil {
+				tbCfg := agentConfig.GetMemory().GetTaskBoard()
+				if tbCfg != nil && tbCfg.Enabled {
+					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+					logger.Info("    Task board enabled (hot-reload)")
 				}
 			}
 
