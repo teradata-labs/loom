@@ -265,7 +265,7 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		if err != nil {
 			return fmt.Errorf("list tasks: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		for rows.Next() {
 			t, err := pgScanTaskRows(rows)
@@ -470,7 +470,7 @@ func (s *TaskStore) GetDependencies(ctx context.Context, taskID string) ([]*task
 		if err != nil {
 			return fmt.Errorf("get dependencies: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		deps, err = pgScanDependencies(rows)
 		return err
@@ -490,7 +490,7 @@ func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*task.T
 		if err != nil {
 			return fmt.Errorf("get dependents: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		deps, err = pgScanDependencies(rows)
 		return err
@@ -558,7 +558,7 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 		if err != nil {
 			return fmt.Errorf("get ready front: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		for rows.Next() {
 			t, err := pgScanTaskRows(rows)
@@ -597,7 +597,7 @@ func (s *TaskStore) GetBlockedTasks(ctx context.Context, boardID string) ([]*tas
 		if err != nil {
 			return fmt.Errorf("get blocked tasks: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		for rows.Next() {
 			t, err := pgScanTaskRows(rows)
@@ -686,7 +686,7 @@ func (s *TaskStore) ListBoards(ctx context.Context) ([]*task.TaskBoard, error) {
 		if err != nil {
 			return fmt.Errorf("list boards: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		for rows.Next() {
 			var board task.TaskBoard
@@ -743,7 +743,7 @@ func (s *TaskStore) GetHistory(ctx context.Context, taskID string) ([]*task.Task
 		if err != nil {
 			return fmt.Errorf("get history: %w", err)
 		}
-		defer rows.Close()
+		defer rows.Close() //nolint:errcheck
 
 		for rows.Next() {
 			var e task.TaskHistoryEntry

@@ -228,10 +228,10 @@ func TestMigrateDown(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version, "should be at version 2 before rollback")
+	assert.Equal(t, 3, version, "should be at version 3 before rollback")
 
 	// Now migrate down all steps
-	err = migrator.MigrateDown(ctx, 2)
+	err = migrator.MigrateDown(ctx, 3)
 	require.NoError(t, err)
 
 	// Verify CurrentVersion returns 0
@@ -255,6 +255,10 @@ func TestMigrateDown(t *testing.T) {
 		"graph_memories",
 		"graph_memory_entities",
 		"graph_memory_lineage",
+		"tasks",
+		"task_dependencies",
+		"task_boards",
+		"task_history",
 	}
 	for _, table := range droppedTables {
 		assert.False(t, tableExists(t, db, table),

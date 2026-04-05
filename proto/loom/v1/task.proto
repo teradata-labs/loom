@@ -7,10 +7,10 @@ syntax = "proto3";
 
 package loom.v1;
 
-option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
-
 import "google/api/annotations.proto";
 import "loom/v1/collaboration.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
 // TaskService provides persistent, dependency-aware task decomposition and
 // kanban-style work management for agents. Tasks are domain-agnostic units
@@ -168,35 +168,35 @@ service TaskService {
 // TaskStatus represents the lifecycle state of a task.
 enum TaskStatus {
   TASK_STATUS_UNSPECIFIED = 0;
-  TASK_STATUS_OPEN = 1;          // Ready to be picked up
-  TASK_STATUS_IN_PROGRESS = 2;   // Claimed and being worked on
-  TASK_STATUS_BLOCKED = 3;       // Waiting on dependencies
-  TASK_STATUS_DONE = 4;          // Completed
-  TASK_STATUS_DEFERRED = 5;      // Parked intentionally
-  TASK_STATUS_CANCELLED = 6;     // Won't do
+  TASK_STATUS_OPEN = 1; // Ready to be picked up
+  TASK_STATUS_IN_PROGRESS = 2; // Claimed and being worked on
+  TASK_STATUS_BLOCKED = 3; // Waiting on dependencies
+  TASK_STATUS_DONE = 4; // Completed
+  TASK_STATUS_DEFERRED = 5; // Parked intentionally
+  TASK_STATUS_CANCELLED = 6; // Won't do
 }
 
 // TaskPriority indicates urgency. Lower number = higher urgency.
 enum TaskPriority {
   TASK_PRIORITY_UNSPECIFIED = 0;
-  TASK_PRIORITY_CRITICAL = 1;    // P0: drop everything
-  TASK_PRIORITY_HIGH = 2;        // P1: do next
-  TASK_PRIORITY_MEDIUM = 3;      // P2: normal work
-  TASK_PRIORITY_LOW = 4;         // P3: when time permits
-  TASK_PRIORITY_BACKLOG = 5;     // P4: someday
+  TASK_PRIORITY_CRITICAL = 1; // P0: drop everything
+  TASK_PRIORITY_HIGH = 2; // P1: do next
+  TASK_PRIORITY_MEDIUM = 3; // P2: normal work
+  TASK_PRIORITY_LOW = 4; // P3: when time permits
+  TASK_PRIORITY_BACKLOG = 5; // P4: someday
 }
 
 // TaskCategory classifies the type of cognitive work. Domain-agnostic.
 enum TaskCategory {
   TASK_CATEGORY_UNSPECIFIED = 0;
-  TASK_CATEGORY_RESEARCH = 1;        // Information gathering, literature review
-  TASK_CATEGORY_ANALYSIS = 2;        // Data analysis, investigation, diagnosis
-  TASK_CATEGORY_IMPLEMENTATION = 3;  // Building, coding, creating artifacts
-  TASK_CATEGORY_REVIEW = 4;          // Evaluating, auditing, quality checking
-  TASK_CATEGORY_WRITING = 5;         // Documentation, reports, communication
-  TASK_CATEGORY_DECISION = 6;        // Architectural decisions, trade-off evaluation
-  TASK_CATEGORY_INVESTIGATION = 7;   // Debugging, root cause analysis
-  TASK_CATEGORY_PLANNING = 8;        // Strategy, roadmap, decomposition
+  TASK_CATEGORY_RESEARCH = 1; // Information gathering, literature review
+  TASK_CATEGORY_ANALYSIS = 2; // Data analysis, investigation, diagnosis
+  TASK_CATEGORY_IMPLEMENTATION = 3; // Building, coding, creating artifacts
+  TASK_CATEGORY_REVIEW = 4; // Evaluating, auditing, quality checking
+  TASK_CATEGORY_WRITING = 5; // Documentation, reports, communication
+  TASK_CATEGORY_DECISION = 6; // Architectural decisions, trade-off evaluation
+  TASK_CATEGORY_INVESTIGATION = 7; // Debugging, root cause analysis
+  TASK_CATEGORY_PLANNING = 8; // Strategy, roadmap, decomposition
   TASK_CATEGORY_OTHER = 9;
 }
 
@@ -442,7 +442,7 @@ message ListTasksRequest {
   TaskCategory category = 4;
   string assignee_agent_id = 5;
   string parent_id = 6;
-  string query = 7;         // Full-text search
+  string query = 7; // Full-text search
   int32 limit = 8;
   int32 offset = 9;
 }

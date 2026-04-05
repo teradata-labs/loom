@@ -228,16 +228,15 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		return nil, 0, fmt.Errorf("count tasks: %w", err)
 	}
 
-	// Fetch page
-	query := `
-		SELECT id, title, description, objective, approach, acceptance_criteria, notes,
+	// Fetch page — dynamic WHERE built from validated enum values; all user data via ? params
+	query := `SELECT id, title, description, objective, approach, acceptance_criteria, notes,
 			status, priority, category, tags_json,
 			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason
-		FROM tasks t WHERE ` + where + `
-		ORDER BY t.priority ASC, t.created_at ASC`
+		FROM tasks t WHERE ` + where + // #nosec G202 -- where is built from validated enum conditions with ? placeholders
+		` ORDER BY t.priority ASC, t.created_at ASC`
 
 	limit := opts.Limit
 	if limit <= 0 {
@@ -249,7 +248,7 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 	if err != nil {
 		return nil, 0, fmt.Errorf("list tasks: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var tasks []*task.Task
 	for rows.Next() {
@@ -403,7 +402,7 @@ func (s *TaskStore) GetDependencies(ctx context.Context, taskID string) ([]*task
 	if err != nil {
 		return nil, fmt.Errorf("get dependencies: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanDependencies(rows)
 }
@@ -418,7 +417,7 @@ func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*task.T
 	if err != nil {
 		return nil, fmt.Errorf("get dependents: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanDependencies(rows)
 }
@@ -466,8 +465,8 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 		limit = 20
 	}
 
-	query := fmt.Sprintf(`
-		SELECT id, title, description, objective, approach, acceptance_criteria, notes,
+	// #nosec G201 -- where/limit are built from validated enum values with ? placeholders
+	query := fmt.Sprintf(`SELECT id, title, description, objective, approach, acceptance_criteria, notes,
 			status, priority, category, tags_json,
 			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
@@ -481,7 +480,7 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 	if err != nil {
 		return nil, fmt.Errorf("get ready front: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var tasks []*task.Task
 	for rows.Next() {
@@ -521,7 +520,7 @@ func (s *TaskStore) GetBlockedTasks(ctx context.Context, boardID string) ([]*tas
 	if err != nil {
 		return nil, fmt.Errorf("get blocked tasks: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var tasks []*task.Task
 	for rows.Next() {
@@ -602,7 +601,7 @@ func (s *TaskStore) ListBoards(ctx context.Context) ([]*task.TaskBoard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list boards: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var boards []*task.TaskBoard
 	for rows.Next() {
@@ -656,7 +655,7 @@ func (s *TaskStore) GetHistory(ctx context.Context, taskID string) ([]*task.Task
 	if err != nil {
 		return nil, fmt.Errorf("get history: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var entries []*task.TaskHistoryEntry
 	for rows.Next() {
