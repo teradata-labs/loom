@@ -44,6 +44,9 @@ func NewTaskBoardTool(manager *task.Manager, decomposer *task.Decomposer, agentI
 	}
 }
 
+// Compile-time interface check.
+var _ shuttle.Tool = (*TaskBoardTool)(nil)
+
 func (t *TaskBoardTool) Name() string    { return "task_board" }
 func (t *TaskBoardTool) Backend() string { return "" }
 func (t *TaskBoardTool) Description() string {
@@ -304,6 +307,12 @@ func (t *TaskBoardTool) executeUpdate(ctx context.Context, input map[string]inte
 	}
 	if approach := getStr(input, "approach"); approach != "" {
 		existing.Approach = approach
+	}
+	if s := getStr(input, "status"); s != "" {
+		newStatus := parseTaskStatus(s)
+		if newStatus != loomv1.TaskStatus_TASK_STATUS_UNSPECIFIED {
+			existing.Status = newStatus
+		}
 	}
 
 	updated, err := t.manager.UpdateTask(ctx, existing, nil)
