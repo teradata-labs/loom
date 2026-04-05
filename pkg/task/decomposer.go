@@ -423,8 +423,8 @@ func (d *Decomposer) materialize(ctx context.Context, req *DecomposeRequest, par
 			Description:        pt.Description,
 			Objective:          pt.Objective,
 			AcceptanceCriteria: pt.AcceptanceCriteria,
-			Category:           parseCategory(pt.Category),
-			Priority:           parsePriority(pt.Priority),
+			Category:           ParseCategory(pt.Category),
+			Priority:           ParsePriority(pt.Priority),
 			EstimatedEffort:    pt.EstimatedEffort,
 			Tags:               pt.Tags,
 			Status:             loomv1.TaskStatus_TASK_STATUS_OPEN,
@@ -472,7 +472,7 @@ func (d *Decomposer) materialize(ctx context.Context, req *DecomposeRequest, par
 // Enum Parsing
 // =============================================================================
 
-func parseCategory(s string) loomv1.TaskCategory {
+func ParseCategory(s string) loomv1.TaskCategory {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "research":
 		return loomv1.TaskCategory_TASK_CATEGORY_RESEARCH
@@ -495,7 +495,7 @@ func parseCategory(s string) loomv1.TaskCategory {
 	}
 }
 
-func parsePriority(s string) loomv1.TaskPriority {
+func ParsePriority(s string) loomv1.TaskPriority {
 	switch strings.ToUpper(strings.TrimSpace(s)) {
 	case "P0", "CRITICAL":
 		return loomv1.TaskPriority_TASK_PRIORITY_CRITICAL

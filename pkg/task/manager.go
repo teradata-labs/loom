@@ -80,7 +80,7 @@ func (m *Manager) CreateTask(ctx context.Context, t *Task) (*Task, error) {
 		return nil, err
 	}
 
-	m.recordHistory(ctx, created.ID, "created", "", statusName(created.Status), t.OwnerAgentID, "")
+	m.recordHistory(ctx, created.ID, "created", "", StatusName(created.Status), t.OwnerAgentID, "")
 	m.publishEvent(ctx, TopicTaskCreated, created, t.OwnerAgentID)
 
 	return created, nil
@@ -124,7 +124,7 @@ func (m *Manager) DeleteTask(ctx context.Context, id string) error {
 
 	oldStatus := ""
 	if existing != nil {
-		oldStatus = statusName(existing.Status)
+		oldStatus = StatusName(existing.Status)
 	}
 	m.recordHistory(ctx, id, "deleted", oldStatus, "", "", "")
 	m.publishEvent(ctx, TopicTaskDeleted, existing, "")
@@ -156,7 +156,7 @@ func (m *Manager) ClaimTask(ctx context.Context, taskID, agentID, sessionID stri
 		return nil, err
 	}
 
-	m.recordHistory(ctx, taskID, "claimed", statusName(loomv1.TaskStatus_TASK_STATUS_OPEN), statusName(claimed.Status), agentID, sessionID)
+	m.recordHistory(ctx, taskID, "claimed", StatusName(loomv1.TaskStatus_TASK_STATUS_OPEN), StatusName(claimed.Status), agentID, sessionID)
 	m.publishEvent(ctx, TopicTaskClaimed, claimed, agentID)
 
 	return claimed, nil
@@ -172,7 +172,7 @@ func (m *Manager) ReleaseTask(ctx context.Context, taskID, sessionID string) (*T
 		return nil, err
 	}
 
-	m.recordHistory(ctx, taskID, "released", statusName(loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS), statusName(released.Status), "", sessionID)
+	m.recordHistory(ctx, taskID, "released", StatusName(loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS), StatusName(released.Status), "", sessionID)
 	m.publishEvent(ctx, TopicTaskReleased, released, "")
 
 	return released, nil
@@ -188,14 +188,14 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	if err != nil {
 		return nil, err
 	}
-	oldStatus := statusName(existing.Status)
+	oldStatus := StatusName(existing.Status)
 
 	closed, err := m.store.CloseTask(ctx, taskID, reason)
 	if err != nil {
 		return nil, err
 	}
 
-	m.recordHistory(ctx, taskID, "closed", oldStatus, statusName(closed.Status), existing.AssigneeAgentID, existing.ClaimedBySession)
+	m.recordHistory(ctx, taskID, "closed", oldStatus, StatusName(closed.Status), existing.AssigneeAgentID, existing.ClaimedBySession)
 	m.publishEvent(ctx, TopicTaskCompleted, closed, "")
 
 	// Auto-complete parent if all children are done.
@@ -215,14 +215,14 @@ func (m *Manager) TransitionTask(ctx context.Context, taskID string, newStatus l
 	if err != nil {
 		return nil, err
 	}
-	oldStatus := statusName(existing.Status)
+	oldStatus := StatusName(existing.Status)
 
 	transitioned, err := m.store.TransitionTask(ctx, taskID, newStatus)
 	if err != nil {
 		return nil, err
 	}
 
-	m.recordHistory(ctx, taskID, "transitioned", oldStatus, statusName(transitioned.Status), "", "")
+	m.recordHistory(ctx, taskID, "transitioned", oldStatus, StatusName(transitioned.Status), "", "")
 
 	if newStatus == loomv1.TaskStatus_TASK_STATUS_BLOCKED {
 		m.publishEvent(ctx, TopicTaskBlocked, transitioned, "")
@@ -499,14 +499,14 @@ func (m *Manager) tryAutoCompleteParent(ctx context.Context, parentID string) {
 		if err != nil || isTerminal(parent.Status) {
 			return
 		}
-		oldStatus := statusName(parent.Status)
+		oldStatus := StatusName(parent.Status)
 		reason := fmt.Sprintf("auto-completed: all %d child tasks are done", len(children))
 		closed, err := m.store.CloseTask(ctx, parentID, reason)
 		if err != nil {
 			m.logger.Warn("auto-complete parent failed", zap.String("parent_id", parentID), zap.Error(err))
 			return
 		}
-		m.recordHistory(ctx, parentID, "auto-closed", oldStatus, statusName(loomv1.TaskStatus_TASK_STATUS_DONE), "", "")
+		m.recordHistory(ctx, parentID, "auto-closed", oldStatus, StatusName(loomv1.TaskStatus_TASK_STATUS_DONE), "", "")
 		m.publishEvent(ctx, TopicTaskCompleted, closed, "")
 
 		// Recurse: if the parent itself has a parent, check that too.
@@ -598,7 +598,7 @@ func (m *Manager) publishEvent(ctx context.Context, topic string, t *Task, agent
 	}
 	if t != nil {
 		metadata["task_id"] = t.ID
-		metadata["status"] = statusName(t.Status)
+		metadata["status"] = StatusName(t.Status)
 		metadata["board_id"] = t.BoardID
 	}
 	if agentID != "" {
@@ -641,8 +641,50 @@ func isTerminal(status loomv1.TaskStatus) bool {
 	}
 }
 
-// statusName returns the human-readable name of a task status.
-func statusName(status loomv1.TaskStatus) string {
+// PriorityName returns the human-readable name of a task priority.
+func PriorityName(priority loomv1.TaskPriority) string {
+	switch priority {
+	case loomv1.TaskPriority_TASK_PRIORITY_CRITICAL:
+		return "P0"
+	case loomv1.TaskPriority_TASK_PRIORITY_HIGH:
+		return "P1"
+	case loomv1.TaskPriority_TASK_PRIORITY_MEDIUM:
+		return "P2"
+	case loomv1.TaskPriority_TASK_PRIORITY_LOW:
+		return "P3"
+	case loomv1.TaskPriority_TASK_PRIORITY_BACKLOG:
+		return "P4"
+	default:
+		return "P2"
+	}
+}
+
+// CategoryName returns the human-readable name of a task category.
+func CategoryName(category loomv1.TaskCategory) string {
+	switch category {
+	case loomv1.TaskCategory_TASK_CATEGORY_RESEARCH:
+		return "research"
+	case loomv1.TaskCategory_TASK_CATEGORY_ANALYSIS:
+		return "analysis"
+	case loomv1.TaskCategory_TASK_CATEGORY_IMPLEMENTATION:
+		return "implementation"
+	case loomv1.TaskCategory_TASK_CATEGORY_REVIEW:
+		return "review"
+	case loomv1.TaskCategory_TASK_CATEGORY_WRITING:
+		return "writing"
+	case loomv1.TaskCategory_TASK_CATEGORY_DECISION:
+		return "decision"
+	case loomv1.TaskCategory_TASK_CATEGORY_INVESTIGATION:
+		return "investigation"
+	case loomv1.TaskCategory_TASK_CATEGORY_PLANNING:
+		return "planning"
+	default:
+		return "other"
+	}
+}
+
+// StatusName returns the human-readable name of a task status.
+func StatusName(status loomv1.TaskStatus) string {
 	switch status {
 	case loomv1.TaskStatus_TASK_STATUS_OPEN:
 		return "OPEN"

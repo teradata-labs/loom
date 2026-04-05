@@ -35,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -268,6 +269,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// that references it. The post-loop calls in Chat/ChatWithProgress are harmless
 	// no-ops since checkAndRegisterGraphMemoryTool early-returns if already registered.
 	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	return a
 }
@@ -746,6 +748,9 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Append graph memory instructions if graph memory is enabled
 	basePrompt += a.graphMemoryPromptSupplement()
 
+	// Append task board instructions if task board is enabled
+	basePrompt += a.taskBoardPromptSupplement()
+
 	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
 }
 
@@ -779,6 +784,56 @@ Actions:
 - consolidate: merge related memories
 
 Focus on the user's request first. Memory operations happen alongside your work, not instead of it.`
+}
+
+// taskBoardPromptSupplement returns instructions for agents with task board enabled.
+// Returns empty string when task board is not available.
+func (a *Agent) taskBoardPromptSupplement() string {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return ""
+	}
+	return `
+
+---
+
+TASK BOARD
+
+You have a task_board tool for decomposing goals into dependency-tracked tasks and managing work via a kanban board.
+
+Workflow:
+1. decompose — Break a complex goal into a DAG of subtasks (specify strategy: backward, forward, or parallel)
+2. ready — See what tasks have all dependencies satisfied and are available to work on
+3. claim — Atomically claim a task to work on (prevents other agents from picking it up)
+4. Work on the task using your other tools
+5. update — Append progress notes, update approach as you learn more
+6. close — Mark the task done with a completion reason
+7. ready — Check what's unblocked next
+
+Key actions: decompose, ready, claim, update, close, create, list, show, add_dep, board
+
+Guidelines:
+- For complex multi-step requests, use decompose before diving in
+- Always claim a task before working on it
+- Append structured notes at milestones: [STARTED], [PROGRESS], [KEY FINDING], [BLOCKED]
+- Close tasks with a meaningful reason summarizing what was accomplished
+- Use show to check dependencies and blocked/blocking relationships
+- Tasks are domain-agnostic: research, analysis, writing, decisions — not just code`
+}
+
+// checkAndRegisterTaskBoardTool implements progressive disclosure for the task_board tool.
+func (a *Agent) checkAndRegisterTaskBoardTool() {
+	if a.tools.IsRegistered("task_board") {
+		return
+	}
+	if a.taskManager == nil {
+		return
+	}
+	if a.taskBoardConfig != nil && !a.taskBoardConfig.Enabled {
+		return
+	}
+
+	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
+	a.tools.Register(tbTool)
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
@@ -947,6 +1002,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
 	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -1136,6 +1192,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
 	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -3365,6 +3422,15 @@ func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMem
 	return func(a *Agent) {
 		a.graphMemoryStore = store
 		a.graphMemoryConfig = config
+	}
+}
+
+// WithTaskBoard sets the task manager, decomposer, and config for task decomposition and kanban.
+func WithTaskBoard(manager *task.Manager, decomposer *task.Decomposer, config *loomv1.TaskBoardConfig) Option {
+	return func(a *Agent) {
+		a.taskManager = manager
+		a.taskDecomposer = decomposer
+		a.taskBoardConfig = config
 	}
 }
 
