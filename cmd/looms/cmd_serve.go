@@ -830,6 +830,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		if ts != nil {
 			taskManager = task.NewManager(ts, nil, tracer, logger.Named("task"))
 			taskDecomposer = task.NewDecomposer(taskManager, tracer, logger.Named("task.decompose"))
+			// Wire graph memory for auto-creating memories on task completion.
+			if graphMemoryStore != nil {
+				taskManager.SetGraphMemory(graphMemoryStore)
+			}
 		}
 	}
 

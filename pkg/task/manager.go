@@ -25,6 +25,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -44,10 +45,11 @@ const (
 // It handles cycle detection, auto-status propagation, event publishing,
 // WIP limit enforcement, and task compaction.
 type Manager struct {
-	store  TaskStore
-	bus    *communication.MessageBus // optional, nil = no events
-	tracer observability.Tracer
-	logger *zap.Logger
+	store       TaskStore
+	bus         *communication.MessageBus // optional, nil = no events
+	graphMemory memory.GraphMemoryStore   // optional, nil = no memory integration
+	tracer      observability.Tracer
+	logger      *zap.Logger
 }
 
 // NewManager creates a new task manager.
@@ -70,6 +72,12 @@ func (m *Manager) Store() TaskStore {
 // initialization where the Manager is created before the bus is available.
 func (m *Manager) SetBus(bus *communication.MessageBus) {
 	m.bus = bus
+}
+
+// SetGraphMemory sets the graph memory store for auto-creating memories
+// when tasks are completed. Supports two-phase initialization.
+func (m *Manager) SetGraphMemory(store memory.GraphMemoryStore) {
+	m.graphMemory = store
 }
 
 // =============================================================================
@@ -203,6 +211,9 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 
 	m.recordHistory(ctx, taskID, "closed", oldStatus, StatusName(closed.Status), existing.AssigneeAgentID, existing.ClaimedBySession)
 	m.publishEvent(ctx, TopicTaskCompleted, closed, "")
+
+	// Auto-create graph memory summarizing the completed task.
+	m.rememberTaskCompletion(ctx, closed)
 
 	// Auto-complete parent if all children are done.
 	if closed.ParentID != "" {
@@ -556,6 +567,50 @@ func (m *Manager) tryUnblock(ctx context.Context, taskID string) {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+// rememberTaskCompletion creates a graph memory entry when a task is completed.
+// Links the memory to any entities referenced by the task. Best-effort.
+func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
+	if m.graphMemory == nil || t == nil {
+		return
+	}
+
+	content := fmt.Sprintf("Completed task: %s\nObjective: %s\nResult: %s",
+		t.Title, t.Objective, t.CloseReason)
+	if t.Notes != "" {
+		// Include last ~300 chars of notes for context.
+		notes := t.Notes
+		if len(notes) > 300 {
+			notes = notes[len(notes)-300:]
+		}
+		content += "\nNotes: " + notes
+	}
+
+	summary := fmt.Sprintf("Task completed: %s — %s", t.Title, t.CloseReason)
+
+	tags := append([]string{"task-completion"}, t.Tags...)
+	tags = append(tags, CategoryName(t.Category))
+
+	mem := &memory.Memory{
+		AgentID:       t.OwnerAgentID,
+		Content:       content,
+		Summary:       summary,
+		MemoryType:    "experience",
+		Source:        "task",
+		SourceID:      t.ID,
+		MemoryAgentID: t.AssigneeAgentID,
+		Tags:          tags,
+		Salience:      0.6, // moderately salient — completed work is worth remembering
+		EntityIDs:     t.EntityIDs,
+	}
+
+	_, err := m.graphMemory.Remember(ctx, mem)
+	if err != nil {
+		m.logger.Debug("failed to create task completion memory",
+			zap.String("task_id", t.ID),
+			zap.Error(err))
+	}
+}
 
 // populateChildIDs queries child tasks and fills the ChildIDs field.
 func (m *Manager) populateChildIDs(ctx context.Context, t *Task) {
