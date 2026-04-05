@@ -148,8 +148,9 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 				entity_ids_json=$16, metadata_json=$17,
 				compaction_level=$18, compacted_summary=$19,
 				output_policy_json=$20, estimated_effort=$21,
-				close_reason=$22, updated_at=$23
-			WHERE id=$24 AND deleted_at IS NULL`,
+				close_reason=$22, claimed_at=$23, closed_at=$24,
+				updated_at=$25
+			WHERE id=$26 AND deleted_at IS NULL`,
 			t.Title, t.Description, t.Objective, t.Approach,
 			t.AcceptanceCriteria, t.Notes,
 			int32(t.Status), int32(t.Priority), int32(t.Category), tagsJSON,
@@ -158,7 +159,8 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 			entityIDsJSON, metadataJSON,
 			t.CompactionLevel, t.CompactedSummary,
 			outputPolicyJSON, t.EstimatedEffort,
-			t.CloseReason, now, t.ID,
+			t.CloseReason, t.ClaimedAt, t.ClosedAt,
+			now, t.ID,
 		)
 		if err != nil {
 			return fmt.Errorf("update task: %w", err)

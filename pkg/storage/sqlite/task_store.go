@@ -138,7 +138,8 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 			entity_ids_json = ?, metadata_json = ?,
 			compaction_level = ?, compacted_summary = ?,
 			output_policy_json = ?, estimated_effort = ?,
-			close_reason = ?, updated_at = datetime(?)
+			close_reason = ?, claimed_at = ?, closed_at = ?,
+			updated_at = datetime(?)
 		WHERE id = ? AND deleted_at IS NULL`,
 		t.Title, t.Description, t.Objective, t.Approach,
 		t.AcceptanceCriteria, t.Notes,
@@ -148,7 +149,8 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 		string(entityIDsJSON), string(metadataJSON),
 		t.CompactionLevel, t.CompactedSummary,
 		outputPolicyJSON, t.EstimatedEffort,
-		t.CloseReason, now.Format(time.RFC3339), t.ID,
+		t.CloseReason, formatNullableTime(t.ClaimedAt), formatNullableTime(t.ClosedAt),
+		now.Format(time.RFC3339), t.ID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update task: %w", err)
@@ -801,6 +803,13 @@ func parseTaskTime(s string) time.Time {
 		t, _ = time.Parse("2006-01-02 15:04:05", s)
 	}
 	return t
+}
+
+func formatNullableTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.Format(time.RFC3339)
 }
 
 func nilIfEmpty(s string) interface{} {

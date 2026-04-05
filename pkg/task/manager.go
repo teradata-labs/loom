@@ -215,6 +215,9 @@ func (m *Manager) CloseTask(ctx context.Context, taskID, reason string) (*Task, 
 	// Auto-create graph memory summarizing the completed task.
 	m.rememberTaskCompletion(ctx, closed)
 
+	// Auto-unblock tasks that were waiting on this task as a blocker.
+	m.tryUnblockDependents(ctx, taskID)
+
 	// Auto-complete parent if all children are done.
 	if closed.ParentID != "" {
 		m.tryAutoCompleteParent(ctx, closed.ParentID)
@@ -565,6 +568,20 @@ func (m *Manager) tryUnblock(ctx context.Context, taskID string) {
 	_, _ = m.TransitionTask(ctx, taskID, loomv1.TaskStatus_TASK_STATUS_OPEN)
 }
 
+// tryUnblockDependents finds all tasks that depend on the given task (as a blocker)
+// and checks if they should be unblocked now that this blocker is complete.
+func (m *Manager) tryUnblockDependents(ctx context.Context, blockerTaskID string) {
+	dependents, err := m.store.GetDependents(ctx, blockerTaskID)
+	if err != nil {
+		return
+	}
+	for _, dep := range dependents {
+		if dep.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			m.tryUnblock(ctx, dep.FromTaskID)
+		}
+	}
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -685,9 +702,9 @@ func (m *Manager) publishEvent(ctx context.Context, topic string, t *Task, agent
 
 	delivered, dropped, err := m.bus.Publish(ctx, topic, msg)
 	if err != nil {
-		m.logger.Debug("task event publish failed", zap.String("topic", topic), zap.Error(err))
+		m.logger.Warn("task event publish failed", zap.String("topic", topic), zap.Error(err))
 	} else if dropped > 0 {
-		m.logger.Debug("task event dropped", zap.String("topic", topic), zap.Int("delivered", delivered), zap.Int("dropped", dropped))
+		m.logger.Warn("task event dropped", zap.String("topic", topic), zap.Int("delivered", delivered), zap.Int("dropped", dropped))
 	}
 }
 

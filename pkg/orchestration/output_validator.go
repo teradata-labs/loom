@@ -140,6 +140,11 @@ func (v *OutputValidator) ValidateAndRetry(
 				currentSessionID = fmt.Sprintf("%s-retry%d", workflowID, attempt)
 				prompt := buildRetryPromptWithOutput(originalPrompt, warnings[len(warnings)-1], lastOutput, retryPolicy, attempt, maxRetries)
 				result, err = execute(ctx, currentSessionID, prompt)
+			default:
+				// Unknown mode — fall back to FRESH.
+				currentSessionID = fmt.Sprintf("%s-retry%d", workflowID, attempt)
+				prompt := buildRetryPromptWithOutput(originalPrompt, warnings[len(warnings)-1], lastOutput, retryPolicy, attempt, maxRetries)
+				result, err = execute(ctx, currentSessionID, prompt)
 			}
 		}
 

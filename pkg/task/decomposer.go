@@ -78,6 +78,9 @@ func (d *Decomposer) Decompose(ctx context.Context, llm types.LLMProvider, req *
 	ctx, span := d.tracer.StartSpan(ctx, "task_decomposer.decompose")
 	defer d.tracer.EndSpan(span)
 
+	if req == nil {
+		return nil, fmt.Errorf("decompose: request is required")
+	}
 	if req.Goal == "" {
 		return nil, fmt.Errorf("decompose: goal is required")
 	}
