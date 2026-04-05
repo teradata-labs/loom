@@ -123,12 +123,12 @@ func (v *OutputValidator) ValidateAndRetry(
 				} else {
 					// Fallback to fresh if no feedback function provided.
 					currentSessionID = fmt.Sprintf("%s-retry%d", workflowID, attempt)
-					prompt := buildRetryPrompt(originalPrompt, warnings[len(warnings)-1], retryPolicy)
+					prompt := buildRetryPrompt(originalPrompt, warnings[len(warnings)-1], retryPolicy, attempt, maxRetries)
 					result, err = execute(ctx, currentSessionID, prompt)
 				}
 			case loomv1.RetrySessionMode_RETRY_SESSION_MODE_FRESH:
 				currentSessionID = fmt.Sprintf("%s-retry%d", workflowID, attempt)
-				prompt := buildRetryPrompt(originalPrompt, warnings[len(warnings)-1], retryPolicy)
+				prompt := buildRetryPrompt(originalPrompt, warnings[len(warnings)-1], retryPolicy, attempt, maxRetries)
 				result, err = execute(ctx, currentSessionID, prompt)
 			}
 
@@ -190,8 +190,7 @@ func validateJSONSchema(schemaStr, output string) error {
 	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
 	if err != nil {
 		// If the output isn't valid JSON at all, report that.
-		var jsonErr *json.SyntaxError
-		if json.Unmarshal([]byte(output), &jsonErr) != nil {
+		if !json.Valid([]byte(output)) {
 			return fmt.Errorf("output is not valid JSON: %s", truncateForError(output, 100))
 		}
 		return fmt.Errorf("schema validation error: %w", err)
@@ -221,12 +220,14 @@ func effectiveMode(mode loomv1.RetrySessionMode, attempt int) loomv1.RetrySessio
 }
 
 // buildRetryPrompt constructs a retry prompt with validation feedback.
-func buildRetryPrompt(originalPrompt, lastWarning string, retryPolicy *loomv1.OutputRetryPolicy) string {
+func buildRetryPrompt(originalPrompt, lastWarning string, retryPolicy *loomv1.OutputRetryPolicy, attempt, maxRetries int) string {
 	if retryPolicy != nil && retryPolicy.FeedbackTemplate != "" {
-		// Use custom feedback template.
+		// Use custom feedback template with all documented variables.
 		prompt := retryPolicy.FeedbackTemplate
 		prompt = strings.ReplaceAll(prompt, "{{error}}", lastWarning)
 		prompt = strings.ReplaceAll(prompt, "{{previous_output}}", "") // not available in fresh mode
+		prompt = strings.ReplaceAll(prompt, "{{attempt}}", fmt.Sprintf("%d", attempt))
+		prompt = strings.ReplaceAll(prompt, "{{max_retries}}", fmt.Sprintf("%d", maxRetries))
 		return originalPrompt + "\n\n" + prompt
 	}
 

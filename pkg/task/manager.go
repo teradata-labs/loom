@@ -524,6 +524,7 @@ func (m *Manager) tryAutoCompleteParent(ctx context.Context, parentID string) {
 			return
 		}
 		m.recordHistory(ctx, parentID, "auto-closed", oldStatus, StatusName(loomv1.TaskStatus_TASK_STATUS_DONE), "", "")
+		m.rememberTaskCompletion(ctx, closed)
 		m.publishEvent(ctx, TopicTaskCompleted, closed, "")
 
 		// Recurse: if the parent itself has a parent, check that too.
