@@ -751,6 +751,10 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Append task board instructions if task board is enabled
 	basePrompt += a.taskBoardPromptSupplement()
 
+	// Inject live task context (current tasks, ready front, board stats).
+	// Rebuilt from DB each turn — survives context compaction.
+	basePrompt += a.buildTaskContext(ctx)
+
 	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
 }
 
@@ -834,6 +838,127 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 
 	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
 	a.tools.Register(tbTool)
+}
+
+// buildTaskContext queries the task store and builds a compact context block
+// for injection into the system prompt. Rebuilt from DB each turn, so it
+// survives context compaction — the agent never forgets what it's working on.
+// Returns empty string if task board is not enabled or no tasks exist.
+func (a *Agent) buildTaskContext(ctx context.Context) string {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return ""
+	}
+
+	budgetTokens := int(a.taskBoardConfig.ContextBudgetTokens)
+	if budgetTokens == 0 {
+		budgetTokens = 500 // default
+	}
+
+	boardID := a.taskBoardConfig.DefaultBoardId
+
+	// Query current claimed tasks for this agent.
+	claimed, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		AssigneeAgentID: a.id,
+		Status:          loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		BoardID:         boardID,
+		Limit:           5,
+	})
+
+	// Query ready front.
+	ready, _ := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
+		MaxResults: 5,
+	})
+
+	// Query board stats.
+	allTasks, total, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		BoardID: boardID,
+		Limit:   1000,
+	})
+
+	// If no tasks exist anywhere, skip the context block entirely.
+	if total == 0 && len(claimed) == 0 && len(ready) == 0 {
+		return ""
+	}
+
+	// Compute stats.
+	stats := map[string]int{"total": total}
+	for _, t := range allTasks {
+		stats[task.StatusName(t.Status)]++
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n--- TASK CONTEXT ---\n")
+
+	// Current tasks
+	if len(claimed) > 0 {
+		for _, t := range claimed {
+			fmt.Fprintf(&b, "CURRENT TASK: [%s] %q (%s, %s)\n",
+				truncateID(t.ID), t.Title, task.StatusName(t.Status), task.PriorityName(t.Priority))
+			if t.Objective != "" {
+				fmt.Fprintf(&b, "  Objective: %s\n", t.Objective)
+			}
+			if t.Approach != "" {
+				fmt.Fprintf(&b, "  Approach: %s\n", t.Approach)
+			}
+			if t.Notes != "" {
+				// Show last ~200 chars of notes to stay within budget.
+				notes := t.Notes
+				if len(notes) > 200 {
+					notes = "..." + notes[len(notes)-200:]
+				}
+				fmt.Fprintf(&b, "  Notes: %s\n", notes)
+			}
+		}
+	} else {
+		b.WriteString("NO CURRENT TASK — use task_board ready to find work\n")
+	}
+
+	// Ready front
+	if len(ready) > 0 {
+		fmt.Fprintf(&b, "\nREADY FRONT (%d tasks):\n", len(ready))
+		for _, t := range ready {
+			effort := ""
+			if t.EstimatedEffort != "" {
+				effort = ", ~" + t.EstimatedEffort
+			}
+			fmt.Fprintf(&b, "  [%s] %q (%s%s)\n",
+				truncateID(t.ID), t.Title, task.PriorityName(t.Priority), effort)
+		}
+	}
+
+	// Board stats
+	fmt.Fprintf(&b, "\nBOARD: %d total", stats["total"])
+	if v := stats["IN_PROGRESS"]; v > 0 {
+		fmt.Fprintf(&b, " | %d in_progress", v)
+	}
+	if v := stats["BLOCKED"]; v > 0 {
+		fmt.Fprintf(&b, " | %d blocked", v)
+	}
+	if v := stats["DONE"]; v > 0 {
+		fmt.Fprintf(&b, " | %d done", v)
+	}
+	if v := stats["OPEN"]; v > 0 {
+		fmt.Fprintf(&b, " | %d open", v)
+	}
+	b.WriteString("\n")
+
+	result := b.String()
+
+	// Rough token budget enforcement (~4 chars per token).
+	maxChars := budgetTokens * 4
+	if len(result) > maxChars {
+		result = result[:maxChars] + "\n[task context truncated]\n"
+	}
+
+	return result
+}
+
+// truncateID returns the first 8 chars of an ID for compact display.
+func truncateID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
