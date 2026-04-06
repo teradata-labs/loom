@@ -1720,6 +1720,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
+	// Register TaskService for gRPC task management and TUI streaming.
+	// Bus wired later via SetBus (two-phase init, bus not yet created).
+	var taskService *server.TaskServiceImpl
+	if taskManager != nil {
+		taskService = server.NewTaskServiceImpl(taskManager, nil, logger)
+		loomv1.RegisterTaskServiceServer(grpcServer, taskService)
+		logger.Info("Task service registered")
+	}
+
 	// Register JudgeService for multi-judge LLM evaluation capabilities.
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
@@ -1906,6 +1915,10 @@ func runServe(cmd *cobra.Command, args []string) {
 		// Wire message bus into task manager for event publishing (two-phase init).
 		if taskManager != nil {
 			taskManager.SetBus(messageBus)
+		}
+		// Wire message bus into task service for streaming task updates to TUI.
+		if taskService != nil {
+			taskService.SetBus(messageBus)
 		}
 
 		// 2. Message Queue for point-to-point async messaging
