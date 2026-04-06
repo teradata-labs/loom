@@ -1819,6 +1819,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Agent registry configured on server for workflow execution")
 	}
 
+	// Wire task manager into server for persistent workflow tracking
+	if taskManager != nil {
+		loomService.SetTaskManager(taskManager)
+		logger.Info("Task manager configured on server for workflow tracking")
+	}
+
 	// Set clarification timeouts from config
 	if config.Server.Clarification.ChannelSendTimeoutMs > 0 {
 		loomService.SetClarificationConfig(config.Server.Clarification.ChannelSendTimeoutMs)
