@@ -2166,6 +2166,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			Logger:       logger,
 			MessageBus:   messageBus,
 			SharedMemory: sharedMemory,
+			TaskManager:  taskManager, // persistent workflow tracking (nil = disabled)
 		})
 
 		// Create and start scheduler
