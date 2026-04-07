@@ -114,7 +114,7 @@ parameters:
 
   # --- Parameter 9: Learning Rate ---
   - name: learning_rate
-    type: float
+    type: number
     # LLM-HINT: Shrinkage factor per boosting step; range (0,1]; lower values need more rounds; default 0.5
     required: false
     default: "0.5"
@@ -132,7 +132,7 @@ parameters:
 
   # --- Parameter 11: Regularization Lambda ---
   - name: regularization_lambda
-    type: float
+    type: number
     # LLM-HINT: L2 regularization; range [0,100000]; default 1; higher = more regularization
     required: false
     default: "1"
@@ -141,7 +141,7 @@ parameters:
 
   # --- Parameter 12: Column Sampling ---
   - name: column_sampling
-    type: float
+    type: number
     # LLM-HINT: Feature fraction per boost round; range (0,1]; default 1.0; lower reduces overfitting
     required: false
     default: "1.0"

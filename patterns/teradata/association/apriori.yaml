@@ -81,7 +81,7 @@ parameters:
 
   # --- Parameter 5: Support ---
   - name: support
-    type: float
+    type: number
     # LLM-HINT: Minimum frequency as proportion of total transactions; range (0,1]; default 0.01
     required: false
     default: "0.01"

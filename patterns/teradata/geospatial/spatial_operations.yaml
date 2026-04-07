@@ -80,7 +80,7 @@ parameters:
 
   # --- Parameter 5: Buffer Distance ---
   - name: buffer_distance
-    type: float
+    type: number
     # LLM-HINT: Distance in SRS linear units; degrees for WGS84, meters for projected
     required: false
     description: "Buffer radius in SRS linear units. For WGS84 (SRID 4326) this is degrees; for projected systems this is meters"
@@ -96,7 +96,7 @@ parameters:
 
   # --- Parameter 7: Simplify Tolerance ---
   - name: simplify_tolerance
-    type: float
+    type: number
     # LLM-HINT: Maximum deviation from the original geometry in SRS units
     required: false
     description: "Tolerance for geometry simplification (SimplifyPreserveTopology)"

@@ -101,7 +101,7 @@ parameters:
 
   # --- Parameter 9: Alpha ---
   - name: alpha
-    type: float
+    type: number
     # LLM-HINT: Level smoothing factor (0-1); omit to let the function estimate from data
     required: false
     description: "Level smoothing factor (0-1). Estimated from data if omitted."
@@ -109,7 +109,7 @@ parameters:
 
   # --- Parameter 10: Beta ---
   - name: beta
-    type: float
+    type: number
     # LLM-HINT: Trend smoothing factor (0-1); omit to let the function estimate from data
     required: false
     description: "Trend smoothing factor (0-1). Estimated from data if omitted."
@@ -117,7 +117,7 @@ parameters:
 
   # --- Parameter 11: Gamma ---
   - name: gamma
-    type: float
+    type: number
     # LLM-HINT: Seasonal smoothing factor (0-1); only applies when SEASONAL_PERIODS > 1; omit to estimate
     required: false
     description: "Seasonal smoothing factor (0-1). Only applies when SEASONAL_PERIODS > 1. Estimated from data if omitted."

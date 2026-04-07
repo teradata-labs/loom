@@ -95,7 +95,7 @@ parameters:
 
   # --- Parameter 7: Distance Threshold ---
   - name: distance_threshold
-    type: float
+    type: number
     # LLM-HINT: Maximum distance for proximity queries; units depend on SRS
     required: false
     description: "Maximum distance for proximity queries. Units are SRS-dependent (degrees for 4326, meters for projected SRS)"

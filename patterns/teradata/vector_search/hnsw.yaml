@@ -31,7 +31,7 @@ use_cases:
   - Fast semantic search over millions of document embeddings
 
   # --- Use Case 2: RAG Pipeline ---
-  - Retrieval-augmented generation: retrieve relevant context for LLM prompts
+  - "Retrieval-augmented generation: retrieve relevant context for LLM prompts"
 
   # --- Use Case 3: Recommendation Engine ---
   - Real-time product or content recommendations from embedding similarity

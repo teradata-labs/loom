@@ -62,7 +62,7 @@ parameters:
 
   # --- Parameter 3: Alpha ---
   - name: alpha
-    type: float
+    type: number
     # LLM-HINT: Significance level for all tests; default 0.05
     required: false
     default: "0.05"
@@ -96,7 +96,7 @@ parameters:
 
   # --- Parameter 7: Mean Under H0 (ZTest) ---
   - name: mean_under_h0
-    type: float
+    type: number
     # LLM-HINT: Hypothesized population mean for ZTest; default 0
     required: false
     default: "0"
@@ -121,7 +121,7 @@ parameters:
 
   # --- Parameter 10: First Sample Variance (FTest Mode 3 / ZTest) ---
   - name: first_sample_variance
-    type: float
+    type: number
     # LLM-HINT: Pre-computed variance for FTest Mode 3 or known population variance for ZTest
     required: false
     description: "Pre-computed variance for the first sample. Required for FTest Mode 3 and for ZTest when n < 30."
@@ -129,7 +129,7 @@ parameters:
 
   # --- Parameter 11: Second Sample Variance (FTest Mode 3 / ZTest) ---
   - name: second_sample_variance
-    type: float
+    type: number
     # LLM-HINT: Pre-computed variance for the second sample
     required: false
     description: "Pre-computed variance for the second sample."

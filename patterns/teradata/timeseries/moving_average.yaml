@@ -117,7 +117,7 @@ parameters:
 
   # --- Parameter 10: Alpha ---
   - name: alpha
-    type: float
+    type: number
     # LLM-HINT: Smoothing factor for TD_SIMPLEEXP and TD_SMOOTHMA exponential mode (0-1)
     required: false
     description: "Smoothing factor (0-1). Higher values weight recent observations more heavily."

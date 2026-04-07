@@ -108,7 +108,7 @@ parameters:
 
   # --- Parameter 8: Regularization Lambda ---
   - name: regularization_lambda
-    type: float
+    type: number
     # LLM-HINT: Elastic net regularization; default 0.02; higher = stronger regularization
     required: false
     default: "0.02"
@@ -117,7 +117,7 @@ parameters:
 
   # --- Parameter 9: Alpha ---
   - name: alpha
-    type: float
+    type: number
     # LLM-HINT: L1/L2 mix; default 0.15; only when Lambda > 0
     required: false
     default: "0.15"
@@ -126,7 +126,7 @@ parameters:
 
   # --- Parameter 10: Epsilon ---
   - name: epsilon
-    type: float
+    type: number
     # LLM-HINT: Regression only; epsilon-insensitive loss threshold; default 0.1
     required: false
     default: "0.1"

@@ -127,7 +127,7 @@ parameters:
 
   # --- Parameter 10: Regularization Lambda ---
   - name: regularization_lambda
-    type: float
+    type: number
     # LLM-HINT: Elastic net regularization strength; default 0.02; 0 = no regularization
     required: false
     default: "0.02"
@@ -136,7 +136,7 @@ parameters:
 
   # --- Parameter 11: Alpha ---
   - name: alpha
-    type: float
+    type: number
     # LLM-HINT: L1/L2 mix; default 0.15 (15% L1, 85% L2); only when Lambda > 0
     required: false
     default: "0.15"

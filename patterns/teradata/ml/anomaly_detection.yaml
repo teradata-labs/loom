@@ -93,7 +93,7 @@ parameters:
 
   # --- Parameter 6: Regularization Lambda ---
   - name: regularization_lambda
-    type: float
+    type: number
     # LLM-HINT: Controls boundary tightness; default 0.02; higher = looser boundary (more permissive)
     required: false
     default: "0.02"
@@ -120,7 +120,7 @@ parameters:
 
   # --- Parameter 9: Alpha ---
   - name: alpha
-    type: float
+    type: number
     # LLM-HINT: L1/L2 mix; default 0.15; only when Lambda > 0
     required: false
     default: "0.15"

@@ -103,7 +103,7 @@ parameters:
 
   # --- Parameter 9: Hertz Sample Rate ---
   - name: hertz_sample_rate
-    type: float
+    type: number
     # LLM-HINT: Required when freq_style is K_HERTZ; sampling rate in Hz
     required: false
     description: "Sample rate in Hz (required when freq_style is K_HERTZ)"

@@ -64,7 +64,7 @@ parameters:
 
   # --- Parameter 4: Train Size ---
   - name: train_size
-    type: float
+    type: number
     # LLM-HINT: Range (0, 1); default 0.75. TrainSize + TestSize must equal 1.0
     required: false
     default: "0.75"
@@ -73,7 +73,7 @@ parameters:
 
   # --- Parameter 5: Test Size ---
   - name: test_size
-    type: float
+    type: number
     # LLM-HINT: Range (0, 1); default 0.25. TrainSize + TestSize must equal 1.0
     required: false
     default: "0.25"
