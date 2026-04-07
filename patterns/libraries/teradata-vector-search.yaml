@@ -1,0 +1,120 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-vector-search
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata in-database vector search patterns for exact and approximate nearest-neighbor search, embedding generation, and vector normalization"
+  labels:
+    vendor: teradata
+    category: vector-search
+    maturity: production
+
+spec:
+  entries:
+    - name: vector_distance
+      description: "Exact pairwise vector distance search using TD_VectorDistance with cosine, euclidean, and manhattan metrics"
+      trigger_conditions:
+        - "user asks about vector similarity or distance search"
+        - "user asks about exact nearest neighbor search"
+        - "user mentions cosine similarity or euclidean distance"
+        - "user asks about TD_VectorDistance"
+        - "user asks about finding similar items by vector"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/vector_search/vector_distance.yaml
+
+        Distance measures:
+        - Cosine: angle-based similarity
+        - Euclidean: straight-line distance
+        - Manhattan: taxicab distance
+
+        Supports VECTOR, VARBYTE, and individual numeric columns.
+        For large datasets, use TD_HNSW for approximate search.
+      priority: 85
+      tags:
+        - vector-search
+        - similarity
+        - distance
+        - exact-search
+        - teradata
+
+    - name: hnsw
+      description: "HNSW approximate nearest-neighbor index using TD_HNSW for fast similarity search on large vector datasets"
+      trigger_conditions:
+        - "user asks about HNSW or approximate nearest neighbor"
+        - "user asks about vector index or ANN search"
+        - "user mentions fast similarity search on millions of vectors"
+        - "user asks about TD_HNSW or TD_HNSWPredict"
+        - "user asks about building a vector search index"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/vector_search/hnsw.yaml
+
+        HNSW workflow:
+        - TD_HNSW: build graph index (supports incremental update/delete)
+        - TD_HNSWPredict: search for approximate top-K neighbors
+        - TD_HNSWSummary: inspect index metadata
+
+        Normalize vectors with TD_VectorNormalize before building
+        cosine-distance indexes.
+      priority: 90
+      tags:
+        - vector-search
+        - hnsw
+        - ann
+        - index
+        - teradata
+
+    - name: embeddings
+      description: "Generate vector embeddings from text using AI_TextEmbeddings, ONNXEmbeddings, or TD_WordEmbeddings"
+      trigger_conditions:
+        - "user asks about text embeddings or vector generation"
+        - "user asks about AI_TextEmbeddings or ONNXEmbeddings"
+        - "user mentions converting text to vectors for search"
+        - "user asks about semantic embeddings in Teradata"
+        - "user asks about GloVe word embeddings or ONNX models"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/vector_search/embeddings.yaml
+
+        Three embedding approaches:
+        - AI_TextEmbeddings: external LLM endpoints (Azure, Bedrock, GCP)
+        - ONNXEmbeddings: in-database ONNX models (air-gapped)
+        - TD_WordEmbeddings: GloVe-style word/document vectors
+
+        Use OutputFormat('VECTOR') for storage and similarity search.
+      priority: 85
+      tags:
+        - vector-search
+        - embeddings
+        - text-to-vector
+        - semantic
+        - teradata
+
+    - name: vector_normalize
+      description: "Normalize vectors to unit length using TD_VectorNormalize as prerequisite for cosine similarity search"
+      trigger_conditions:
+        - "user asks about vector normalization or L2 normalization"
+        - "user asks about preparing vectors for cosine search"
+        - "user mentions TD_VectorNormalize or unit vector normalization"
+        - "user asks about normalizing embeddings before indexing"
+        - "user asks about converting vectors to unit length"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/vector_search/vector_normalize.yaml
+
+        Normalization approaches:
+        - UNITVECTOR (L2): divide by L2 norm of vector
+        - FRACTION: each element as fraction of sum
+        - PERCENTAGE: each element as percentage of sum
+        - INDEX: normalize relative to a base value
+
+        Always normalize BEFORE cosine distance or HNSW index builds.
+      priority: 80
+      tags:
+        - vector-search
+        - normalization
+        - preprocessing
+        - cosine
+        - teradata

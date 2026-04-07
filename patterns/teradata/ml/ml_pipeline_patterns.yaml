@@ -1,0 +1,603 @@
+# === METADATA START ===
+name: ml_pipeline_patterns
+title: "ML Pipeline Patterns"
+description: |
+  Reusable end-to-end pipeline patterns for Teradata ML workflows. These are NOT
+  function-specific patterns -- they are composable workflow templates that combine
+  multiple ML functions into production pipelines.
+
+  This pattern collection includes:
+  - CTE Prediction Pipeline: wrap all preprocessing + prediction in a single query
+  - Class Imbalance Workflow: split first, SMOTE train only, train, evaluate on original test
+  - Micromodeling Pipeline: train one model per partition, score per partition
+
+  These patterns assume familiarity with individual ML functions (TD_XGBoost,
+  TD_DecisionForest, TD_GLM, etc.) and data preparation functions
+  (TD_ColumnTransformer, TD_ScaleFit, TD_TrainTestSplit, TD_SMOTE).
+
+category: ml
+difficulty: advanced
+teradata_function: Pipeline
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - model_training
+  - analytics
+use_cases:
+  # --- Use Case 1: Production Scoring Pipeline ---
+  - Production scoring pipeline with preprocessing and prediction in one query
+
+  # --- Use Case 2: Class Imbalance Handling ---
+  - Training on imbalanced data with proper SMOTE application
+
+  # --- Use Case 3: Micromodeling ---
+  - Per-segment independent models (region, product, customer tier)
+
+  # --- Use Case 4: Model Comparison ---
+  - Comparing multiple models using the same train-test split
+
+  # --- Use Case 5: Feature Pipeline ---
+  - Reusable feature engineering pipeline with saved FitTables
+
+  # --- Use Case 6: End-to-End ML Workflow ---
+  - Complete split, preprocess, train, evaluate, deploy workflow
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database for all tables in the pipeline"
+    example: "ml_workspace"
+
+  # --- Parameter 2: Source Table ---
+  - name: source_table
+    type: string
+    # LLM-HINT: Raw labeled data table; input to the pipeline
+    required: true
+    description: "Source table with labeled data"
+    example: "labeled_data"
+
+  # --- Parameter 3: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: Numeric feature columns after preprocessing
+    required: true
+    description: "Feature columns for training (after preprocessing)"
+    example: '["feat1", "feat2", "feat3", "feat4"]'
+
+  # --- Parameter 4: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Target column to predict
+    required: true
+    description: "Target column to predict"
+    example: "label"
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier
+    required: true
+    description: "Unique identifier column"
+    example: "id"
+
+  # --- Parameter 6: Partition Column ---
+  - name: partition_column
+    type: string
+    # LLM-HINT: For micromodeling; column to partition by for per-segment models
+    required: false
+    description: "Column to partition by for micromodeling"
+    example: "region"
+
+  # --- Parameter 7: Minority Class ---
+  - name: minority_class
+    type: string
+    # LLM-HINT: For class imbalance workflow; label value of the minority class
+    required: false
+    description: "Minority class label value for SMOTE oversampling"
+    example: "1"
+
+  # --- Parameter 8: Oversampling Factor ---
+  - name: oversampling_factor
+    type: integer
+    # LLM-HINT: SMOTE oversampling multiplier; e.g., 4 = generate 4x synthetic minority samples
+    required: false
+    default: "4"
+    description: "SMOTE oversampling factor for minority class"
+    example: "4"
+
+  # --- Parameter 9: Seed ---
+  - name: seed
+    type: integer
+    # LLM-HINT: Random seed for reproducible splits and SMOTE
+    required: false
+    default: "42"
+    description: "Random seed for reproducibility"
+    example: "42"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CTE_PREDICTION_PIPELINE TEMPLATE ===
+  # LLM-HINT: Single-query pipeline: CTE preprocesses via TD_ColumnTransformer, then feeds into Predict
+  cte_prediction_pipeline:
+    description: "CTE-based prediction pipeline: preprocess + predict in one query"
+    sql: |
+      -- Single-query scoring pipeline: preprocess via CTE, then predict
+      -- LLM-HINT: FitTables must be persistent named tables, not subqueries
+      -- LLM-HINT: TD_ColumnTransformer accepts up to 10 named FitTable DIMENSION inputs
+      -- LLM-HINT: Swap TD_XGBoostPredict for any other Predict function as needed
+      WITH transformed AS (
+          SELECT {{id_column}}, {{input_columns_list}}, {{response_column}}
+          FROM TD_ColumnTransformer(
+              ON {{database}}.{{scoring_table}} AS InputTable
+
+              ON {{database}}.impute_fit     AS ImputeFitTable        DIMENSION
+              ON {{database}}.outlier_fit    AS OutlierFitTable        DIMENSION
+              ON {{database}}.encoding_fit   AS OneHotEncodingFitTable DIMENSION
+              ON {{database}}.scale_fit      AS ScaleFitTable          DIMENSION
+          ) AS t
+      )
+      SELECT * FROM TD_XGBoostPredict(
+          ON transformed AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              Accumulate('{{response_column}}')
+      ) AS dt;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - input_columns_list
+      - response_column
+
+  # === BUILD_FIT_TABLES TEMPLATE ===
+  # LLM-HINT: One-time setup: create FitTables from training data for reuse in CTE pipeline
+  build_fit_tables:
+    description: "Create FitTables from training data (one-time setup for CTE pipeline)"
+    sql: |
+      -- One-time setup: build and persist FitTables from training data
+      -- LLM-HINT: Run once on training data; reference these tables indefinitely in TD_ColumnTransformer
+
+      -- Scale fit: standardize numeric features
+      CREATE TABLE {{database}}.scale_fit AS (
+          SELECT * FROM TD_ScaleFit(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              USING
+                  TargetColumns({{input_columns_quoted}})
+                  ScaleMethod('STD')
+          ) AS t
+      ) WITH DATA;
+
+      -- Impute fit: fill missing values
+      CREATE TABLE {{database}}.impute_fit AS (
+          SELECT * FROM TD_SimpleImputeFit(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              USING
+                  TargetColumns({{input_columns_quoted}})
+                  ImputeMethod('MEDIAN')
+          ) AS t
+      ) WITH DATA;
+
+      -- Additional FitTables (encoding, outlier) follow the same pattern
+      -- Reference all FitTables in TD_ColumnTransformer CTE pipeline
+    required_parameters:
+      - database
+      - training_table
+      - input_columns_quoted
+
+  # === CLASS_IMBALANCE_WORKFLOW TEMPLATE ===
+  # LLM-HINT: Split first -> SMOTE train split only -> train -> evaluate on original test split
+  class_imbalance_workflow:
+    description: "Handle class imbalance: split, SMOTE on train only, train, evaluate on original test"
+    sql: |
+      -- CLASS IMBALANCE WORKFLOW
+      -- Key rule: SMOTE on train split only; evaluate on original test split only
+      -- LLM-HINT: Never apply SMOTE before splitting -- it leaks synthetic data into test set
+
+      -- Step 1: Split data with stratification (preserves class proportions)
+      CREATE TABLE {{database}}.data_split AS (
+          SELECT * FROM TD_TrainTestSplit(
+              ON {{database}}.{{source_table}} PARTITION BY ANY
+              USING
+                  IDColumn('{{id_column}}')
+                  TrainSize(0.80)
+                  Seed({{seed}})
+                  StratifyColumn('{{response_column}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Oversample minority class in training set ONLY
+      CREATE TABLE {{database}}.train_augmented AS (
+          -- Original training rows
+          SELECT {{id_column}}, {{input_columns_list}}, {{response_column}}
+          FROM {{database}}.data_split WHERE TD_IsTrainRow = 1
+
+          UNION ALL
+
+          -- Synthetic minority samples from training rows only
+          SELECT {{id_column}}, {{input_columns_list}}, {{response_column}}
+          FROM TD_SMOTE(
+              ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 1)
+                  PARTITION BY ANY
+              USING
+                  IDColumn('{{id_column}}')
+                  ResponseColumn('{{response_column}}')
+                  InputColumns({{input_columns_quoted}})
+                  MinorityClass('{{minority_class}}')
+                  OversamplingFactor({{oversampling_factor}})
+                  Seed({{seed}})
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 3: Train on augmented training set
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_XGBoost(
+              ON {{database}}.train_augmented AS INPUTTABLE
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('Classification')
+                  MaxDepth(6)
+                  NumBoostRounds(50)
+                  LearningRate(0.1)
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 4: Evaluate on ORIGINAL (unaugmented) test set
+      -- LLM-HINT: Test set must be the original split -- never augmented data
+      SELECT * FROM TD_ClassificationEvaluator(
+          ON (
+              SELECT * FROM TD_XGBoostPredict(
+                  ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 0)
+                      AS InputTable
+                  ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+                  USING
+                      IDColumn('{{id_column}}')
+                      ModelType('Classification')
+                      Accumulate('{{response_column}}')
+              ) AS t
+          ) AS InputTable
+          USING
+              ObservationColumn('{{response_column}}')
+              PredictionColumn('prediction')
+              NumLabels({{num_labels}})
+      ) AS t;
+    required_parameters:
+      - database
+      - source_table
+      - model_table
+      - input_columns_quoted
+      - input_columns_list
+      - response_column
+      - id_column
+      - minority_class
+      - oversampling_factor
+      - seed
+      - num_labels
+
+  # === MICROMODELING_PIPELINE TEMPLATE ===
+  # LLM-HINT: Train one model per partition value in parallel; score per partition
+  micromodeling_pipeline:
+    description: "Micromodeling: one model per partition, scored per partition"
+    sql: |
+      -- MICROMODELING PIPELINE (TD_GLM)
+      -- Train one independent model per partition value in parallel
+      -- LLM-HINT: Only TD_GLM supports micromodeling (PARTITION BY key)
+      -- LLM-HINT: ModelTable in Predict uses PARTITION BY (not DIMENSION)
+
+      -- Step 1: Train one model per partition value
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_GLM(
+              ON {{database}}.{{source_table}} AS InputTable
+                  PARTITION BY {{partition_column}} ORDER BY {{id_column}}
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  Family('{{family}}')
+                  MaxIterNum(100)
+                  BatchSize(10)
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Score per partition (PARTITION BY, not DIMENSION)
+      -- LLM-HINT: Both InputTable and ModelTable must PARTITION BY the same column
+      SELECT * FROM TD_GLMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable
+              PARTITION BY {{partition_column}}
+          ON {{database}}.{{model_table}} AS ModelTable
+              PARTITION BY {{partition_column}}
+          USING
+              IDColumn('{{id_column}}')
+              Family('{{family}}')
+              Accumulate('{{partition_column}}', '{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - source_table
+      - scoring_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - id_column
+      - partition_column
+      - family
+
+  # === MODEL_COMPARISON TEMPLATE ===
+  # LLM-HINT: Train and evaluate multiple models on the same split for fair comparison
+  model_comparison:
+    description: "Compare multiple models on the same train-test split"
+    sql: |
+      -- MODEL COMPARISON: same split, different algorithms
+      -- LLM-HINT: Use the same data_split for all models to ensure fair comparison
+
+      -- Step 1: Split once (reused for all models)
+      CREATE TABLE {{database}}.data_split AS (
+          SELECT * FROM TD_TrainTestSplit(
+              ON {{database}}.{{source_table}} PARTITION BY ANY
+              USING
+                  IDColumn('{{id_column}}')
+                  TrainSize(0.75)
+                  TestSize(0.25)
+                  Seed({{seed}})
+                  StratifyColumn('{{response_column}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2a: Train XGBoost
+      CREATE TABLE {{database}}.xgb_model AS (
+          SELECT * FROM TD_XGBoost(
+              ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 1) AS INPUTTABLE
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('Classification')
+                  MaxDepth(6)
+                  NumBoostRounds(50)
+                  LearningRate(0.1)
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2b: Train Decision Forest
+      CREATE TABLE {{database}}.forest_model AS (
+          SELECT * FROM TD_DecisionForest(
+              ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 1)
+                  AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('Classification')
+                  MaxDepth(7)
+                  NumTrees(100)
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 3a: Evaluate XGBoost
+      SELECT 'XGBoost' AS model_name, * FROM TD_ClassificationEvaluator(
+          ON (
+              SELECT * FROM TD_XGBoostPredict(
+                  ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 0)
+                      AS InputTable
+                  ON {{database}}.xgb_model AS ModelTable DIMENSION
+                  USING
+                      IDColumn('{{id_column}}')
+                      ModelType('Classification')
+                      Accumulate('{{response_column}}')
+              ) AS t
+          ) AS InputTable
+          USING
+              ObservationColumn('{{response_column}}')
+              PredictionColumn('prediction')
+              NumLabels({{num_labels}})
+      ) AS t;
+
+      -- Step 3b: Evaluate Decision Forest
+      SELECT 'DecisionForest' AS model_name, * FROM TD_ClassificationEvaluator(
+          ON (
+              SELECT * FROM TD_DecisionForestPredict(
+                  ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 0)
+                      AS InputTable PARTITION BY ANY
+                  ON {{database}}.forest_model AS ModelTable DIMENSION
+                  USING
+                      IDColumn('{{id_column}}')
+                      Accumulate('{{response_column}}')
+              ) AS t
+          ) AS InputTable
+          USING
+              ObservationColumn('{{response_column}}')
+              PredictionColumn('prediction')
+              NumLabels({{num_labels}})
+      ) AS t;
+    required_parameters:
+      - database
+      - source_table
+      - input_columns_quoted
+      - response_column
+      - id_column
+      - seed
+      - num_labels
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: CTE Scoring Pipeline ---
+  - name: "CTE Scoring Pipeline (XGBoost)"
+    description: "Score new data with preprocessing and prediction in one query"
+    parameters:
+      database: "production"
+      scoring_table: "new_customers"
+      model_table: "churn_xgb_model"
+      id_column: "customer_id"
+      input_columns: ["tenure", "monthly_charges", "total_charges"]
+      response_column: "churned"
+    expected_result: |
+      Single query output (no intermediate tables):
+        customer_id | prediction | churned
+        C10001      | 0          | NULL    -- new customer, no actual label
+        C10002      | 1          | NULL    -- predicted to churn
+
+      The CTE handles all preprocessing (imputation, scaling, encoding) using
+      saved FitTables, then feeds clean features directly into TD_XGBoostPredict.
+      FitTables are created once from training data and reused indefinitely.
+
+  # --- Example 2: Class Imbalance (Fraud Detection) ---
+  - name: "Class Imbalance Workflow (Fraud)"
+    description: "Handle rare fraud class with SMOTE on training split only"
+    parameters:
+      database: "banking"
+      source_table: "transaction_features"
+      model_table: "fraud_xgb_model"
+      id_column: "transaction_id"
+      input_columns: ["amount", "time_delta", "merchant_code", "distance"]
+      response_column: "is_fraud"
+      minority_class: "1"
+      oversampling_factor: 4
+      seed: 42
+      num_labels: 2
+    expected_result: |
+      Class distribution before SMOTE (train split):
+        is_fraud=0: 9,500 rows (95%)
+        is_fraud=1: 500 rows (5%)
+
+      After SMOTE (train split only):
+        is_fraud=0: 9,500 rows
+        is_fraud=1: 2,500 rows (500 original + 2,000 synthetic)
+
+      Evaluation on ORIGINAL test set (no synthetic data):
+        Accuracy: 0.94
+        Precision (fraud): 0.82
+        Recall (fraud): 0.75
+        F1 (fraud): 0.78
+
+      Without SMOTE, recall on fraud class would typically be 0.30-0.50.
+
+  # --- Example 3: Micromodeling by Region ---
+  - name: "Regional Micromodeling Pipeline"
+    description: "Train independent models per region"
+    parameters:
+      database: "sales"
+      source_table: "regional_sales_data"
+      scoring_table: "new_quarter_data"
+      model_table: "regional_glm_models"
+      id_column: "record_id"
+      input_columns: ["marketing_spend", "num_reps", "avg_deal_size"]
+      response_column: "quarterly_revenue"
+      partition_column: "region"
+      family: "Gaussian"
+    expected_result: |
+      Independent models per region (trained in parallel):
+        region | attribute | predictor       | estimate
+        EAST   | 0         | Intercept       | 50000.0
+        EAST   | 1         | marketing_spend | 3.2
+        WEST   | 0         | Intercept       | 72000.0
+        WEST   | 1         | marketing_spend | 4.8
+        SOUTH  | 0         | Intercept       | 38000.0
+        SOUTH  | 1         | marketing_spend | 2.1
+
+      Each region has different coefficients reflecting local market dynamics.
+      Scoring uses PARTITION BY region (not DIMENSION) to match per-partition models.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: SMOTE Before Split ---
+  - error: "Inflated evaluation metrics that don't reflect real performance"
+    cause: "Applying SMOTE before train-test split leaks synthetic samples into the test set."
+    solution: "Always split first with TD_TrainTestSplit, then apply SMOTE to the training split only. Evaluate on the original (unaugmented) test split."
+
+  # --- Error 2: FitTables as Subqueries ---
+  - error: "TD_ColumnTransformer fails or produces unexpected results"
+    cause: "FitTables must be persistent named tables. Using inline subqueries for FitTables is not supported."
+    solution: "Create FitTables as permanent tables (CREATE TABLE ... WITH DATA), then reference them by name in TD_ColumnTransformer."
+
+  # --- Error 3: DIMENSION in Micromodeling Predict ---
+  - error: "All partitions get the same prediction in micromodeling"
+    cause: "Using ModelTable DIMENSION in TD_GLMPredict instead of PARTITION BY for micromodeling."
+    solution: "For micromodeling, both InputTable and ModelTable must use PARTITION BY partition_col. DIMENSION is for global (single) models only."
+
+  # --- Error 4: Mismatched Split Tables ---
+  - error: "Model comparison results are not comparable"
+    cause: "Using different random seeds or re-running TD_TrainTestSplit for each model."
+    solution: "Create the split table once and reuse it for all model training and evaluation. Use the same split for fair comparison."
+
+  # --- Error 5: Missing Preprocessing on Scoring Data ---
+  - error: "Prediction quality degrades on new data"
+    cause: "Training data was preprocessed (scaled, imputed) but scoring data was not, or different preprocessing was applied."
+    solution: "Use TD_ColumnTransformer with the same saved FitTables for both training and scoring data. The CTE pipeline pattern ensures this."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## ML Pipeline Best Practices
+
+  ### 1. CTE Pipeline Pattern
+  The gold standard for production scoring:
+  - Build FitTables once from training data (TD_ScaleFit, TD_SimpleImputeFit, etc.)
+  - Use TD_ColumnTransformer in a CTE to apply all transforms in one pass
+  - Feed the CTE directly into any Predict function
+  - One query, no intermediate tables, consistent preprocessing
+
+  ### 2. Class Imbalance Golden Rule
+  **Split first, SMOTE second. Always.**
+  - TD_TrainTestSplit with StratifyColumn to preserve class proportions
+  - TD_SMOTE on train split ONLY
+  - Evaluate on original test split ONLY
+  - Synthetic samples must never touch the test set
+
+  ### 3. Micromodeling Decision Criteria
+  Use micromodeling when:
+  - Natural segmentation exists (region, product, customer tier)
+  - Feature-target relationship differs across segments
+  - Sufficient data per partition (100+ rows per segment minimum)
+  - Business needs per-segment interpretability
+
+  Use a global model when:
+  - Segments are small or unbalanced
+  - Feature-target relationship is consistent
+  - A single model is simpler to maintain
+
+  ### 4. Model Comparison Protocol
+  - Split once, reuse for all models
+  - Train each model on the same training set
+  - Evaluate each on the same test set
+  - Compare metrics side by side (accuracy, precision, recall, F1)
+  - Choose based on business priorities (e.g., recall for fraud, precision for spam)
+
+  ### 5. Pipeline Reproducibility
+  - Use Seed in TD_TrainTestSplit and TD_SMOTE for reproducible results
+  - Persist all intermediate tables (split, FitTables, models)
+  - Document hyperparameters for each model version
+  - Keep FitTables versioned alongside models
+
+  ### 6. Scaling to Production
+  - CTE pipeline = single query deployment (no orchestration needed)
+  - FitTables are small and cache-friendly
+  - Model tables persist across sessions
+  - Micromodels scale automatically with new partition values (train new, keep existing)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: XGBoost ---
+  - xgboost
+
+  # --- Pattern 2: Decision Forest ---
+  - decision_forest
+
+  # --- Pattern 3: GLM ---
+  - glm
+
+  # --- Pattern 4: K-Means ---
+  - kmeans
+
+  # --- Pattern 5: Anomaly Detection ---
+  - anomaly_detection
+# === RELATED_PATTERNS END ===

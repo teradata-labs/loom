@@ -1,0 +1,314 @@
+# === METADATA START ===
+name: train_test_split
+title: "Train/Test Split"
+description: |
+  Split data into training and test sets using TD_TrainTestSplit. Each row is tagged with
+  TD_IsTrainRow (1 = train, 0 = test) for downstream filtering. Supports stratified splits
+  to preserve class proportions and deterministic seeds for reproducibility.
+
+  TD_TrainTestSplit is ideal for:
+  - Splitting labeled data before model training
+  - Stratified splits that preserve class balance
+  - Reproducible experiments with fixed random seeds
+  - Preparing data for TD_ClassificationEvaluator or TD_RegressionEvaluator
+
+category: model_evaluation
+difficulty: beginner
+teradata_function: TD_TrainTestSplit
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - model_evaluation
+  - analytics
+use_cases:
+  # --- Use Case 1: Basic Random Split ---
+  - Splitting data into train and test sets for model validation
+
+  # --- Use Case 2: Stratified Split ---
+  - Stratified split to maintain class balance across train/test
+
+  # --- Use Case 3: Reproducible Experiments ---
+  - Deterministic data splitting for reproducible ML experiments
+
+  # --- Use Case 4: Cross-Validation Prep ---
+  - Preparing holdout test data for evaluating model performance
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the source data"
+    example: "ml_project"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; the table to split
+    required: true
+    description: "Table to split into train and test sets"
+    example: "customer_churn_data"
+
+  # --- Parameter 3: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Required when Seed is specified; ensures deterministic output across runs
+    required: true
+    description: "Unique identifier column. Required when using Seed for deterministic splits"
+    example: "customer_id"
+
+  # --- Parameter 4: Train Size ---
+  - name: train_size
+    type: float
+    # LLM-HINT: Range (0, 1); default 0.75. TrainSize + TestSize must equal 1.0
+    required: false
+    default: "0.75"
+    description: "Proportion of data for training. Must be in range (0, 1)"
+    example: "0.8"
+
+  # --- Parameter 5: Test Size ---
+  - name: test_size
+    type: float
+    # LLM-HINT: Range (0, 1); default 0.25. TrainSize + TestSize must equal 1.0
+    required: false
+    default: "0.25"
+    description: "Proportion of data for testing. Must be in range (0, 1)"
+    example: "0.2"
+
+  # --- Parameter 6: Seed ---
+  - name: seed
+    type: integer
+    # LLM-HINT: Integer in range [0, INT_MAX]; requires IDColumn; omit for random split each run
+    required: false
+    description: "Random seed for reproducible splits. Requires id_column to be set"
+    example: "42"
+
+  # --- Parameter 7: Stratify Column ---
+  - name: stratify_column
+    type: string
+    # LLM-HINT: Column for stratified split; preserves class proportions; column must not contain NULLs
+    required: false
+    description: "Column to stratify on, preserving class proportions in both sets. Column cannot have NULLs"
+    example: "churn_flag"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === STRATIFIED_SPLIT TEMPLATE ===
+  # LLM-HINT: Deterministic stratified split; preserves class balance; use when target column has imbalanced classes
+  stratified_split:
+    description: "Stratified split with deterministic seed preserving class proportions"
+    sql: |
+      -- Stratified train/test split preserving class balance
+      -- TD_IsTrainRow: 1 = train, 0 = test
+      SELECT * FROM TD_TrainTestSplit(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          IDColumn('{{id_column}}')
+          TrainSize({{train_size}})
+          TestSize({{test_size}})
+          Seed({{seed}})
+          StratifyColumn('{{stratify_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - train_size
+      - test_size
+      - seed
+      - stratify_column
+
+  # === BASIC_SPLIT TEMPLATE ===
+  # LLM-HINT: Simple configurable split with optional seed; no stratification
+  basic_split:
+    description: "Basic train/test split with configurable ratio and optional seed"
+    sql: |
+      -- Basic train/test split
+      -- TD_IsTrainRow: 1 = train, 0 = test
+      -- NOTE: Seed is optional - omit for a different random split each run
+      SELECT * FROM TD_TrainTestSplit(
+        ON {{database}}.{{table}} AS InputTable
+        USING
+          IDColumn('{{id_column}}')
+          TrainSize({{train_size}})
+          TestSize({{test_size}})
+          -- Seed({{seed}})  -- Uncomment for reproducible splits
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - train_size
+      - test_size
+
+  # === SPLIT_AND_PERSIST TEMPLATE ===
+  # LLM-HINT: Creates separate train and test tables for downstream model training and evaluation
+  split_and_persist:
+    description: "Split data and persist train/test sets into separate tables"
+    sql: |
+      -- Step 1: Perform the split
+      CREATE VOLATILE TABLE {{table}}_split AS (
+        SELECT * FROM TD_TrainTestSplit(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+            IDColumn('{{id_column}}')
+            TrainSize({{train_size}})
+            TestSize({{test_size}})
+            Seed({{seed}})
+        ) AS t
+      ) WITH DATA ON COMMIT PRESERVE ROWS;
+
+      -- Step 2: Create training table
+      CREATE VOLATILE TABLE {{table}}_train AS (
+        SELECT * FROM {{table}}_split
+        WHERE TD_IsTrainRow = 1
+      ) WITH DATA ON COMMIT PRESERVE ROWS;
+
+      -- Step 3: Create test table
+      CREATE VOLATILE TABLE {{table}}_test AS (
+        SELECT * FROM {{table}}_split
+        WHERE TD_IsTrainRow = 0
+      ) WITH DATA ON COMMIT PRESERVE ROWS;
+
+      -- Verify row counts
+      SELECT
+        (SELECT COUNT(*) FROM {{table}}_train) AS train_rows,
+        (SELECT COUNT(*) FROM {{table}}_test) AS test_rows,
+        (SELECT COUNT(*) FROM {{database}}.{{table}}) AS total_rows;
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - train_size
+      - test_size
+      - seed
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Churn Prediction Split ---
+  - name: "Churn Prediction - Stratified Split"
+    description: "80/20 stratified split for a churn prediction model, preserving churn class balance"
+    parameters:
+      database: "telecom"
+      table: "customer_churn"
+      id_column: "customer_id"
+      train_size: 0.8
+      test_size: 0.2
+      seed: 42
+      stratify_column: "churn_flag"
+    expected_result: |
+      Data split into 80% train / 20% test with class balance preserved:
+
+      Train set: ~8000 rows (churn_flag=1: ~12%, churn_flag=0: ~88%)
+      Test set:  ~2000 rows (churn_flag=1: ~12%, churn_flag=0: ~88%)
+
+      Both sets maintain the same class distribution as the original data.
+      Use TD_IsTrainRow column to filter: 1 = train, 0 = test.
+
+  # --- Example 2: Simple 70/30 Split ---
+  - name: "Regression Model - Basic 70/30 Split"
+    description: "Simple 70/30 split for a house price regression model"
+    parameters:
+      database: "real_estate"
+      table: "house_prices"
+      id_column: "listing_id"
+      train_size: 0.7
+      test_size: 0.3
+      seed: 123
+    expected_result: |
+      Data split into 70% train / 30% test:
+
+      Train set: ~7000 rows
+      Test set:  ~3000 rows
+
+      Deterministic split via Seed(123) - re-running produces identical partition.
+      All original columns carried through with TD_IsTrainRow appended.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: TrainSize + TestSize != 1.0 ---
+  - error: "TrainSize and TestSize do not sum to 1.0"
+    cause: "Both TrainSize and TestSize specified but their sum is not exactly 1.0"
+    solution: "Ensure TrainSize + TestSize = 1.0. For example: TrainSize(0.8) and TestSize(0.2)"
+
+  # --- Error 2: Seed without IDColumn ---
+  - error: "Non-deterministic results when using Seed"
+    cause: "Seed is specified but IDColumn is missing"
+    solution: "Always specify IDColumn when using Seed. IDColumn is required for deterministic, reproducible splits"
+
+  # --- Error 3: NULLs in StratifyColumn ---
+  - error: "Error when using StratifyColumn with NULL values"
+    cause: "The stratify column contains NULL values which are not allowed"
+    solution: "Filter out or impute NULLs in the stratify column before splitting. Use: WHERE stratify_col IS NOT NULL"
+
+  # --- Error 4: Too few rows per class for stratification ---
+  - error: "Stratified split fails or produces empty partitions"
+    cause: "TrainSize or TestSize results in fewer rows than the number of distinct classes"
+    solution: "Ensure each partition has enough rows. TrainSize and TestSize must each produce more rows than the number of distinct class values in StratifyColumn"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Train/Test Split Best Practices
+
+  ### 1. Always Use a Seed for Reproducibility
+  - Set Seed along with IDColumn for deterministic splits
+  - Record the seed value in experiment logs
+  - Same seed + same data = identical split every time
+
+  ### 2. Choose the Right Ratio
+  - **80/20** is the most common default for medium datasets
+  - **70/30** when you need a larger test set for reliable evaluation
+  - **90/10** only for very large datasets (>100K rows)
+  - Ensure both sets are large enough for meaningful evaluation
+
+  ### 3. Use Stratified Splits for Classification
+  - Always stratify when the target class is imbalanced
+  - Prevents test sets with no minority class examples
+  - Critical for churn prediction, fraud detection, rare event models
+
+  ### 4. Persist Split Results
+  - Save the split into separate train/test tables for reuse
+  - Avoids re-splitting and potential inconsistencies
+  - Downstream training and evaluation queries are simpler
+
+  ### 5. Validate the Split
+  ```sql
+  -- Check class distribution in both sets
+  SELECT
+    TD_IsTrainRow,
+    target_col,
+    COUNT(*) as row_count
+  FROM split_result
+  GROUP BY TD_IsTrainRow, target_col
+  ORDER BY TD_IsTrainRow, target_col;
+  ```
+
+  ### 6. Integration with Model Evaluation
+  - Train model on rows where TD_IsTrainRow = 1
+  - Evaluate with TD_ClassificationEvaluator or TD_RegressionEvaluator on TD_IsTrainRow = 0
+  - Never evaluate on training data - results will be misleadingly optimistic
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Classification Evaluator ---
+  - classification_evaluator
+
+  # --- Pattern 2: Regression Evaluator ---
+  - regression_evaluator
+
+  # --- Pattern 3: ROC Analysis ---
+  - roc_analysis
+
+  # --- Pattern 4: K-Means ---
+  - kmeans
+# === RELATED_PATTERNS END ===

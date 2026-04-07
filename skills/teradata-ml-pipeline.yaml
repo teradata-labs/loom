@@ -1,0 +1,192 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: teradata-ml-pipeline
+  title: Teradata ML Pipeline
+  description: Step-by-step machine learning workflow guidance using native Teradata Vantage functions — from data exploration through model deployment
+  version: "1.0.0"
+  domain: teradata
+  author: loom
+  labels:
+    category: database
+    backend: teradata
+trigger:
+  slash_commands:
+    - /td-ml
+    - /td-train
+  keywords:
+    - train model
+    - classification
+    - regression
+    - clustering
+    - machine learning
+    - xgboost
+    - decision forest
+    - random forest
+    - logistic regression
+    - kmeans
+  intent_categories:
+    - analytics
+    - machine_learning
+  mode: HYBRID
+  min_confidence: 0.7
+prompt:
+  instructions: |
+    Guide the user through the complete ML lifecycle using native Teradata Vantage
+    functions. Every step runs in-database — no data leaves Teradata.
+
+    ## Step 1: Explore Data
+    - Use TD_ColumnSummary for column-level statistics (count, mean, stddev, nulls, distinct)
+    - Use TD_UnivariateStatistics for distribution details (percentiles, skewness, kurtosis)
+    - Use TD_Histogram to visualize value distributions
+    - Use TD_Correlation to check feature relationships
+    - Use SAMPLE or TOP N to preview rows — never SELECT * on large tables
+    - Topic: data-exploration
+
+    ## Step 2: Clean Data
+    - Use TD_GetRowsWithMissingValues to identify rows with NULLs
+    - Use TD_GetFutileColumns to drop useless (zero-variance) columns
+    - Use TD_SimpleImputeFit / TD_SimpleImputeTransform to fill missing values
+    - Use TD_OutlierFilterFit / TD_OutlierFilterTransform to detect and handle outliers
+    - Use TD_ConvertTo for type conversions
+    - Topic: data-cleaning
+
+    ## Step 3: Train/Test Split
+    - Use TD_TrainTestSplit to split data (typical: 80/20 or 70/30)
+    - Always split BEFORE any feature engineering to prevent data leakage
+    - Fit all transforms on the training set only
+    - Topic: model-evaluation
+
+    ## Step 4: Feature Engineering (Fit/Transform Pattern)
+    All feature engineering uses the two-phase Fit/Transform pattern:
+    - Fit learns parameters from training data (saves a FitTable)
+    - Transform applies learned parameters to any dataset (train, test, or new data)
+
+    Available transforms:
+    - TD_ScaleFit / TD_ScaleTransform — normalize numeric features (StandardScale, MinMax, etc.)
+    - TD_BinCodeFit / TD_BinCodeTransform — discretize continuous variables
+    - TD_OneHotEncodingFit / TD_OneHotEncodingTransform — encode categoricals as binary columns
+    - TD_OrdinalEncodingFit / TD_OrdinalEncodingTransform — encode categoricals as integers
+    - TD_TargetEncodingFit / TD_TargetEncodingTransform — encode categoricals using target mean
+    - TD_PolynomialFeaturesFit / TD_PolynomialFeaturesTransform — create interaction features
+    - TD_ColumnTransformer — apply multiple saved FitTables in a single pass
+
+    When to use which:
+    - Scaling: required for distance-based models (KNN, SVM, KMeans); optional for tree models
+    - One-hot encoding: for nominal categoricals with low cardinality
+    - Ordinal encoding: for ordinal categoricals or high-cardinality columns
+    - Target encoding: for high-cardinality categoricals in supervised learning
+    - Binning: to discretize continuous features or reduce noise
+    - Topic: data-prep, fit-transform-pattern
+
+    ## Step 5: Train Model
+    Choose the right algorithm for the task:
+
+    Classification:
+    - TD_XGBoost — best general-purpose classifier, handles mixed features well
+    - TD_DecisionForest — good interpretability, resistant to overfitting
+    - TD_GLM (family='BINOMIAL') — logistic regression, interpretable coefficients
+    - TD_SVM — effective for high-dimensional data
+    - TD_NaiveBayes — fast baseline for text or categorical-heavy data
+
+    Regression:
+    - TD_XGBoost — best general-purpose regressor
+    - TD_GLM (family='GAUSSIAN') — linear regression, interpretable
+    - TD_DecisionForest — handles non-linear relationships
+
+    Clustering:
+    - TD_KMeans — standard centroid-based clustering
+    - Use the elbow method (UNION ALL pattern) to choose K — see ml-patterns topic
+
+    Anomaly Detection:
+    - TD_OneClassSVM — unsupervised anomaly detection
+
+    Always use OUT TABLE to persist model tables — never stream models back.
+    - Topic: ml-functions
+
+    ## Step 6: Evaluate Model
+    - TD_ClassificationEvaluator — confusion matrix, precision, recall, F1 for classification
+    - TD_RegressionEvaluator — MAE, RMSE, R-squared for regression
+    - TD_ROC — ROC curve and AUC for binary classification
+    - TD_Silhouette — silhouette score for clustering quality
+    - TD_SHAP — feature importance / explainability
+    - Topic: model-evaluation
+
+    ## Step 7: Deploy as CTE Pipeline
+    Wrap the full scoring pipeline in a single query:
+    1. Apply all transforms via TD_ColumnTransformer (using saved FitTables)
+    2. Feed transformed data into the Predict function
+    3. Return only aggregated results — not raw predictions
+
+    Example pattern:
+    ```sql
+    WITH transformed AS (
+        SELECT * FROM TD_ColumnTransformer(
+            ON new_data AS InputTable
+            ON scale_fit AS ScaleFitTable DIMENSION
+            ON encode_fit AS EncodeFitTable DIMENSION
+        ) AS t
+    )
+    SELECT td_prediction, COUNT(*) AS n
+    FROM TD_XGBoostPredict(
+        ON transformed AS InputTable
+        ON my_model AS ModelTable DIMENSION
+        USING IDColumn('id')
+    ) AS dt
+    GROUP BY td_prediction;
+    ```
+    - Topic: ml-patterns
+
+    ## Handling Class Imbalance
+    If classes are imbalanced:
+    1. Split first with TD_TrainTestSplit
+    2. Apply TD_SMOTE to the training set ONLY (never to test set)
+    3. Train on the rebalanced training set
+    4. Evaluate on the original (unmodified) test set
+    - Topic: data-prep (TD_SMOTE), ml-patterns (class imbalance workflow)
+  constraints:
+    - Always split data before feature engineering to prevent leakage
+    - Fit transforms on training data only — apply to test and production data via Transform
+    - Use OUT TABLE for model persistence — never stream models to the agent
+    - Aggregate predictions before returning — never return raw prediction rows
+    - Use TD_SMOTE on training set only — never resample the test set
+    - Always EXPLAIN before executing joins or scans on large tables
+  output_format: |
+    ## ML Pipeline Plan
+    **Task type**: [classification / regression / clustering]
+    **Algorithm**: [recommended algorithm with rationale]
+
+    ### Pipeline Steps
+    1. [step with native function and topic reference]
+    2. ...
+
+    ### SQL
+    ```sql
+    -- step-by-step SQL or full CTE pipeline
+    ```
+
+    ### Evaluation
+    [Which metrics to check, expected ranges, next steps]
+  examples:
+    - user_input: "Build a model to predict customer churn"
+      expected_output: "Classification pipeline: TD_ColumnSummary -> TD_SimpleImputeTransform -> TD_ScaleTransform -> TD_OneHotEncodingTransform -> TD_TrainTestSplit -> TD_XGBoost -> TD_ClassificationEvaluator -> TD_SHAP"
+      explanation: "Full churn prediction pipeline using native functions — data never leaves Teradata"
+    - user_input: "Segment my customers into groups"
+      expected_output: "Clustering pipeline: TD_ColumnSummary -> TD_ScaleTransform -> TD_KMeans (elbow method for K) -> TD_Silhouette -> TD_KMeansPredict"
+      explanation: "Scaling is required for KMeans (distance-based); elbow method avoids arbitrary K choice"
+tools:
+  required_tools: []
+  preferred_order:
+    - execute_sql
+    - explain_query
+    - get_syntax_help
+  excluded_tools: []
+  mcp_servers: []
+pattern_refs:
+  - teradata-data-prep
+  - teradata-ml
+  - teradata-model-eval
+skill_refs: []
+max_prompt_tokens: 0
+sticky: true
+backend: teradata

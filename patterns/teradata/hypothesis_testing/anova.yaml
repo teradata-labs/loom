@@ -1,0 +1,381 @@
+# === METADATA START ===
+name: anova
+title: "One-Way Analysis of Variance (ANOVA)"
+description: |
+  Test whether the means of two or more groups are significantly different using
+  TD_ANOVA. Returns F-statistic, p-value, and a pass/fail conclusion.
+
+  TD_ANOVA supports two input modes:
+  - Wide format (Mode 1): one column per group, rows are observations
+  - Long format (Mode 2): one row per observation with group label and value columns
+
+  Typical applications:
+  - Comparing average spend across customer segments
+  - Testing whether marketing treatments produce different conversion rates
+  - Evaluating whether product quality varies across manufacturing lines
+
+category: hypothesis_testing
+difficulty: intermediate
+teradata_function: TD_ANOVA
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - hypothesis_testing
+  - statistical_analysis
+use_cases:
+  # --- Use Case 1: Treatment Comparison ---
+  - Compare mean outcomes across experimental treatments or A/B/C test groups
+
+  # --- Use Case 2: Segment Analysis ---
+  - Test whether customer segments have significantly different average behavior
+
+  # --- Use Case 3: Quality Control ---
+  - Determine whether manufacturing lines or suppliers produce different mean quality
+
+  # --- Use Case 4: Regional Performance ---
+  - Assess whether regional offices or stores have significantly different performance metrics
+
+  # --- Use Case 5: Time Period Comparison ---
+  - Compare average metrics across time periods (quarters, campaigns)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the data to analyze"
+    example: "marketing_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table or view containing the groups to compare"
+    example: "campaign_results"
+
+  # --- Parameter 3: Group Columns (Mode 1) ---
+  - name: group_columns
+    type: array[string]
+    # LLM-HINT: Wide format — one column per group; mutually exclusive with group_name_column
+    required: false
+    description: "Column names for wide-format input (Mode 1). Each column represents one group."
+    example: '["treatment_a", "treatment_b", "control"]'
+
+  # --- Parameter 4: Group Name Column (Mode 2) ---
+  - name: group_name_column
+    type: string
+    # LLM-HINT: Long format — column containing group labels; use with group_value_column
+    required: false
+    description: "Column containing group labels for long-format input (Mode 2)"
+    example: "segment"
+
+  # --- Parameter 5: Group Value Column (Mode 2) ---
+  - name: group_value_column
+    type: string
+    # LLM-HINT: Long format — column containing numeric values to compare
+    required: false
+    description: "Column containing numeric values for long-format input (Mode 2)"
+    example: "revenue"
+
+  # --- Parameter 6: Group Names (Mode 2) ---
+  - name: group_names
+    type: array[string]
+    # LLM-HINT: Specific group labels to compare; mutually exclusive with num_groups
+    required: false
+    description: "Specific group names to include in the test (Mode 2). Mutually exclusive with num_groups."
+    example: '["gold", "silver", "bronze"]'
+
+  # --- Parameter 7: Num Groups (Mode 2) ---
+  - name: num_groups
+    type: integer
+    # LLM-HINT: Number of groups to compare; mutually exclusive with group_names
+    required: false
+    description: "Number of groups to compare (Mode 2). Mutually exclusive with group_names."
+    example: "3"
+
+  # --- Parameter 8: Alpha ---
+  - name: alpha
+    type: float
+    # LLM-HINT: Significance level; default 0.05; valid range [0, 1]
+    required: false
+    default: "0.05"
+    description: "Significance level for the test. Default 0.05 (95% confidence)."
+    example: "0.05"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === WIDE_FORMAT TEMPLATE ===
+  # LLM-HINT: Mode 1 — one column per group; use when data is pivoted/wide
+  wide_format:
+    description: "One-way ANOVA with wide-format input (one column per group)"
+    sql: |
+      -- One-way ANOVA: wide format (Mode 1)
+      -- Each column is a separate group; rows are observations
+      SELECT * FROM TD_ANOVA(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              GroupColumns({{group_columns_quoted}})
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - group_columns_quoted
+      - alpha
+
+  # === LONG_FORMAT_NAMED TEMPLATE ===
+  # LLM-HINT: Mode 2 with named groups — use when data is in normalized/long format
+  long_format_named:
+    description: "One-way ANOVA with long-format input and named groups"
+    sql: |
+      -- One-way ANOVA: long format (Mode 2) with named groups
+      -- One row per observation; group label + numeric value columns
+      SELECT * FROM TD_ANOVA(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              GroupNameColumn('{{group_name_column}}')
+              GroupValueColumn('{{group_value_column}}')
+              GroupNames({{group_names_quoted}})
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - group_name_column
+      - group_value_column
+      - group_names_quoted
+      - alpha
+
+  # === LONG_FORMAT_COUNT TEMPLATE ===
+  # LLM-HINT: Mode 2 with NumGroups — use when you know the count but not the names
+  long_format_count:
+    description: "One-way ANOVA with long-format input and group count"
+    sql: |
+      -- One-way ANOVA: long format (Mode 2) with NumGroups
+      -- Automatically selects the first N groups found
+      SELECT * FROM TD_ANOVA(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              GroupNameColumn('{{group_name_column}}')
+              GroupValueColumn('{{group_value_column}}')
+              NumGroups({{num_groups}})
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - group_name_column
+      - group_value_column
+      - num_groups
+      - alpha
+
+  # === INTERPRET_RESULTS TEMPLATE ===
+  # LLM-HINT: Post-processing — wrap ANOVA output and label the result for reporting
+  interpret_results:
+    description: "Run ANOVA and interpret the F-statistic and p-value"
+    sql: |
+      -- Run ANOVA and interpret results
+      SELECT
+          F_statistic,
+          p_value,
+          alpha,
+          critical_f,
+          conclusion,
+          CASE
+              WHEN p_value < {{alpha}} THEN 'Group means are significantly different (reject H0)'
+              ELSE 'No significant difference in group means (fail to reject H0)'
+          END AS interpretation,
+          CASE
+              WHEN p_value < 0.001 THEN 'very strong'
+              WHEN p_value < 0.01  THEN 'strong'
+              WHEN p_value < 0.05  THEN 'moderate'
+              WHEN p_value < 0.10  THEN 'weak'
+              ELSE 'none'
+          END AS evidence_strength
+      FROM TD_ANOVA(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              GroupNameColumn('{{group_name_column}}')
+              GroupValueColumn('{{group_value_column}}')
+              GroupNames({{group_names_quoted}})
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - group_name_column
+      - group_value_column
+      - group_names_quoted
+      - alpha
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Marketing Campaign Comparison (Wide) ---
+  - name: "Marketing Campaign Comparison (Wide Format)"
+    description: "Compare conversion rates across three marketing campaigns using wide-format input"
+    parameters:
+      database: "marketing"
+      table: "campaign_conversions_wide"
+      group_columns: ["email_campaign", "social_campaign", "search_campaign"]
+      alpha: 0.05
+    expected_result: |
+      Single result row:
+        F_statistic: 8.42
+        p_value: 0.0003
+        conclusion: 'reject null hypothesis'
+
+      Interpretation: At least one campaign has a significantly different
+      mean conversion rate. Follow up with pairwise comparisons to identify
+      which campaigns differ.
+
+  # --- Example 2: Customer Segment Revenue (Long) ---
+  - name: "Customer Segment Revenue (Long Format)"
+    description: "Test whether customer tier segments have different average revenue"
+    parameters:
+      database: "customer_analytics"
+      table: "customer_transactions"
+      group_name_column: "tier"
+      group_value_column: "monthly_revenue"
+      group_names: ["gold", "silver", "bronze"]
+      alpha: 0.05
+    expected_result: |
+      Single result row:
+        F_statistic: 24.7
+        p_value: 0.00001
+        conclusion: 'reject null hypothesis'
+
+      Interpretation: Revenue differs significantly across customer tiers.
+      The high F-statistic and very low p-value indicate strong evidence
+      that at least one tier has a different mean revenue.
+
+  # --- Example 3: Manufacturing Quality ---
+  - name: "Manufacturing Quality by Line"
+    description: "Determine whether production lines yield different defect rates"
+    parameters:
+      database: "manufacturing"
+      table: "quality_metrics"
+      group_name_column: "production_line"
+      group_value_column: "defect_rate"
+      num_groups: 4
+      alpha: 0.01
+    expected_result: |
+      Single result row with alpha=0.01 (99% confidence):
+        F_statistic: 3.15
+        p_value: 0.025
+        conclusion: 'fail to reject null hypothesis'
+
+      At alpha=0.01 the difference is not significant, but at alpha=0.05
+      it would be. Consider the business impact before choosing the threshold.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Mode Confusion ---
+  - error: "Mixing Mode 1 and Mode 2 parameters"
+    cause: "Specifying both GroupColumns and GroupNameColumn in the same call"
+    solution: "Use GroupColumns for wide format OR GroupNameColumn + GroupValueColumn for long format. Never both."
+
+  # --- Error 2: GroupNames vs NumGroups ---
+  - error: "Specifying both GroupNames and NumGroups"
+    cause: "These parameters are mutually exclusive in Mode 2"
+    solution: "Use GroupNames to select specific groups by label, OR NumGroups to select by count. Never both."
+
+  # --- Error 3: Non-Normal Data ---
+  - error: "Misleading results on skewed data"
+    cause: "TD_ANOVA assumes normally distributed data within each group"
+    solution: "Check group distributions before running ANOVA. For heavily skewed data, apply log transformation or use a non-parametric alternative."
+
+  # --- Error 4: Unequal Variances ---
+  - error: "Invalid F-statistic when group variances differ greatly"
+    cause: "ANOVA assumes approximately equal variances across groups"
+    solution: "Use TD_FTest to check variance equality first. If variances differ significantly, consider Welch's ANOVA or transform the data."
+
+  # --- Error 5: Small Group Sizes ---
+  - error: "Low statistical power"
+    cause: "Groups with very few observations reduce test sensitivity"
+    solution: "Ensure each group has a reasonable sample size (typically 20+ observations). Unbalanced groups reduce power."
+
+  # --- Error 6: Input Alias ---
+  - error: "[Teradata] Invalid alias for input"
+    cause: "Using wrong alias name for the ON clause"
+    solution: "TD_ANOVA requires the alias InputTable on the ON clause. Example: ON db.table AS InputTable"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## ANOVA Best Practices
+
+  ### 1. Check Assumptions First
+  **Normality:**
+  - ANOVA is fairly robust to non-normality with large samples (n > 30 per group)
+  - For small samples, check distribution shape before relying on results
+  - Log-transform right-skewed data (revenue, counts) before testing
+
+  **Equal variances:**
+  ```sql
+  -- Check variance equality with TD_FTest before running ANOVA
+  SELECT * FROM TD_FTest(
+      ON db.my_table AS InputTable
+      USING
+          FirstSampleColumn('group_a_values')
+          SecondSampleColumn('group_b_values')
+  ) AS t;
+  ```
+
+  ### 2. Choose the Right Input Mode
+  **Wide format (Mode 1):** Best when data is already pivoted — one column per group.
+  ```
+  treatment_a | treatment_b | control
+  12.5        | 10.3        | 9.8
+  ```
+
+  **Long format (Mode 2):** Best for normalized/transactional data.
+  ```
+  group_name  | value
+  treatment_a | 12.5
+  treatment_b | 10.3
+  control     | 9.8
+  ```
+
+  ### 3. Interpret p-value Correctly
+  - p < alpha: reject H0 — at least one group mean differs
+  - p >= alpha: fail to reject H0 — no significant difference detected
+  - A non-significant result does NOT prove groups are equal
+  - ANOVA tells you IF groups differ, not WHICH ones differ
+
+  ### 4. Follow Up on Significant Results
+  - ANOVA only tells you that at least one group is different
+  - Perform pairwise comparisons (t-tests or Tukey HSD) to find which groups differ
+  - Apply Bonferroni correction when doing multiple pairwise tests
+
+  ### 5. Report Effect Size
+  - p-value alone is not enough — large samples make tiny differences significant
+  - Calculate eta-squared: SS_between / SS_total
+  - Small: 0.01, Medium: 0.06, Large: 0.14
+
+  ### 6. Alpha Selection
+  - 0.05 is conventional but not universal
+  - Use 0.01 for high-stakes decisions (medical, financial)
+  - Use 0.10 for exploratory analysis
+  - Pre-register your alpha before looking at results
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Statistical Tests ---
+  - statistical_tests
+
+  # --- Pattern 2: K-Means Clustering ---
+  - kmeans
+
+  # --- Pattern 3: Linear Regression ---
+  - linear_regression
+# === RELATED_PATTERNS END ===

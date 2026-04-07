@@ -189,14 +189,24 @@ func (ps *PatternSelector) matchCategory(category string, domain DomainType) []s
 
 	// Category → pattern prefix mapping
 	categoryMap := map[string][]string{
-		"analytics":      {"analytics/", "postgres/analytics/", "teradata/analytics/"},
-		"data_quality":   {"sql/data_quality/", "teradata/data_quality/"},
-		"data_discovery": {"teradata/data_discovery/"},
-		"ml":             {"teradata/ml/"},
-		"timeseries":     {"sql/timeseries/", "teradata/timeseries/"},
-		"text":           {"sql/text/", "teradata/text/", "text/"},
-		"api":            {"rest_api/"},
-		"file":           {"document/"},
+		"analytics":          {"analytics/", "postgres/analytics/", "teradata/analytics/"},
+		"data_quality":       {"sql/data_quality/", "teradata/data_quality/"},
+		"data_discovery":     {"teradata/data_discovery/"},
+		"ml":                 {"teradata/ml/"},
+		"data_prep":          {"teradata/data_prep/"},
+		"model_evaluation":   {"teradata/model_evaluation/"},
+		"timeseries":         {"sql/timeseries/", "teradata/timeseries/"},
+		"text":               {"sql/text/", "teradata/text/"},
+		"ai_functions":       {"teradata/ai_functions/"},
+		"vector_search":      {"teradata/vector_search/"},
+		"geospatial":         {"teradata/geospatial/"},
+		"hypothesis_testing": {"teradata/hypothesis_testing/"},
+		"association":        {"teradata/association/"},
+		"byom":               {"teradata/byom/"},
+		"performance":        {"teradata/performance/"},
+		"core":               {"teradata/core/"},
+		"api":                {"rest_api/"},
+		"file":               {"document/"},
 	}
 
 	if prefixes, exists := categoryMap[category]; exists {
@@ -210,14 +220,42 @@ func (ps *PatternSelector) matchCategory(category string, domain DomainType) []s
 func (ps *PatternSelector) resolveDependencies(selectedPatterns map[string]float64) []string {
 	// Pattern dependencies (pattern → required dependencies)
 	dependencies := map[string][]string{
-		"postgres/analytics/missing_index_analysis":     {"postgres/analytics/sequential_scan_detection"},
-		"postgres/analytics/join_optimization":          {"postgres/analytics/missing_index_analysis"},
-		"sql/data_quality/data_validation":              {"sql/data_quality/data_profiling"},
-		"teradata/analytics/funnel_analysis":            {"teradata/analytics/sessionize"},
+		// Postgres
+		"postgres/analytics/missing_index_analysis": {"postgres/analytics/sequential_scan_detection"},
+		"postgres/analytics/join_optimization":      {"postgres/analytics/missing_index_analysis"},
+		// SQL core
+		"sql/data_quality/data_validation": {"sql/data_quality/data_profiling"},
+		// Teradata analytics
+		"teradata/analytics/funnel_analysis": {"teradata/analytics/sessionize"},
+		// Teradata data discovery
 		"teradata/data_discovery/key_detection":         {"teradata/data_discovery/signature_generation"},
-		"teradata/data_discovery/foreign_key_detection": {"teradata/data_discovery/signature_generation", "teradata/data_discovery/key_detection"},
-		"teradata/data_discovery/column_similarity":     {"teradata/data_discovery/signature_generation"},
-		"teradata/data_discovery/data_profiling":        {"teradata/data_discovery/signature_generation"},
+		"teradata/data_discovery/foreign_key_detection":  {"teradata/data_discovery/signature_generation", "teradata/data_discovery/key_detection"},
+		"teradata/data_discovery/column_similarity":      {"teradata/data_discovery/signature_generation"},
+		"teradata/data_discovery/data_profiling":         {"teradata/data_discovery/signature_generation"},
+		// Teradata ML → data prep dependency
+		"teradata/ml/xgboost":         {"teradata/data_prep/fit_transform_pattern"},
+		"teradata/ml/decision_forest":  {"teradata/data_prep/fit_transform_pattern"},
+		"teradata/ml/svm":              {"teradata/data_prep/fit_transform_pattern"},
+		"teradata/ml/glm":              {"teradata/data_prep/fit_transform_pattern"},
+		// Model evaluation dependencies
+		"teradata/model_evaluation/classification_evaluator": {"teradata/model_evaluation/train_test_split"},
+		"teradata/model_evaluation/regression_evaluator":     {"teradata/model_evaluation/train_test_split"},
+		"teradata/model_evaluation/roc_analysis":             {"teradata/model_evaluation/train_test_split"},
+		"teradata/model_evaluation/shap_explainability":      {"teradata/model_evaluation/train_test_split"},
+		// Vector search dependencies
+		"teradata/vector_search/hnsw":            {"teradata/vector_search/vector_normalize"},
+		"teradata/vector_search/vector_distance":  {"teradata/vector_search/vector_normalize"},
+		// AI functions → authorization dependency
+		"teradata/ai_functions/ai_sentiment":       {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_ask_llm":         {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_text_classifier":  {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_pii":              {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_summarize":         {"teradata/ai_functions/authorization_objects"},
+		// Embeddings → authorization dependency
+		"teradata/vector_search/embeddings": {"teradata/ai_functions/authorization_objects"},
+		// Time series UAF dependencies
+		"teradata/timeseries/holt_winters":       {"teradata/timeseries/uaf_concepts"},
+		"teradata/timeseries/signal_processing":   {"teradata/timeseries/uaf_concepts"},
 	}
 
 	// Add dependencies to selection
@@ -345,35 +383,199 @@ func buildCapabilityMap() map[string][]string {
 		"regression": {
 			"teradata/ml/linear_regression",
 			"teradata/ml/logistic_regression",
+			"teradata/ml/glm",
 		},
 		"classification": {
 			"teradata/ml/logistic_regression",
 			"teradata/ml/decision_tree",
+			"teradata/ml/xgboost",
+			"teradata/ml/decision_forest",
+			"teradata/ml/svm",
+			"teradata/ml/naive_bayes",
 		},
 		"clustering": {
 			"teradata/ml/kmeans",
 		},
+		"xgboost": {
+			"teradata/ml/xgboost",
+		},
+		"gradient_boosting": {
+			"teradata/ml/xgboost",
+		},
+		"random_forest": {
+			"teradata/ml/decision_forest",
+		},
+		"svm": {
+			"teradata/ml/svm",
+		},
+		"knn": {
+			"teradata/ml/knn",
+		},
+		"anomaly_detection": {
+			"teradata/ml/anomaly_detection",
+		},
+		"ml_pipeline": {
+			"teradata/ml/ml_pipeline_patterns",
+		},
+		"micromodeling": {
+			"teradata/ml/glm",
+			"teradata/ml/ml_pipeline_patterns",
+		},
+
+		// Data Preparation
+		"feature_engineering": {
+			"teradata/data_prep/scale_transform",
+			"teradata/data_prep/one_hot_encoding",
+			"teradata/data_prep/bincode",
+			"teradata/data_prep/column_transformer",
+			"teradata/data_prep/fit_transform_pattern",
+		},
+		"data_preparation": {
+			"teradata/data_prep/scale_transform",
+			"teradata/data_prep/one_hot_encoding",
+			"teradata/data_prep/bincode",
+			"teradata/data_prep/column_transformer",
+			"teradata/data_prep/smote",
+			"teradata/data_prep/fit_transform_pattern",
+		},
+		"scaling": {
+			"teradata/data_prep/scale_transform",
+		},
+		"encoding": {
+			"teradata/data_prep/one_hot_encoding",
+		},
+		"binning": {
+			"teradata/data_prep/bincode",
+		},
+		"class_imbalance": {
+			"teradata/data_prep/smote",
+		},
+
+		// Model Evaluation
+		"model_evaluation": {
+			"teradata/model_evaluation/train_test_split",
+			"teradata/model_evaluation/classification_evaluator",
+			"teradata/model_evaluation/regression_evaluator",
+			"teradata/model_evaluation/roc_analysis",
+			"teradata/model_evaluation/shap_explainability",
+		},
+		"train_test_split": {
+			"teradata/model_evaluation/train_test_split",
+		},
+		"confusion_matrix": {
+			"teradata/model_evaluation/classification_evaluator",
+		},
+		"feature_importance": {
+			"teradata/model_evaluation/shap_explainability",
+		},
 
 		// Time Series
 		"time_series": {
-			"sql/timeseries/moving_average",
-			"sql/timeseries/arima",
+			"teradata/timeseries/arima",
+			"teradata/timeseries/moving_average",
+			"teradata/timeseries/holt_winters",
+			"teradata/timeseries/uaf_concepts",
 		},
 		"forecasting": {
-			"sql/timeseries/arima",
+			"teradata/timeseries/arima",
+			"teradata/timeseries/holt_winters",
+		},
+		"signal_processing": {
+			"teradata/timeseries/signal_processing",
 		},
 
 		// Text Processing
 		"text_analysis": {
-			"sql/text/ngram",
-			"text/sentiment-analysis",
-			"text/summarization",
+			"teradata/text/ngram",
+			"teradata/text/tfidf",
+			"teradata/text/sentiment",
+			"teradata/text/text_classifier",
+			"teradata/text/ner",
 		},
 		"sentiment_analysis": {
-			"text/sentiment-analysis",
+			"teradata/text/sentiment",
+			"teradata/ai_functions/ai_sentiment",
+		},
+		"text_classification": {
+			"teradata/text/text_classifier",
+			"teradata/ai_functions/ai_text_classifier",
 		},
 		"text_summarization": {
-			"text/summarization",
+			"teradata/ai_functions/ai_summarize",
+		},
+		"named_entity_recognition": {
+			"teradata/text/ner",
+		},
+		"pii_detection": {
+			"teradata/ai_functions/ai_pii",
+		},
+
+		// AI / LLM Functions
+		"ai_analytics": {
+			"teradata/ai_functions/ai_sentiment",
+			"teradata/ai_functions/ai_ask_llm",
+			"teradata/ai_functions/ai_text_classifier",
+			"teradata/ai_functions/ai_pii",
+			"teradata/ai_functions/ai_summarize",
+			"teradata/ai_functions/authorization_objects",
+		},
+
+		// Vector Search & Embeddings
+		"vector_search": {
+			"teradata/vector_search/vector_distance",
+			"teradata/vector_search/hnsw",
+			"teradata/vector_search/vector_normalize",
+		},
+		"embeddings": {
+			"teradata/vector_search/embeddings",
+		},
+		"semantic_search": {
+			"teradata/vector_search/hnsw",
+			"teradata/vector_search/embeddings",
+			"teradata/vector_search/vector_normalize",
+		},
+
+		// Geospatial
+		"geospatial": {
+			"teradata/geospatial/geometry_basics",
+			"teradata/geospatial/spatial_relationships",
+			"teradata/geospatial/spatial_operations",
+		},
+		"spatial_analysis": {
+			"teradata/geospatial/spatial_relationships",
+			"teradata/geospatial/spatial_operations",
+		},
+
+		// Hypothesis Testing
+		"hypothesis_testing": {
+			"teradata/hypothesis_testing/anova",
+			"teradata/hypothesis_testing/statistical_tests",
+		},
+		"statistical_testing": {
+			"teradata/hypothesis_testing/anova",
+			"teradata/hypothesis_testing/statistical_tests",
+		},
+
+		// Association & Market Basket
+		"market_basket": {
+			"teradata/association/apriori",
+		},
+		"collaborative_filtering": {
+			"teradata/association/collaborative_filtering",
+		},
+		"association_analysis": {
+			"teradata/association/apriori",
+			"teradata/association/collaborative_filtering",
+		},
+
+		// BYOM
+		"byom": {
+			"teradata/byom/model_loading",
+			"teradata/byom/model_scoring",
+		},
+		"external_model": {
+			"teradata/byom/model_loading",
+			"teradata/byom/model_scoring",
 		},
 
 		// Code

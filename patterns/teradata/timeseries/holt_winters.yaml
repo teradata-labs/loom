@@ -1,0 +1,553 @@
+# === METADATA START ===
+name: holt_winters
+title: "Holt-Winters Exponential Smoothing Forecaster"
+description: |
+  TD_HOLT_WINTERS_FORECASTER implements triple exponential smoothing for seasonal time
+  series forecasting. It handles additive and multiplicative seasonal patterns with trend
+  components. The function simultaneously fits the model and generates forecasts.
+
+  Holt-Winters decomposes a series into three components:
+  - Level (alpha): Smoothed baseline value
+  - Trend (beta): Direction and rate of change
+  - Seasonal (gamma): Repeating periodic patterns
+
+  For single exponential smoothing (level only, no trend or seasonality), use TD_SIMPLEEXP
+  instead. For non-seasonal forecasting, use TD_MAMEAN or ARIMA.
+
+category: timeseries
+difficulty: advanced
+teradata_function: TD_HOLT_WINTERS_FORECASTER
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - forecasting
+  - query_generation
+use_cases:
+  - Seasonal sales forecasting (retail, e-commerce)
+  - Quarterly revenue projections with seasonal adjustment
+  - Demand planning for products with seasonal cycles
+  - Energy consumption forecasting (heating/cooling seasons)
+  - Tourism and hospitality demand forecasting
+  - Seasonal inventory optimization
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Table Name ---
+  - name: table_name
+    type: string
+    # LLM-HINT: Source table with time series data
+    required: true
+    description: "Table containing the time series data"
+    example: "sales_ts"
+
+  # --- Parameter 2: Series ID ---
+  - name: series_id
+    type: string
+    # LLM-HINT: Column(s) identifying each distinct series
+    required: true
+    description: "Column(s) uniquely identifying each series instance"
+    example: "store_id"
+
+  # --- Parameter 3: Row Axis Column ---
+  - name: row_axis_column
+    type: string
+    # LLM-HINT: Index column; SEQUENCE for integer, TIMECODE for date/timestamp
+    required: true
+    description: "Column used as the row axis index"
+    example: "seq_no"
+
+  # --- Parameter 4: Row Axis Type ---
+  - name: row_axis_type
+    type: string
+    # LLM-HINT: TIMECODE for date/timestamp, SEQUENCE for integer/float
+    required: true
+    description: "Type of row axis: TIMECODE or SEQUENCE"
+    example: "SEQUENCE"
+
+  # --- Parameter 5: Value Column ---
+  - name: value_column
+    type: string
+    # LLM-HINT: Numeric column to forecast; REAL content type only
+    required: true
+    description: "Numeric column to forecast (REAL content type only)"
+    example: "sales_amt"
+
+  # --- Parameter 6: Forecast Periods ---
+  - name: forecast_periods
+    type: integer
+    # LLM-HINT: Number of future periods to forecast beyond the last observation
+    required: true
+    description: "Number of future periods to forecast"
+    example: "12"
+
+  # --- Parameter 7: Model Type ---
+  - name: model_type
+    type: string
+    # LLM-HINT: ADDITIVE for constant seasonal amplitude; MULTIPLICATIVE when amplitude scales with level
+    required: true
+    description: "Seasonal model type: ADDITIVE (constant seasonal swings) or MULTIPLICATIVE (seasonal swings proportional to level)"
+    example: "ADDITIVE"
+
+  # --- Parameter 8: Seasonal Periods ---
+  - name: seasonal_periods
+    type: integer
+    # LLM-HINT: Number of periods in one seasonal cycle (4=quarterly, 12=monthly, 7=daily with weekly pattern)
+    required: true
+    description: "Number of periods in one seasonal cycle (must be > 1 for seasonal models)"
+    example: "4"
+
+  # --- Parameter 9: Alpha ---
+  - name: alpha
+    type: float
+    # LLM-HINT: Level smoothing factor (0-1); omit to let the function estimate from data
+    required: false
+    description: "Level smoothing factor (0-1). Estimated from data if omitted."
+    example: "0.3"
+
+  # --- Parameter 10: Beta ---
+  - name: beta
+    type: float
+    # LLM-HINT: Trend smoothing factor (0-1); omit to let the function estimate from data
+    required: false
+    description: "Trend smoothing factor (0-1). Estimated from data if omitted."
+    example: "0.1"
+
+  # --- Parameter 11: Gamma ---
+  - name: gamma
+    type: float
+    # LLM-HINT: Seasonal smoothing factor (0-1); only applies when SEASONAL_PERIODS > 1; omit to estimate
+    required: false
+    description: "Seasonal smoothing factor (0-1). Only applies when SEASONAL_PERIODS > 1. Estimated from data if omitted."
+    example: "0.2"
+
+  # --- Parameter 12: Fit Percentage ---
+  - name: fit_percentage
+    type: integer
+    # LLM-HINT: Percent of series for fitting (default 100); set < 100 to reserve holdout for validation
+    required: false
+    default: "100"
+    description: "Percent of series used for fitting. Remainder is holdout."
+    example: "80"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === ADDITIVE_FORECAST TEMPLATE ===
+  # LLM-HINT: Use for series where seasonal fluctuations are roughly constant regardless of level
+  additive_forecast:
+    description: "Holt-Winters additive model: seasonal swings are constant in magnitude"
+    sql: |
+      -- Holt-Winters with ADDITIVE seasonality
+      -- Seasonal swings are constant regardless of the series level.
+      -- Use when seasonal peaks/troughs add a fixed amount to the trend.
+      EXECUTE FUNCTION INTO VOLATILE ART(hw_additive_art)
+      TD_HOLT_WINTERS_FORECASTER(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              MODEL(ADDITIVE),
+              SEASONAL_PERIODS({{seasonal_periods}}),
+              PREDICTION_INTERVALS(BOTH),
+              FIT_METRICS(1),
+              SELECTION_METRICS(1),
+              RESIDUALS(1)
+          ),
+          OUTPUT_FMT(INDEX_STYLE(NUMERICAL_SEQUENCE))
+      );
+
+      -- Primary results: historical fit + forecast
+      SELECT * FROM hw_additive_art;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_type
+      - row_axis_column
+      - value_column
+      - forecast_periods
+      - seasonal_periods
+
+  # === MULTIPLICATIVE_FORECAST TEMPLATE ===
+  # LLM-HINT: Use for series where seasonal fluctuations scale with the level (e.g., percentage swings)
+  multiplicative_forecast:
+    description: "Holt-Winters multiplicative model: seasonal swings scale with the series level"
+    sql: |
+      -- Holt-Winters with MULTIPLICATIVE seasonality
+      -- Seasonal swings are proportional to the series level.
+      -- Use when seasonal peaks grow as the overall level increases.
+      EXECUTE FUNCTION INTO VOLATILE ART(hw_multiplicative_art)
+      TD_HOLT_WINTERS_FORECASTER(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              MODEL(MULTIPLICATIVE),
+              SEASONAL_PERIODS({{seasonal_periods}}),
+              PREDICTION_INTERVALS(BOTH),
+              FIT_METRICS(1),
+              SELECTION_METRICS(1),
+              RESIDUALS(1)
+          ),
+          OUTPUT_FMT(INDEX_STYLE(NUMERICAL_SEQUENCE))
+      );
+
+      -- Primary results: historical fit + forecast
+      SELECT * FROM hw_multiplicative_art;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_type
+      - row_axis_column
+      - value_column
+      - forecast_periods
+      - seasonal_periods
+
+  # === CUSTOM_SMOOTHING TEMPLATE ===
+  # LLM-HINT: Manually specify alpha, beta, gamma smoothing parameters instead of auto-estimation
+  custom_smoothing:
+    description: "Holt-Winters with manually specified smoothing parameters"
+    sql: |
+      -- Specify alpha, beta, gamma manually for explicit control.
+      -- Omit any parameter to let the function estimate it from data.
+      EXECUTE FUNCTION INTO VOLATILE ART(hw_custom_art)
+      TD_HOLT_WINTERS_FORECASTER(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              MODEL({{model_type}}),
+              SEASONAL_PERIODS({{seasonal_periods}}),
+              ALPHA({{alpha}}),
+              BETA({{beta}}),
+              GAMMA({{gamma}}),
+              PREDICTION_INTERVALS(BOTH),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          )
+      );
+
+      SELECT * FROM hw_custom_art;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_type
+      - row_axis_column
+      - value_column
+      - forecast_periods
+      - model_type
+      - seasonal_periods
+      - alpha
+      - beta
+      - gamma
+
+  # === SEASONAL_DECOMPOSITION TEMPLATE ===
+  # LLM-HINT: Extract level, trend, and seasonal components from ARTFITRESIDUALS layer
+  seasonal_decomposition:
+    description: "Decompose series into level, trend, seasonal components via ARTFITRESIDUALS"
+    sql: |
+      -- Fit model with RESIDUALS(1) to enable decomposition extraction
+      EXECUTE FUNCTION INTO VOLATILE ART(hw_decomp_art)
+      TD_HOLT_WINTERS_FORECASTER(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              MODEL({{model_type}}),
+              SEASONAL_PERIODS({{seasonal_periods}}),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          )
+      );
+
+      -- Extract seasonal decomposition from ARTFITRESIDUALS layer
+      -- Returns: ACTUAL_VALUE, CALC_LEVEL, CALC_TREND, CALC_SEASONAL, CALC_VALUE, RESIDUAL
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(hw_decomp_art), LAYER(ARTFITRESIDUALS))
+      );
+
+      -- Extract smoothing parameters and fit quality from ARTFITMETADATA
+      -- Returns: R_SQUARE, ALPHA, BETA, GAMMA, ME, MAE, MSE, MAPE, FSTAT_CALC, NULL_HYPOTH
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(hw_decomp_art), LAYER(ARTFITMETADATA))
+      );
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_type
+      - row_axis_column
+      - value_column
+      - forecast_periods
+      - model_type
+      - seasonal_periods
+
+  # === MODEL_COMPARISON TEMPLATE ===
+  # LLM-HINT: Compare additive vs multiplicative models using ARTSELMETRICS (AIC, SBIC, HQIC)
+  model_comparison:
+    description: "Compare additive vs multiplicative models using information criteria"
+    sql: |
+      -- Fit additive model
+      EXECUTE FUNCTION INTO VOLATILE ART(hw_add_art)
+      TD_HOLT_WINTERS_FORECASTER(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              MODEL(ADDITIVE),
+              SEASONAL_PERIODS({{seasonal_periods}}),
+              FIT_METRICS(1),
+              SELECTION_METRICS(1)
+          )
+      );
+
+      -- Fit multiplicative model
+      EXECUTE FUNCTION INTO VOLATILE ART(hw_mult_art)
+      TD_HOLT_WINTERS_FORECASTER(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS({{row_axis_type}}({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              MODEL(MULTIPLICATIVE),
+              SEASONAL_PERIODS({{seasonal_periods}}),
+              FIT_METRICS(1),
+              SELECTION_METRICS(1)
+          )
+      );
+
+      -- Compare model selection criteria (lower AIC/SBIC = better fit)
+      -- Additive model metrics:
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(hw_add_art), LAYER(ARTSELMETRICS))
+      );
+
+      -- Multiplicative model metrics:
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(hw_mult_art), LAYER(ARTSELMETRICS))
+      );
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_type
+      - row_axis_column
+      - value_column
+      - forecast_periods
+      - seasonal_periods
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Quarterly Retail Sales ---
+  - name: "Quarterly Retail Sales Forecast"
+    description: "Forecast quarterly retail sales with yearly seasonality (4 periods per season)"
+    parameters:
+      table_name: "retail_sales_ts"
+      series_id: "store_id"
+      row_axis_column: "quarter_seq"
+      row_axis_type: "SEQUENCE"
+      value_column: "quarterly_sales"
+      forecast_periods: 4
+      model_type: "ADDITIVE"
+      seasonal_periods: 4
+    expected_result: |
+      ARTPRIMARY: historical fit + 4 forecast periods with prediction intervals.
+      - OBSERVED_VALUE: historical sales (NULL for forecast rows)
+      - FORECAST_VALUE: fitted values (in-sample) and forecasts (out-of-sample)
+      - LO_80, HI_80, LO_95, HI_95: prediction interval bounds
+
+      ARTFITMETADATA: estimated ALPHA, BETA, GAMMA, R_SQUARE, MAE, MSE, MAPE.
+      ARTSELMETRICS: AIC, SBIC, HQIC for model comparison.
+      ARTFITRESIDUALS: CALC_LEVEL, CALC_TREND, CALC_SEASONAL decomposition.
+
+  # --- Example 2: Monthly Energy Consumption ---
+  - name: "Monthly Energy Consumption Forecast"
+    description: "Forecast monthly energy usage with multiplicative yearly seasonality"
+    parameters:
+      table_name: "energy_consumption"
+      series_id: "region_id"
+      row_axis_column: "month_seq"
+      row_axis_type: "SEQUENCE"
+      value_column: "kwh_usage"
+      forecast_periods: 12
+      model_type: "MULTIPLICATIVE"
+      seasonal_periods: 12
+    expected_result: |
+      Multiplicative model captures seasonal peaks that grow with increasing baseline:
+      - Summer/winter peaks scale proportionally with overall consumption growth
+      - 12 forecast periods covering next year
+      - Prediction intervals widen for further-out forecasts
+
+  # --- Example 3: Custom Smoothing Parameters ---
+  - name: "Controlled Smoothing for Inventory Planning"
+    description: "Specify alpha/beta/gamma for stable, low-variance forecasts"
+    parameters:
+      table_name: "warehouse_demand"
+      series_id: "product_id"
+      row_axis_column: "week_seq"
+      row_axis_type: "SEQUENCE"
+      value_column: "units_shipped"
+      forecast_periods: 8
+      model_type: "ADDITIVE"
+      seasonal_periods: 52
+      alpha: 0.2
+      beta: 0.05
+      gamma: 0.1
+    expected_result: |
+      Low alpha (0.2): Smooth level, less reactive to recent spikes.
+      Low beta (0.05): Trend changes slowly, suitable for stable products.
+      Low gamma (0.1): Seasonal pattern updates gradually over years.
+
+      Produces conservative forecasts suitable for safety stock calculations.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Wrong Content Type ---
+  - error: "TD_HOLT_WINTERS_FORECASTER does not accept MULTIVAR_REAL or COMPLEX"
+    cause: "Function supports REAL series only (single numeric field)"
+    solution: "Use CONTENT(REAL) with a single payload field. For multivariate forecasting, run separate Holt-Winters calls per variable."
+
+  # --- Error 2: Seasonal Periods Too Small ---
+  - error: "SEASONAL_PERIODS must be > 1 for seasonal models"
+    cause: "GAMMA parameter requires SEASONAL_PERIODS > 1 to have a seasonal component"
+    solution: "Set SEASONAL_PERIODS to the actual number of periods per season (4 for quarterly, 12 for monthly, 7 for daily-with-weekly-cycle). Omit GAMMA for non-seasonal smoothing."
+
+  # --- Error 3: Additive vs Multiplicative Mismatch ---
+  - error: "Model produces poor fit or unreasonable forecasts"
+    cause: "Wrong MODEL type for the data characteristics"
+    solution: "Use ADDITIVE when seasonal swings are constant in absolute magnitude. Use MULTIPLICATIVE when seasonal swings grow proportionally with the series level. Compare both using ARTSELMETRICS (lower AIC = better)."
+
+  # --- Error 4: Insufficient Data for Seasonal Estimation ---
+  - error: "Cannot estimate seasonal parameters"
+    cause: "Series is shorter than two full seasonal cycles"
+    solution: "Provide at least 2 complete seasonal cycles of data (e.g., 24 months for monthly seasonality with yearly cycle). More data produces more stable estimates."
+
+  # --- Error 5: Alpha/Beta/Gamma Out of Range ---
+  - error: "Smoothing parameters must be between 0 and 1"
+    cause: "Invalid alpha, beta, or gamma value"
+    solution: "All smoothing parameters must be in range [0, 1]. Higher values weight recent observations more heavily. Omit to let the function estimate optimal values from data."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Holt-Winters Best Practices
+
+  ### 1. Model Selection: Additive vs Multiplicative
+  **Additive (MODEL(ADDITIVE)):**
+  - Seasonal fluctuations are roughly the same size regardless of level
+  - Example: Temperature varies +/- 15 degrees from trend regardless of baseline
+  - Works with series containing zero or negative values
+
+  **Multiplicative (MODEL(MULTIPLICATIVE)):**
+  - Seasonal fluctuations scale with the series level
+  - Example: Holiday sales spike is 40% above baseline (not a fixed dollar amount)
+  - Requires strictly positive values (no zeros or negatives)
+
+  **Decision approach:**
+  - Plot the series: if seasonal peaks grow over time, use multiplicative
+  - Fit both models and compare AIC from ARTSELMETRICS (lower = better)
+
+  ### 2. Seasonal Periods Configuration
+  **Common SEASONAL_PERIODS values:**
+  - 4: Quarterly data with yearly seasonality
+  - 7: Daily data with weekly seasonality
+  - 12: Monthly data with yearly seasonality
+  - 52: Weekly data with yearly seasonality
+  - 365: Daily data with yearly seasonality (requires substantial data)
+
+  **Provide enough data:**
+  - Minimum: 2 full seasonal cycles
+  - Recommended: 3-5 full cycles for stable estimation
+  - More data = more reliable gamma (seasonal) estimates
+
+  ### 3. Smoothing Parameter Guidelines
+  **Let the function estimate parameters (recommended):**
+  - Omit ALPHA, BETA, GAMMA to auto-estimate from data
+  - Extract estimated values from ARTFITMETADATA for inspection
+
+  **Manual override scenarios:**
+  - High alpha (0.7-0.9): Series with rapid level changes
+  - Low alpha (0.1-0.3): Stable series, less reactive to noise
+  - Low beta (0.01-0.1): Slow-changing trend
+  - High beta (0.3-0.5): Rapidly evolving trend
+  - Low gamma (0.05-0.2): Stable seasonal patterns
+  - High gamma (0.3-0.5): Evolving seasonal patterns
+
+  ### 4. Diagnostic Layer Usage
+  **Always enable diagnostics during development:**
+  ```sql
+  FUNC_PARAMS(
+      ...,
+      FIT_METRICS(1),        -- ARTFITMETADATA: R_SQUARE, MAE, MSE, MAPE
+      SELECTION_METRICS(1),  -- ARTSELMETRICS: AIC, SBIC, HQIC
+      RESIDUALS(1)           -- ARTFITRESIDUALS: CALC_LEVEL, CALC_TREND, CALC_SEASONAL
+  )
+  ```
+
+  **Check ARTFITRESIDUALS for decomposition:**
+  - CALC_LEVEL: Is the smoothed level tracking the data?
+  - CALC_TREND: Is the trend direction reasonable?
+  - CALC_SEASONAL: Do seasonal factors match known patterns?
+  - RESIDUAL: Are residuals random with no remaining pattern?
+
+  ### 5. Forecast Validation
+  **Use FIT_PERCENTAGE for holdout validation:**
+  ```sql
+  FUNC_PARAMS(..., FIT_PERCENTAGE(80))
+  ```
+  - Trains on 80% of data, forecasts remaining 20%
+  - Compare FORECAST_VALUE to OBSERVED_VALUE in holdout
+
+  **Compare with simpler baselines:**
+  - TD_MAMEAN (naive, mean) as lower bound
+  - TD_SIMPLEEXP (single exponential) for non-seasonal comparison
+  - TD_ARIMAESTIMATE for more complex seasonal patterns
+
+  ### 6. Holt-Winters vs Alternatives
+  **Use Holt-Winters when:**
+  - Series has clear level + trend + seasonal pattern
+  - Seasonality is relatively stable across cycles
+  - Quick, interpretable forecasts are needed
+
+  **Use ARIMA instead when:**
+  - Complex autocorrelation structure beyond trend/season
+  - Need rigorous model selection with AIC/BIC comparison
+  - Series has irregular seasonal patterns
+
+  **Use TD_SIMPLEEXP when:**
+  - No trend or seasonality (level-only smoothing)
+  - Flat forecast is acceptable
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - uaf_concepts
+  - arima
+  - moving_average
+  - signal_processing
+# === RELATED_PATTERNS END ===

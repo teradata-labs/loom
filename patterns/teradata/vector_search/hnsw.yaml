@@ -1,0 +1,602 @@
+# === METADATA START ===
+name: hnsw
+title: "HNSW Approximate Nearest Neighbor Search"
+description: |
+  Build and query Hierarchical Navigable Small World (HNSW) indexes for approximate
+  nearest-neighbor search using TD_HNSW and TD_HNSWPredict. HNSW provides orders of
+  magnitude faster search than exact TD_VectorDistance on large datasets, with tunable
+  recall-speed tradeoffs.
+
+  The HNSW workflow has three functions:
+  - TD_HNSW: Build the graph index (supports incremental Update and Delete)
+  - TD_HNSWPredict: Search the index for approximate top-K nearest neighbors
+  - TD_HNSWSummary: Inspect index structure and build metadata
+
+  IMPORTANT: TD_VectorNormalize with Approach('UNITVECTOR') should be applied to all
+  input vectors BEFORE building an HNSW index with DistanceMeasure('cosine'). The index
+  stores vectors as-is and does not normalize internally.
+
+category: vector_search
+difficulty: advanced
+teradata_function: TD_HNSW
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - similarity_search
+  - vector_search
+  - analytics
+use_cases:
+  # --- Use Case 1: Large-Scale Semantic Search ---
+  - Fast semantic search over millions of document embeddings
+
+  # --- Use Case 2: RAG Pipeline ---
+  - Retrieval-augmented generation: retrieve relevant context for LLM prompts
+
+  # --- Use Case 3: Recommendation Engine ---
+  - Real-time product or content recommendations from embedding similarity
+
+  # --- Use Case 4: Image Similarity ---
+  - Find visually similar images from feature embeddings
+
+  # --- Use Case 5: Incremental Index ---
+  - Add new vectors to an existing index without full rebuild
+
+  # --- Use Case 6: Anomaly Detection ---
+  - Identify vectors with no close neighbors in the index
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the vector data and model tables"
+    example: "embeddings_db"
+
+  # --- Parameter 2: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Table with vectors to index; should contain NORMALIZED vectors for cosine distance
+    required: true
+    description: "Table containing vectors to build the index from"
+    example: "document_embeddings_norm"
+
+  # --- Parameter 3: Model Table ---
+  - name: model_table
+    type: string
+    # LLM-HINT: OUT TABLE for the HNSW graph; stores packed binary nodes; reused in TD_HNSWPredict
+    required: true
+    description: "Table name for storing the HNSW graph index"
+    example: "document_hnsw_index"
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier in the input table; used at both build and search time
+    required: true
+    description: "Unique identifier column for each vector"
+    example: "doc_id"
+
+  # --- Parameter 5: Vector Column ---
+  - name: vector_column
+    type: string
+    # LLM-HINT: VECTOR, Vector32, VARBYTE, or BYTE column containing the embedding
+    required: true
+    description: "Column containing the vector/embedding (VECTOR, Vector32, VARBYTE, or BYTE)"
+    example: "embedding"
+
+  # --- Parameter 6: Distance Measure ---
+  - name: distance_measure
+    type: string
+    # LLM-HINT: Set at build time; inherited by TD_HNSWPredict (not specified again at search time)
+    required: false
+    default: "cosine"
+    description: "Distance measure: euclidean, cosine, or dotproduct. Set at build time only"
+    example: "cosine"
+
+  # --- Parameter 7: EfConstruction ---
+  - name: ef_construction
+    type: integer
+    # LLM-HINT: Neighbors searched during build; higher = better recall, slower build; range [1, 1024]
+    required: false
+    default: "32"
+    description: "Build-time search width. Higher values improve recall but slow index construction"
+    example: "64"
+
+  # --- Parameter 8: EfSearch ---
+  - name: ef_search
+    type: integer
+    # LLM-HINT: Candidates considered during search; higher = better recall, slower search; must be >= TopK
+    required: false
+    default: "32"
+    description: "Search-time candidates. Higher values improve recall. Must be >= TopK"
+    example: "64"
+
+  # --- Parameter 9: TopK ---
+  - name: top_k
+    type: integer
+    # LLM-HINT: Nearest neighbors to return per query vector; range [1, 1024]
+    required: false
+    default: "10"
+    description: "Number of nearest neighbors to return per query vector"
+    example: "10"
+
+  # --- Parameter 10: NumConnPerNode ---
+  - name: num_conn_per_node
+    type: integer
+    # LLM-HINT: Connections added per new node during build; higher = better recall, larger index
+    required: false
+    default: "32"
+    description: "Connections per node during build. Higher = better recall, larger index"
+    example: "32"
+
+  # --- Parameter 11: ApplyHeuristics ---
+  - name: apply_heuristics
+    type: string
+    # LLM-HINT: Improves graph navigability at the cost of build time; set 'true' for production indexes
+    required: false
+    default: "false"
+    description: "Apply heuristics during build for better graph quality"
+    example: "true"
+
+  # --- Parameter 12: Query Table ---
+  - name: query_table
+    type: string
+    # LLM-HINT: Table with query vectors for TD_HNSWPredict; passed as InputTable DIMENSION
+    required: false
+    description: "Table containing query vectors for search"
+    example: "query_vectors"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BUILD_INDEX TEMPLATE ===
+  # LLM-HINT: Build the HNSW graph index; graph stored in OUT TABLE, not primary output
+  build_index:
+    description: "Build an HNSW graph index from input vectors"
+    sql: |
+      -- Build HNSW index from normalized embeddings
+      -- IMPORTANT: Normalize vectors BEFORE building if using cosine distance.
+      -- The index stores vectors as-is; it does NOT normalize internally.
+      -- The graph is stored in the OUT TABLE, not the primary output.
+      SELECT * FROM TD_HNSW(
+          ON {{database}}.{{input_table}} AS InputTable
+          OUT PERMANENT TABLE ModelTable({{database}}.{{model_table}})
+          USING
+              IdColumn('{{id_column}}')
+              VectorColumn('{{vector_column}}')
+              DistanceMeasure('{{distance_measure}}')
+              EfConstruction({{ef_construction}})
+              NumConnPerNode({{num_conn_per_node}})
+              ApplyHeuristics('{{apply_heuristics}}')
+              -- Seed(42)          -- Uncomment for reproducible graph construction
+              -- UseSIMD('true')   -- Uncomment for SIMD acceleration
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - model_table
+      - id_column
+      - vector_column
+      - distance_measure
+      - ef_construction
+      - num_conn_per_node
+      - apply_heuristics
+
+  # === SEARCH_INDEX TEMPLATE ===
+  # LLM-HINT: Search the HNSW index; DistanceMeasure is inherited from build time
+  search_index:
+    description: "Search an HNSW index for approximate nearest neighbors"
+    sql: |
+      -- Search the HNSW index for top-K nearest neighbors
+      -- NOTE: DistanceMeasure is inherited from build time (TD_HNSW) --
+      -- do NOT specify it here.
+      -- NOTE: ModelTable is first ON clause; InputTable (query vectors) is DIMENSION.
+      SELECT * FROM TD_HNSWPredict(
+          ON {{database}}.{{model_table}} AS ModelTable
+          ON {{database}}.{{query_table}} AS InputTable DIMENSION
+          USING
+              IdColumn('{{id_column}}')
+              VectorColumn('{{vector_column}}')
+              TopK({{top_k}})
+              EfSearch({{ef_search}})
+              OutputSimilarity('false')
+              -- OutputNearestVector('true')  -- Uncomment to include neighbor vectors in output
+              -- Accumulate('query_text')     -- Uncomment to pass through query metadata
+      ) AS t
+      ORDER BY {{id_column}}, nearest_neighbor_distance ASC;
+    required_parameters:
+      - database
+      - model_table
+      - query_table
+      - id_column
+      - vector_column
+      - top_k
+      - ef_search
+
+  # === SEARCH_WITH_SIMILARITY TEMPLATE ===
+  # LLM-HINT: Returns similarity scores instead of distances; higher = more similar
+  search_with_similarity:
+    description: "Search HNSW index and return similarity scores instead of distances"
+    sql: |
+      -- Search with similarity output (higher = more similar)
+      SELECT * FROM TD_HNSWPredict(
+          ON {{database}}.{{model_table}} AS ModelTable
+          ON {{database}}.{{query_table}} AS InputTable DIMENSION
+          USING
+              IdColumn('{{id_column}}')
+              VectorColumn('{{vector_column}}')
+              TopK({{top_k}})
+              EfSearch({{ef_search}})
+              OutputSimilarity('true')
+              Accumulate('{{accumulate_columns}}')
+      ) AS t
+      ORDER BY {{id_column}}, nearest_neighbor_similarity DESC;
+    required_parameters:
+      - database
+      - model_table
+      - query_table
+      - id_column
+      - vector_column
+      - top_k
+      - ef_search
+      - accumulate_columns
+
+  # === UPDATE_INDEX TEMPLATE ===
+  # LLM-HINT: Add new vectors to an existing index without rebuilding from scratch
+  update_index:
+    description: "Insert new vectors into an existing HNSW index incrementally"
+    sql: |
+      -- Incrementally add new vectors to an existing HNSW graph
+      -- No full rebuild required; new vectors are inserted into the existing graph
+      SELECT * FROM TD_HNSW(
+          ON {{database}}.{{model_table}} AS InputModelTable
+          ON {{database}}.{{new_vectors_table}} AS InputTable DIMENSION
+          OUT PERMANENT TABLE ModelTable({{database}}.{{updated_model_table}})
+          USING
+              IdColumn('{{id_column}}')
+              VectorColumn('{{vector_column}}')
+              AlterOperation('update')
+              -- UseSIMD('true')  -- Uncomment for SIMD acceleration
+      ) AS t;
+    required_parameters:
+      - database
+      - model_table
+      - new_vectors_table
+      - updated_model_table
+      - id_column
+      - vector_column
+
+  # === DELETE_FROM_INDEX TEMPLATE ===
+  # LLM-HINT: Remove vectors from an existing index; reconstruction method is slower but preserves quality
+  delete_from_index:
+    description: "Remove vectors from an existing HNSW index"
+    sql: |
+      -- Remove vectors from an existing HNSW graph
+      -- DeleteMethod options:
+      --   'reconstruction' (default): graph rebuilt after deletion, better quality
+      --   'deletenode': in-place removal, faster but may degrade search quality
+      SELECT * FROM TD_HNSW(
+          ON {{database}}.{{model_table}} AS InputModelTable
+          ON {{database}}.{{delete_vectors_table}} AS InputTable DIMENSION
+          OUT PERMANENT TABLE ModelTable({{database}}.{{updated_model_table}})
+          USING
+              IdColumn('{{id_column}}')
+              VectorColumn('{{vector_column}}')
+              AlterOperation('delete')
+              DeleteMethod('reconstruction')
+              -- UseSIMD('true')  -- Uncomment for SIMD acceleration
+      ) AS t;
+    required_parameters:
+      - database
+      - model_table
+      - delete_vectors_table
+      - updated_model_table
+      - id_column
+      - vector_column
+
+  # === INSPECT_INDEX TEMPLATE ===
+  # LLM-HINT: View index structure: layer counts, neighbor connections, build metadata
+  inspect_index:
+    description: "Inspect HNSW index structure and statistics"
+    sql: |
+      -- Summarize HNSW index: nodes per layer, average neighbor count
+      SELECT layer_id,
+             COUNT(*)            AS node_count,
+             AVG(num_neighbors)  AS avg_neighbors,
+             MAX(num_neighbors)  AS max_neighbors
+      FROM TD_HNSWSummary(
+          ON {{database}}.{{model_table}} AS ModelTable
+      ) AS t
+      GROUP BY layer_id
+      ORDER BY layer_id DESC;
+    required_parameters:
+      - database
+      - model_table
+
+  # === END_TO_END_RAG_SEARCH TEMPLATE ===
+  # LLM-HINT: Full RAG pipeline: embed query text, normalize, search HNSW index -- all in one query
+  end_to_end_rag_search:
+    description: "End-to-end RAG search: embed query text, normalize, and search HNSW index"
+    sql: |
+      -- Full RAG search pipeline in a single query:
+      -- 1. Generate query embedding from text
+      -- 2. Normalize to unit length
+      -- 3. Search pre-built HNSW index
+      WITH query_embedded AS (
+          SELECT query_id, Embeddings AS embedding
+          FROM TD_SYSFNLIB.AI_TextEmbeddings(
+              ON (SELECT 1 AS query_id, '{{query_text}}' AS txt) AS InputTable
+              USING
+                  ApiType('{{api_type}}')
+                  AUTHORIZATION({{database}}.{{auth_object}})
+                  {{provider_args}}
+                  TextColumn('txt')
+                  OutputFormat('VECTOR')
+                  Accumulate('query_id')
+          ) AS t
+      ),
+      query_normalized AS (
+          SELECT * FROM TD_VectorNormalize(
+              ON query_embedded AS InputTable PARTITION BY ANY
+              USING
+                  IDColumns('query_id')
+                  TargetColumns('embedding')
+                  Approach('UNITVECTOR')
+          ) AS t
+      )
+      SELECT * FROM TD_HNSWPredict(
+          ON {{database}}.{{model_table}} AS ModelTable
+          ON query_normalized AS InputTable DIMENSION
+          USING
+              IdColumn('query_id')
+              VectorColumn('embedding')
+              TopK({{top_k}})
+              EfSearch({{ef_search}})
+              OutputSimilarity('true')
+      ) AS t
+      ORDER BY nearest_neighbor_similarity DESC;
+    required_parameters:
+      - database
+      - model_table
+      - query_text
+      - api_type
+      - auth_object
+      - provider_args
+      - top_k
+      - ef_search
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Build Document Search Index ---
+  - name: "Build Document Search Index"
+    description: "Build an HNSW index on normalized document embeddings for cosine similarity search"
+    parameters:
+      database: "semantic_search"
+      input_table: "document_embeddings_norm"
+      model_table: "document_hnsw_index"
+      id_column: "doc_id"
+      vector_column: "embedding"
+      distance_measure: "cosine"
+      ef_construction: 64
+      num_conn_per_node: 32
+      apply_heuristics: "true"
+    expected_result: |
+      Primary output: a single status message row confirming index build.
+      The HNSW graph is stored in semantic_search.document_hnsw_index.
+
+      The index can now be searched with TD_HNSWPredict.
+      DistanceMeasure('cosine') is encoded in the graph and inherited at search time.
+
+  # --- Example 2: Search for Similar Documents ---
+  - name: "Semantic Search with HNSW"
+    description: "Find top 5 nearest documents for query vectors"
+    parameters:
+      database: "semantic_search"
+      model_table: "document_hnsw_index"
+      query_table: "query_vectors"
+      id_column: "query_id"
+      vector_column: "embedding"
+      top_k: 5
+      ef_search: 64
+    expected_result: |
+      5 rows per query vector (one per nearest neighbor):
+
+      query_id | nearest_neighbor_id | nearest_neighbor_distance
+      1        | 42                  | 0.0312
+      1        | 187                 | 0.0458
+      1        | 93                  | 0.0521
+      1        | 256                 | 0.0603
+      1        | 18                  | 0.0674
+
+      Results are approximate but fast. Increase EfSearch for better recall.
+
+  # --- Example 3: Incremental Index Update ---
+  - name: "Add New Documents to Index"
+    description: "Incrementally add new document embeddings to existing HNSW index"
+    parameters:
+      database: "semantic_search"
+      model_table: "document_hnsw_index"
+      new_vectors_table: "new_document_embeddings_norm"
+      updated_model_table: "document_hnsw_index_v2"
+      id_column: "doc_id"
+      vector_column: "embedding"
+    expected_result: |
+      New vectors are inserted into the existing graph without full rebuild.
+      The updated graph is stored in document_hnsw_index_v2.
+      Original index (document_hnsw_index) is preserved.
+
+  # --- Example 4: End-to-End RAG Search ---
+  - name: "RAG Search Pipeline"
+    description: "Embed a natural language query and search the HNSW index in one query"
+    parameters:
+      database: "semantic_search"
+      model_table: "document_hnsw_index"
+      query_text: "find documents about supply chain risk"
+      api_type: "azure"
+      auth_object: "td_gen_azure_auth"
+      provider_args: "DeploymentId('text-embedding-ada-002')"
+      top_k: 10
+      ef_search: 64
+    expected_result: |
+      10 nearest documents ranked by similarity to the natural language query.
+      The query text is embedded, normalized, and searched in a single query.
+      Only the query hits the external embedding API; the search runs in-database.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Unnormalized Vectors for Cosine ---
+  - error: "Poor recall or unexpected results with cosine distance"
+    cause: "Input vectors were not normalized before building the HNSW index"
+    solution: "Apply TD_VectorNormalize with Approach('UNITVECTOR') to ALL vectors BEFORE calling TD_HNSW with DistanceMeasure('cosine'). The index stores vectors as-is"
+
+  # --- Error 2: EfSearch Too Low ---
+  - error: "Missing known nearest neighbors (low recall)"
+    cause: "EfSearch is too low relative to TopK"
+    solution: "Set EfSearch >= TopK. For better recall, use EfSearch = 2x to 4x TopK. Example: TopK(10) with EfSearch(64)"
+
+  # --- Error 3: Specifying DistanceMeasure in Predict ---
+  - error: "Unexpected parameter in TD_HNSWPredict"
+    cause: "Specifying DistanceMeasure in TD_HNSWPredict (it is only set in TD_HNSW)"
+    solution: "DistanceMeasure is encoded in the graph at build time and automatically inherited by TD_HNSWPredict. Do not specify it at search time"
+
+  # --- Error 4: ON Clause Order in Predict ---
+  - error: "ModelTable and InputTable appear swapped"
+    cause: "TD_HNSWPredict uses ModelTable as the first ON clause and InputTable as DIMENSION (reverse of typical Predict pattern)"
+    solution: "Use: ON db.model AS ModelTable ... ON db.queries AS InputTable DIMENSION. The large graph is first, the small query set is DIMENSION"
+
+  # --- Error 5: Missing OUT TABLE ---
+  - error: "TD_HNSW primary output is only a status message"
+    cause: "Graph is stored in OUT TABLE, not the primary output"
+    solution: "Always use OUT TABLE to store the graph: OUT PERMANENT TABLE ModelTable(db.index_name). The primary SELECT output is only a status message"
+
+  # --- Error 6: SingleInputRow Not Set ---
+  - error: "Unexpected results when searching with exactly one query vector"
+    cause: "SingleInputRow defaults to false; with one row the function may not optimize correctly"
+    solution: "When the query table has exactly one row, set SingleInputRow('true') for correct behavior"
+
+  # --- Error 7: Index Drift ---
+  - error: "Recall degrades after many incremental updates"
+    cause: "Repeated AlterOperation('update') can degrade graph quality over time"
+    solution: "Periodically rebuild the index from scratch to restore graph quality. Use incremental updates for small additions between rebuilds"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## HNSW Best Practices
+
+  ### 1. Normalize Vectors Before Building
+  For cosine distance, ALWAYS normalize input vectors first:
+  ```sql
+  -- Step 1: Normalize
+  CREATE TABLE db.embeddings_norm AS (
+      SELECT * FROM TD_VectorNormalize(
+          ON db.embeddings AS InputTable PARTITION BY ANY
+          USING
+              IDColumns('id') TargetColumns('embedding') Approach('UNITVECTOR')
+      ) AS t
+  ) WITH DATA;
+
+  -- Step 2: Build index on normalized vectors
+  SELECT * FROM TD_HNSW(
+      ON db.embeddings_norm AS InputTable
+      OUT PERMANENT TABLE ModelTable(db.hnsw_index)
+      USING
+          IdColumn('id') VectorColumn('embedding')
+          DistanceMeasure('cosine') EfConstruction(64)
+          ApplyHeuristics('true')
+  ) AS t;
+  ```
+
+  ### 2. Tuning Build Parameters
+  | Parameter | Default | Increase For | Decrease For |
+  |-----------|---------|--------------|--------------|
+  | EfConstruction | 32 | Better recall; slower build | Faster build; lower recall |
+  | NumConnPerNode | 32 | Better recall; larger index | Smaller index; faster build |
+  | ApplyHeuristics | false | Better graph quality (production) | Faster build (experimentation) |
+
+  Production recommendation: EfConstruction(64), ApplyHeuristics('true')
+
+  ### 3. Tuning Search Parameters
+  - Set `EfSearch >= TopK` -- searching fewer candidates than you want degrades recall
+  - Start with EfSearch = 2x TopK and increase if recall is insufficient
+  - Higher EfSearch = better recall but slower search
+
+  | EfSearch | Behavior |
+  |----------|----------|
+  | Low (16) | Fast; lower recall |
+  | Default (32) | Balanced |
+  | High (128+) | Slower; approaches exact search quality |
+
+  ### 4. Index Lifecycle
+  **Build once, search many:**
+  - Build the index on the full normalized dataset
+  - Use TD_HNSWPredict for each search query
+  - Incrementally add new vectors with AlterOperation('update')
+  - Periodically rebuild from scratch to maintain graph quality
+
+  **Incremental updates:**
+  ```sql
+  -- Add new vectors without rebuilding
+  SELECT * FROM TD_HNSW(
+      ON db.hnsw_index AS InputModelTable
+      ON db.new_vectors AS InputTable DIMENSION
+      OUT PERMANENT TABLE ModelTable(db.hnsw_index_v2)
+      USING
+          IdColumn('id') VectorColumn('embedding')
+          AlterOperation('update')
+  ) AS t;
+  ```
+
+  ### 5. Monitor Index Health
+  ```sql
+  -- Check layer distribution and connectivity
+  SELECT layer_id, COUNT(*) AS nodes, AVG(num_neighbors) AS avg_conn
+  FROM TD_HNSWSummary(ON db.hnsw_index AS ModelTable) AS t
+  GROUP BY layer_id ORDER BY layer_id DESC;
+  ```
+
+  ### 6. When to Use HNSW vs Exact Search
+  | Dataset Size | Recommendation |
+  |--------------|----------------|
+  | < 10K vectors | TD_VectorDistance (exact, fast enough) |
+  | 10K - 100K | Either; HNSW if repeated queries |
+  | > 100K | TD_HNSW (build) + TD_HNSWPredict (search) |
+  | > 1M | TD_HNSW required; exact search too slow |
+
+  ### 7. Query Normalization at Search Time
+  Always normalize query vectors the same way as the indexed vectors:
+  ```sql
+  WITH q_norm AS (
+      SELECT * FROM TD_VectorNormalize(
+          ON query_table AS InputTable PARTITION BY ANY
+          USING IDColumns('qid') TargetColumns('embedding') Approach('UNITVECTOR')
+      ) AS t
+  )
+  SELECT * FROM TD_HNSWPredict(
+      ON db.index AS ModelTable
+      ON q_norm AS InputTable DIMENSION
+      USING IdColumn('qid') VectorColumn('embedding') TopK(10) EfSearch(64)
+  ) AS t;
+  ```
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Vector Normalize ---
+  - vector_normalize
+
+  # --- Pattern 2: Vector Distance ---
+  - vector_distance
+
+  # --- Pattern 3: Embeddings ---
+  - embeddings
+
+  # --- Pattern 4: KMeans ---
+  - kmeans
+# === RELATED_PATTERNS END ===

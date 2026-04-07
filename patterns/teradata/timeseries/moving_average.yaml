@@ -13,9 +13,15 @@ description: |
   - Anomaly detection
   - Seasonal pattern analysis
 
+  Teradata provides both SQL window functions for basic moving averages and UAF functions
+  for advanced smoothing and forecasting:
+  - TD_SMOOTHMA: Cumulative, mean, median, and exponential smoothing with window presets
+  - TD_MAMEAN: Flat forecaster using moving average, mean, or naive (random walk) algorithm
+  - TD_SIMPLEEXP: Single exponential smoothing (level only, no trend or seasonality)
+
 category: timeseries
 difficulty: beginner
-teradata_function: MovingAverage
+teradata_function: MovingAverage, TD_SMOOTHMA, TD_MAMEAN, TD_SIMPLEEXP
 # === METADATA END ===
 
 # === USE_CASES START ===
@@ -30,6 +36,9 @@ use_cases:
   - Temperature and weather pattern analysis
   - Network performance monitoring
   - Customer metrics trending (active users, revenue)
+  - Signal smoothing before ARIMA modeling (TD_SMOOTHMA)
+  - Short-horizon flat forecasting for stationary series (TD_MAMEAN)
+  - Level-only exponential smoothing (TD_SIMPLEEXP)
 # === USE_CASES END ===
 
 # === PARAMETERS START ===
@@ -81,6 +90,38 @@ parameters:
     required: false
     description: "Optional: partition by this column for separate moving averages"
     example: "store_id"
+
+  # --- Parameter 7: Series ID ---
+  - name: series_id
+    type: string
+    # LLM-HINT: Column identifying each series instance for UAF functions (TD_SMOOTHMA, TD_MAMEAN, TD_SIMPLEEXP)
+    required: false
+    description: "Column identifying each series instance (for UAF functions)"
+    example: "store_id"
+
+  # --- Parameter 8: Sequence Column ---
+  - name: seq_column
+    type: string
+    # LLM-HINT: Integer sequence column for UAF SERIES_SPEC ROW_AXIS(SEQUENCE(...))
+    required: false
+    description: "Integer sequence column for UAF functions"
+    example: "seq_no"
+
+  # --- Parameter 9: Forecast Periods ---
+  - name: forecast_periods
+    type: integer
+    # LLM-HINT: Number of future periods to forecast (for TD_MAMEAN and TD_SIMPLEEXP)
+    required: false
+    description: "Number of future periods to forecast (1-32000, for TD_MAMEAN and TD_SIMPLEEXP)"
+    example: "8"
+
+  # --- Parameter 10: Alpha ---
+  - name: alpha
+    type: float
+    # LLM-HINT: Smoothing factor for TD_SIMPLEEXP and TD_SMOOTHMA exponential mode (0-1)
+    required: false
+    description: "Smoothing factor (0-1). Higher values weight recent observations more heavily."
+    example: "0.3"
 # === PARAMETERS END ===
 
 # === TEMPLATES START ===
@@ -237,6 +278,180 @@ templates:
       - table
       - value_column
       - time_column
+
+  # === UAF_SMOOTHMA TEMPLATE ===
+  # LLM-HINT: TD_SMOOTHMA for advanced smoothing with MEAN, MEDIAN, CUMULATIVE, EXPONENTIAL modes and well-known presets
+  uaf_smoothma:
+    description: "TD_SMOOTHMA: UAF-based moving average smoothing with multiple algorithms and well-known presets"
+    sql: |
+      -- TD_SMOOTHMA: Advanced moving average smoothing using UAF.
+      -- Algorithms: CUMULATIVE, MEAN, MEDIAN, EXPONENTIAL
+      -- Produces single-layer ART (ARTPRIMARY only).
+      -- Output column: MAGNITUDE_<field> (smoothed values)
+
+      -- Simple mean MA with window
+      EXECUTE FUNCTION INTO VOLATILE ART(smoothma_art)
+      TD_SMOOTHMA(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              WINDOW({{window_size}}),
+              PAD(0),
+              MA(MEAN)
+          )
+      );
+
+      SELECT * FROM smoothma_art;
+
+      -- Alternative: Use a well-known weighted MA preset
+      -- Presets: 3MA, 5MA, 2x12MA, 3x3MA, 3x5MA, S15MA, S21MA,
+      --          H5MA, H9MA, H13MA, H23MA
+      -- EXECUTE FUNCTION INTO VOLATILE ART(wellknown_art)
+      -- TD_SMOOTHMA(
+      --     SERIES_SPEC(...),
+      --     FUNC_PARAMS(WINDOW(5), PAD(0), MA(MEAN), WELL_KNOWN("5MA"))
+      -- );
+    required_parameters:
+      - table
+      - series_id
+      - seq_column
+      - value_column
+      - window_size
+
+  # === UAF_SMOOTHMA_EXPONENTIAL TEMPLATE ===
+  # LLM-HINT: TD_SMOOTHMA with EXPONENTIAL mode for weighted smoothing via LAMBDA parameter
+  uaf_smoothma_exponential:
+    description: "TD_SMOOTHMA: Exponential moving average smoothing using UAF"
+    sql: |
+      -- TD_SMOOTHMA with EXPONENTIAL algorithm.
+      -- LAMBDA controls the decay factor (0-1): higher = discount older values faster.
+      -- No WINDOW parameter needed for EXPONENTIAL mode.
+      EXECUTE FUNCTION INTO VOLATILE ART(exp_smooth_art)
+      TD_SMOOTHMA(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              MA(EXPONENTIAL),
+              LAMBDA({{alpha}})
+          )
+      );
+
+      -- Output: MAGNITUDE_<field> (exponentially smoothed values)
+      SELECT * FROM exp_smooth_art;
+    required_parameters:
+      - table
+      - series_id
+      - seq_column
+      - value_column
+      - alpha
+
+  # === UAF_MAMEAN_FORECAST TEMPLATE ===
+  # LLM-HINT: TD_MAMEAN flat forecaster; all forecast periods receive the same value; three-layer ART
+  uaf_mamean_forecast:
+    description: "TD_MAMEAN: Moving average flat forecaster (MA, MEAN, or NAIVE algorithm)"
+    sql: |
+      -- TD_MAMEAN: Flat forecaster using moving average, mean, or naive algorithm.
+      -- All forecast periods beyond the last observation receive the same forecast value.
+      -- Suitable for short-horizon forecasts of stationary series with no trend or seasonality.
+      --
+      -- Algorithms:
+      --   MA: Moving average of last K_ORDER observations
+      --   MEAN: Overall mean of entire series
+      --   NAIVE: Random walk (last observed value = forecast)
+      --
+      -- Produces three-layer ART: ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS
+      EXECUTE FUNCTION INTO VOLATILE ART(mamean_art)
+      TD_MAMEAN(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              ALGORITHM(MA),
+              K_ORDER({{window_size}}),
+              PREDICTION_INTERVALS(BOTH),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          )
+      );
+
+      -- Primary: OBSERVED_VALUE, FORECAST_VALUE, LO_80, HI_80, LO_95, HI_95
+      SELECT * FROM mamean_art;
+
+      -- Fit metrics: R_SQUARE, MAE, MSE, MAPE, FSTAT_CALC, etc.
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(mamean_art), LAYER(ARTFITMETADATA))
+      );
+
+      -- Residuals: ACTUAL_VALUE, CALC_VALUE, RESIDUAL
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(mamean_art), LAYER(ARTFITRESIDUALS))
+      );
+    required_parameters:
+      - table
+      - series_id
+      - seq_column
+      - value_column
+      - forecast_periods
+      - window_size
+
+  # === UAF_SIMPLEEXP_FORECAST TEMPLATE ===
+  # LLM-HINT: TD_SIMPLEEXP single exponential smoothing; level only, no trend or seasonality; flat forecast
+  uaf_simpleexp_forecast:
+    description: "TD_SIMPLEEXP: Single exponential smoothing forecast (level only, flat forecast)"
+    sql: |
+      -- TD_SIMPLEEXP: Simple (single) exponential smoothing.
+      -- Models level only; no trend or seasonality.
+      -- ALPHA controls smoothing: higher = weight recent observations more.
+      -- ALPHA(1.0) = no smoothing (each forecast = prior observation).
+      -- All forecast periods receive the same value (flat forecaster).
+      -- Use TD_HOLT_WINTERS_FORECASTER when trend or seasonality is present.
+      --
+      -- Produces three-layer ART: ARTPRIMARY, ARTFITMETADATA, ARTFITRESIDUALS
+      EXECUTE FUNCTION INTO VOLATILE ART(simpleexp_art)
+      TD_SIMPLEEXP(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              FORECAST_STARTING_VALUE('MEAN'),
+              ALPHA({{alpha}}),
+              PREDICTION_INTERVALS(BOTH),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          ),
+          OUTPUT_FMT(INDEX_STYLE(FLOW_THROUGH))
+      );
+
+      -- Primary: OBSERVED_VALUE, FORECAST_VALUE, LO_80, HI_80, LO_95, HI_95
+      SELECT * FROM simpleexp_art;
+
+      -- Fit metrics
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(simpleexp_art), LAYER(ARTFITMETADATA))
+      );
+    required_parameters:
+      - table
+      - series_id
+      - seq_column
+      - value_column
+      - forecast_periods
+      - alpha
 # === TEMPLATES END ===
 
 # === EXAMPLES START ===
@@ -295,6 +510,63 @@ examples:
       - Tablet: MA trending down (-3% MoM)
 
       Smoothed data removes weekend/weekday patterns, shows true trends.
+
+  # --- Example 4: UAF TD_SMOOTHMA with Well-Known Preset ---
+  - name: "UAF Smoothing with Well-Known Preset"
+    description: "Use TD_SMOOTHMA with a well-known weighted moving average preset"
+    parameters:
+      table: "orders_ts"
+      series_id: "order_id"
+      seq_column: "seq"
+      value_column: "qty"
+      window_size: 5
+    expected_result: |
+      TD_SMOOTHMA with MA(MEAN) and WELL_KNOWN("5MA"):
+      - Applies Henderson-weighted 5-point moving average
+      - Output: MAGNITUDE_qty column with smoothed values
+      - Single-layer ART (ARTPRIMARY only)
+
+      Well-known presets use mathematically derived weight profiles
+      that minimize noise while preserving the underlying trend.
+
+  # --- Example 5: UAF TD_MAMEAN Flat Forecast ---
+  - name: "UAF Moving Average Flat Forecast"
+    description: "Use TD_MAMEAN for short-horizon flat forecasting"
+    parameters:
+      table: "orders_ts"
+      series_id: "store_id"
+      seq_column: "seq_no"
+      value_column: "sales_amt"
+      forecast_periods: 8
+      window_size: 3
+    expected_result: |
+      TD_MAMEAN with ALGORITHM(MA) and K_ORDER(3):
+      - In-sample: OBSERVED_VALUE + FORECAST_VALUE (fitted moving average)
+      - Out-of-sample: 8 forecast periods all receive the same flat value
+        (average of last 3 observations)
+      - ARTFITMETADATA: R_SQUARE, MAE, MSE, MAPE
+      - ARTFITRESIDUALS: ACTUAL_VALUE, CALC_VALUE, RESIDUAL
+
+      Suitable for stationary series with no trend. Use ARIMA or
+      Holt-Winters for series with trend or seasonality.
+
+  # --- Example 6: UAF TD_SIMPLEEXP Single Exponential Smoothing ---
+  - name: "UAF Simple Exponential Smoothing"
+    description: "Use TD_SIMPLEEXP for level-only smoothing and flat forecast"
+    parameters:
+      table: "inflation_ts"
+      series_id: "country_id"
+      seq_column: "year_recorded"
+      value_column: "inflation_rate"
+      forecast_periods: 4
+      alpha: 0.1
+    expected_result: |
+      TD_SIMPLEEXP with ALPHA(0.1):
+      - Low alpha produces very smooth forecasts (slow to react to recent changes)
+      - FORECAST_STARTING_VALUE('MEAN') uses series mean as initial value
+      - All 4 forecast periods receive the same flat value
+      - ARTFITMETADATA: R_SQUARE, MAE, MSE, MAPE for fit quality
+      - OUTPUT_FMT(INDEX_STYLE(FLOW_THROUGH)): ROW_I inherits original index type
 # === EXAMPLES END ===
 
 # === COMMON_ERRORS START ===
@@ -318,6 +590,21 @@ common_errors:
   - error: "Moving average lags actual data"
     cause: "This is expected - MA is a lagging indicator"
     solution: "Use exponential MA for faster response, or reduce window size. MA always trails the actual data"
+
+  # --- Error 5: TD_SMOOTHMA PAD Required with MEAN/MEDIAN ---
+  - error: "PAD parameter required for TD_SMOOTHMA with MEAN or MEDIAN"
+    cause: "MEAN and MEDIAN algorithms require PAD to fill positions before the window is full"
+    solution: "Add PAD(value) to FUNC_PARAMS. Use PAD(0) for zero-fill, or the series mean for less edge distortion."
+
+  # --- Error 6: TD_MAMEAN K_ORDER Required with MA ---
+  - error: "K_ORDER required when ALGORITHM is MA"
+    cause: "TD_MAMEAN with ALGORITHM(MA) requires K_ORDER to specify the window size"
+    solution: "Add K_ORDER(n) to FUNC_PARAMS where n is the window size (1-32000). K_ORDER is ignored for MEAN and NAIVE algorithms."
+
+  # --- Error 7: TD_SIMPLEEXP ALPHA Default is 1.0 ---
+  - error: "TD_SIMPLEEXP producing no smoothing"
+    cause: "Default ALPHA is 1.0, which means each forecast equals the prior observation (no smoothing)"
+    solution: "Set ALPHA explicitly. Common values: 0.1 (very smooth), 0.3 (moderate), 0.5 (responsive). Lower alpha = smoother forecasts."
 # === COMMON_ERRORS END ===
 
 # === BEST_PRACTICES START ===
@@ -387,21 +674,41 @@ best_practices: |
   - Makes trends obvious visually
 
   **Bollinger Bands:**
-  - MA ± 2 standard deviations
+  - MA +/- 2 standard deviations
   - Shows volatility and potential outliers
 
-  ### 7. Forecasting
-  **Simple forecast:**
-  - MA value = baseline forecast for next period
-  - Works for stable time series
-  - Add trend component for improving forecasts
+  ### 7. UAF Smoothing Functions
 
-  **Limitations:**
-  - MA doesn't predict turning points
-  - Always lags actual data
-  - Use ARIMA or exponential smoothing for better forecasts
+  **TD_SMOOTHMA for trend exposure:**
+  - MA(MEAN): Simple moving average with configurable window
+  - MA(MEDIAN): Robust to outliers (uses median instead of mean)
+  - MA(CUMULATIVE): Running cumulative average
+  - MA(EXPONENTIAL): Weighted by LAMBDA decay factor
+  - WELL_KNOWN presets: 3MA, 5MA, 2x12MA, 3x3MA, 3x5MA, S15MA, S21MA, H5MA, H9MA, H13MA, H23MA
+  - ONE_SIDED(1): Trailing window (no centering) for real-time smoothing
 
-  ### 8. Performance Optimization
+  **TD_MAMEAN for flat forecasting:**
+  - ALGORITHM(MA): Forecast = average of last K_ORDER observations
+  - ALGORITHM(MEAN): Forecast = overall series mean
+  - ALGORITHM(NAIVE): Forecast = last observed value (random walk)
+  - Suitable for stationary series with no trend or seasonality
+  - All forecast periods receive the same flat value
+
+  **TD_SIMPLEEXP for level smoothing:**
+  - Single exponential smoothing (no trend, no seasonality)
+  - ALPHA controls responsiveness: low = smooth, high = reactive
+  - FORECAST_STARTING_VALUE: 'FIRST' (default) or 'MEAN'
+  - Flat forecast like TD_MAMEAN but with exponential weighting
+  - Upgrade to TD_HOLT_WINTERS_FORECASTER when trend/seasonality is present
+
+  ### 8. Forecasting Hierarchy
+  **Choose the right forecasting function:**
+  - TD_MAMEAN / TD_SIMPLEEXP: Stationary, no trend, no seasonality (flat forecast)
+  - TD_HOLT_WINTERS_FORECASTER: Trend and/or seasonality (triple exponential smoothing)
+  - TD_ARIMAESTIMATE pipeline: Complex autocorrelation, rigorous model selection
+  - TD_AUTOARIMA: Automatic model selection (exploration phase)
+
+  ### 9. Performance Optimization
   **For large datasets:**
   - Partition by logical groups (store, product, region)
   - Use indexed time column
@@ -414,7 +721,8 @@ best_practices: |
 
 # === RELATED_PATTERNS START ===
 related_patterns:
-  - exponential_smoothing
+  - uaf_concepts
   - arima
-  - seasonal_decomposition
+  - holt_winters
+  - signal_processing
 # === RELATED_PATTERNS END ===

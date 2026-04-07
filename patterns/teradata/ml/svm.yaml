@@ -1,0 +1,474 @@
+# === METADATA START ===
+name: svm
+title: "Support Vector Machine (SVM)"
+description: |
+  Train and score linear Support Vector Machine models using TD_SVM and TD_SVMPredict.
+  Supports binary classification (hinge loss) and regression (epsilon-insensitive loss).
+  Uses Minibatch Stochastic Gradient Descent (SGD) for optimization -- same engine as
+  TD_GLM and TD_OneClassSVM.
+
+  TD_SVM is a linear SVM. Kernel selection (linear, rbf, polynomial) is handled at the
+  feature engineering level -- apply explicit feature transformations (polynomial features,
+  RBF kernel approximation) before calling TD_SVM to achieve nonlinear decision boundaries.
+
+  SVM is suitable for:
+  - Binary classification with clear margin separation
+  - High-dimensional data (text classification, genomics)
+  - Regression with epsilon-insensitive loss
+  - Cases where regularization and margin control matter
+
+category: ml
+difficulty: intermediate
+teradata_function: TD_SVM
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - model_training
+  - analytics
+use_cases:
+  # --- Use Case 1: Binary Classification ---
+  - Binary classification (spam detection, sentiment analysis)
+
+  # --- Use Case 2: Text Classification ---
+  - Document or text classification on TF-IDF features
+
+  # --- Use Case 3: SVM Regression ---
+  - Regression with epsilon-insensitive loss (robust to outliers)
+
+  # --- Use Case 4: High-Dimensional Data ---
+  - Classification with many features and few samples
+
+  # --- Use Case 5: Fraud Detection ---
+  - Fraud or anomaly binary classification
+
+  # --- Use Case 6: Medical Diagnosis ---
+  - Clinical binary outcome prediction
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training and scoring data"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Must contain numeric features; AS InputTable alias is mandatory
+    required: true
+    description: "Table with labeled training data"
+    example: "spam_training"
+
+  # --- Parameter 3: Scoring Table ---
+  - name: scoring_table
+    type: string
+    # LLM-HINT: New data to score
+    required: false
+    description: "Table with new data to score"
+    example: "new_emails"
+
+  # --- Parameter 4: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: All must be numeric; maps to InputColumns()
+    required: true
+    description: "Numeric feature columns for training"
+    example: '["word_count", "link_count", "caps_ratio", "excl_count", "tfidf_1", "tfidf_2"]'
+
+  # --- Parameter 5: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Classification requires 0 or 1 values (binary only); regression any numeric
+    required: true
+    description: "Target column to predict"
+    example: "is_spam"
+
+  # --- Parameter 6: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier for Predict
+    required: true
+    description: "Unique identifier column"
+    example: "email_id"
+
+  # --- Parameter 7: Model Type ---
+  - name: model_type
+    type: string
+    # LLM-HINT: 'Classification' (hinge loss) or 'Regression' (epsilon-insensitive); must match between train/predict
+    required: false
+    default: "Classification"
+    description: "Model type: Classification (hinge loss) or Regression (epsilon-insensitive)"
+    example: "Classification"
+
+  # --- Parameter 8: Regularization Lambda ---
+  - name: regularization_lambda
+    type: float
+    # LLM-HINT: Elastic net regularization; default 0.02; higher = stronger regularization
+    required: false
+    default: "0.02"
+    description: "Regularization strength (0 = no regularization)"
+    example: "0.1"
+
+  # --- Parameter 9: Alpha ---
+  - name: alpha
+    type: float
+    # LLM-HINT: L1/L2 mix; default 0.15; only when Lambda > 0
+    required: false
+    default: "0.15"
+    description: "Elastic net mixing (0 = pure L2, 1 = pure L1)"
+    example: "0.5"
+
+  # --- Parameter 10: Epsilon ---
+  - name: epsilon
+    type: float
+    # LLM-HINT: Regression only; epsilon-insensitive loss threshold; default 0.1
+    required: false
+    default: "0.1"
+    description: "Epsilon for regression loss (errors within epsilon are ignored)"
+    example: "0.05"
+
+  # --- Parameter 11: Max Iterations ---
+  - name: max_iter_num
+    type: integer
+    # LLM-HINT: Maximum SGD iterations; default 300
+    required: false
+    default: "300"
+    description: "Maximum number of SGD iterations"
+    example: "500"
+
+  # --- Parameter 12: Batch Size ---
+  - name: batch_size
+    type: integer
+    # LLM-HINT: Mini-batch size; default 10; 0 = full batch
+    required: false
+    default: "10"
+    description: "Mini-batch size for SGD (0 = full batch)"
+    example: "32"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TRAIN_CLASSIFICATION TEMPLATE ===
+  # LLM-HINT: Binary classification with hinge loss; response must be 0 or 1
+  train_classification:
+    description: "Train an SVM classifier (binary, hinge loss)"
+    sql: |
+      -- Train SVM binary classifier and persist model
+      -- LLM-HINT: AS InputTable alias is mandatory; PARTITION BY ANY only
+      -- LLM-HINT: ResponseColumn values must be 0 or 1 (binary only)
+      -- LLM-HINT: Nesterov defaults to false (unlike TD_GLM)
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_SVM(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('Classification')
+                  BatchSize({{batch_size}})
+                  MaxIterNum({{max_iter_num}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Alpha({{alpha}})
+                  Intercept('true')
+                  Tolerance(0.001)
+                  IterNumNoChange(50)
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - batch_size
+      - max_iter_num
+      - regularization_lambda
+      - alpha
+
+  # === TRAIN_REGRESSION TEMPLATE ===
+  # LLM-HINT: Epsilon-insensitive regression; errors within Epsilon threshold are ignored
+  train_regression:
+    description: "Train an SVM regressor (epsilon-insensitive loss)"
+    sql: |
+      -- Train SVM regression and persist model
+      -- LLM-HINT: Epsilon defines the insensitive loss threshold; default 0.1
+      -- LLM-HINT: Errors within [-epsilon, +epsilon] are not penalized
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_SVM(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('Regression')
+                  Epsilon({{epsilon}})
+                  BatchSize({{batch_size}})
+                  MaxIterNum({{max_iter_num}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Alpha({{alpha}})
+                  Intercept('true')
+                  Tolerance(0.001)
+                  IterNumNoChange(50)
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - epsilon
+      - batch_size
+      - max_iter_num
+      - regularization_lambda
+      - alpha
+
+  # === PREDICT TEMPLATE ===
+  # LLM-HINT: ModelType must match training; ModelTable is DIMENSION input
+  predict:
+    description: "Score new data using a trained SVM model"
+    sql: |
+      -- Score new data with trained SVM model
+      -- LLM-HINT: ModelType must match the value used during TD_SVM training
+      SELECT * FROM TD_SVMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              ModelType('{{model_type}}')
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - model_type
+      - response_column
+
+  # === PREDICT_WITH_PROBABILITIES TEMPLATE ===
+  # LLM-HINT: Classification only; outputs per-class probabilities
+  predict_with_probabilities:
+    description: "Score with class probabilities (classification only)"
+    sql: |
+      -- Score with class probabilities for threshold tuning
+      -- LLM-HINT: OutputProb and Responses are Classification only
+      SELECT * FROM TD_SVMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              ModelType('Classification')
+              OutputProb('true')
+              Responses('0', '1')
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - response_column
+
+  # === TRAIN_WITH_CLASS_WEIGHTS TEMPLATE ===
+  # LLM-HINT: Handles imbalanced classes by upweighting the minority class
+  train_with_class_weights:
+    description: "Train SVM with class weights for imbalanced data"
+    sql: |
+      -- Train SVM with class weights to handle imbalanced data
+      -- LLM-HINT: ClassWeights format is 'class:weight,...'; higher weight = more penalty for misclassification
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_SVM(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('Classification')
+                  ClassWeights('0:1.0,1:{{minority_weight}}')
+                  BatchSize({{batch_size}})
+                  MaxIterNum({{max_iter_num}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Intercept('true')
+                  Tolerance(0.001)
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - minority_weight
+      - batch_size
+      - max_iter_num
+      - regularization_lambda
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Spam Detection ---
+  - name: "Spam Detection (Binary Classification)"
+    description: "Classify emails as spam or not spam using SVM"
+    parameters:
+      database: "email"
+      training_table: "email_features"
+      scoring_table: "incoming_emails"
+      model_table: "spam_svm_model"
+      input_columns: ["word_count", "link_count", "caps_ratio", "excl_count", "tfidf_score"]
+      response_column: "is_spam"
+      id_column: "email_id"
+      model_type: "Classification"
+      batch_size: 10
+      max_iter_num: 300
+      regularization_lambda: 0.02
+      alpha: 0.15
+    expected_result: |
+      Model output (coefficient table):
+        attribute | predictor   | estimate | value
+        -3        | LossFunction| NULL     | HINGE
+        -2        | Regularization| NULL   | L2
+        0         | Intercept   | -1.25    | NULL
+        1         | word_count  | -0.003   | NULL
+        2         | link_count  | 0.85     | NULL
+        3         | caps_ratio  | 2.10     | NULL
+        4         | excl_count  | 0.45     | NULL
+        5         | tfidf_score | 1.30     | NULL
+
+      Predict output:
+        email_id | prediction | is_spam
+        E1001    | 1          | 1
+        E1002    | 0          | 0
+
+      link_count and caps_ratio are strongest spam indicators (highest coefficients).
+
+  # --- Example 2: SVM Regression ---
+  - name: "Energy Consumption Prediction (Regression)"
+    description: "Predict building energy consumption using SVM regression"
+    parameters:
+      database: "facilities"
+      training_table: "building_features"
+      scoring_table: "new_buildings"
+      model_table: "energy_svm_model"
+      input_columns: ["sqft", "num_floors", "insulation_rating", "avg_temp", "occupancy"]
+      response_column: "kwh_monthly"
+      id_column: "building_id"
+      model_type: "Regression"
+      epsilon: 0.1
+      batch_size: 10
+      max_iter_num: 500
+      regularization_lambda: 0.02
+    expected_result: |
+      Model output:
+        attribute | predictor         | estimate | value
+        -3        | LossFunction      | NULL     | EPSILON_INSENSITIVE
+        0         | Intercept         | 1500.0   | NULL
+        1         | sqft              | 2.35     | NULL
+        2         | num_floors        | 450.0    | NULL
+        3         | insulation_rating | -320.5   | NULL
+
+      Predict output:
+        building_id | prediction
+        B5001       | 12500.75
+        B5002       | 8200.30
+
+      Higher insulation_rating reduces predicted energy consumption (negative coefficient).
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Non-Binary Response for Classification ---
+  - error: "Response column values out of range for classification"
+    cause: "TD_SVM classification requires response values to be exactly 0 or 1. Multiclass or non-binary values fail."
+    solution: "Cast response to 0/1. TD_SVM only supports binary classification. For multiclass, use TD_XGBoost or TD_DecisionForest."
+
+  # --- Error 2: ModelType Mismatch ---
+  - error: "Prediction output type is unexpected"
+    cause: "ModelType in TD_SVMPredict does not match the ModelType used in TD_SVM training."
+    solution: "Set the same ModelType in both Train and Predict. Classification outputs SMALLINT; Regression outputs FLOAT."
+
+  # --- Error 3: Missing AS InputTable Alias ---
+  - error: "Syntax error or function not recognized"
+    cause: "TD_SVM requires the AS InputTable alias. Omitting it causes a parse error."
+    solution: "Always include: ON db.table AS InputTable PARTITION BY ANY."
+
+  # --- Error 4: Epsilon Used with Classification ---
+  - error: "Unexpected parameter or parameter ignored"
+    cause: "Epsilon is a Regression-only parameter. Specifying it with Classification has no effect or may error."
+    solution: "Only set Epsilon when ModelType is 'Regression'. Classification uses hinge loss, not epsilon-insensitive."
+
+  # --- Error 5: No Micromodeling Support ---
+  - error: "Attempting PARTITION BY key with TD_SVM"
+    cause: "TD_SVM only supports PARTITION BY ANY. Micromodeling (per-partition models) is not supported."
+    solution: "Use TD_GLM for micromodeling. TD_SVM is limited to a single global model."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## SVM Best Practices
+
+  ### 1. Feature Scaling is Critical
+  SVM is sensitive to feature scale. Always normalize or standardize features before training:
+  ```sql
+  -- Use TD_ScaleFit + TD_ScaleTransform for consistent scaling
+  CREATE TABLE db.scale_fit AS (
+      SELECT * FROM TD_ScaleFit(
+          ON db.training_data PARTITION BY ANY
+          USING TargetColumns('feat1','feat2','feat3') ScaleMethod('STD')
+      ) AS t
+  ) WITH DATA;
+  ```
+
+  ### 2. Kernel Approximation for Nonlinear Boundaries
+  TD_SVM is a linear SVM. For nonlinear decision boundaries:
+  - Create polynomial features manually (e.g., feat1*feat2, feat1^2)
+  - Use RBF kernel approximation via explicit feature mapping
+  - Or consider TD_XGBoost / TD_DecisionForest which handle nonlinearity natively
+
+  ### 3. Regularization Tuning
+  - Lambda = 0.02 (default) works for many problems
+  - Increase Lambda (0.1-1.0) for high-dimensional data to prevent overfitting
+  - Alpha controls L1/L2 mix: use Alpha=1 for sparse features (L1 drives coefficients to zero)
+
+  ### 4. Handling Imbalanced Classes
+  - Use ClassWeights to upweight the minority class
+  - Example: if class 1 is 10% of data, try ClassWeights('0:1.0,1:5.0')
+  - Alternatively, apply TD_SMOTE to training data before training
+
+  ### 5. Binary Only
+  TD_SVM only supports binary classification (0/1 response). For multiclass:
+  - Use TD_XGBoost (supports up to 500 classes)
+  - Use TD_DecisionForest (supports multiclass)
+  - Manually implement one-vs-rest with multiple TD_SVM models
+
+  ### 6. Model Persistence
+  No OUT TABLE for the model -- capture via CREATE TABLE AS:
+  ```sql
+  CREATE TABLE db.svm_model AS (
+      SELECT * FROM TD_SVM(...) AS t
+  ) WITH DATA;
+  ```
+
+  ### 7. SGD Tuning
+  - Same SGD engine as TD_GLM; all SGD parameters behave identically
+  - LearningRate defaults: 'optimal' for Classification, 'invtime' for Regression
+  - Nesterov defaults to false (unlike TD_GLM where it defaults to true)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Anomaly Detection (One-Class SVM) ---
+  - anomaly_detection
+
+  # --- Pattern 2: GLM ---
+  - glm
+
+  # --- Pattern 3: XGBoost ---
+  - xgboost
+
+  # --- Pattern 4: Logistic Regression ---
+  - logistic_regression
+# === RELATED_PATTERNS END ===

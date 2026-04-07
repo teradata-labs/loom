@@ -1,0 +1,461 @@
+# === METADATA START ===
+name: xgboost
+title: "XGBoost (Gradient Boosted Trees)"
+description: |
+  Train and score gradient boosted decision tree ensembles using TD_XGBoost and
+  TD_XGBoostPredict. Supports binary classification, multiclass classification
+  (up to 500 classes), and regression. Trees are built in parallel across AMPs
+  with configurable boosting rounds, learning rate, depth, and regularization.
+
+  XGBoost is suitable for:
+  - Binary and multiclass classification
+  - Regression with nonlinear relationships
+  - Feature importance ranking
+  - Kaggle-style competitions on structured data
+  - Fraud detection, churn prediction, demand forecasting
+
+category: ml
+difficulty: intermediate
+teradata_function: TD_XGBoost
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - model_training
+  - analytics
+use_cases:
+  # --- Use Case 1: Churn Prediction ---
+  - Customer churn prediction (binary classification)
+
+  # --- Use Case 2: Fraud Detection ---
+  - Fraud detection on transactional data
+
+  # --- Use Case 3: Demand Forecasting ---
+  - Demand or sales forecasting (regression)
+
+  # --- Use Case 4: Multiclass Classification ---
+  - Product category prediction (multiclass)
+
+  # --- Use Case 5: Credit Risk ---
+  - Credit risk scoring and default prediction
+
+  # --- Use Case 6: Click Prediction ---
+  - Click-through rate prediction for ad targeting
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training and scoring data"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Maps to {{training_table}}; must contain numeric features and integer response for classification
+    required: true
+    description: "Table with labeled training data"
+    example: "churn_training"
+
+  # --- Parameter 3: Scoring Table ---
+  - name: scoring_table
+    type: string
+    # LLM-HINT: Maps to {{scoring_table}}; new data to predict on
+    required: false
+    description: "Table with new data to score"
+    example: "churn_scoring"
+
+  # --- Parameter 4: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: All columns must be numeric; no double-quoted names; maps to InputColumns()
+    required: true
+    description: "Numeric feature columns for training (all must be numeric)"
+    example: '["tenure", "monthly_charges", "total_charges", "num_support_calls"]'
+
+  # --- Parameter 5: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Classification requires INTEGER/BIGINT/SMALLINT/BYTEINT; regression any numeric
+    required: true
+    description: "Target column to predict"
+    example: "churned"
+
+  # --- Parameter 6: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier; used in Predict IDColumn(); cannot be NULL
+    required: true
+    description: "Unique identifier column"
+    example: "customer_id"
+
+  # --- Parameter 7: Model Type ---
+  - name: model_type
+    type: string
+    # LLM-HINT: 'Classification' or 'Regression'; default is 'Regression'; must match between train and predict
+    required: false
+    default: "Regression"
+    description: "Model type: Classification or Regression"
+    example: "Classification"
+
+  # --- Parameter 8: Max Depth ---
+  - name: max_depth
+    type: integer
+    # LLM-HINT: Tree depth limit; deeper trees capture more complexity but risk overfitting; default 5
+    required: false
+    default: "5"
+    description: "Maximum tree depth (higher = more complex, risk of overfitting)"
+    example: "6"
+
+  # --- Parameter 9: Learning Rate ---
+  - name: learning_rate
+    type: float
+    # LLM-HINT: Shrinkage factor per boosting step; range (0,1]; lower values need more rounds; default 0.5
+    required: false
+    default: "0.5"
+    description: "Per-step shrinkage factor; lower values need more boost rounds"
+    example: "0.1"
+
+  # --- Parameter 10: Num Boost Rounds ---
+  - name: num_boost_rounds
+    type: integer
+    # LLM-HINT: Number of boosting iterations; range 1-100000; default 10; more rounds with low learning rate
+    required: false
+    default: "10"
+    description: "Number of boosting iterations"
+    example: "50"
+
+  # --- Parameter 11: Regularization Lambda ---
+  - name: regularization_lambda
+    type: float
+    # LLM-HINT: L2 regularization; range [0,100000]; default 1; higher = more regularization
+    required: false
+    default: "1"
+    description: "L2 regularization weight (0 = no regularization)"
+    example: "1.0"
+
+  # --- Parameter 12: Column Sampling ---
+  - name: column_sampling
+    type: float
+    # LLM-HINT: Feature fraction per boost round; range (0,1]; default 1.0; lower reduces overfitting
+    required: false
+    default: "1.0"
+    description: "Fraction of features sampled per boost round"
+    example: "0.8"
+
+  # --- Parameter 13: Seed ---
+  - name: seed
+    type: integer
+    # LLM-HINT: Random seed for column sampling reproducibility
+    required: false
+    description: "Random seed for reproducibility"
+    example: "42"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TRAIN_MODEL TEMPLATE ===
+  # LLM-HINT: Trains an XGBoost model; save output via CREATE TABLE AS for later scoring
+  train_model:
+    description: "Train an XGBoost model for classification or regression"
+    sql: |
+      -- Train XGBoost model and persist for scoring
+      -- LLM-HINT: All InputColumns must be numeric; ResponseColumn must be INTEGER type for Classification
+      -- LLM-HINT: ModelType must match between Train and Predict calls
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_XGBoost(
+              ON {{database}}.{{training_table}} AS INPUTTABLE
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('{{model_type}}')
+                  MaxDepth({{max_depth}})
+                  NumBoostRounds({{num_boost_rounds}})
+                  LearningRate({{learning_rate}})
+                  RegularizationLambda({{regularization_lambda}})
+                  ColumnSampling({{column_sampling}})
+                  MinNodeSize(1)
+                  Seed({{seed}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - model_type
+      - max_depth
+      - num_boost_rounds
+      - learning_rate
+      - regularization_lambda
+      - column_sampling
+      - seed
+
+  # === PREDICT TEMPLATE ===
+  # LLM-HINT: Score new data using a saved model table; ModelTable is DIMENSION input
+  predict:
+    description: "Score new data using a trained XGBoost model"
+    sql: |
+      -- Score new data with trained XGBoost model
+      -- LLM-HINT: ModelType must match the value used during training
+      -- LLM-HINT: IDColumn cannot contain NULLs; no double-quoted names
+      SELECT * FROM TD_XGBoostPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              ModelType('{{model_type}}')
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - model_type
+      - response_column
+
+  # === PREDICT_WITH_PROBABILITIES TEMPLATE ===
+  # LLM-HINT: Classification only; outputs per-class probabilities for threshold tuning
+  predict_with_probabilities:
+    description: "Score with class probabilities (classification only)"
+    sql: |
+      -- Score with class probabilities for threshold tuning
+      -- LLM-HINT: OutputProb and Responses are Classification only
+      SELECT * FROM TD_XGBoostPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              ModelType('Classification')
+              OutputProb('true')
+              Responses({{response_values}})
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - response_values
+      - response_column
+
+  # === TRAIN_EVALUATE_PIPELINE TEMPLATE ===
+  # LLM-HINT: Full pipeline: split -> train -> score test set -> evaluate; uses TD_TrainTestSplit
+  train_evaluate_pipeline:
+    description: "End-to-end train/evaluate pipeline with train-test split"
+    sql: |
+      -- Step 1: Split data with stratification
+      CREATE TABLE {{database}}.data_split AS (
+          SELECT * FROM TD_TrainTestSplit(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              USING
+                  IDColumn('{{id_column}}')
+                  TrainSize(0.75)
+                  TestSize(0.25)
+                  Seed({{seed}})
+                  StratifyColumn('{{response_column}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Train on training rows only
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_XGBoost(
+              ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 1) AS INPUTTABLE
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  ModelType('{{model_type}}')
+                  MaxDepth({{max_depth}})
+                  NumBoostRounds({{num_boost_rounds}})
+                  LearningRate({{learning_rate}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Seed({{seed}})
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 3: Score test rows and evaluate
+      -- LLM-HINT: Accumulate the response column to compare predictions vs actuals
+      SELECT * FROM TD_ClassificationEvaluator(
+          ON (
+              SELECT * FROM TD_XGBoostPredict(
+                  ON (SELECT * FROM {{database}}.data_split WHERE TD_IsTrainRow = 0) AS InputTable
+                  ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+                  USING
+                      IDColumn('{{id_column}}')
+                      ModelType('Classification')
+                      Accumulate('{{response_column}}')
+              ) AS t
+          ) AS InputTable
+          USING
+              ObservationColumn('{{response_column}}')
+              PredictionColumn('prediction')
+              NumLabels({{num_labels}})
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - model_type
+      - id_column
+      - max_depth
+      - num_boost_rounds
+      - learning_rate
+      - regularization_lambda
+      - seed
+      - num_labels
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Churn Prediction ---
+  - name: "Customer Churn Prediction"
+    description: "Predict customer churn using XGBoost classification"
+    parameters:
+      database: "telecom"
+      training_table: "customer_features"
+      scoring_table: "new_customers"
+      model_table: "churn_xgb_model"
+      input_columns: ["tenure", "monthly_charges", "total_charges", "num_support_calls", "contract_length"]
+      response_column: "churned"
+      id_column: "customer_id"
+      model_type: "Classification"
+      max_depth: 6
+      learning_rate: 0.1
+      num_boost_rounds: 50
+      regularization_lambda: 1.0
+      column_sampling: 0.8
+      seed: 42
+    expected_result: |
+      Model trained with 50 boosting rounds at depth 6.
+      Classification accuracy on test set: ~85-92%
+
+      Predict output columns:
+        customer_id | prediction | confidence_lower | confidence_upper
+        10001       | 1          | 0.87             | 0.87
+        10002       | 0          | 0.95             | 0.95
+
+      Higher confidence values indicate stronger model certainty.
+      Use OutputProb('true') for probability-based threshold tuning.
+
+  # --- Example 2: Sales Forecasting (Regression) ---
+  - name: "Sales Forecasting (Regression)"
+    description: "Forecast weekly sales using XGBoost regression"
+    parameters:
+      database: "retail"
+      training_table: "weekly_sales_features"
+      scoring_table: "next_week_features"
+      model_table: "sales_xgb_model"
+      input_columns: ["week_of_year", "promo_flag", "avg_price", "competitor_price", "store_traffic"]
+      response_column: "weekly_sales"
+      id_column: "record_id"
+      model_type: "Regression"
+      max_depth: 5
+      learning_rate: 0.3
+      num_boost_rounds: 100
+      regularization_lambda: 1.0
+      column_sampling: 1.0
+      seed: 42
+    expected_result: |
+      Regression model trained with 100 boosting rounds.
+
+      Predict output columns:
+        record_id | prediction
+        5001      | 24350.75
+        5002      | 18220.40
+
+      Evaluate with MSE/MAE by comparing prediction vs actual weekly_sales.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Non-Numeric Input Columns ---
+  - error: "InputColumns contain non-numeric data types"
+    cause: "TD_XGBoost requires all input columns to be numeric. VARCHAR or DATE columns cause failure."
+    solution: "Convert categoricals using TD_OneHotEncodingFit/Transform or label encoding before training. Convert dates to numeric features (day_of_week, month, etc.)."
+
+  # --- Error 2: ModelType Mismatch ---
+  - error: "Prediction output is DOUBLE when expecting integer class labels"
+    cause: "ModelType in TD_XGBoostPredict does not match the ModelType used in TD_XGBoost training."
+    solution: "Set ModelType('Classification') in both Train and Predict calls. Default is 'Regression' which outputs DOUBLE."
+
+  # --- Error 3: Response Column Type for Classification ---
+  - error: "Response column type error in classification mode"
+    cause: "Classification requires ResponseColumn to be INTEGER, BIGINT, SMALLINT, or BYTEINT. FLOAT or VARCHAR fails."
+    solution: "Cast response column to INTEGER before training: CAST(label AS INTEGER)."
+
+  # --- Error 4: Small Dataset with Many AMPs ---
+  - error: "Poor model quality on small datasets"
+    cause: "Data is distributed across many AMPs; each AMP tree sees very few rows, producing weak learners."
+    solution: "Redistribute data to fewer AMPs by adding a constant primary index column. Do not repurpose an existing column -- add a new one (e.g., ALTER TABLE ADD pi_col INTEGER DEFAULT 1)."
+
+  # --- Error 5: Memory Pressure at Predict Time ---
+  - error: "Slow prediction or spool space errors"
+    cause: "Large model table with many trees exceeds available memory; trees spill to spool."
+    solution: "Reduce NumParallelTrees and NumBoostRounds in TD_XGBoostPredict to limit how much of the model is loaded. This trades accuracy for speed."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## XGBoost Best Practices
+
+  ### 1. Hyperparameter Tuning Strategy
+  Start conservative and increase complexity:
+  - Begin with MaxDepth(3), NumBoostRounds(10), LearningRate(0.3)
+  - Increase NumBoostRounds while decreasing LearningRate (e.g., 100 rounds at 0.1)
+  - Increase MaxDepth only if underfitting (try 5, then 7)
+  - Add RegularizationLambda (1-10) if overfitting
+
+  ### 2. Feature Preparation
+  - All columns must be numeric -- encode categoricals first
+  - Use TD_SimpleImpute to handle NULLs before training (rows with NULLs are skipped)
+  - Scale features if mixing very different ranges (not strictly required but helps convergence)
+
+  ### 3. Handling Imbalanced Classes
+  - For rare events (fraud, churn), redistribute to one AMP via constant PI column
+  - Consider TD_SMOTE on the training split only (never on the test split)
+  - Use ClassWeights-like behavior by adjusting BaseScore
+
+  ### 4. Model Persistence
+  ```sql
+  -- Always save the model table for reuse
+  CREATE TABLE db.my_xgb_model AS (
+      SELECT * FROM TD_XGBoost(...) AS t
+  ) WITH DATA;
+  ```
+  No OUT TABLE clause exists for the model -- you must capture it via CREATE TABLE AS.
+
+  ### 5. Evaluate Before Deploying
+  - Always split data first with TD_TrainTestSplit (stratify for classification)
+  - Train on train split, evaluate on test split
+  - Use TD_ClassificationEvaluator for classification, compare MSE/MAE for regression
+  - Use TD_SHAP after training to understand feature contributions
+
+  ### 6. Prediction Performance
+  - NumParallelTrees and NumBoostRounds in Predict limit how much model is loaded
+  - Fewer = faster prediction but potentially less accurate
+  - For latency-sensitive scoring, reduce both and validate acceptable accuracy
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Decision Forest ---
+  - decision_forest
+
+  # --- Pattern 2: GLM ---
+  - glm
+
+  # --- Pattern 3: K-Means ---
+  - kmeans
+
+  # --- Pattern 4: ML Pipeline Patterns ---
+  - ml_pipeline_patterns
+# === RELATED_PATTERNS END ===

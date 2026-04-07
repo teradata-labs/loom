@@ -1,0 +1,380 @@
+# === METADATA START ===
+name: bincode
+title: "Binning / Discretization (TD_BinCodeFit / TD_BinCodeTransform)"
+description: |
+  Bin (discretize) numeric columns into categorical intervals using TD_BinCodeFit
+  and TD_BinCodeTransform. Converts continuous numeric values into labeled bins.
+
+  The Fit phase learns bin boundaries from training data. The Transform phase assigns
+  each row's values to the appropriate bin label.
+
+  Supports two binning methods:
+  - equal-width: Divides the value range into N bins of equal width.
+  - variable-width: Uses a FitInput dimension table to define custom bin boundaries.
+
+  Binning is useful for:
+  - Converting continuous features into categorical for tree-based models
+  - Creating human-readable buckets for reporting (e.g., age groups, income tiers)
+  - Reducing the effect of outliers by grouping extreme values into edge bins
+  - Feature engineering for non-linear relationships
+
+category: data_prep
+difficulty: intermediate
+teradata_function: TD_BinCodeFit, TD_BinCodeTransform
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - feature_engineering
+  - discretization
+use_cases:
+  # --- Use Case 1: Equal-Width Binning ---
+  - Divide a numeric column into equal-width bins for feature engineering
+
+  # --- Use Case 2: Custom Bin Boundaries ---
+  - Apply business-defined bin boundaries (e.g., income tiers, age groups)
+
+  # --- Use Case 3: Reporting Buckets ---
+  - Create human-readable categories from numeric data for dashboards and reports
+
+  # --- Use Case 4: Outlier Handling ---
+  - Group extreme values into edge bins to reduce outlier impact on models
+
+  # --- Use Case 5: Pipeline Integration ---
+  - Produce a fit table for use in TD_ColumnTransformer alongside scaling and encoding
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the source tables"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Maps to {{training_table}}; table used to learn bin boundaries
+    required: true
+    description: "Table to learn bin boundaries from (typically the training set)"
+    example: "transactions_train"
+
+  # --- Parameter 3: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Maps to {{input_table}}; table to transform into binned values
+    required: true
+    description: "Table to apply binning transformation to"
+    example: "transactions_test"
+
+  # --- Parameter 4: Target Columns ---
+  - name: target_columns
+    type: array[string]
+    # LLM-HINT: Numeric columns to bin; each gets its own set of bin boundaries
+    required: true
+    description: "Numeric columns to discretize into bins"
+    example: '["amount", "age", "transaction_count"]'
+
+  # --- Parameter 5: Method Type ---
+  - name: method_type
+    type: string
+    # LLM-HINT: equal-width for uniform bins; variable-width for custom boundaries via FitInput
+    required: true
+    description: "Binning method: 'equal-width' or 'variable-width'"
+    example: "equal-width"
+
+  # --- Parameter 6: Number of Bins ---
+  - name: nbins
+    type: string
+    # LLM-HINT: Single value for all columns, or comma-separated per column (e.g., '10','5')
+    required: false
+    description: "Number of bins per column (for equal-width). Single value or one per column."
+    example: "10"
+
+  # --- Parameter 7: Fit Table Name ---
+  - name: fit_table
+    type: string
+    # LLM-HINT: Name for the persisted fit model table; reuse for consistent binning
+    required: false
+    default: "bincode_fit_model"
+    description: "Name for the persisted binning model table"
+    example: "bincode_fit_model"
+
+  # --- Parameter 8: Label Prefix ---
+  - name: label_prefix
+    type: string
+    # LLM-HINT: Prefix for bin labels in output (e.g., 'bin' produces 'bin_1', 'bin_2')
+    required: false
+    description: "Prefix for generated bin labels"
+    example: "bin"
+
+  # --- Parameter 9: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns to pass through unchanged in the transform output (e.g., ID columns)
+    required: false
+    description: "Columns to pass through unchanged in the transform output"
+    example: '["customer_id", "transaction_date"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === EQUAL_WIDTH_FIT TEMPLATE ===
+  # LLM-HINT: Divides the value range into N equally-spaced bins; simple and automatic
+  equal_width_fit:
+    description: "Fit equal-width bins on training data"
+    sql: |
+      -- Learn equal-width bin boundaries from training data
+      -- Each column's range (max - min) is divided into NBins equal intervals
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_BincodeFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{target_columns_quoted}})
+                  MethodType('equal-width')
+                  NBins('{{nbins}}')
+                  LabelPrefix('{{label_prefix}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_columns_quoted
+      - nbins
+      - label_prefix
+
+  # === VARIABLE_WIDTH_FIT TEMPLATE ===
+  # LLM-HINT: Uses a FitInput dimension table for custom bin boundaries; business-defined buckets
+  variable_width_fit:
+    description: "Fit variable-width bins using custom boundaries from a FitInput table"
+    sql: |
+      -- FitInput table defines custom bin boundaries per column
+      -- Schema: (ColumnName VARCHAR, MinValue FLOAT, MaxValue FLOAT, Label VARCHAR)
+      -- Example rows:
+      --   ('amount', 0,    100,  'low')
+      --   ('amount', 100,  500,  'medium')
+      --   ('amount', 500,  10000, 'high')
+      --   ('age',    0,    18,   'minor')
+      --   ('age',    18,   65,   'adult')
+      --   ('age',    65,   200,  'senior')
+
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_BincodeFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              ON {{database}}.{{bin_boundaries_table}} AS FitInput DIMENSION
+              USING
+                  TargetColumns({{target_columns_quoted}})
+                  MethodType('variable-width')
+                  MinValueColumn('MinValue')
+                  MaxValueColumn('MaxValue')
+                  LabelColumn('Label')
+                  TargetColNames('ColumnName')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_columns_quoted
+      - bin_boundaries_table
+
+  # === TRANSFORM TEMPLATE ===
+  # LLM-HINT: Applies bin boundaries to input data; output replaces numeric values with bin labels
+  transform_data:
+    description: "Transform data using a previously fitted binning model"
+    sql: |
+      -- Apply binning to input data using the persisted fit model
+      -- Numeric values are replaced by bin labels (e.g., 'bin_1', 'bin_2', or custom labels)
+      SELECT * FROM TD_BinCodeTransform(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{fit_table}} AS FitTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - fit_table
+      - accumulate_columns_quoted
+
+  # === PER_COLUMN_BINS TEMPLATE ===
+  # LLM-HINT: Different number of bins per column; pass comma-separated NBins values
+  per_column_bins_fit:
+    description: "Fit equal-width bins with different bin counts per column"
+    sql: |
+      -- Different bin counts per column: e.g., 10 bins for amount, 5 bins for age
+      -- NBins values must match the order of TargetColumns
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_BincodeFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{target_columns_quoted}})
+                  MethodType('equal-width')
+                  NBins({{nbins_per_column}})
+                  LabelPrefix({{label_prefixes}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_columns_quoted
+      - nbins_per_column
+      - label_prefixes
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Equal-Width Transaction Amount Bins ---
+  - name: "Equal-Width Binning for Transaction Amounts"
+    description: "Bin transaction amounts into 5 equal-width buckets for fraud detection features"
+    parameters:
+      database: "fraud_db"
+      training_table: "transactions_train"
+      input_table: "transactions_test"
+      target_columns: ["amount"]
+      method_type: "equal-width"
+      nbins: "5"
+      label_prefix: "amount_bin"
+      fit_table: "amount_bincode_fit"
+      accumulate_columns: ["transaction_id", "customer_id"]
+    expected_result: |
+      Fit learns bin boundaries from training data:
+        amount range: 0.50 to 9999.99
+        Bin width: (9999.99 - 0.50) / 5 = ~2000
+
+      Bin boundaries:
+        amount_bin_1: [0.50, 2000.50)
+        amount_bin_2: [2000.50, 4000.50)
+        amount_bin_3: [4000.50, 6000.50)
+        amount_bin_4: [6000.50, 8000.50)
+        amount_bin_5: [8000.50, 9999.99]
+
+      Transform output:
+        transaction_id | customer_id | amount
+        T001           | C100        | amount_bin_1
+        T002           | C200        | amount_bin_3
+        T003           | C100        | amount_bin_5
+
+  # --- Example 2: Variable-Width Age Groups ---
+  - name: "Business-Defined Age Groups"
+    description: "Bin customer ages into business-defined categories using custom boundaries"
+    parameters:
+      database: "crm_db"
+      training_table: "customers"
+      input_table: "customers"
+      target_columns: ["age"]
+      method_type: "variable-width"
+      fit_table: "age_bincode_fit"
+      accumulate_columns: ["customer_id", "name"]
+    expected_result: |
+      FitInput (bin_boundaries) table:
+        ColumnName | MinValue | MaxValue | Label
+        age        | 0        | 18       | minor
+        age        | 18       | 30       | young_adult
+        age        | 30       | 50       | middle_age
+        age        | 50       | 65       | mature
+        age        | 65       | 200      | senior
+
+      Transform output:
+        customer_id | name       | age
+        C001        | Alice      | young_adult
+        C002        | Bob        | mature
+        C003        | Carol      | senior
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: NBins Mismatch ---
+  - error: "Number of NBins values does not match TargetColumns count"
+    cause: "When specifying per-column bin counts, the number of NBins values must match the number of TargetColumns."
+    solution: "Either provide a single NBins value (applied to all columns) or one value per TargetColumn in the same order."
+
+  # --- Error 2: Variable-Width Missing FitInput ---
+  - error: "MethodType 'variable-width' requires a FitInput DIMENSION table"
+    cause: "Variable-width binning needs a dimension table defining bin boundaries but none was provided."
+    solution: "Create a FitInput table with columns (ColumnName, MinValue, MaxValue, Label) and pass it as a DIMENSION input. Each row defines one bin boundary."
+
+  # --- Error 3: Gaps in Variable-Width Boundaries ---
+  - error: "Values fall outside defined bin boundaries and produce NULL bin labels"
+    cause: "The FitInput table has gaps between bin ranges. For example, bins [0, 100) and [200, 500) leave [100, 200) undefined."
+    solution: "Ensure bin boundaries are contiguous with no gaps. The MaxValue of one bin should equal the MinValue of the next bin."
+
+  # --- Error 4: Edge Values in Equal-Width ---
+  - error: "Extreme values in test data fall outside training data range"
+    cause: "Equal-width bins are based on the training data min/max. Test data values beyond that range may be assigned to the nearest edge bin or produce unexpected results."
+    solution: "Check test data range against training data range. Consider expanding the training data or using variable-width bins with explicit edge boundaries."
+
+  # --- Error 5: Too Many Bins ---
+  - error: "Bins have very few observations each, reducing statistical power"
+    cause: "NBins is too high relative to the data distribution. Some bins may be empty or have very few rows."
+    solution: "Start with 5-10 bins for most use cases. Check bin distribution after fitting. Reduce NBins if bins are sparse."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Binning Best Practices
+
+  ### 1. Choose the Right Binning Method
+  - **Equal-width:** Best for uniformly distributed data or when bin boundaries are not
+    important. Quick and automatic. Start with 5-10 bins.
+  - **Variable-width:** Best for business-defined categories (age groups, income tiers) or
+    when the data distribution is highly skewed. Requires more setup but gives full control.
+
+  ### 2. Consider Data Distribution
+  Equal-width bins can produce very uneven distributions with skewed data. For example,
+  income data is typically right-skewed, so most observations end up in the first few bins.
+  Options:
+  - Use variable-width with quantile-based boundaries
+  - Pre-compute quantile boundaries and use them in FitInput
+  - Use equal-width on log-transformed values
+
+  ### 3. Persist the Fit Model
+  Save the fit output as a permanent table. This ensures:
+  - Identical bin boundaries applied to training, test, and production data
+  - Reuse in TD_ColumnTransformer for pipeline orchestration
+  - Auditability of preprocessing decisions
+
+  ### 4. Use Meaningful Labels
+  With variable-width bins, use descriptive labels that business users understand:
+  - "low", "medium", "high" rather than "bin_1", "bin_2", "bin_3"
+  - "minor", "young_adult", "senior" rather than numeric codes
+  With equal-width, use LabelPrefix to create identifiable labels per column.
+
+  ### 5. Validate Bin Distribution
+  After fitting, check how many observations fall into each bin:
+  ```sql
+  SELECT binned_column, COUNT(*) as cnt
+  FROM TD_BinCodeTransform(
+      ON db.data AS InputTable
+      ON db.bincode_fit AS FitTable DIMENSION
+  ) AS t
+  GROUP BY binned_column
+  ORDER BY cnt DESC;
+  ```
+  Bins with very few or no observations may indicate poor boundary choices.
+
+  ### 6. Combine with TD_ColumnTransformer
+  Pass the bincode fit table as the BincodeFitTable dimension input to
+  TD_ColumnTransformer for single-pass preprocessing alongside scaling and encoding.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Feature Scaling ---
+  - scale_transform
+
+  # --- Pattern 2: One-Hot Encoding ---
+  - one_hot_encoding
+
+  # --- Pattern 3: Column Transformer Pipeline ---
+  - column_transformer
+
+  # --- Pattern 4: Fit/Transform Architecture ---
+  - fit_transform_pattern
+# === RELATED_PATTERNS END ===
