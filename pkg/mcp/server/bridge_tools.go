@@ -169,10 +169,10 @@ func (b *LoomBridge) buildToolDefinitions() []protocol.Tool {
 
 	return []protocol.Tool{
 		// Core Agent
-		tool("loom_weave", "Execute a query using Loom's agent. The agent selects patterns, executes tools, and weaves LLM intelligence with domain knowledge.", objectSchema(
+		tool("loom_weave", "Execute a query using Loom's agent. The agent selects patterns, executes tools, and weaves LLM intelligence with domain knowledge. Return value is plain text in two parts: (1) a short routing header with lines labeled agent_id and optional agent_name (snake_case labels), plus a note when agent_id was not set on this tool call; (2) a single JSON object for WeaveResponse using protojson (camelCase fields such as agentId, sessionId, text). When agent_id is omitted on the call, the server uses a default or session-owned agent; for tasks that need specific MCP tools (e.g. Teradata), call loom_list_agents and pass agent_id.", objectSchema(
 			prop("query", "string", "The user query or instruction to execute"),
 			prop("session_id", "string", "Session ID for conversation continuity (optional)"),
-			prop("agent_id", "string", "Agent ID to use (optional, uses default if empty)"),
+			prop("agent_id", "string", "Agent ID to use (optional; if empty, server default or session routing applies). Pass a string; some clients may send other JSON scalar types, which are treated as explicit when non-empty."),
 		), conversationViewerURI, mv, weaveAnn),
 
 		// Patterns
