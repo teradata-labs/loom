@@ -36,6 +36,8 @@ import (
 
 var gitCommit = "unknown"
 
+const maxNumAgents = 1000
+
 // reconfigureRequest is the JSON body for POST /reconfigure.
 type reconfigureRequest struct {
 	LLMLatencyMs        *int64   `json:"llm_latency_ms"`
@@ -208,7 +210,12 @@ func (bs *benchServer) startHTTPServer(port int) *http.Server {
 		if req.LLMErrorRate != nil {
 			cfg.llmErrorRate = *req.LLMErrorRate
 		}
-		if req.NumAgents != nil && *req.NumAgents > 0 {
+		if req.NumAgents != nil {
+			if *req.NumAgents <= 0 || *req.NumAgents > maxNumAgents {
+				bs.mu.Unlock()
+				http.Error(w, fmt.Sprintf("NumAgents must be between 1 and %d", maxNumAgents), http.StatusBadRequest)
+				return
+			}
 			cfg.numAgents = *req.NumAgents
 		}
 		if req.LLMConcurrencyLimit != nil {
