@@ -229,14 +229,14 @@ func (ps *PatternSelector) resolveDependencies(selectedPatterns map[string]float
 		"teradata/analytics/funnel_analysis": {"teradata/analytics/sessionize"},
 		// Teradata data discovery
 		"teradata/data_discovery/key_detection":         {"teradata/data_discovery/signature_generation"},
-		"teradata/data_discovery/foreign_key_detection":  {"teradata/data_discovery/signature_generation", "teradata/data_discovery/key_detection"},
-		"teradata/data_discovery/column_similarity":      {"teradata/data_discovery/signature_generation"},
-		"teradata/data_discovery/data_profiling":         {"teradata/data_discovery/signature_generation"},
+		"teradata/data_discovery/foreign_key_detection": {"teradata/data_discovery/signature_generation", "teradata/data_discovery/key_detection"},
+		"teradata/data_discovery/column_similarity":     {"teradata/data_discovery/signature_generation"},
+		"teradata/data_discovery/data_profiling":        {"teradata/data_discovery/signature_generation"},
 		// Teradata ML → data prep dependency
 		"teradata/ml/xgboost":         {"teradata/data_prep/fit_transform_pattern"},
-		"teradata/ml/decision_forest":  {"teradata/data_prep/fit_transform_pattern"},
-		"teradata/ml/svm":              {"teradata/data_prep/fit_transform_pattern"},
-		"teradata/ml/glm":              {"teradata/data_prep/fit_transform_pattern"},
+		"teradata/ml/decision_forest": {"teradata/data_prep/fit_transform_pattern"},
+		"teradata/ml/svm":             {"teradata/data_prep/fit_transform_pattern"},
+		"teradata/ml/glm":             {"teradata/data_prep/fit_transform_pattern"},
 		// Model evaluation dependencies
 		"teradata/model_evaluation/classification_evaluator": {"teradata/model_evaluation/train_test_split"},
 		"teradata/model_evaluation/regression_evaluator":     {"teradata/model_evaluation/train_test_split"},
@@ -244,18 +244,18 @@ func (ps *PatternSelector) resolveDependencies(selectedPatterns map[string]float
 		"teradata/model_evaluation/shap_explainability":      {"teradata/model_evaluation/train_test_split"},
 		// Vector search dependencies
 		"teradata/vector_search/hnsw":            {"teradata/vector_search/vector_normalize"},
-		"teradata/vector_search/vector_distance":  {"teradata/vector_search/vector_normalize"},
+		"teradata/vector_search/vector_distance": {"teradata/vector_search/vector_normalize"},
 		// AI functions → authorization dependency
 		"teradata/ai_functions/ai_sentiment":       {"teradata/ai_functions/authorization_objects"},
 		"teradata/ai_functions/ai_ask_llm":         {"teradata/ai_functions/authorization_objects"},
-		"teradata/ai_functions/ai_text_classifier":  {"teradata/ai_functions/authorization_objects"},
-		"teradata/ai_functions/ai_pii":              {"teradata/ai_functions/authorization_objects"},
-		"teradata/ai_functions/ai_summarize":         {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_text_classifier": {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_pii":             {"teradata/ai_functions/authorization_objects"},
+		"teradata/ai_functions/ai_summarize":       {"teradata/ai_functions/authorization_objects"},
 		// Embeddings → authorization dependency
 		"teradata/vector_search/embeddings": {"teradata/ai_functions/authorization_objects"},
 		// Time series UAF dependencies
-		"teradata/timeseries/holt_winters":       {"teradata/timeseries/uaf_concepts"},
-		"teradata/timeseries/signal_processing":   {"teradata/timeseries/uaf_concepts"},
+		"teradata/timeseries/holt_winters":      {"teradata/timeseries/uaf_concepts"},
+		"teradata/timeseries/signal_processing": {"teradata/timeseries/uaf_concepts"},
 	}
 
 	// Add dependencies to selection
