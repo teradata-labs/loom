@@ -1928,11 +1928,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// === CONVERSATION-TURN GRAPH MEMORY EXTRACTION ===
 		// Fire extraction based on LLM conversation turns, independent of tool use.
 		// This ensures memory builds up even in pure-conversation flows.
+		// Skip if the LLM already used graph_memory this turn — explicit tool use
+		// is higher quality than auto-extraction and we avoid duplicate/meta noise.
 		if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
-			a.graphTurnsSinceExtraction++
-			if a.graphTurnsSinceExtraction >= a.graphConversationExtractionCadence {
-				go a.extractGraphMemoryAsync(ctx, session.ID)
-				a.graphTurnsSinceExtraction = 0
+			graphMemoryUsedThisTurn := false
+			for _, tc := range llmResp.ToolCalls {
+				if tc.Name == "graph_memory" {
+					graphMemoryUsedThisTurn = true
+					break
+				}
+			}
+			if !graphMemoryUsedThisTurn {
+				a.graphTurnsSinceExtraction++
+				if a.graphTurnsSinceExtraction >= a.graphConversationExtractionCadence {
+					go a.extractGraphMemoryAsync(ctx, session.ID)
+					a.graphTurnsSinceExtraction = 0
+				}
 			}
 		}
 
@@ -2197,8 +2208,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
-			// After each tool execution, check if we should extract graph memories
-			if a.enableGraphMemoryExtraction {
+			// After each tool execution, check if we should extract graph memories.
+			// Skip when the tool IS graph_memory — explicit use is higher quality.
+			if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
 				a.graphToolExecutionsSinceExtraction++
 				if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
 					go a.extractGraphMemoryAsync(ctx, session.ID)

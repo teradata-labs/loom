@@ -70,12 +70,16 @@ type ExtractedMemory struct {
 func buildGraphMemoryExtractionPrompt(messages []types.Message, maxEntities int) string {
 	var sb strings.Builder
 	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
+	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
+	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
+	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior.\n\n")
 	sb.WriteString("Conversation:\n")
 
 	for i, msg := range messages {
 		role := msg.Role
-		if role == "tool" && len(msg.ToolCalls) > 0 {
-			role = "tool:" + msg.ToolCalls[0].Name
+		// Skip tool result messages — they add noise without user-facing content.
+		if role == "tool" {
+			continue
 		}
 		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, role, msg.Content))
 	}
