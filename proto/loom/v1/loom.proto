@@ -1260,6 +1260,24 @@ message Session {
 
   // Metadata
   map<string, string> metadata = 9;
+
+  // Agent ID for this session (logical agent identifier, often the configured agent name).
+  string agent_id = 10;
+
+  // Human-readable agent name when available (from session context or artifact metadata).
+  string agent_name = 11;
+
+  // Session start time in RFC3339 UTC (mirrors created_at for API consumers).
+  string started_at = 12;
+
+  // Session end time in RFC3339 UTC when recorded in artifact metadata (e.g. after completion).
+  string ended_at = 13;
+
+  // Lifecycle status from artifacts/sessions/<id>/metadata.json (e.g. active, completed).
+  string metadata_status = 14;
+
+  // Count of indexed artifacts when present in session artifact metadata.
+  int32 artifact_count = 15;
 }
 
 // GetSessionRequest retrieves a session.
@@ -1276,19 +1294,29 @@ message ListSessionsRequest {
   // Filter by backend
   string backend = 2;
 
-  // Pagination offset
+  // Pagination offset (sessions skipped; must be >= 0).
   int32 offset = 3;
 
-  // Pagination limit
+  // Pagination page size. Omitted or <= 0 defaults to 50; values above 500 are capped at 500.
   int32 limit = 4;
+
+  // Filter by agent ID (matches Session.agent_id; often the configured agent name).
+  string agent_id = 5;
+
+  // Filter by project_id stored in session metadata (context / artifact metadata).
+  string project_id = 6;
+
+  // Filter by metadata_status from session artifact metadata (e.g. active, completed).
+  string metadata_status = 7;
 }
 
 // ListSessionsResponse returns sessions.
 message ListSessionsResponse {
-  // Sessions
+  // Sessions for the current page (after filters, offset, and limit).
   repeated Session sessions = 1;
 
-  // Total count
+  // Total number of sessions matching the request filters (before applying offset/limit).
+  // int32 is sufficient for in-memory listings; values above 2^31-1 are not expected.
   int32 total_count = 2;
 }
 

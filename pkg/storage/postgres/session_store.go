@@ -27,6 +27,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -97,6 +98,10 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 		if err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to save session: %w", err)
+		}
+		if err := artifacts.SyncSessionArtifactMetadata(ctx, session); err != nil {
+			span.RecordError(err)
+			// Best-effort filesystem metadata; PostgreSQL persistence already succeeded.
 		}
 		return nil
 	})
