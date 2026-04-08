@@ -68,6 +68,9 @@ message ForkJoinPattern {
 
   // Optional: Timeout for all parallel executions
   int32 timeout_seconds = 4;
+
+  // Optional: Output validation policy applied to each agent's output.
+  OutputPolicy agent_output_policy = 5;
 }
 
 // PipelinePattern executes agents sequentially where each agent's output
@@ -105,6 +108,10 @@ message PipelineStage {
   // When both output_schema and validation_prompt are set, schema is checked
   // first (cheap), then validation_prompt only if schema passes (semantic check).
   string output_schema = 5;
+
+  // Optional: Unified output validation policy. When set, takes precedence
+  // over the legacy validation_prompt + output_schema + retry_policy fields.
+  OutputPolicy output_policy = 6;
 }
 
 // IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.
@@ -217,6 +224,9 @@ message AgentTask {
 
   // Optional: Task metadata
   map<string, string> metadata = 3;
+
+  // Optional: Output validation policy for this task's output.
+  OutputPolicy output_policy = 4;
 }
 
 // ConditionalPattern routes execution based on an agent's decision.
