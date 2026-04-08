@@ -1131,6 +1131,14 @@ type GraphMemoryConfig struct {
 	// Maximum entities to extract per extraction cycle.
 	// Default: 10.
 	MaxEntitiesPerExtraction int32 `protobuf:"varint,11,opt,name=max_entities_per_extraction,json=maxEntitiesPerExtraction,proto3" json:"max_entities_per_extraction,omitempty"`
+	// Number of conversation turns (LLM responses) between automatic extractions.
+	// Fires independently of extraction_cadence (tool-based).
+	// 0 = disabled (default). Set to 1 to extract after every LLM turn.
+	// Useful for conversational agents that build memory without tool use.
+	ConversationExtractionCadence int32 `protobuf:"varint,12,opt,name=conversation_extraction_cadence,json=conversationExtractionCadence,proto3" json:"conversation_extraction_cadence,omitempty"`
+	// Timeout in seconds for each extraction LLM call.
+	// Default: 30. Set higher for slower providers or larger context windows.
+	ExtractionTimeoutSeconds int32 `protobuf:"varint,13,opt,name=extraction_timeout_seconds,json=extractionTimeoutSeconds,proto3" json:"extraction_timeout_seconds,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -1238,6 +1246,20 @@ func (x *GraphMemoryConfig) GetExtractionCadence() int32 {
 func (x *GraphMemoryConfig) GetMaxEntitiesPerExtraction() int32 {
 	if x != nil {
 		return x.MaxEntitiesPerExtraction
+	}
+	return 0
+}
+
+func (x *GraphMemoryConfig) GetConversationExtractionCadence() int32 {
+	if x != nil {
+		return x.ConversationExtractionCadence
+	}
+	return 0
+}
+
+func (x *GraphMemoryConfig) GetExtractionTimeoutSeconds() int32 {
+	if x != nil {
+		return x.ExtractionTimeoutSeconds
 	}
 	return 0
 }
@@ -2060,7 +2082,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x12memory_compression\x18\x05 \x01(\v2 .loom.v1.MemoryCompressionConfigR\x11memoryCompression\x12A\n" +
 	"\x1dshared_memory_threshold_bytes\x18\x06 \x01(\x03R\x1asharedMemoryThresholdBytes\x12(\n" +
 	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\x12=\n" +
-	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\"\x83\x04\n" +
+	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\"\x89\x05\n" +
 	"\x11GraphMemoryConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
 	"\x16context_budget_percent\x18\x02 \x01(\x05R\x14contextBudgetPercent\x12,\n" +
@@ -2074,7 +2096,9 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x11enable_extraction\x18\t \x01(\bR\x10enableExtraction\x12-\n" +
 	"\x12extraction_cadence\x18\n" +
 	" \x01(\x05R\x11extractionCadence\x12=\n" +
-	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\"k\n" +
+	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\x12F\n" +
+	"\x1fconversation_extraction_cadence\x18\f \x01(\x05R\x1dconversationExtractionCadence\x12<\n" +
+	"\x1aextraction_timeout_seconds\x18\r \x01(\x05R\x18extractionTimeoutSeconds\"k\n" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +

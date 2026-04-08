@@ -135,6 +135,23 @@ build-hawk: proto
     GOWORK=off go build -tags fts5,hawk -o bin/loom-hawk ./cmd/loom
     @echo "✅ Hawk-enabled binaries: bin/looms-hawk, bin/loom-hawk"
 
+# Build LongMemEval benchmark harness
+build-longmemeval:
+    @echo "Building LongMemEval benchmark harness..."
+    @mkdir -p bin
+    GOWORK=off go build -tags fts5 -o bin/loom-longmemeval ./cmd/loom-longmemeval
+    @echo "✅ LongMemEval binary: bin/loom-longmemeval"
+
+# Download LongMemEval datasets and run benchmark
+longmemeval-download:
+    @just build-longmemeval
+    ./bin/loom-longmemeval download --datasets oracle
+
+# Run LongMemEval benchmark against a running Loom server
+longmemeval server="localhost:60051" mode="ingest" limit="0":
+    @just build-longmemeval
+    ./bin/loom-longmemeval run --server {{server}} --mode {{mode}} --limit {{limit}} -v
+
 # Build with all features (judge is now built-in)
 build-full: proto
     @echo "Building Loom with all features (built-in judge)..."

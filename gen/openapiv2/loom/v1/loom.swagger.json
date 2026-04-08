@@ -5206,6 +5206,16 @@
           "type": "integer",
           "format": "int32",
           "description": "Maximum entities to extract per extraction cycle.\nDefault: 10."
+        },
+        "conversationExtractionCadence": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of conversation turns (LLM responses) between automatic extractions.\nFires independently of extraction_cadence (tool-based).\n0 = disabled (default). Set to 1 to extract after every LLM turn.\nUseful for conversational agents that build memory without tool use."
+        },
+        "extractionTimeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Timeout in seconds for each extraction LLM call.\nDefault: 30. Set higher for slower providers or larger context windows."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."

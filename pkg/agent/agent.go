@@ -121,6 +121,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			a.graphExtractionCadence = 5
 		}
 		a.graphToolExecutionsSinceExtraction = 0
+
+		// Conversation-turn-based extraction (fires on LLM responses, not just tool use).
+		a.graphConversationExtractionCadence = int(a.graphMemoryConfig.ConversationExtractionCadence)
+		a.graphTurnsSinceExtraction = 0
 	}
 
 	// Initialize pattern orchestrator
@@ -931,6 +935,13 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		span.RecordError(err)
 	}
 
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it. The user message is where the
+	// information lives — extract entities/facts before the response comes back.
+	if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
+		go a.extractGraphMemoryAsync(ctx, sessionID)
+	}
+
 	// Create agent context
 	agentCtx := &agentContext{
 		Context:          ctx,
@@ -1112,6 +1123,12 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
 		span.RecordError(err)
+	}
+
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it.
+	if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
+		go a.extractGraphMemoryAsync(ctx, sessionID)
 	}
 
 	// Store progressCallback in context so nested operations (tools, backends) can access it
@@ -1908,6 +1925,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			span.RecordError(err)
 		}
 
+		// === CONVERSATION-TURN GRAPH MEMORY EXTRACTION ===
+		// Fire extraction based on LLM conversation turns, independent of tool use.
+		// This ensures memory builds up even in pure-conversation flows.
+		if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
+			a.graphTurnsSinceExtraction++
+			if a.graphTurnsSinceExtraction >= a.graphConversationExtractionCadence {
+				go a.extractGraphMemoryAsync(ctx, session.ID)
+				a.graphTurnsSinceExtraction = 0
+			}
+		}
+
 		// Execute tool calls with per-turn cap and deduplication.
 		// MaxIterations limits how many tool calls are executed from a single
 		// LLM response. Excess calls get "turn_limit_exceeded" error results.
@@ -2568,18 +2596,42 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	}
 
 	// Query graph memory for context.
+	// First try entity-based ContextFor (entity profile + graph neighborhood + scoped recall).
+	// If no entity matches, fall back to direct topic-based Recall across all memories.
 	recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
 		AgentID:    a.config.Name,
 		EntityName: a.config.Name,
 		Topic:      topic,
 		MaxTokens:  budget,
 	})
-	if err != nil || recall == nil || len(recall.Memories) == 0 {
-		return
+
+	var content string
+	if err == nil && recall != nil && len(recall.Memories) > 0 {
+		content = recall.Format()
 	}
 
-	// Format and inject as a system-level context note.
-	content := recall.Format()
+	// Fallback: entity not found or no scoped memories — do a topic-based recall
+	// across all memories for this agent. This ensures conversational agents that
+	// don't create a self-entity still get memory context injection.
+	if content == "" {
+		memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+			AgentID:   a.config.Name,
+			Query:     topic,
+			Limit:     30,
+			MaxTokens: budget,
+		})
+		if recallErr == nil && len(memories) > 0 {
+			var sb strings.Builder
+			sb.WriteString("Relevant memories from past conversations:\n\n")
+			for _, m := range memories {
+				sb.WriteString("- ")
+				sb.WriteString(m.Content)
+				sb.WriteString("\n")
+			}
+			content = sb.String()
+		}
+	}
+
 	if content == "" {
 		return
 	}

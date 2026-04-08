@@ -102,7 +102,7 @@ func TestBuildGraphMemoryExtractionPrompt(t *testing.T) {
 	assert.Contains(t, prompt, `"role": "about|mentions"`)
 }
 
-func TestBuildGraphMemoryExtractionPrompt_Truncation(t *testing.T) {
+func TestBuildGraphMemoryExtractionPrompt_FullContent(t *testing.T) {
 	longContent := strings.Repeat("x", 1000)
 	messages := []types.Message{
 		{Role: "user", Content: longContent},
@@ -110,10 +110,8 @@ func TestBuildGraphMemoryExtractionPrompt_Truncation(t *testing.T) {
 
 	prompt := buildGraphMemoryExtractionPrompt(messages, 5)
 
-	// Should truncate to 500 chars + "..."
-	assert.Contains(t, prompt, "...")
-	// Prompt should not contain the full 1000-char string (500 truncated + boilerplate)
-	assert.NotContains(t, prompt, longContent)
+	// Full content should be preserved (no truncation)
+	assert.Contains(t, prompt, longContent)
 }
 
 func TestExtractGraphMemoryAsync_Disabled(t *testing.T) {

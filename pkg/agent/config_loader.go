@@ -193,17 +193,19 @@ type MemoryConfigYAML struct {
 // Enabled is a *bool so we can distinguish "not set" (nil → defaults to true, opt-out)
 // from "explicitly set to false" (opt-out by the user).
 type GraphMemoryConfigYAML struct {
-	Enabled                  *bool   `yaml:"enabled"`
-	ContextBudgetPercent     int     `yaml:"context_budget_percent"`
-	MaxContextTokens         int     `yaml:"max_context_tokens"`
-	DecayRate                float64 `yaml:"decay_rate"`
-	BoostAmount              float64 `yaml:"boost_amount"`
-	MinSalienceThreshold     float64 `yaml:"min_salience_threshold"`
-	MaxRecallCandidates      int     `yaml:"max_recall_candidates"`
-	DefaultSalience          float64 `yaml:"default_salience"`
-	EnableExtraction         *bool   `yaml:"enable_extraction"`
-	ExtractionCadence        int     `yaml:"extraction_cadence"`
-	MaxEntitiesPerExtraction int     `yaml:"max_entities_per_extraction"`
+	Enabled                       *bool   `yaml:"enabled"`
+	ContextBudgetPercent          int     `yaml:"context_budget_percent"`
+	MaxContextTokens              int     `yaml:"max_context_tokens"`
+	DecayRate                     float64 `yaml:"decay_rate"`
+	BoostAmount                   float64 `yaml:"boost_amount"`
+	MinSalienceThreshold          float64 `yaml:"min_salience_threshold"`
+	MaxRecallCandidates           int     `yaml:"max_recall_candidates"`
+	DefaultSalience               float64 `yaml:"default_salience"`
+	EnableExtraction              *bool   `yaml:"enable_extraction"`
+	ExtractionCadence             int     `yaml:"extraction_cadence"`
+	MaxEntitiesPerExtraction      int     `yaml:"max_entities_per_extraction"`
+	ConversationExtractionCadence int     `yaml:"conversation_extraction_cadence"`
+	ExtractionTimeoutSeconds      int     `yaml:"extraction_timeout_seconds"`
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -800,17 +802,19 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 // Used when graph memory is enabled but no explicit config is provided (e.g., pre-existing agents).
 func DefaultGraphMemoryConfig() *loomv1.GraphMemoryConfig {
 	return &loomv1.GraphMemoryConfig{
-		Enabled:                  true,
-		ContextBudgetPercent:     20,
-		MaxContextTokens:         0, // 0 = use ContextBudgetPercent instead of absolute cap
-		DecayRate:                0.95,
-		EnableExtraction:         true,
-		ExtractionCadence:        5,
-		MaxEntitiesPerExtraction: 10,
-		BoostAmount:              0.1,
-		MinSalienceThreshold:     0.1,
-		MaxRecallCandidates:      50,
-		DefaultSalience:          0.5,
+		Enabled:                       true,
+		ContextBudgetPercent:          20,
+		MaxContextTokens:              0, // 0 = use ContextBudgetPercent instead of absolute cap
+		DecayRate:                     0.95,
+		EnableExtraction:              true,
+		ExtractionCadence:             5,
+		MaxEntitiesPerExtraction:      10,
+		BoostAmount:                   0.1,
+		MinSalienceThreshold:          0.1,
+		MaxRecallCandidates:           50,
+		DefaultSalience:               0.5,
+		ConversationExtractionCadence: 0,  // disabled by default (tool-based extraction is primary)
+		ExtractionTimeoutSeconds:      30, // 30s default — enough for Bedrock/Anthropic
 	}
 }
 
@@ -855,18 +859,29 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		return nil
 	}
 
+	conversationExtractionCadence, err := safeInt32(yaml.ConversationExtractionCadence, "GraphMemory.ConversationExtractionCadence")
+	if err != nil {
+		return nil
+	}
+	extractionTimeoutSeconds, err := safeInt32(yaml.ExtractionTimeoutSeconds, "GraphMemory.ExtractionTimeoutSeconds")
+	if err != nil {
+		return nil
+	}
+
 	return &loomv1.GraphMemoryConfig{
-		Enabled:                  enabled,
-		ContextBudgetPercent:     contextBudgetPercent,
-		MaxContextTokens:         maxContextTokens,
-		DecayRate:                float32(yaml.DecayRate),
-		BoostAmount:              float32(yaml.BoostAmount),
-		MinSalienceThreshold:     float32(yaml.MinSalienceThreshold),
-		MaxRecallCandidates:      maxRecallCandidates,
-		DefaultSalience:          float32(yaml.DefaultSalience),
-		EnableExtraction:         enableExtraction,
-		ExtractionCadence:        extractionCadence,
-		MaxEntitiesPerExtraction: maxEntitiesPerExtraction,
+		Enabled:                       enabled,
+		ContextBudgetPercent:          contextBudgetPercent,
+		MaxContextTokens:              maxContextTokens,
+		DecayRate:                     float32(yaml.DecayRate),
+		BoostAmount:                   float32(yaml.BoostAmount),
+		MinSalienceThreshold:          float32(yaml.MinSalienceThreshold),
+		MaxRecallCandidates:           maxRecallCandidates,
+		DefaultSalience:               float32(yaml.DefaultSalience),
+		EnableExtraction:              enableExtraction,
+		ExtractionCadence:             extractionCadence,
+		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
+		ConversationExtractionCadence: conversationExtractionCadence,
+		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
 	}
 }
 
@@ -1012,17 +1027,19 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			enabled := config.Memory.GraphMemory.Enabled
 			enableExtraction := config.Memory.GraphMemory.EnableExtraction
 			yaml.Agent.Memory.GraphMemory = &GraphMemoryConfigYAML{
-				Enabled:                  &enabled,
-				ContextBudgetPercent:     int(config.Memory.GraphMemory.ContextBudgetPercent),
-				MaxContextTokens:         int(config.Memory.GraphMemory.MaxContextTokens),
-				DecayRate:                float64(config.Memory.GraphMemory.DecayRate),
-				BoostAmount:              float64(config.Memory.GraphMemory.BoostAmount),
-				MinSalienceThreshold:     float64(config.Memory.GraphMemory.MinSalienceThreshold),
-				MaxRecallCandidates:      int(config.Memory.GraphMemory.MaxRecallCandidates),
-				DefaultSalience:          float64(config.Memory.GraphMemory.DefaultSalience),
-				EnableExtraction:         &enableExtraction,
-				ExtractionCadence:        int(config.Memory.GraphMemory.ExtractionCadence),
-				MaxEntitiesPerExtraction: int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
+				Enabled:                       &enabled,
+				ContextBudgetPercent:          int(config.Memory.GraphMemory.ContextBudgetPercent),
+				MaxContextTokens:              int(config.Memory.GraphMemory.MaxContextTokens),
+				DecayRate:                     float64(config.Memory.GraphMemory.DecayRate),
+				BoostAmount:                   float64(config.Memory.GraphMemory.BoostAmount),
+				MinSalienceThreshold:          float64(config.Memory.GraphMemory.MinSalienceThreshold),
+				MaxRecallCandidates:           int(config.Memory.GraphMemory.MaxRecallCandidates),
+				DefaultSalience:               float64(config.Memory.GraphMemory.DefaultSalience),
+				EnableExtraction:              &enableExtraction,
+				ExtractionCadence:             int(config.Memory.GraphMemory.ExtractionCadence),
+				MaxEntitiesPerExtraction:      int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
+				ConversationExtractionCadence: int(config.Memory.GraphMemory.ConversationExtractionCadence),
+				ExtractionTimeoutSeconds:      int(config.Memory.GraphMemory.ExtractionTimeoutSeconds),
 			}
 		}
 	}

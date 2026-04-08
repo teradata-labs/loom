@@ -302,6 +302,16 @@ message GraphMemoryConfig {
   // Maximum entities to extract per extraction cycle.
   // Default: 10.
   int32 max_entities_per_extraction = 11;
+
+  // Number of conversation turns (LLM responses) between automatic extractions.
+  // Fires independently of extraction_cadence (tool-based).
+  // 0 = disabled (default). Set to 1 to extract after every LLM turn.
+  // Useful for conversational agents that build memory without tool use.
+  int32 conversation_extraction_cadence = 12;
+
+  // Timeout in seconds for each extraction LLM call.
+  // Default: 30. Set higher for slower providers or larger context windows.
+  int32 extraction_timeout_seconds = 13;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases

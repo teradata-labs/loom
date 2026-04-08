@@ -73,15 +73,11 @@ func buildGraphMemoryExtractionPrompt(messages []types.Message, maxEntities int)
 	sb.WriteString("Conversation:\n")
 
 	for i, msg := range messages {
-		preview := msg.Content
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
 		role := msg.Role
 		if role == "tool" && len(msg.ToolCalls) > 0 {
 			role = "tool:" + msg.ToolCalls[0].Name
 		}
-		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, role, preview))
+		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, role, msg.Content))
 	}
 
 	sb.WriteString(fmt.Sprintf("\nExtract up to %d entities. Return a single JSON object:\n", maxEntities))
@@ -121,9 +117,13 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		return
 	}
 
-	// Create a timeout context for extraction (5 seconds max).
+	// Create a timeout context for extraction.
 	// Derive from caller's context to propagate RLS user_id and other values.
-	extractCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeout := 30 * time.Second // default
+	if a.graphMemoryConfig != nil && a.graphMemoryConfig.ExtractionTimeoutSeconds > 0 {
+		timeout = time.Duration(a.graphMemoryConfig.ExtractionTimeoutSeconds) * time.Second
+	}
+	extractCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	session, ok := a.memory.GetSession(sessionID)

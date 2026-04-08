@@ -157,6 +157,10 @@ type Agent struct {
 	enableGraphMemoryExtraction        bool
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
+
+	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
+	graphConversationExtractionCadence int // 0 = disabled
+	graphTurnsSinceExtraction          int
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
