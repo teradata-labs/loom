@@ -303,12 +303,14 @@ func TestSegmentedMemory_CompactMemory(t *testing.T) {
 	// Compact memory
 	messagesCompressed, tokensSaved := sm.CompactMemory(context.Background())
 
-	// All messages should be compressed
-	assert.Equal(t, initialL1Count, messagesCompressed)
+	// All messages before the last user message should be compressed (9 of 10).
+	// The last user message is preserved in L1 so downstream consumers always
+	// have at least one user-role message.
+	assert.Equal(t, initialL1Count-1, messagesCompressed)
 	assert.Greater(t, tokensSaved, 0)
 
-	// L1 should be empty
-	assert.Equal(t, 0, sm.GetL1MessageCount())
+	// L1 should have exactly the last user message
+	assert.Equal(t, 1, sm.GetL1MessageCount())
 
 	// L2 should have content
 	sm.mu.RLock()
