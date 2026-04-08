@@ -26,6 +26,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 )
 
 // MigrationInspector is an optional interface that StorageBackend implementations
@@ -78,6 +79,14 @@ type StorageDetailProvider interface {
 type GraphMemoryProvider interface {
 	// GraphMemoryStore returns the graph memory store, or nil if not available.
 	GraphMemoryStore() memory.GraphMemoryStore
+}
+
+// TaskStoreProvider is an optional interface that StorageBackend implementations
+// may satisfy to provide task decomposition and kanban storage.
+// Only backends with the tasks migration applied implement this.
+type TaskStoreProvider interface {
+	// TaskStore returns the task store, or nil if not available.
+	TaskStore() task.TaskStore
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.
