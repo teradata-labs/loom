@@ -454,8 +454,10 @@ func TestSessionMemoryTool_Compact_Force(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "compact", response["action"])
-	// Should have compacted the 2 messages
-	assert.Equal(t, float64(2), response["messages_compressed"])
+	// CompactMemory preserves the last user message and any subsequent
+	// assistant/tool messages. With only 1 user + 1 assistant, the user
+	// message is the last (and only) user message, so both are preserved.
+	assert.Equal(t, float64(0), response["messages_compressed"])
 }
 
 // TestSessionMemoryTool_MissingContext tests behavior when context values are missing.

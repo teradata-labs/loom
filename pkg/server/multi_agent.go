@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -142,6 +143,9 @@ type MultiAgentServer struct {
 
 	// patternTracker is wired into every agent's orchestrator for effectiveness metrics.
 	patternTracker *learning.PatternEffectivenessTracker
+
+	// taskManager for persistent workflow tracking via the task system (optional).
+	taskManager *task.Manager
 }
 
 // workflowSubAgentContext tracks a running workflow sub-agent for message notifications
@@ -293,6 +297,14 @@ func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registry = registry
+}
+
+// SetTaskManager injects the task manager for persistent workflow tracking.
+// When set, workflow executions automatically create task boards with stage tasks.
+func (s *MultiAgentServer) SetTaskManager(tm *task.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskManager = tm
 }
 
 // SetTracer injects an observability tracer for workflow and agent tracing.
@@ -3445,7 +3457,7 @@ func (s *MultiAgentServer) executeWorkflowInternalWithProgress(ctx context.Conte
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
-	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback)
+	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback, s.taskManager)
 
 	// Execute pattern
 	result, err := orchestrator.ExecutePattern(ctx, pattern)
@@ -3652,7 +3664,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 }
 
 // createOrchestratorWithProgress creates an orchestrator with the given agents, configuration, and optional progress callback.
-func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback) *orchestration.Orchestrator {
+func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback, taskManager *task.Manager) *orchestration.Orchestrator {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -3667,6 +3679,7 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 		Tracer:           tracer, // Use provided tracer for observability
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
+		TaskManager:      taskManager,      // Persistent workflow tracking
 	})
 
 	// Register all agents with orchestrator

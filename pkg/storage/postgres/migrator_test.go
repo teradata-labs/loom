@@ -25,8 +25,8 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 10 migrations
-	assert.Len(t, migrations, 10, "should have 10 migration versions")
+	// Verify we have all 11 migrations
+	assert.Len(t, migrations, 11, "should have 11 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
