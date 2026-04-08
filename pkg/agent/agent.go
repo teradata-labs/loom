@@ -938,7 +938,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	// Fire graph memory extraction on the incoming user message immediately,
 	// in parallel with the LLM processing it. The user message is where the
 	// information lives — extract entities/facts before the response comes back.
-	if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
+	if a.enableGraphMemoryExtraction {
 		go a.extractGraphMemoryAsync(ctx, sessionID)
 	}
 
@@ -1127,7 +1127,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 
 	// Fire graph memory extraction on the incoming user message immediately,
 	// in parallel with the LLM processing it.
-	if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
+	if a.enableGraphMemoryExtraction {
 		go a.extractGraphMemoryAsync(ctx, sessionID)
 	}
 
@@ -1923,28 +1923,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.String("role", assistantMsg.Role),
 				zap.Error(err))
 			span.RecordError(err)
-		}
-
-		// === CONVERSATION-TURN GRAPH MEMORY EXTRACTION ===
-		// Fire extraction based on LLM conversation turns, independent of tool use.
-		// This ensures memory builds up even in pure-conversation flows.
-		// Skip if the LLM already used graph_memory this turn — explicit tool use
-		// is higher quality than auto-extraction and we avoid duplicate/meta noise.
-		if a.enableGraphMemoryExtraction && a.graphConversationExtractionCadence > 0 {
-			graphMemoryUsedThisTurn := false
-			for _, tc := range llmResp.ToolCalls {
-				if tc.Name == "graph_memory" {
-					graphMemoryUsedThisTurn = true
-					break
-				}
-			}
-			if !graphMemoryUsedThisTurn {
-				a.graphTurnsSinceExtraction++
-				if a.graphTurnsSinceExtraction >= a.graphConversationExtractionCadence {
-					go a.extractGraphMemoryAsync(ctx, session.ID)
-					a.graphTurnsSinceExtraction = 0
-				}
-			}
 		}
 
 		// Execute tool calls with per-turn cap and deduplication.
