@@ -2590,57 +2590,37 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// Search for relevant entities and collect their IDs for scoped recall.
-	var entityIDs []string
-	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
-	if err == nil {
-		for _, e := range entities {
-			entityIDs = append(entityIDs, e.ID)
-			// Also grab 1-hop neighbors — the graph edges lead to related memories.
-			edgesOut, _ := a.graphMemoryStore.ListEdgesFrom(ctx, e.ID)
-			for _, edge := range edgesOut {
-				entityIDs = append(entityIDs, edge.TargetID)
-			}
-			edgesIn, _ := a.graphMemoryStore.ListEdgesTo(ctx, e.ID)
-			for _, edge := range edgesIn {
-				entityIDs = append(entityIDs, edge.SourceID)
-			}
-		}
-	}
-
-	// Entity-scoped recall: memories linked to matched entities + their neighbors.
+	// Search for relevant entities matching the searchQuery.
 	var content string
-	if len(entityIDs) > 0 {
-		scopedMemories, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-			AgentID:   a.config.Name,
-			Query:     searchQuery,
-			EntityIDs: entityIDs,
-			Limit:     20,
-			MaxTokens: budget / 2,
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	if err == nil && len(entities) > 0 {
+		// Use the top entity for ContextFor (entity profile + graph + scoped memories).
+		recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+			AgentID:    a.config.Name,
+			EntityName: entities[0].Name,
+			Topic:      searchQuery,
+			MaxTokens:  budget,
 		})
-		if err == nil && len(scopedMemories) > 0 {
-			var sb strings.Builder
-			for _, m := range scopedMemories {
-				sb.WriteString("- ")
-				sb.WriteString(m.Content)
-				sb.WriteString("\n")
-			}
-			content = sb.String()
+		if err == nil && recall != nil && len(recall.Memories) > 0 {
+			content = recall.Format()
 		}
 	}
 
-	// Unscoped recall: broad search across all memories for this agent.
+	// Also do a direct keyword-based recall across all memories.
+	// Merge with entity-scoped results for broader coverage.
 	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
 		AgentID:   a.config.Name,
 		Query:     searchQuery,
-		Limit:     20,
-		MaxTokens: budget / 2,
+		Limit:     30,
+		MaxTokens: budget,
 	})
 	if recallErr == nil && len(memories) > 0 {
 		var sb strings.Builder
 		if content != "" {
 			sb.WriteString(content)
+			sb.WriteString("\n\n")
 		}
+		sb.WriteString("Relevant memories:\n\n")
 		for _, m := range memories {
 			sb.WriteString("- ")
 			sb.WriteString(m.Content)
