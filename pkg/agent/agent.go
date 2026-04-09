@@ -774,7 +774,7 @@ When to use the graph_memory tool:
 
 Actions:
 - remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
-- recall: search by keywords, filter by type/tags
+- recall: search by searchQuery, filter by type/tags
 - supersede: correct outdated info (preserves lineage)
 - forget: soft-delete
 - relate: link entities with typed relationships (USES, WORKS_ON, KNOWS_ABOUT)
@@ -2569,68 +2569,107 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// Extract topic from recent user messages.
-	topic := ""
+	// Get the last user message.
+	var userMessage string
 	msgs := session.GetMessages()
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" && msgs[i].Content != "" {
-			topic = msgs[i].Content
-			if len(topic) > 200 {
-				topic = topic[:200]
-			}
+			userMessage = msgs[i].Content
 			break
 		}
 	}
-	if topic == "" {
+	if userMessage == "" {
 		return
 	}
 
-	// Query graph memory for context.
-	// First try entity-based ContextFor (entity profile + graph neighborhood + scoped recall).
-	// If no entity matches, fall back to direct topic-based Recall across all memories.
-	recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-		AgentID:    a.config.Name,
-		EntityName: a.config.Name,
-		Topic:      topic,
-		MaxTokens:  budget,
-	})
-
-	var content string
-	if err == nil && recall != nil && len(recall.Memories) > 0 {
-		content = recall.Format()
+	// Use LLM to distill the user message into a search query for memory recall.
+	// "What was the first issue I had with my new car after its first service?"
+	// becomes something like "first issue with new car after first service".
+	searchQuery := a.extractSearchQuery(ctx, userMessage)
+	if searchQuery == "" {
+		return
 	}
 
-	// Fallback: entity not found or no scoped memories — do a topic-based recall
-	// across all memories for this agent. This ensures conversational agents that
-	// don't create a self-entity still get memory context injection.
-	if content == "" {
-		memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-			AgentID:   a.config.Name,
-			Query:     topic,
-			Limit:     30,
-			MaxTokens: budget,
+	// Search for relevant entities matching the searchQuery.
+	var content string
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	if err == nil && len(entities) > 0 {
+		// Use the top entity for ContextFor (entity profile + graph + scoped memories).
+		recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+			AgentID:    a.config.Name,
+			EntityName: entities[0].Name,
+			Topic:      searchQuery,
+			MaxTokens:  budget,
 		})
-		if recallErr == nil && len(memories) > 0 {
-			var sb strings.Builder
-			sb.WriteString("Relevant memories from past conversations:\n\n")
-			for _, m := range memories {
-				sb.WriteString("- ")
-				sb.WriteString(m.Content)
-				sb.WriteString("\n")
-			}
-			content = sb.String()
+		if err == nil && recall != nil && len(recall.Memories) > 0 {
+			content = recall.Format()
 		}
 	}
 
+	// Also do a direct keyword-based recall across all memories.
+	// Merge with entity-scoped results for broader coverage.
+	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:   a.config.Name,
+		Query:     searchQuery,
+		Limit:     30,
+		MaxTokens: budget,
+	})
+	if recallErr == nil && len(memories) > 0 {
+		var sb strings.Builder
+		if content != "" {
+			sb.WriteString(content)
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("Relevant memories:\n\n")
+		for _, m := range memories {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		content = sb.String()
+	}
+
 	if content == "" {
 		return
 	}
 
-	// Add as a system message so it appears in context without polluting conversation.
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
 		Content: "[Graph Memory Context]\n" + content,
 	})
+}
+
+// extractSearchQuery uses the LLM to distill a user message into a concise
+// search query for memory recall. Returns a natural language query like
+// "car GPS malfunction after March service" — not searchQuery, not the raw prompt.
+func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) string {
+	extractCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf(
+		"Distill this message into a concise search query for looking up relevant memories. "+
+			"Return ONLY the search query, nothing else. Strip away instructions, "+
+			"framing, and filler — just the core topic the user is asking about.\n\n"+
+			"Message: %s\n\nSearch query:", userMessage)
+
+	// Use compressor LLM if available (cheaper/faster), otherwise main LLM.
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+
+	resp, err := llmProvider.Chat(extractCtx, []types.Message{
+		{Role: "user", Content: prompt},
+	}, nil)
+	if err != nil {
+		return ""
+	}
+
+	query := strings.TrimSpace(resp.Content)
+	if idx := strings.IndexByte(query, '\n'); idx > 0 {
+		query = query[:idx]
+	}
+	return query
 }
 
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
