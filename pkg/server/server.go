@@ -141,6 +141,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	return &loomv1.WeaveResponse{
 		Text:         resp.Content,
 		SessionId:    sessionID,
+		AgentId:      s.agent.GetID(),
 		ContextState: contextState,
 		Cost: &loomv1.CostInfo{
 			LlmCost: &loomv1.LLMCost{

@@ -35,6 +35,7 @@ Specifies the Loom data directory where configuration, databases, and other pers
 - If relative path, converted to absolute
 - Tilde (`~`) expansion supported
 - Takes precedence over default `$HOME/.loom`
+- `just clean` deletes the resolved data directory (after a confirmation prompt); default target is `$HOME/.loom` when unset
 
 **Examples:**
 ```bash
@@ -97,7 +98,8 @@ Specifies where Loom binaries are installed during `just install` and cleaned du
 - Only affects installation scripts, not the running application
 - The application never needs to know where its binary is installed
 - NOT managed by viper or included in runtime configuration
-- Tilde (`~`) expansion supported
+- Tilde (`~`) expansion supported for interactive shells when exporting this variable
+- `just clean` removes `loom`, `looms`, and `hawk` from this directory (after a confirmation prompt); literal `~/...` values from the environment are normalized to `$HOME/...` in the `Justfile` before removal
 
 **Examples:**
 ```bash

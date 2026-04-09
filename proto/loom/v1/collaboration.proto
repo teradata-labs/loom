@@ -12,7 +12,6 @@ option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 // OutputRetryPolicy defines retry behavior when agent output doesn't match expectations.
 // Used by conditional executors (branch matching fails), pipeline executors
 // (validation_prompt or output_schema fails), and swarm executors (vote parsing fails).
-// Each retry uses a fresh session ID to avoid anchoring on previous bad output.
 message OutputRetryPolicy {
   // Maximum retries before falling back to default branch or graceful degradation.
   // 0 = no retries (default behavior, preserves backwards compatibility).
@@ -24,6 +23,53 @@ message OutputRetryPolicy {
   // For swarms: includes the vote format template.
   // Code treats unset (false) as true (include values by default).
   bool include_valid_values = 2;
+
+  // Session behavior on retry. Default (UNSPECIFIED) = FRESH for backward compatibility.
+  RetrySessionMode session_mode = 3;
+
+  // Custom feedback template injected into the retry prompt.
+  // Variables: {{error}}, {{previous_output}}, {{attempt}}, {{max_retries}}.
+  // If empty, a default feedback template is used.
+  string feedback_template = 4;
+
+  // Cooldown between retries in milliseconds. Default: 0 (no cooldown).
+  int32 cooldown_ms = 5;
+}
+
+// RetrySessionMode controls how agent sessions are handled across retries.
+enum RetrySessionMode {
+  // Default: FRESH (preserves existing behavior — each retry gets a fresh session).
+  RETRY_SESSION_MODE_UNSPECIFIED = 0;
+
+  // Continue in the same session. Validation feedback is appended as a new
+  // user message. The agent sees its previous attempt and what went wrong.
+  RETRY_SESSION_MODE_CONTINUE = 1;
+
+  // Fresh session. New conversation with original prompt + error feedback.
+  RETRY_SESSION_MODE_FRESH = 2;
+
+  // Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH
+  // with an upgraded LLM (switches to orchestrator_llm if available).
+  RETRY_SESSION_MODE_ESCALATE = 3;
+}
+
+// OutputPolicy defines how agent output is validated and optionally retried.
+// Attachable to workflow stages, tasks, parallel agent executions, or direct invocations.
+message OutputPolicy {
+  // JSON Schema string for structural validation (instant, free, deterministic).
+  string output_schema = 1;
+
+  // Semantic validation criteria evaluated by LLM. Use {{output}} placeholder.
+  string acceptance_criteria = 2;
+
+  // Optional: another agent evaluates the output.
+  string validator_agent_id = 3;
+
+  // Optional: judge config ID for multi-dimensional quality evaluation.
+  string judge_config_id = 4;
+
+  // Retry behavior when any validation fails.
+  OutputRetryPolicy retry_policy = 5;
 }
 
 // SwarmPattern orchestrates multiple agents to vote on decisions.

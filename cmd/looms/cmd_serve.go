@@ -61,6 +61,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/tui/components"
@@ -821,9 +822,25 @@ func runServe(cmd *cobra.Command, args []string) {
 		graphMemoryStore = gmp.GraphMemoryStore()
 	}
 
+	// Extract task store if available (optional interface)
+	var taskManager *task.Manager
+	var taskDecomposer *task.Decomposer
+	if tsp, ok := storageBackend.(backend.TaskStoreProvider); ok {
+		ts := tsp.TaskStore()
+		if ts != nil {
+			taskManager = task.NewManager(ts, nil, tracer, logger.Named("task"))
+			taskDecomposer = task.NewDecomposer(taskManager, tracer, logger.Named("task.decompose"))
+			// Wire graph memory for auto-creating memories on task completion.
+			if graphMemoryStore != nil {
+				taskManager.SetGraphMemory(graphMemoryStore)
+			}
+		}
+	}
+
 	logger.Info("Storage backend initialized",
 		zap.String("backend", config.Storage.Backend),
-		zap.Bool("graph_memory_available", graphMemoryStore != nil))
+		zap.Bool("graph_memory_available", graphMemoryStore != nil),
+		zap.Bool("task_store_available", taskManager != nil))
 
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
@@ -1365,6 +1382,16 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
+				// Wire task board (opt-in: disabled by default).
+				// To enable for a specific agent, set task_board.enabled: true in its YAML.
+				if taskManager != nil {
+					tbCfg := cfg.Memory.GetTaskBoard()
+					if tbCfg != nil && tbCfg.Enabled {
+						agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+						logger.Info("    Task board enabled")
+					}
+				}
+
 				// Add PermissionChecker if configured
 				if permissionChecker != nil {
 					agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
@@ -1693,6 +1720,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService := server.NewMultiAgentServer(agents, store)
 	loomv1.RegisterLoomServiceServer(grpcServer, loomService)
 
+	// Register TaskService for gRPC task management and TUI streaming.
+	// Bus wired later via SetBus (two-phase init, bus not yet created).
+	var taskService *server.TaskServiceImpl
+	if taskManager != nil {
+		taskService = server.NewTaskServiceImpl(taskManager, nil, logger)
+		loomv1.RegisterTaskServiceServer(grpcServer, taskService)
+		logger.Info("Task service registered")
+	}
+
 	// Register JudgeService for multi-judge LLM evaluation capabilities.
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
@@ -1792,6 +1828,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Agent registry configured on server for workflow execution")
 	}
 
+	// Wire task manager into server for persistent workflow tracking
+	if taskManager != nil {
+		loomService.SetTaskManager(taskManager)
+		logger.Info("Task manager configured on server for workflow tracking")
+	}
+
 	// Set clarification timeouts from config
 	if config.Server.Clarification.ChannelSendTimeoutMs > 0 {
 		loomService.SetClarificationConfig(config.Server.Clarification.ChannelSendTimeoutMs)
@@ -1869,6 +1911,15 @@ func runServe(cmd *cobra.Command, args []string) {
 		// 1. Broadcast Bus for pub/sub
 		messageBus = communication.NewMessageBus(refStore, policyManager, tracer, logger)
 		logger.Info("Broadcast bus initialized")
+
+		// Wire message bus into task manager for event publishing (two-phase init).
+		if taskManager != nil {
+			taskManager.SetBus(messageBus)
+		}
+		// Wire message bus into task service for streaming task updates to TUI.
+		if taskService != nil {
+			taskService.SetBus(messageBus)
+		}
 
 		// 2. Message Queue for point-to-point async messaging
 		queuePath := config.Communication.Store.Path
@@ -2134,6 +2185,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			Logger:       logger,
 			MessageBus:   messageBus,
 			SharedMemory: sharedMemory,
+			TaskManager:  taskManager, // persistent workflow tracking (nil = disabled)
 		})
 
 		// Create and start scheduler
@@ -2442,6 +2494,15 @@ func runServe(cmd *cobra.Command, args []string) {
 						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
 				} else {
 					logger.Info("    Graph memory explicitly disabled (hot-reload)")
+				}
+			}
+
+			// Wire task board (opt-in: disabled by default).
+			if taskManager != nil {
+				tbCfg := agentConfig.GetMemory().GetTaskBoard()
+				if tbCfg != nil && tbCfg.Enabled {
+					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+					logger.Info("    Task board enabled (hot-reload)")
 				}
 			}
 

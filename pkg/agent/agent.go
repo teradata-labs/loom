@@ -35,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -268,6 +269,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// that references it. The post-loop calls in Chat/ChatWithProgress are harmless
 	// no-ops since checkAndRegisterGraphMemoryTool early-returns if already registered.
 	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	return a
 }
@@ -746,6 +748,14 @@ func (a *Agent) getSystemPrompt(ctx context.Context) string {
 	// Append graph memory instructions if graph memory is enabled
 	basePrompt += a.graphMemoryPromptSupplement()
 
+	// Inject live task context (current tasks, ready front, board stats).
+	// Rebuilt from DB each turn — survives context compaction.
+	basePrompt += a.buildTaskContext(ctx)
+
+	// Append task board tool instructions after the context block,
+	// so the agent sees "here's your state" before "here's how to manage it".
+	basePrompt += a.taskBoardPromptSupplement()
+
 	return formatSystemPromptWithDatetime(basePrompt, a.workflowCommContext)
 }
 
@@ -779,6 +789,242 @@ Actions:
 - consolidate: merge related memories
 
 Focus on the user's request first. Memory operations happen alongside your work, not instead of it.`
+}
+
+// taskBoardPromptSupplement returns instructions for agents with task board enabled.
+// Returns empty string when task board is not available.
+func (a *Agent) taskBoardPromptSupplement() string {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return ""
+	}
+	return `
+
+---
+
+TASK BOARD
+
+You have a task_board tool for decomposing goals into dependency-tracked tasks and managing work via a kanban board.
+
+Workflow:
+1. decompose — Break a complex goal into a DAG of subtasks (specify strategy: backward, forward, or parallel)
+2. ready — See what tasks have all dependencies satisfied and are available to work on
+3. claim — Atomically claim a task to work on (prevents other agents from picking it up)
+4. Work on the task using your other tools
+5. update — Append progress notes, update approach as you learn more
+6. close — Mark the task done with a completion reason
+7. ready — Check what's unblocked next
+
+Key actions: decompose, ready, claim, update, close, create, list, show, add_dep, board
+
+Guidelines:
+- For complex multi-step requests, use decompose before diving in
+- Always claim a task before working on it
+- Append structured notes at milestones: [STARTED], [PROGRESS], [KEY FINDING], [BLOCKED]
+- Close tasks with a meaningful reason summarizing what was accomplished
+- Use show to check dependencies and blocked/blocking relationships
+- Tasks are domain-agnostic: research, analysis, writing, decisions — not just code`
+}
+
+// checkAndRegisterTaskBoardTool implements progressive disclosure for the task_board tool.
+func (a *Agent) checkAndRegisterTaskBoardTool() {
+	if a.tools.IsRegistered("task_board") {
+		return
+	}
+	if a.taskManager == nil {
+		return
+	}
+	if a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return
+	}
+
+	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
+	a.tools.Register(tbTool)
+}
+
+// buildTaskContext queries the task store and builds a compact context block
+// for injection into the system prompt. Rebuilt from DB each turn, so it
+// survives context compaction — the agent never forgets what it's working on.
+// Returns empty string if task board is not enabled, budget is 0, or no tasks exist.
+func (a *Agent) buildTaskContext(ctx context.Context) string {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+		return ""
+	}
+
+	// context_budget_tokens = 0 means disable context injection (per proto doc).
+	// Negative values also disable. Unset (proto default 0) disables; users must
+	// explicitly set a positive value or rely on the default below.
+	budgetTokens := int(a.taskBoardConfig.ContextBudgetTokens)
+	if budgetTokens < 0 {
+		return ""
+	}
+	if budgetTokens == 0 {
+		budgetTokens = 500 // default when not explicitly set
+	}
+
+	boardID := a.taskBoardConfig.DefaultBoardId
+
+	// Query current claimed tasks for this agent.
+	claimed, _, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		AssigneeAgentID: a.id,
+		Status:          loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		BoardID:         boardID,
+		Limit:           5,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to list claimed tasks", zap.Error(err))
+	}
+
+	// Query ready front.
+	ready, err := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
+		MaxResults: 5,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to get ready front", zap.Error(err))
+	}
+
+	// Query board stats.
+	allTasks, total, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		BoardID: boardID,
+		Limit:   1000,
+	})
+	if err != nil {
+		zap.L().Warn("task context: failed to list board tasks", zap.Error(err))
+	}
+
+	// Query recent completions (last 3 closed tasks for momentum/context).
+	recentDone, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
+		BoardID: boardID,
+		Status:  loomv1.TaskStatus_TASK_STATUS_DONE,
+		Limit:   3,
+	})
+
+	// If no tasks exist anywhere, skip the context block entirely.
+	if total == 0 && len(claimed) == 0 && len(ready) == 0 {
+		return ""
+	}
+
+	// Compute stats.
+	stats := map[string]int{"total": total}
+	for _, t := range allTasks {
+		stats[task.StatusName(t.Status)]++
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n--- TASK CONTEXT ---\n")
+
+	// Current tasks with dependency info.
+	if len(claimed) > 0 {
+		for _, t := range claimed {
+			fmt.Fprintf(&b, "CURRENT TASK: [%s] %q (%s, %s)\n",
+				truncateID(t.ID), t.Title, task.StatusName(t.Status), task.PriorityName(t.Priority))
+			if t.Objective != "" {
+				fmt.Fprintf(&b, "  Objective: %s\n", t.Objective)
+			}
+			if t.Approach != "" {
+				fmt.Fprintf(&b, "  Approach: %s\n", t.Approach)
+			}
+			if t.Notes != "" {
+				notes := t.Notes
+				if len(notes) > 200 {
+					notes = "..." + notes[len(notes)-200:]
+				}
+				fmt.Fprintf(&b, "  Notes: %s\n", notes)
+			}
+			// Show dependency info for current task.
+			a.writeTaskDeps(&b, ctx, t.ID)
+		}
+	} else {
+		b.WriteString("NO CURRENT TASK — use task_board ready to find work\n")
+	}
+
+	// Ready front
+	if len(ready) > 0 {
+		fmt.Fprintf(&b, "\nREADY FRONT (%d tasks):\n", len(ready))
+		for _, t := range ready {
+			effort := ""
+			if t.EstimatedEffort != "" {
+				effort = ", ~" + t.EstimatedEffort
+			}
+			fmt.Fprintf(&b, "  [%s] %q (%s%s)\n",
+				truncateID(t.ID), t.Title, task.PriorityName(t.Priority), effort)
+		}
+	}
+
+	// Recent completions
+	if len(recentDone) > 0 {
+		fmt.Fprintf(&b, "\nRECENT COMPLETIONS (%d):\n", len(recentDone))
+		for _, t := range recentDone {
+			fmt.Fprintf(&b, "  [%s] %q — %s\n", truncateID(t.ID), t.Title, t.CloseReason)
+		}
+	}
+
+	// Board stats
+	fmt.Fprintf(&b, "\nBOARD: %d total", stats["total"])
+	if v := stats["IN_PROGRESS"]; v > 0 {
+		fmt.Fprintf(&b, " | %d in_progress", v)
+	}
+	if v := stats["BLOCKED"]; v > 0 {
+		fmt.Fprintf(&b, " | %d blocked", v)
+	}
+	if v := stats["DONE"]; v > 0 {
+		fmt.Fprintf(&b, " | %d done", v)
+	}
+	if v := stats["OPEN"]; v > 0 {
+		fmt.Fprintf(&b, " | %d open", v)
+	}
+	b.WriteString("\n")
+
+	result := b.String()
+
+	// Rough token budget enforcement (~4 chars per token).
+	maxChars := budgetTokens * 4
+	if len(result) > maxChars {
+		result = result[:maxChars] + "\n[task context truncated]\n"
+	}
+
+	return result
+}
+
+// writeTaskDeps appends blocked-by and blocking info for a task to the builder.
+func (a *Agent) writeTaskDeps(b *strings.Builder, ctx context.Context, taskID string) {
+	deps, _ := a.taskManager.Store().GetDependencies(ctx, taskID)
+	dependents, _ := a.taskManager.Store().GetDependents(ctx, taskID)
+
+	blockedBy := []string{}
+	for _, d := range deps {
+		if d.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			blocker, err := a.taskManager.Store().GetTask(ctx, d.ToTaskID)
+			if err == nil && !task.IsTerminal(blocker.Status) {
+				blockedBy = append(blockedBy, fmt.Sprintf("[%s] %q", truncateID(blocker.ID), blocker.Title))
+			}
+		}
+	}
+	blocking := []string{}
+	for _, d := range dependents {
+		if d.Type == loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS {
+			blocked, err := a.taskManager.Store().GetTask(ctx, d.FromTaskID)
+			if err == nil {
+				blocking = append(blocking, fmt.Sprintf("[%s] %q", truncateID(blocked.ID), blocked.Title))
+			}
+		}
+	}
+
+	if len(blockedBy) > 0 {
+		fmt.Fprintf(b, "  Blocked by: %s\n", strings.Join(blockedBy, ", "))
+	} else {
+		b.WriteString("  Blocked by: (none)\n")
+	}
+	if len(blocking) > 0 {
+		fmt.Fprintf(b, "  Blocking: %s\n", strings.Join(blocking, ", "))
+	}
+}
+
+// truncateID returns the first 8 chars of an ID for compact display.
+func truncateID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 // SetWorkflowCommunicationContext sets the workflow communication context for this agent.
@@ -947,6 +1193,7 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
 	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -1136,6 +1383,7 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	a.checkAndRegisterConversationMemoryTool(sessionID)
 	a.checkAndRegisterSessionMemoryTool(ctx)
 	a.checkAndRegisterGraphMemoryTool()
+	a.checkAndRegisterTaskBoardTool()
 
 	// Calculate total duration
 	duration := time.Since(startTime)
@@ -3365,6 +3613,15 @@ func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMem
 	return func(a *Agent) {
 		a.graphMemoryStore = store
 		a.graphMemoryConfig = config
+	}
+}
+
+// WithTaskBoard sets the task manager, decomposer, and config for task decomposition and kanban.
+func WithTaskBoard(manager *task.Manager, decomposer *task.Decomposer, config *loomv1.TaskBoardConfig) Option {
+	return func(a *Agent) {
+		a.taskManager = manager
+		a.taskDecomposer = decomposer
+		a.taskBoardConfig = config
 	}
 }
 
