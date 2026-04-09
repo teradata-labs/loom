@@ -1118,8 +1118,11 @@ import (
 )
 
 func main() {
-    conn, _ := grpc.NewClient("localhost:60051",
+    conn, err := grpc.NewClient("localhost:60051",
         grpc.WithTransportCredentials(insecure.NewCredentials()))
+    if err != nil {
+        log.Fatalf("grpc dial: %v", err)
+    }
     defer conn.Close()
 
     client := loomv1.NewLoomServiceClient(conn)
