@@ -2590,58 +2590,133 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// Search for relevant entities and call ContextFor on each.
-	// Each ContextFor returns entity profile + 1-hop graph neighborhood + scoped memories.
-	var content string
+	// Gather candidate memories from multiple sources.
+	seen := make(map[string]bool)
+	var candidates []*memory.Memory
+
+	// Entity-scoped recall: search entities, get their neighborhoods.
 	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
-	if err == nil && len(entities) > 0 {
-		perEntityBudget := budget / len(entities)
-		var sb strings.Builder
+	if err == nil {
 		for _, e := range entities {
 			recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
 				AgentID:    a.config.Name,
 				EntityName: e.Name,
 				Topic:      searchQuery,
-				MaxTokens:  perEntityBudget,
+				MaxTokens:  budget,
 			})
-			if err == nil && recall != nil && len(recall.Memories) > 0 {
-				sb.WriteString(recall.Format())
-				sb.WriteString("\n")
+			if err == nil && recall != nil {
+				for _, sm := range recall.Memories {
+					if sm.Memory != nil && !seen[sm.Memory.ID] {
+						seen[sm.Memory.ID] = true
+						candidates = append(candidates, sm.Memory)
+					}
+				}
 			}
 		}
-		content = sb.String()
 	}
 
-	// Also do unscoped recall for memories not linked to any entity.
+	// Unscoped recall: broad FTS5 search across all memories.
 	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
 		AgentID:   a.config.Name,
 		Query:     searchQuery,
-		Limit:     20,
+		Limit:     50,
 		MaxTokens: budget,
 	})
-	if recallErr == nil && len(memories) > 0 {
-		var sb strings.Builder
-		if content != "" {
-			sb.WriteString(content)
-			sb.WriteString("\n")
-		}
-		sb.WriteString("Additional relevant memories:\n\n")
+	if recallErr == nil {
 		for _, m := range memories {
-			sb.WriteString("- ")
-			sb.WriteString(m.Content)
-			sb.WriteString("\n")
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				candidates = append(candidates, m)
+			}
 		}
-		content = sb.String()
 	}
 
-	if content == "" {
+	if len(candidates) == 0 {
 		return
+	}
+
+	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	relevant := a.rerankMemories(ctx, userMessage, candidates)
+	if len(relevant) == 0 {
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Relevant memories from past conversations:\n\n")
+	for _, m := range relevant {
+		sb.WriteString("- ")
+		sb.WriteString(m.Content)
+		sb.WriteString("\n")
 	}
 
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: "[Graph Memory Context]\n" + content,
+		Content: "[Graph Memory Context]\n" + sb.String(),
 	})
+}
+
+// rerankMemories uses the LLM to select the most relevant memories for a user message
+// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	rerankCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	// Build numbered list of candidates.
+	var sb strings.Builder
+	sb.WriteString("User message:\n")
+	sb.WriteString(userMessage)
+	if len(userMessage) > 500 {
+		sb.WriteString(userMessage[:500])
+	} else {
+		sb.WriteString(userMessage)
+	}
+	sb.WriteString("\n\nCandidate memories:\n")
+	for i, m := range candidates {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, m.Content))
+	}
+	sb.WriteString("\nReturn ONLY the numbers of memories that are relevant to the user's message, ")
+	sb.WriteString("comma-separated. Example: 1,3,7\n")
+	sb.WriteString("If none are relevant, return: none")
+
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+
+	resp, err := llmProvider.Chat(rerankCtx, []types.Message{
+		{Role: "user", Content: sb.String()},
+	}, nil)
+	if err != nil {
+		// On failure, return all candidates (no worse than before).
+		return candidates
+	}
+
+	// Parse the response — extract numbers.
+	response := strings.TrimSpace(resp.Content)
+	if strings.EqualFold(response, "none") {
+		return nil
+	}
+
+	var result []*memory.Memory
+	for _, part := range strings.Split(response, ",") {
+		part = strings.TrimSpace(part)
+		var idx int
+		if _, err := fmt.Sscanf(part, "%d", &idx); err == nil {
+			if idx >= 1 && idx <= len(candidates) {
+				result = append(result, candidates[idx-1])
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		// LLM returned something we couldn't parse — fall back to all candidates.
+		return candidates
+	}
+	return result
 }
 
 // extractSearchQuery uses the LLM to distill a user message into a concise
