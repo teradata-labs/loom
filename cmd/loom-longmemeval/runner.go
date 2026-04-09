@@ -223,16 +223,17 @@ func (r *Runner) deleteSession(ctx context.Context, sessionID string) {
 }
 
 // runIngest processes an entry by feeding sessions through Weave, then querying.
+// All turns happen in a single session so the conversation history accumulates,
+// compression triggers, and the agent can search back through everything.
 func (r *Runner) runIngest(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult) EntryResult {
-	// Phase 1: Ingest sessions — feed each session as a Weave call
-	// so the agent builds memory (graph memory, conversation history, etc.).
-	for i, sess := range sessions {
-		sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-ingest-%d", entry.QuestionID, i))
-		if err != nil {
-			result.Error = fmt.Sprintf("create ingest session %d: %v", i, err)
-			return result
-		}
+	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s", entry.QuestionID))
+	if err != nil {
+		result.Error = fmt.Sprintf("create session: %v", err)
+		return result
+	}
 
+	// Phase 1: Ingest all sessions in the same session.
+	for i, sess := range sessions {
 		ingestMsg := fmt.Sprintf(
 			"The following is conversation session %d that took place on %s. "+
 				"Read it carefully and remember all the key details, facts, preferences, "+
@@ -245,22 +246,9 @@ func (r *Runner) runIngest(ctx context.Context, entry Entry, sessions []SessionW
 			result.Error = fmt.Sprintf("ingest session %d: %v", i, err)
 			return result
 		}
-
-		// Clean up ingestion session (we only need the memories, not the chat history)
-		r.deleteSession(ctx, sessionID)
 	}
 
-	// Brief pause for the last extraction to land
-	time.Sleep(5 * time.Second)
-
-	// Phase 2: Ask the question in a fresh session
-	questionSessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-question", entry.QuestionID))
-	if err != nil {
-		result.Error = fmt.Sprintf("create question session: %v", err)
-		return result
-	}
-	defer r.deleteSession(ctx, questionSessionID)
-
+	// Phase 2: Ask the question in the same session.
 	questionMsg := fmt.Sprintf(
 		"Current date: %s\n\n"+
 			"Based on everything you remember from our past conversation sessions, "+
@@ -270,7 +258,7 @@ func (r *Runner) runIngest(ctx context.Context, entry Entry, sessions []SessionW
 		entry.QuestionDate, entry.Question,
 	)
 
-	resp, err := r.weave(ctx, questionSessionID, questionMsg, &result)
+	resp, err := r.weave(ctx, sessionID, questionMsg, &result)
 	if err != nil {
 		result.Error = fmt.Sprintf("ask question: %v", err)
 		return result
