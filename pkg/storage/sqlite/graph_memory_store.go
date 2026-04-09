@@ -181,13 +181,14 @@ func (s *GraphMemoryStore) SearchEntities(ctx context.Context, agentID, query st
 		limit = 20
 	}
 
+	ftsQuery := toFTS5OrQuery(query)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.id, e.agent_id, e.name, e.entity_type, e.properties_json, COALESCE(e.owner,''), e.created_at, e.updated_at
 		 FROM graph_entities e
 		 JOIN graph_entities_fts f ON f.entity_id = e.id
 		 WHERE f.graph_entities_fts MATCH ? AND e.agent_id = ?
 		 ORDER BY rank LIMIT ?`,
-		query, agentID, limit,
+		ftsQuery, agentID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search entities: %w", err)
@@ -508,6 +509,11 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 
 	var query string
 	if opts.Query != "" {
+		// Convert query to OR semantics for FTS5. Space-separated terms default
+		// to AND in FTS5 (all must match), which is too strict for memory recall.
+		// OR returns any match and lets BM25 rank multi-term matches higher.
+		ftsQuery := toFTS5OrQuery(opts.Query)
+
 		// FTS search with BM25 ranking.
 		query = fmt.Sprintf(
 			`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
@@ -520,7 +526,7 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 			 WHERE f.graph_memories_fts MATCH ? AND %s
 			 ORDER BY (m.salience * (-rank)) DESC, m.created_at DESC
 			 LIMIT ?`, where)
-		args = append([]interface{}{opts.Query}, args...)
+		args = append([]interface{}{ftsQuery}, args...)
 	} else {
 		query = fmt.Sprintf(
 			`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
@@ -940,6 +946,28 @@ func (s *GraphMemoryStore) GetStats(ctx context.Context, agentID string) (*memor
 
 func (s *GraphMemoryStore) Close() error {
 	return nil // db owned externally
+}
+
+// toFTS5OrQuery converts a natural language query to OR-separated terms for FTS5.
+// FTS5 defaults to AND (all terms must match), which is too strict for memory recall.
+// OR returns any match and BM25 naturally ranks multi-term matches higher.
+// If the query already contains FTS5 operators (OR, AND, NOT, NEAR, quotes), pass through.
+func toFTS5OrQuery(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return query
+	}
+	// Pass through if already using FTS5 operators.
+	for _, op := range []string{" OR ", " AND ", " NOT ", " NEAR ", `"`} {
+		if strings.Contains(query, op) {
+			return query
+		}
+	}
+	words := strings.Fields(query)
+	if len(words) <= 1 {
+		return query
+	}
+	return strings.Join(words, " OR ")
 }
 
 // =============================================================================
