@@ -2590,37 +2590,42 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// Search for relevant entities matching the searchQuery.
+	// Search for relevant entities and call ContextFor on each.
+	// Each ContextFor returns entity profile + 1-hop graph neighborhood + scoped memories.
 	var content string
 	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
 	if err == nil && len(entities) > 0 {
-		// Use the top entity for ContextFor (entity profile + graph + scoped memories).
-		recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-			AgentID:    a.config.Name,
-			EntityName: entities[0].Name,
-			Topic:      searchQuery,
-			MaxTokens:  budget,
-		})
-		if err == nil && recall != nil && len(recall.Memories) > 0 {
-			content = recall.Format()
+		perEntityBudget := budget / len(entities)
+		var sb strings.Builder
+		for _, e := range entities {
+			recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+				AgentID:    a.config.Name,
+				EntityName: e.Name,
+				Topic:      searchQuery,
+				MaxTokens:  perEntityBudget,
+			})
+			if err == nil && recall != nil && len(recall.Memories) > 0 {
+				sb.WriteString(recall.Format())
+				sb.WriteString("\n")
+			}
 		}
+		content = sb.String()
 	}
 
-	// Also do a direct keyword-based recall across all memories.
-	// Merge with entity-scoped results for broader coverage.
+	// Also do unscoped recall for memories not linked to any entity.
 	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
 		AgentID:   a.config.Name,
 		Query:     searchQuery,
-		Limit:     30,
+		Limit:     20,
 		MaxTokens: budget,
 	})
 	if recallErr == nil && len(memories) > 0 {
 		var sb strings.Builder
 		if content != "" {
 			sb.WriteString(content)
-			sb.WriteString("\n\n")
+			sb.WriteString("\n")
 		}
-		sb.WriteString("Relevant memories:\n\n")
+		sb.WriteString("Additional relevant memories:\n\n")
 		for _, m := range memories {
 			sb.WriteString("- ")
 			sb.WriteString(m.Content)
