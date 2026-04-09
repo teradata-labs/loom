@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,6 +79,7 @@ temporal reasoning, knowledge updates, and abstention.`,
 
 	rootCmd.AddCommand(downloadCmd())
 	rootCmd.AddCommand(runCmd())
+	rootCmd.AddCommand(scoreCmd())
 	rootCmd.AddCommand(infoCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -161,6 +163,67 @@ Two benchmark modes:
 	cmd.Flags().StringVar(&questionTypes, "types", "", "Comma-separated question types to include (empty = all)")
 	cmd.Flags().StringVar(&mode, "mode", "ingest", "Run mode: ingest or context-stuffing")
 
+	return cmd
+}
+
+func scoreCmd() *cobra.Command {
+	var resultsPath string
+
+	cmd := &cobra.Command{
+		Use:   "score",
+		Short: "Score benchmark results using the Loom judge system",
+		Long: `Reads detailed results JSON from a previous run and evaluates
+each answer's correctness using the Loom JudgeService. Produces
+PASS/PARTIAL/FAIL verdicts with scores and explanations.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := newLogger(verbose)
+			defer func() { _ = logger.Sync() }()
+
+			// Load results
+			data, err := os.ReadFile(resultsPath)
+			if err != nil {
+				return fmt.Errorf("read results: %w", err)
+			}
+			var results []EntryResult
+			if err := json.Unmarshal(data, &results); err != nil {
+				return fmt.Errorf("parse results: %w", err)
+			}
+			logger.Info("loaded results", zap.Int("count", len(results)))
+
+			// Connect to judge service
+			scorer, err := NewScorer(serverAddr, logger)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = scorer.Close() }()
+
+			// Score
+			scored := scorer.ScoreResults(context.Background(), results)
+
+			// Print
+			PrintScoredSummary(scored)
+
+			// Write scored results
+			scoredPath := resultsPath + ".scored.json"
+			f, err := os.Create(scoredPath)
+			if err != nil {
+				return fmt.Errorf("create scored output: %w", err)
+			}
+			defer func() { _ = f.Close() }()
+			enc := json.NewEncoder(f)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(scored); err != nil {
+				return fmt.Errorf("write scored output: %w", err)
+			}
+			logger.Info("wrote scored results", zap.String("path", scoredPath))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&resultsPath, "results", "", "Path to detailed results JSON from a previous run")
+	cmd.Flags().StringVar(&serverAddr, "server", "localhost:60051", "Loom gRPC server address")
+	_ = cmd.MarkFlagRequired("results")
 	return cmd
 }
 
