@@ -1,0 +1,390 @@
+# === METADATA START ===
+name: authorization_objects
+title: "Authorization Objects for External Services"
+description: |
+  Create and manage authorization objects that store external service credentials
+  securely inside Teradata. Authorization objects decouple secrets from SQL code and
+  are a prerequisite for all AI_* functions.
+
+  Authorization objects support:
+  - Azure OpenAI (ApiBase, ApiKey, ApiVersion)
+  - AWS Bedrock (AccessKey, SecretKey, optional SessionKey)
+  - Google Cloud / Vertex AI (Project, Region, AccessToken)
+  - NVIDIA NIM (ApiBase, ApiKey)
+  - LiteLLM proxy (ApiBase, ApiKey)
+  - AWS IAM role assumption (ASSUME_ROLE)
+
+category: ai_functions
+difficulty: beginner
+teradata_function: CREATE_AUTHORIZATION
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_governance
+  - security
+  - configuration
+use_cases:
+  # --- Use Case 1: Store LLM Provider Credentials ---
+  - Store LLM provider credentials securely for AI functions
+
+  # --- Use Case 2: Rotate Credentials ---
+  - Rotate API keys or access tokens without modifying application SQL
+
+  # --- Use Case 3: Grant Access to Teams ---
+  - Grant teams access to external services through Teradata permissions
+
+  # --- Use Case 4: Cross-Account AWS Access ---
+  - Configure cross-account AWS access via IAM role assumption
+
+  # --- Use Case 5: Centralized Credential Management ---
+  - Centralize credential management for operational pipelines
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below; use a dedicated credentials database for production
+    required: true
+    description: "Database where the authorization object will be created"
+    example: "ai_credentials"
+
+  # --- Parameter 2: Auth Name ---
+  - name: auth_name
+    type: string
+    # LLM-HINT: Maps to {{auth_name}} in SQL templates; naming convention: td_gen_<provider>_auth
+    required: true
+    description: "Name for the authorization object. Convention: td_gen_<provider>_auth"
+    example: "td_gen_azure_auth"
+
+  # --- Parameter 3: Provider ---
+  - name: provider
+    type: string
+    # LLM-HINT: Determines which template to use and what USER/PASSWORD/SESSION_TOKEN mean
+    required: true
+    description: "LLM provider: azure, aws, gcp, nim, or litellm"
+    example: "azure"
+
+  # --- Parameter 4: User Value ---
+  - name: user_value
+    type: string
+    # LLM-HINT: Meaning varies by provider: Azure=ApiBase URL, AWS=AccessKey, GCP=Project, NIM/LiteLLM=ApiBase URL
+    required: true
+    description: "USER field value (meaning varies by provider)"
+    example: "https://myinstance.openai.azure.com/"
+
+  # --- Parameter 5: Password Value ---
+  - name: password_value
+    type: string
+    # LLM-HINT: Meaning varies by provider: Azure=ApiKey, AWS=SecretKey, GCP=Region, NIM/LiteLLM=ApiKey
+    required: true
+    description: "PASSWORD field value (meaning varies by provider)"
+    example: "your-api-key-here"
+
+  # --- Parameter 6: Session Token ---
+  - name: session_token
+    type: string
+    # LLM-HINT: Required for Azure (ApiVersion) and GCP (AccessToken); optional for AWS (SessionKey); not used for NIM/LiteLLM
+    required: false
+    description: "SESSION_TOKEN value. Required for Azure (ApiVersion) and GCP (AccessToken)"
+    example: "2024-02-15-preview"
+
+  # --- Parameter 7: Role ARN (ASSUME_ROLE only) ---
+  - name: role_arn
+    type: string
+    # LLM-HINT: Only for AWS ASSUME_ROLE form; full IAM role ARN
+    required: false
+    description: "AWS IAM role ARN for ASSUME_ROLE authentication"
+    example: "arn:aws:iam::123456789012:role/teradata-bedrock-role"
+
+  # --- Parameter 8: External ID (ASSUME_ROLE only) ---
+  - name: external_id
+    type: string
+    # LLM-HINT: Only for AWS ASSUME_ROLE form; prevents confused deputy attacks
+    required: false
+    description: "External ID for AWS ASSUME_ROLE trust policy"
+    example: "teradata-external-id"
+
+  # --- Parameter 9: Grant Target ---
+  - name: grant_target
+    type: string
+    # LLM-HINT: User, role, or database name to grant EXECUTE permission to
+    required: false
+    description: "User, role, or database to grant EXECUTE permission on the auth object"
+    example: "analyst_role"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === AZURE_AUTH TEMPLATE ===
+  # LLM-HINT: Azure requires SESSION_TOKEN for ApiVersion; USER is the endpoint URL, PASSWORD is the API key
+  azure_auth:
+    description: "Create authorization object for Azure OpenAI"
+    sql: |
+      -- Create authorization object for Azure OpenAI
+      -- USER = ApiBase (endpoint URL)
+      -- PASSWORD = ApiKey
+      -- SESSION_TOKEN = ApiVersion (required for Azure)
+      CREATE AUTHORIZATION {{database}}.{{auth_name}}
+          USER     '{{user_value}}'
+          PASSWORD '{{password_value}}'
+          SESSION_TOKEN '{{session_token}}';
+    required_parameters:
+      - database
+      - auth_name
+      - user_value
+      - password_value
+      - session_token
+
+  # === AWS_AUTH TEMPLATE ===
+  # LLM-HINT: AWS uses USER=AccessKey, PASSWORD=SecretKey; SESSION_TOKEN (SessionKey) is optional for long-term credentials
+  aws_auth:
+    description: "Create authorization object for AWS Bedrock"
+    sql: |
+      -- Create authorization object for AWS Bedrock
+      -- USER = AccessKey
+      -- PASSWORD = SecretKey
+      -- SESSION_TOKEN = SessionKey (optional for long-term credentials)
+      CREATE AUTHORIZATION {{database}}.{{auth_name}}
+          USER     '{{user_value}}'
+          PASSWORD '{{password_value}}';
+
+      -- If using temporary credentials, include SESSION_TOKEN:
+      -- CREATE AUTHORIZATION {{database}}.{{auth_name}}
+      --     USER     '{{user_value}}'
+      --     PASSWORD '{{password_value}}'
+      --     SESSION_TOKEN '{{session_token}}';
+    required_parameters:
+      - database
+      - auth_name
+      - user_value
+      - password_value
+
+  # === GCP_AUTH TEMPLATE ===
+  # LLM-HINT: GCP requires SESSION_TOKEN for AccessToken; USER=Project, PASSWORD=Region
+  gcp_auth:
+    description: "Create authorization object for Google Cloud (Vertex AI / Gemini)"
+    sql: |
+      -- Create authorization object for Google Cloud
+      -- USER = GCP Project name
+      -- PASSWORD = GCP Region
+      -- SESSION_TOKEN = AccessToken (required for GCP)
+      CREATE AUTHORIZATION {{database}}.{{auth_name}}
+          USER     '{{user_value}}'
+          PASSWORD '{{password_value}}'
+          SESSION_TOKEN '{{session_token}}';
+    required_parameters:
+      - database
+      - auth_name
+      - user_value
+      - password_value
+      - session_token
+
+  # === AWS_ASSUME_ROLE TEMPLATE ===
+  # LLM-HINT: For cross-account AWS access; Teradata nodes must have STS AssumeRole permission
+  aws_assume_role:
+    description: "Create authorization object using AWS IAM role assumption"
+    sql: |
+      -- Create authorization object using AWS ASSUME_ROLE
+      -- Use when Teradata nodes have an instance profile with STS AssumeRole permission
+      CREATE AUTHORIZATION {{database}}.{{auth_name}}
+          USING AUTHSERVICETYPE 'ASSUME_ROLE'
+          ROLENAME '{{role_arn}}'
+          EXTERNALID '{{external_id}}'
+          DURATION_SECONDS '3600';
+    required_parameters:
+      - database
+      - auth_name
+      - role_arn
+      - external_id
+
+  # === REPLACE_AUTH TEMPLATE ===
+  # LLM-HINT: Use REPLACE to rotate credentials without dropping the object; avoids breaking dependent views/procedures
+  replace_auth:
+    description: "Replace authorization object to rotate credentials"
+    sql: |
+      -- Rotate credentials without dropping the authorization object
+      -- REPLACE preserves grants and does not break dependent views or procedures
+      REPLACE AUTHORIZATION {{database}}.{{auth_name}}
+          USER     '{{user_value}}'
+          PASSWORD '{{password_value}}';
+    required_parameters:
+      - database
+      - auth_name
+      - user_value
+      - password_value
+
+  # === GRANT_EXECUTE TEMPLATE ===
+  # LLM-HINT: Grant EXECUTE to databases (not just users) when views/macros reference the auth object from another database
+  grant_execute:
+    description: "Grant EXECUTE permission on authorization object"
+    sql: |
+      -- Grant EXECUTE to a user, role, or database
+      -- IMPORTANT: When a view in database B references an auth object in database A,
+      -- grant EXECUTE to database B (not just the user)
+      GRANT EXECUTE ON {{database}}.{{auth_name}} TO {{grant_target}};
+
+      -- With grant option (allows grantee to further grant):
+      -- GRANT EXECUTE ON {{database}}.{{auth_name}} TO {{grant_target}} WITH GRANT OPTION;
+    required_parameters:
+      - database
+      - auth_name
+      - grant_target
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Azure OpenAI Setup ---
+  - name: "Azure OpenAI Setup"
+    description: "Create authorization object and grant access for Azure OpenAI"
+    parameters:
+      database: "ai_credentials"
+      auth_name: "td_gen_azure_auth"
+      user_value: "https://myinstance.openai.azure.com/"
+      password_value: "your-azure-api-key"
+      session_token: "2024-02-15-preview"
+      grant_target: "analytics_db"
+    expected_result: |
+      Authorization object created: ai_credentials.td_gen_azure_auth
+      EXECUTE granted to analytics_db
+
+      Can now use in AI functions:
+        AUTHORIZATION(ai_credentials.td_gen_azure_auth)
+        DeploymentId('gpt-4o')
+
+  # --- Example 2: AWS Bedrock Setup ---
+  - name: "AWS Bedrock Setup"
+    description: "Create authorization object for AWS Bedrock with long-term credentials"
+    parameters:
+      database: "ai_credentials"
+      auth_name: "td_gen_aws_auth"
+      user_value: "AKIAIOSFODNN7EXAMPLE"
+      password_value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    expected_result: |
+      Authorization object created: ai_credentials.td_gen_aws_auth
+
+      Can now use in AI functions:
+        AUTHORIZATION(ai_credentials.td_gen_aws_auth)
+        Region('us-east-1')
+        ModelName('anthropic.claude-3-sonnet-20240229-v1:0')
+
+  # --- Example 3: GCP Vertex AI Setup ---
+  - name: "GCP Vertex AI Setup"
+    description: "Create authorization object for Google Cloud Vertex AI"
+    parameters:
+      database: "ai_credentials"
+      auth_name: "td_gen_gcp_auth"
+      user_value: "my-gcp-project"
+      password_value: "us-central1"
+      session_token: "ya29.a0AfH6SM..."
+    expected_result: |
+      Authorization object created: ai_credentials.td_gen_gcp_auth
+
+      Can now use in AI functions:
+        AUTHORIZATION(ai_credentials.td_gen_gcp_auth)
+        ModelName('gemini-1.5-pro')
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing SESSION_TOKEN for Azure ---
+  - error: "Azure AI function fails with authentication error"
+    cause: "SESSION_TOKEN (ApiVersion) was not provided when creating the authorization object"
+    solution: "Azure requires SESSION_TOKEN set to the API version string (e.g., '2024-02-15-preview'). Recreate with REPLACE AUTHORIZATION including SESSION_TOKEN"
+
+  # --- Error 2: Missing SESSION_TOKEN for GCP ---
+  - error: "GCP AI function fails with authentication error"
+    cause: "SESSION_TOKEN (AccessToken) was not provided when creating the authorization object"
+    solution: "GCP requires SESSION_TOKEN set to a valid access token. Recreate with REPLACE AUTHORIZATION including SESSION_TOKEN"
+
+  # --- Error 3: Permission Inheritance Failure ---
+  - error: "View or macro referencing AI function fails with authorization error"
+    cause: "EXECUTE was granted to the user but not to the database hosting the view"
+    solution: "Grant EXECUTE on the auth object to the database containing the view: GRANT EXECUTE ON credentials_db.auth_name TO operational_db"
+
+  # --- Error 4: Expired Credentials ---
+  - error: "AI function returns authentication failure after working previously"
+    cause: "Credentials (API key, access token, session token) have expired or been rotated"
+    solution: "Use REPLACE AUTHORIZATION to update credentials without dropping the object"
+
+  # --- Error 5: Object Already Exists ---
+  - error: "CREATE AUTHORIZATION fails because object already exists"
+    cause: "An authorization object with the same name already exists in the database"
+    solution: "Use REPLACE AUTHORIZATION instead of CREATE to overwrite the existing object"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Authorization Object Best Practices
+
+  ### 1. Naming Convention
+  Use a consistent naming pattern:
+  ```
+  td_gen_<provider>_auth       -- e.g., td_gen_azure_auth, td_gen_aws_auth
+  td_gen_<provider>_<env>_auth -- e.g., td_gen_azure_prod_auth, td_gen_aws_dev_auth
+  ```
+
+  ### 2. Centralized Credentials Database
+  Store all authorization objects in a dedicated database:
+  ```sql
+  CREATE DATABASE ai_credentials;
+  ```
+  This simplifies permission management and auditing.
+
+  ### 3. Grant to Databases, Not Just Users
+  When views or macros in another database reference an auth object,
+  grant EXECUTE to the database itself:
+  ```sql
+  -- This is the most common production failure pattern
+  GRANT EXECUTE ON ai_credentials.td_gen_aws_auth TO operational_db;
+  ```
+
+  ### 4. Use REPLACE for Credential Rotation
+  Never DROP and CREATE to rotate credentials. REPLACE is atomic
+  and preserves existing grants:
+  ```sql
+  REPLACE AUTHORIZATION ai_credentials.td_gen_azure_auth
+      USER     'new-endpoint-url'
+      PASSWORD 'new-api-key'
+      SESSION_TOKEN '2024-02-15-preview';
+  ```
+
+  ### 5. Use Role-Based Access
+  Grant EXECUTE to roles, not individual users:
+  ```sql
+  GRANT EXECUTE ON ai_credentials.td_gen_aws_auth TO data_science_role;
+  ```
+
+  ### 6. Use ASSUME_ROLE for AWS Production
+  In production AWS environments, prefer IAM role assumption over
+  static access keys. It avoids long-lived credentials and integrates
+  with AWS security best practices.
+
+  ### 7. Document Provider Field Mapping
+  Keep a reference for what USER/PASSWORD/SESSION_TOKEN mean per provider:
+  - Azure: USER=ApiBase, PASSWORD=ApiKey, SESSION_TOKEN=ApiVersion
+  - AWS: USER=AccessKey, PASSWORD=SecretKey, SESSION_TOKEN=SessionKey
+  - GCP: USER=Project, PASSWORD=Region, SESSION_TOKEN=AccessToken
+  - NIM: USER=ApiBase, PASSWORD=ApiKey
+  - LiteLLM: USER=ApiBase, PASSWORD=ApiKey
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: AI Sentiment Analysis ---
+  - ai_sentiment
+
+  # --- Pattern 2: AI Ask LLM ---
+  - ai_ask_llm
+
+  # --- Pattern 3: AI Text Classifier ---
+  - ai_text_classifier
+
+  # --- Pattern 4: AI PII Detection ---
+  - ai_pii
+
+  # --- Pattern 5: AI Text Summarize ---
+  - ai_summarize
+# === RELATED_PATTERNS END ===

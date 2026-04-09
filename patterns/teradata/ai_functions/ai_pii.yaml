@@ -1,0 +1,407 @@
+# === METADATA START ===
+name: ai_pii
+title: "AI PII Detection and Masking"
+description: |
+  Detect and mask personally identifiable information (PII) in text columns using
+  LLM-powered analysis. Teradata provides two complementary functions:
+
+  - AI_MaskPII: Detects PII and returns both a structured entity list and a masked
+    version of the original text (PII values replaced with asterisks).
+  - AI_RecognizePIIEntities: Detects PII and returns structured entity metadata
+    (type, value, position, length) without masking.
+
+  These functions are ideal for:
+  - Data privacy compliance (GDPR, CCPA, HIPAA)
+  - PII discovery in unstructured text columns
+  - Automated data masking for non-production environments
+  - Audit reporting of PII exposure
+  - Pre-processing text before sharing with external systems
+
+  Requires an authorization object configured for the target LLM provider.
+  All functions are schema-qualified under TD_SYSFNLIB.
+
+category: ai_functions
+difficulty: intermediate
+teradata_function: AI_MaskPII
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_governance
+  - security
+  - text_analysis
+use_cases:
+  # --- Use Case 1: PII Discovery ---
+  - Discover PII in text columns for compliance audits
+
+  # --- Use Case 2: Data Masking ---
+  - Mask PII before sharing data with downstream systems or external teams
+
+  # --- Use Case 3: GDPR Compliance ---
+  - Identify personal data for GDPR right-to-erasure or data subject access requests
+
+  # --- Use Case 4: Data Classification ---
+  - Classify columns by PII sensitivity level based on detected entity types
+
+  # --- Use Case 5: Audit Reporting ---
+  - Generate audit reports showing PII types and locations in text data
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the text data"
+    example: "customer_data"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain a text column with potential PII
+    required: true
+    description: "Table or view with text data that may contain PII"
+    example: "customer_notes"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column containing text to scan for PII; must be VARCHAR, CHAR, or CLOB
+    required: true
+    description: "Column containing text to scan for PII (VARCHAR, CHAR, or CLOB)"
+    example: "note_text"
+
+  # --- Parameter 4: Auth Object ---
+  - name: auth_object
+    type: string
+    # LLM-HINT: Fully qualified authorization object name; must be created first
+    required: true
+    description: "Authorization object for LLM provider (e.g., db.td_gen_azure_auth)"
+    example: "ai_credentials.td_gen_azure_auth"
+
+  # --- Parameter 5: Provider ---
+  - name: provider
+    type: string
+    # LLM-HINT: ApiType value: 'azure', 'aws', 'gcp', 'nim', or 'litellm'
+    required: true
+    description: "LLM provider type for ApiType"
+    example: "azure"
+
+  # --- Parameter 6: Deployment/Model ---
+  - name: deployment_id
+    type: string
+    # LLM-HINT: Azure uses DeploymentId; AWS/GCP use ModelName
+    required: true
+    description: "Model deployment identifier"
+    example: "gpt-4o"
+
+  # --- Parameter 7: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns from InputTable to carry through to output; include key columns for traceability
+    required: false
+    description: "Columns to carry through from input to output"
+    example: '["note_id", "created_date"]'
+
+  # --- Parameter 8: Region (AWS/GCP) ---
+  - name: region
+    type: string
+    # LLM-HINT: Required for AWS Bedrock; not used for Azure
+    required: false
+    description: "AWS region for Bedrock or GCP region"
+    example: "us-east-1"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === MASK_PII TEMPLATE ===
+  # LLM-HINT: Returns both PII_Entities (structured list) and Masked_Phrase (text with PII replaced by asterisks)
+  mask_pii:
+    description: "Detect and mask PII in text, returning both entity metadata and masked text"
+    sql: |
+      -- Detect and mask PII in text
+      -- Output columns:
+      --   PII_Entities: structured list of detected PII with type, value, position, length
+      --   Masked_Phrase: original text with PII values replaced by * characters
+      --   Message: error message from LLM endpoint, if any
+      SELECT * FROM TD_SYSFNLIB.AI_MaskPII(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - accumulate_columns_quoted
+
+  # === RECOGNIZE_PII TEMPLATE ===
+  # LLM-HINT: Returns PII_Entities only (no masking); use when you need metadata without modifying text
+  recognize_pii:
+    description: "Detect PII entities with type, value, position, and length metadata"
+    sql: |
+      -- Detect PII entities without masking
+      -- Output columns:
+      --   PII_Entities: structured list with ('type'='value', 'start_position'=N, 'length'=N) tuples
+      --   Message: error message from LLM endpoint, if any
+      -- start_position is zero-indexed character offset; -1 means position could not be determined
+      SELECT * FROM TD_SYSFNLIB.AI_RecognizePIIEntities(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - accumulate_columns_quoted
+
+  # === MASKED_TABLE TEMPLATE ===
+  # LLM-HINT: Persists masked text to a new table; use for creating sanitized copies of sensitive data
+  masked_table:
+    description: "Create a sanitized copy of the table with PII masked"
+    sql: |
+      -- Create a sanitized copy with PII masked
+      -- Useful for non-production environments or data sharing
+      CREATE TABLE {{database}}.{{table}}_masked AS (
+          SELECT
+              {{accumulate_columns_list}},
+              t.Masked_Phrase AS {{text_column}}_masked,
+              t.PII_Entities AS pii_detected
+          FROM TD_SYSFNLIB.AI_MaskPII(
+              ON {{database}}.{{table}} AS InputTable
+              USING
+                  ApiType('{{provider}}')
+                  AUTHORIZATION({{auth_object}})
+                  DeploymentId('{{deployment_id}}')
+                  TextColumn('{{text_column}}')
+                  Accumulate({{accumulate_columns_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - accumulate_columns_quoted
+      - accumulate_columns_list
+
+  # === PII_AUDIT TEMPLATE ===
+  # LLM-HINT: Counts rows with PII and summarizes entity types; useful for compliance reporting
+  pii_audit:
+    description: "Audit PII exposure across a table for compliance reporting"
+    sql: |
+      -- Audit PII exposure: count rows with PII and summarize
+      SELECT
+          COUNT(*) AS total_rows,
+          SUM(CASE WHEN t.PII_Entities IS NOT NULL
+                    AND t.PII_Entities <> '' THEN 1 ELSE 0 END) AS rows_with_pii,
+          CAST(SUM(CASE WHEN t.PII_Entities IS NOT NULL
+                         AND t.PII_Entities <> '' THEN 1 ELSE 0 END) * 100.0
+               / COUNT(*) AS DECIMAL(5,2)) AS pii_pct
+      FROM TD_SYSFNLIB.AI_RecognizePIIEntities(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Mask PII in Customer Notes ---
+  - name: "Mask PII in Customer Notes"
+    description: "Detect and mask PII in customer service notes"
+    parameters:
+      database: "customer_data"
+      table: "customer_notes"
+      text_column: "note_text"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["note_id", "created_date"]
+    expected_result: |
+      note_id | created_date | PII_Entities                                    | Masked_Phrase                                     | Message
+      --------|--------------|------------------------------------------------|---------------------------------------------------|--------
+      N-101   | 2024-03-15   | ('Name'='Parker Doe', 'start_position'=0,       | ********** originally from ****** has             | NULL
+              |              |  'length'=10), ('address'='Brazil',              |  successfully cleared all their loans by           |
+              |              |  'start_position'=27, 'length'=6)                |  **********                                        |
+
+      PII values replaced with * characters matching original length.
+      Entity types include Name, address, date/time, contact numbers, SSN, etc.
+
+  # --- Example 2: PII Entity Detection ---
+  - name: "PII Entity Detection for Audit"
+    description: "Detect PII entities with metadata for compliance audit"
+    parameters:
+      database: "hr_data"
+      table: "employee_records"
+      text_column: "bio_text"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["employee_id"]
+    expected_result: |
+      employee_id | PII_Entities                                                      | Message
+      ------------|-------------------------------------------------------------------|--------
+      E-5001      | ('Name'='Jane Smith', 'start_position'=0, 'length'=10),           | NULL
+                  | ('SSN'='123 45 6789', 'start_position'=45, 'length'=11),          |
+                  | ('contact number'='555 123 4567', 'start_position'=78, 'length'=12)|
+
+      start_position is zero-indexed. start_position=-1 means position could not be determined.
+      Entity types are provider-generated and may vary across models.
+
+  # --- Example 3: PII Exposure Audit ---
+  - name: "PII Exposure Audit"
+    description: "Measure PII exposure across a table for compliance reporting"
+    parameters:
+      database: "customer_data"
+      table: "customer_notes"
+      text_column: "note_text"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+    expected_result: |
+      total_rows | rows_with_pii | pii_pct
+      -----------|---------------|--------
+      50000      | 32150         | 64.30
+
+      64.3% of customer notes contain detectable PII.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Authorization Object ---
+  - error: "Function fails with authorization or authentication error"
+    cause: "Authorization object does not exist or lacks EXECUTE permission"
+    solution: "Create the authorization object first (see authorization_objects pattern) and grant EXECUTE"
+
+  # --- Error 2: start_position = -1 ---
+  - error: "PII_Entities shows start_position=-1 for some entities"
+    cause: "The LLM could not determine the character position of a compound or multi-token entity"
+    solution: "This is expected behavior. Use the entity type and value for identification instead of position-based extraction"
+
+  # --- Error 3: Entity Type Variation ---
+  - error: "PII entity types differ between runs or providers"
+    cause: "Entity type labels (Name, address, SSN, etc.) are provider-generated and not standardized"
+    solution: "Normalize entity types in downstream processing. Map provider-specific labels to your standard taxonomy"
+
+  # --- Error 4: PARTITION BY Causes Error ---
+  - error: "Adding PARTITION BY causes an error"
+    cause: "AI_MaskPII and AI_RecognizePIIEntities manage parallelism internally"
+    solution: "Remove any PARTITION BY clause from the ON clause"
+
+  # --- Error 5: Token Limit Exceeded ---
+  - error: "Message column shows token limit or context length error"
+    cause: "Input text exceeds the LLM model's maximum token limit"
+    solution: "Truncate long text before passing to the function, or use a model with a larger context window"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## AI PII Detection and Masking Best Practices
+
+  ### 1. Choose the Right Function
+  | Need | Function |
+  |------|----------|
+  | Detect PII + get masked text | AI_MaskPII |
+  | Detect PII + get structured metadata only | AI_RecognizePIIEntities |
+  | General named entity recognition (non-PII) | AI_RecognizeEntities |
+
+  ### 2. Authorization Setup First
+  Create and test the authorization object before running PII detection.
+  See the authorization_objects pattern for provider-specific setup.
+
+  ### 3. Persist Masked Results
+  Create sanitized copies for non-production use:
+  ```sql
+  CREATE TABLE notes_masked AS (
+      SELECT note_id, Masked_Phrase AS note_text
+      FROM TD_SYSFNLIB.AI_MaskPII(...)
+  ) WITH DATA;
+  ```
+
+  ### 4. Use Accumulate for Traceability
+  Always include key columns to join results back:
+  ```sql
+  Accumulate('note_id', 'created_date', 'customer_id')
+  ```
+
+  ### 5. Understand Masking Format
+  PII values are replaced with * characters matching the original character length:
+  ```
+  Original: Parker Doe originally from Brazil
+  Masked:   ********** originally from ******
+  ```
+
+  ### 6. Normalize Entity Types
+  Entity type labels vary by provider. Build a mapping for your standard taxonomy:
+  - Name, Person -> PERSON
+  - address, location -> LOCATION
+  - SSN, serial numbers -> SSN
+  - contact numbers, phone -> PHONE
+
+  ### 7. Handle start_position=-1
+  Some entities report start_position=-1 (position undetermined).
+  Use the entity value for identification rather than position-based extraction.
+
+  ### 8. Run PII Audits Regularly
+  Schedule periodic PII audits to monitor data exposure:
+  ```sql
+  -- Count rows with PII per table
+  SELECT ... SUM(CASE WHEN PII_Entities <> '' THEN 1 ELSE 0 END) ...
+  ```
+
+  ### 9. No PARTITION BY
+  AI_MaskPII and AI_RecognizePIIEntities manage parallelism internally.
+  Do not add a PARTITION BY clause.
+
+  ### 10. Batch Processing for Large Tables
+  Process large tables in batches using WHERE clause filters to manage
+  LLM costs and avoid timeout issues.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Authorization Objects (prerequisite) ---
+  - authorization_objects
+
+  # --- Pattern 2: AI Sentiment ---
+  - ai_sentiment
+
+  # --- Pattern 3: AI Text Classifier ---
+  - ai_text_classifier
+
+  # --- Pattern 4: AI Text Summarize ---
+  - ai_summarize
+
+  # --- Pattern 5: AI Ask LLM ---
+  - ai_ask_llm
+# === RELATED_PATTERNS END ===

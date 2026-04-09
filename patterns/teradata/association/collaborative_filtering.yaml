@@ -1,0 +1,435 @@
+# === METADATA START ===
+name: collaborative_filtering
+title: "Collaborative Filtering (Pairwise Item Affinity)"
+description: |
+  Compute co-occurrence statistics for every pair of items across transactions using
+  TD_CFilter. Simpler than TD_Apriori — always produces pairwise results (no itemsets
+  larger than 2, no rules mode).
+
+  TD_CFilter outputs one row per item pair with support, confidence, lift, and z-score.
+  Typical applications: product recommendation, market basket affinity scoring, and
+  pairwise item similarity.
+
+  Key difference from TD_Apriori:
+  - CFilter is pairwise only (no itemsets > 2, no multi-item rules)
+  - CFilter includes z-score for co-occurrence significance
+  - CFilter uses TransactionIDColumns (supports composite keys up to 2047 columns)
+  - CFilter is faster for simple pairwise affinity
+
+category: association
+difficulty: intermediate
+teradata_function: TD_CFilter
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - recommendation
+  - pattern_discovery
+use_cases:
+  # --- Use Case 1: Product Recommendations ---
+  - Generate "customers who bought X also bought Y" recommendations
+
+  # --- Use Case 2: Affinity Scoring ---
+  - Score pairwise item affinity for cross-sell and upsell
+
+  # --- Use Case 3: Content Recommendations ---
+  - Recommend articles, videos, or courses based on co-consumption
+
+  # --- Use Case 4: Co-Prescription Analysis ---
+  - Identify medications frequently prescribed together
+
+  # --- Use Case 5: Feature Co-Usage ---
+  - Discover which product features or services are used together
+
+  # --- Use Case 6: Playlist Generation ---
+  - Build music or media playlists based on co-listening patterns
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the transaction data"
+    example: "retail_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table containing transaction or event data (sparse format: one row per item)"
+    example: "purchase_items"
+
+  # --- Parameter 3: Target Column ---
+  - name: target_column
+    type: string
+    # LLM-HINT: Column containing item identifiers
+    required: true
+    description: "Column containing item identifiers (product names, SKUs, content IDs)"
+    example: "product_name"
+
+  # --- Parameter 4: Transaction ID Columns ---
+  - name: transaction_id_columns
+    type: array[string]
+    # LLM-HINT: Column(s) grouping items into a transaction; supports composite keys (max 2047)
+    required: true
+    description: "Column(s) grouping items into transactions. Supports composite keys (max 2047 columns)."
+    example: '["order_id"]'
+
+  # --- Parameter 5: Partition Columns ---
+  - name: partition_columns
+    type: array[string]
+    # LLM-HINT: Optional; partition results by dimension (e.g., store, region); max 10
+    required: false
+    description: "Columns to partition the analysis by. Max 10. Results are nondeterministic unless partition columns are unique within transaction ID."
+    example: '["region"]'
+
+  # --- Parameter 6: Max Distinct Items ---
+  - name: max_distinct_items
+    type: integer
+    # LLM-HINT: Maximum item set size; default 100
+    required: false
+    default: "100"
+    description: "Maximum number of distinct items to consider. Default 100."
+    example: "500"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_PAIRWISE TEMPLATE ===
+  # LLM-HINT: Basic pairwise co-occurrence for all item pairs
+  basic_pairwise:
+    description: "Compute pairwise co-occurrence statistics for all item pairs"
+    sql: |
+      -- Pairwise collaborative filtering
+      -- One row per item pair with co-occurrence metrics
+      SELECT * FROM TD_CFilter(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              TransactionIDColumns('{{transaction_id_column}}')
+              MaxDistinctItems({{max_distinct_items}})
+      ) AS t
+      ORDER BY lift DESC, confidence DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - transaction_id_column
+      - max_distinct_items
+
+  # === RECOMMENDATIONS_FOR_ITEM TEMPLATE ===
+  # LLM-HINT: Get top recommended items for a specific item, ranked by lift
+  recommendations_for_item:
+    description: "Get top recommendations for a specific item ranked by lift"
+    sql: |
+      -- Find top items associated with a specific product
+      SELECT
+          TD_item2 AS recommended_item,
+          cntb AS co_purchase_count,
+          support,
+          confidence,
+          lift,
+          z_score
+      FROM TD_CFilter(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              TransactionIDColumns('{{transaction_id_column}}')
+              MaxDistinctItems({{max_distinct_items}})
+      ) AS t
+      WHERE TD_item1 = '{{target_item}}'
+        AND lift > 1.0
+      ORDER BY lift DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - transaction_id_column
+      - max_distinct_items
+      - target_item
+
+  # === COMPOSITE_KEY TEMPLATE ===
+  # LLM-HINT: Use composite transaction key (e.g., customer + date for session-based)
+  composite_key:
+    description: "Collaborative filtering with composite transaction key (e.g., customer + date)"
+    sql: |
+      -- Composite transaction key for session-based affinity
+      -- Groups items by customer + session/date combination
+      SELECT * FROM TD_CFilter(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              TransactionIDColumns('{{transaction_id_col1}}', '{{transaction_id_col2}}')
+              MaxDistinctItems({{max_distinct_items}})
+      ) AS t
+      ORDER BY lift DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - transaction_id_col1
+      - transaction_id_col2
+      - max_distinct_items
+
+  # === PARTITIONED_AFFINITY TEMPLATE ===
+  # LLM-HINT: Compute item affinity per partition (e.g., per region or store)
+  partitioned_affinity:
+    description: "Compute item affinity scores partitioned by dimension (store, region, etc.)"
+    sql: |
+      -- Partitioned collaborative filtering
+      -- Separate affinity scores per partition value
+      SELECT * FROM TD_CFilter(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              TransactionIDColumns('{{transaction_id_column}}')
+              PartitionColumns({{partition_columns_quoted}})
+              MaxDistinctItems({{max_distinct_items}})
+      ) AS t
+      ORDER BY {{partition_column_first}}, lift DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - transaction_id_column
+      - partition_columns_quoted
+      - partition_column_first
+      - max_distinct_items
+
+  # === TOP_PAIRS_BY_SIGNIFICANCE TEMPLATE ===
+  # LLM-HINT: Filter for statistically significant co-occurrences using z-score
+  top_pairs_by_significance:
+    description: "Find statistically significant item pairs using z-score filtering"
+    sql: |
+      -- Significant item pairs filtered by z-score
+      -- z_score measures how many standard deviations co-occurrence is above the mean
+      SELECT
+          TD_item1,
+          TD_item2,
+          cntb AS co_occurrence_count,
+          support,
+          confidence,
+          lift,
+          z_score
+      FROM TD_CFilter(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          USING
+              TargetColumn('{{target_column}}')
+              TransactionIDColumns('{{transaction_id_column}}')
+              MaxDistinctItems({{max_distinct_items}})
+      ) AS t
+      WHERE z_score > {{min_z_score}}
+        AND lift > 1.0
+      ORDER BY z_score DESC;
+    required_parameters:
+      - database
+      - table
+      - target_column
+      - transaction_id_column
+      - max_distinct_items
+      - min_z_score
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: E-Commerce Product Recommendations ---
+  - name: "E-Commerce Product Recommendations"
+    description: "Find product co-purchase patterns for recommendation engine"
+    parameters:
+      database: "ecommerce"
+      table: "order_items"
+      target_column: "product_name"
+      transaction_id_columns: ["order_id"]
+      max_distinct_items: 500
+    expected_result: |
+      Item pair results (sorted by lift):
+        TD_item1: 'phone case'       TD_item2: 'screen protector'  cntb: 1523  lift: 4.2  z_score: 12.3
+        TD_item1: 'laptop'           TD_item2: 'laptop bag'        cntb: 987   lift: 3.8  z_score: 10.1
+        TD_item1: 'camera'           TD_item2: 'memory card'       cntb: 654   lift: 3.5  z_score: 8.7
+        TD_item1: 'running shoes'    TD_item2: 'athletic socks'    cntb: 432   lift: 2.9  z_score: 7.2
+
+      Use these pairs for:
+      - "Frequently bought together" sections on product pages
+      - Cart recommendations ("You might also need...")
+      - Bundle pricing strategies
+
+  # --- Example 2: Specific Item Recommendations ---
+  - name: "Recommendations for a Specific Product"
+    description: "Find what to recommend when a customer adds headphones to cart"
+    parameters:
+      database: "ecommerce"
+      table: "order_items"
+      target_column: "product_name"
+      transaction_id_columns: ["order_id"]
+      max_distinct_items: 500
+      target_item: "wireless headphones"
+    expected_result: |
+      Top recommendations for 'wireless headphones':
+        recommended_item: 'headphone case'     lift: 5.1  confidence: 0.35
+        recommended_item: 'phone stand'        lift: 2.3  confidence: 0.18
+        recommended_item: 'bluetooth adapter'  lift: 2.1  confidence: 0.12
+
+      All items have lift > 1, confirming positive association.
+      Headphone case has the strongest affinity (5.1x random chance).
+
+  # --- Example 3: Session-Based Content Affinity ---
+  - name: "Content Co-Viewing per User Session"
+    description: "Find content pairings using composite key (user + session date)"
+    parameters:
+      database: "media"
+      table: "viewing_history"
+      target_column: "content_title"
+      transaction_id_columns: ["user_id", "session_date"]
+      max_distinct_items: 200
+    expected_result: |
+      Content pairs viewed in the same session:
+        TD_item1: 'Action Movie A'    TD_item2: 'Action Movie B'    lift: 3.2
+        TD_item1: 'Cooking Show'      TD_item2: 'Recipe Tutorial'   lift: 2.8
+        TD_item1: 'News Episode 5'    TD_item2: 'News Episode 6'    lift: 6.1
+
+      Composite key (user + date) captures session-level behavior
+      rather than all-time co-viewing.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: z_score is NULL ---
+  - error: "z_score column is NULL for all rows"
+    cause: "All cntb (co-occurrence count) values are equal, making standard deviation zero"
+    solution: "This is expected behavior when co-occurrence counts are identical. z_score requires variance in cntb values to compute. Filter by lift and confidence instead."
+
+  # --- Error 2: MaxDistinctItems Too Low ---
+  - error: "Missing expected item pairs in results"
+    cause: "MaxDistinctItems is set lower than the actual number of distinct items"
+    solution: "Increase MaxDistinctItems to cover all items in your catalog. Check distinct count: SELECT COUNT(DISTINCT item_col) FROM table."
+
+  # --- Error 3: Wrong Transaction Granularity ---
+  - error: "All items are paired with all other items (low lift, near-random)"
+    cause: "Transaction ID is too broad (e.g., customer_id instead of order_id)"
+    solution: "Use the most specific transaction identifier. order_id captures a single purchase event; customer_id captures all purchases ever made."
+
+  # --- Error 4: One-Sided Pairs ---
+  - error: "Only seeing (A, B) but not (B, A)"
+    cause: "TD_CFilter outputs each pair once (TD_item1, TD_item2)"
+    solution: "This is normal. The pair appears once with TD_item1 and TD_item2. Confidence is directional (cntb/cnt1), so check both directions by filtering on either item."
+
+  # --- Error 5: Nondeterministic Partitioned Results ---
+  - error: "Partitioned results change between runs"
+    cause: "PartitionColumns values are not unique within TransactionIDColumns"
+    solution: "Ensure each partition column value maps deterministically to transactions. If a transaction spans multiple partitions, results are nondeterministic."
+
+  # --- Error 6: Performance on Large Catalogs ---
+  - error: "Query runs out of spool space"
+    cause: "Too many distinct items generate O(n^2) pairs"
+    solution: "Reduce MaxDistinctItems, filter to a subset of items, or use PartitionColumns to divide the workload."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Collaborative Filtering Best Practices
+
+  ### 1. Choosing Between TD_CFilter and TD_Apriori
+  | Need | Use |
+  |------|-----|
+  | Pairwise item affinity only | TD_CFilter (simpler, includes z-score) |
+  | Itemsets of 3+ items | TD_Apriori (supports MaxLen up to 20) |
+  | Association rules with metrics | TD_Apriori (PatternsOrRules='Rules') |
+  | Quick affinity scoring | TD_CFilter |
+  | Statistical significance | TD_CFilter (has z_score) |
+
+  ### 2. Transaction Granularity
+  **Choose the right transaction level:**
+  - Order ID: single purchase event (most common)
+  - Session ID: single browsing session
+  - Customer + Date: daily interaction
+  - Customer ID: all-time (usually too broad — reduces signal)
+
+  **Composite keys for nuance:**
+  ```sql
+  -- Session-level: user + date
+  TransactionIDColumns('user_id', 'session_date')
+
+  -- Store-specific: transaction + store
+  TransactionIDColumns('txn_id', 'store_id')
+  ```
+
+  ### 3. Interpreting Metrics
+  **Lift is the most useful metric for recommendations:**
+  - Lift > 1: items are bought together more than chance predicts
+  - Lift = 1: items are independent
+  - Lift < 1: items tend to substitute for each other
+
+  **Confidence gives directional strength:**
+  - confidence = cntb / cnt1 (how often item2 appears given item1)
+  - High confidence + high lift = strong recommendation
+
+  **z_score measures statistical significance:**
+  - z_score > 2.0 is typically significant (p < 0.05)
+  - z_score > 3.0 is highly significant (p < 0.001)
+  - NULL z_score means all co-occurrence counts are equal (no variance)
+
+  ### 4. Filtering for Quality Recommendations
+  ```sql
+  -- Production-quality recommendations
+  WHERE lift > 1.5           -- meaningfully above random
+    AND cntb >= 10           -- sufficient co-occurrences for reliability
+    AND z_score > 2.0        -- statistically significant
+  ORDER BY lift DESC
+  ```
+
+  ### 5. Building a Recommendation Service
+  **Pre-compute and store:**
+  ```sql
+  -- Store pairwise scores for fast lookup
+  CREATE TABLE product_affinity AS
+  SELECT
+      TD_item1, TD_item2,
+      cntb, support, confidence, lift, z_score
+  FROM TD_CFilter(
+      ON db.order_items AS InputTable PARTITION BY ANY
+      USING
+          TargetColumn('product_name')
+          TransactionIDColumns('order_id')
+          MaxDistinctItems(1000)
+  ) AS t
+  WHERE lift > 1.0 AND cntb >= 5;
+  ```
+
+  **Query for recommendations:**
+  ```sql
+  -- Get top 5 recommendations for a product
+  SELECT TOP 5 TD_item2 AS recommendation, lift, confidence
+  FROM product_affinity
+  WHERE TD_item1 = 'target_product'
+  ORDER BY lift DESC;
+  ```
+
+  ### 6. Refresh Frequency
+  - Recompute weekly or monthly for stable catalogs
+  - Recompute daily for fast-moving inventory
+  - Compare results across periods to detect trend shifts
+  - Track lift stability — unstable pairs may be seasonal
+
+  ### 7. MaxDistinctItems Sizing
+  - Check your catalog: `SELECT COUNT(DISTINCT item_col) FROM table`
+  - Set MaxDistinctItems >= your distinct item count
+  - Be aware: O(n^2) pairs means 1000 items = up to 500K pairs
+  - For very large catalogs, filter to top-selling items first
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Apriori ---
+  - apriori
+
+  # --- Pattern 2: K-Means (segment-based recommendations) ---
+  - kmeans
+
+  # --- Pattern 3: Decision Tree ---
+  - decision_tree
+# === RELATED_PATTERNS END ===
