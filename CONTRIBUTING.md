@@ -271,6 +271,7 @@ func TestPolicy_ShouldReference(t *testing.T) {
 - Proto lint & breaking changes
 - Go lint (gofmt, go vet)
 - Unit tests with race detection
+- Fuzz tests (merge-blocking; a failing fuzz target fails CI; see the `fuzz` job in `.github/workflows/ci.yml`)
 - Multi-platform build (Linux, macOS, Windows)
 - Security scan (gosec, CodeQL)
 - Coverage check
