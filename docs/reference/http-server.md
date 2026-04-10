@@ -43,10 +43,31 @@ LoomService gRPC endpoints are available via HTTP/REST through the grpc-gateway.
 
 - `POST /v1/weave` - Execute agent query
 - `POST /v1/sessions` - Create session
+- `GET /v1/sessions` - List sessions (paginated, with optional filters)
 - `GET /v1/sessions/{session_id}` - Get session
+- `DELETE /v1/sessions/{session_id}` - Delete session
 - `POST /v1/weave:stream` - Stream agent execution (SSE)
 
 This is a subset; the LoomService exposes 68 HTTP path patterns via gRPC-gateway. See `/swagger-ui` for the complete API documentation.
+
+#### List sessions (`GET /v1/sessions`)
+
+Query parameters (all optional):
+
+| Parameter | Description |
+|-----------|-------------|
+| `state` | Filter by session `state` |
+| `backend` | Filter by `backend` |
+| `offset` | Number of matching sessions to skip (default: 0) |
+| `limit` | Page size; omitted or `<= 0` defaults to **50**; values above **500** are capped at **500** |
+| `agent_id` | Filter by session agent id (often the configured agent name) |
+| `project_id` | Filter by `metadata.project_id` (from session context or artifact metadata) |
+| `metadata_status` | Filter by artifact metadata lifecycle (e.g. `active`, `completed`) |
+
+The response includes `sessions` for the current page and `total_count`: the number of sessions **matching the filters before** `offset`/`limit`. Session payloads include in-memory attribution (`agent_id`, `agent_name`, `started_at`, context-backed `metadata`, and `backend`). Fields that come only from `metadata.json` (`ended_at`, `artifact_count`, and lifecycle `metadata_status` when not already reflected in memory) are merged when you filter by `metadata_status` or `project_id` (so filtering stays correct). For other list calls, use `GET /v1/sessions/{session_id}` to merge on-disk metadata for a single session. See [session artifact metadata](../architecture/artifacts.md#session-artifact-metadata-metadatajson).
+
+> [!NOTE]
+> `CreateSessionRequest.agent_id` (optional) selects which agent handles the new session. That is distinct from `Session.agent_id` on each listed session, which identifies the agent that owns that conversation.
 
 ### Apps Browser
 
