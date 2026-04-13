@@ -16,13 +16,13 @@ require (
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/alecthomas/chroma/v2 v2.23.1
-	github.com/anthropics/anthropic-sdk-go v1.30.0
+	github.com/anthropics/anthropic-sdk-go v1.35.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.14
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
-	github.com/aws/smithy-go v1.24.2
+	github.com/aws/smithy-go v1.24.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
@@ -54,10 +54,10 @@ require (
 	github.com/xuri/excelize/v2 v2.10.1
 	github.com/zalando/go-keyring v0.2.8
 	go.uber.org/zap v1.27.1
-	golang.org/x/mod v0.34.0
+	golang.org/x/mod v0.35.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/term v0.41.0
-	modernc.org/sqlite v1.48.1
+	golang.org/x/term v0.42.0
+	modernc.org/sqlite v1.48.2
 )
 
 require (
@@ -152,7 +152,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/image v0.38.0 // indirect
-	golang.org/x/tools v0.42.0 // indirect
+	golang.org/x/tools v0.43.0 // indirect
 	gopkg.in/cenkalti/backoff.v1 v1.1.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 	modernc.org/libc v1.70.0 // indirect
@@ -162,8 +162,8 @@ require (
 
 require (
 	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
