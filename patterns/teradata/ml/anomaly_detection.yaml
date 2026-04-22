@@ -1,0 +1,386 @@
+# === METADATA START ===
+name: anomaly_detection
+title: "Anomaly Detection (One-Class SVM)"
+description: |
+  Detect anomalies and outliers using TD_OneClassSVM and TD_OneClassSVMPredict.
+  One-class SVM is trained on normal data only (no labels needed for anomalies).
+  At predict time, observations are scored as normal (1) or outlier (0). Uses the
+  same Minibatch SGD engine as TD_GLM and TD_SVM.
+
+  Key difference from TD_SVM: no ResponseColumn is needed -- all training data is
+  assumed to belong to the single "normal" class (value 1). The model learns the
+  boundary of normal behavior and flags anything outside as an outlier.
+
+  Anomaly detection with One-Class SVM is suitable for:
+  - Network intrusion detection
+  - Fraud detection where fraud examples are rare or unavailable
+  - Manufacturing defect detection
+  - Sensor data anomaly monitoring
+  - Medical anomaly screening
+  - Any domain where labeled anomalies are scarce
+
+category: ml
+difficulty: advanced
+teradata_function: TD_OneClassSVM
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - model_training
+  - analytics
+use_cases:
+  # --- Use Case 1: Fraud Detection ---
+  - Fraud detection trained on legitimate transactions only
+
+  # --- Use Case 2: Network Security ---
+  - Network intrusion detection using normal traffic patterns
+
+  # --- Use Case 3: Manufacturing QA ---
+  - Defect detection trained on in-spec product measurements
+
+  # --- Use Case 4: Sensor Monitoring ---
+  - IoT sensor anomaly detection from baseline readings
+
+  # --- Use Case 5: Medical Screening ---
+  - Medical test anomaly screening from healthy patient data
+
+  # --- Use Case 6: Financial Monitoring ---
+  - Unusual transaction pattern detection for compliance
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing training and scoring data"
+    example: "security_db"
+
+  # --- Parameter 2: Normal Data Table ---
+  - name: normal_data_table
+    type: string
+    # LLM-HINT: Training data containing only normal/legitimate observations; no anomalies
+    required: true
+    description: "Table with normal/legitimate observations for training (no anomalies)"
+    example: "normal_transactions"
+
+  # --- Parameter 3: Scoring Table ---
+  - name: scoring_table
+    type: string
+    # LLM-HINT: New data to score for anomalies; contains mix of normal and potentially anomalous rows
+    required: true
+    description: "Table with new data to score for anomalies"
+    example: "recent_transactions"
+
+  # --- Parameter 4: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: All numeric; no ResponseColumn needed -- one-class training
+    required: true
+    description: "Numeric feature columns (no response/label column needed)"
+    example: '["amount", "time_since_last", "merchant_category", "distance_from_home"]'
+
+  # --- Parameter 5: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier for Predict
+    required: true
+    description: "Unique identifier column"
+    example: "transaction_id"
+
+  # --- Parameter 6: Regularization Lambda ---
+  - name: regularization_lambda
+    type: number
+    # LLM-HINT: Controls boundary tightness; default 0.02; higher = looser boundary (more permissive)
+    required: false
+    default: "0.02"
+    description: "Regularization strength (higher = looser anomaly boundary)"
+    example: "0.05"
+
+  # --- Parameter 7: Max Iterations ---
+  - name: max_iter_num
+    type: integer
+    # LLM-HINT: Maximum SGD iterations; default 300
+    required: false
+    default: "300"
+    description: "Maximum number of SGD iterations"
+    example: "500"
+
+  # --- Parameter 8: Batch Size ---
+  - name: batch_size
+    type: integer
+    # LLM-HINT: Mini-batch size; default 10; 0 = full batch
+    required: false
+    default: "10"
+    description: "Mini-batch size for SGD (0 = full batch)"
+    example: "32"
+
+  # --- Parameter 9: Alpha ---
+  - name: alpha
+    type: number
+    # LLM-HINT: L1/L2 mix; default 0.15; only when Lambda > 0
+    required: false
+    default: "0.15"
+    description: "Elastic net mixing (0 = pure L2, 1 = pure L1)"
+    example: "0.15"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TRAIN_NORMAL_BOUNDARY TEMPLATE ===
+  # LLM-HINT: Train on normal data only; no ResponseColumn needed; learns normal boundary
+  train_normal_boundary:
+    description: "Train anomaly detection model on normal data"
+    sql: |
+      -- Train One-Class SVM on normal observations only
+      -- LLM-HINT: No ResponseColumn -- all training data assumed normal (class 1)
+      -- LLM-HINT: AS InputTable alias is mandatory; PARTITION BY ANY only
+      -- LLM-HINT: Nesterov defaults to false (unlike TD_GLM)
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_OneClassSVM(
+              ON {{database}}.{{normal_data_table}} AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  BatchSize({{batch_size}})
+                  MaxIterNum({{max_iter_num}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Alpha({{alpha}})
+                  Intercept('true')
+                  Tolerance(0.001)
+                  IterNumNoChange(50)
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - normal_data_table
+      - model_table
+      - input_columns_quoted
+      - batch_size
+      - max_iter_num
+      - regularization_lambda
+      - alpha
+
+  # === SCORE_ANOMALIES TEMPLATE ===
+  # LLM-HINT: Scores new data; prediction 1 = normal, 0 = outlier
+  score_anomalies:
+    description: "Score new data for anomalies"
+    sql: |
+      -- Score new data: prediction 0 = outlier, 1 = normal
+      -- LLM-HINT: ModelTable is DIMENSION input
+      SELECT * FROM TD_OneClassSVMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              Accumulate({{accumulate_columns}})
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - accumulate_columns
+
+  # === SCORE_WITH_PROBABILITIES TEMPLATE ===
+  # LLM-HINT: Outputs anomaly probability; useful for ranking suspicious observations
+  score_with_probabilities:
+    description: "Score with anomaly probabilities for ranking"
+    sql: |
+      -- Score with probabilities: prob_0 = probability of being an outlier
+      -- LLM-HINT: Use prob_0 to rank observations by anomaly severity
+      SELECT * FROM TD_OneClassSVMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              OutputProb('true')
+              Responses('0', '1')
+              Accumulate({{accumulate_columns}})
+      ) AS t
+      ORDER BY prob_0 DESC;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - accumulate_columns
+
+  # === ANOMALY_REPORT TEMPLATE ===
+  # LLM-HINT: Filters to only outliers and ranks by anomaly probability
+  anomaly_report:
+    description: "Generate anomaly report showing only detected outliers"
+    sql: |
+      -- Extract only detected anomalies, ranked by severity
+      -- LLM-HINT: prediction = 0 means outlier; prob_0 = anomaly severity
+      SELECT * FROM (
+          SELECT * FROM TD_OneClassSVMPredict(
+              ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+              ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+              USING
+                  IDColumn('{{id_column}}')
+                  OutputProb('true')
+                  Responses('0', '1')
+                  Accumulate({{accumulate_columns}})
+          ) AS t
+      ) scored
+      WHERE scored.prediction = 0
+      ORDER BY scored.prob_0 DESC;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - accumulate_columns
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Transaction Fraud Detection ---
+  - name: "Transaction Fraud Detection"
+    description: "Detect fraudulent transactions by training on legitimate transaction history"
+    parameters:
+      database: "banking"
+      normal_data_table: "legitimate_transactions"
+      scoring_table: "recent_transactions"
+      model_table: "fraud_ocsvm_model"
+      input_columns: ["amount", "time_since_last_txn", "merchant_category_encoded", "distance_from_home"]
+      id_column: "transaction_id"
+      batch_size: 32
+      max_iter_num: 300
+      regularization_lambda: 0.02
+      alpha: 0.15
+    expected_result: |
+      Score output:
+        transaction_id | prediction | prob_0 | prob_1
+        T90001         | 1          | 0.05   | 0.95     -- normal
+        T90002         | 0          | 0.82   | 0.18     -- OUTLIER (high fraud probability)
+        T90003         | 1          | 0.12   | 0.88     -- normal
+        T90004         | 0          | 0.91   | 0.09     -- OUTLIER (very high fraud probability)
+
+      prediction = 0: flagged as anomaly/potential fraud
+      prob_0: probability of being an outlier (higher = more suspicious)
+
+      Rank by prob_0 DESC to prioritize investigation.
+
+  # --- Example 2: Sensor Anomaly Monitoring ---
+  - name: "IoT Sensor Anomaly Detection"
+    description: "Monitor sensor readings for equipment anomalies"
+    parameters:
+      database: "iot"
+      normal_data_table: "baseline_readings"
+      scoring_table: "live_readings"
+      model_table: "sensor_ocsvm_model"
+      input_columns: ["temperature", "vibration", "pressure", "rpm"]
+      id_column: "reading_id"
+      batch_size: 10
+      max_iter_num: 500
+      regularization_lambda: 0.05
+      alpha: 0.15
+    expected_result: |
+      Anomaly report (outliers only):
+        reading_id | prediction | prob_0 | temperature | vibration | pressure | rpm
+        R50023     | 0          | 0.93   | 98.5        | 4.2       | 210      | 3500
+        R50087     | 0          | 0.78   | 45.1        | 0.1       | 85       | 100
+
+      R50023: high temperature + high vibration (overheating equipment)
+      R50087: low across all metrics (possible sensor failure or shutdown)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Training on Contaminated Data ---
+  - error: "Model flags too few anomalies or misses real outliers"
+    cause: "Training data contains anomalous observations. One-class SVM assumes ALL training data is normal."
+    solution: "Carefully curate training data to include only known-good/normal observations. Remove any known anomalies before training."
+
+  # --- Error 2: Missing AS InputTable Alias ---
+  - error: "Syntax error or function not recognized"
+    cause: "TD_OneClassSVM requires the AS InputTable alias. Omitting it causes a parse error."
+    solution: "Always include: ON db.table AS InputTable PARTITION BY ANY."
+
+  # --- Error 3: Specifying ResponseColumn ---
+  - error: "Unexpected parameter ResponseColumn"
+    cause: "TD_OneClassSVM does not accept a ResponseColumn. All training data is implicitly class 1 (normal)."
+    solution: "Remove ResponseColumn from the USING clause. For binary anomaly labels, use TD_SVM instead."
+
+  # --- Error 4: Non-Numeric Inputs ---
+  - error: "InputColumns contain non-numeric types"
+    cause: "All input columns must be numeric."
+    solution: "Encode categorical variables to numeric before training. Use TD_OneHotEncodingFit/Transform."
+
+  # --- Error 5: Boundary Too Loose or Too Tight ---
+  - error: "Too many or too few anomalies detected"
+    cause: "RegularizationLambda controls boundary tightness. Too high = loose boundary (few anomalies); too low = tight boundary (many false positives)."
+    solution: "Tune RegularizationLambda: increase to detect fewer anomalies (more permissive), decrease to detect more (more strict). Validate against known anomaly examples."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Anomaly Detection (One-Class SVM) Best Practices
+
+  ### 1. Training Data Quality
+  The most critical factor: training data must contain ONLY normal observations.
+  - Remove any known anomalies before training
+  - Use a time window of known-good operation for training data
+  - If unsure, use conservative filtering (remove statistical outliers first)
+
+  ### 2. Feature Scaling
+  Like all SVM variants, One-Class SVM is sensitive to feature scale:
+  ```sql
+  -- Scale features before training
+  CREATE TABLE db.scale_fit AS (
+      SELECT * FROM TD_ScaleFit(
+          ON db.normal_data PARTITION BY ANY
+          USING TargetColumns('feat1','feat2','feat3') ScaleMethod('STD')
+      ) AS t
+  ) WITH DATA;
+  -- Apply same scaling to scoring data via TD_ColumnTransformer
+  ```
+
+  ### 3. Regularization Tuning
+  - RegularizationLambda controls the normal boundary tightness
+  - Start with default (0.02) and adjust based on false positive/negative rate
+  - Lower Lambda = tighter boundary = more anomalies detected (more false positives)
+  - Higher Lambda = looser boundary = fewer anomalies detected (more false negatives)
+  - Use a validation set with known anomalies to find the right balance
+
+  ### 4. Probability-Based Ranking
+  - Use OutputProb('true') with Responses('0','1') for anomaly probability
+  - prob_0 = probability of being an outlier
+  - Rank by prob_0 DESC to prioritize investigation
+  - Set a threshold on prob_0 rather than using binary prediction for more control
+
+  ### 5. Monitoring and Drift
+  - Retrain periodically as "normal" behavior evolves
+  - Track anomaly detection rate over time -- sudden spikes may indicate data drift
+  - Compare model predictions against domain expert reviews to calibrate
+
+  ### 6. Comparison with Other Approaches
+  - TD_OneClassSVM: best when anomaly examples are unavailable (unsupervised)
+  - TD_SVM (binary): use when you have labeled anomaly and normal examples
+  - TD_XGBoost/DecisionForest: use for supervised anomaly detection with labels
+  - Statistical methods (z-score, IQR): simpler but less flexible for multivariate data
+
+  ### 7. SGD Parameters
+  - Same SGD engine as TD_GLM and TD_SVM
+  - Nesterov defaults to false (not true as in TD_GLM)
+  - LocalSGDIterations can speed convergence on large clusters (try 10)
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: SVM ---
+  - svm
+
+  # --- Pattern 2: GLM ---
+  - glm
+
+  # --- Pattern 3: K-Means ---
+  - kmeans
+
+  # --- Pattern 4: ML Pipeline Patterns ---
+  - ml_pipeline_patterns
+# === RELATED_PATTERNS END ===

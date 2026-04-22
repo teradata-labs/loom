@@ -1,0 +1,378 @@
+# === METADATA START ===
+name: scale_transform
+title: "Feature Scaling (TD_ScaleFit / TD_ScaleTransform)"
+description: |
+  Scale and normalize numeric columns using TD_ScaleFit and TD_ScaleTransform.
+  The Fit phase learns scaling parameters (mean, standard deviation, min, max, etc.)
+  from training data. The Transform phase applies those parameters to any dataset.
+
+  Supported scaling methods:
+  - STD (Z-score): Subtract mean, divide by standard deviation. Centers at 0.
+  - RANGE (Min-Max): Scale to [0, 1] using (x - min) / (max - min).
+  - RESCALE: Scale to a custom [lower_bound, upper_bound] range.
+  - MEAN: Subtract the mean.
+  - MAXABS: Divide by the maximum absolute value. Preserves sparsity.
+  - MIDRANGE: Subtract the midpoint of (min + max) / 2.
+  - USTD: Like STD but uses population standard deviation.
+  - SUM: Divide by the column sum.
+
+  Scaling is a prerequisite for distance-based algorithms (K-Means, KNN, SVM)
+  and gradient-based models (neural networks, logistic regression).
+
+category: data_prep
+difficulty: intermediate
+teradata_function: TD_ScaleFit, TD_ScaleTransform
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - feature_engineering
+  - normalization
+use_cases:
+  # --- Use Case 1: Z-Score Standardization ---
+  - Standardize features to zero mean and unit variance before model training
+
+  # --- Use Case 2: Min-Max Normalization ---
+  - Normalize features to a 0-1 range for neural networks or distance-based models
+
+  # --- Use Case 3: Custom Range Scaling ---
+  - Rescale features to a custom range (e.g., -1 to 1) for specific model requirements
+
+  # --- Use Case 4: Pre-Clustering Normalization ---
+  - Normalize features before K-Means or other clustering to prevent scale bias
+
+  # --- Use Case 5: Scoring Pipeline ---
+  - Apply identical scaling learned from training data to new/incoming data for scoring
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the source tables"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Maps to {{training_table}}; table used to learn scaling parameters
+    required: true
+    description: "Table to learn scaling parameters from (typically the training set)"
+    example: "customer_features_train"
+
+  # --- Parameter 3: Input Table ---
+  - name: input_table
+    type: string
+    # LLM-HINT: Maps to {{input_table}}; table to transform (can be same as training or new data)
+    required: true
+    description: "Table to apply the scaling transformation to"
+    example: "customer_features_test"
+
+  # --- Parameter 4: Target Columns ---
+  - name: target_columns
+    type: array[string]
+    # LLM-HINT: Numeric columns to scale; must exist in both training and input tables
+    required: true
+    description: "Numeric columns to scale"
+    example: '["age", "income", "purchase_count"]'
+
+  # --- Parameter 5: Scale Method ---
+  - name: scale_method
+    type: string
+    # LLM-HINT: STD for Z-score, RANGE for min-max, RESCALE({lb=0,ub=1}) for custom range
+    required: true
+    description: "Scaling method: STD, RANGE, RESCALE({lb=X,ub=Y}), MEAN, MAXABS, MIDRANGE, USTD, SUM"
+    example: "STD"
+
+  # --- Parameter 6: Fit Table Name ---
+  - name: fit_table
+    type: string
+    # LLM-HINT: Name for the persisted fit model table; reuse this for consistent transforms
+    required: false
+    default: "scale_fit_model"
+    description: "Name for the persisted scaling model table"
+    example: "scale_fit_model"
+
+  # --- Parameter 7: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns to pass through unchanged in the transform output (e.g., ID columns)
+    required: false
+    description: "Columns to pass through unchanged in the transform output"
+    example: '["customer_id", "segment"]'
+
+  # --- Parameter 8: Miss Value ---
+  - name: miss_value
+    type: string
+    # LLM-HINT: How to handle NULLs: KEEP (default), ZERO, or LOCATION (replace with mean)
+    required: false
+    default: "KEEP"
+    description: "NULL handling: KEEP (pass through), ZERO (replace with 0), LOCATION (replace with mean)"
+    example: "KEEP"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === FIT_SCALER TEMPLATE ===
+  # LLM-HINT: Learns scaling parameters from training data; persist the output for reuse
+  fit_scaler:
+    description: "Fit a scaler on training data and persist the model table"
+    sql: |
+      -- Learn scaling parameters from training data
+      -- The fit table captures mean, stddev, min, max, etc. depending on ScaleMethod
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_ScaleFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{target_columns_quoted}})
+                  ScaleMethod('{{scale_method}}')
+                  MissValue('{{miss_value}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - fit_table
+      - target_columns_quoted
+      - scale_method
+      - miss_value
+
+  # === TRANSFORM_DATA TEMPLATE ===
+  # LLM-HINT: Applies the persisted scaler to any dataset; use Accumulate to keep ID columns
+  transform_data:
+    description: "Transform data using a previously fitted scaler"
+    sql: |
+      -- Apply scaling to input data using the persisted fit model
+      SELECT * FROM TD_ScaleTransform(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{fit_table}} AS FitTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - input_table
+      - fit_table
+      - accumulate_columns_quoted
+
+  # === FIT_AND_TRANSFORM TEMPLATE ===
+  # LLM-HINT: Inline fit+transform in one query; no model persistence. Good for exploration.
+  fit_and_transform_inline:
+    description: "Fit and transform in a single query (no model persistence)"
+    sql: |
+      -- Inline fit and transform for quick exploration
+      -- NOTE: The fit model is NOT persisted; use fit_scaler + transform_data for pipelines
+      SELECT * FROM TD_ScaleTransform(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON (
+              SELECT * FROM TD_ScaleFit(
+                  ON {{database}}.{{training_table}} AS InputTable
+                  USING
+                      TargetColumns({{target_columns_quoted}})
+                      ScaleMethod('{{scale_method}}')
+                      MissValue('{{miss_value}}')
+              ) AS fit
+          ) AS FitTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - input_table
+      - target_columns_quoted
+      - scale_method
+      - miss_value
+      - accumulate_columns_quoted
+
+  # === RESCALE_CUSTOM_RANGE TEMPLATE ===
+  # LLM-HINT: Use RESCALE with lb/ub for custom range; common for neural network inputs (-1 to 1)
+  rescale_custom_range:
+    description: "Scale features to a custom range using RESCALE"
+    sql: |
+      -- Scale to custom range, e.g., [-1, 1] for neural network inputs
+      CREATE TABLE {{database}}.{{fit_table}} AS (
+          SELECT * FROM TD_ScaleFit(
+              ON {{database}}.{{training_table}} AS InputTable
+              USING
+                  TargetColumns({{target_columns_quoted}})
+                  ScaleMethod('RESCALE({lb={{lower_bound}},ub={{upper_bound}}})')
+                  MissValue('{{miss_value}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Apply the custom-range scaler
+      SELECT * FROM TD_ScaleTransform(
+          ON {{database}}.{{input_table}} AS InputTable
+          ON {{database}}.{{fit_table}} AS FitTable DIMENSION
+          USING
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - training_table
+      - input_table
+      - fit_table
+      - target_columns_quoted
+      - lower_bound
+      - upper_bound
+      - miss_value
+      - accumulate_columns_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Z-Score Standardization for Clustering ---
+  - name: "Z-Score Standardization Before K-Means"
+    description: "Standardize RFM features before customer segmentation clustering"
+    parameters:
+      database: "retail_db"
+      training_table: "customer_rfm_train"
+      input_table: "customer_rfm_train"
+      target_columns: ["recency_days", "purchase_frequency", "total_spend"]
+      scale_method: "STD"
+      fit_table: "rfm_scale_fit"
+      accumulate_columns: ["customer_id"]
+      miss_value: "KEEP"
+    expected_result: |
+      The fit table (rfm_scale_fit) stores per-column statistics:
+        recency_days:      mean=45.2, stddev=22.1
+        purchase_frequency: mean=8.3,  stddev=5.7
+        total_spend:        mean=520,  stddev=310
+
+      Transformed output has Z-scored values centered near 0:
+        customer_id | recency_days | purchase_frequency | total_spend
+        C001        | -0.82        |  1.05              |  0.64
+        C002        |  1.35        | -0.40              | -1.12
+
+      All features now on comparable scales for K-Means distance calculations.
+
+  # --- Example 2: Min-Max for Scoring Pipeline ---
+  - name: "Min-Max Scaling for Train/Test Consistency"
+    description: "Fit on training data, apply the same scaling to test data for model scoring"
+    parameters:
+      database: "ml_db"
+      training_table: "features_train"
+      input_table: "features_test"
+      target_columns: ["age", "income", "credit_score"]
+      scale_method: "RANGE"
+      fit_table: "minmax_fit"
+      accumulate_columns: ["customer_id", "label"]
+      miss_value: "ZERO"
+    expected_result: |
+      Fit learned from training data:
+        age:          min=18, max=85
+        income:       min=15000, max=250000
+        credit_score: min=300, max=850
+
+      Test data scaled using training min/max (values may fall outside [0,1] if test
+      has values beyond training range):
+        customer_id | label | age  | income | credit_score
+        T001        | 1     | 0.35 | 0.22   | 0.68
+        T002        | 0     | 0.71 | 0.55   | 0.41
+
+      NULLs replaced with 0 due to MissValue('ZERO').
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Scale Method Mismatch ---
+  - error: "ScaleMethod syntax error with RESCALE"
+    cause: "RESCALE requires specific JSON-like syntax: RESCALE({lb=0,ub=1}). Omitting the braces or using colons instead of equals causes a parse error."
+    solution: "Use exact syntax: ScaleMethod('RESCALE({lb=0,ub=1})'). The lb and ub parameters use = not : inside curly braces."
+
+  # --- Error 2: Fit Table Not Persisted ---
+  - error: "Fit model lost between sessions; transform fails with missing table"
+    cause: "Using OUT VOLATILE TABLE or inline subquery means the fit model is session-scoped or not saved at all."
+    solution: "Use CREATE TABLE ... AS (SELECT * FROM TD_ScaleFit(...)) WITH DATA to persist the fit model permanently. Reference it by table name in TD_ScaleTransform."
+
+  # --- Error 3: Column Name Mismatch ---
+  - error: "TD_ScaleTransform fails because target columns not found"
+    cause: "The input table for Transform must contain the same column names that were specified in TargetColumns during the Fit step."
+    solution: "Verify column names match exactly between training and scoring tables. Use column aliases if needed to align names."
+
+  # --- Error 4: Data Leakage ---
+  - error: "Model performs well on test data but poorly in production"
+    cause: "Fit was run on the full dataset (including test data) instead of training data only. Scaling parameters leak test set statistics into the model."
+    solution: "Always fit the scaler on training data only. Apply the same fit model to test/validation/production data via TD_ScaleTransform."
+
+  # --- Error 5: NULL Handling ---
+  - error: "Unexpected NULL or zero values in transform output"
+    cause: "MissValue parameter controls NULL handling. Default KEEP preserves NULLs; ZERO replaces them with 0; LOCATION replaces them with the column mean."
+    solution: "Choose MissValue based on your modeling needs. For tree-based models, KEEP is fine. For linear/distance models, use LOCATION or impute before scaling."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Feature Scaling Best Practices
+
+  ### 1. Choose the Right Scaling Method
+  - **STD (Z-score):** Best default for most ML algorithms. Centers data at 0 with unit variance.
+    Use when features are roughly Gaussian-distributed.
+  - **RANGE (Min-Max):** Use when you need bounded output [0, 1]. Sensitive to outliers because
+    min/max determine the range. Good for neural networks expecting bounded inputs.
+  - **MAXABS:** Preserves zero entries (sparsity). Good for sparse data or when zero has meaning.
+  - **RESCALE:** Use when your model requires a specific range (e.g., [-1, 1] for tanh activations).
+
+  ### 2. Fit on Training Data Only
+  Always fit the scaler on training data. Apply the saved fit model to test, validation, and
+  production data. This prevents data leakage and ensures the model sees data scaled identically
+  to what it was trained on.
+
+  ```sql
+  -- CORRECT: Fit on train, transform both train and test
+  CREATE TABLE db.scale_model AS (
+      SELECT * FROM TD_ScaleFit(ON db.train ...) AS t
+  ) WITH DATA;
+
+  -- Transform training data
+  SELECT * FROM TD_ScaleTransform(ON db.train ... ON db.scale_model AS FitTable DIMENSION ...) AS t;
+
+  -- Transform test data with SAME model
+  SELECT * FROM TD_ScaleTransform(ON db.test ... ON db.scale_model AS FitTable DIMENSION ...) AS t;
+  ```
+
+  ### 3. Persist the Fit Model
+  Save the fit output as a permanent table. This enables:
+  - Consistent scaling across train/test/production
+  - Auditing and versioning of preprocessing steps
+  - Reuse in TD_ColumnTransformer for pipeline orchestration
+
+  ### 4. Handle Outliers Before Scaling
+  Min-Max scaling is heavily influenced by outliers. Consider:
+  - Capping values at the 1st and 99th percentile before fitting
+  - Using STD (Z-score) which is less affected by extreme values
+  - Using MAXABS if negative outliers are a concern
+
+  ### 5. Combine with TD_ColumnTransformer
+  For production pipelines, use TD_ColumnTransformer to apply scaling alongside other
+  transformations (imputation, encoding) in a single pass. Pass the scale fit table
+  as the ScaleFitTable dimension input.
+
+  ### 6. GlobalScale for Comparable Columns
+  When columns represent the same measurement (e.g., multiple temperature sensors),
+  use GlobalScale('true') to compute a single set of scaling parameters across all columns.
+  This preserves relative differences between columns.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: One-Hot Encoding ---
+  - one_hot_encoding
+
+  # --- Pattern 2: Binning ---
+  - bincode
+
+  # --- Pattern 3: Column Transformer Pipeline ---
+  - column_transformer
+
+  # --- Pattern 4: Fit/Transform Architecture ---
+  - fit_transform_pattern
+
+  # --- Pattern 5: K-Means Clustering ---
+  - kmeans
+# === RELATED_PATTERNS END ===
