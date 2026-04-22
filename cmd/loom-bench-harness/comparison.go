@@ -55,11 +55,11 @@ func scenarioComparison(ctx context.Context, serverAddr, httpAddr string, runs, 
 	}); err != nil {
 		return nil, fmt.Errorf("reconfigure loom: %w", err)
 	}
-	resetServer(httpAddr)
+	_ = resetServer(httpAddr)
 
 	loomCfg := baseCfg(serverAddr, runs, warmupRuns, "comparison_loom")
-	loomCfg.HarnessConfig.Concurrency = 20
-	loomCfg.HarnessConfig.TotalRequests = 500
+	loomCfg.Concurrency = 20
+	loomCfg.TotalRequests = 500
 
 	loomReport, err := runSingleScenario(ctx, loomCfg)
 	if err != nil {
@@ -111,11 +111,11 @@ func scenarioComparisonConcurrency(ctx context.Context, serverAddr, httpAddr str
 		}); err != nil {
 			return nil, err
 		}
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		loomCfg := baseCfg(serverAddr, runs, 0, fmt.Sprintf("comparison_concurrency_loom_%dw", workers))
-		loomCfg.HarnessConfig.Concurrency = workers
-		loomCfg.HarnessConfig.TotalRequests = 500
+		loomCfg.Concurrency = workers
+		loomCfg.TotalRequests = 500
 		loomCfg.CollectHistogram = false
 		loomCfg.CollectTimeSeries = false
 
@@ -303,7 +303,7 @@ func driveLangGraph(ctx context.Context, addr string, concurrency, totalRequests
 	if err != nil {
 		return nil, 0, fmt.Errorf("dial langgraph: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	client := benchpb.NewBenchServiceClient(conn)
 

@@ -184,7 +184,7 @@ func (br *BenchmarkRunner) trimWarmup(results []result) []result {
 
 	cfg := br.config
 
-	if cfg.HarnessConfig.Duration > 0 && cfg.PerRunWarmup > 0 {
+	if cfg.Duration > 0 && cfg.PerRunWarmup > 0 {
 		// Duration-based: discard first N seconds
 		cutoff := results[0].startedAt.Add(cfg.PerRunWarmup)
 		trimmed := make([]result, 0, len(results))
@@ -200,7 +200,7 @@ func (br *BenchmarkRunner) trimWarmup(results []result) []result {
 		return results
 	}
 
-	if cfg.HarnessConfig.TotalRequests > 0 {
+	if cfg.TotalRequests > 0 {
 		// Request-count-based: discard first 10%
 		trimCount := len(results) / 10
 		if trimCount > 0 {

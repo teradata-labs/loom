@@ -121,8 +121,8 @@ func main() {
 		for _, report := range reports {
 			writeReport(report, *outputDir)
 		}
-		// Explicitly release report memory before next scenario
-		reports = nil
+		// Explicitly drop the reference so GC can reclaim the slice before the next scenario.
+		reports = nil //nolint:ineffassign,wastedassign // drop reference before forced GC
 		runtime.GC()
 
 		completed++

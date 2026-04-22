@@ -128,7 +128,7 @@ func main() {
 	grpcServer.GracefulStop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	httpServer.Shutdown(ctx)
+	_ = httpServer.Shutdown(ctx)
 	log.Println("Server stopped.")
 }
 
@@ -177,12 +177,12 @@ func (bs *benchServer) startHTTPServer(port int) *http.Server {
 		snap := bs.provider.GetMetrics().Snapshot()
 		bs.mu.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(snap)
+		_ = json.NewEncoder(w).Encode(snap)
 	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"ok","commit":"%s"}`, gitCommit)
+		_, _ = fmt.Fprintf(w, `{"status":"ok","commit":"%s"}`, gitCommit)
 	})
 
 	mux.HandleFunc("/reconfigure", func(w http.ResponseWriter, r *http.Request) {
@@ -243,7 +243,7 @@ func (bs *benchServer) startHTTPServer(port int) *http.Server {
 			cfg.numAgents, cfg.llmLatency, cfg.llmJitter, cfg.llmErrorRate, cfg.llmConcurrencyLimit)
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"reconfigured","agents":%d,"llm_latency_ms":%d,"llm_error_rate":%.2f}`,
+		_, _ = fmt.Fprintf(w, `{"status":"reconfigured","agents":%d,"llm_latency_ms":%d,"llm_error_rate":%.2f}`,
 			cfg.numAgents, cfg.llmLatency.Milliseconds(), cfg.llmErrorRate)
 	})
 
@@ -271,7 +271,7 @@ func (bs *benchServer) startHTTPServer(port int) *http.Server {
 		runtime.GC()
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"reset","sessions_cleared":true}`)
+		_, _ = fmt.Fprint(w, `{"status":"reset","sessions_cleared":true}`)
 	})
 
 	srv := &http.Server{

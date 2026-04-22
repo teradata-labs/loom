@@ -41,7 +41,7 @@ func reconfigureServer(httpAddr string, cfg map[string]interface{}) error {
 	if err != nil {
 		return fmt.Errorf("reconfigure request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("reconfigure returned %d", resp.StatusCode)
 	}
@@ -56,7 +56,7 @@ func resetServer(httpAddr string) error {
 	if err != nil {
 		return fmt.Errorf("reset request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return nil
 }
 
@@ -93,8 +93,8 @@ func scenarioSustainedLoad(ctx context.Context, serverAddr, httpAddr string, run
 	}
 
 	cfg := baseCfg(serverAddr, runs, warmupRuns, "sustained_load")
-	cfg.HarnessConfig.Concurrency = 20
-	cfg.HarnessConfig.Duration = 120 * time.Second
+	cfg.Concurrency = 20
+	cfg.Duration = 120 * time.Second
 	cfg.PerRunWarmup = 10 * time.Second
 
 	report, err := runSingleScenario(ctx, cfg)
@@ -119,11 +119,11 @@ func scenarioConcurrencyScaling(ctx context.Context, serverAddr, httpAddr string
 
 	for _, workers := range levels {
 		log.Printf("[concurrency_scaling] level=%d workers", workers)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		cfg := baseCfg(serverAddr, runs, warmupRuns, fmt.Sprintf("concurrency_scaling_%d", workers))
-		cfg.HarnessConfig.Concurrency = workers
-		cfg.HarnessConfig.Duration = 30 * time.Second
+		cfg.Concurrency = workers
+		cfg.Duration = 30 * time.Second
 		cfg.PerRunWarmup = 5 * time.Second
 
 		report, err := runSingleScenario(ctx, cfg)
@@ -165,11 +165,11 @@ func scenarioPeakThroughput(ctx context.Context, serverAddr, httpAddr string, ru
 
 	for _, workers := range levels {
 		log.Printf("[peak_throughput] level=%d workers", workers)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		cfg := baseCfg(serverAddr, runs, warmupRuns, fmt.Sprintf("peak_throughput_%d", workers))
-		cfg.HarnessConfig.Concurrency = workers
-		cfg.HarnessConfig.Duration = 30 * time.Second
+		cfg.Concurrency = workers
+		cfg.Duration = 30 * time.Second
 		cfg.PerRunWarmup = 5 * time.Second
 
 		report, err := runSingleScenario(ctx, cfg)
@@ -208,15 +208,15 @@ func scenarioMemoryPressure(ctx context.Context, serverAddr, httpAddr string, ru
 
 	for _, sessions := range sessionLevels {
 		log.Printf("[memory_pressure] level=%d sessions", sessions)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		cfg := baseCfg(serverAddr, runs/2, warmupRuns/2, fmt.Sprintf("memory_pressure_%d", sessions))
 		if cfg.Runs < 1 {
 			cfg.Runs = 1
 		}
-		cfg.HarnessConfig.Concurrency = 32
-		cfg.HarnessConfig.TotalRequests = sessions
-		cfg.HarnessConfig.LLMConcurrencyLimit = 100000
+		cfg.Concurrency = 32
+		cfg.TotalRequests = sessions
+		cfg.LLMConcurrencyLimit = 100000
 
 		report, err := runSingleScenario(ctx, cfg)
 		if err != nil {
@@ -249,15 +249,15 @@ func scenarioMultiTurn(ctx context.Context, serverAddr, httpAddr string, runs, w
 
 	for _, turns := range turnCounts {
 		log.Printf("[multi_turn] level=%d turns", turns)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		cfg := baseCfg(serverAddr, runs/2, 0, fmt.Sprintf("multi_turn_%d", turns))
 		if cfg.Runs < 1 {
 			cfg.Runs = 1
 		}
-		cfg.HarnessConfig.Concurrency = 1
-		cfg.HarnessConfig.TotalRequests = turns
-		cfg.HarnessConfig.SessionID = fmt.Sprintf("multi-turn-%d", turns)
+		cfg.Concurrency = 1
+		cfg.TotalRequests = turns
+		cfg.SessionID = fmt.Sprintf("multi-turn-%d", turns)
 		cfg.PerRunWarmup = 0
 		cfg.CollectTimeSeries = false
 
@@ -293,15 +293,15 @@ func scenarioRealisticLLM(ctx context.Context, serverAddr, httpAddr string, runs
 
 		for _, workers := range workerLevels {
 			log.Printf("[realistic_llm] latency=%dms, workers=%d", latMs, workers)
-			resetServer(httpAddr)
+			_ = resetServer(httpAddr)
 
 			scenarioRuns := runs / 2
 			if scenarioRuns < 1 {
 				scenarioRuns = 1
 			}
 			cfg := baseCfg(serverAddr, scenarioRuns, 0, fmt.Sprintf("realistic_llm_%dms_%dw", latMs, workers))
-			cfg.HarnessConfig.Concurrency = workers
-			cfg.HarnessConfig.Duration = 30 * time.Second
+			cfg.Concurrency = workers
+			cfg.Duration = 30 * time.Second
 			cfg.PerRunWarmup = 5 * time.Second
 
 			report, err := runSingleScenario(ctx, cfg)
@@ -328,10 +328,10 @@ func scenarioFreshVsReused(ctx context.Context, serverAddr, httpAddr string, run
 
 	// Fresh sessions
 	log.Printf("[fresh_vs_reused] mode=fresh")
-	resetServer(httpAddr)
+	_ = resetServer(httpAddr)
 	freshCfg := baseCfg(serverAddr, runs, warmupRuns, "fresh_vs_reused_fresh")
-	freshCfg.HarnessConfig.Concurrency = 50
-	freshCfg.HarnessConfig.TotalRequests = 5000
+	freshCfg.Concurrency = 50
+	freshCfg.TotalRequests = 5000
 
 	freshReport, err := runSingleScenario(ctx, freshCfg)
 	if err != nil {
@@ -343,11 +343,11 @@ func scenarioFreshVsReused(ctx context.Context, serverAddr, httpAddr string, run
 	// on a single session lock. With N workers queued, the Nth waits for
 	// (N-1) × per-request time. At 10 workers this is manageable.
 	log.Printf("[fresh_vs_reused] mode=reused")
-	resetServer(httpAddr)
+	_ = resetServer(httpAddr)
 	reusedCfg := baseCfg(serverAddr, runs, warmupRuns, "fresh_vs_reused_reused")
-	reusedCfg.HarnessConfig.Concurrency = 10
-	reusedCfg.HarnessConfig.TotalRequests = 1000
-	reusedCfg.HarnessConfig.SessionID = "reused-session-test"
+	reusedCfg.Concurrency = 10
+	reusedCfg.TotalRequests = 1000
+	reusedCfg.SessionID = "reused-session-test"
 
 	reusedReport, err := runSingleScenario(ctx, reusedCfg)
 	if err != nil {
@@ -372,16 +372,16 @@ func scenarioSessionContention(ctx context.Context, serverAddr, httpAddr string,
 
 	for _, workers := range workerLevels {
 		log.Printf("[session_contention] workers=%d", workers)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		scenarioRuns := runs / 2
 		if scenarioRuns < 1 {
 			scenarioRuns = 1
 		}
 		cfg := baseCfg(serverAddr, scenarioRuns, 0, fmt.Sprintf("session_contention_%d", workers))
-		cfg.HarnessConfig.Concurrency = workers
-		cfg.HarnessConfig.Duration = 30 * time.Second
-		cfg.HarnessConfig.SessionID = "contention-test-session"
+		cfg.Concurrency = workers
+		cfg.Duration = 30 * time.Second
+		cfg.SessionID = "contention-test-session"
 		cfg.PerRunWarmup = 5 * time.Second
 
 		report, err := runSingleScenario(ctx, cfg)
@@ -407,15 +407,15 @@ func scenarioMultiAgent(ctx context.Context, serverAddr, httpAddr string, runs, 
 		}); err != nil {
 			return nil, err
 		}
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		scenarioRuns := runs / 2
 		if scenarioRuns < 1 {
 			scenarioRuns = 1
 		}
 		cfg := baseCfg(serverAddr, scenarioRuns, 0, fmt.Sprintf("multi_agent_%d", agents))
-		cfg.HarnessConfig.Concurrency = 32
-		cfg.HarnessConfig.TotalRequests = 2000
+		cfg.Concurrency = 32
+		cfg.TotalRequests = 2000
 
 		report, err := runSingleScenario(ctx, cfg)
 		if err != nil {
@@ -440,15 +440,15 @@ func scenarioErrorResilience(ctx context.Context, serverAddr, httpAddr string, r
 		}); err != nil {
 			return nil, err
 		}
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		scenarioRuns := runs / 2
 		if scenarioRuns < 1 {
 			scenarioRuns = 1
 		}
 		cfg := baseCfg(serverAddr, scenarioRuns, 0, fmt.Sprintf("error_resilience_%dpct", int(rate*100)))
-		cfg.HarnessConfig.Concurrency = 20
-		cfg.HarnessConfig.Duration = 60 * time.Second
+		cfg.Concurrency = 20
+		cfg.Duration = 60 * time.Second
 		cfg.PerRunWarmup = 5 * time.Second
 
 		report, err := runSingleScenario(ctx, cfg)
@@ -459,7 +459,7 @@ func scenarioErrorResilience(ctx context.Context, serverAddr, httpAddr string, r
 	}
 
 	// Reset error rate back to 0
-	reconfigureServer(httpAddr, map[string]interface{}{"llm_error_rate": 0.0})
+	_ = reconfigureServer(httpAddr, map[string]interface{}{"llm_error_rate": 0.0})
 	return reports, nil
 }
 
@@ -478,16 +478,16 @@ func scenarioStreamWeave(ctx context.Context, serverAddr, httpAddr string, runs,
 
 	for _, workers := range workerLevels {
 		log.Printf("[streamweave] workers=%d", workers)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		scenarioRuns := runs / 2
 		if scenarioRuns < 1 {
 			scenarioRuns = 1
 		}
 		cfg := baseCfg(serverAddr, scenarioRuns, 0, fmt.Sprintf("streamweave_%d", workers))
-		cfg.HarnessConfig.Concurrency = workers
-		cfg.HarnessConfig.Duration = 30 * time.Second
-		cfg.HarnessConfig.UseStreaming = true
+		cfg.Concurrency = workers
+		cfg.Duration = 30 * time.Second
+		cfg.UseStreaming = true
 		cfg.PerRunWarmup = 5 * time.Second
 
 		report, err := runSingleScenario(ctx, cfg)
@@ -510,12 +510,12 @@ func scenarioColdStart(ctx context.Context, serverAddr, httpAddr string, runs, _
 
 	for i := range runs {
 		log.Printf("[cold_start] iteration %d/%d", i+1, runs)
-		resetServer(httpAddr)
+		_ = resetServer(httpAddr)
 
 		// Measure first 10 serial requests
 		cfg := baseCfg(serverAddr, 1, 0, fmt.Sprintf("cold_start_%d", i+1))
-		cfg.HarnessConfig.Concurrency = 1
-		cfg.HarnessConfig.TotalRequests = 11
+		cfg.Concurrency = 1
+		cfg.TotalRequests = 11
 		cfg.PerRunWarmup = 0
 		cfg.CollectTimeSeries = false
 		cfg.CollectHistogram = true
