@@ -17,12 +17,12 @@ import (
 // Opus 4.6 (128K) without the caller ever knowing.
 func TestResolveMaxOutput(t *testing.T) {
 	tests := []struct {
-		name              string
-		configuredMax     int
-		provider          string
-		model             string
-		wantMaxOutputCap  int
-		description       string
+		name             string
+		configuredMax    int
+		provider         string
+		model            string
+		wantMaxOutputCap int
+		description      string
 	}{
 		{
 			name:             "explicit user config wins",
