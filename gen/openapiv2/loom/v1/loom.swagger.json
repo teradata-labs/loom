@@ -3942,6 +3942,10 @@
             "type": "string"
           },
           "title": "Optional: Task metadata"
+        },
+        "outputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Optional: Output validation policy for this task's output."
         }
       },
       "description": "AgentTask represents a single agent task with its own prompt."
@@ -4332,6 +4336,10 @@
         "defaultBranch": {
           "$ref": "#/definitions/v1WorkflowPattern",
           "title": "Optional: Default branch if condition doesn't match any branch"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when condition output doesn't match any branch key.\nOn retry, the agent receives a prompt listing valid branch keys and its\nprevious failed output. Each retry uses a fresh session ID."
         }
       },
       "description": "ConditionalPattern routes execution based on an agent's decision.\nA classifier agent evaluates the condition and selects the workflow branch."
@@ -4727,6 +4735,17 @@
       },
       "description": "DebateRound captures one round of debate discussion."
     },
+    "v1DecomposeStrategy": {
+      "type": "string",
+      "enum": [
+        "DECOMPOSE_STRATEGY_UNSPECIFIED",
+        "DECOMPOSE_STRATEGY_BACKWARD",
+        "DECOMPOSE_STRATEGY_FORWARD",
+        "DECOMPOSE_STRATEGY_PARALLEL"
+      ],
+      "default": "DECOMPOSE_STRATEGY_UNSPECIFIED",
+      "description": "DecomposeStrategy controls how the LLM decomposes a goal.\n\n - DECOMPOSE_STRATEGY_BACKWARD: Walk backward from the goal to prerequisites (beads model).\n - DECOMPOSE_STRATEGY_FORWARD: Plan sequentially from current state toward the goal.\n - DECOMPOSE_STRATEGY_PARALLEL: Maximize tasks that can run concurrently."
+    },
     "v1DeleteAgentResponse": {
       "type": "object",
       "properties": {
@@ -4999,6 +5018,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Optional: Timeout for all parallel executions"
+        },
+        "agentOutputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Optional: Output validation policy applied to each agent's output."
         }
       },
       "description": "ForkJoinPattern executes multiple agents in parallel on the same prompt,\nthen merges their results according to the specified strategy."
@@ -5188,6 +5211,20 @@
           "type": "number",
           "format": "float",
           "description": "Default salience for new memories. Default: 0.5."
+        },
+        "enableExtraction": {
+          "type": "boolean",
+          "description": "Enable automatic memory extraction from conversation context.\nWhen enabled, an LLM subprocess periodically extracts entities,\nrelationships, and memories from recent conversation turns.\nDefault: true (when graph memory is enabled)."
+        },
+        "extractionCadence": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of tool executions between automatic graph memory extractions.\nDefault: 5."
+        },
+        "maxEntitiesPerExtraction": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum entities to extract per extraction cycle.\nDefault: 10."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
@@ -6071,6 +6108,10 @@
         "graphMemory": {
           "$ref": "#/definitions/v1GraphMemoryConfig",
           "description": "Graph memory configuration for salience-driven episodic memory."
+        },
+        "taskBoard": {
+          "$ref": "#/definitions/v1TaskBoardConfig",
+          "description": "Task board configuration for dependency-aware task decomposition and kanban."
         }
       },
       "title": "MemoryConfig defines agent memory and session storage"
@@ -6286,6 +6327,60 @@
         }
       },
       "description": "NewMessageUpdate indicates a new message was added to the conversation."
+    },
+    "v1OutputPolicy": {
+      "type": "object",
+      "properties": {
+        "outputSchema": {
+          "type": "string",
+          "description": "JSON Schema string for structural validation (instant, free, deterministic)."
+        },
+        "acceptanceCriteria": {
+          "type": "string",
+          "description": "Semantic validation criteria evaluated by LLM. Use {{output}} placeholder."
+        },
+        "validatorAgentId": {
+          "type": "string",
+          "description": "Optional: another agent evaluates the output."
+        },
+        "judgeConfigId": {
+          "type": "string",
+          "description": "Optional: judge config ID for multi-dimensional quality evaluation."
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Retry behavior when any validation fails."
+        }
+      },
+      "description": "OutputPolicy defines how agent output is validated and optionally retried.\nAttachable to workflow stages, tasks, parallel agent executions, or direct invocations."
+    },
+    "v1OutputRetryPolicy": {
+      "type": "object",
+      "properties": {
+        "maxRetries": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum retries before falling back to default branch or graceful degradation.\n0 = no retries (default behavior, preserves backwards compatibility)."
+        },
+        "includeValidValues": {
+          "type": "boolean",
+          "description": "Whether to include valid output values in the retry prompt.\nFor conditionals: lists valid branch keys.\nFor pipelines: includes the JSON schema or validation criteria.\nFor swarms: includes the vote format template.\nCode treats unset (false) as true (include values by default)."
+        },
+        "sessionMode": {
+          "$ref": "#/definitions/v1RetrySessionMode",
+          "description": "Session behavior on retry. Default (UNSPECIFIED) = FRESH for backward compatibility."
+        },
+        "feedbackTemplate": {
+          "type": "string",
+          "description": "Custom feedback template injected into the retry prompt.\nVariables: {{error}}, {{previous_output}}, {{attempt}}, {{max_retries}}.\nIf empty, a default feedback template is used."
+        },
+        "cooldownMs": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Cooldown between retries in milliseconds. Default: 0 (no cooldown)."
+        }
+      },
+      "description": "OutputRetryPolicy defines retry behavior when agent output doesn't match expectations.\nUsed by conditional executors (branch matching fails), pipeline executors\n(validation_prompt or output_schema fails), and swarm executors (vote parsing fails)."
     },
     "v1PairProgrammingPattern": {
       "type": "object",
@@ -6618,7 +6713,19 @@
         },
         "validationPrompt": {
           "type": "string",
-          "title": "Optional: Validation function to check output before proceeding"
+          "description": "Optional: LLM-based validation — asks an LLM if the output meets criteria.\nUse {{output}} placeholder to reference the stage output."
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when validation fails (schema or LLM validation).\nEach retry includes the failure reason and expected format in the prompt.\nEach retry uses a fresh session ID."
+        },
+        "outputSchema": {
+          "type": "string",
+          "description": "Optional: JSON Schema for validating stage output.\nInstant, free, deterministic validation — no LLM call required.\nWhen both output_schema and validation_prompt are set, schema is checked\nfirst (cheap), then validation_prompt only if schema passes (semantic check)."
+        },
+        "outputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Optional: Unified output validation policy. When set, takes precedence\nover the legacy validation_prompt + output_schema + retry_policy fields."
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
@@ -7016,6 +7123,17 @@
         }
       },
       "description": "RestartPolicy defines rules for stage restart coordination."
+    },
+    "v1RetrySessionMode": {
+      "type": "string",
+      "enum": [
+        "RETRY_SESSION_MODE_UNSPECIFIED",
+        "RETRY_SESSION_MODE_CONTINUE",
+        "RETRY_SESSION_MODE_FRESH",
+        "RETRY_SESSION_MODE_ESCALATE"
+      ],
+      "default": "RETRY_SESSION_MODE_UNSPECIFIED",
+      "description": "RetrySessionMode controls how agent sessions are handled across retries.\n\n - RETRY_SESSION_MODE_UNSPECIFIED: Default: FRESH (preserves existing behavior — each retry gets a fresh session).\n - RETRY_SESSION_MODE_CONTINUE: Continue in the same session. Validation feedback is appended as a new\nuser message. The agent sees its previous attempt and what went wrong.\n - RETRY_SESSION_MODE_FRESH: Fresh session. New conversation with original prompt + error feedback.\n - RETRY_SESSION_MODE_ESCALATE: Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH\nwith an upgraded LLM (switches to orchestrator_llm if available)."
     },
     "v1ReviewComment": {
       "type": "object",
@@ -8211,6 +8329,10 @@
         "judgeAgentId": {
           "type": "string",
           "title": "Optional: Judge agent to break ties"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when vote parsing fails (agent doesn't output\nVOTE:/CONFIDENCE:/REASONING: format). Each retry includes the expected\nformat template and the agent's failed output."
         }
       },
       "description": "SwarmPattern orchestrates multiple agents to vote on decisions.\nAgents independently evaluate a question and vote, with configurable\nconsensus thresholds for decision-making."
@@ -8353,6 +8475,38 @@
         }
       },
       "description": "TLSStatus reports the current TLS status of the server."
+    },
+    "v1TaskBoardConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the task board is enabled. Default: false (opt-in)."
+        },
+        "autoDecompose": {
+          "type": "boolean",
+          "description": "Automatically decompose complex goals into task DAGs."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum decomposition depth (default: 3)."
+        },
+        "defaultBoardId": {
+          "type": "string",
+          "description": "Default board ID. If empty, the agent creates/uses a board named after itself."
+        },
+        "defaultStrategy": {
+          "$ref": "#/definitions/v1DecomposeStrategy",
+          "description": "Default decomposition strategy."
+        },
+        "contextBudgetTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum tokens for the task context block injected into the system prompt.\nDefault: 500. Set to 0 to disable context injection."
+        }
+      },
+      "description": "TaskBoardConfig configures the dependency-aware task decomposition and kanban system."
     },
     "v1TeacherStudentPattern": {
       "type": "object",

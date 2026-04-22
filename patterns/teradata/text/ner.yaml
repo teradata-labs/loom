@@ -1,0 +1,344 @@
+# === METADATA START ===
+name: ner
+title: "Named Entity Recognition"
+description: |
+  Extract named entities (person, organization, location, etc.) from text using
+  TD_NERExtractor. Supports both dictionary-based and rule-based (regex) matching
+  simultaneously.
+
+  Entity matching approaches:
+  - Dictionary (DICT): Match against a table of known entity terms
+  - Rule (RULE): Match using regular expression patterns
+  - Both can be used together in a single query
+
+  The function identifies entity text, its type label, word positions, and
+  surrounding context. English only.
+
+category: text
+difficulty: intermediate
+teradata_function: NERExtractor
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - document_search
+use_cases:
+  # --- Use Case 1: Entity Extraction ---
+  - Extract people, organizations, and locations from documents
+
+  # --- Use Case 2: PII Detection ---
+  - Detect personally identifiable information in text
+
+  # --- Use Case 3: Knowledge Graph ---
+  - Build knowledge graphs from unstructured text
+
+  # --- Use Case 4: Document Indexing ---
+  - Index documents by mentioned entities
+
+  # --- Use Case 5: Compliance Scanning ---
+  - Scan documents for regulated entity references
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing text data and entity reference tables"
+    example: "text_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in all SQL templates below; table with raw text to scan
+    required: true
+    description: "Table with text column to scan for entities"
+    example: "news_articles"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column with raw text; no pre-tokenization needed for NER
+    required: true
+    description: "Column containing text to scan for entities"
+    example: "article_text"
+
+  # --- Parameter 4: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Used in Accumulate to track which document each entity came from
+    required: true
+    description: "Unique identifier column"
+    example: "article_id"
+
+  # --- Parameter 5: Dict Table ---
+  - name: dict_table
+    type: string
+    # LLM-HINT: Dictionary table with columns type_ner (label) and dict (term); case-insensitive matching
+    required: false
+    description: "Dictionary table for entity lookup (columns: type_ner, dict)"
+    example: "ner_dict"
+
+  # --- Parameter 6: Rules Table ---
+  - name: rules_table
+    type: string
+    # LLM-HINT: Rules table with columns type_ner (label) and regex (pattern); for pattern-based matching
+    required: false
+    description: "Rules table for regex-based entity matching (columns: type_ner, regex)"
+    example: "ner_rules"
+
+  # --- Parameter 7: Show Context ---
+  - name: show_context
+    type: integer
+    # LLM-HINT: Number of words before/after each match to include in context column; 0 disables
+    required: false
+    description: "Number of context words before/after each entity match"
+    example: "3"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === DICT_NER TEMPLATE ===
+  # LLM-HINT: Use for dictionary-based entity extraction; requires a Dict dimension table
+  dict_ner:
+    description: "Extract entities using a dictionary of known terms"
+    sql: |
+      -- Dictionary-based Named Entity Recognition
+      SELECT
+        {{id_column}},
+        entity,
+        "type",
+        "start",
+        "end",
+        context,
+        approach
+      FROM TD_NERExtractor(
+        ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+        ON {{database}}.{{dict_table}} AS Dict DIMENSION
+        USING
+          TextColumn('{{text_column}}')
+          InputLanguage('en')
+          ShowContext({{show_context}})
+          Accumulate('{{id_column}}')
+      ) AS t
+      ORDER BY {{id_column}}, "start";
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - dict_table
+      - show_context
+
+  # === RULE_NER TEMPLATE ===
+  # LLM-HINT: Use for regex-based entity extraction; useful for patterns like emails, phone numbers, dates
+  rule_ner:
+    description: "Extract entities using regular expression rules"
+    sql: |
+      -- Rule-based Named Entity Recognition
+      SELECT
+        {{id_column}},
+        entity,
+        "type",
+        "start",
+        "end",
+        context,
+        approach
+      FROM TD_NERExtractor(
+        ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+        ON {{database}}.{{rules_table}} AS Rules DIMENSION
+        USING
+          TextColumn('{{text_column}}')
+          InputLanguage('en')
+          ShowContext({{show_context}})
+          Accumulate('{{id_column}}')
+      ) AS t
+      ORDER BY {{id_column}}, "start";
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - rules_table
+      - show_context
+
+  # === COMBINED_NER TEMPLATE ===
+  # LLM-HINT: Use for full NER with both dictionary and regex rules; most thorough approach
+  combined_ner:
+    description: "Extract entities using both dictionary and regex rules simultaneously"
+    sql: |
+      -- Combined dictionary + rule-based Named Entity Recognition
+      SELECT
+        {{id_column}},
+        entity,
+        "type",
+        "start",
+        "end",
+        context,
+        approach
+      FROM TD_NERExtractor(
+        ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+        ON {{database}}.{{dict_table}} AS Dict DIMENSION
+        ON {{database}}.{{rules_table}} AS Rules DIMENSION
+        USING
+          TextColumn('{{text_column}}')
+          InputLanguage('en')
+          ShowContext({{show_context}})
+          Accumulate('{{id_column}}')
+      ) AS t
+      ORDER BY {{id_column}}, "start";
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - dict_table
+      - rules_table
+      - show_context
+
+  # === ENTITY_SUMMARY TEMPLATE ===
+  # LLM-HINT: Use to get aggregate counts of entities by type across the corpus
+  entity_summary:
+    description: "Summarize entity counts by type across all documents"
+    sql: |
+      -- Entity type summary across corpus
+      WITH entities AS (
+        SELECT
+          {{id_column}},
+          entity,
+          "type",
+          approach
+        FROM TD_NERExtractor(
+          ON {{database}}.{{table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{dict_table}} AS Dict DIMENSION
+          USING
+            TextColumn('{{text_column}}')
+            InputLanguage('en')
+            Accumulate('{{id_column}}')
+        ) AS t
+      )
+      SELECT
+        "type" AS entity_type,
+        COUNT(*) AS mention_count,
+        COUNT(DISTINCT entity) AS unique_entities,
+        COUNT(DISTINCT {{id_column}}) AS doc_count
+      FROM entities
+      GROUP BY "type"
+      ORDER BY mention_count DESC;
+    required_parameters:
+      - database
+      - table
+      - text_column
+      - id_column
+      - dict_table
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "News Article Entity Extraction"
+    description: "Extract people, organizations, and locations from news articles"
+    parameters:
+      database: "news_db"
+      table: "articles"
+      text_column: "article_text"
+      id_column: "article_id"
+      dict_table: "ner_dict"
+      rules_table: "ner_rules"
+      show_context: 3
+    expected_result: |
+      Extracted entities:
+      - article_id: 1, entity: "Teradata", type: "ORGANIZATION", context: "...announced that Teradata will expand..."
+      - article_id: 1, entity: "San Diego", type: "LOCATION", context: "...headquarters in San Diego California..."
+      - article_id: 2, entity: "Jane Smith", type: "PERSON", context: "...CEO Jane Smith stated that..."
+
+      The approach column shows DICT or RULE for each match.
+
+  - name: "PII Detection with Regex Rules"
+    description: "Detect email addresses and phone numbers using regex patterns"
+    parameters:
+      database: "compliance_db"
+      table: "customer_notes"
+      text_column: "note_text"
+      id_column: "note_id"
+      rules_table: "pii_rules"
+      show_context: 2
+    expected_result: |
+      Detected PII:
+      - note_id: 301, entity: "user@example.com", type: "EMAIL", approach: "RULE"
+      - note_id: 302, entity: "555-123-4567", type: "PHONE", approach: "RULE"
+
+      Regex rules table example:
+        type_ner: 'EMAIL', regex: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        type_ner: 'PHONE', regex: '\d{3}[-.]?\d{3}[-.]?\d{4}'
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "No entities found"
+    cause: "Neither Dict nor Rules dimension table provided, or tables are empty"
+    solution: "Provide at least one of Dict or Rules as a DIMENSION input with populated data"
+
+  - error: "type column requires quoting"
+    cause: "The output column 'type' is a reserved word in SQL"
+    solution: "Always quote the type column as \"type\" in SELECT and WHERE clauses"
+
+  - error: "Dict table column name mismatch"
+    cause: "Dict table must have exactly columns named type_ner and dict"
+    solution: "Create the dictionary table with columns: type_ner VARCHAR(500), dict VARCHAR(500)"
+
+  - error: "Rules table column name mismatch"
+    cause: "Rules table must have exactly columns named type_ner and regex"
+    solution: "Create the rules table with columns: type_ner VARCHAR(500), regex VARCHAR(500)"
+
+  - error: "Regex escaping issues"
+    cause: "Double-escaping backslashes in the Rules table"
+    solution: "In the Rules table, use single backslashes (e.g., \\d not \\\\d). Double-escaping is only needed for inline TaggingRules, not for Rules tables."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Named Entity Recognition Best Practices
+
+  ### 1. Build Quality Dictionaries
+  - Include common variations (e.g., "IBM", "International Business Machines")
+  - Dict matching is case-insensitive and trims whitespace
+  - Dict entries can also contain regex patterns for flexible matching
+
+  ### 2. Use Both Dict and Rules Together
+  - Dict for known entities (company names, product names)
+  - Rules for structural patterns (emails, phone numbers, dates)
+  - The approach column tells you which method matched
+
+  ### 3. Use ShowContext for Validation
+  - Set ShowContext(3) or higher to see surrounding words
+  - Helps verify matches are correct in context
+  - Context values are word counts, not character counts
+
+  ### 4. Entity Positions
+  - start/end columns are word positions, not character offsets
+  - Use these to reconstruct entity location in original text
+  - ORDER BY start to see entities in document order
+
+  ### 5. Post-Processing
+  - Deduplicate entities that appear multiple times in the same document
+  - Normalize entity names (e.g., "J. Smith" and "Jane Smith")
+  - Join with other text analytics results (sentiment, classification) for richer analysis
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: N-Gram Analysis ---
+  - ngram
+
+  # --- Pattern 2: Sentiment Analysis ---
+  - sentiment
+
+  # --- Pattern 3: Text Classification ---
+  - text_classifier
+
+  # --- Pattern 4: TF-IDF ---
+  - tfidf
+# === RELATED_PATTERNS END ===

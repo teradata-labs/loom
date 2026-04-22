@@ -1111,3 +1111,16 @@ agent:
 	require.NotNil(t, config.Memory.GraphMemory)
 	assert.False(t, config.Memory.GraphMemory.Enabled, "graph_memory should be disabled when explicitly set to false")
 }
+
+func TestDefaultGraphMemoryConfig(t *testing.T) {
+	cfg := DefaultGraphMemoryConfig()
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.Enabled)
+	assert.Equal(t, int32(20), cfg.ContextBudgetPercent, "default budget percent should be 20")
+	assert.Equal(t, int32(0), cfg.MaxContextTokens, "default max context tokens should be 0 (use percentage)")
+	assert.InDelta(t, 0.95, float64(cfg.DecayRate), 0.001)
+	assert.InDelta(t, 0.1, float64(cfg.BoostAmount), 0.001)
+	assert.InDelta(t, 0.1, float64(cfg.MinSalienceThreshold), 0.001)
+	assert.Equal(t, int32(50), cfg.MaxRecallCandidates)
+	assert.InDelta(t, 0.5, float64(cfg.DefaultSalience), 0.001)
+}

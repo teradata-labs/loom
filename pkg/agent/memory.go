@@ -186,10 +186,16 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	m.mu.Lock()
 
 	// Double-check: another goroutine may have created it while we waited for the write lock.
-	// Sessions are always inserted fully built (SegmentedMem != nil), so we only need to
-	// update metadata under the lock — never mutate SegmentedMem on a live session.
+	// Defensive: also ensure SegmentedMem/FailureTracker are present — in the common
+	// case they already are (ensureSessionMemory is a no-op), but this protects against
+	// edge cases where a cached session has been stripped of these fields.
 	if session, ok := m.sessions[sessionID]; ok {
 		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
+		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
+			sharedMem, store, tracer, llmProv, maxToolRes, ctx)
+		if session.FailureTracker == nil {
+			session.FailureTracker = newConsecutiveFailureTracker()
+		}
 		m.mu.Unlock()
 		return session
 	}
@@ -200,15 +206,24 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		session, err := store.LoadSession(ctx, sessionID)
 		if err == nil && session != nil {
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
+			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
+			// (they aren't persisted). Recreate them so compression and error
+			// tracking continue to work across restarts.
+			needsReplay := session.SegmentedMem == nil
 			m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
 				sharedMem, store, tracer, llmProv, maxToolRes, ctx)
 			if session.FailureTracker == nil {
 				session.FailureTracker = newConsecutiveFailureTracker()
 			}
-			// Replay loaded messages into SegmentedMem
-			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-				for _, msg := range session.Messages {
-					segMem.AddMessage(ctx, msg)
+			// Replay DB-loaded messages into a freshly built SegmentedMem so
+			// GetMessagesForLLM returns full history after server restart.
+			//
+			// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
+			// compression from firing between an assistant tool_use and its
+			// tool_result — see ReplayMessages doc for details.
+			if needsReplay {
+				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
+					segMem.ReplayMessages(ctx, session.Messages)
 				}
 			}
 			m.sessions[sessionID] = session

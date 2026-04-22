@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xeipuuv/gojsonschema"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -72,6 +74,7 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 	stageOutputs := make([]string, 0, len(e.pattern.Stages))
 	currentInput := e.pattern.InitialPrompt
 	modelsUsed := make(map[string]string)
+	var validationWarnings []string // tracks stages that used unvalidated output
 
 	for i, stage := range e.pattern.Stages {
 		stageNum := i + 1
@@ -108,16 +111,53 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		allResults = append(allResults, result)
 		stageOutputs = append(stageOutputs, result.Output)
 
-		// Validate output if validation prompt is provided
-		if stage.ValidationPrompt != "" {
+		// Validate output — schema first (cheap), then LLM validation (expensive)
+		var validationFailure string
+
+		if stage.OutputSchema != "" {
+			extractedJSON, schemaErr := e.validateStageOutputSchema(result.Output, stage.OutputSchema)
+			if schemaErr != nil {
+				validationFailure = fmt.Sprintf("JSON Schema validation failed: %s", schemaErr.Error())
+			} else if extractedJSON != result.Output {
+				// Normalize output: replace prose+JSON with just the extracted JSON
+				// so downstream stages receive clean structured data.
+				result.Output = extractedJSON
+				allResults[len(allResults)-1].Output = extractedJSON
+				stageOutputs[len(stageOutputs)-1] = extractedJSON
+			}
+		}
+
+		if validationFailure == "" && stage.ValidationPrompt != "" {
 			valid, err := e.validateStageOutput(ctx, workflowID, stage, result.Output, stageNum)
 			if err != nil {
-				e.orchestrator.logger.Warn("Stage validation failed",
-					zap.Int("stage", i+1),
+				e.orchestrator.logger.Warn("Stage validation error",
+					zap.Int("stage", stageNum),
 					zap.Error(err))
-				// Continue anyway, but log the validation failure
 			} else if !valid {
-				return nil, fmt.Errorf("stage %d output validation failed", i+1)
+				validationFailure = fmt.Sprintf("LLM validation failed against criteria: %s", stage.ValidationPrompt)
+			}
+		}
+
+		if validationFailure != "" {
+			if stage.RetryPolicy != nil && stage.RetryPolicy.MaxRetries > 0 {
+				// Pass prior stage outputs (excluding current failed output) to avoid
+				// leaking the failed output into {{history}} in the retry prompt.
+				priorOutputs := stageOutputs[:len(stageOutputs)-1]
+				retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
+				if retryResult != nil {
+					result = retryResult
+					allResults[len(allResults)-1] = result
+					stageOutputs[len(stageOutputs)-1] = result.Output
+					if retryModel != "" {
+						modelsUsed[stage.AgentId] = retryModel
+					}
+				} else {
+					// Graceful degradation: retries exhausted, continue with unvalidated output
+					validationWarnings = append(validationWarnings,
+						fmt.Sprintf("stage %d (%s): %s", stageNum, stage.AgentId, validationFailure))
+				}
+			} else {
+				return nil, fmt.Errorf("stage %d output validation failed: %s", stageNum, validationFailure)
 			}
 		}
 
@@ -136,17 +176,22 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		zap.Duration("duration", duration),
 		zap.Float64("total_cost_usd", cost.TotalCostUsd))
 
+	metadata := map[string]string{
+		"stage_count":       fmt.Sprintf("%d", len(e.pattern.Stages)),
+		"pass_full_history": fmt.Sprintf("%t", e.pattern.PassFullHistory),
+	}
+	if len(validationWarnings) > 0 {
+		metadata["validation_warnings"] = strings.Join(validationWarnings, "; ")
+	}
+
 	return &loomv1.WorkflowResult{
 		PatternType:  "pipeline",
 		AgentResults: allResults,
 		MergedOutput: finalOutput,
-		Metadata: map[string]string{
-			"stage_count":       fmt.Sprintf("%d", len(e.pattern.Stages)),
-			"pass_full_history": fmt.Sprintf("%t", e.pattern.PassFullHistory),
-		},
-		DurationMs: duration.Milliseconds(),
-		Cost:       cost,
-		ModelsUsed: modelsUsed,
+		Metadata:     metadata,
+		DurationMs:   duration.Milliseconds(),
+		Cost:         cost,
+		ModelsUsed:   modelsUsed,
 	}, nil
 }
 
@@ -356,4 +401,161 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 	}
 
 	return cost
+}
+
+// validateStageOutputSchema validates stage output against a JSON Schema.
+// Returns (extractedJSON, nil) if valid, ("", error) if invalid.
+// When the output contains JSON embedded in prose, the extracted JSON is returned
+// so the caller can normalize result.Output for downstream stages.
+func (e *PipelineExecutor) validateStageOutputSchema(output string, schema string) (string, error) {
+	// Try to extract JSON from mixed text+JSON output
+	jsonStr := extractJSONFromText(output)
+	if jsonStr == "" {
+		return "", fmt.Errorf("no valid JSON found in output")
+	}
+
+	schemaLoader := gojsonschema.NewStringLoader(schema)
+	documentLoader := gojsonschema.NewStringLoader(jsonStr)
+
+	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	if err != nil {
+		return "", fmt.Errorf("schema validation error: %w", err)
+	}
+
+	if !result.Valid() {
+		var violations []string
+		for _, err := range result.Errors() {
+			violations = append(violations, err.String())
+		}
+		return "", fmt.Errorf("schema violations: %s", strings.Join(violations, "; "))
+	}
+
+	return jsonStr, nil
+}
+
+// retryStage retries a pipeline stage after validation failure. Each retry uses
+// a fresh session ID and includes the failure reason in the prompt. Returns nil
+// if all retries are exhausted (caller should use graceful degradation).
+func (e *PipelineExecutor) retryStage(
+	ctx context.Context,
+	workflowID string,
+	stage *loomv1.PipelineStage,
+	previousInput string,
+	allOutputs []string,
+	stageNum int,
+	failedOutput string,
+	validationFailure string,
+) (*loomv1.AgentResult, string) {
+	maxRetries := cappedRetries(stage.RetryPolicy.MaxRetries)
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ""
+		}
+		// Build retry prompt with validation feedback
+		basePrompt := e.buildStagePrompt(stage, previousInput, allOutputs)
+		retryPrompt := e.buildStageRetryPrompt(basePrompt, failedOutput, validationFailure, stage.OutputSchema, stage.RetryPolicy.IncludeValidValues, attempt, maxRetries)
+
+		// Fresh session ID for retry
+		retryWorkflowID := fmt.Sprintf("%s-stage%d-%s-retry%d", workflowID, stageNum, stage.AgentId, attempt)
+
+		e.orchestrator.logger.Info("Retrying pipeline stage",
+			zap.Int("stage", stageNum),
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+			zap.String("failure", truncateForLog(validationFailure, 100)))
+
+		result, model, err := e.executeStageWithSpan(ctx, retryWorkflowID, stage, retryPrompt, stageNum)
+		if err != nil {
+			e.orchestrator.logger.Warn("Stage retry execution failed",
+				zap.Int("stage", stageNum),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			continue
+		}
+
+		// Re-validate — schema first, then LLM
+		var retryValidationFailure string
+		if stage.OutputSchema != "" {
+			extractedJSON, schemaErr := e.validateStageOutputSchema(result.Output, stage.OutputSchema)
+			if schemaErr != nil {
+				retryValidationFailure = fmt.Sprintf("JSON Schema validation failed: %s", schemaErr.Error())
+			} else if extractedJSON != result.Output {
+				result.Output = extractedJSON
+			}
+		}
+		if retryValidationFailure == "" && stage.ValidationPrompt != "" {
+			valid, valErr := e.validateStageOutput(ctx, retryWorkflowID, stage, result.Output, stageNum)
+			if valErr != nil {
+				e.orchestrator.logger.Warn("Stage retry validation error",
+					zap.Int("stage", stageNum),
+					zap.Int("attempt", attempt),
+					zap.Error(valErr))
+			} else if !valid {
+				retryValidationFailure = fmt.Sprintf("LLM validation failed against criteria: %s", stage.ValidationPrompt)
+			}
+		}
+
+		if retryValidationFailure == "" {
+			e.orchestrator.logger.Info("Stage passed validation after retry",
+				zap.Int("stage", stageNum),
+				zap.Int("attempt", attempt))
+			return result, model
+		}
+
+		// Update failure info for next retry prompt
+		failedOutput = result.Output
+		validationFailure = retryValidationFailure
+	}
+
+	e.orchestrator.logger.Warn("Stage failed validation after all retries, continuing with last output",
+		zap.Int("stage", stageNum),
+		zap.Int("retries", maxRetries))
+	return nil, ""
+}
+
+// buildStageRetryPrompt constructs a retry prompt that explains what went wrong
+// and shows the expected output format. When includeValidValues is true (the default),
+// the JSON schema or validation criteria is included in the prompt.
+func (e *PipelineExecutor) buildStageRetryPrompt(originalPrompt, failedOutput, validationFailure, schema string, includeValidValues bool, attempt, maxRetries int) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("⚠️ OUTPUT VALIDATION FAILED (retry %d of %d)\n\n", attempt, maxRetries))
+
+	// Show failed output (truncated)
+	truncated := failedOutput
+	if len(truncated) > 500 {
+		truncated = truncated[:500] + "... (truncated)"
+	}
+	sb.WriteString("YOUR PREVIOUS OUTPUT:\n---\n")
+	sb.WriteString(truncated)
+	sb.WriteString("\n---\n\n")
+
+	// Explain why it failed
+	sb.WriteString("WHY IT FAILED:\n")
+	sb.WriteString(validationFailure)
+	sb.WriteString("\n\n")
+
+	// Include schema/criteria when includeValidValues is true (default behavior).
+	// Proto3 bool default is false; callers should pass true unless explicitly disabled.
+	if includeValidValues && schema != "" {
+		sb.WriteString("REQUIRED JSON SCHEMA:\n")
+		sb.WriteString(schema)
+		sb.WriteString("\n\n")
+		sb.WriteString("WHAT TO DO:\n")
+		sb.WriteString("1. Your output MUST be valid JSON conforming to the schema above.\n")
+		sb.WriteString("2. Output ONLY the JSON object — no markdown, no explanation, no code fences.\n")
+		sb.WriteString("3. Ensure all required fields are present and have the correct types.\n\n")
+	} else {
+		sb.WriteString("WHAT TO DO:\n")
+		sb.WriteString("1. Re-read the original task below.\n")
+		sb.WriteString("2. Ensure your output satisfies the validation criteria.\n")
+		sb.WriteString("3. If the validation expects a specific format (JSON, structured data, etc.),\n")
+		sb.WriteString("   output ONLY that format with no surrounding explanation.\n\n")
+	}
+
+	sb.WriteString("ORIGINAL TASK:\n")
+	sb.WriteString(originalPrompt)
+
+	return sb.String()
 }

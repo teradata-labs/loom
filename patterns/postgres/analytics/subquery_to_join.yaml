@@ -9,6 +9,10 @@ priority: 80
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Eliminate correlated subqueries"
   - "Speed up existence checks (EXISTS/IN)"

@@ -9,6 +9,10 @@ priority: 70
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Remove redundant DISTINCT on primary keys"
   - "Optimize unique value queries"

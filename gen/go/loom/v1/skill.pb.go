@@ -314,7 +314,7 @@ type SkillTrigger struct {
 	SlashCommands []string `protobuf:"bytes,1,rep,name=slash_commands,json=slashCommands,proto3" json:"slash_commands,omitempty"`
 	// Keywords for auto-detection from user messages
 	Keywords []string `protobuf:"bytes,2,rep,name=keywords,proto3" json:"keywords,omitempty"`
-	// Maps to patterns.IntentCategory for intent-based activation
+	// Freeform intent labels for intent-based activation
 	IntentCategories []string `protobuf:"bytes,3,rep,name=intent_categories,json=intentCategories,proto3" json:"intent_categories,omitempty"`
 	// How this skill can be activated
 	Mode SkillActivationMode `protobuf:"varint,4,opt,name=mode,proto3,enum=loom.v1.SkillActivationMode" json:"mode,omitempty"`

@@ -137,3 +137,55 @@ func TestEntityRecall_Format_Full(t *testing.T) {
 	assert.Contains(t, formatted, "### Relevant Memories")
 	assert.Contains(t, formatted, "[fact] (salience=0.90): Loom is an agent framework")
 }
+
+func TestEntityRecall_Format_EntityNamesResolution(t *testing.T) {
+	er := &EntityRecall{
+		Entity: &Entity{Name: "ilsun", EntityType: "person"},
+		EdgesOut: []*Edge{
+			{Relation: "WORKS_ON", TargetID: "uuid-project-1"},
+			{Relation: "KNOWS_ABOUT", TargetID: "uuid-missing"},
+		},
+		EdgesIn: []*Edge{
+			{Relation: "COLLEAGUE_OF", SourceID: "uuid-marcus"},
+		},
+		EntityNames: map[string]string{
+			"uuid-project-1": "team_phoenix",
+			"uuid-marcus":    "marcus",
+		},
+	}
+	formatted := er.Format()
+	// Resolved names should appear instead of UUIDs.
+	assert.Contains(t, formatted, "ilsun -> [WORKS_ON] -> team_phoenix")
+	assert.Contains(t, formatted, "marcus -> [COLLEAGUE_OF] -> ilsun")
+	// UUID with no name mapping should fall back to the raw ID.
+	assert.Contains(t, formatted, "ilsun -> [KNOWS_ABOUT] -> uuid-missing")
+}
+
+func TestEntityRecall_Format_UserMarker(t *testing.T) {
+	er := &EntityRecall{
+		Entity: &Entity{
+			Name:           "ilsun",
+			EntityType:     "person",
+			PropertiesJSON: `{"is_user":true}`,
+		},
+	}
+	formatted := er.Format()
+	// User entities should be annotated in the header.
+	assert.Contains(t, formatted, "## Graph Memory: ilsun (person, user)")
+	// The is_user-only properties should not be printed as a separate line.
+	assert.NotContains(t, formatted, "Properties:")
+}
+
+func TestEntityRecall_Format_UserMarkerWithOtherProps(t *testing.T) {
+	er := &EntityRecall{
+		Entity: &Entity{
+			Name:           "ilsun",
+			EntityType:     "person",
+			PropertiesJSON: `{"is_user":true,"team":"phoenix"}`,
+		},
+	}
+	formatted := er.Format()
+	assert.Contains(t, formatted, "## Graph Memory: ilsun (person, user)")
+	// Other properties should still be shown.
+	assert.Contains(t, formatted, "Properties:")
+}

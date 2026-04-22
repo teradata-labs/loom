@@ -43,6 +43,9 @@ teradata_function: Count_Estimate, Population, Null_Count, IsSurrogate, Overlaps
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Generate data quality reports
   - Assess column completeness (NULL percentages)

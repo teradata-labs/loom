@@ -54,6 +54,7 @@ llm:
 
 | Method | When to Use | Configuration |
 |--------|-------------|---------------|
+| **Bearer Token** | Corporate SSO, Identity Center | `AWS_BEARER_TOKEN_BEDROCK` env var |
 | **IAM Role** | EC2/ECS/Lambda (recommended) | No config needed - automatic |
 | **AWS Profile** | Local development with named profile | `bedrock_profile: my-profile` |
 | **Environment Variables** | CI/CD, containers | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
@@ -170,7 +171,43 @@ aws bedrock list-foundation-models --region us-east-1 \
 
 Bedrock supports multiple authentication methods (in order of priority):
 
-### Method 1: IAM Role (Recommended for EC2/ECS/Lambda)
+### Method 1: Bearer Token (Corporate SSO / Identity Center)
+
+Use a bearer token for environments where teams get API access to Bedrock via AWS IAM Identity Center (formerly AWS SSO) without needing full IAM credentials.
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK="your-bearer-token"
+```
+
+No other AWS credential fields are required. Region and model defaults still apply (`us-west-2` and `us.anthropic.claude-sonnet-4-5-20250929-v1:0`).
+
+```yaml
+llm:
+  provider: bedrock
+  # Optional: override region/model if needed
+  bedrock_region: us-west-2
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # No credentials needed - bearer token from env var bypasses SigV4
+```
+
+**When to use**:
+- Corporate SSO / AWS IAM Identity Center environments
+- API-key-style access to Bedrock without IAM credentials
+- Environments where SigV4 credential management is impractical
+
+**How it works**:
+- The AWS SDK's `bedrockruntime` client auto-detects `AWS_BEARER_TOKEN_BEDROCK` at initialization
+- Sets `AuthSchemePreference` to `httpBearerAuth`, bypassing SigV4 signing entirely
+- No `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, or IAM role is needed
+
+**Limitations**:
+- The token is a static string from the env var — no automatic refresh/rotation
+- For rotating tokens, use IAM roles or AWS profiles with SSO instead
+
+**Available since**: `bedrockruntime v1.35.0` (Loom ships `v1.50.4`)
+
+
+### Method 2: IAM Role (Recommended for EC2/ECS/Lambda)
 
 No configuration needed - Loom automatically uses the instance/task IAM role:
 
@@ -194,7 +231,7 @@ llm:
 - Audit trail via CloudTrail
 
 
-### Method 2: AWS Profile
+### Method 3: AWS Profile
 
 Use a named profile from `~/.aws/credentials`:
 
@@ -219,7 +256,7 @@ aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 - Switching between projects
 
 
-### Method 3: Environment Variables
+### Method 4: Environment Variables
 
 ```bash
 export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
@@ -233,7 +270,7 @@ export AWS_DEFAULT_REGION="us-west-2"
 - Serverless deployments
 
 
-### Method 4: Keyring (for Explicit Credentials)
+### Method 5: Keyring (for Explicit Credentials)
 
 For security, store AWS credentials in system keyring:
 
@@ -1070,7 +1107,7 @@ time aws bedrock list-foundation-models --region us-west-2
 | Feature | Bedrock | Direct Anthropic |
 |---------|---------|------------------|
 | **Pricing** | Varies by region ($1-$75/1M) | Fixed global pricing ($1-$75/1M) |
-| **Authentication** | AWS IAM (roles, keys) | API key |
+| **Authentication** | AWS IAM (roles, keys, bearer token) | API key |
 | **Network** | VPC/PrivateLink support | Public internet only |
 | **Compliance** | AWS compliance (HIPAA, SOC 2) | Anthropic compliance |
 | **Latency** | Regional (5-180ms) | Global (varies) |

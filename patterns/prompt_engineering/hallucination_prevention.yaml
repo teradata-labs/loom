@@ -31,6 +31,8 @@ backend_type: prompt_engineering
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - reliability
 use_cases:
   # --- Use Case 1: SQL Query Generation ---
   - Verify table and column names before generating queries

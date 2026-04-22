@@ -27,6 +27,9 @@ teradata_function: DBQL
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - query_generation
+  - analytics
 use_cases:
   - Identify queries consuming excessive spool space
   - Diagnose "No more spool space" errors (2646)

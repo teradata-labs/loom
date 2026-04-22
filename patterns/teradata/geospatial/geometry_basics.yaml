@@ -1,0 +1,450 @@
+# === METADATA START ===
+name: geometry_basics
+title: "ST_Geometry Types and Construction"
+description: |
+  Core geospatial data types in Teradata Vantage: ST_Point, ST_LineString, ST_Polygon,
+  ST_GeomCollection, and Multi* variants. Covers creation from Well-Known Text (WKT)
+  and Well-Known Binary (WKB), the Spatial Reference System Identifier (SRID) system,
+  column sizing, inline length tuning, and transform groups for client data exchange.
+
+  Teradata implements SQL/MM Spatial (ISO/IEC 13249-3). The core UDT is ST_Geometry
+  stored in SYSUDTLIB. Geometry columns can be indexed with a geospatial NUSI.
+
+  Geometry basics are foundational for:
+  - Storing location data (stores, customers, assets)
+  - Encoding boundaries (regions, parcels, routes)
+  - Tracking movement (GeoSequence with timestamps)
+  - Preparing data for spatial analysis and joins
+
+category: geospatial
+difficulty: beginner
+teradata_function: ST_Geometry
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_modeling
+  - data_ingestion
+  - analytics
+use_cases:
+  # --- Use Case 1: Store/Asset Location Storage ---
+  - Store point locations (stores, warehouses, cell towers) in a geometry column
+
+  # --- Use Case 2: Boundary Encoding ---
+  - Encode regional boundaries (sales territories, zip codes, parcels) as polygons
+
+  # --- Use Case 3: Route Storage ---
+  - Store routes or paths (delivery routes, pipelines, roads) as linestrings
+
+  # --- Use Case 4: Bulk WKT Ingestion ---
+  - Bulk-load geospatial data from WKT or WKB sources
+
+  # --- Use Case 5: SRID Assignment ---
+  - Assign and manage spatial reference systems for coordinate accuracy
+
+  # --- Use Case 6: Geometry Inspection ---
+  - Inspect geometry type, dimensionality, validity, and bounding rectangles
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database where geospatial tables reside"
+    example: "geo_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table containing or to receive geometry data"
+    example: "store_locations"
+
+  # --- Parameter 3: Geometry Column ---
+  - name: geometry_column
+    type: string
+    # LLM-HINT: Name of the ST_Geometry column in the table
+    required: true
+    description: "Name of the ST_Geometry column"
+    example: "shape"
+
+  # --- Parameter 4: SRID ---
+  - name: srid
+    type: integer
+    # LLM-HINT: Spatial Reference System Identifier; 4326 = WGS84 (lat/lon), 0 = undefined
+    required: false
+    default: "0"
+    description: "Spatial Reference System Identifier. Use 4326 for WGS84 lat/lon coordinates"
+    example: "4326"
+
+  # --- Parameter 5: Max Length ---
+  - name: max_length
+    type: integer
+    # LLM-HINT: Maximum byte size of the geometry column; default ~16MB
+    required: false
+    default: "16776192"
+    description: "Maximum byte size of geometry data. Set equal to inline_length to avoid LOB overhead"
+    example: "8000"
+
+  # --- Parameter 6: Inline Length ---
+  - name: inline_length
+    type: integer
+    # LLM-HINT: Data <= inline_length stored in row; larger stored as LOB; default ~10000
+    required: false
+    default: "10000"
+    description: "Threshold in bytes; geometries larger than this are stored as LOBs"
+    example: "8000"
+
+  # --- Parameter 7: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier for the geometry table
+    required: true
+    description: "Unique identifier column for geometry rows"
+    example: "location_id"
+
+  # --- Parameter 8: Geometry Type ---
+  - name: geometry_type
+    type: string
+    # LLM-HINT: One of ST_Point, ST_LineString, ST_Polygon, ST_MultiPoint, etc.
+    required: false
+    default: "ST_Geometry"
+    description: "Specific geometry subtype to register in GEOMETRY_COLUMNS metadata"
+    example: "ST_Point"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CREATE_TABLE TEMPLATE ===
+  # LLM-HINT: Creates a table with an ST_Geometry column and a geospatial NUSI
+  create_geometry_table:
+    description: "Create a table with an ST_Geometry column and geospatial index"
+    sql: |
+      -- Create table with geometry column
+      -- Set max_length = inline_length to keep all data in-row (avoids LOB overhead)
+      CREATE TABLE {{database}}.{{table}} (
+        {{id_column}} INTEGER NOT NULL,
+        name         VARCHAR(200),
+        {{geometry_column}} ST_Geometry({{max_length}}) INLINE LENGTH {{inline_length}}
+      )
+      INDEX ({{geometry_column}});  -- Geospatial NUSI for spatial predicates
+
+      -- Register the column in SYSSPATIAL metadata
+      CALL SYSSPATIAL.AddGeometryColumn(
+        '',                -- catalog (empty for Teradata)
+        '{{database}}',    -- database
+        '{{table}}',       -- table
+        '{{geometry_column}}', -- column
+        {{srid}},          -- SRID (e.g. 4326 for WGS84)
+        '{{geometry_type}}',   -- geometry type
+        -180.0, -90.0, 180.0, 90.0  -- universe MBR for WGS84
+      );
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - geometry_column
+      - max_length
+      - inline_length
+      - srid
+      - geometry_type
+
+  # === INSERT_POINTS TEMPLATE ===
+  # LLM-HINT: Insert point geometries from WKT; supports optional SRID
+  insert_points_from_wkt:
+    description: "Insert point geometries from Well-Known Text"
+    sql: |
+      -- Insert points using WKT string literals
+      INSERT INTO {{database}}.{{table}} ({{id_column}}, name, {{geometry_column}})
+      VALUES (1, 'Location A', 'POINT(-96.80 32.78)');
+
+      -- Insert with explicit SRID via constructor
+      INSERT INTO {{database}}.{{table}} ({{id_column}}, name, {{geometry_column}})
+      VALUES (2, 'Location B', NEW ST_Geometry('POINT(-87.65 41.90)', {{srid}}));
+
+      -- Insert using coordinate constructor (2D with SRID)
+      INSERT INTO {{database}}.{{table}} ({{id_column}}, name, {{geometry_column}})
+      VALUES (3, 'Location C', NEW ST_Geometry('ST_POINT', -122.42, 37.77, {{srid}}));
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - geometry_column
+      - srid
+
+  # === INSERT_POLYGONS TEMPLATE ===
+  # LLM-HINT: Insert polygon geometries from WKT; rings must close (first point = last point)
+  insert_polygons_from_wkt:
+    description: "Insert polygon geometries from Well-Known Text"
+    sql: |
+      -- Simple polygon (exterior ring only; first point = last point)
+      INSERT INTO {{database}}.{{table}} ({{id_column}}, name, {{geometry_column}})
+      VALUES (1, 'Region A',
+        'POLYGON((-97.0 32.5, -97.0 33.0, -96.5 33.0, -96.5 32.5, -97.0 32.5))');
+
+      -- Polygon with hole (exterior ring + interior ring)
+      INSERT INTO {{database}}.{{table}} ({{id_column}}, name, {{geometry_column}})
+      VALUES (2, 'Region B with hole',
+        'POLYGON((0 0, 0 20, 20 20, 20 0, 0 0),
+                 (5 5, 5 10, 10 10, 10 5, 5 5))');
+
+      -- MultiPolygon (collection of non-overlapping polygons)
+      INSERT INTO {{database}}.{{table}} ({{id_column}}, name, {{geometry_column}})
+      VALUES (3, 'Multi-Region',
+        'MULTIPOLYGON(((1 1, 1 3, 6 3, 6 0, 1 1)),
+                      ((10 5, 10 10, 20 10, 20 5, 10 5)))');
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - geometry_column
+
+  # === READ_GEOMETRIES TEMPLATE ===
+  # LLM-HINT: Read geometry data as WKT, inspect type, SRID, validity, and bounding rectangles
+  read_geometries:
+    description: "Read and inspect geometry data"
+    sql: |
+      -- Export geometries as WKT
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_AsText()       AS wkt,
+        {{geometry_column}}.ST_GeometryType() AS geom_type,
+        {{geometry_column}}.ST_SRID()         AS srid,
+        {{geometry_column}}.ST_IsValid()      AS is_valid,
+        {{geometry_column}}.ST_IsEmpty()      AS is_empty,
+        {{geometry_column}}.ST_CoordDim()     AS coord_dim,
+        {{geometry_column}}.ST_Is3D()         AS is_3d
+      FROM {{database}}.{{table}}
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - geometry_column
+
+  # === BOUNDING_RECTANGLES TEMPLATE ===
+  # LLM-HINT: Extract MBR and coordinate extents for spatial filtering
+  bounding_rectangles:
+    description: "Extract minimum bounding rectangles and coordinate extents"
+    sql: |
+      -- Get MBR and coordinate bounds for each geometry
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_MBR()   AS mbr,
+        {{geometry_column}}.ST_MinX()  AS min_x,
+        {{geometry_column}}.ST_MinY()  AS min_y,
+        {{geometry_column}}.ST_MaxX()  AS max_x,
+        {{geometry_column}}.ST_MaxY()  AS max_y
+      FROM {{database}}.{{table}}
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - id_column
+      - geometry_column
+
+  # === TRANSFORM_GROUP TEMPLATE ===
+  # LLM-HINT: Change how ST_Geometry is serialized for client import/export
+  set_transform_group:
+    description: "Set the transform group for ST_Geometry import/export format"
+    sql: |
+      -- Use VARCHAR WKT (max 64000 bytes) instead of CLOB default
+      SET TRANSFORM GROUP FOR TYPE ST_Geometry TO TD_GEO_VARCHAR;
+
+      -- Use VARCHAR WKT with SRID prefix (EWKT)
+      -- SET TRANSFORM GROUP FOR TYPE ST_Geometry TO TD_GEO_VARCHAR_SRID;
+
+      -- Check current session transform settings
+      EXEC SYSUDTLIB.HelpCurrentSessionTransforms;
+    required_parameters: []
+
+  # === GRANT_PRIVILEGES TEMPLATE ===
+  # LLM-HINT: Required privileges before any geospatial operations
+  grant_geospatial_privileges:
+    description: "Grant required geospatial privileges to a user"
+    sql: |
+      -- Required privileges for geospatial operations
+      GRANT UDTUSAGE ON SYSUDTLIB TO {{username}};
+      GRANT EXECUTE FUNCTION ON SYSSPATIAL TO {{username}};
+      GRANT SELECT ON SYSSPATIAL TO {{username}};
+      GRANT EXECUTE PROCEDURE ON SYSSPATIAL TO {{username}};
+    required_parameters:
+      - username
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Retail Store Locations ---
+  - name: "Retail Store Locations"
+    description: "Create and populate a table of store locations as WGS84 points"
+    parameters:
+      database: "retail_geo"
+      table: "stores"
+      geometry_column: "location"
+      id_column: "store_id"
+      srid: 4326
+      max_length: 8000
+      inline_length: 8000
+      geometry_type: "ST_Point"
+    expected_result: |
+      Table created with ST_Geometry(8000) INLINE LENGTH 8000 — all points stored in-row
+      (no LOB overhead). Geospatial NUSI on 'location' enables index-accelerated spatial
+      predicates (ST_Within, ST_Distance, etc.).
+
+      Sample rows:
+      store_id | name         | location (WKT)
+      1        | Dallas HQ    | POINT(-96.80 32.78)
+      2        | Chicago Main | POINT(-87.65 41.90)
+      3        | SF Flagship  | POINT(-122.42 37.77)
+
+  # --- Example 2: Sales Territories as Polygons ---
+  - name: "Sales Territories"
+    description: "Store sales territory boundaries as polygons with SRID 4326"
+    parameters:
+      database: "sales_geo"
+      table: "territories"
+      geometry_column: "boundary"
+      id_column: "territory_id"
+      srid: 4326
+      max_length: 250000
+      inline_length: 10000
+      geometry_type: "ST_Polygon"
+    expected_result: |
+      Table created with ST_Geometry(250000) — supports large polygons up to 250KB.
+      Polygons exceeding 10KB inline length stored as LOBs (still queryable, but UDF
+      performance may differ).
+
+      Sample rows:
+      territory_id | name       | boundary (WKT)
+      1            | Region A   | POLYGON((-97.0 32.5, -97.0 33.0, ...))
+      2            | Region B   | POLYGON((0 0, 0 20, 20 20, 20 0, 0 0), (5 5, ...))
+
+  # --- Example 3: Inspecting Geometry Metadata ---
+  - name: "Inspect Existing Geometries"
+    description: "Read geometry types, validity, and coordinate systems from an existing table"
+    parameters:
+      database: "geo_analytics"
+      table: "sample_shapes"
+      geometry_column: "shape"
+      id_column: "skey"
+    expected_result: |
+      skey | wkt                          | geom_type      | srid | is_valid | is_empty | coord_dim | is_3d
+      1001 | POINT(-96.80 32.78)          | ST_Point       | 4326 | 1        | 0        | 2         | 0
+      1002 | LINESTRING(1 1, 2 2, 3 3)    | ST_LineString  | 0    | 1        | 0        | 2         | 0
+      1003 | POLYGON((0 0, 0 20, ...))    | ST_Polygon     | 0    | 1        | 0        | 2         | 0
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Privileges ---
+  - error: "UDTUSAGE or EXECUTE FUNCTION privilege required"
+    cause: "User lacks geospatial privileges on SYSUDTLIB or SYSSPATIAL"
+    solution: "Grant all four required privileges: UDTUSAGE ON SYSUDTLIB, EXECUTE FUNCTION ON SYSSPATIAL, SELECT ON SYSSPATIAL, EXECUTE PROCEDURE ON SYSSPATIAL"
+
+  # --- Error 2: Invalid WKT ---
+  - error: "Geometry construction failed from WKT"
+    cause: "Malformed WKT string (unclosed ring, missing parentheses, invalid coordinates)"
+    solution: "Verify WKT syntax: polygons must close (first point = last point), coordinates are space-separated (x y), points are comma-separated. Use ST_IsValid() to check after insert"
+
+  # --- Error 3: LOB Column Limit ---
+  - error: "Too many LOB columns (max 6 per table)"
+    cause: "ST_Geometry columns where data exceeds inline_length count toward the 6-LOB limit"
+    solution: "Set max_length = inline_length (e.g., 8000) to keep geometry in-row. Or reduce the number of ST_Geometry columns per table"
+
+  # --- Error 4: WKT Exceeds 64000 Bytes ---
+  - error: "VARCHAR constructor overflow for large geometry"
+    cause: "WKT string exceeds 64000-byte VARCHAR limit of the ST_Geometry constructor"
+    solution: "Use CLOB constructor: USING (a INTEGER, b CLOB(size)) INSERT ... VALUES (:a, NEW ST_Geometry(:b)). Or use WKB via BLOB constructor"
+
+  # --- Error 5: SRID Mismatch ---
+  - error: "Spatial operation returns unexpected results or errors"
+    cause: "Geometries in a spatial predicate have different SRIDs"
+    solution: "Ensure all geometries in a spatial operation share the same SRID. Use ST_SRID(new_srid) to reassign, or ST_Transform() to reproject"
+
+  # --- Error 6: Geospatial Index on Volatile Table ---
+  - error: "Cannot create geospatial index on volatile or global temporary table"
+    cause: "Geospatial NUSIs are not supported on volatile or global temporary tables"
+    solution: "Use a permanent table for indexed geospatial queries. For temporary analysis, accept full table scans or copy results to a permanent table"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## ST_Geometry Basics Best Practices
+
+  ### 1. Column Sizing
+  **Match max_length to inline_length for point data:**
+  ```sql
+  -- Points are small (~50-100 bytes); keep everything in-row
+  location ST_Geometry(8000) INLINE LENGTH 8000
+  ```
+
+  **Use larger max_length for polygons:**
+  ```sql
+  -- Complex polygons can be large; allow LOB storage
+  boundary ST_Geometry(250000) INLINE LENGTH 10000
+  ```
+
+  The default (~16MB max, ~10KB inline) works for most cases but wastes
+  space for simple point data and forces LOB storage for medium polygons.
+
+  ### 2. Always Create a Geospatial Index
+  ```sql
+  CREATE TABLE t (id INT, shape ST_Geometry) INDEX(shape);
+  ```
+
+  Without a geospatial NUSI, spatial predicates (ST_Within, ST_Intersects,
+  ST_Distance) perform full table scans. The index enables the optimizer
+  to use MBR filtering for significant speedups.
+
+  ### 3. Register Columns in GEOMETRY_COLUMNS
+  ```sql
+  CALL SYSSPATIAL.AddGeometryColumn('', 'mydb', 'mytable', 'shape',
+    4326, 'ST_Point', -180.0, -90.0, 180.0, 90.0);
+  ```
+
+  This metadata is used by GIS tools and the Teradata optimizer.
+  Always register after creating a geometry column.
+
+  ### 4. Use Consistent SRIDs
+  - Pick one SRID for your entire dataset (4326 / WGS84 is the most common)
+  - Mixed SRIDs cause spatial predicate errors or wrong results
+  - Use ST_Transform() when combining data from different coordinate systems
+
+  ### 5. Choose the Right Transform Group
+  - Default ST_WellKnownText (CLOB) works for most queries
+  - Use TD_GEO_VARCHAR for smaller geometries and JDBC/ODBC clients
+  - Use TD_GEO_VARCHAR_SRID when you need SRID in the output
+  - Set per-session: `SET TRANSFORM GROUP FOR TYPE ST_Geometry TO TD_GEO_VARCHAR;`
+
+  ### 6. Validate on Insert
+  ```sql
+  -- Check validity after bulk load
+  SELECT id, shape.ST_IsValid(), shape.ST_GeometryType()
+  FROM mytable
+  WHERE shape.ST_IsValid() = 0;
+  ```
+
+  Invalid geometries (self-intersecting polygons, unclosed rings) cause
+  errors in spatial predicates. Fix them early.
+
+  ### 7. Collect Statistics on Geometry Columns
+  ```sql
+  COLLECT STATISTICS ON mytable COLUMN (shape);
+  ```
+
+  Statistics help the optimizer decide when to use the geospatial index
+  vs. a full table scan.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Spatial Relationships ---
+  - spatial_relationships
+
+  # --- Pattern 2: Spatial Operations ---
+  - spatial_operations
+# === RELATED_PATTERNS END ===

@@ -12,6 +12,8 @@ backend_type: code
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - testing
 use_cases:
   - Unit test creation for Go, Python, JavaScript
   - SQL query test data generation

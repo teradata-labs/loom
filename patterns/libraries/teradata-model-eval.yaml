@@ -1,0 +1,138 @@
+apiVersion: loom/v1
+kind: PatternLibrary
+metadata:
+  name: teradata-model-eval
+  version: 1.0.0
+  domain: teradata
+  description: "Teradata in-database model evaluation patterns for train/test splitting, classification and regression metrics, ROC analysis, and SHAP explainability"
+  labels:
+    vendor: teradata
+    category: model-evaluation
+    maturity: production
+
+spec:
+  entries:
+    - name: train_test_split
+      description: "Split data into training and test sets using TD_TrainTestSplit with stratified and reproducible splits"
+      trigger_conditions:
+        - "user asks about splitting data into train and test"
+        - "user asks about TD_TrainTestSplit"
+        - "user mentions stratified split or preserving class balance"
+        - "user asks about reproducible data splitting with a seed"
+        - "user asks about holdout validation setup"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/model_evaluation/train_test_split.yaml
+
+        Key features:
+        - Tags rows with TD_IsTrainRow (1 = train, 0 = test)
+        - Stratified splits preserve class proportions
+        - Deterministic seeds for reproducibility
+        - Prepares data for downstream evaluators
+      priority: 85
+      tags:
+        - model-evaluation
+        - train-test-split
+        - validation
+        - stratified
+        - teradata
+
+    - name: classification_evaluator
+      description: "Evaluate classification models using TD_ClassificationEvaluator with precision, recall, F1, and confusion matrix"
+      trigger_conditions:
+        - "user asks about classification model evaluation"
+        - "user asks about confusion matrix or precision/recall"
+        - "user mentions F1 score or classification metrics"
+        - "user asks about TD_ClassificationEvaluator"
+        - "user asks about comparing classification model performance"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/model_evaluation/classification_evaluator.yaml
+
+        Metrics produced:
+        - Per-class precision, recall, F1-score, support
+        - Confusion matrix (observed vs predicted)
+        - Aggregate metrics across all classes
+      priority: 85
+      tags:
+        - model-evaluation
+        - classification
+        - confusion-matrix
+        - precision-recall
+        - teradata
+
+    - name: regression_evaluator
+      description: "Evaluate regression models using TD_RegressionEvaluator with MAE, MSE, RMSE, and R-squared"
+      trigger_conditions:
+        - "user asks about regression model evaluation"
+        - "user asks about MAE, MSE, RMSE, or R-squared"
+        - "user mentions regression error metrics"
+        - "user asks about TD_RegressionEvaluator"
+        - "user asks about comparing regression model accuracy"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/model_evaluation/regression_evaluator.yaml
+
+        Metrics produced:
+        - MAE (Mean Absolute Error)
+        - MSE (Mean Squared Error)
+        - RMSE (Root Mean Squared Error)
+        - R-squared and Adjusted R-squared
+        - Wide-format output with one column per metric
+      priority: 85
+      tags:
+        - model-evaluation
+        - regression
+        - error-metrics
+        - r-squared
+        - teradata
+
+    - name: roc_analysis
+      description: "Generate ROC curves and compute AUC using TD_ROC for binary classification threshold analysis"
+      trigger_conditions:
+        - "user asks about ROC curve or AUC"
+        - "user asks about binary classifier threshold selection"
+        - "user mentions true positive rate or false positive rate"
+        - "user asks about TD_ROC or threshold-independent evaluation"
+        - "user asks about comparing multiple binary classifiers"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/model_evaluation/roc_analysis.yaml
+
+        Key features:
+        - TPR and FPR computed at every threshold
+        - AUC as a single threshold-independent metric
+        - Multi-model comparison via ModelIDColumn
+        - Optimal threshold selection for deployment
+      priority: 80
+      tags:
+        - model-evaluation
+        - roc
+        - auc
+        - binary-classification
+        - teradata
+
+    - name: shap_explainability
+      description: "Compute SHAP values using TD_SHAP for per-prediction explanations and global feature importance"
+      trigger_conditions:
+        - "user asks about SHAP values or feature explainability"
+        - "user asks about model interpretability or explaining predictions"
+        - "user mentions feature importance or contribution analysis"
+        - "user asks about TD_SHAP or Shapley values"
+        - "user asks about model auditing for fairness or regulatory compliance"
+      example: |
+        For detailed SQL templates, parameters, and examples, see:
+        patterns/teradata/model_evaluation/shap_explainability.yaml
+
+        Key features:
+        - Per-sample feature contributions (primary output)
+        - Global feature importance (GlobalExplanation OUT TABLE)
+        - Works with TD_GLM, TD_DecisionForest, and TD_XGBoost
+        - Model debugging, auditing, and fairness analysis
+      priority: 80
+      tags:
+        - model-evaluation
+        - shap
+        - explainability
+        - feature-importance
+        - teradata

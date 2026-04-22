@@ -11,12 +11,24 @@ description: |
   - I (d): Integrated - differences to make stationary
   - MA (q): Moving Average - uses past forecast errors
 
+  Teradata provides two ARIMA workflows:
+  - Manual pipeline: TD_ARIMAESTIMATE -> TD_ARIMAVALIDATE -> TD_ARIMAFORECAST
+    (full control over model order, auditable, supports seasonal ARIMA)
+  - Automatic: TD_AUTOARIMA -> TD_ARIMAFORECAST
+    (auto-selects best model order via information criteria)
+
+  Both workflows use the UAF EXECUTE FUNCTION INTO ART pattern and ART chaining.
+
 category: timeseries
 difficulty: advanced
-teradata_function: ARIMA
+teradata_function: TD_ARIMAESTIMATE, TD_ARIMAVALIDATE, TD_ARIMAFORECAST, TD_AUTOARIMA
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - forecasting
+  - query_generation
 use_cases:
   - Sales forecasting
   - Demand planning
@@ -24,6 +36,8 @@ use_cases:
   - Website traffic forecasting
   - Revenue projections
   - Inventory optimization
+  - Seasonal time series modeling (SARIMA)
+  - Multi-step forecast pipelines with model validation
 # === USE_CASES END ===
 
 # === PARAMETERS START ===
@@ -60,7 +74,23 @@ parameters:
     description: "Date/timestamp column"
     example: "sale_date"
 
-  # --- Parameter 5: AR Order (p) ---
+  # --- Parameter 5: Sequence Column ---
+  - name: seq_column
+    type: string
+    # LLM-HINT: Integer sequence column for UAF SERIES_SPEC ROW_AXIS(SEQUENCE(...))
+    required: false
+    description: "Integer sequence column for UAF functions (alternative to time_column)"
+    example: "seq_no"
+
+  # --- Parameter 6: Series ID ---
+  - name: series_id
+    type: string
+    # LLM-HINT: Column(s) identifying each distinct series for UAF SERIES_ID
+    required: false
+    description: "Column(s) uniquely identifying each series instance"
+    example: "store_id"
+
+  # --- Parameter 7: AR Order (p) ---
   - name: p_order
     type: integer
     # LLM-HINT: Autoregressive terms; start with p=1 for simple models
@@ -68,7 +98,7 @@ parameters:
     description: "AR order (autoregressive terms)"
     example: "1"
 
-  # --- Parameter 6: Differencing Order (d) ---
+  # --- Parameter 8: Differencing Order (d) ---
   - name: d_order
     type: integer
     # LLM-HINT: Differencing for stationarity; d=1 removes linear trend
@@ -76,7 +106,7 @@ parameters:
     description: "I order (differencing)"
     example: "1"
 
-  # --- Parameter 7: MA Order (q) ---
+  # --- Parameter 9: MA Order (q) ---
   - name: q_order
     type: integer
     # LLM-HINT: Moving average terms; start with q=1 for simple models
@@ -84,12 +114,62 @@ parameters:
     description: "MA order (moving average terms)"
     example: "1"
 
-  # --- Parameter 8: Forecast Horizon ---
+  # --- Parameter 10: Forecast Horizon ---
   - name: forecast_periods
     type: integer
     required: true
     description: "Number of periods to forecast ahead"
     example: "30"
+
+  # --- Parameter 11: Fit Percentage ---
+  - name: fit_percentage
+    type: integer
+    # LLM-HINT: Percent of series used for estimation; remainder is holdout for TD_ARIMAVALIDATE
+    required: false
+    default: "80"
+    description: "Percent of series for estimation (remainder = holdout for validation). Must be < 100 to enable TD_ARIMAVALIDATE."
+    example: "80"
+
+  # --- Parameter 12: Seasonal AR Order (P) ---
+  - name: seasonal_p
+    type: integer
+    # LLM-HINT: Seasonal AR order for SARIMA; use with SEASONAL(MODEL_ORDER(P,D,Q), PERIOD(n))
+    required: false
+    description: "Seasonal AR order (for SARIMA models)"
+    example: "1"
+
+  # --- Parameter 13: Seasonal Differencing Order (D) ---
+  - name: seasonal_d
+    type: integer
+    # LLM-HINT: Seasonal differencing order for SARIMA
+    required: false
+    description: "Seasonal differencing order (for SARIMA models)"
+    example: "1"
+
+  # --- Parameter 14: Seasonal MA Order (Q) ---
+  - name: seasonal_q
+    type: integer
+    # LLM-HINT: Seasonal MA order for SARIMA
+    required: false
+    description: "Seasonal MA order (for SARIMA models)"
+    example: "1"
+
+  # --- Parameter 15: Seasonal Period ---
+  - name: seasonal_period
+    type: integer
+    # LLM-HINT: Number of periods per season (4=quarterly, 12=monthly, 7=daily-weekly)
+    required: false
+    description: "Number of periods in one seasonal cycle"
+    example: "12"
+
+  # --- Parameter 16: Algorithm ---
+  - name: algorithm
+    type: string
+    # LLM-HINT: Estimation algorithm: MLE (recommended), OLE, MLE_CSS, CSS
+    required: false
+    default: "MLE"
+    description: "Estimation algorithm: OLE, MLE (maximum likelihood), MLE_CSS, CSS"
+    example: "MLE"
 # === PARAMETERS END ===
 
 # === TEMPLATES START ===
@@ -217,10 +297,318 @@ templates:
     required_parameters:
       - database
       - forecast_results
+
+  # === UAF_ARIMAESTIMATE TEMPLATE ===
+  # LLM-HINT: UAF-based ARIMA estimation with SERIES_SPEC; produces multi-layer ART with coefficients, fit metrics, residuals
+  uaf_arimaestimate:
+    description: "TD_ARIMAESTIMATE: Estimate ARIMA coefficients using UAF SERIES_SPEC (step 1 of manual pipeline)"
+    sql: |
+      -- TD_ARIMAESTIMATE: Estimate ARIMA model coefficients.
+      -- Produces up to 5 ART layers: ARTPRIMARY (coefficients), ARTFITMETADATA,
+      -- ARTFITRESIDUALS, ARTMODEL (consumed by TD_ARIMAVALIDATE), ARTVALDATA (holdout).
+      -- FIT_PERCENTAGE must be < 100 to enable TD_ARIMAVALIDATE on holdout data.
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_est)
+      TD_ARIMAESTIMATE(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              NONSEASONAL(MODEL_ORDER({{p_order}},{{d_order}},{{q_order}})),
+              ALGORITHM({{algorithm}}),
+              CONSTANT(1),
+              FIT_PERCENTAGE({{fit_percentage}}),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          )
+      );
+
+      -- Primary layer: coefficient table (COEFF_NAME, COEFF_VALUE)
+      SELECT * FROM arima_est;
+
+      -- Goodness-of-fit metrics (R-squared, AIC, MAE, MSE, MAPE)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(arima_est), LAYER(ARTFITMETADATA))
+      );
+
+      -- Residuals (ACTUAL_VALUE, CALC_VALUE, RESIDUAL)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(arima_est), LAYER(ARTFITRESIDUALS))
+      );
+    required_parameters:
+      - table
+      - seq_column
+      - series_id
+      - value_column
+      - p_order
+      - d_order
+      - q_order
+      - algorithm
+      - fit_percentage
+
+  # === UAF_ARIMAVALIDATE TEMPLATE ===
+  # LLM-HINT: Validates ARIMA model on holdout data; consumes ART from TD_ARIMAESTIMATE
+  uaf_arimavalidate:
+    description: "TD_ARIMAVALIDATE: Validate ARIMA model on holdout data (step 2 of manual pipeline)"
+    sql: |
+      -- TD_ARIMAVALIDATE: In-sample validation on holdout portion.
+      -- Consumes ART from TD_ARIMAESTIMATE via ART_SPEC.
+      -- FIT_PERCENTAGE in TD_ARIMAESTIMATE must have been < 100.
+      -- Produces 4 layers: ARTPRIMARY (selection metrics), ARTFITMETADATA,
+      -- ARTFITRESIDUALS, ARTMODEL (consumed by TD_ARIMAFORECAST).
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_val)
+      TD_ARIMAVALIDATE(
+          ART_SPEC(TABLE_NAME(arima_est)),
+          FUNC_PARAMS(FIT_METRICS(1), RESIDUALS(1)),
+          OUTPUT_FMT(INDEX_STYLE(FLOW_THROUGH))
+      );
+
+      -- Model selection metrics (AIC, SBIC, HQIC, MLR, MSE)
+      SELECT * FROM arima_val;
+
+      -- Validation fit metrics (R-squared, MAE, MSE, MAPE, F_STAT)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(arima_val), LAYER(ARTFITMETADATA))
+      );
+
+      -- Validation residuals (ACTUAL_VALUE, CALC_VALUE, RESIDUAL)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(arima_val), LAYER(ARTFITRESIDUALS))
+      );
+    required_parameters: []
+
+  # === UAF_ARIMAFORECAST TEMPLATE ===
+  # LLM-HINT: Generates out-of-sample forecasts from validated ARIMA ART; input is ART_SPEC only
+  uaf_arimaforecast:
+    description: "TD_ARIMAFORECAST: Generate forecasts from fitted ARIMA model (step 3 of manual pipeline)"
+    sql: |
+      -- TD_ARIMAFORECAST: Out-of-sample forecasting.
+      -- Input: ART_SPEC only (no SERIES_SPEC). Use TABLE_NAME only, no LAYER or PAYLOAD.
+      -- Consumes ART from TD_ARIMAVALIDATE (manual pipeline) or TD_AUTOARIMA (auto pipeline).
+      -- PREDICTION_INTERVALS: NONE, 80, 95, or BOTH (default BOTH).
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_fcst)
+      TD_ARIMAFORECAST(
+          ART_SPEC(TABLE_NAME(arima_val)),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              PREDICTION_INTERVALS(BOTH)
+          )
+      );
+
+      -- Forecast results: series-id, ROW_I, FORECAST_VALUE, LO_80, HI_80, LO_95, HI_95
+      SELECT * FROM arima_fcst;
+    required_parameters:
+      - forecast_periods
+
+  # === UAF_FULL_PIPELINE TEMPLATE ===
+  # LLM-HINT: Complete Estimate -> Validate -> Forecast pipeline using ART chaining
+  uaf_full_pipeline:
+    description: "Full manual ARIMA pipeline: TD_ARIMAESTIMATE -> TD_ARIMAVALIDATE -> TD_ARIMAFORECAST"
+    sql: |
+      -- Full Manual ARIMA Pipeline using UAF ART Chaining
+      -- Step 1: Estimate ARIMA coefficients (reserve holdout for validation)
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_est)
+      TD_ARIMAESTIMATE(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              NONSEASONAL(MODEL_ORDER({{p_order}},{{d_order}},{{q_order}})),
+              ALGORITHM({{algorithm}}),
+              CONSTANT(1),
+              FIT_PERCENTAGE({{fit_percentage}}),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          )
+      );
+
+      -- Step 2: Validate on holdout portion (consumes ART from step 1)
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_val)
+      TD_ARIMAVALIDATE(
+          ART_SPEC(TABLE_NAME(arima_est)),
+          FUNC_PARAMS(FIT_METRICS(1), RESIDUALS(1))
+      );
+
+      -- Step 3: Forecast future periods (consumes validated ART from step 2)
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_fcst)
+      TD_ARIMAFORECAST(
+          ART_SPEC(TABLE_NAME(arima_val)),
+          FUNC_PARAMS(
+              FORECAST_PERIODS({{forecast_periods}}),
+              PREDICTION_INTERVALS(BOTH)
+          )
+      );
+
+      -- Step 4: Retrieve results
+      -- Forecast values with prediction intervals
+      SELECT * FROM arima_fcst;
+
+      -- Validation fit metrics (compare models by AIC, MAPE, etc.)
+      EXECUTE FUNCTION TD_EXTRACT_RESULTS(
+          ART_SPEC(TABLE_NAME(arima_val), LAYER(ARTFITMETADATA))
+      );
+    required_parameters:
+      - table
+      - seq_column
+      - series_id
+      - value_column
+      - p_order
+      - d_order
+      - q_order
+      - algorithm
+      - fit_percentage
+      - forecast_periods
+
+  # === UAF_AUTOARIMA TEMPLATE ===
+  # LLM-HINT: Automatic model selection; do NOT run TD_ARIMAVALIDATE on AUTOARIMA output
+  uaf_autoarima:
+    description: "TD_AUTOARIMA: Automatic ARIMA model selection and estimation"
+    sql: |
+      -- TD_AUTOARIMA: Auto-selects best ARIMA model via information criteria.
+      -- Eliminates the manual TD_ARIMAESTIMATE -> TD_ARIMAVALIDATE cycle.
+      --
+      -- RESTRICTIONS:
+      -- - Do NOT mix seasonal and non-seasonal series in one input
+      -- - Do NOT run TD_ARIMAVALIDATE on TD_AUTOARIMA output (returns error)
+      -- - PERIOD must be specified for seasonal data (cannot be inferred)
+      -- - Max p+q+P+Q = 5 when STEPWISE(0) (grid search)
+      EXECUTE FUNCTION INTO ART(autoarima_art)
+      TD_AUTOARIMA(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              ROW_AXIS(SEQUENCE({{seq_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              MAX_PQ_NONSEASONAL(3,3),
+              INFOR_CRITERIA(AIC),
+              STEPWISE(0),
+              RESIDUALS(1)
+          )
+      );
+
+      -- Best-model coefficients
+      SELECT * FROM autoarima_art;
+
+      -- Selected model order (e.g., "ARIMA(1, 1, 3)")
+      EXECUTE FUNCTION INTO ART(model_order_art)
+      TD_EXTRACT_RESULTS(ART_SPEC(TABLE_NAME(autoarima_art), LAYER(ARTICANDORDER)));
+      SELECT * FROM model_order_art;
+
+      -- Forecast directly (no validation step needed or allowed)
+      EXECUTE FUNCTION INTO VOLATILE ART(forecast)
+      TD_ARIMAFORECAST(
+          ART_SPEC(TABLE_NAME(autoarima_art)),
+          FUNC_PARAMS(FORECAST_PERIODS({{forecast_periods}}))
+      );
+      SELECT * FROM forecast;
+    required_parameters:
+      - table
+      - seq_column
+      - series_id
+      - value_column
+      - forecast_periods
+
+  # === UAF_SEASONAL_ARIMA TEMPLATE ===
+  # LLM-HINT: Seasonal ARIMA (SARIMA) with seasonal normalization pipeline
+  uaf_seasonal_arima:
+    description: "Seasonal ARIMA pipeline with TD_SEASONALNORMALIZE and TD_UNNORMALIZE"
+    sql: |
+      -- Seasonal ARIMA Pipeline:
+      -- 1. Normalize to remove seasonal fluctuations
+      -- 2. Estimate, validate, forecast on normalized series
+      -- 3. Unnormalize forecast back to original scale
+
+      -- Step 1: Seasonal normalization (INTERVAL required in SERIES_SPEC)
+      EXECUTE FUNCTION INTO VOLATILE ART(norm_series)
+      TD_SEASONALNORMALIZE(
+          SERIES_SPEC(
+              TABLE_NAME({{table}}),
+              ROW_AXIS(TIMECODE({{time_column}})),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL)),
+              INTERVAL(CAL_MONTHS(1))
+          ),
+          FUNC_PARAMS(
+              SEASON_CYCLE(CYCLES("CAL_YEARS"), DURATION(1))
+          )
+      );
+
+      -- Step 2: Estimate ARIMA on normalized series
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_est)
+      TD_ARIMAESTIMATE(
+          SERIES_SPEC(
+              TABLE_NAME(norm_series),
+              ROW_AXIS(SEQUENCE(ROW_I)),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              NONSEASONAL(MODEL_ORDER({{p_order}},{{d_order}},{{q_order}})),
+              ALGORITHM(MLE),
+              CONSTANT(1),
+              FIT_PERCENTAGE({{fit_percentage}}),
+              FIT_METRICS(1),
+              RESIDUALS(1)
+          )
+      );
+
+      -- Step 3: Validate
+      EXECUTE FUNCTION INTO VOLATILE ART(arima_val)
+      TD_ARIMAVALIDATE(
+          ART_SPEC(TABLE_NAME(arima_est)),
+          FUNC_PARAMS(FIT_METRICS(1), RESIDUALS(1))
+      );
+
+      -- Step 4: Forecast (on normalized scale)
+      EXECUTE FUNCTION INTO VOLATILE ART(norm_forecast)
+      TD_ARIMAFORECAST(
+          ART_SPEC(TABLE_NAME(arima_val)),
+          FUNC_PARAMS(FORECAST_PERIODS({{forecast_periods}}))
+      );
+
+      -- Step 5: Unnormalize forecast back to original scale
+      -- INTERVAL must match the TD_SEASONALNORMALIZE call
+      EXECUTE FUNCTION INTO VOLATILE ART(final_forecast)
+      TD_UNNORMALIZE(
+          SERIES_SPEC(
+              TABLE_NAME(norm_forecast),
+              ROW_AXIS(TIMECODE(ROW_I)),
+              SERIES_ID({{series_id}}),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL)),
+              INTERVAL(CAL_MONTHS(1))
+          ),
+          ART_SPEC(
+              TABLE_NAME(norm_series),
+              LAYER(ARTMETADATA),
+              PAYLOAD(FIELDS(MEAN_{{value_column}}, SD_{{value_column}}), CONTENT(MULTIVAR_REAL))
+          ),
+          INPUT_FMT(INPUT_MODE(MATCH)),
+          OUTPUT_FMT(INDEX_STYLE(FLOW_THROUGH))
+      );
+
+      SELECT * FROM final_forecast;
+    required_parameters:
+      - table
+      - time_column
+      - series_id
+      - value_column
+      - p_order
+      - d_order
+      - q_order
+      - fit_percentage
+      - forecast_periods
 # === TEMPLATES END ===
 
 # === EXAMPLES START ===
 examples:
+  # --- Example 1: Daily Sales Forecasting (Basic) ---
   - name: "Daily Sales Forecasting"
     description: "Forecast next 30 days of revenue"
     parameters:
@@ -234,23 +622,107 @@ examples:
       forecast_periods: 30
     expected_result: |
       ARIMA(1,1,1) forecast for next 30 days:
-      - Day 1: $45,200 ± $3,100 (95% CI)
-      - Day 7: $47,800 ± $4,200
-      - Day 30: $52,100 ± $6,800
+      - Day 1: $45,200 +/- $3,100 (95% CI)
+      - Day 7: $47,800 +/- $4,200
+      - Day 30: $52,100 +/- $6,800
 
       Model captures weekly seasonality and upward trend.
       Use for inventory planning and staffing.
+
+  # --- Example 2: UAF Full Pipeline ---
+  - name: "UAF ARIMA Full Pipeline"
+    description: "Complete Estimate -> Validate -> Forecast pipeline using UAF ART chaining"
+    parameters:
+      table: "sales_ts"
+      seq_column: "seq_no"
+      series_id: "store_id"
+      value_column: "sales_amt"
+      p_order: 1
+      d_order: 1
+      q_order: 1
+      algorithm: "MLE"
+      fit_percentage: 80
+      forecast_periods: 12
+    expected_result: |
+      Three ART tables created in sequence:
+      - arima_est: ARIMA(1,1,1) coefficients via maximum likelihood estimation
+        ARTPRIMARY: COEFF_NAME (AR1, MA1, CONSTANT), COEFF_VALUE
+        ARTFITMETADATA: R-squared, AIC, MAE, MSE, MAPE
+        ARTFITRESIDUALS: ACTUAL_VALUE, CALC_VALUE, RESIDUAL per in-sample observation
+      - arima_val: Holdout validation metrics (AIC, SBIC, HQIC, MSE)
+      - arima_fcst: 12 forecast periods with FORECAST_VALUE, LO_80, HI_80, LO_95, HI_95
+
+  # --- Example 3: Auto ARIMA ---
+  - name: "Auto ARIMA Model Selection"
+    description: "Let TD_AUTOARIMA select the best model order automatically"
+    parameters:
+      table: "covid_confirm"
+      seq_column: "row_axis"
+      series_id: "city"
+      value_column: "cnumber"
+      forecast_periods: 14
+    expected_result: |
+      TD_AUTOARIMA searches model space and selects best by AIC:
+      - ARTICANDORDER layer: MODEL_ORDER e.g. "ARIMA(1, 1, 3)"
+      - ARTPRIMARY: Best-model coefficients
+      - Direct forecast: 14 periods with prediction intervals
+
+      Use this for exploration; switch to manual pipeline for production auditing.
+
+  # --- Example 4: Seasonal ARIMA with Normalization ---
+  - name: "Seasonal ARIMA Pipeline"
+    description: "Monthly sales forecast with yearly seasonal normalization"
+    parameters:
+      table: "monthly_sales"
+      time_column: "sale_date"
+      series_id: "store_id"
+      value_column: "sales"
+      p_order: 1
+      d_order: 0
+      q_order: 1
+      fit_percentage: 80
+      forecast_periods: 12
+    expected_result: |
+      Pipeline: TD_SEASONALNORMALIZE -> TD_ARIMAESTIMATE -> TD_ARIMAVALIDATE
+        -> TD_ARIMAFORECAST -> TD_UNNORMALIZE
+
+      Normalization removes monthly seasonal patterns (divides by interval mean/SD).
+      ARIMA models the normalized (stationary) series.
+      TD_UNNORMALIZE restores original scale using ARTMETADATA from normalization step.
+      Final output: 12-month forecast in original dollar values.
 # === EXAMPLES END ===
 
 # === COMMON_ERRORS START ===
 common_errors:
+  # --- Error 1: Non-Stationary Series ---
   - error: "Series is not stationary"
     cause: "Trend or seasonality present"
-    solution: "Increase d_order to difference more. Remove trend/seasonality first."
+    solution: "Increase d_order to difference more. Use TD_DIFF for explicit differencing. Use TD_DICKEY_FULLER to test for unit roots. Use TD_SEASONALNORMALIZE for seasonal non-stationarity."
 
+  # --- Error 2: Model Convergence ---
   - error: "Model doesn't converge"
     cause: "Orders too high or data insufficient"
-    solution: "Start with ARIMA(1,1,1). Reduce p, d, q if issues persist."
+    solution: "Start with ARIMA(1,1,1). Reduce p, d, q if issues persist. Try different ALGORITHM (MLE, CSS, MLE_CSS)."
+
+  # --- Error 3: FIT_PERCENTAGE 100 with Validate ---
+  - error: "TD_ARIMAVALIDATE fails on TD_ARIMAESTIMATE ART"
+    cause: "FIT_PERCENTAGE was 100 in TD_ARIMAESTIMATE (no holdout data)"
+    solution: "Set FIT_PERCENTAGE < 100 (e.g., 80) in TD_ARIMAESTIMATE to reserve holdout for validation. If FIT_PERCENTAGE was 100, skip TD_ARIMAVALIDATE and go directly to TD_ARIMAFORECAST."
+
+  # --- Error 4: Validate on AUTOARIMA Output ---
+  - error: "TD_ARIMAVALIDATE errors on TD_AUTOARIMA ART"
+    cause: "TD_ARIMAVALIDATE is not valid on TD_AUTOARIMA output"
+    solution: "Go directly from TD_AUTOARIMA to TD_ARIMAFORECAST. TD_AUTOARIMA already selects the best model. If validation is needed, extract the selected model order from ARTICANDORDER and re-estimate with TD_ARIMAESTIMATE."
+
+  # --- Error 5: Mixed Seasonal/Non-Seasonal in AUTOARIMA ---
+  - error: "TD_AUTOARIMA errors on mixed input"
+    cause: "Input mixes seasonal and non-seasonal series, or series with different periods"
+    solution: "Use TD_ARIMAESTIMATE instead (supports mixed series types). Or filter input to contain only one type. Specify PERIOD explicitly for seasonal data."
+
+  # --- Error 6: ART_SPEC Input to TD_ARIMAFORECAST ---
+  - error: "TD_ARIMAFORECAST rejects extra ART_SPEC parameters"
+    cause: "TD_ARIMAFORECAST accepts TABLE_NAME only in ART_SPEC; no LAYER or PAYLOAD"
+    solution: "Use ART_SPEC(TABLE_NAME(art_name)) only. Do not specify LAYER, PAYLOAD, or other parameters."
 # === COMMON_ERRORS END ===
 
 # === BEST_PRACTICES START ===
@@ -261,6 +733,8 @@ best_practices: |
   - Plot time series
   - Check for trend and seasonality
   - Use differencing (d_order) to achieve stationarity
+  - Use TD_DICKEY_FULLER for formal unit root testing
+  - Use TD_DIFF for explicit differencing when needed
 
   ### 2. Order Selection
   **Start with ARIMA(1,1,1):**
@@ -268,15 +742,66 @@ best_practices: |
   - Use AIC/BIC to compare models
   - Don't over-parameterize
 
+  **Use ACF/PACF for manual order identification:**
+  - TD_ACF: Identifies MA order (q) from autocorrelation cutoff
+  - TD_PACF: Identifies AR order (p) from partial autocorrelation cutoff
+  - Both accept ALPHA parameter for confidence intervals
+
+  **Use TD_AUTOARIMA for exploration:**
+  - Auto-selects best model by AIC/AICC/BIC
+  - Extract selected order from ARTICANDORDER layer
+  - Then switch to manual pipeline for production use
+
   ### 3. Validate Forecasts
-  - Hold out test set
-  - Calculate MAE, RMSE, MAPE
-  - Check if forecasts make business sense
+  - Set FIT_PERCENTAGE < 100 to reserve holdout data
+  - Run TD_ARIMAVALIDATE for in-sample validation metrics
+  - Compare AIC, SBIC, HQIC across candidate models
+  - Check residuals with TD_EXTRACT_RESULTS(ARTFITRESIDUALS)
+
+  ### 4. UAF Pipeline Pattern
+  **Manual pipeline (recommended for production):**
+  ```
+  TD_ARIMAESTIMATE (FIT_PERCENTAGE < 100)
+    -> TD_ARIMAVALIDATE
+    -> TD_ARIMAFORECAST
+  ```
+  - Each step consumes the previous ART via ART_SPEC
+  - Full auditability of model choice and validation metrics
+  - Extract any layer with TD_EXTRACT_RESULTS
+
+  **Auto pipeline (recommended for exploration):**
+  ```
+  TD_AUTOARIMA -> TD_ARIMAFORECAST
+  ```
+  - No validation step (TD_ARIMAVALIDATE errors on AUTOARIMA output)
+  - Model already selected by information criteria
+
+  ### 5. Seasonal ARIMA
+  **For seasonal patterns, choose one approach:**
+  - TD_SEASONALNORMALIZE -> ARIMA -> TD_UNNORMALIZE (normalize/model/restore)
+  - SEASONAL(MODEL_ORDER(P,D,Q), PERIOD(n)) in TD_ARIMAESTIMATE (direct SARIMA)
+  - TD_AUTOARIMA with PERIOD parameter for auto seasonal model selection
+
+  **Normalization approach advantages:**
+  - Works with any ARIMA order
+  - ARTMETADATA stores seasonal parameters for unnormalization
+  - INTERVAL in SERIES_SPEC must match between normalize and unnormalize
+
+  ### 6. Algorithm Selection
+  **TD_ARIMAESTIMATE algorithms:**
+  - MLE (maximum likelihood): Most common, statistically rigorous
+  - CSS (conditional sum-of-squares): Faster, approximate
+  - MLE_CSS: CSS initialization then MLE refinement
+  - OLE (ordinary least estimates): Simplest
+
+  **TD_AUTOARIMA algorithms:**
+  - CSS_MLE (default), MLE, CSS
 # === BEST_PRACTICES END ===
 
 # === RELATED_PATTERNS START ===
 related_patterns:
+  - uaf_concepts
+  - holt_winters
   - moving_average
-  - exponential_smoothing
-  - seasonal_decomposition
+  - signal_processing
 # === RELATED_PATTERNS END ===

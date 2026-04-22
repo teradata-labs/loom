@@ -32,6 +32,9 @@ teradata_function: P_XAGXB, P_XBGXA
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Navigate from table to related tables
   - Discover all tables in relationship cluster

@@ -9,6 +9,10 @@ priority: 85
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - reporting
+  - query_generation
 use_cases:
   - "Transform slow queries to faster equivalents"
   - "Optimize subquery performance"

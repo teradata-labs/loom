@@ -43,6 +43,9 @@ teradata_function: Materialized Views
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Query table structure and metadata
   - Find FK relationships quickly

@@ -88,7 +88,7 @@ type SkillTrigger struct {
 	// Keywords for auto-detection from user messages
 	Keywords []string `json:"keywords,omitempty"`
 
-	// Maps to patterns.IntentCategory for intent-based activation
+	// Freeform intent labels for intent-based activation (matched against pattern intents)
 	IntentCategories []string `json:"intent_categories,omitempty"`
 
 	// How this skill can be activated

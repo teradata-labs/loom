@@ -36,6 +36,9 @@ teradata_function: Cosine, P_XAGXB, Count_Estimate
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Catalog all domains in the corpus
   - Find columns belonging to specific domain (e.g., "states")

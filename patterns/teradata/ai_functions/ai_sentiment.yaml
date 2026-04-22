@@ -1,0 +1,364 @@
+# === METADATA START ===
+name: ai_sentiment
+title: "AI Sentiment Analysis"
+description: |
+  Analyze the sentiment of text stored in Teradata columns using LLM-powered
+  classification. AI_AnalyzeSentiment returns a sentiment label (positive, negative,
+  or neutral) for each input row.
+
+  AI_AnalyzeSentiment is ideal for:
+  - Customer review sentiment tracking
+  - Social media monitoring
+  - Support ticket prioritization by tone
+  - Brand perception analysis
+  - Survey response classification
+
+  Requires an authorization object configured for the target LLM provider.
+  All functions are schema-qualified under TD_SYSFNLIB.
+
+category: ai_functions
+difficulty: intermediate
+teradata_function: AI_AnalyzeSentiment
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - text_analysis
+  - classification
+use_cases:
+  # --- Use Case 1: Customer Review Sentiment ---
+  - Classify customer reviews as positive, negative, or neutral
+
+  # --- Use Case 2: Support Ticket Triage ---
+  - Prioritize support tickets by detecting negative sentiment
+
+  # --- Use Case 3: Brand Monitoring ---
+  - Monitor brand sentiment across social media or survey data
+
+  # --- Use Case 4: Employee Feedback ---
+  - Analyze employee feedback or survey responses for sentiment trends
+
+  # --- Use Case 5: Product Launch Reception ---
+  - Measure product launch reception from customer feedback
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the text data"
+    example: "customer_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates; must contain a text column (VARCHAR, CHAR, or CLOB)
+    required: true
+    description: "Table or view with text data to analyze"
+    example: "customer_reviews"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column containing text to analyze; must be VARCHAR, CHAR, or CLOB
+    required: true
+    description: "Column containing the text to analyze (VARCHAR, CHAR, or CLOB)"
+    example: "review_text"
+
+  # --- Parameter 4: Auth Object ---
+  - name: auth_object
+    type: string
+    # LLM-HINT: Fully qualified authorization object name (database.object_name); must be created first
+    required: true
+    description: "Authorization object for LLM provider (e.g., db.td_gen_azure_auth)"
+    example: "ai_credentials.td_gen_azure_auth"
+
+  # --- Parameter 5: Provider ---
+  - name: provider
+    type: string
+    # LLM-HINT: ApiType value: 'azure', 'aws', 'gcp', 'nim', or 'litellm'
+    required: true
+    description: "LLM provider type for ApiType"
+    example: "azure"
+
+  # --- Parameter 6: Deployment/Model ---
+  - name: deployment_id
+    type: string
+    # LLM-HINT: Azure uses DeploymentId; AWS/GCP use ModelName; use the appropriate arg for the provider
+    required: true
+    description: "Model deployment identifier (DeploymentId for Azure, ModelName for AWS/GCP)"
+    example: "gpt-4o"
+
+  # --- Parameter 7: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns from InputTable to carry through to output; useful for joining results back
+    required: false
+    description: "Columns to carry through from input to output"
+    example: '["review_id", "customer_id"]'
+
+  # --- Parameter 8: Region (AWS/GCP) ---
+  - name: region
+    type: string
+    # LLM-HINT: Required for AWS Bedrock (e.g., 'us-east-1'); not used for Azure
+    required: false
+    description: "AWS region for Bedrock or GCP region"
+    example: "us-east-1"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_SENTIMENT TEMPLATE ===
+  # LLM-HINT: Simplest form; analyzes sentiment on each row using Azure provider; returns Sentiment and Message columns
+  basic_sentiment:
+    description: "Basic sentiment analysis on a text column using Azure"
+    sql: |
+      -- Analyze sentiment of text in each row
+      -- Output: Sentiment (positive/negative/neutral), Message (errors if any)
+      -- NOTE: Sentiment label casing may vary by LLM provider; normalize with LOWER() if needed
+      SELECT * FROM TD_SYSFNLIB.AI_AnalyzeSentiment(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('azure')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - auth_object
+      - deployment_id
+      - text_column
+      - accumulate_columns_quoted
+
+  # === AWS_SENTIMENT TEMPLATE ===
+  # LLM-HINT: AWS Bedrock requires Region and ModelName instead of DeploymentId
+  aws_sentiment:
+    description: "Sentiment analysis using AWS Bedrock"
+    sql: |
+      -- Analyze sentiment using AWS Bedrock
+      SELECT * FROM TD_SYSFNLIB.AI_AnalyzeSentiment(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('aws')
+              AUTHORIZATION({{auth_object}})
+              Region('{{region}}')
+              ModelName('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+              Accumulate({{accumulate_columns_quoted}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - auth_object
+      - deployment_id
+      - region
+      - text_column
+      - accumulate_columns_quoted
+
+  # === SENTIMENT_WITH_AGGREGATION TEMPLATE ===
+  # LLM-HINT: Wraps sentiment analysis with GROUP BY to produce summary statistics; useful for dashboards
+  sentiment_with_aggregation:
+    description: "Sentiment analysis with aggregated summary statistics"
+    sql: |
+      -- Analyze sentiment and aggregate results
+      -- Useful for dashboards and reporting
+      SELECT
+          LOWER(t.Sentiment) AS sentiment,
+          COUNT(*) AS total_count,
+          CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) AS pct
+      FROM TD_SYSFNLIB.AI_AnalyzeSentiment(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('{{provider}}')
+              AUTHORIZATION({{auth_object}})
+              DeploymentId('{{deployment_id}}')
+              TextColumn('{{text_column}}')
+      ) AS t
+      GROUP BY LOWER(t.Sentiment)
+      ORDER BY total_count DESC;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+
+  # === BATCH_OUT_TABLE TEMPLATE ===
+  # LLM-HINT: Persists results to a table for downstream use; avoids re-running LLM calls
+  batch_out_table:
+    description: "Batch sentiment analysis with results persisted to a table"
+    sql: |
+      -- Persist sentiment results to a table for downstream processing
+      -- Avoids repeated LLM calls for the same data
+      CREATE TABLE {{database}}.{{table}}_sentiment AS (
+          SELECT * FROM TD_SYSFNLIB.AI_AnalyzeSentiment(
+              ON {{database}}.{{table}} AS InputTable
+              USING
+                  ApiType('{{provider}}')
+                  AUTHORIZATION({{auth_object}})
+                  DeploymentId('{{deployment_id}}')
+                  TextColumn('{{text_column}}')
+                  Accumulate({{accumulate_columns_quoted}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - table
+      - provider
+      - auth_object
+      - deployment_id
+      - text_column
+      - accumulate_columns_quoted
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Customer Review Sentiment ---
+  - name: "Customer Review Sentiment"
+    description: "Analyze sentiment of customer product reviews"
+    parameters:
+      database: "ecommerce"
+      table: "customer_reviews"
+      text_column: "review_text"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+      accumulate_columns: ["review_id", "customer_id"]
+    expected_result: |
+      review_id | customer_id | Sentiment | Message
+      ----------|-------------|-----------|--------
+      1001      | C-5432      | Positive  | NULL
+      1002      | C-1234      | Negative  | NULL
+      1003      | C-9876      | Neutral   | NULL
+
+      Use LOWER(Sentiment) to normalize casing across providers.
+
+  # --- Example 2: Support Ticket Triage ---
+  - name: "Support Ticket Triage"
+    description: "Identify negative sentiment in support tickets for priority routing"
+    parameters:
+      database: "support"
+      table: "tickets"
+      text_column: "ticket_body"
+      auth_object: "ai_credentials.td_gen_aws_auth"
+      provider: "aws"
+      deployment_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+      region: "us-east-1"
+      accumulate_columns: ["ticket_id", "submitted_date", "priority"]
+    expected_result: |
+      Negative sentiment tickets flagged for priority escalation.
+      Combine with existing priority field for composite scoring.
+
+  # --- Example 3: Sentiment Dashboard ---
+  - name: "Sentiment Dashboard"
+    description: "Aggregate sentiment distribution for a reporting dashboard"
+    parameters:
+      database: "marketing"
+      table: "social_mentions"
+      text_column: "mention_text"
+      auth_object: "ai_credentials.td_gen_azure_auth"
+      provider: "azure"
+      deployment_id: "gpt-4o"
+    expected_result: |
+      sentiment | total_count | pct
+      ----------|-------------|------
+      positive  | 1250        | 62.50
+      neutral   | 500         | 25.00
+      negative  | 250         | 12.50
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Authorization Object ---
+  - error: "Function fails with authorization or authentication error"
+    cause: "Authorization object does not exist or the user/database lacks EXECUTE permission"
+    solution: "Create the authorization object first (see authorization_objects pattern) and grant EXECUTE to the calling user or database"
+
+  # --- Error 2: Invalid TextColumn Type ---
+  - error: "TextColumn type mismatch error"
+    cause: "The specified column is not VARCHAR, CHAR, or CLOB"
+    solution: "Cast the column to VARCHAR in a subquery: (SELECT CAST(col AS VARCHAR(10000)) AS text_col FROM table)"
+
+  # --- Error 3: Sentiment Casing Inconsistency ---
+  - error: "Downstream logic fails because sentiment labels have inconsistent casing"
+    cause: "Different LLM providers return different casing (e.g., 'Positive' vs 'positive')"
+    solution: "Normalize with LOWER(Sentiment) in your SELECT or WHERE clause"
+
+  # --- Error 4: PARTITION BY Causes Error ---
+  - error: "Adding PARTITION BY to the ON clause causes an error or unexpected behavior"
+    cause: "AI_AnalyzeSentiment manages parallelism internally and does not support PARTITION BY"
+    solution: "Remove any PARTITION BY clause from the ON clause"
+
+  # --- Error 5: Token Limit Exceeded ---
+  - error: "Message column shows token limit or context length error"
+    cause: "Input text exceeds the LLM model's maximum token limit"
+    solution: "Truncate long text before passing to the function, or use a model with a larger context window"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## AI Sentiment Analysis Best Practices
+
+  ### 1. Authorization Setup First
+  Always create and test the authorization object before running sentiment analysis.
+  See the authorization_objects pattern for setup instructions per provider.
+
+  ### 2. Normalize Sentiment Labels
+  Sentiment label casing varies by provider. Always normalize:
+  ```sql
+  SELECT LOWER(Sentiment) AS sentiment FROM ...
+  ```
+
+  ### 3. Use Accumulate for Traceability
+  Always include key columns in Accumulate so you can join results back:
+  ```sql
+  Accumulate('review_id', 'customer_id', 'product_id')
+  ```
+
+  ### 4. Persist Results for Repeated Use
+  LLM calls are expensive. Persist results to a table for downstream analysis:
+  ```sql
+  CREATE TABLE results_sentiment AS (...) WITH DATA;
+  ```
+
+  ### 5. Batch Size Considerations
+  For large tables, process in batches using a WHERE clause or date filter
+  to avoid long-running LLM calls and manage costs.
+
+  ### 6. No PARTITION BY
+  AI_AnalyzeSentiment manages parallelism internally.
+  Do not add a PARTITION BY clause to the ON clause.
+
+  ### 7. Handle Errors Gracefully
+  Check the Message column for LLM errors. Rows with errors will have
+  NULL in the Sentiment column and an error description in Message.
+
+  ### 8. Schema Qualifier Required
+  Always use TD_SYSFNLIB.AI_AnalyzeSentiment() with the full schema qualifier.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Authorization Objects (prerequisite) ---
+  - authorization_objects
+
+  # --- Pattern 2: AI Text Classifier ---
+  - ai_text_classifier
+
+  # --- Pattern 3: AI Text Summarize ---
+  - ai_summarize
+
+  # --- Pattern 4: AI Ask LLM ---
+  - ai_ask_llm
+
+  # --- Pattern 5: AI PII ---
+  - ai_pii
+# === RELATED_PATTERNS END ===

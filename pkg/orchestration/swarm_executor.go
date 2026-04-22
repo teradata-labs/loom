@@ -254,6 +254,9 @@ func (e *SwarmExecutor) collectVoteWithContext(ctx context.Context, workflowID, 
 	// Create unique session ID
 	sessionID := fmt.Sprintf("%s-vote-%d", workflowID, voteNumber)
 
+	// Capture parent context for retry (span context will be ended before retry)
+	parentCtx := ctx
+
 	// Execute agent
 	ctx, agentSpan := e.orchestrator.tracer.StartSpan(ctx, fmt.Sprintf("swarm.agent.%s", agentID))
 	if agentSpan != nil {
@@ -271,6 +274,14 @@ func (e *SwarmExecutor) collectVoteWithContext(ctx context.Context, workflowID, 
 
 	// Parse vote from output
 	vote := e.parseVote(agentID, response.Content)
+
+	// Retry if vote parsing failed and retry policy is configured
+	if !isValidVote(vote, response.Content) && e.pattern.RetryPolicy != nil && e.pattern.RetryPolicy.MaxRetries > 0 {
+		retryVote := e.retryVoteCollection(parentCtx, workflowID, agentID, voteNumber, response.Content)
+		if retryVote != nil {
+			vote = retryVote
+		}
+	}
 
 	// Get model info from agent
 	modelName := agt.GetLLMModel()
@@ -300,6 +311,9 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 	// Create unique session ID
 	sessionID := fmt.Sprintf("%s-vote-%d", workflowID, voteNumber)
 
+	// Capture parent context for retry (span context will be ended before retry)
+	parentCtx := ctx
+
 	// Execute agent
 	ctx, agentSpan := e.orchestrator.tracer.StartSpan(ctx, fmt.Sprintf("swarm.agent.%s", agentID))
 	if agentSpan != nil {
@@ -316,6 +330,14 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 
 	// Parse vote from output
 	vote := e.parseVote(agentID, response.Content)
+
+	// Retry if vote parsing failed and retry policy is configured
+	if !isValidVote(vote, response.Content) && e.pattern.RetryPolicy != nil && e.pattern.RetryPolicy.MaxRetries > 0 {
+		retryVote := e.retryVoteCollection(parentCtx, workflowID, agentID, voteNumber, response.Content)
+		if retryVote != nil {
+			vote = retryVote
+		}
+	}
 
 	// Get model info from agent
 	modelName := agt.GetLLMModel()
@@ -623,7 +645,30 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, votes []*loomv1.SwarmVo
 
 	// Validate that judge picked one of the actual choices
 	if _, exists := distribution[decision]; !exists {
-		// Judge didn't pick a valid choice, log and return error
+		// Try case-insensitive matching
+		for choice := range distribution {
+			if strings.EqualFold(decision, choice) {
+				return choice, nil
+			}
+		}
+
+		// Try coercion: extract a valid choice from verbose output
+		validChoices := make([]string, 0, len(distribution))
+		for choice := range distribution {
+			validChoices = append(validChoices, choice)
+		}
+		if coerced, ok := coerceBranchKey(decision, validChoices); ok {
+			return coerced, nil
+		}
+
+		// Retry judge if retry policy is configured
+		if e.pattern.RetryPolicy != nil && e.pattern.RetryPolicy.MaxRetries > 0 {
+			retryDecision := e.retryJudge(ctx, distribution, decision)
+			if retryDecision != "" {
+				return retryDecision, nil
+			}
+		}
+
 		e.orchestrator.logger.Warn("Judge selected invalid choice",
 			zap.String("judge_choice", decision))
 		return "", fmt.Errorf("judge selected invalid choice: %s", decision)
@@ -656,6 +701,189 @@ func (e *SwarmExecutor) formatAgentResults(votes []*loomv1.SwarmVote, voteCosts 
 		}
 	}
 	return results
+}
+
+// isValidVote checks if a vote was parsed correctly (not defaulted to abstain).
+// Returns false when parsing likely failed — the agent didn't follow the format.
+func isValidVote(vote *loomv1.SwarmVote, rawOutput string) bool {
+	// If the output contained "VOTE:" the agent at least attempted the format
+	if strings.Contains(strings.ToUpper(rawOutput), "VOTE:") {
+		return true
+	}
+	// If choice is the default "abstain", parsing likely failed
+	if vote.Choice == "abstain" {
+		return false
+	}
+	return true
+}
+
+// retryVoteCollection retries collecting a vote from an agent after parsing failure.
+// Each retry uses a fresh session ID and includes the expected format.
+func (e *SwarmExecutor) retryVoteCollection(
+	ctx context.Context,
+	workflowID string,
+	agentID string,
+	voteNumber int,
+	previousOutput string,
+) *loomv1.SwarmVote {
+	agent, err := e.orchestrator.GetAgent(ctx, agentID)
+	if err != nil {
+		e.orchestrator.logger.Warn("Failed to get agent for vote retry",
+			zap.String("agent_id", agentID),
+			zap.Error(err))
+		return nil
+	}
+
+	maxRetries := cappedRetries(e.pattern.RetryPolicy.MaxRetries)
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil
+		}
+		retryPrompt := e.buildVoteRetryPrompt(previousOutput, attempt, maxRetries)
+
+		sessionID := fmt.Sprintf("%s-vote-%d-%s-retry%d", workflowID, voteNumber, agentID, attempt)
+
+		e.orchestrator.logger.Info("Retrying vote collection",
+			zap.String("agent_id", agentID),
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries))
+
+		response, chatErr := agent.Chat(ctx, sessionID, retryPrompt)
+		if chatErr != nil {
+			e.orchestrator.logger.Warn("Vote retry failed",
+				zap.String("agent_id", agentID),
+				zap.Int("attempt", attempt),
+				zap.Error(chatErr))
+			continue
+		}
+
+		vote := e.parseVote(agentID, response.Content)
+		if isValidVote(vote, response.Content) {
+			e.orchestrator.logger.Info("Vote parsed successfully after retry",
+				zap.String("agent_id", agentID),
+				zap.Int("attempt", attempt),
+				zap.String("choice", vote.Choice))
+			return vote
+		}
+		previousOutput = response.Content
+	}
+
+	e.orchestrator.logger.Warn("Vote retry exhausted, using default abstain vote",
+		zap.String("agent_id", agentID),
+		zap.Int("retries", maxRetries))
+	return nil
+}
+
+// buildVoteRetryPrompt constructs a retry prompt for vote collection that explains
+// the failure and shows the expected format.
+func (e *SwarmExecutor) buildVoteRetryPrompt(previousOutput string, attempt, maxRetries int) string {
+	truncated := previousOutput
+	if len(truncated) > 300 {
+		truncated = truncated[:300] + "... (truncated)"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Your previous response could not be parsed as a valid vote.\n\n")
+	sb.WriteString("YOUR PREVIOUS OUTPUT:\n---\n")
+	sb.WriteString(truncated)
+	sb.WriteString("\n---\n\n")
+	sb.WriteString("WHY IT FAILED:\n")
+	sb.WriteString("Your response did not contain the required VOTE: / CONFIDENCE: / REASONING: fields\n")
+	sb.WriteString("in the expected format. The vote was recorded as \"abstain\" with 0.5 confidence,\n")
+	sb.WriteString("which was not your intent.\n\n")
+
+	// Include format template unless include_valid_values is explicitly set to false
+	includeFormat := e.pattern.RetryPolicy == nil || e.pattern.RetryPolicy.IncludeValidValues
+	if includeFormat {
+		sb.WriteString("REQUIRED FORMAT (respond exactly like this):\n\n")
+		sb.WriteString("VOTE: <your single clear answer>\n")
+		sb.WriteString("CONFIDENCE: <a number between 0.0 and 1.0>\n")
+		sb.WriteString("REASONING: <your explanation for the vote>\n\n")
+		sb.WriteString("EXAMPLE:\n")
+		sb.WriteString("VOTE: Option A\n")
+		sb.WriteString("CONFIDENCE: 0.85\n")
+		sb.WriteString("REASONING: Option A best addresses the core issue because...\n\n")
+	}
+	sb.WriteString(fmt.Sprintf("QUESTION BEING VOTED ON:\n%s\n\n", e.pattern.Question))
+	sb.WriteString(fmt.Sprintf("This is retry %d of %d. Please respond in the exact format above.\n", attempt, maxRetries))
+
+	return sb.String()
+}
+
+// retryJudge retries the judge agent when its decision doesn't match any valid option.
+func (e *SwarmExecutor) retryJudge(
+	ctx context.Context,
+	distribution map[string]int32,
+	previousDecision string,
+) string {
+	judgeAgent, err := e.orchestrator.GetAgent(ctx, e.pattern.JudgeAgentId)
+	if err != nil {
+		e.orchestrator.logger.Warn("Failed to get judge agent for retry",
+			zap.String("judge_id", e.pattern.JudgeAgentId),
+			zap.Error(err))
+		return ""
+	}
+
+	maxRetries := cappedRetries(e.pattern.RetryPolicy.MaxRetries)
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return ""
+		}
+		retryPrompt := e.buildJudgeRetryPrompt(distribution, previousDecision, attempt, maxRetries)
+
+		sessionID := fmt.Sprintf("%s-judge-retry%d", e.workflowID, attempt)
+
+		e.orchestrator.logger.Info("Retrying judge decision",
+			zap.Int("attempt", attempt),
+			zap.String("previous_decision", previousDecision))
+
+		response, chatErr := judgeAgent.Chat(ctx, sessionID, retryPrompt)
+		if chatErr != nil {
+			continue
+		}
+
+		decision := strings.TrimSpace(response.Content)
+
+		// Check exact match
+		if _, exists := distribution[decision]; exists {
+			return decision
+		}
+
+		// Try case-insensitive
+		for choice := range distribution {
+			if strings.EqualFold(decision, choice) {
+				return choice
+			}
+		}
+
+		// Try coercion
+		validChoices := make([]string, 0, len(distribution))
+		for choice := range distribution {
+			validChoices = append(validChoices, choice)
+		}
+		if coerced, ok := coerceBranchKey(decision, validChoices); ok {
+			return coerced
+		}
+
+		previousDecision = decision
+	}
+
+	return ""
+}
+
+// buildJudgeRetryPrompt constructs a retry prompt for the judge that lists valid options.
+func (e *SwarmExecutor) buildJudgeRetryPrompt(distribution map[string]int32, previousDecision string, attempt, maxRetries int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Your previous response %q does not match any of the available options.\n\n", previousDecision))
+	sb.WriteString("VALID OPTIONS (pick exactly one):\n")
+	for choice := range distribution {
+		sb.WriteString(fmt.Sprintf("- %s\n", choice))
+	}
+	sb.WriteString("\nPlease respond with exactly one of the options above and nothing else.\n")
+	sb.WriteString(fmt.Sprintf("This is retry %d of %d.\n", attempt, maxRetries))
+	return sb.String()
 }
 
 // calculateCost sums up the costs from all agent results.

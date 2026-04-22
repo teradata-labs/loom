@@ -31,6 +31,9 @@ teradata_function: HASHAMP, HASHBUCKET
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - query_generation
+  - analytics
 use_cases:
   - Identify tables with poor Primary Index distribution
   - Diagnose slow query performance caused by skew

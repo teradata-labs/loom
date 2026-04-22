@@ -35,6 +35,7 @@ Specifies the Loom data directory where configuration, databases, and other pers
 - If relative path, converted to absolute
 - Tilde (`~`) expansion supported
 - Takes precedence over default `$HOME/.loom`
+- `just clean` deletes the resolved data directory (after a confirmation prompt); default target is `$HOME/.loom` when unset
 
 **Examples:**
 ```bash
@@ -97,7 +98,8 @@ Specifies where Loom binaries are installed during `just install` and cleaned du
 - Only affects installation scripts, not the running application
 - The application never needs to know where its binary is installed
 - NOT managed by viper or included in runtime configuration
-- Tilde (`~`) expansion supported
+- Tilde (`~`) expansion supported for interactive shells when exporting this variable
+- `just clean` removes `loom`, `looms`, and `hawk` from this directory (after a confirmation prompt); literal `~/...` values from the environment are normalized to `$HOME/...` in the `Justfile` before removal
 
 **Examples:**
 ```bash
@@ -222,7 +224,27 @@ AWS region for Bedrock service. Takes precedence over `AWS_DEFAULT_REGION`.
 export LOOM_LLM_BEDROCK_REGION=us-east-1
 ```
 
-See [AWS Credentials](#aws-credentials) section for authentication environment variables.
+#### AWS_BEARER_TOKEN_BEDROCK
+**Default:** None (disabled)
+**Used in:** AWS SDK `bedrockruntime` client (auto-detected at initialization)
+**Available since:** `bedrockruntime v1.35.0` (Loom ships `v1.50.4`)
+
+Bearer token for Bedrock authentication via AWS IAM Identity Center (formerly AWS SSO). When set, bypasses SigV4 signing entirely — no `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, or IAM role is needed.
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK="your-bearer-token"
+```
+
+**How it works:**
+- The AWS SDK's `resolveEnvBearerToken()` function reads this env var during client initialization
+- Sets `AuthSchemePreference` to `httpBearerAuth`, which takes priority over SigV4
+- Region and model ID defaults still apply (`us-west-2`, `us.anthropic.claude-sonnet-4-5-20250929-v1:0`)
+
+**Limitations:**
+- Static token only — no automatic refresh/rotation from the env var path
+- For rotating tokens, use IAM roles or AWS profiles with SSO
+
+See [AWS Credentials](#aws-credentials) section for other authentication environment variables.
 
 ---
 
@@ -416,6 +438,16 @@ looms config set-key huggingface_token
 ## AWS Credentials
 
 These environment variables are used for AWS Bedrock authentication and other AWS services.
+
+### AWS_BEARER_TOKEN_BEDROCK
+**Default:** None (disabled)
+**Used in:** AWS SDK `bedrockruntime` client (auto-detected at initialization)
+
+Bearer token for Bedrock authentication. When set, bypasses SigV4 signing — no other AWS credential env vars are needed. See [AWS Bedrock](#aws-bedrock) section for details.
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK="your-bearer-token"
+```
 
 ### AWS_REGION
 **Used in:** `pkg/llm/factory/factory.go`, `pkg/agent/registry.go`
@@ -849,9 +881,12 @@ Configuration sources are applied in this order (highest to lowest priority):
 looms config set-key anthropic_api_key
 looms config set-key hawk_api_key
 
-# Use AWS profile (recommended for Bedrock)
+# Option A: Use AWS profile (recommended for Bedrock)
 aws configure --profile bedrock
 export AWS_PROFILE=bedrock
+
+# Option B: Use bearer token (for corporate SSO / Identity Center)
+export AWS_BEARER_TOKEN_BEDROCK="your-bearer-token"
 
 # Customize installation directories (optional)
 export LOOM_BIN_DIR=/usr/local/bin      # Where to install binaries

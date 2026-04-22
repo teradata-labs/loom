@@ -34,6 +34,9 @@ teradata_function: P_XAGXB, P_XBGXA, Overlaps
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - schema_discovery
+  - relationship_query
 use_cases:
   - Automatically discover foreign key relationships
   - Reverse-engineer undocumented schema relationships

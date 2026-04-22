@@ -12,6 +12,9 @@ backend_type: text
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - document_search
+  - analytics
 use_cases:
   - Customer feedback analysis and prioritization
   - Support ticket sentiment-based routing

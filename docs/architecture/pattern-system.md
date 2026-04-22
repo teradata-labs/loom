@@ -212,7 +212,7 @@ graph TB
 │  │  │         Execution Planning                         │     │          │  │
 │  │  │                                                    │     │          │  │
 │  │  │  ExecutionPlan:                                    │     │          │  │
-│  │  │    - Intent: IntentCategory                        │     │          │  │
+│  │  │    - Intent: string (freeform)                      │     │          │  │
 │  │  │    - Steps: []PlannedStep                          │     │          │  │
 │  │  │    - Reasoning: string                             │     │          │  │
 │  │  │    - PatternName: string (recommendation)          │     │          │  │
@@ -338,6 +338,7 @@ type Pattern struct {
     Difficulty      string   // beginner, intermediate, advanced
     BackendType     string   // sql, rest, document, etc.
     UseCases        []string // Example use cases
+    Intents         []string // Freeform intent labels this pattern serves
     RelatedPatterns []string // Cross-references
 
     // Definition
@@ -442,14 +443,14 @@ lib.mu.Unlock()
 
 **Intent Classification**:
 ```
-User Message ───▶ Intent Classifier ───▶ IntentCategory + Confidence            
+User Message ───▶ Intent Classifier ───▶ Intent (string) + Confidence
                       │                                                         
                       ├─ Keyword matching (default)                             
                       ├─ Backend-specific classifier (pluggable)                
                       └─ LLM-based classification (optional)                    
 ```
 
-**Intent Categories** (9 types):
+**Freeform Intent Labels**: Intents are freeform snake_case strings — the classifier can return any label. The default keyword classifier recognizes these common intents:
 - `schema_discovery`: "Show me the table structure"
 - `data_quality`: "Check for duplicates"
 - `data_transform`: "Convert this data format"
@@ -458,7 +459,8 @@ User Message ───▶ Intent Classifier ───▶ IntentCategory + Confid
 - `query_generation`: "Generate a SQL query for..."
 - `document_search`: "Find documents matching..."
 - `api_call`: "Call the REST API to..."
-- `unknown`: Fallback category
+
+Custom classifiers can return domain-specific labels (e.g., `"predict_churn"`, `"code_review"`). Patterns declare which intents they serve via the `intents` YAML field.
 
 **Pattern Recommendation Algorithm**:
 ```
@@ -468,7 +470,10 @@ User Message ───▶ Intent Classifier ───▶ IntentCategory + Confid
    └─ Return top N candidates                                                   
 
 2. Score Candidates (multi-factor, from orchestrator.go)
-   ├─ Category match (intent alignment):    +0.5
+   ├─ Intent match via matchesIntent():     +0.5
+   │   ├─ Check pattern's declared intents[] first
+   │   └─ Fallback: match against category
+   ├─ Unknown intent category boost:        +0.2 to +0.4
    ├─ Keyword match rate (% of keywords):   up to +0.5
    ├─ Exact name match:                     +0.2
    ├─ Title keyword match:                  +0.1
@@ -486,21 +491,44 @@ User Message ───▶ Intent Classifier ───▶ IntentCategory + Confid
 **Pluggable Classifiers**:
 ```go
 // Backends can provide custom intent classifiers
+// Returns a freeform intent label and confidence score
 type IntentClassifierFunc func(
     userMessage string,
     context map[string]interface{}
-) (IntentCategory, float64)
+) (string, float64)
 
 // Example: Teradata-specific classifier
-func TeradataIntentClassifier(msg string, ctx map[string]interface{}) (IntentCategory, float64) {
+func TeradataIntentClassifier(msg string, ctx map[string]interface{}) (string, float64) {
     if strings.Contains(msg, "nPath") || strings.Contains(msg, "sessionize") {
-        return IntentAnalytics, 0.9
+        return "analytics", 0.9
     }
     // ... backend-specific logic
     return defaultIntentClassifier(msg, ctx)
 }
 
 orchestrator.SetIntentClassifier(TeradataIntentClassifier)
+```
+
+**Public API** (`pkg/patterns/orchestrator.go`):
+```go
+// Classify user intent — returns freeform string label + confidence
+func (o *Orchestrator) ClassifyIntent(userMessage string, ctxData map[string]interface{}) (string, float64)
+
+// Create execution plan from classified intent
+func (o *Orchestrator) PlanExecution(intent string, userMessage string, ctxData map[string]interface{}) (*ExecutionPlan, error)
+
+// Recommend best-matching pattern from library
+func (o *Orchestrator) RecommendPattern(userMessage string, intent string) (string, float64)
+
+// Get routing guidance for an intent
+func (o *Orchestrator) GetRoutingRecommendation(intent string) string
+
+// Plug in custom classifier and planner
+func (o *Orchestrator) SetIntentClassifier(fn IntentClassifierFunc)
+func (o *Orchestrator) SetExecutionPlanner(fn ExecutionPlannerFunc)
+
+// Enable hybrid keyword + LLM re-ranking
+func (o *Orchestrator) SetLLMProvider(provider types.LLMProvider)
 ```
 
 **Routing Recommendations**:
@@ -532,7 +560,11 @@ orchestrator.SetIntentClassifier(TeradataIntentClassifier)
    └─ Return ALL matching patterns (no top-K truncation)
 
 3. Intent Boosting (in Orchestrator.RecommendPattern, not in Library.Search)
-   ├─ If pattern category matches intent → +0.5 score
+   ├─ matchesIntent(category, declaredIntents, classifiedIntent):
+   │   ├─ Check pattern's declared intents[] first (freeform labels)
+   │   └─ Fallback: match against pattern category (backward compat)
+   ├─ If matchesIntent returns true → +0.5 score
+   ├─ If intent is unknown (""), boost by category relevance (0.2-0.4)
    ├─ Keyword match rate → up to +0.5 score
    ├─ Exact name match → +0.2 score
    └─ Title keyword match → +0.1 score
@@ -740,14 +772,14 @@ User Query      Orchestrator    Library       Pattern Index
 User: "Analyze customer purchase journey with nPath"
 
 Pattern: npath_analysis
-├─ Category = "analytics" matches IntentAnalytics → +0.5
+├─ Intent "analytics" matches declared intents     → +0.5
 ├─ Keyword match rate (4/5 keywords matched)      → +0.4
 ├─ Name contains "npath"                          → +0.2
 ├─ Title contains "nPath"                         → +0.1
 └─ Total Score: 1.2 (high confidence match)
 
 Pattern: sessionize
-├─ Category = "analytics" matches IntentAnalytics → +0.5
+├─ Intent "analytics" matches declared intents     → +0.5
 ├─ Keyword match rate (2/5 keywords matched)      → +0.2
 └─ Total Score: 0.7 (medium confidence, alternative)
 ```
@@ -767,6 +799,7 @@ type Pattern struct {
     Difficulty      string               // advanced
     BackendType     string               // sql
     UseCases        []string             // ["customer journey", "churn"]
+    Intents         []string             // ["analytics", "reporting", "query_generation"]
     RelatedPatterns []string             // ["sessionize", "funnel"]
 
     Parameters      []Parameter          // Template variables
@@ -787,6 +820,10 @@ description: "Analyze sequences of events to find patterns over ordered data par
 category: analytics
 difficulty: advanced
 backend_type: sql
+intents:
+  - analytics
+  - reporting
+  - query_generation
 
 parameters:
   - name: table

@@ -26,6 +26,8 @@ backend_type: prompt_engineering
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - learning
 use_cases:
   # --- Use Case 1: Query Generation ---
   - Natural language to SQL query generation

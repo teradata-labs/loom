@@ -1007,7 +1007,9 @@ type MemoryConfig struct {
 	// 0 = use default (5). Higher values give the LLM more context from recent tool calls.
 	MaxToolResults int32 `protobuf:"varint,7,opt,name=max_tool_results,json=maxToolResults,proto3" json:"max_tool_results,omitempty"`
 	// Graph memory configuration for salience-driven episodic memory.
-	GraphMemory   *GraphMemoryConfig `protobuf:"bytes,8,opt,name=graph_memory,json=graphMemory,proto3" json:"graph_memory,omitempty"`
+	GraphMemory *GraphMemoryConfig `protobuf:"bytes,8,opt,name=graph_memory,json=graphMemory,proto3" json:"graph_memory,omitempty"`
+	// Task board configuration for dependency-aware task decomposition and kanban.
+	TaskBoard     *TaskBoardConfig `protobuf:"bytes,9,opt,name=task_board,json=taskBoard,proto3" json:"task_board,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1098,6 +1100,13 @@ func (x *MemoryConfig) GetGraphMemory() *GraphMemoryConfig {
 	return nil
 }
 
+func (x *MemoryConfig) GetTaskBoard() *TaskBoardConfig {
+	if x != nil {
+		return x.TaskBoard
+	}
+	return nil
+}
+
 // GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer.
 type GraphMemoryConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1121,8 +1130,19 @@ type GraphMemoryConfig struct {
 	MaxRecallCandidates int32 `protobuf:"varint,7,opt,name=max_recall_candidates,json=maxRecallCandidates,proto3" json:"max_recall_candidates,omitempty"`
 	// Default salience for new memories. Default: 0.5.
 	DefaultSalience float32 `protobuf:"fixed32,8,opt,name=default_salience,json=defaultSalience,proto3" json:"default_salience,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Enable automatic memory extraction from conversation context.
+	// When enabled, an LLM subprocess periodically extracts entities,
+	// relationships, and memories from recent conversation turns.
+	// Default: true (when graph memory is enabled).
+	EnableExtraction bool `protobuf:"varint,9,opt,name=enable_extraction,json=enableExtraction,proto3" json:"enable_extraction,omitempty"`
+	// Number of tool executions between automatic graph memory extractions.
+	// Default: 5.
+	ExtractionCadence int32 `protobuf:"varint,10,opt,name=extraction_cadence,json=extractionCadence,proto3" json:"extraction_cadence,omitempty"`
+	// Maximum entities to extract per extraction cycle.
+	// Default: 10.
+	MaxEntitiesPerExtraction int32 `protobuf:"varint,11,opt,name=max_entities_per_extraction,json=maxEntitiesPerExtraction,proto3" json:"max_entities_per_extraction,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *GraphMemoryConfig) Reset() {
@@ -1211,6 +1231,119 @@ func (x *GraphMemoryConfig) GetDefaultSalience() float32 {
 	return 0
 }
 
+func (x *GraphMemoryConfig) GetEnableExtraction() bool {
+	if x != nil {
+		return x.EnableExtraction
+	}
+	return false
+}
+
+func (x *GraphMemoryConfig) GetExtractionCadence() int32 {
+	if x != nil {
+		return x.ExtractionCadence
+	}
+	return 0
+}
+
+func (x *GraphMemoryConfig) GetMaxEntitiesPerExtraction() int32 {
+	if x != nil {
+		return x.MaxEntitiesPerExtraction
+	}
+	return 0
+}
+
+// TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
+type TaskBoardConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether the task board is enabled. Default: false (opt-in).
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Automatically decompose complex goals into task DAGs.
+	AutoDecompose bool `protobuf:"varint,2,opt,name=auto_decompose,json=autoDecompose,proto3" json:"auto_decompose,omitempty"`
+	// Maximum decomposition depth (default: 3).
+	MaxDepth int32 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	// Default board ID. If empty, the agent creates/uses a board named after itself.
+	DefaultBoardId string `protobuf:"bytes,4,opt,name=default_board_id,json=defaultBoardId,proto3" json:"default_board_id,omitempty"`
+	// Default decomposition strategy.
+	DefaultStrategy DecomposeStrategy `protobuf:"varint,5,opt,name=default_strategy,json=defaultStrategy,proto3,enum=loom.v1.DecomposeStrategy" json:"default_strategy,omitempty"`
+	// Maximum tokens for the task context block injected into the system prompt.
+	// Default: 500. Set to 0 to disable context injection.
+	ContextBudgetTokens int32 `protobuf:"varint,6,opt,name=context_budget_tokens,json=contextBudgetTokens,proto3" json:"context_budget_tokens,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *TaskBoardConfig) Reset() {
+	*x = TaskBoardConfig{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskBoardConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskBoardConfig) ProtoMessage() {}
+
+func (x *TaskBoardConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskBoardConfig.ProtoReflect.Descriptor instead.
+func (*TaskBoardConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TaskBoardConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *TaskBoardConfig) GetAutoDecompose() bool {
+	if x != nil {
+		return x.AutoDecompose
+	}
+	return false
+}
+
+func (x *TaskBoardConfig) GetMaxDepth() int32 {
+	if x != nil {
+		return x.MaxDepth
+	}
+	return 0
+}
+
+func (x *TaskBoardConfig) GetDefaultBoardId() string {
+	if x != nil {
+		return x.DefaultBoardId
+	}
+	return ""
+}
+
+func (x *TaskBoardConfig) GetDefaultStrategy() DecomposeStrategy {
+	if x != nil {
+		return x.DefaultStrategy
+	}
+	return DecomposeStrategy_DECOMPOSE_STRATEGY_UNSPECIFIED
+}
+
+func (x *TaskBoardConfig) GetContextBudgetTokens() int32 {
+	if x != nil {
+		return x.ContextBudgetTokens
+	}
+	return 0
+}
+
 // MemoryCompressionBatchSizes defines how many messages to compress in each batch
 type MemoryCompressionBatchSizes struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1226,7 +1359,7 @@ type MemoryCompressionBatchSizes struct {
 
 func (x *MemoryCompressionBatchSizes) Reset() {
 	*x = MemoryCompressionBatchSizes{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1238,7 +1371,7 @@ func (x *MemoryCompressionBatchSizes) String() string {
 func (*MemoryCompressionBatchSizes) ProtoMessage() {}
 
 func (x *MemoryCompressionBatchSizes) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[10]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1251,7 +1384,7 @@ func (x *MemoryCompressionBatchSizes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCompressionBatchSizes.ProtoReflect.Descriptor instead.
 func (*MemoryCompressionBatchSizes) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{10}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MemoryCompressionBatchSizes) GetNormal() int32 {
@@ -1301,7 +1434,7 @@ type MemoryCompressionConfig struct {
 
 func (x *MemoryCompressionConfig) Reset() {
 	*x = MemoryCompressionConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1313,7 +1446,7 @@ func (x *MemoryCompressionConfig) String() string {
 func (*MemoryCompressionConfig) ProtoMessage() {}
 
 func (x *MemoryCompressionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[11]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1326,7 +1459,7 @@ func (x *MemoryCompressionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCompressionConfig.ProtoReflect.Descriptor instead.
 func (*MemoryCompressionConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MemoryCompressionConfig) GetWorkloadProfile() WorkloadProfile {
@@ -1404,7 +1537,7 @@ type BehaviorConfig struct {
 
 func (x *BehaviorConfig) Reset() {
 	*x = BehaviorConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +1549,7 @@ func (x *BehaviorConfig) String() string {
 func (*BehaviorConfig) ProtoMessage() {}
 
 func (x *BehaviorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[12]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,7 +1562,7 @@ func (x *BehaviorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BehaviorConfig.ProtoReflect.Descriptor instead.
 func (*BehaviorConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *BehaviorConfig) GetMaxIterations() int32 {
@@ -1520,7 +1653,7 @@ type PatternConfig struct {
 
 func (x *PatternConfig) Reset() {
 	*x = PatternConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1532,7 +1665,7 @@ func (x *PatternConfig) String() string {
 func (*PatternConfig) ProtoMessage() {}
 
 func (x *PatternConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[13]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1545,7 +1678,7 @@ func (x *PatternConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatternConfig.ProtoReflect.Descriptor instead.
 func (*PatternConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PatternConfig) GetEnabled() bool {
@@ -1600,7 +1733,7 @@ type AgentTemplate struct {
 
 func (x *AgentTemplate) Reset() {
 	*x = AgentTemplate{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1612,7 +1745,7 @@ func (x *AgentTemplate) String() string {
 func (*AgentTemplate) ProtoMessage() {}
 
 func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1625,7 +1758,7 @@ func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTemplate.ProtoReflect.Descriptor instead.
 func (*AgentTemplate) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AgentTemplate) GetName() string {
@@ -1675,7 +1808,7 @@ type TemplateParameter struct {
 
 func (x *TemplateParameter) Reset() {
 	*x = TemplateParameter{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1687,7 +1820,7 @@ func (x *TemplateParameter) String() string {
 func (*TemplateParameter) ProtoMessage() {}
 
 func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1700,7 +1833,7 @@ func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TemplateParameter.ProtoReflect.Descriptor instead.
 func (*TemplateParameter) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *TemplateParameter) GetName() string {
@@ -1753,7 +1886,7 @@ type AgentProfile struct {
 
 func (x *AgentProfile) Reset() {
 	*x = AgentProfile{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1765,7 +1898,7 @@ func (x *AgentProfile) String() string {
 func (*AgentProfile) ProtoMessage() {}
 
 func (x *AgentProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1778,7 +1911,7 @@ func (x *AgentProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentProfile.ProtoReflect.Descriptor instead.
 func (*AgentProfile) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AgentProfile) GetName() string {
@@ -1822,7 +1955,7 @@ type EphemeralAgentPolicy struct {
 
 func (x *EphemeralAgentPolicy) Reset() {
 	*x = EphemeralAgentPolicy{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1834,7 +1967,7 @@ func (x *EphemeralAgentPolicy) String() string {
 func (*EphemeralAgentPolicy) ProtoMessage() {}
 
 func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1847,7 +1980,7 @@ func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EphemeralAgentPolicy.ProtoReflect.Descriptor instead.
 func (*EphemeralAgentPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{17}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *EphemeralAgentPolicy) GetRole() string {
@@ -1900,7 +2033,7 @@ type SpawnTrigger struct {
 
 func (x *SpawnTrigger) Reset() {
 	*x = SpawnTrigger{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1912,7 +2045,7 @@ func (x *SpawnTrigger) String() string {
 func (*SpawnTrigger) ProtoMessage() {}
 
 func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1925,7 +2058,7 @@ func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnTrigger.ProtoReflect.Descriptor instead.
 func (*SpawnTrigger) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{18}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SpawnTrigger) GetType() SpawnTriggerType {
@@ -1953,7 +2086,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\"\xf0\a\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\x1a\x12loom/v1/task.proto\"\xf0\a\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -2019,7 +2152,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x05tools\x18\x02 \x03(\tR\x05tools\"N\n" +
 	"\x10CustomToolConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12&\n" +
-	"\x0eimplementation\x18\x02 \x01(\tR\x0eimplementation\"\xe6\x02\n" +
+	"\x0eimplementation\x18\x02 \x01(\tR\x0eimplementation\"\x9f\x03\n" +
 	"\fMemoryConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x10\n" +
@@ -2029,7 +2162,9 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x12memory_compression\x18\x05 \x01(\v2 .loom.v1.MemoryCompressionConfigR\x11memoryCompression\x12A\n" +
 	"\x1dshared_memory_threshold_bytes\x18\x06 \x01(\x03R\x1asharedMemoryThresholdBytes\x12(\n" +
 	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\x12=\n" +
-	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\"\xe8\x02\n" +
+	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\x127\n" +
+	"\n" +
+	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\x83\x04\n" +
 	"\x11GraphMemoryConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
 	"\x16context_budget_percent\x18\x02 \x01(\x05R\x14contextBudgetPercent\x12,\n" +
@@ -2039,7 +2174,18 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\fboost_amount\x18\x05 \x01(\x02R\vboostAmount\x124\n" +
 	"\x16min_salience_threshold\x18\x06 \x01(\x02R\x14minSalienceThreshold\x122\n" +
 	"\x15max_recall_candidates\x18\a \x01(\x05R\x13maxRecallCandidates\x12)\n" +
-	"\x10default_salience\x18\b \x01(\x02R\x0fdefaultSalience\"k\n" +
+	"\x10default_salience\x18\b \x01(\x02R\x0fdefaultSalience\x12+\n" +
+	"\x11enable_extraction\x18\t \x01(\bR\x10enableExtraction\x12-\n" +
+	"\x12extraction_cadence\x18\n" +
+	" \x01(\x05R\x11extractionCadence\x12=\n" +
+	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\"\x94\x02\n" +
+	"\x0fTaskBoardConfig\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
+	"\x0eauto_decompose\x18\x02 \x01(\bR\rautoDecompose\x12\x1b\n" +
+	"\tmax_depth\x18\x03 \x01(\x05R\bmaxDepth\x12(\n" +
+	"\x10default_board_id\x18\x04 \x01(\tR\x0edefaultBoardId\x12E\n" +
+	"\x10default_strategy\x18\x05 \x01(\x0e2\x1a.loom.v1.DecomposeStrategyR\x0fdefaultStrategy\x122\n" +
+	"\x15context_budget_tokens\x18\x06 \x01(\x05R\x13contextBudgetTokens\"k\n" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
@@ -2134,7 +2280,7 @@ func file_loom_v1_agent_config_proto_rawDescGZIP() []byte {
 }
 
 var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_loom_v1_agent_config_proto_goTypes = []any{
 	(LLMRole)(0),                        // 0: loom.v1.LLMRole
 	(WorkloadProfile)(0),                // 1: loom.v1.WorkloadProfile
@@ -2149,54 +2295,58 @@ var file_loom_v1_agent_config_proto_goTypes = []any{
 	(*CustomToolConfig)(nil),            // 10: loom.v1.CustomToolConfig
 	(*MemoryConfig)(nil),                // 11: loom.v1.MemoryConfig
 	(*GraphMemoryConfig)(nil),           // 12: loom.v1.GraphMemoryConfig
-	(*MemoryCompressionBatchSizes)(nil), // 13: loom.v1.MemoryCompressionBatchSizes
-	(*MemoryCompressionConfig)(nil),     // 14: loom.v1.MemoryCompressionConfig
-	(*BehaviorConfig)(nil),              // 15: loom.v1.BehaviorConfig
-	(*PatternConfig)(nil),               // 16: loom.v1.PatternConfig
-	(*AgentTemplate)(nil),               // 17: loom.v1.AgentTemplate
-	(*TemplateParameter)(nil),           // 18: loom.v1.TemplateParameter
-	(*AgentProfile)(nil),                // 19: loom.v1.AgentProfile
-	(*EphemeralAgentPolicy)(nil),        // 20: loom.v1.EphemeralAgentPolicy
-	(*SpawnTrigger)(nil),                // 21: loom.v1.SpawnTrigger
-	nil,                                 // 22: loom.v1.AgentConfig.MetadataEntry
-	nil,                                 // 23: loom.v1.AgentProfile.OverridesEntry
-	(*SkillsConfig)(nil),                // 24: loom.v1.SkillsConfig
+	(*TaskBoardConfig)(nil),             // 13: loom.v1.TaskBoardConfig
+	(*MemoryCompressionBatchSizes)(nil), // 14: loom.v1.MemoryCompressionBatchSizes
+	(*MemoryCompressionConfig)(nil),     // 15: loom.v1.MemoryCompressionConfig
+	(*BehaviorConfig)(nil),              // 16: loom.v1.BehaviorConfig
+	(*PatternConfig)(nil),               // 17: loom.v1.PatternConfig
+	(*AgentTemplate)(nil),               // 18: loom.v1.AgentTemplate
+	(*TemplateParameter)(nil),           // 19: loom.v1.TemplateParameter
+	(*AgentProfile)(nil),                // 20: loom.v1.AgentProfile
+	(*EphemeralAgentPolicy)(nil),        // 21: loom.v1.EphemeralAgentPolicy
+	(*SpawnTrigger)(nil),                // 22: loom.v1.SpawnTrigger
+	nil,                                 // 23: loom.v1.AgentConfig.MetadataEntry
+	nil,                                 // 24: loom.v1.AgentProfile.OverridesEntry
+	(*SkillsConfig)(nil),                // 25: loom.v1.SkillsConfig
+	(DecomposeStrategy)(0),              // 26: loom.v1.DecomposeStrategy
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
 	8,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
 	11, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
-	15, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
-	22, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
-	20, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
+	16, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
+	23, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
+	21, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
 	6,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
 	6,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
 	6,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
 	6,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
-	24, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
+	25, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
 	6,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
 	4,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
 	7,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
 	9,  // 14: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
 	10, // 15: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	14, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	15, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
 	12, // 17: loom.v1.MemoryConfig.graph_memory:type_name -> loom.v1.GraphMemoryConfig
-	1,  // 18: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	13, // 19: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	16, // 20: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	18, // 21: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 22: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 23: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	23, // 24: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	21, // 25: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 26: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 27: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 28: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	13, // 18: loom.v1.MemoryConfig.task_board:type_name -> loom.v1.TaskBoardConfig
+	26, // 19: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
+	1,  // 20: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	14, // 21: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	17, // 22: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	19, // 23: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	3,  // 24: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	3,  // 25: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	24, // 26: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	22, // 27: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	3,  // 28: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	2,  // 29: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	3,  // 30: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2205,13 +2355,14 @@ func file_loom_v1_agent_config_proto_init() {
 		return
 	}
 	file_loom_v1_skill_proto_init()
+	file_loom_v1_task_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_agent_config_proto_rawDesc), len(file_loom_v1_agent_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   21,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

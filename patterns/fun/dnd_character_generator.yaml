@@ -35,6 +35,8 @@ tags: [dnd, rpg, character-creation, interactive, gaming]
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - fun
 use_cases:
   - Create new D&D characters for campaigns
   - Generate NPCs quickly

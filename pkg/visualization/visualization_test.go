@@ -7,6 +7,7 @@ package visualization
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -300,6 +301,44 @@ func TestStyleGuideClient_FetchStyleWithFallback(t *testing.T) {
 	}
 	if style.FontFamily == "" {
 		t.Error("FontFamily should not be empty")
+	}
+}
+
+// styleGuideTestEndpoint is a non-reserved example host (example.com is reserved by IANA for documentation).
+const styleGuideTestEndpoint = "https://hawk.example.com"
+
+func TestStyleGuideClient_FetchStyle_RemoteNotImplemented(t *testing.T) {
+	sgc := NewStyleGuideClient(styleGuideTestEndpoint)
+	_, err := sgc.FetchStyle(context.Background(), "dark")
+	if err == nil {
+		t.Fatal("expected error when endpoint is set")
+	}
+	if !errors.Is(err, ErrStyleGuideRemoteNotImplemented) {
+		t.Fatalf("expected ErrStyleGuideRemoteNotImplemented, got %v", err)
+	}
+}
+
+func TestStyleGuideClient_FetchStyle_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sgc := NewStyleGuideClient("")
+	_, err := sgc.FetchStyle(ctx, "dark")
+	if err == nil {
+		t.Fatal("expected error for canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestStyleGuideClient_FetchStyleWithFallback_NonEmptyEndpoint(t *testing.T) {
+	sgc := NewStyleGuideClient(styleGuideTestEndpoint)
+	style := sgc.FetchStyleWithFallback(context.Background(), "dark")
+	if style == nil {
+		t.Fatal("FetchStyleWithFallback returned nil")
+	}
+	if style.ColorPrimary == "" {
+		t.Error("ColorPrimary should not be empty after fallback")
 	}
 }
 

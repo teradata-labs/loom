@@ -16,6 +16,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/collaboration"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/task"
 	"go.uber.org/zap"
 )
 
@@ -76,7 +77,13 @@ type Orchestrator struct {
 	// LLM concurrency semaphore to limit parallel LLM calls (optional)
 	// If nil, no concurrency control is applied
 	llmSemaphore chan struct{}
+
+	// TaskManager for persistent workflow tracking (optional).
+	taskManager *task.Manager
 }
+
+// taskTrackingKey is a context key to prevent recursive task tracking.
+type taskTrackingKey struct{}
 
 // Config configures the orchestrator.
 type Config struct {
@@ -105,6 +112,11 @@ type Config struct {
 	// If nil, no concurrency control is applied
 	// Use make(chan struct{}, N) where N is the max concurrent LLM calls
 	LLMSemaphore chan struct{}
+
+	// TaskManager for persistent workflow tracking (optional).
+	// When set, ExecutePattern wraps execution with task-based state tracking,
+	// providing persistence, resume capability, and progress visibility.
+	TaskManager *task.Manager
 }
 
 // NewOrchestrator creates a new orchestrator instance.
@@ -126,6 +138,7 @@ func NewOrchestrator(config Config) *Orchestrator {
 		sharedMemory:     config.SharedMemory,
 		progressCallback: config.ProgressCallback,
 		llmSemaphore:     config.LLMSemaphore,
+		taskManager:      config.TaskManager,
 	}
 
 	// Initialize collaboration engine with orchestrator as provider
@@ -284,7 +297,18 @@ func (o *Orchestrator) Conditional(classifier *agent.Agent, conditionPrompt stri
 
 // ExecutePattern executes a workflow pattern and returns the result.
 // This is the low-level execution method used by pattern builders.
+// When a TaskManager is configured, workflow execution is automatically
+// wrapped with persistent task tracking (board creation, stage tasks,
+// progress recording, resume support).
 func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.WorkflowPattern) (*loomv1.WorkflowResult, error) {
+	// If task tracking is configured and this isn't already a tracked call,
+	// delegate to the TaskTrackedOrchestrator.
+	if o.taskManager != nil && ctx.Value(taskTrackingKey{}) == nil {
+		ctx = context.WithValue(ctx, taskTrackingKey{}, true)
+		tracked := NewTaskTrackedOrchestrator(o, o.taskManager, o.tracer, o.logger)
+		return tracked.ExecutePattern(ctx, pattern)
+	}
+
 	patternType := GetPatternType(pattern)
 
 	// Emit initial progress

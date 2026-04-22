@@ -19,6 +19,10 @@ teradata_function: KMeans
 # === METADATA END ===
 
 # === USE_CASES START ===
+intents:
+  - analytics
+  - prediction
+  - model_training
 use_cases:
   # --- Use Case 1: Customer Segmentation ---
   - Customer segmentation by behavior or demographics
