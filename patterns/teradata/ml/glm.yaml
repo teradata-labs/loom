@@ -1,0 +1,507 @@
+# === METADATA START ===
+name: glm
+title: "Generalized Linear Model (GLM)"
+description: |
+  Train and score Generalized Linear Models using TD_GLM and TD_GLMPredict.
+  Supports Gaussian family (regression) and Binomial family (logistic regression /
+  binary classification). Uses Stochastic Gradient Descent (SGD) for optimization.
+
+  TD_GLM offers two operating modes:
+  - PARTITION BY ANY: trains a single global model on the full dataset
+  - PARTITION BY key (Micromodeling): trains one independent model per partition
+    value in parallel, with optional per-partition feature and parameter overrides
+
+  GLM is suitable for:
+  - Linear and logistic regression
+  - Interpretable models with coefficient weights
+  - Micromodeling (per-segment independent models)
+  - Stepwise feature selection
+  - Baseline models before trying ensemble methods
+
+category: ml
+difficulty: intermediate
+teradata_function: TD_GLM
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - prediction
+  - model_training
+  - analytics
+use_cases:
+  # --- Use Case 1: Linear Regression ---
+  - Continuous value prediction (sales, revenue, temperature)
+
+  # --- Use Case 2: Logistic Regression ---
+  - Binary classification (churn, fraud, default)
+
+  # --- Use Case 3: Micromodeling ---
+  - Per-segment models (one model per region, product, store)
+
+  # --- Use Case 4: Feature Selection ---
+  - Stepwise feature selection (forward, backward, bidirectional)
+
+  # --- Use Case 5: Interpretable Models ---
+  - Regulatory or compliance models requiring coefficient transparency
+
+  # --- Use Case 6: Baseline Benchmarking ---
+  - Baseline model before comparing to XGBoost or Decision Forest
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training and scoring data"
+    example: "analytics_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: All feature columns must be numeric
+    required: true
+    description: "Table with labeled training data"
+    example: "sales_training"
+
+  # --- Parameter 3: Scoring Table ---
+  - name: scoring_table
+    type: string
+    # LLM-HINT: New data to score; must have same numeric feature columns
+    required: false
+    description: "Table with new data to score"
+    example: "new_accounts"
+
+  # --- Parameter 4: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: All must be numeric; maps to InputColumns()
+    required: true
+    description: "Numeric feature columns"
+    example: '["age", "income", "credit_score", "debt_ratio"]'
+
+  # --- Parameter 5: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Binomial family requires 0/1 values; Gaussian accepts any numeric
+    required: true
+    description: "Target column to predict"
+    example: "approved"
+
+  # --- Parameter 6: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier for Predict; required
+    required: true
+    description: "Unique identifier column"
+    example: "account_id"
+
+  # --- Parameter 7: Family ---
+  - name: family
+    type: string
+    # LLM-HINT: 'Gaussian' for regression; 'Binomial' for binary classification (logistic regression)
+    required: false
+    default: "Gaussian"
+    description: "Distribution family: Gaussian (regression) or Binomial (logistic regression)"
+    example: "Binomial"
+
+  # --- Parameter 8: Batch Size ---
+  - name: batch_size
+    type: integer
+    # LLM-HINT: Mini-batch size for SGD; default 10; 0 = full batch gradient descent
+    required: false
+    default: "10"
+    description: "Mini-batch size for SGD optimization (0 = full batch)"
+    example: "32"
+
+  # --- Parameter 9: Max Iterations ---
+  - name: max_iter_num
+    type: integer
+    # LLM-HINT: Maximum SGD iterations; default 300
+    required: false
+    default: "300"
+    description: "Maximum number of SGD iterations"
+    example: "500"
+
+  # --- Parameter 10: Regularization Lambda ---
+  - name: regularization_lambda
+    type: number
+    # LLM-HINT: Elastic net regularization strength; default 0.02; 0 = no regularization
+    required: false
+    default: "0.02"
+    description: "Regularization strength (0 = no regularization)"
+    example: "0.1"
+
+  # --- Parameter 11: Alpha ---
+  - name: alpha
+    type: number
+    # LLM-HINT: L1/L2 mix; default 0.15 (15% L1, 85% L2); only when Lambda > 0
+    required: false
+    default: "0.15"
+    description: "Elastic net mixing (0 = pure L2, 1 = pure L1)"
+    example: "0.5"
+
+  # --- Parameter 12: Partition Column ---
+  - name: partition_column
+    type: string
+    # LLM-HINT: For micromodeling only; column to partition by for per-segment models
+    required: false
+    description: "Partition column for micromodeling (one model per partition value)"
+    example: "region"
+
+  # --- Parameter 13: Seed ---
+  - name: seed
+    type: integer
+    # LLM-HINT: Not directly supported in TD_GLM; use for TD_TrainTestSplit in pipelines
+    required: false
+    description: "Random seed for train-test split reproducibility"
+    example: "42"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === TRAIN_REGRESSION TEMPLATE ===
+  # LLM-HINT: Gaussian family; single global model via PARTITION BY ANY
+  train_regression:
+    description: "Train a linear regression model (Gaussian family)"
+    sql: |
+      -- Train GLM regression (Gaussian family) and persist model
+      -- LLM-HINT: AS InputTable alias is mandatory
+      -- LLM-HINT: All InputColumns must be numeric
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_GLM(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  Family('Gaussian')
+                  BatchSize({{batch_size}})
+                  MaxIterNum({{max_iter_num}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Alpha({{alpha}})
+                  Intercept('true')
+                  Tolerance(0.001)
+                  IterNumNoChange(50)
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - batch_size
+      - max_iter_num
+      - regularization_lambda
+      - alpha
+
+  # === TRAIN_CLASSIFICATION TEMPLATE ===
+  # LLM-HINT: Binomial family (logistic regression); response must be 0 or 1
+  train_classification:
+    description: "Train a logistic regression model (Binomial family)"
+    sql: |
+      -- Train GLM logistic regression (Binomial family) and persist model
+      -- LLM-HINT: ResponseColumn values must be 0 or 1 for Binomial family
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_GLM(
+              ON {{database}}.{{training_table}} AS InputTable PARTITION BY ANY
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  Family('Binomial')
+                  BatchSize({{batch_size}})
+                  MaxIterNum({{max_iter_num}})
+                  RegularizationLambda({{regularization_lambda}})
+                  Alpha({{alpha}})
+                  Intercept('true')
+                  Tolerance(0.001)
+                  IterNumNoChange(50)
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - batch_size
+      - max_iter_num
+      - regularization_lambda
+      - alpha
+
+  # === PREDICT TEMPLATE ===
+  # LLM-HINT: PARTITION BY ANY mode; ModelTable is DIMENSION; Family must match training
+  predict:
+    description: "Score new data using a trained GLM model"
+    sql: |
+      -- Score new data with trained GLM model
+      -- LLM-HINT: Family must match the value used during training
+      SELECT * FROM TD_GLMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              Family('{{family}}')
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - family
+      - response_column
+
+  # === PREDICT_WITH_PROBABILITIES TEMPLATE ===
+  # LLM-HINT: Binomial only; outputs probability columns per class
+  predict_with_probabilities:
+    description: "Score with class probabilities (Binomial only)"
+    sql: |
+      -- Score with class probabilities for threshold tuning
+      -- LLM-HINT: OutputProb and Responses are Binomial family only
+      SELECT * FROM TD_GLMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable PARTITION BY ANY
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          USING
+              IDColumn('{{id_column}}')
+              Family('Binomial')
+              OutputProb('true')
+              Responses('0', '1')
+              Accumulate('{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - response_column
+
+  # === MICROMODELING_TRAIN TEMPLATE ===
+  # LLM-HINT: PARTITION BY key mode; trains one independent model per partition value in parallel
+  micromodeling_train:
+    description: "Train per-partition models (micromodeling)"
+    sql: |
+      -- Micromodeling: train one GLM per partition value, in parallel
+      -- LLM-HINT: PARTITION BY key (not PARTITION BY ANY); each partition trains independently
+      -- LLM-HINT: ORDER BY ensures determinism when BatchSize < partition rows
+      CREATE TABLE {{database}}.{{model_table}} AS (
+          SELECT * FROM TD_GLM(
+              ON {{database}}.{{training_table}} AS InputTable
+                  PARTITION BY {{partition_column}} ORDER BY {{id_column}}
+              USING
+                  InputColumns({{input_columns_quoted}})
+                  ResponseColumn('{{response_column}}')
+                  Family('{{family}}')
+                  MaxIterNum({{max_iter_num}})
+                  BatchSize({{batch_size}})
+                  RegularizationLambda({{regularization_lambda}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - model_table
+      - input_columns_quoted
+      - response_column
+      - family
+      - partition_column
+      - id_column
+      - max_iter_num
+      - batch_size
+      - regularization_lambda
+
+  # === MICROMODELING_PREDICT TEMPLATE ===
+  # LLM-HINT: ModelTable uses PARTITION BY (not DIMENSION) to match per-partition models
+  micromodeling_predict:
+    description: "Score using per-partition models (micromodeling)"
+    sql: |
+      -- Micromodeling predict: ModelTable uses PARTITION BY (not DIMENSION)
+      -- LLM-HINT: Both InputTable and ModelTable must PARTITION BY the same column
+      SELECT * FROM TD_GLMPredict(
+          ON {{database}}.{{scoring_table}} AS InputTable
+              PARTITION BY {{partition_column}}
+          ON {{database}}.{{model_table}} AS ModelTable
+              PARTITION BY {{partition_column}}
+          USING
+              IDColumn('{{id_column}}')
+              Family('{{family}}')
+              Accumulate('{{partition_column}}', '{{response_column}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - scoring_table
+      - model_table
+      - id_column
+      - family
+      - partition_column
+      - response_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Binary Classification (Logistic Regression) ---
+  - name: "Loan Approval (Logistic Regression)"
+    description: "Predict loan approval using logistic regression"
+    parameters:
+      database: "credit"
+      training_table: "loan_labeled"
+      scoring_table: "new_applications"
+      model_table: "loan_glm_model"
+      input_columns: ["income", "debt_ratio", "credit_score", "years_employed"]
+      response_column: "approved"
+      id_column: "application_id"
+      family: "Binomial"
+      batch_size: 10
+      max_iter_num: 300
+      regularization_lambda: 0.02
+      alpha: 0.15
+    expected_result: |
+      Model output (coefficient table):
+        attribute | predictor     | estimate  | value
+        -3        | LossFunction  | NULL      | CROSS_ENTROPY
+        -2        | Regularization| NULL      | L2
+        -1        | Iterations    | 150.0     | NULL
+        0         | Intercept     | -2.45     | NULL
+        1         | income        | 0.0003    | NULL
+        2         | debt_ratio    | -1.82     | NULL
+        3         | credit_score  | 0.0085    | NULL
+        4         | years_employed| 0.12      | NULL
+
+      Positive estimate = increases approval probability.
+      Negative estimate = decreases approval probability.
+
+  # --- Example 2: Micromodeling by Region ---
+  - name: "Regional Sales Forecast (Micromodeling)"
+    description: "Train one regression model per region"
+    parameters:
+      database: "sales"
+      training_table: "regional_sales"
+      model_table: "regional_models"
+      scoring_table: "new_quarters"
+      input_columns: ["marketing_spend", "num_reps", "avg_deal_size", "pipeline_value"]
+      response_column: "quarterly_revenue"
+      id_column: "record_id"
+      family: "Gaussian"
+      partition_column: "region"
+      batch_size: 10
+      max_iter_num: 100
+      regularization_lambda: 0.02
+    expected_result: |
+      One model per region, trained in parallel:
+
+        region | attribute | predictor       | estimate
+        EAST   | 0         | Intercept       | 50000.0
+        EAST   | 1         | marketing_spend | 3.2
+        WEST   | 0         | Intercept       | 72000.0
+        WEST   | 1         | marketing_spend | 4.8
+
+      Each region has independent coefficients reflecting local market dynamics.
+      Score with PARTITION BY region (not DIMENSION) in TD_GLMPredict.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing AS InputTable Alias ---
+  - error: "Syntax error or function not recognized"
+    cause: "TD_GLM requires the AS InputTable alias on the input. Omitting it causes a parse error."
+    solution: "Always include AS InputTable after the ON clause: ON db.table AS InputTable PARTITION BY ANY."
+
+  # --- Error 2: Binomial Response Not 0/1 ---
+  - error: "Response column values out of range for Binomial"
+    cause: "Family('Binomial') requires response values to be exactly 0 or 1. Other values (e.g., -1/1, Yes/No) cause failure."
+    solution: "Cast response to 0/1: CASE WHEN label = 'Yes' THEN 1 ELSE 0 END."
+
+  # --- Error 3: Family Mismatch Train vs Predict ---
+  - error: "Prediction results are unexpected or nonsensical"
+    cause: "Family in TD_GLMPredict does not match the Family used during training."
+    solution: "Set the same Family value in both TD_GLM and TD_GLMPredict (e.g., both 'Binomial' or both 'Gaussian')."
+
+  # --- Error 4: Micromodeling with DIMENSION ---
+  - error: "All rows get the same prediction in micromodeling"
+    cause: "Using ModelTable DIMENSION instead of PARTITION BY in TD_GLMPredict for micromodeling."
+    solution: "For micromodeling, both InputTable and ModelTable must use PARTITION BY partition_col (not DIMENSION)."
+
+  # --- Error 5: Non-Numeric Inputs ---
+  - error: "InputColumns contain non-numeric data types"
+    cause: "TD_GLM requires all input columns to be numeric."
+    solution: "Encode categoricals before training. Use TD_OneHotEncodingFit/Transform or manual CASE encoding."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## GLM Best Practices
+
+  ### 1. Choosing the Family
+  - **Gaussian**: continuous target (sales, temperature, price)
+  - **Binomial**: binary target (yes/no, 0/1, churn/no-churn)
+  - Response must be 0 or 1 for Binomial -- cast if needed
+
+  ### 2. Regularization
+  - Default Lambda=0.02 with Alpha=0.15 (elastic net: 15% L1, 85% L2)
+  - Increase Lambda for many features or overfitting
+  - Set Alpha=1 for pure L1 (sparse features), Alpha=0 for pure L2
+  - Set Lambda=0 to disable regularization entirely
+
+  ### 3. SGD Tuning
+  - BatchSize(10) is default; increase for large datasets (32-128)
+  - BatchSize(0) = full batch gradient descent (slow but deterministic)
+  - LearningRate options: 'constant', 'optimal', 'invtime', 'adaptive'
+  - Default is 'invtime' for Gaussian, 'optimal' for Binomial
+
+  ### 4. Early Stopping
+  - IterNumNoChange(50) stops training if loss does not improve for 50 iterations
+  - Set to 0 to disable early stopping
+  - Tolerance(0.001) defines the minimum improvement threshold
+
+  ### 5. Micromodeling Decisions
+  When to use micromodeling (PARTITION BY key):
+  - Natural segmentation exists (region, product line, customer tier)
+  - Feature-target relationship differs across segments
+  - Enough data per partition for stable model fitting
+
+  When to use global model (PARTITION BY ANY):
+  - Small dataset without natural segments
+  - Feature-target relationship is consistent across data
+  - Need a single interpretable model
+
+  ### 6. Stepwise Feature Selection (PARTITION BY ANY only)
+  ```sql
+  -- Forward stepwise: add features that improve model score
+  SELECT * FROM TD_GLM(
+      ON db.training_data AS InputTable PARTITION BY ANY
+      OUT TABLE MetaInformationTable(db.step_meta)
+      USING
+          InputColumns('feat1','feat2','feat3','feat4','feat5')
+          ResponseColumn('target')
+          StepwiseDirection('forward')
+          MaxStepsNum(5)
+  ) AS t;
+  -- Check db.step_meta for which features were selected at each step
+  ```
+
+  ### 7. Model Interpretation
+  - Positive estimate = feature increases prediction
+  - Negative estimate = feature decreases prediction
+  - Magnitude = strength of effect
+  - Check MetaInformationTable (OUT TABLE) for training loss curve
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Linear Regression ---
+  - linear_regression
+
+  # --- Pattern 2: Logistic Regression ---
+  - logistic_regression
+
+  # --- Pattern 3: SVM ---
+  - svm
+
+  # --- Pattern 4: XGBoost ---
+  - xgboost
+
+  # --- Pattern 5: ML Pipeline Patterns ---
+  - ml_pipeline_patterns
+# === RELATED_PATTERNS END ===

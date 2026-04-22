@@ -1,0 +1,366 @@
+# === METADATA START ===
+name: tfidf
+title: "TF-IDF Vector Generation"
+description: |
+  Compute Term Frequency-Inverse Document Frequency (TF-IDF) vectors from a text
+  corpus using TD_TFIDF. TF-IDF scores measure how important a term is to a
+  document relative to the overall corpus.
+
+  TF-IDF output vectors can feed into:
+  - Cosine similarity for document comparison
+  - K-means clustering for topic discovery
+  - K-NN for nearest-neighbor classification
+  - LDA for topic modeling
+
+  Input must be pre-tokenized. Use TD_TextParser or TD_NgramSplitter to produce
+  one token per row before passing to this function.
+
+  Normalization options:
+  - TF: NORMAL (default), BOOL, COUNT, LOG, AUGMENT
+  - IDF: LOG (default), UNARY, LOGNORM, SMOOTH
+  - Regularization: NONE (default), L1, L2
+
+category: text
+difficulty: intermediate
+teradata_function: TFIDF
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - document_search
+use_cases:
+  # --- Use Case 1: Document Similarity ---
+  - Compute document similarity using TF-IDF vectors
+
+  # --- Use Case 2: Keyword Extraction ---
+  - Extract important keywords from a document corpus
+
+  # --- Use Case 3: Search Relevance ---
+  - Score document relevance for search queries
+
+  # --- Use Case 4: Feature Engineering ---
+  - Generate text features for downstream ML models
+
+  # --- Use Case 5: Topic Discovery ---
+  - Identify distinguishing terms per topic cluster
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing tokenized text data"
+    example: "text_analytics"
+
+  # --- Parameter 2: Token Table ---
+  - name: token_table
+    type: string
+    # LLM-HINT: Pre-tokenized input; one token per row with doc_id and token columns
+    required: true
+    description: "Table of pre-tokenized documents (one token per row)"
+    example: "doc_tokens"
+
+  # --- Parameter 3: Token Column ---
+  - name: token_column
+    type: string
+    # LLM-HINT: Column containing individual tokens (words); input must already be tokenized
+    required: true
+    description: "Column containing individual tokens"
+    example: "token"
+
+  # --- Parameter 4: Doc ID Column ---
+  - name: doc_id_column
+    type: string
+    # LLM-HINT: Document identifier column; each unique value represents one document in the corpus
+    required: true
+    description: "Document identifier column"
+    example: "doc_id"
+
+  # --- Parameter 5: TF Normalization ---
+  - name: tf_normalization
+    type: string
+    # LLM-HINT: Term frequency method: NORMAL (default), BOOL (presence), COUNT (raw), LOG, AUGMENT
+    required: false
+    description: "TF normalization method: NORMAL, BOOL, COUNT, LOG, AUGMENT"
+    example: "NORMAL"
+
+  # --- Parameter 6: IDF Normalization ---
+  - name: idf_normalization
+    type: string
+    # LLM-HINT: Inverse doc frequency method: LOG (default), UNARY (disables IDF), LOGNORM, SMOOTH
+    required: false
+    description: "IDF normalization method: LOG, UNARY, LOGNORM, SMOOTH"
+    example: "LOG"
+
+  # --- Parameter 7: Regularization ---
+  - name: regularization
+    type: string
+    # LLM-HINT: Vector regularization: NONE (default), L2 (Euclidean), L1 (Manhattan)
+    required: false
+    description: "Regularization method: NONE, L2, L1"
+    example: "NONE"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === COMPUTE_TFIDF TEMPLATE ===
+  # LLM-HINT: Use for basic TF-IDF computation on pre-tokenized input; returns per-term scores
+  compute_tfidf:
+    description: "Compute TF-IDF scores for all terms in the corpus"
+    sql: |
+      -- Compute TF-IDF vectors
+      SELECT
+        {{doc_id_column}},
+        {{token_column}},
+        TD_TF,
+        TD_IDF,
+        TD_TF_IDF
+      FROM TD_TFIDF(
+        ON {{database}}.{{token_table}} AS InputTable
+        USING
+          DocIdColumn('{{doc_id_column}}')
+          TokenColumn('{{token_column}}')
+          TFNormalization('{{tf_normalization}}')
+          IDFNormalization('{{idf_normalization}}')
+          Regularization('{{regularization}}')
+      ) AS t
+      ORDER BY {{doc_id_column}}, TD_TF_IDF DESC;
+    required_parameters:
+      - database
+      - token_table
+      - token_column
+      - doc_id_column
+      - tf_normalization
+      - idf_normalization
+      - regularization
+
+  # === TOP_TERMS TEMPLATE ===
+  # LLM-HINT: Use to find the most important terms per document; ranks by TF-IDF score
+  top_terms:
+    description: "Find the top terms per document by TF-IDF score"
+    sql: |
+      -- Top terms per document by TF-IDF score
+      WITH tfidf_scores AS (
+        SELECT
+          {{doc_id_column}},
+          {{token_column}},
+          TD_TF_IDF,
+          ROW_NUMBER() OVER (
+            PARTITION BY {{doc_id_column}}
+            ORDER BY TD_TF_IDF DESC
+          ) AS term_rank
+        FROM TD_TFIDF(
+          ON {{database}}.{{token_table}} AS InputTable
+          USING
+            DocIdColumn('{{doc_id_column}}')
+            TokenColumn('{{token_column}}')
+            TFNormalization('{{tf_normalization}}')
+            IDFNormalization('{{idf_normalization}}')
+        ) AS t
+      )
+      SELECT
+        {{doc_id_column}},
+        {{token_column}},
+        TD_TF_IDF,
+        term_rank
+      FROM tfidf_scores
+      WHERE term_rank <= 10
+      ORDER BY {{doc_id_column}}, term_rank;
+    required_parameters:
+      - database
+      - token_table
+      - token_column
+      - doc_id_column
+      - tf_normalization
+      - idf_normalization
+
+  # === CORPUS_KEYWORDS TEMPLATE ===
+  # LLM-HINT: Use to find corpus-wide important terms; high IDF means rare and distinguishing
+  corpus_keywords:
+    description: "Find the most distinguishing terms across the entire corpus"
+    sql: |
+      -- Corpus-wide keyword importance
+      WITH tfidf_scores AS (
+        SELECT
+          {{token_column}},
+          TD_IDF,
+          TD_TF_IDF,
+          COUNT(DISTINCT {{doc_id_column}}) AS doc_frequency
+        FROM TD_TFIDF(
+          ON {{database}}.{{token_table}} AS InputTable
+          USING
+            DocIdColumn('{{doc_id_column}}')
+            TokenColumn('{{token_column}}')
+            TFNormalization('NORMAL')
+            IDFNormalization('LOG')
+        ) AS t
+        GROUP BY {{token_column}}, TD_IDF, TD_TF_IDF
+      )
+      SELECT
+        {{token_column}},
+        MAX(TD_IDF) AS idf_score,
+        SUM(TD_TF_IDF) AS total_tfidf,
+        MAX(doc_frequency) AS doc_count
+      FROM tfidf_scores
+      GROUP BY {{token_column}}
+      ORDER BY total_tfidf DESC
+      LIMIT 100;
+    required_parameters:
+      - database
+      - token_table
+      - token_column
+      - doc_id_column
+
+  # === TOKENIZE_AND_TFIDF TEMPLATE ===
+  # LLM-HINT: Use for end-to-end: tokenize raw text with TD_TextParser, then compute TF-IDF
+  tokenize_and_tfidf:
+    description: "Tokenize raw text and compute TF-IDF in one flow"
+    sql: |
+      -- Step 1: Tokenize raw text
+      CREATE TABLE {{database}}.{{token_table}} AS (
+        SELECT * FROM TD_TextParser(
+          ON {{database}}.{{source_table}}
+          USING
+            TextColumn('{{text_column}}')
+            ConvertToLowerCase('true')
+            RemoveStopWords('false')
+            OutputByWord('true')
+            Accumulate('{{doc_id_column}}')
+        ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Compute TF-IDF vectors
+      SELECT
+        {{doc_id_column}},
+        token,
+        TD_TF,
+        TD_IDF,
+        TD_TF_IDF
+      FROM TD_TFIDF(
+        ON {{database}}.{{token_table}} AS InputTable
+        USING
+          DocIdColumn('{{doc_id_column}}')
+          TokenColumn('token')
+          TFNormalization('{{tf_normalization}}')
+          IDFNormalization('{{idf_normalization}}')
+          Regularization('{{regularization}}')
+      ) AS t
+      ORDER BY {{doc_id_column}}, TD_TF_IDF DESC;
+    required_parameters:
+      - database
+      - source_table
+      - token_table
+      - text_column
+      - doc_id_column
+      - tf_normalization
+      - idf_normalization
+      - regularization
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  - name: "Document Keyword Extraction"
+    description: "Extract the most important keywords from a collection of research papers"
+    parameters:
+      database: "research_db"
+      token_table: "paper_tokens"
+      token_column: "token"
+      doc_id_column: "paper_id"
+      tf_normalization: "NORMAL"
+      idf_normalization: "LOG"
+      regularization: "NONE"
+    expected_result: |
+      Top terms per paper (by TF-IDF):
+      - paper_id: 1, "neural" (0.42), "network" (0.38), "gradient" (0.31)
+      - paper_id: 2, "database" (0.45), "query" (0.40), "optimization" (0.28)
+
+      High TF-IDF terms are frequent in the document but rare across
+      the corpus, making them strong document identifiers.
+
+  - name: "Search Relevance Scoring"
+    description: "Use L2-regularized TF-IDF vectors for cosine similarity search"
+    parameters:
+      database: "search_db"
+      token_table: "article_tokens"
+      token_column: "token"
+      doc_id_column: "article_id"
+      tf_normalization: "LOG"
+      idf_normalization: "SMOOTH"
+      regularization: "L2"
+    expected_result: |
+      L2-regularized TF-IDF vectors:
+      - article_id: 101, "machine" (0.21), "learning" (0.19), "model" (0.15)
+      - article_id: 102, "climate" (0.25), "temperature" (0.22), "carbon" (0.18)
+
+      L2 regularization normalizes vectors to unit length,
+      enabling direct cosine similarity comparison between documents.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  - error: "Input not tokenized"
+    cause: "Passing raw text instead of pre-tokenized data (one token per row)"
+    solution: "Use TD_TextParser or TD_NgramSplitter to tokenize text first. Each row must have one token with its document ID."
+
+  - error: "All TF-IDF scores are zero or identical"
+    cause: "Using IDFNormalization('UNARY') which disables the IDF component"
+    solution: "Use IDFNormalization('LOG') (default) or 'SMOOTH' to weight terms by corpus-level rarity"
+
+  - error: "Very common words dominate results"
+    cause: "Stop words (the, a, is) not removed before TF-IDF computation"
+    solution: "Use TD_TextParser with RemoveStopWords('true') and a StopWordsTable during tokenization"
+
+  - error: "No PARTITION BY expected"
+    cause: "Adding PARTITION BY to the TD_TFIDF InputTable reference"
+    solution: "TD_TFIDF does not use PARTITION BY. Remove any PARTITION BY clause from the ON ... AS InputTable line."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## TF-IDF Best Practices
+
+  ### 1. Pre-tokenize Carefully
+  - Use TD_TextParser with ConvertToLowerCase('true')
+  - Remove stop words to reduce noise in TF-IDF vectors
+  - Consider stemming (StemTokens) for better term consolidation
+
+  ### 2. Choose Normalization Wisely
+  - TF NORMAL + IDF LOG: Standard choice for most use cases
+  - TF LOG + IDF SMOOTH: Better for long documents with repeated terms
+  - TF AUGMENT: Mitigates bias toward longer documents
+  - IDF UNARY: Disables IDF entirely (rarely useful)
+
+  ### 3. Use Regularization for Similarity
+  - L2 (Euclidean): Required for cosine similarity computation
+  - L1 (Manhattan): Useful for sparse vector comparison
+  - NONE: Use when feeding into algorithms that normalize internally
+
+  ### 4. Filter Low-Value Terms
+  - Remove terms appearing in only 1 document (too rare)
+  - Remove terms appearing in >90% of documents (too common)
+  - Focus on the middle range for meaningful features
+
+  ### 5. Combine with Other Text Analytics
+  - Use TF-IDF vectors as features for Naive Bayes classification
+  - Pair with N-gram tokenization for phrase-level TF-IDF
+  - Feed into clustering algorithms for unsupervised topic discovery
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: N-Gram Tokenization ---
+  - ngram
+
+  # --- Pattern 2: Text Classification ---
+  - text_classifier
+
+  # --- Pattern 3: Sentiment Analysis ---
+  - sentiment
+
+  # --- Pattern 4: Named Entity Recognition ---
+  - ner
+# === RELATED_PATTERNS END ===

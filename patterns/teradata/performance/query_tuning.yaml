@@ -1,0 +1,553 @@
+# === METADATA START ===
+name: query_tuning
+title: "Query Tuning Strategies"
+description: |
+  General query tuning patterns for Teradata SQL optimization. Covers Primary Index design
+  principles, early filtering strategies, anti-pattern avoidance, volatile tables for
+  intermediate results, NoPI tables for staging, and CTE vs derived table equivalence.
+
+  This pattern focuses on *writing better SQL* and *designing tables for performance*.
+  For reading and interpreting EXPLAIN output, see explain_analysis.
+  For statistics collection, see statistics_collection.
+
+  **Key principles:**
+  - The Primary Index (PI) determines row distribution across AMPs
+  - Filter early: push WHERE clauses as close to base tables as possible
+  - Avoid functions on indexed columns in predicates
+  - Avoid implicit type conversions in joins
+  - Use volatile tables for multi-step logic within a session
+  - Use NoPI tables for staging when access pattern is unknown
+
+category: performance
+difficulty: intermediate
+teradata_function: EXPLAIN
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - query_generation
+  - analytics
+use_cases:
+  # --- Use Case 1: PI Design Review ---
+  - Evaluate Primary Index choice for data distribution and access patterns
+
+  # --- Use Case 2: Skew Investigation ---
+  - Detect and fix AMP skew caused by low-cardinality Primary Index
+
+  # --- Use Case 3: Filter Pushdown ---
+  - Rewrite queries to filter rows before joining for reduced spool usage
+
+  # --- Use Case 4: Anti-Pattern Removal ---
+  - Identify and rewrite common SQL anti-patterns that defeat indexing
+
+  # --- Use Case 5: Staging Table Design ---
+  - Create NoPI staging tables for data loads with unknown access patterns
+
+  # --- Use Case 6: Session-Scoped Temp Tables ---
+  - Use volatile tables for intermediate results within a session
+
+  # --- Use Case 7: CTE Refactoring ---
+  - Refactor nested subqueries into readable CTEs without performance penalty
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates
+    required: true
+    description: "Database containing the table"
+    example: "sales_db"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table to analyze or tune"
+    example: "orders"
+
+  # --- Parameter 3: PI Columns ---
+  - name: pi_columns
+    type: array[string]
+    # LLM-HINT: Current or proposed Primary Index columns; used in skew check
+    required: false
+    description: "Primary Index column(s) to evaluate"
+    example: '["customer_id"]'
+
+  # --- Parameter 4: Join Columns ---
+  - name: join_columns
+    type: array[string]
+    # LLM-HINT: Columns used in JOIN ON clauses; check type alignment
+    required: false
+    description: "Columns used in join conditions"
+    example: '["customer_id", "order_id"]'
+
+  # --- Parameter 5: Filter Columns ---
+  - name: filter_columns
+    type: array[string]
+    # LLM-HINT: Columns used in WHERE predicates; check for function wrapping
+    required: false
+    description: "Columns used in WHERE clause predicates"
+    example: '["order_date", "status"]'
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === PI_SKEW_CHECK TEMPLATE ===
+  # LLM-HINT: Check row distribution across AMPs; high max/avg ratio means skew
+  pi_skew_check:
+    description: "Check Primary Index distribution across AMPs for skew"
+    sql: |
+      -- Check AMP-level row distribution for {{database}}.{{table}}
+      -- A healthy distribution has max/avg ratio close to 1.0
+      SELECT
+        MIN(row_count) AS min_rows,
+        MAX(row_count) AS max_rows,
+        AVG(row_count) AS avg_rows,
+        CAST(MAX(row_count) AS DECIMAL(18,2)) / NULLIFZERO(AVG(row_count)) AS skew_ratio,
+        COUNT(*) AS amp_count
+      FROM (
+        SELECT Hashamp() + 1 AS amp, COUNT(*) AS row_count
+        FROM {{database}}.{{table}}
+        GROUP BY Hashamp()
+      ) amp_dist;
+
+      -- Per-AMP detail (top 20 hottest AMPs)
+      SELECT Hashamp() + 1 AS amp, COUNT(*) AS row_count
+      FROM {{database}}.{{table}}
+      GROUP BY Hashamp()
+      ORDER BY row_count DESC
+      FETCH FIRST 20 ROWS ONLY;
+    required_parameters:
+      - database
+      - table
+
+  # === FILTER_BEFORE_JOIN TEMPLATE ===
+  # LLM-HINT: Rewrite pattern that pushes WHERE predicates into derived tables before the JOIN
+  filter_before_join:
+    description: "Rewrite a query to filter rows before joining (reduces spool and redistribution)"
+    sql: |
+      -- ANTI-PATTERN: Filter after join
+      -- The optimizer may push this down automatically, but explicit
+      -- early filtering is safer and clearer for complex queries.
+      --
+      -- SELECT a.*, b.name
+      -- FROM {{database}}.{{table}} a
+      -- JOIN {{database}}.{{dim_table}} b
+      --   ON a.{{join_column}} = b.{{join_column}}
+      -- WHERE a.{{filter_column}} >= {{filter_value}};
+
+      -- BETTER: Filter in derived table before join
+      SELECT a.*, b.name
+      FROM (
+        SELECT *
+        FROM {{database}}.{{table}}
+        WHERE {{filter_column}} >= {{filter_value}}
+      ) a
+      JOIN {{database}}.{{dim_table}} b
+        ON a.{{join_column}} = b.{{join_column}};
+    required_parameters:
+      - database
+      - table
+      - dim_table
+      - join_column
+      - filter_column
+      - filter_value
+
+  # === ANTI_PATTERN_FUNCTION_ON_INDEX TEMPLATE ===
+  # LLM-HINT: Shows how functions on indexed columns defeat PI/index lookups
+  anti_pattern_function_on_index:
+    description: "Rewrite predicates that apply functions to indexed columns"
+    sql: |
+      -- ANTI-PATTERN: Function on indexed column prevents PI/index usage
+      -- The optimizer cannot use the index when a function wraps the column.
+      --
+      -- Bad:
+      -- WHERE EXTRACT(YEAR FROM order_date) = 2024
+      --
+      -- Better: Use range predicate that preserves index access
+      -- WHERE order_date BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'
+
+      -- ANTI-PATTERN: CAST on join column
+      -- Bad:
+      -- WHERE CAST(char_col AS INTEGER) = int_col
+      --
+      -- Better: CAST the literal or the smaller side
+      -- WHERE char_col = CAST(int_col AS CHAR(10))
+
+      -- ANTI-PATTERN: TRIM/UPPER on indexed column
+      -- Bad:
+      -- WHERE UPPER(customer_name) = 'ACME CORP'
+      --
+      -- Better: Store normalized values in a separate column and index that,
+      -- or use a join index with the expression.
+
+  # === ANTI_PATTERN_TYPE_MISMATCH TEMPLATE ===
+  # LLM-HINT: Implicit type conversions in joins cause full table scans
+  anti_pattern_type_mismatch:
+    description: "Fix implicit type conversions in join conditions"
+    sql: |
+      -- ANTI-PATTERN: CHAR vs VARCHAR mismatch in join
+      -- Teradata must convert every row, defeating hash distribution.
+      --
+      -- Bad:
+      -- FROM table_a a JOIN table_b b ON a.char_col = b.varchar_col
+      --
+      -- Better: Explicit CAST to match types
+      SELECT a.*, b.*
+      FROM {{database}}.table_a a
+      JOIN {{database}}.table_b b
+        ON CAST(a.char_col AS VARCHAR(50)) = b.varchar_col;
+
+      -- Check for type mismatches between join columns
+      SELECT
+        ca.ColumnName AS col_a,
+        ca.ColumnType AS type_a,
+        ca.ColumnLength AS len_a,
+        cb.ColumnName AS col_b,
+        cb.ColumnType AS type_b,
+        cb.ColumnLength AS len_b
+      FROM DBC.ColumnsV ca
+      CROSS JOIN DBC.ColumnsV cb
+      WHERE ca.DatabaseName = '{{database}}'
+        AND ca.TableName = '{{table_a}}'
+        AND ca.ColumnName = '{{join_column}}'
+        AND cb.DatabaseName = '{{database}}'
+        AND cb.TableName = '{{table_b}}'
+        AND cb.ColumnName = '{{join_column}}';
+    required_parameters:
+      - database
+      - table_a
+      - table_b
+      - join_column
+
+  # === VOLATILE_TABLE TEMPLATE ===
+  # LLM-HINT: Session-scoped temp table; no cleanup needed; good for multi-step logic
+  volatile_table:
+    description: "Create a volatile table for intermediate results within a session"
+    sql: |
+      -- Volatile tables exist only for the session duration.
+      -- Use for multi-step queries where intermediate results are reused.
+      CREATE VOLATILE TABLE tmp_{{table}}_filtered AS (
+        SELECT {{select_columns}}
+        FROM {{database}}.{{table}}
+        WHERE {{filter_predicate}}
+      ) WITH DATA
+      ON COMMIT PRESERVE ROWS;
+
+      -- Use in subsequent queries
+      SELECT * FROM tmp_{{table}}_filtered;
+
+      -- Collect statistics on volatile table for optimizer
+      COLLECT STATISTICS ON tmp_{{table}}_filtered COLUMN({{pi_column}});
+    required_parameters:
+      - database
+      - table
+      - select_columns
+      - filter_predicate
+      - pi_column
+
+  # === NOPI_STAGING TEMPLATE ===
+  # LLM-HINT: NoPI tables skip hash distribution; ideal for staging/loading
+  nopi_staging:
+    description: "Create a NoPI staging table for data loads"
+    sql: |
+      -- NoPI tables have no Primary Index, so rows are not hash-distributed.
+      -- Use for staging/loading when you don't know the access pattern yet.
+      -- After loading, INSERT-SELECT into a properly indexed target table.
+
+      -- Create empty NoPI staging table matching source schema
+      CREATE MULTISET TABLE {{database}}.stg_{{table}}, NO PRIMARY INDEX AS (
+        SELECT * FROM {{database}}.{{table}} WHERE 1=0
+      ) WITH NO DATA;
+
+      -- Load data into staging (via BTEQ, TPT, etc.)
+      -- ...
+
+      -- Then redistribute into final table with proper PI
+      INSERT INTO {{database}}.{{table}}_final
+      SELECT * FROM {{database}}.stg_{{table}};
+
+      -- Drop staging table
+      DROP TABLE {{database}}.stg_{{table}};
+    required_parameters:
+      - database
+      - table
+
+  # === CTE_REFACTOR TEMPLATE ===
+  # LLM-HINT: CTEs and derived tables are equivalent in Teradata; CTEs improve readability
+  cte_refactor:
+    description: "Refactor nested subqueries into CTEs for readability (no performance penalty)"
+    sql: |
+      -- In Teradata, CTEs and derived tables produce identical execution plans.
+      -- CTEs are preferred for readability, especially with multi-step logic.
+
+      -- BEFORE: Nested derived tables (hard to read)
+      -- SELECT * FROM (
+      --   SELECT id, SUM(val) AS total
+      --   FROM (
+      --     SELECT * FROM {{database}}.{{table}} WHERE {{filter_predicate}}
+      --   ) filtered
+      --   GROUP BY id
+      -- ) aggregated
+      -- WHERE total > {{threshold}};
+
+      -- AFTER: CTE version (equivalent plan, much clearer)
+      WITH filtered AS (
+        SELECT *
+        FROM {{database}}.{{table}}
+        WHERE {{filter_predicate}}
+      ),
+      aggregated AS (
+        SELECT id, SUM(val) AS total
+        FROM filtered
+        GROUP BY id
+      )
+      SELECT *
+      FROM aggregated
+      WHERE total > {{threshold}};
+    required_parameters:
+      - database
+      - table
+      - filter_predicate
+      - threshold
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: PI Skew Investigation ---
+  - name: "Investigate PI skew on orders table"
+    description: "Check if the current PI causes uneven data distribution"
+    parameters:
+      database: "sales"
+      table: "orders"
+      pi_columns: ["status"]
+    expected_result: |
+      AMP distribution analysis:
+      - min_rows: 12
+      - max_rows: 4,500,000
+      - avg_rows: 312,500
+      - skew_ratio: 14.4
+      - amp_count: 32
+
+      Diagnosis: Severe skew (ratio 14.4, target < 1.5).
+      Cause: PI on 'status' has only 5 distinct values.
+      Recommendation: Change PI to high-cardinality column like 'order_id'.
+
+  # --- Example 2: Filter-Before-Join Rewrite ---
+  - name: "Push date filter before join"
+    description: "Rewrite a slow join query to filter early"
+    parameters:
+      database: "sales"
+      table: "orders"
+      filter_column: "order_date"
+      filter_value: "CURRENT_DATE - 30"
+    expected_result: |
+      Rewritten query filters orders to last 30 days BEFORE joining to customers.
+
+      Before: Full join of 50M orders x 2M customers, then filter
+      After: Join 1.2M recent orders x 2M customers
+
+      EXPLAIN comparison:
+      - Before: 3 redistributions, 45GB spool, 120 seconds
+      - After: 1 redistribution, 2GB spool, 8 seconds
+
+  # --- Example 3: Anti-Pattern Fix ---
+  - name: "Remove function on indexed date column"
+    description: "Rewrite EXTRACT(YEAR FROM ...) to range predicate"
+    parameters:
+      database: "sales"
+      table: "orders"
+      filter_columns: ["order_date"]
+    expected_result: |
+      Anti-pattern found:
+        WHERE EXTRACT(YEAR FROM order_date) = 2024
+
+      Rewritten to:
+        WHERE order_date BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'
+
+      Impact: Enables partition elimination on PPI tables and index access.
+      EXPLAIN shows single-partition scan instead of all-rows scan.
+
+  # --- Example 4: Volatile Table for Multi-Step Analysis ---
+  - name: "Use volatile table for complex report"
+    description: "Stage filtered results in volatile table for reuse"
+    parameters:
+      database: "analytics"
+      table: "web_events"
+      filter_columns: ["event_date", "event_type"]
+    expected_result: |
+      Created volatile table with 30-day clickstream data.
+      Subsequent queries against volatile table avoid re-scanning
+      the 2B-row base table multiple times.
+
+      Step 1: CREATE VOLATILE TABLE tmp_web_events_filtered AS (...)
+      Step 2: COLLECT STATISTICS on volatile table
+      Step 3: Run 3 analytical queries against volatile table
+      Total time: 45 seconds (vs 12 minutes scanning base table 3 times)
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Low-Cardinality PI ---
+  - error: "Severe AMP skew after table creation"
+    cause: "Primary Index chosen on low-cardinality column (e.g., status, boolean, region)"
+    solution: "ALTER TABLE to change PI to a high-cardinality column. Or recreate table with new PI. Check skew with: SELECT Hashamp()+1, COUNT(*) FROM db.table GROUP BY 1 ORDER BY 2 DESC"
+
+  # --- Error 2: Function on PI in WHERE ---
+  - error: "Full table scan despite PI column in WHERE clause"
+    cause: "Function applied to PI column (e.g., UPPER(pi_col), CAST(pi_col AS ...), EXTRACT(... FROM pi_col))"
+    solution: "Rewrite predicate to avoid wrapping the PI column in a function. Apply the function to the literal or comparison value instead."
+
+  # --- Error 3: Type Mismatch in Join ---
+  - error: "Unexpected redistribution or product join in EXPLAIN"
+    cause: "Join columns have mismatched types (CHAR vs VARCHAR, INTEGER vs DECIMAL). Teradata must convert rows, which prevents hash-join co-location."
+    solution: "Add explicit CAST to align types. Prefer casting the smaller table's column. Long-term fix: align column DDL types across tables."
+
+  # --- Error 4: SELECT * in Production ---
+  - error: "Excessive spool consumption for simple lookup"
+    cause: "SELECT * retrieves all columns including large VARCHAR/CLOB columns not needed"
+    solution: "Enumerate only the columns you need. This reduces spool, network transfer, and block I/O."
+
+  # --- Error 5: Missing Statistics After Tuning ---
+  - error: "Query still slow after rewriting SQL"
+    cause: "Statistics are missing or stale on the columns used in the rewritten predicates"
+    solution: "COLLECT STATISTICS on all columns used in WHERE, JOIN, and GROUP BY. Then re-run EXPLAIN to verify the optimizer uses the new plan."
+
+  # --- Error 6: CTE Materialization Assumption ---
+  - error: "CTE assumed to be materialized (cached) but is re-evaluated"
+    cause: "Teradata does not guarantee CTE materialization. A CTE referenced multiple times may be inlined and re-evaluated."
+    solution: "If the CTE result must be computed once, materialize it into a volatile table explicitly. Then reference the volatile table in subsequent steps."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Query Tuning Best Practices
+
+  ### 1. Primary Index Design
+  **The PI is the single most important performance decision in Teradata.**
+  - Choose high-cardinality columns (unique or near-unique values)
+  - Prefer columns frequently used in joins and equality filters
+  - Avoid low-cardinality columns (status, boolean, region, gender)
+  - For composite PI, all columns must appear in the WHERE/JOIN for PI access
+  ```sql
+  -- Check PI skew before committing to a PI choice
+  SELECT Hashamp() + 1 AS amp, COUNT(*) AS row_count
+  FROM db.table
+  GROUP BY Hashamp()
+  ORDER BY row_count DESC;
+  ```
+  Target: max/avg ratio below 1.5.
+
+  ### 2. Filter Early, Join Late
+  Push WHERE predicates into derived tables or CTEs before joining:
+  ```sql
+  -- Filter 50M rows down to 1M BEFORE joining
+  WITH recent_orders AS (
+    SELECT * FROM sales.orders
+    WHERE order_date >= CURRENT_DATE - 30
+  )
+  SELECT r.*, c.name
+  FROM recent_orders r
+  JOIN sales.customers c ON r.customer_id = c.customer_id;
+  ```
+  The optimizer often does this automatically, but explicit filtering is safer
+  for complex multi-join queries.
+
+  ### 3. Avoid Functions on Indexed Columns
+  Functions on PI or indexed columns in WHERE/JOIN defeat index access:
+  ```sql
+  -- Bad: EXTRACT prevents partition elimination
+  WHERE EXTRACT(YEAR FROM order_date) = 2024
+
+  -- Good: Range predicate enables partition elimination
+  WHERE order_date BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'
+  ```
+
+  ### 4. Avoid Implicit Type Conversions
+  Mismatched types in joins cause row-by-row conversion and redistribution:
+  ```sql
+  -- Bad: CHAR(10) joined to VARCHAR(50) — implicit conversion
+  ON a.code = b.code
+
+  -- Good: Explicit CAST to align types
+  ON CAST(a.code AS VARCHAR(50)) = b.code
+  ```
+  Long-term fix: align DDL column types across tables.
+
+  ### 5. Avoid SELECT *
+  Enumerate needed columns explicitly:
+  - Reduces spool space and network I/O
+  - Makes query intent clear
+  - Prevents breakage when columns are added/dropped
+
+  ### 6. Use Volatile Tables for Multi-Step Logic
+  When the same filtered dataset is used multiple times in a session:
+  ```sql
+  CREATE VOLATILE TABLE tmp_filtered AS (
+    SELECT customer_id, order_date, amount
+    FROM sales.orders
+    WHERE order_date >= CURRENT_DATE - 90
+  ) WITH DATA ON COMMIT PRESERVE ROWS;
+
+  COLLECT STATISTICS ON tmp_filtered COLUMN(customer_id);
+  ```
+  Avoids re-scanning the base table for each analytical query.
+
+  ### 7. Use NoPI Tables for Staging
+  When loading data and the access pattern is unknown:
+  ```sql
+  CREATE MULTISET TABLE db.staging, NO PRIMARY INDEX AS (
+    SELECT * FROM db.source WHERE 1=0
+  ) WITH NO DATA;
+  ```
+  Load into NoPI, then INSERT-SELECT into the final table with a proper PI.
+
+  ### 8. CTEs vs Derived Tables
+  In Teradata, CTEs and derived tables produce identical execution plans.
+  Prefer CTEs for readability:
+  ```sql
+  WITH base AS (
+    SELECT ... FROM db.t WHERE ...
+  ),
+  agg AS (
+    SELECT id, SUM(val) FROM base GROUP BY id
+  )
+  SELECT * FROM agg;
+  ```
+  Note: Teradata does not guarantee CTE materialization. If you need the
+  result computed exactly once, use a volatile table.
+
+  ### 9. EXPLAIN Before Executing
+  Always EXPLAIN non-trivial queries before running them:
+  ```sql
+  EXPLAIN SELECT ...;
+  ```
+  Look for: product joins, no-confidence estimates, all-rows scans on large
+  tables, excessive spool. See explain_analysis pattern for detailed guidance.
+
+  ### 10. Collect Statistics After Tuning
+  Query rewrites are only effective if the optimizer has accurate statistics.
+  After tuning, collect statistics on all columns used in WHERE, JOIN, and
+  GROUP BY clauses. See statistics_collection pattern.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: EXPLAIN Analysis ---
+  - explain_analysis  # Reading and interpreting EXPLAIN output
+
+  # --- Pattern 2: Statistics Collection ---
+  - statistics_collection  # Collecting stats for optimizer accuracy
+
+  # --- Pattern 3: Catalog Views ---
+  - catalog_views  # DBC.* views for metadata discovery
+
+  # --- Pattern 4: PI Skew Detection ---
+  - pi_skew_detection  # Detailed skew detection and remediation
+
+  # --- Pattern 5: Spool Space Analysis ---
+  - spool_space_analysis  # Diagnosing excessive spool consumption
+# === RELATED_PATTERNS END ===
