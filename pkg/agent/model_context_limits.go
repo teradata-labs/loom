@@ -23,15 +23,18 @@ type ModelContextLimits struct {
 	ReservedOutputTokens int // Tokens reserved for model output (typically 10%)
 }
 
-// modelContextLimits is a lookup table for known model context limits.
-// Models are keyed by their base name (without version/variant suffixes).
-// If a model is not in this table, use the provider's default or auto-detect.
+// modelContextLimits is the legacy prefix-matched fallback used when a model
+// ID is not in the built-in catalog (pkg/llm/catalog). Prefer adding new
+// entries to the catalog — the catalog is authoritative, this map is only
+// consulted after an exact-match miss.
+//
+// Claude 4.x entries intentionally omitted: every current Claude 4.x model is
+// in the catalog with accurate per-model ContextWindow and MaxOutputTokens.
+// Leaving a "claude-opus-4" prefix entry here would silently override real
+// catalog values (e.g. Opus 4.6/4.7 at 1M) with stale 200K numbers for any
+// unqualified or future variant not yet in the catalog.
 var modelContextLimits = map[string]ModelContextLimits{
-	// Anthropic Claude models (current)
-	"claude-opus-4":   {MaxContextTokens: 200000, ReservedOutputTokens: 128000}, // Claude Opus 4.6
-	"claude-sonnet-4": {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Sonnet 4.5
-	"claude-haiku-4":  {MaxContextTokens: 200000, ReservedOutputTokens: 64000},  // Claude Haiku 4.5
-	// Anthropic Claude models (legacy)
+	// Anthropic Claude 3.x — pre-catalog, kept for prefix-match fallback.
 	"claude-3-5-sonnet": {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-opus":     {MaxContextTokens: 200000, ReservedOutputTokens: 20000},
 	"claude-3-sonnet":   {MaxContextTokens: 200000, ReservedOutputTokens: 20000},

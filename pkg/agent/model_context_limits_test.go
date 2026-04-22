@@ -28,18 +28,18 @@ func TestGetModelContextLimits(t *testing.T) {
 		shouldFind       bool
 	}{
 		{
-			name:             "Claude Sonnet 4 exact match",
-			model:            "claude-sonnet-4",
-			expectedMax:      200000,
-			expectedReserved: 64000,
-			shouldFind:       true,
+			// Claude 4.x entries intentionally no longer live in this legacy
+			// map — the catalog owns per-model ContextWindow/MaxOutputTokens.
+			// An unqualified "claude-sonnet-4" that isn't in the catalog must
+			// not match a stale prefix here; callers fall to provider defaults.
+			name:       "Claude Sonnet 4 (unqualified) no longer in legacy map",
+			model:      "claude-sonnet-4",
+			shouldFind: false,
 		},
 		{
-			name:             "Claude Sonnet 4 with version suffix",
-			model:            "claude-sonnet-4-20250514",
-			expectedMax:      200000,
-			expectedReserved: 64000,
-			shouldFind:       true,
+			name:       "Claude Sonnet 4 dated variant no longer in legacy map",
+			model:      "claude-sonnet-4-20250514",
+			shouldFind: false,
 		},
 		{
 			name:             "Llama 3.1 exact match",

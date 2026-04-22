@@ -21,6 +21,8 @@
 package catalog
 
 import (
+	"context"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
@@ -35,7 +37,22 @@ import (
 func BuildCatalog() map[string][]*loomv1.ModelInfo {
 	return map[string][]*loomv1.ModelInfo{
 		// ── Anthropic ──────────────────────────────────────────────────────────────
+		// Verified against https://platform.claude.com/docs/en/docs/about-claude/models/overview
+		// on 2026-04-22. Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
 		"anthropic": {
+			{
+				// Current flagship. Uses adaptive thinking (not extended thinking).
+				Id:                  "claude-opus-4-7",
+				Name:                "Claude Opus 4.7",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
 			{
 				Id:                  "claude-opus-4-6",
 				Name:                "Claude Opus 4.6",
@@ -111,28 +128,115 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		},
 
 		// ── OpenAI ─────────────────────────────────────────────────────────────────
+		// Pricing + context cross-checked against OpenRouter's openai/* catalog on
+		// 2026-04-22 (platform.openai.com was behind a 403). The GPT-5.x family
+		// ladder is current; earlier gpt-5-mini (272k) was dropped in favor of
+		// gpt-5.4-mini. gpt-5 itself moved from 272k/$2.50 to 400k/$1.25.
 		"openai": {
 			{
-				Id:                  "gpt-5",
-				Name:                "GPT-5",
+				// GPT-5.4 Pro — premium reasoning tier.
+				Id:                  "gpt-5.4-pro",
+				Name:                "GPT-5.4 Pro",
 				Provider:            "openai",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
-				ContextWindow:       272_000,
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  30.0,
+				CostPer_1MOutputUsd: 180.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.4",
+				Name:                "GPT-5.4",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
 				MaxOutputTokens:     128_000,
 				CostPer_1MInputUsd:  2.50,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.4-mini",
+				Name:                "GPT-5.4 Mini",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       400_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  0.75,
+				CostPer_1MOutputUsd: 4.50,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.4-nano",
+				Name:                "GPT-5.4 Nano",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       400_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  0.20,
+				CostPer_1MOutputUsd: 1.25,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.3-codex",
+				Name:                "GPT-5.3 Codex",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "tool-use", "thinking"},
+				ContextWindow:       400_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  1.75,
+				CostPer_1MOutputUsd: 14.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.3-chat",
+				Name:                "GPT-5.3 Chat",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  1.75,
+				CostPer_1MOutputUsd: 14.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.2",
+				Name:                "GPT-5.2",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       400_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  1.75,
+				CostPer_1MOutputUsd: 14.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5.1",
+				Name:                "GPT-5.1",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       400_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  1.25,
 				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
 			{
-				Id:                  "gpt-5-mini",
-				Name:                "GPT-5 Mini",
+				// gpt-5: context + pricing refreshed from the 2026-04 OpenRouter listing.
+				Id:                  "gpt-5",
+				Name:                "GPT-5",
 				Provider:            "openai",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
-				ContextWindow:       272_000,
+				ContextWindow:       400_000,
 				MaxOutputTokens:     128_000,
-				CostPer_1MInputUsd:  0.40,
-				CostPer_1MOutputUsd: 1.60,
+				CostPer_1MInputUsd:  1.25,
+				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
@@ -170,14 +274,27 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				ShowInDropdown:      true,
 			},
 			{
+				Id:                  "o3-pro",
+				Name:                "o3-pro",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     100_000,
+				CostPer_1MInputUsd:  20.0,
+				CostPer_1MOutputUsd: 80.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				// o3 pricing refreshed: $2/$8 per 2026-04 OpenRouter (was $10/$40).
 				Id:                  "o3",
 				Name:                "o3",
 				Provider:            "openai",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       200_000,
 				MaxOutputTokens:     100_000,
-				CostPer_1MInputUsd:  10.0,
-				CostPer_1MOutputUsd: 40.0,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 8.0,
 				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
@@ -208,8 +325,57 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		},
 
 		// ── Google Gemini ───────────────────────────────────────────────────────────
-		// GA models only. Gemini 3.x is preview as of 2026-03.
+		// 2.5 family is GA. Gemini 3.x is preview as of 2026-04 — included because
+		// OpenRouter was routing real traffic to the preview endpoints on 2026-04-22.
 		"gemini": {
+			{
+				Id:                  "gemini-3.1-pro-preview",
+				Name:                "Gemini 3.1 Pro (Preview)",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     65_536,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 12.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemini-3.1-flash-lite-preview",
+				Name:                "Gemini 3.1 Flash-Lite (Preview)",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  0.25,
+				CostPer_1MOutputUsd: 1.50,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemini-3-pro-preview",
+				Name:                "Gemini 3 Pro (Preview)",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     65_536,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 12.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemini-3-flash-preview",
+				Name:                "Gemini 3 Flash (Preview)",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  0.50,
+				CostPer_1MOutputUsd: 3.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
 			{
 				Id:                  "gemini-2.5-pro",
 				Name:                "Gemini 2.5 Pro",
@@ -248,36 +414,73 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		},
 
 		// ── Mistral ────────────────────────────────────────────────────────────────
+		// Prices + contexts cross-checked against OpenRouter's mistralai/* listing
+		// on 2026-04-22. The dated IDs (e.g. mistral-large-2512) are the canonical
+		// snapshots; -latest aliases are kept because most existing configs use
+		// them and they track whatever dated snapshot Mistral currently serves.
 		"mistral": {
 			{
 				Id:                  "mistral-large-latest",
-				Name:                "Mistral Large",
+				Name:                "Mistral Large (latest)",
 				Provider:            "mistral",
-				Capabilities:        []string{"text", "tool-use"},
-				ContextWindow:       128_000,
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       262_144,
 				MaxOutputTokens:     8_192,
-				CostPer_1MInputUsd:  2.0,
-				CostPer_1MOutputUsd: 6.0,
+				CostPer_1MInputUsd:  0.50,
+				CostPer_1MOutputUsd: 1.50,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "mistral-large-2512",
+				Name:                "Mistral Large 3 (Dec 2025)",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       262_144,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.50,
+				CostPer_1MOutputUsd: 1.50,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "mistral-medium-latest",
+				Name:                "Mistral Medium (latest)",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       131_072,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.40,
+				CostPer_1MOutputUsd: 2.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "mistral-medium-3.1",
+				Name:                "Mistral Medium 3.1",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       131_072,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.40,
+				CostPer_1MOutputUsd: 2.0,
 				ShowInDropdown:      true,
 			},
 			{
 				Id:                  "mistral-small-latest",
-				Name:                "Mistral Small",
+				Name:                "Mistral Small (latest)",
 				Provider:            "mistral",
-				Capabilities:        []string{"text", "tool-use"},
-				ContextWindow:       32_000,
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       131_072,
 				MaxOutputTokens:     8_192,
-				CostPer_1MInputUsd:  0.10,
-				CostPer_1MOutputUsd: 0.30,
+				CostPer_1MInputUsd:  0.075,
+				CostPer_1MOutputUsd: 0.20,
 				ShowInDropdown:      true,
 			},
 			{
 				Id:                  "magistral-medium-latest",
-				Name:                "Magistral Medium",
+				Name:                "Magistral Medium (latest)",
 				Provider:            "mistral",
 				Capabilities:        []string{"text", "tool-use", "thinking"},
 				ContextWindow:       128_000,
-				MaxOutputTokens:     131_072,
+				MaxOutputTokens:     40_960,
 				CostPer_1MInputUsd:  2.0,
 				CostPer_1MOutputUsd: 8.0,
 				IsReasoning:         true,
@@ -285,19 +488,52 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 			},
 			{
 				Id:                  "magistral-small-latest",
-				Name:                "Magistral Small",
+				Name:                "Magistral Small (latest)",
 				Provider:            "mistral",
 				Capabilities:        []string{"text", "tool-use", "thinking"},
 				ContextWindow:       128_000,
-				MaxOutputTokens:     131_072,
+				MaxOutputTokens:     40_960,
 				CostPer_1MInputUsd:  0.50,
 				CostPer_1MOutputUsd: 1.50,
 				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
 			{
+				Id:                  "ministral-14b-2512",
+				Name:                "Ministral 3 14B",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       262_144,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.20,
+				CostPer_1MOutputUsd: 0.20,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "ministral-8b-2512",
+				Name:                "Ministral 3 8B",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       262_144,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.15,
+				CostPer_1MOutputUsd: 0.15,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "ministral-3b-2512",
+				Name:                "Ministral 3 3B",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       131_072,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.10,
+				CostPer_1MOutputUsd: 0.10,
+				ShowInDropdown:      true,
+			},
+			{
 				Id:                  "codestral-latest",
-				Name:                "Codestral",
+				Name:                "Codestral (latest)",
 				Provider:            "mistral",
 				Capabilities:        []string{"text", "tool-use"},
 				ContextWindow:       256_000,
@@ -308,13 +544,24 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 			},
 			{
 				Id:                  "devstral-medium-latest",
-				Name:                "Devstral",
+				Name:                "Devstral Medium",
 				Provider:            "mistral",
 				Capabilities:        []string{"text", "tool-use"},
-				ContextWindow:       128_000,
+				ContextWindow:       131_072,
 				MaxOutputTokens:     8_192,
-				CostPer_1MInputUsd:  0.50,
-				CostPer_1MOutputUsd: 1.50,
+				CostPer_1MInputUsd:  0.40,
+				CostPer_1MOutputUsd: 2.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "devstral-small-latest",
+				Name:                "Devstral Small",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       131_072,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.10,
+				CostPer_1MOutputUsd: 0.30,
 				ShowInDropdown:      true,
 			},
 		},
@@ -322,7 +569,20 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		// ── Ollama (self-hosted) ────────────────────────────────────────────────────
 		// These are static defaults. DiscoverOllamaModels() replaces this list at
 		// runtime with whatever is actually installed on the local Ollama instance.
+		// Updated 2026-04-22 — added llama4 (Meta multimodal MoE), gemma4, phi4-mini,
+		// qwen3.5 (multimodal reasoning).
 		"ollama": {
+			{
+				Id:                  "llama4",
+				Name:                "Llama 4 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
 			{
 				Id:                  "llama3.3",
 				Name:                "Llama 3.3 (Ollama)",
@@ -365,6 +625,18 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				MaxOutputTokens:     8_192,
 				CostPer_1MInputUsd:  0.0,
 				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "qwen3.5",
+				Name:                "Qwen 3.5 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
 			{
@@ -414,6 +686,17 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				ShowInDropdown:      true,
 			},
 			{
+				Id:                  "phi4-mini",
+				Name:                "Phi 4 Mini (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
 				Id:                  "phi4",
 				Name:                "Phi 4 (Ollama)",
 				Provider:            "ollama",
@@ -422,6 +705,18 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				MaxOutputTokens:     4_096,
 				CostPer_1MInputUsd:  0.0,
 				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemma4",
+				Name:                "Gemma 4 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "vision", "thinking"},
+				ContextWindow:       256_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
 			{
@@ -440,7 +735,33 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		// ── AWS Bedrock ─────────────────────────────────────────────────────────────
 		// Claude 4.x models only. ShowInDropdown=false — Bedrock is endpoint-configured
 		// via deployment settings, not selected from a user-facing model picker.
+		// Both us.* (regional) and global.* (dynamic routing) forms are listed where
+		// applicable so ProviderFactory.normalizeModelID only needs to strip prefixes.
 		"bedrock": {
+			{
+				Id:                  "us.anthropic.claude-opus-4-7-v1:0",
+				Name:                "Claude Opus 4.7 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "global.anthropic.claude-opus-4-7-v1:0",
+				Name:                "Claude Opus 4.7 (Bedrock, global)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
 			{
 				Id:                  "us.anthropic.claude-opus-4-6-v1",
 				Name:                "Claude Opus 4.6 (Bedrock)",
@@ -517,16 +838,51 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 
 		// ── Azure OpenAI ───────────────────────────────────────────────────────────
 		// ShowInDropdown=false — Azure deployments are endpoint-configured, not
-		// selected from a user-facing model picker.
+		// selected from a user-facing model picker. Mirrors the OpenAI entries above
+		// for the model IDs typically deployed on Azure (same specs + pricing).
 		"azure-openai": {
+			{
+				Id:                  "gpt-5.4",
+				Name:                "GPT-5.4 (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  2.50,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "gpt-5.4-mini",
+				Name:                "GPT-5.4 Mini (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       400_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  0.75,
+				CostPer_1MOutputUsd: 4.50,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "gpt-5.3-chat",
+				Name:                "GPT-5.3 Chat (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  1.75,
+				CostPer_1MOutputUsd: 14.0,
+				ShowInDropdown:      false,
+			},
 			{
 				Id:                  "gpt-5",
 				Name:                "GPT-5 (Azure)",
 				Provider:            "azure-openai",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
-				ContextWindow:       272_000,
+				ContextWindow:       400_000,
 				MaxOutputTokens:     128_000,
-				CostPer_1MInputUsd:  2.50,
+				CostPer_1MInputUsd:  1.25,
 				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
 				ShowInDropdown:      false,
@@ -560,8 +916,8 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       200_000,
 				MaxOutputTokens:     100_000,
-				CostPer_1MInputUsd:  10.0,
-				CostPer_1MOutputUsd: 40.0,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 8.0,
 				IsReasoning:         true,
 				ShowInDropdown:      false,
 			},
@@ -591,14 +947,21 @@ func NormalizeProvider(provider string) string {
 }
 
 // Lookup returns the ModelInfo for a given provider + model ID, or nil when
-// the exact pair is not in the built-in catalog. This is an exact-match lookup;
-// callers that need prefix or version-suffix matching must handle that above.
+// the pair is not in the currently registered default source. This is the
+// package-level convenience form; it delegates to DefaultSource().Lookup with
+// context.Background.
+//
+// At startup the default source is the built-in StaticSource. Callers can
+// extend it via Register — for example to consult a DB-backed catalog first
+// and fall back to the built-in map:
+//
+//	catalog.Register(catalog.MultiSource{
+//	    catalog.NewCachedSource(myDBSource, 5*time.Minute),
+//	    catalog.StaticSource(),
+//	})
+//
+// This is an exact-match lookup at each source; callers that need prefix or
+// version-suffix matching must handle that above.
 func Lookup(provider, modelID string) *loomv1.ModelInfo {
-	provider = NormalizeProvider(provider)
-	for _, m := range BuildCatalog()[provider] {
-		if m.Id == modelID {
-			return m
-		}
-	}
-	return nil
+	return DefaultSource().Lookup(context.Background(), provider, modelID)
 }

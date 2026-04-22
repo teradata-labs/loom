@@ -40,7 +40,7 @@ func TestLookup(t *testing.T) {
 			provider:       "openai",
 			modelID:        "gpt-5",
 			wantFound:      true,
-			wantContextWin: 272_000,
+			wantContextWin: 400_000,
 			wantMaxOutput:  128_000,
 		},
 		{
@@ -48,7 +48,15 @@ func TestLookup(t *testing.T) {
 			provider:       "azureopenai",
 			modelID:        "gpt-5",
 			wantFound:      true,
-			wantContextWin: 272_000,
+			wantContextWin: 400_000,
+			wantMaxOutput:  128_000,
+		},
+		{
+			name:           "anthropic claude opus 4.7 (added 2026-04)",
+			provider:       "anthropic",
+			modelID:        "claude-opus-4-7",
+			wantFound:      true,
+			wantContextWin: 1_000_000,
 			wantMaxOutput:  128_000,
 		},
 		{
