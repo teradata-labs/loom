@@ -19,6 +19,7 @@ jobs:
   proto:
     name: Proto Lint & Breaking Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -56,6 +57,7 @@ jobs:
   lint:
     name: Go Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -97,6 +99,7 @@ jobs:
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       matrix:
         go-version: ['1.25']
@@ -174,10 +177,12 @@ jobs:
 
   # ============================================================================
   # Job 4: Fuzz Tests (OSSF Scorecard Compliance)
+  # Failures fail the job (no swallowed exit codes).
   # ============================================================================
   fuzz:
     name: Fuzz Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -201,45 +206,50 @@ jobs:
 
       - name: Run fuzz tests (agent package)
         run: |
-          echo "## Fuzz Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "Running fuzz tests for 30s each..." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          echo "## Fuzz Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "Each fuzz target uses -fuzztime=30s per go test -fuzz invocation (not the Actions job wall limit)." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
           # Run each fuzz test individually with timeout
           # Use -run=^$ to skip regular tests and only run fuzz tests
-          go test -tags fts5 -run=^$ -fuzz='^FuzzTokenCounter$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzTokenCounter had issues"
-          go test -tags fts5 -run=^$ -fuzz='^FuzzCompressionProfile$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzCompressionProfile had issues"
-          go test -tags fts5 -run=^$ -fuzz='^FuzzConfigLoaderYAML$' -fuzztime=30s ./pkg/agent || echo "::warning::FuzzConfigLoaderYAML had issues"
+          go test -tags fts5 -run=^$ -fuzz='^FuzzTokenCounter$' -fuzztime=30s ./pkg/agent
+          go test -tags fts5 -run=^$ -fuzz='^FuzzCompressionProfile$' -fuzztime=30s ./pkg/agent
+          go test -tags fts5 -run=^$ -fuzz='^FuzzConfigLoaderYAML$' -fuzztime=30s ./pkg/agent
 
-          echo "✅ Agent package fuzz tests completed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Agent package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run fuzz tests (prompts package)
         run: |
-          go test -run=^$ -fuzz='^FuzzPromptInterpolation$' -fuzztime=30s ./pkg/prompts || echo "::warning::FuzzPromptInterpolation had issues"
-          go test -run=^$ -fuzz='^FuzzEscapeString$' -fuzztime=30s ./pkg/prompts || echo "::warning::FuzzEscapeString had issues"
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzPromptInterpolation$' -fuzztime=30s ./pkg/prompts
+          go test -run=^$ -fuzz='^FuzzEscapeString$' -fuzztime=30s ./pkg/prompts
 
-          echo "✅ Prompts package fuzz tests completed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Prompts package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run fuzz tests (observability package)
         run: |
-          go test -run=^$ -fuzz='^FuzzSpanAttributes$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzSpanAttributes had issues"
-          go test -run=^$ -fuzz='^FuzzSpanTimestamps$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzSpanTimestamps had issues"
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzSpanAttributes$' -fuzztime=30s ./pkg/observability
+          go test -run=^$ -fuzz='^FuzzSpanTimestamps$' -fuzztime=30s ./pkg/observability
 
-          echo "✅ Observability package fuzz tests completed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
-          go test -tags hawk -run=^$ -fuzz='^FuzzPrivacyRedaction$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzPrivacyRedaction had issues"
-          go test -tags hawk -run=^$ -fuzz='^FuzzEmailPattern$' -fuzztime=30s ./pkg/observability || echo "::warning::FuzzEmailPattern had issues"
+          set -euo pipefail
+          go test -tags hawk -run=^$ -fuzz='^FuzzPrivacyRedaction$' -fuzztime=30s ./pkg/observability
+          go test -tags hawk -run=^$ -fuzz='^FuzzEmailPattern$' -fuzztime=30s ./pkg/observability
 
-          echo "✅ Privacy fuzz tests completed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Privacy fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summary
         run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Fuzz Testing Complete" >> $GITHUB_STEP_SUMMARY
-          echo "All fuzz tests executed for OSSF Scorecard compliance." >> $GITHUB_STEP_SUMMARY
-          echo "Tests run with 30s timeout each to keep CI fast." >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Fuzz Testing Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "All fuzz tests executed for OSSF Scorecard compliance; any failure fails this job." >> "$GITHUB_STEP_SUMMARY"
+          echo "Each fuzz target uses -fuzztime=30s; this job also has timeout-minutes on the workflow job." >> "$GITHUB_STEP_SUMMARY"
 
   # ============================================================================
   # Job 5: Build Verification
@@ -247,6 +257,7 @@ jobs:
   build:
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -324,6 +335,7 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -370,6 +382,7 @@ jobs:
   coverage-check:
     name: Coverage Requirements
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: test
     if: always()
     steps:
@@ -420,6 +433,7 @@ jobs:
   ci-success:
     name: All CI Checks Passed
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs:
       - proto
       - lint

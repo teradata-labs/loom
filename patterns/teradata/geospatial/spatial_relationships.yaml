@@ -1,0 +1,523 @@
+# === METADATA START ===
+name: spatial_relationships
+title: "Spatial Relationship Predicates and Distance"
+description: |
+  Spatial predicate functions for testing topological relationships between geometries
+  in Teradata Vantage: ST_Within, ST_Contains, ST_Intersects, ST_Touches, ST_Crosses,
+  ST_Equals, ST_Overlaps, ST_Disjoint, and the DE-9IM matrix via ST_Relate.
+
+  Distance functions: ST_Distance (planar), ST_3DDistance (z-aware),
+  ST_SphericalDistance (Haversine on sphere), and ST_SpheroidalDistance (WGS84 ellipsoid).
+
+  All relationship predicates except ST_Disjoint are index-accelerated when a
+  geospatial NUSI exists. Distance predicates are index-accelerated when used
+  with a < constant comparison.
+
+category: geospatial
+difficulty: intermediate
+teradata_function: ST_Within
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - data_quality
+  - reporting
+use_cases:
+  # --- Use Case 1: Point-in-Polygon ---
+  - Determine which region, territory, or zone a point falls within
+
+  # --- Use Case 2: Proximity Search ---
+  - Find all locations within a given distance of a reference point
+
+  # --- Use Case 3: Spatial Join ---
+  - Join two tables based on spatial overlap (e.g., streets within cities)
+
+  # --- Use Case 4: Boundary Analysis ---
+  - Identify geometries that touch, cross, or overlap a boundary
+
+  # --- Use Case 5: Real-World Distance ---
+  - Calculate great-circle or ellipsoidal distance between GPS coordinates
+
+  # --- Use Case 6: Containment Verification ---
+  - Verify that child geometries are fully contained within parent geometries
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the geospatial tables"
+    example: "geo_analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Primary table in the query
+    required: true
+    description: "Primary table with geometry column"
+    example: "store_locations"
+
+  # --- Parameter 3: Geometry Column ---
+  - name: geometry_column
+    type: string
+    # LLM-HINT: ST_Geometry column to test relationships against
+    required: true
+    description: "ST_Geometry column in the primary table"
+    example: "location"
+
+  # --- Parameter 4: Second Table ---
+  - name: second_table
+    type: string
+    # LLM-HINT: For spatial joins; the second table in the relationship
+    required: false
+    description: "Second table for spatial join operations"
+    example: "territories"
+
+  # --- Parameter 5: Second Geometry Column ---
+  - name: second_geometry_column
+    type: string
+    # LLM-HINT: ST_Geometry column in the second table
+    required: false
+    description: "ST_Geometry column in the second table"
+    example: "boundary"
+
+  # --- Parameter 6: Search Geometry WKT ---
+  - name: search_wkt
+    type: string
+    # LLM-HINT: WKT of the geometry to search against (point, polygon, etc.)
+    required: false
+    description: "Well-Known Text of the search geometry"
+    example: "POLYGON((-97 32, -97 33, -96 33, -96 32, -97 32))"
+
+  # --- Parameter 7: Distance Threshold ---
+  - name: distance_threshold
+    type: number
+    # LLM-HINT: Maximum distance for proximity queries; units depend on SRS
+    required: false
+    description: "Maximum distance for proximity queries. Units are SRS-dependent (degrees for 4326, meters for projected SRS)"
+    example: "0.5"
+
+  # --- Parameter 8: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique identifier for result rows
+    required: true
+    description: "Unique identifier column in the primary table"
+    example: "store_id"
+
+  # --- Parameter 9: Second ID Column ---
+  - name: second_id_column
+    type: string
+    # LLM-HINT: Unique identifier in the second table for join results
+    required: false
+    description: "Unique identifier column in the second table"
+    example: "territory_id"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === POINT_IN_POLYGON TEMPLATE ===
+  # LLM-HINT: Find which polygon contains a given point; index-accelerated with = 1
+  point_in_polygon:
+    description: "Test which polygon a point falls within"
+    sql: |
+      -- Find which polygon(s) contain each point
+      -- ST_Within is index-accelerated when geospatial NUSI exists
+      SELECT
+        p.{{id_column}},
+        r.{{second_id_column}},
+        r.name AS region_name
+      FROM {{database}}.{{table}} p
+      INNER JOIN {{database}}.{{second_table}} r
+        ON p.{{geometry_column}}.ST_Within(r.{{second_geometry_column}}) = 1
+      ORDER BY p.{{id_column}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - second_table
+      - second_geometry_column
+      - second_id_column
+
+  # === CONTAINMENT_TEST TEMPLATE ===
+  # LLM-HINT: Test if a polygon contains given geometries; inverse of ST_Within
+  containment_test:
+    description: "Find all geometries contained within a search polygon"
+    sql: |
+      -- Find all geometries within a search polygon
+      -- ST_Contains: polygon.ST_Contains(geometry) = 1
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_AsText() AS wkt
+      FROM {{database}}.{{table}}
+      WHERE NEW ST_Geometry('{{search_wkt}}').ST_Contains({{geometry_column}}) = 1
+      ORDER BY {{id_column}};
+
+      -- Equivalent using ST_Within (geometry.ST_Within(polygon) = 1)
+      -- SELECT {{id_column}}
+      -- FROM {{database}}.{{table}}
+      -- WHERE {{geometry_column}}.ST_Within(NEW ST_Geometry('{{search_wkt}}')) = 1;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - search_wkt
+
+  # === INTERSECTION_TEST TEMPLATE ===
+  # LLM-HINT: Find geometries that intersect (share any space) with a search geometry
+  intersection_test:
+    description: "Find geometries that intersect a search geometry"
+    sql: |
+      -- ST_Intersects returns 1 when geometries share any space
+      -- Index-accelerated; excludes GeomCollection inputs
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_GeometryType() AS geom_type
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_Intersects(NEW ST_Geometry('{{search_wkt}}')) = 1
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - search_wkt
+
+  # === SPATIAL_JOIN TEMPLATE ===
+  # LLM-HINT: Join two tables on spatial overlap; at least one side should have geospatial NUSI
+  spatial_join:
+    description: "Join two tables based on spatial intersection"
+    sql: |
+      -- Spatial join: find matching geometries between two tables
+      -- Optimizer uses nested join; at least one side needs a geospatial NUSI
+      SELECT
+        a.{{id_column}}              AS left_id,
+        b.{{second_id_column}}       AS right_id,
+        a.{{geometry_column}}.ST_AsText()  AS left_wkt,
+        b.{{second_geometry_column}}.ST_AsText() AS right_wkt
+      FROM {{database}}.{{table}} a
+      INNER JOIN {{database}}.{{second_table}} b
+        ON a.{{geometry_column}}.ST_Intersects(b.{{second_geometry_column}}) = 1
+      ORDER BY a.{{id_column}}, b.{{second_id_column}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - second_table
+      - second_geometry_column
+      - second_id_column
+
+  # === PROXIMITY_SEARCH TEMPLATE ===
+  # LLM-HINT: Find geometries within a planar distance; use < constant for index acceleration
+  proximity_search:
+    description: "Find geometries within a planar distance threshold"
+    sql: |
+      -- Proximity search: ST_Distance < constant is index-accelerated
+      -- Distance units depend on the SRS (degrees for WGS84, meters for projected)
+      SELECT
+        {{id_column}},
+        {{geometry_column}}.ST_Distance(NEW ST_Geometry('{{search_wkt}}')) AS distance
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_Distance(NEW ST_Geometry('{{search_wkt}}')) < {{distance_threshold}}
+      ORDER BY distance;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - search_wkt
+      - distance_threshold
+
+  # === SPHERICAL_DISTANCE TEMPLATE ===
+  # LLM-HINT: Great-circle distance in meters using Haversine formula; works for all point pairs
+  spherical_distance:
+    description: "Calculate great-circle distance between two points in meters (Haversine)"
+    sql: |
+      -- ST_SphericalDistance: Haversine formula, returns meters
+      -- Works for any two points (including near-antipodal)
+      SELECT
+        a.{{id_column}}   AS from_id,
+        b.{{second_id_column}} AS to_id,
+        a.{{geometry_column}}.ST_SphericalDistance(b.{{second_geometry_column}}) AS distance_meters
+      FROM {{database}}.{{table}} a
+      CROSS JOIN {{database}}.{{second_table}} b
+      ORDER BY distance_meters;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - second_table
+      - second_geometry_column
+      - second_id_column
+
+  # === SPHEROIDAL_DISTANCE TEMPLATE ===
+  # LLM-HINT: Ellipsoidal distance in meters using WGS84; more accurate but fails for antipodal points
+  spheroidal_distance:
+    description: "Calculate ellipsoidal distance between two points in meters (WGS84)"
+    sql: |
+      -- ST_SpheroidalDistance: WGS84 ellipsoid, returns meters
+      -- More accurate than spherical for short-to-medium distances
+      -- WARNING: May fail for near-antipodal point pairs; use ST_SphericalDistance instead
+      SELECT
+        a.{{id_column}}   AS from_id,
+        b.{{second_id_column}} AS to_id,
+        a.{{geometry_column}}.ST_SpheroidalDistance(b.{{second_geometry_column}}) AS distance_meters
+      FROM {{database}}.{{table}} a
+      CROSS JOIN {{database}}.{{second_table}} b
+      ORDER BY distance_meters;
+
+      -- With explicit WGS84 parameters (default values shown)
+      -- a.{{geometry_column}}.ST_SpheroidalDistance(
+      --   b.{{second_geometry_column}}, 6378137.0, 298.257223563
+      -- )
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - second_table
+      - second_geometry_column
+      - second_id_column
+
+  # === TOUCHES_AND_CROSSES TEMPLATE ===
+  # LLM-HINT: Boundary analysis using ST_Touches and ST_Crosses predicates
+  boundary_analysis:
+    description: "Find geometries that touch or cross a boundary"
+    sql: |
+      -- ST_Touches: geometries share boundary points but no interior points
+      SELECT
+        {{id_column}},
+        'touches' AS relationship
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_Touches(NEW ST_Geometry('{{search_wkt}}')) = 1
+
+      UNION ALL
+
+      -- ST_Crosses: geometries cross each other (e.g., line crosses polygon)
+      SELECT
+        {{id_column}},
+        'crosses' AS relationship
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_Crosses(NEW ST_Geometry('{{search_wkt}}')) = 1
+
+      ORDER BY 1;
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - search_wkt
+
+  # === DE9IM_RELATE TEMPLATE ===
+  # LLM-HINT: Advanced relationship test using DE-9IM matrix pattern (9-char: T/F/0/1/2/*)
+  de9im_relate:
+    description: "Test a specific DE-9IM spatial relationship pattern"
+    sql: |
+      -- ST_Relate: DE-9IM matrix test (9-character pattern)
+      -- Characters: T (true), F (false), 0/1/2 (dimension), * (any)
+      -- Example: 'T*F**FFF*' = "A contains B" (equivalent to ST_Contains)
+      -- Example: '0********' = "interiors intersect at a point"
+      SELECT
+        {{id_column}}
+      FROM {{database}}.{{table}}
+      WHERE {{geometry_column}}.ST_Relate(
+        NEW ST_Geometry('{{search_wkt}}'),
+        '{{de9im_pattern}}'
+      ) = 1
+      ORDER BY {{id_column}};
+    required_parameters:
+      - database
+      - table
+      - geometry_column
+      - id_column
+      - search_wkt
+      - de9im_pattern
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Stores in Sales Territory ---
+  - name: "Stores Within Sales Territory"
+    description: "Find all stores that fall within each sales territory polygon"
+    parameters:
+      database: "retail_geo"
+      table: "stores"
+      geometry_column: "location"
+      id_column: "store_id"
+      second_table: "territories"
+      second_geometry_column: "boundary"
+      second_id_column: "territory_id"
+    expected_result: |
+      Spatial join using ST_Within — each store assigned to its containing territory.
+
+      store_id | territory_id | region_name
+      101      | 1            | Southwest
+      102      | 1            | Southwest
+      103      | 2            | Midwest
+      104      | 3            | Northeast
+
+      Index-accelerated when geospatial NUSI exists on stores.location or
+      territories.boundary (ideally both).
+
+  # --- Example 2: Nearby Stores ---
+  - name: "Stores Within 50km of a Point"
+    description: "Find all stores within 50km of a reference location using spheroidal distance"
+    parameters:
+      database: "retail_geo"
+      table: "stores"
+      geometry_column: "location"
+      id_column: "store_id"
+      second_table: "reference_points"
+      second_geometry_column: "point"
+      second_id_column: "ref_id"
+    expected_result: |
+      Pairwise spheroidal distance in meters between stores and reference points.
+
+      from_id | to_id | distance_meters
+      101     | 1     | 12540.83
+      102     | 1     | 38210.55
+      103     | 1     | 49820.17
+
+      For single-point proximity, use the proximity_search template with
+      ST_Distance for planar or construct a manual ST_SpheroidalDistance filter.
+
+  # --- Example 3: Roads Crossing County Boundaries ---
+  - name: "Roads Crossing County Boundaries"
+    description: "Identify road segments that cross county boundary polygons"
+    parameters:
+      database: "transportation"
+      table: "roads"
+      geometry_column: "road_line"
+      id_column: "road_id"
+      search_wkt: "POLYGON((-97 32, -97 33, -96 33, -96 32, -97 32))"
+    expected_result: |
+      road_id | relationship
+      501     | crosses
+      502     | touches
+      505     | crosses
+
+      'crosses' = road passes through the interior of the polygon.
+      'touches' = road endpoint sits on the polygon boundary but does not enter.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing = 1 ---
+  - error: "Spatial predicate not using geospatial index"
+    cause: "Predicate written as WHERE ST_Within(a, b) instead of WHERE a.ST_Within(b) = 1"
+    solution: "Use instance method syntax with = 1: WHERE shape.ST_Within(polygon) = 1. The = 1 comparison is required for index acceleration"
+
+  # --- Error 2: SRID Mismatch ---
+  - error: "Incorrect spatial results or runtime error in distance calculation"
+    cause: "Geometries have different SRIDs (e.g., one is 4326, the other is 0)"
+    solution: "Ensure both geometries use the same SRID. ST_Distance requires same SRS. Use ST_SRID(new_srid) to reassign or ST_Transform() to reproject"
+
+  # --- Error 3: Distance Units Confusion ---
+  - error: "Distance values seem too large or too small"
+    cause: "ST_Distance returns values in SRS linear units — degrees for SRID 4326 (WGS84), meters for projected systems"
+    solution: "For real-world meters, use ST_SphericalDistance or ST_SpheroidalDistance (point-to-point only). For planar analysis, use a projected SRS with meter-based coordinates"
+
+  # --- Error 4: Antipodal Point Failure ---
+  - error: "ST_SpheroidalDistance fails or returns NaN"
+    cause: "Near-antipodal points (nearly opposite sides of the globe) cause the Vincenty formula to diverge"
+    solution: "Use ST_SphericalDistance (Haversine) instead, which handles all point pairs. It is less accurate for short distances but never fails"
+
+  # --- Error 5: GeomCollection in Intersects ---
+  - error: "ST_Intersects fails on GeomCollection input"
+    cause: "ST_Intersects and ST_Overlaps do not support GeomCollection geometry type"
+    solution: "Decompose GeomCollection into individual geometries using ST_GeometryN() and test each element separately"
+
+  # --- Error 6: Distance Not Using Index ---
+  - error: "Distance query performs full table scan despite geospatial NUSI"
+    cause: "Distance predicate not written as shape.ST_Distance(geom) < constant with a literal constant"
+    solution: "Use a literal float constant: WHERE shape.ST_Distance('POINT(10 20)') < 1E0. Variable or expression thresholds prevent index use"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Spatial Relationship Best Practices
+
+  ### 1. Predicate Selection Guide
+  | Need | Use | Notes |
+  |------|-----|-------|
+  | Point inside polygon | ST_Within | point.ST_Within(polygon) = 1 |
+  | Polygon contains point | ST_Contains | polygon.ST_Contains(point) = 1 |
+  | Any overlap | ST_Intersects | Broadest test; index-accelerated |
+  | Shared boundary only | ST_Touches | No interior overlap |
+  | Line crosses polygon | ST_Crosses | Enters and exits |
+  | Exact match | ST_Equals | Topologically equal |
+  | Custom relationship | ST_Relate | DE-9IM 9-char pattern |
+
+  ST_Within and ST_Contains are inverses: `a.ST_Within(b) = 1` is logically
+  equivalent to `b.ST_Contains(a) = 1`. Choose whichever reads more naturally.
+
+  ### 2. Index Acceleration Rules
+  **Predicates must use instance method syntax with = 1:**
+  ```sql
+  -- Index-accelerated
+  WHERE shape.ST_Within(polygon) = 1
+  WHERE shape.ST_Distance('POINT(10 20)') < 50.0
+
+  -- NOT index-accelerated
+  WHERE shape.ST_Disjoint(polygon) = 1  -- ST_Disjoint is never indexed
+  WHERE shape.ST_Distance(other) < threshold  -- variable threshold not indexed
+  ```
+
+  **For spatial joins**, at least one side must have a geospatial NUSI.
+  The optimizer will use a nested join strategy.
+
+  ### 3. Distance Function Selection
+  | Function | Type | Units | Use When |
+  |----------|------|-------|----------|
+  | ST_Distance | Planar | SRS units | Same projected SRS |
+  | ST_3DDistance | Planar 3D | SRS units | Z-coordinate matters |
+  | ST_SphericalDistance | Haversine | Meters | GPS coords, any distance |
+  | ST_SpheroidalDistance | Vincenty | Meters | GPS coords, high accuracy |
+
+  **Default to ST_SphericalDistance** for lat/lon data (SRID 4326).
+  It handles all point pairs and is accurate to ~0.3%.
+  Use ST_SpheroidalDistance only when sub-meter accuracy is needed
+  and you have verified no near-antipodal pairs.
+
+  ### 4. Two-Phase Spatial Filtering
+  For complex predicates on large tables, use MBR filtering first:
+  ```sql
+  -- Phase 1: Fast MBR filter (coarse)
+  -- Phase 2: Exact predicate (precise)
+  SELECT id
+  FROM large_table
+  WHERE shape.MBR_Filter(search_polygon) = 1    -- coarse: cheap
+    AND shape.ST_Within(search_polygon) = 1;     -- precise: expensive
+  ```
+
+  The geospatial NUSI already does this internally, but explicit MBR_Filter
+  can help when combining spatial and non-spatial predicates.
+
+  ### 5. Spatial Join Performance
+  - Create geospatial NUSIs on both join columns when possible
+  - Collect statistics on both geometry columns
+  - Use EXPLAIN to verify the optimizer chose a spatial join plan
+  - For very large joins, consider tessellation-based indexing (see spatial_operations)
+
+  ### 6. Handling NULL and Empty Geometries
+  - Spatial predicates return NULL when either operand is NULL or empty
+  - Filter empty geometries: `WHERE shape.ST_IsEmpty() = 0`
+  - Handle NULLs: `WHERE shape IS NOT NULL AND shape.ST_IsEmpty() = 0`
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Geometry Basics ---
+  - geometry_basics
+
+  # --- Pattern 2: Spatial Operations ---
+  - spatial_operations
+# === RELATED_PATTERNS END ===

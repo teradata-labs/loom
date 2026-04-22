@@ -1,0 +1,467 @@
+# === METADATA START ===
+name: smote
+title: "Synthetic Oversampling (TD_SMOTE)"
+description: |
+  Generate synthetic minority-class samples to address class imbalance using TD_SMOTE.
+  Supports four oversampling strategies:
+  - smote: Standard SMOTE. Interpolates between minority samples and their nearest neighbors.
+  - adasyn: Adaptive Synthetic. Generates more samples near the decision boundary.
+  - borderline: Borderline-SMOTE. Focuses on minority samples near the class boundary.
+  - smotenc: SMOTE for mixed numeric + categorical features. Requires an EncodingsTable
+    from TD_OrdinalEncodingFit and a pre-computed MedianStandardDeviation value.
+
+  CRITICAL: TD_SMOTE outputs ONLY synthetic samples. You must UNION ALL the output
+  with the original training table to produce the full augmented dataset.
+
+  CRITICAL: SMOTE must be applied ONLY to training data AFTER the train/test split.
+  Applying SMOTE before splitting leaks synthetic data into the test set, producing
+  unreliable evaluation metrics. The test set must reflect the real class distribution.
+
+category: data_prep
+difficulty: intermediate
+teradata_function: TD_SMOTE
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - class_balancing
+  - oversampling
+use_cases:
+  # --- Use Case 1: Binary Classification Imbalance ---
+  - Balance a binary classification dataset where the minority class is underrepresented
+
+  # --- Use Case 2: Fraud Detection ---
+  - Oversample fraud cases to improve model recall on rare fraud events
+
+  # --- Use Case 3: Medical Diagnosis ---
+  - Generate synthetic positive-diagnosis samples for rare disease detection models
+
+  # --- Use Case 4: Churn Prediction ---
+  - Balance churner vs non-churner classes when churners are a small minority
+
+  # --- Use Case 5: Mixed Feature Types ---
+  - Use SMOTE-NC to handle datasets with both numeric and categorical features
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the training table"
+    example: "ml_db"
+
+  # --- Parameter 2: Training Table ---
+  - name: training_table
+    type: string
+    # LLM-HINT: Maps to {{training_table}}; MUST be training data only (post train/test split)
+    required: true
+    description: "Training table (MUST be post train/test split, never the full dataset)"
+    example: "fraud_train"
+
+  # --- Parameter 3: ID Column ---
+  - name: id_column
+    type: string
+    # LLM-HINT: Unique row identifier; with FillSampleID('true') the output id_col contains the source row ID, not a new unique ID
+    required: true
+    description: "Unique row identifier column"
+    example: "transaction_id"
+
+  # --- Parameter 4: Response Column ---
+  - name: response_column
+    type: string
+    # LLM-HINT: Numeric class label column (e.g., 0/1 for binary classification)
+    required: true
+    description: "Numeric class label column"
+    example: "is_fraud"
+
+  # --- Parameter 5: Input Columns ---
+  - name: input_columns
+    type: array[string]
+    # LLM-HINT: Numeric feature columns used for synthetic sample interpolation
+    required: true
+    description: "Numeric feature columns used for synthesizing new samples"
+    example: '["amount", "time_since_last", "distance_from_home"]'
+
+  # --- Parameter 6: Minority Class ---
+  - name: minority_class
+    type: string
+    # LLM-HINT: The minority class label as a string (even if numeric, e.g., '1')
+    required: true
+    description: "Minority class label (integer, quoted as string)"
+    example: "'1'"
+
+  # --- Parameter 7: Oversampling Factor ---
+  - name: oversampling_factor
+    type: number
+    # LLM-HINT: 1.0 = generate same count as existing minority; 5 = 5x the minority count
+    required: false
+    default: 5
+    description: "Multiplier for number of synthetic samples (1.0 = same count as minority class)"
+    example: "3"
+
+  # --- Parameter 8: Sampling Strategy ---
+  - name: sampling_strategy
+    type: string
+    # LLM-HINT: smote (default), adasyn, borderline, or smotenc (for mixed numeric+categorical)
+    required: false
+    default: "smote"
+    description: "Strategy: 'smote', 'adasyn', 'borderline', or 'smotenc'"
+    example: "smote"
+
+  # --- Parameter 9: Number of Neighbors ---
+  - name: number_of_neighbors
+    type: integer
+    # LLM-HINT: Default 5, but TD_KNN includes the sample itself as neighbor #1. Set to 6 for 5 effective neighbors.
+    required: false
+    default: 5
+    description: "Number of nearest neighbors. Set to N+1 to get N effective neighbors (KNN includes self)."
+    example: "6"
+
+  # --- Parameter 10: Seed ---
+  - name: seed
+    type: integer
+    # LLM-HINT: For reproducible results; default 186006
+    required: false
+    default: 186006
+    description: "Random seed for reproducible synthetic sample generation"
+    example: "42"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === BASIC_SMOTE TEMPLATE ===
+  # LLM-HINT: Standard SMOTE; output is synthetic samples ONLY, must UNION ALL with original data
+  basic_smote:
+    description: "Generate synthetic minority samples using standard SMOTE and combine with original training data"
+    sql: |
+      -- IMPORTANT: Apply ONLY to training data (post train/test split)
+      -- TD_SMOTE outputs ONLY synthetic samples; UNION ALL with original data
+
+      -- Full augmented training set
+      CREATE TABLE {{database}}.{{output_table}} AS (
+          SELECT * FROM {{database}}.{{training_table}}
+          UNION ALL
+          SELECT * FROM TD_SMOTE(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              USING
+                  IDColumn('{{id_column}}')
+                  ResponseColumn('{{response_column}}')
+                  InputColumns({{input_columns_quoted}})
+                  MinorityClass('{{minority_class}}')
+                  OversamplingFactor({{oversampling_factor}})
+                  NumberOfNeighbors({{number_of_neighbors}})
+                  Seed({{seed}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - output_table
+      - id_column
+      - response_column
+      - input_columns_quoted
+      - minority_class
+      - oversampling_factor
+      - number_of_neighbors
+      - seed
+
+  # === ADASYN TEMPLATE ===
+  # LLM-HINT: Adaptive synthetic; generates more samples near the decision boundary
+  adasyn_oversampling:
+    description: "Adaptive oversampling that focuses on harder-to-learn minority samples"
+    sql: |
+      -- ADASYN generates more synthetic samples near the decision boundary
+      -- Use smaller OversamplingFactor with extreme imbalance to avoid duplicates
+      CREATE TABLE {{database}}.{{output_table}} AS (
+          SELECT * FROM {{database}}.{{training_table}}
+          UNION ALL
+          SELECT * FROM TD_SMOTE(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              USING
+                  IDColumn('{{id_column}}')
+                  ResponseColumn('{{response_column}}')
+                  InputColumns({{input_columns_quoted}})
+                  MinorityClass('{{minority_class}}')
+                  SamplingStrategy('adasyn')
+                  OversamplingFactor({{oversampling_factor}})
+                  NumberOfNeighbors({{number_of_neighbors}})
+                  Seed({{seed}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - output_table
+      - id_column
+      - response_column
+      - input_columns_quoted
+      - minority_class
+      - oversampling_factor
+      - number_of_neighbors
+      - seed
+
+  # === SMOTENC TEMPLATE ===
+  # LLM-HINT: For mixed numeric + categorical features; requires EncodingsTable and MedianStandardDeviation
+  smotenc_mixed_features:
+    description: "SMOTE-NC for datasets with both numeric and categorical features"
+    sql: |
+      -- Step 1: Build ordinal encodings for categorical columns
+      -- Must use Approach('AUTO') and NO DefaultValue for smotenc compatibility
+      CREATE TABLE {{database}}.{{encodings_table}} AS (
+          SELECT * FROM TD_OrdinalEncodingFit(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              USING
+                  TargetColumn({{categorical_columns_quoted}})
+                  Approach('AUTO')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Compute MedianStandardDeviation
+      -- (median of standard deviations of numeric input columns, minority class only)
+      SELECT StatValue AS MedianValue FROM TD_UnivariateStatistics(
+          ON (
+              SELECT * FROM TD_UnivariateStatistics(
+                  ON (SELECT * FROM {{database}}.{{training_table}}
+                      WHERE {{response_column}} = {{minority_class}}) AS InputTable
+                  USING
+                      TargetColumns({{input_columns_quoted}})
+                      Stats('STANDARD DEVIATION')
+              ) AS dt
+          ) AS InputTable
+          USING
+              TargetColumns('StatValue')
+              Stats('MED')
+      ) AS dtu;
+      -- Use the returned MedianValue as the MedianStandardDeviation parameter below
+
+      -- Step 3: Run SMOTE-NC
+      CREATE TABLE {{database}}.{{output_table}} AS (
+          SELECT * FROM {{database}}.{{training_table}}
+          UNION ALL
+          SELECT * FROM TD_SMOTE(
+              ON {{database}}.{{training_table}} PARTITION BY ANY
+              ON {{database}}.{{encodings_table}} AS EncodingsTable DIMENSION
+              USING
+                  IDColumn('{{id_column}}')
+                  ResponseColumn('{{response_column}}')
+                  InputColumns({{input_columns_quoted}})
+                  CategoricalInputColumns({{categorical_columns_quoted}})
+                  MinorityClass('{{minority_class}}')
+                  SamplingStrategy('smotenc')
+                  MedianStandardDeviation({{median_std_dev}})
+                  OversamplingFactor({{oversampling_factor}})
+                  Seed({{seed}})
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - training_table
+      - output_table
+      - encodings_table
+      - id_column
+      - response_column
+      - input_columns_quoted
+      - categorical_columns_quoted
+      - minority_class
+      - median_std_dev
+      - oversampling_factor
+      - seed
+
+  # === VERIFY_BALANCE TEMPLATE ===
+  # LLM-HINT: Check class distribution before and after SMOTE to verify the balance
+  verify_balance:
+    description: "Verify class distribution before and after oversampling"
+    sql: |
+      -- Check original class distribution
+      SELECT '1_original' AS dataset,
+             {{response_column}},
+             COUNT(*) AS cnt,
+             CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) AS pct
+      FROM {{database}}.{{training_table}}
+      GROUP BY {{response_column}}
+
+      UNION ALL
+
+      -- Check augmented class distribution
+      SELECT '2_augmented' AS dataset,
+             {{response_column}},
+             COUNT(*) AS cnt,
+             CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) AS pct
+      FROM {{database}}.{{output_table}}
+      GROUP BY {{response_column}}
+
+      ORDER BY dataset, {{response_column}};
+    required_parameters:
+      - database
+      - training_table
+      - output_table
+      - response_column
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Fraud Detection ---
+  - name: "Fraud Detection Oversampling"
+    description: "Oversample fraud transactions (1% of data) for a binary classifier"
+    parameters:
+      database: "fraud_db"
+      training_table: "transactions_train"
+      output_table: "transactions_train_balanced"
+      id_column: "txn_id"
+      response_column: "is_fraud"
+      input_columns: ["amount", "time_since_last_txn", "distance_from_home", "num_txns_24h"]
+      minority_class: "1"
+      oversampling_factor: 5
+      number_of_neighbors: 6
+      seed: 42
+      sampling_strategy: "smote"
+    expected_result: |
+      Original distribution:
+        is_fraud=0: 99,000 (99.0%)
+        is_fraud=1:  1,000 (1.0%)
+
+      After SMOTE (OversamplingFactor=5):
+        is_fraud=0: 99,000 (95.2%)  -- unchanged
+        is_fraud=1:  6,000 (4.8%)   -- 1,000 original + 5,000 synthetic
+
+      Synthetic samples are interpolated between existing fraud cases and their
+      nearest neighbors, creating plausible new fraud patterns for the model to learn.
+
+      The test set remains untouched with the original 1% fraud rate for honest evaluation.
+
+  # --- Example 2: SMOTE-NC with Mixed Features ---
+  - name: "Churn Prediction with Mixed Features"
+    description: "Oversample churners using SMOTE-NC for numeric + categorical features"
+    parameters:
+      database: "telecom_db"
+      training_table: "customers_train"
+      output_table: "customers_train_balanced"
+      encodings_table: "churn_smote_encodings"
+      id_column: "customer_id"
+      response_column: "churned"
+      input_columns: ["tenure", "monthly_charges", "total_charges"]
+      categorical_columns: ["contract_type", "payment_method"]
+      minority_class: "1"
+      oversampling_factor: 3
+      median_std_dev: 15.7
+      seed: 42
+    expected_result: |
+      SMOTE-NC handles numeric features (tenure, charges) via interpolation and
+      categorical features (contract_type, payment_method) via most-frequent-neighbor voting.
+
+      Original: 5,000 non-churners, 500 churners (10%)
+      Augmented: 5,000 non-churners, 2,000 churners (28.6%)
+        - 500 original churners
+        - 1,500 synthetic (3x OversamplingFactor)
+
+      Categorical values in synthetic samples are taken from the nearest neighbor's
+      actual values (not interpolated), preserving valid category memberships.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Applying SMOTE Before Train/Test Split ---
+  - error: "Model evaluation metrics are unrealistically good"
+    cause: "SMOTE was applied to the full dataset before splitting into train/test. Synthetic samples in the test set are derived from training samples, causing data leakage."
+    solution: "ALWAYS split data into train/test FIRST, then apply SMOTE ONLY to the training set. The test set must reflect the real-world class distribution."
+
+  # --- Error 2: Forgetting UNION ALL ---
+  - error: "Training set contains only synthetic minority samples after SMOTE"
+    cause: "TD_SMOTE outputs ONLY the synthetic samples, not the original data. Using the SMOTE output alone discards all original observations."
+    solution: "Always UNION ALL the SMOTE output with the original training table to create the full augmented dataset."
+
+  # --- Error 3: NumberOfNeighbors Off-By-One ---
+  - error: "Fewer effective neighbors than expected in synthetic sample generation"
+    cause: "TD_KNN includes the observation itself as neighbor #1. NumberOfNeighbors(5) uses only 4 actual neighbors for interpolation."
+    solution: "Set NumberOfNeighbors to N+1 to get N effective neighbors. For 5 effective neighbors, use NumberOfNeighbors(6)."
+
+  # --- Error 4: smotenc EncodingsTable Error ---
+  - error: "EncodingsTable format incompatible with TD_SMOTE smotenc"
+    cause: "The EncodingsTable was created with DefaultValue or a non-AUTO approach, or was passed as a subquery instead of a real table."
+    solution: "Create EncodingsTable using TD_OrdinalEncodingFit with Approach('AUTO') and NO DefaultValue. It must be a real table (not a subquery). Column aliasing is not allowed on InputTable or EncodingsTable."
+
+  # --- Error 5: FillSampleID Misunderstanding ---
+  - error: "Synthetic samples have duplicate IDs with original data"
+    cause: "FillSampleID('true') (default) writes the source observation ID to the id_col in synthetic samples. These IDs are NOT unique."
+    solution: "Set FillSampleID('false') and generate your own unique IDs if you need unique keys in the augmented table. Or add a 'synthetic' flag column to distinguish original from synthetic rows."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## TD_SMOTE Best Practices
+
+  ### 1. ALWAYS Apply After Train/Test Split (Non-Negotiable)
+  ```
+  Full Dataset
+    |
+    +-- train/test split (e.g., 80/20)
+    |      |
+    |      +-- Training Set ----> Apply TD_SMOTE ----> Augmented Training Set ----> Train Model
+    |      |
+    |      +-- Test Set (UNTOUCHED, real-world distribution) ----> Evaluate Model
+  ```
+  Applying SMOTE before splitting causes data leakage. Synthetic test samples are
+  derived from training data, making evaluation metrics unreliable.
+
+  ### 2. Choose the Right Strategy
+  - **smote:** Good default for most cases. Works well when minority samples are
+    spread throughout the feature space.
+  - **adasyn:** Better when the decision boundary is important. Generates more samples
+    near hard-to-classify regions. Use smaller OversamplingFactor with extreme imbalance.
+  - **borderline:** Focuses on minority samples that are near majority-class neighbors.
+    Good when the boundary between classes is the critical learning area.
+  - **smotenc:** Required when you have both numeric and categorical features. Standard
+    SMOTE cannot interpolate categorical values.
+
+  ### 3. Choose OversamplingFactor Carefully
+  - Start with a factor that achieves 20-40% minority representation (not necessarily 50/50)
+  - Very high factors (>10) may generate unrealistic samples
+  - For extreme imbalance (minority < 1%), consider multiple rounds with moderate factors
+  - ADASYN may produce slightly different counts than requested due to density estimation
+
+  ### 4. Verify Balance After SMOTE
+  Always check the class distribution before and after:
+  ```sql
+  SELECT is_fraud, COUNT(*) FROM db.train_balanced GROUP BY is_fraud;
+  ```
+  Compare with the original training distribution to confirm the desired balance.
+
+  ### 5. Use Seed for Reproducibility
+  Set the Seed parameter for deterministic synthetic sample generation. This ensures
+  reproducible experiments and debugging.
+
+  ### 6. Handle Non-Input Columns
+  ValueForNonInputColumns controls what happens to columns not in InputColumns:
+  - 'sample' (default): Takes value from the source minority observation
+  - 'neighbor': Takes value from the chosen nearest neighbor
+  - 'null': Sets to NULL
+
+  Choose based on your use case. 'sample' is safest for most scenarios.
+
+  ### 7. Consider Feature Scaling Before SMOTE
+  SMOTE uses distance-based neighbor finding. Features on different scales will
+  bias neighbor selection. Scale features (TD_ScaleFit/TD_ScaleTransform) before
+  applying SMOTE, then apply SMOTE on the scaled data.
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Feature Scaling (scale before SMOTE) ---
+  - scale_transform
+
+  # --- Pattern 2: One-Hot Encoding ---
+  - one_hot_encoding
+
+  # --- Pattern 3: Column Transformer Pipeline ---
+  - column_transformer
+
+  # --- Pattern 4: Fit/Transform Architecture ---
+  - fit_transform_pattern
+
+  # --- Pattern 5: Binning ---
+  - bincode
+# === RELATED_PATTERNS END ===

@@ -308,6 +308,7 @@ security:
     @gosec -exclude-dir=gen -fmt=text ./...
 
 # Clean build artifacts
+[confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]
 clean:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -320,12 +321,25 @@ clean:
     rm -rf dist/
     find . -name "*.test" -delete
     find . -name "*.out" -delete
-    # Clean installed binaries (use LOOM_BIN_DIR if set, otherwise ~/.local/bin)
-    BIN_DIR="${LOOM_BIN_DIR:-~/.local/bin}"
+    : "${HOME:?HOME is unset}"
+    # Paths from shell rc or dotenv may be literal "~/..."; ${var:-~/.x} defaults also
+    # fail to expand tilde reliably. Normalize before any rm -rf.
+    normalize_literal_tilde_prefix() {
+        local p="$1"
+        if [[ "${p:0:2}" == "~/" ]]; then
+            printf '%s\n' "${HOME}/${p:2}"
+        elif [[ "$p" == "~" ]]; then
+            printf '%s\n' "$HOME"
+        else
+            printf '%s\n' "$p"
+        fi
+    }
+    # LOOM_BIN_DIR: install target for loom/looms/hawk (default ~/.local/bin).
+    BIN_DIR="$(normalize_literal_tilde_prefix "${LOOM_BIN_DIR:-${HOME}/.local/bin}")"
     rm -rf "$BIN_DIR/loom" "$BIN_DIR/looms" "$BIN_DIR/hawk"
-    # Clean app data directories (use LOOM_DATA_DIR if set, otherwise ~/.loom)
-    LOOM_DIR="${LOOM_DATA_DIR:-~/.loom}"
-    rm -rf "$LOOM_DIR" ~/.hawk
+    # LOOM_DATA_DIR: full Loom data tree (default ~/.loom).
+    LOOM_DIR="$(normalize_literal_tilde_prefix "${LOOM_DATA_DIR:-${HOME}/.loom}")"
+    rm -rf "$LOOM_DIR" "${HOME}/.hawk"
     # Clean any databases in project root
     rm -f *.db *.sqlite *.sqlite3
     # Clean any stray binaries in project root

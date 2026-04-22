@@ -1,0 +1,547 @@
+# === METADATA START ===
+name: statistical_tests
+title: "Statistical Tests (Chi-Square, F-Test, Z-Test)"
+description: |
+  Combined pattern for three core hypothesis testing functions: TD_ChiSq, TD_FTest,
+  and TD_ZTest. Each tests a different aspect of data:
+
+  - TD_ChiSq: Tests independence between two categorical variables using a contingency table
+  - TD_FTest: Compares variances of two samples to check equality
+  - TD_ZTest: Tests whether one or two sample means differ significantly
+
+  All three return a conclusion of 'reject null hypothesis' or 'fail to reject null hypothesis'
+  along with the test statistic, p-value, and critical value.
+
+category: hypothesis_testing
+difficulty: intermediate
+teradata_function: TD_ChiSq, TD_FTest, TD_ZTest
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - hypothesis_testing
+  - statistical_analysis
+use_cases:
+  # --- Use Case 1: Independence Testing (ChiSq) ---
+  - Determine whether two categorical variables are independent (e.g., gender vs. product preference)
+
+  # --- Use Case 2: Variance Comparison (FTest) ---
+  - Compare variability between two groups (e.g., quality consistency across suppliers)
+
+  # --- Use Case 3: Mean Comparison (ZTest) ---
+  - Test whether a sample mean differs from a known population mean or another sample mean
+
+  # --- Use Case 4: A/B Testing ---
+  - Validate A/B test results for conversion rates (ChiSq) or mean metrics (ZTest)
+
+  # --- Use Case 5: Pre-ANOVA Variance Check ---
+  - Verify equal variance assumption before running ANOVA using TD_FTest
+
+  # --- Use Case 6: Survey Analysis ---
+  - Test associations between categorical survey responses (ChiSq)
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the data to analyze"
+    example: "analytics"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Maps to {{table}} in SQL templates
+    required: true
+    description: "Table or view containing the data"
+    example: "survey_results"
+
+  # --- Parameter 3: Alpha ---
+  - name: alpha
+    type: number
+    # LLM-HINT: Significance level for all tests; default 0.05
+    required: false
+    default: "0.05"
+    description: "Significance level. Default 0.05 (95% confidence)."
+    example: "0.05"
+
+  # --- Parameter 4: First Sample Column (FTest/ZTest) ---
+  - name: first_sample_column
+    type: string
+    # LLM-HINT: Numeric column for the first sample in FTest or ZTest wide format
+    required: false
+    description: "Column for the first sample (FTest Mode 1, ZTest Mode 1)"
+    example: "group_a_scores"
+
+  # --- Parameter 5: Second Sample Column (FTest/ZTest) ---
+  - name: second_sample_column
+    type: string
+    # LLM-HINT: Numeric column for the second sample; omit for one-sample ZTest
+    required: false
+    description: "Column for the second sample. Omit for one-sample Z-test."
+    example: "group_b_scores"
+
+  # --- Parameter 6: Alternative Hypothesis ---
+  - name: alternative_hypothesis
+    type: string
+    # LLM-HINT: 'two-tailed' (default), 'upper-tailed', or 'lower-tailed'
+    required: false
+    default: "two-tailed"
+    description: "Direction of the alternative hypothesis: 'two-tailed', 'upper-tailed', or 'lower-tailed'"
+    example: "two-tailed"
+
+  # --- Parameter 7: Mean Under H0 (ZTest) ---
+  - name: mean_under_h0
+    type: number
+    # LLM-HINT: Hypothesized population mean for ZTest; default 0
+    required: false
+    default: "0"
+    description: "Hypothesized population mean under the null hypothesis (Z-test only). Default 0."
+    example: "100"
+
+  # --- Parameter 8: Sample Name Column (FTest/ZTest Mode 2) ---
+  - name: sample_name_column
+    type: string
+    # LLM-HINT: Column containing group labels for long-format input
+    required: false
+    description: "Column containing group labels for long-format input (FTest/ZTest Mode 2)"
+    example: "treatment_group"
+
+  # --- Parameter 9: Sample Value Column (FTest/ZTest Mode 2) ---
+  - name: sample_value_column
+    type: string
+    # LLM-HINT: Column containing numeric values for long-format input
+    required: false
+    description: "Column containing numeric values for long-format input (FTest/ZTest Mode 2)"
+    example: "response_time"
+
+  # --- Parameter 10: First Sample Variance (FTest Mode 3 / ZTest) ---
+  - name: first_sample_variance
+    type: number
+    # LLM-HINT: Pre-computed variance for FTest Mode 3 or known population variance for ZTest
+    required: false
+    description: "Pre-computed variance for the first sample. Required for FTest Mode 3 and for ZTest when n < 30."
+    example: "12.5"
+
+  # --- Parameter 11: Second Sample Variance (FTest Mode 3 / ZTest) ---
+  - name: second_sample_variance
+    type: number
+    # LLM-HINT: Pre-computed variance for the second sample
+    required: false
+    description: "Pre-computed variance for the second sample."
+    example: "9.3"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === CHISQ_INDEPENDENCE TEMPLATE ===
+  # LLM-HINT: Tests independence of two categorical variables from a contingency table
+  chisq_independence:
+    description: "Chi-squared test for independence between two categorical variables"
+    sql: |
+      -- Chi-squared test for independence
+      -- Input MUST be a contingency table (cross-tabulation of counts)
+      -- First column: category 1 labels; remaining columns: frequency counts per category 2
+      -- NOTE: Input alias MUST be CONTINGENCY, not InputTable
+      SELECT * FROM TD_ChiSq(
+          ON {{database}}.{{table}} AS CONTINGENCY
+          USING
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - alpha
+
+  # === CHISQ_WITH_EXPECTED TEMPLATE ===
+  # LLM-HINT: Same as above but also outputs expected frequencies table
+  chisq_with_expected:
+    description: "Chi-squared test with expected counts output table"
+    sql: |
+      -- Chi-squared test with expected frequency output
+      -- The EXPCOUNTS table stores expected values under H0
+      SELECT * FROM TD_ChiSq(
+          ON {{database}}.{{table}} AS CONTINGENCY
+          OUT TABLE EXPCOUNTS({{database}}.{{expected_table}})
+          USING
+              Alpha({{alpha}})
+      ) AS t;
+
+      -- View expected frequencies
+      SELECT * FROM {{database}}.{{expected_table}};
+    required_parameters:
+      - database
+      - table
+      - expected_table
+      - alpha
+
+  # === FTEST_WIDE TEMPLATE ===
+  # LLM-HINT: Mode 1 — two columns in wide format; tests variance equality
+  ftest_wide:
+    description: "F-test for variance equality using wide-format input (two columns)"
+    sql: |
+      -- F-test for variance equality: wide format (Mode 1)
+      SELECT * FROM TD_FTest(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              FirstSampleColumn('{{first_sample_column}}')
+              SecondSampleColumn('{{second_sample_column}}')
+              AlternativeHypothesis('{{alternative_hypothesis}}')
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - first_sample_column
+      - second_sample_column
+      - alternative_hypothesis
+      - alpha
+
+  # === FTEST_LONG TEMPLATE ===
+  # LLM-HINT: Mode 2 — long format with group label and value columns
+  ftest_long:
+    description: "F-test for variance equality using long-format input"
+    sql: |
+      -- F-test for variance equality: long format (Mode 2)
+      SELECT * FROM TD_FTest(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              SampleNameColumn('{{sample_name_column}}')
+              SampleValueColumn('{{sample_value_column}}')
+              AlternativeHypothesis('{{alternative_hypothesis}}')
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - sample_name_column
+      - sample_value_column
+      - alternative_hypothesis
+      - alpha
+
+  # === FTEST_PRECOMPUTED TEMPLATE ===
+  # LLM-HINT: Mode 3 — no input table required; uses pre-computed variance values
+  ftest_precomputed:
+    description: "F-test using pre-computed variance values (no input table)"
+    sql: |
+      -- F-test from pre-computed variances (Mode 3)
+      -- No ON clause — variances and degrees of freedom are provided directly
+      SELECT * FROM TD_FTest(
+          USING
+              FirstSampleVariance({{first_sample_variance}})
+              SecondSampleVariance({{second_sample_variance}})
+              df1({{df1}})
+              df2({{df2}})
+              AlternativeHypothesis('{{alternative_hypothesis}}')
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - first_sample_variance
+      - second_sample_variance
+      - df1
+      - df2
+      - alternative_hypothesis
+      - alpha
+
+  # === ZTEST_ONE_SAMPLE TEMPLATE ===
+  # LLM-HINT: One-sample Z-test — compare sample mean to a known value
+  ztest_one_sample:
+    description: "One-sample Z-test comparing a sample mean to a hypothesized value"
+    sql: |
+      -- One-sample Z-test
+      -- NOTE: No AS alias on the ON clause — TD_ZTest does not use an input alias
+      -- FirstSampleVariance is required when sample size < 30
+      SELECT * FROM TD_ZTest(
+          ON {{database}}.{{table}}
+          USING
+              FirstSampleColumn('{{first_sample_column}}')
+              MeanUnderH0({{mean_under_h0}})
+              AlternativeHypothesis('{{alternative_hypothesis}}')
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - first_sample_column
+      - mean_under_h0
+      - alternative_hypothesis
+      - alpha
+
+  # === ZTEST_TWO_SAMPLE TEMPLATE ===
+  # LLM-HINT: Two-sample Z-test — compare means of two independent samples
+  ztest_two_sample:
+    description: "Two-sample Z-test comparing means of two groups"
+    sql: |
+      -- Two-sample Z-test (wide format)
+      -- NOTE: No AS alias on the ON clause — TD_ZTest does not use an input alias
+      SELECT * FROM TD_ZTest(
+          ON {{database}}.{{table}}
+          USING
+              FirstSampleColumn('{{first_sample_column}}')
+              SecondSampleColumn('{{second_sample_column}}')
+              AlternativeHypothesis('{{alternative_hypothesis}}')
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - first_sample_column
+      - second_sample_column
+      - alternative_hypothesis
+      - alpha
+
+  # === ZTEST_LONG_FORMAT TEMPLATE ===
+  # LLM-HINT: Z-test with long-format input using group name/value columns
+  ztest_long_format:
+    description: "Two-sample Z-test using long-format input with group labels"
+    sql: |
+      -- Two-sample Z-test: long format (Mode 2)
+      -- NOTE: No AS alias on the ON clause
+      SELECT * FROM TD_ZTest(
+          ON {{database}}.{{table}}
+          USING
+              SampleNameColumn('{{sample_name_column}}')
+              SampleValueColumn('{{sample_value_column}}')
+              FirstSampleName('{{first_sample_name}}')
+              SecondSampleName('{{second_sample_name}}')
+              AlternativeHypothesis('{{alternative_hypothesis}}')
+              Alpha({{alpha}})
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - sample_name_column
+      - sample_value_column
+      - first_sample_name
+      - second_sample_name
+      - alternative_hypothesis
+      - alpha
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Chi-Square Independence Test ---
+  - name: "Gender vs. Smoking Status (Chi-Square)"
+    description: "Test whether gender and smoking status are independent using a contingency table"
+    parameters:
+      database: "health_study"
+      table: "gender_smoking_contingency"
+      alpha: 0.05
+    expected_result: |
+      Input contingency table:
+        gender    smoker    non_smoker
+        female    32        78
+        male      45        65
+
+      Result:
+        chi_square: 4.52
+        cramers_v: 0.143
+        df: 1
+        p_value: 0.033
+        conclusion: 'reject null hypothesis'
+
+      Interpretation: Gender and smoking status are not independent at
+      the 0.05 significance level. Cramer's V of 0.143 indicates a
+      small but significant association.
+
+  # --- Example 2: F-Test Variance Equality ---
+  - name: "Supplier Quality Variance (F-Test)"
+    description: "Compare defect rate variance between two suppliers"
+    parameters:
+      database: "procurement"
+      table: "supplier_quality"
+      first_sample_column: "supplier_a_defects"
+      second_sample_column: "supplier_b_defects"
+      alternative_hypothesis: "two-tailed"
+      alpha: 0.05
+    expected_result: |
+      Result:
+        FirstSampleVariance: 12.5
+        SecondSampleVariance: 9.3
+        VarianceRatio: 1.344
+        p_value: 0.22
+        Conclusion: 'fail to reject null hypothesis'
+
+      Interpretation: No significant difference in defect rate variance
+      between the two suppliers. Safe to proceed with ANOVA if needed.
+
+  # --- Example 3: One-Sample Z-Test ---
+  - name: "Average Order Value vs. Target (Z-Test)"
+    description: "Test whether current average order value differs from the $100 target"
+    parameters:
+      database: "ecommerce"
+      table: "recent_orders"
+      first_sample_column: "order_total"
+      mean_under_h0: 100
+      alternative_hypothesis: "two-tailed"
+      alpha: 0.05
+    expected_result: |
+      Result:
+        mean1: 107.35
+        z_score: 2.84
+        p_value: 0.0045
+        Conclusion: 'reject null hypothesis'
+
+      Interpretation: The current average order value ($107.35) is
+      significantly different from the $100 target.
+
+  # --- Example 4: Two-Sample Z-Test ---
+  - name: "A/B Test Response Time (Z-Test)"
+    description: "Compare mean response times between old and new system"
+    parameters:
+      database: "performance"
+      table: "response_times"
+      first_sample_column: "old_system_ms"
+      second_sample_column: "new_system_ms"
+      alternative_hypothesis: "upper-tailed"
+      alpha: 0.05
+    expected_result: |
+      Result:
+        mean1: 245.3 (old system)
+        mean2: 198.7 (new system)
+        z_score: 3.21
+        p_value: 0.0007
+        Conclusion: 'reject null hypothesis'
+
+      Interpretation: The old system has a significantly higher mean
+      response time than the new system (upper-tailed test).
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: ChiSq Wrong Alias ---
+  - error: "[Teradata] Invalid alias on TD_ChiSq input"
+    cause: "Using AS InputTable instead of AS CONTINGENCY"
+    solution: "TD_ChiSq requires the alias CONTINGENCY on the ON clause. Use: ON db.table AS CONTINGENCY"
+
+  # --- Error 2: ChiSq Low Cell Counts ---
+  - error: "Chi-squared test invalid due to low expected frequencies"
+    cause: "One or more cells in the contingency table have expected frequency < 5"
+    solution: "Each cell should have an expected count of at least 5. Combine sparse categories or use Fisher's exact test for small samples."
+
+  # --- Error 3: ChiSq Wrong Input Format ---
+  - error: "Unexpected results from TD_ChiSq"
+    cause: "Input is not a proper contingency table (raw data instead of cross-tabulated counts)"
+    solution: "TD_ChiSq expects a pre-aggregated contingency table. Cross-tabulate your data first using GROUP BY and CASE expressions."
+
+  # --- Error 4: FTest Mode Conflict ---
+  - error: "Conflicting parameters in TD_FTest"
+    cause: "Mixing column-based parameters (Mode 1/2) with pre-computed variance parameters (Mode 3)"
+    solution: "Use FirstSampleColumn/SecondSampleColumn for data-based tests OR FirstSampleVariance/SecondSampleVariance for pre-computed values. Never both."
+
+  # --- Error 5: ZTest No Alias ---
+  - error: "[Teradata] Syntax error on TD_ZTest ON clause"
+    cause: "Adding AS InputTable alias to the ON clause"
+    solution: "TD_ZTest does not use an input alias. Use: ON db.table (without AS alias)"
+
+  # --- Error 6: ZTest Small Sample Without Variance ---
+  - error: "FirstSampleVariance required"
+    cause: "Sample size < 30 and no population variance provided"
+    solution: "When sample size is less than 30, you must provide FirstSampleVariance (known or estimated population variance). For n >= 30, the function approximates from the data."
+
+  # --- Error 7: Wrong Alternative Hypothesis ---
+  - error: "Test does not detect expected difference"
+    cause: "Using 'two-tailed' when a one-tailed test is appropriate, or vice versa"
+    solution: "Use 'upper-tailed' when testing if sample > reference, 'lower-tailed' for sample < reference, 'two-tailed' for any difference."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Statistical Tests Best Practices
+
+  ### 1. Choosing the Right Test
+  | Question | Test | Function |
+  |----------|------|----------|
+  | Are two categorical variables independent? | Chi-squared | TD_ChiSq |
+  | Do two groups have equal variance? | F-test | TD_FTest |
+  | Does a sample mean differ from a known value? | One-sample Z-test | TD_ZTest |
+  | Do two sample means differ? | Two-sample Z-test | TD_ZTest |
+  | Do 3+ group means differ? | ANOVA | TD_ANOVA |
+
+  ### 2. Chi-Squared Test (TD_ChiSq)
+  **Prepare the contingency table correctly:**
+  ```sql
+  -- Build a contingency table from raw data
+  CREATE TABLE contingency_table AS
+  SELECT
+      gender,
+      SUM(CASE WHEN preference = 'A' THEN 1 ELSE 0 END) AS pref_a,
+      SUM(CASE WHEN preference = 'B' THEN 1 ELSE 0 END) AS pref_b,
+      SUM(CASE WHEN preference = 'C' THEN 1 ELSE 0 END) AS pref_c
+  FROM raw_survey_data
+  GROUP BY gender;
+  ```
+
+  **Check expected cell counts:**
+  - All expected frequencies should be >= 5
+  - Use the EXPCOUNTS output table to verify
+  - Merge sparse categories if needed
+
+  **Interpret Cramer's V:**
+  - 0.1 = small effect
+  - 0.3 = medium effect
+  - 0.5+ = large effect
+
+  ### 3. F-Test (TD_FTest)
+  **Use F-test before ANOVA:**
+  - ANOVA assumes equal variances
+  - Run TD_FTest on pairs of groups first
+  - If variances are significantly different, interpret ANOVA cautiously
+
+  **Three modes for flexibility:**
+  - Mode 1 (wide): Two columns in same table — simplest
+  - Mode 2 (long): Group label + value columns — most common data format
+  - Mode 3 (pre-computed): No table needed — useful for reporting or when only summary stats are available
+
+  ### 4. Z-Test (TD_ZTest)
+  **When to use Z-test vs. T-test:**
+  - Z-test: large samples (n >= 30) or known population variance
+  - T-test: small samples with unknown population variance
+  - TD_ZTest handles both cases — it requires variance when n < 30
+
+  **One-sample vs. two-sample:**
+  - One-sample: compare to a known standard (e.g., "Is our mean > 100?")
+  - Two-sample: compare two groups (e.g., "Is group A different from group B?")
+  - Omit SecondSampleColumn for one-sample tests
+
+  **Choosing the alternative hypothesis:**
+  - 'two-tailed': "Is there any difference?" (most common)
+  - 'upper-tailed': "Is sample 1 greater than sample 2?"
+  - 'lower-tailed': "Is sample 1 less than sample 2?"
+  - Pre-register your hypothesis direction before looking at data
+
+  ### 5. General Statistical Testing
+  **Multiple testing correction:**
+  - Running many tests inflates false positive rate
+  - Apply Bonferroni correction: adjusted_alpha = alpha / number_of_tests
+  - Or use False Discovery Rate (FDR) for exploratory work
+
+  **Effect size matters:**
+  - A statistically significant result may not be practically significant
+  - Always report effect size alongside p-values
+  - Large samples can make trivial differences "significant"
+
+  **Report completely:**
+  - Test statistic value (chi-square, F, or Z)
+  - Degrees of freedom
+  - p-value
+  - Effect size
+  - Sample sizes
+  - Confidence level used
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: ANOVA ---
+  - anova
+
+  # --- Pattern 2: Linear Regression ---
+  - linear_regression
+
+  # --- Pattern 3: K-Means (for group discovery) ---
+  - kmeans
+# === RELATED_PATTERNS END ===

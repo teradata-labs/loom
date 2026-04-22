@@ -187,6 +187,17 @@ type MemoryConfigYAML struct {
 	MaxToolResults             int                          `yaml:"max_tool_results"`
 	MemoryCompression          *MemoryCompressionConfigYAML `yaml:"memory_compression"`
 	GraphMemory                *GraphMemoryConfigYAML       `yaml:"graph_memory"`
+	TaskBoard                  *TaskBoardConfigYAML         `yaml:"task_board"`
+}
+
+// TaskBoardConfigYAML represents task board configuration in YAML.
+type TaskBoardConfigYAML struct {
+	Enabled             *bool  `yaml:"enabled"`
+	AutoDecompose       bool   `yaml:"auto_decompose"`
+	MaxDepth            int    `yaml:"max_depth"`
+	DefaultBoardID      string `yaml:"default_board_id"`
+	DefaultStrategy     int    `yaml:"default_strategy"`
+	ContextBudgetTokens int    `yaml:"context_budget_tokens"`
 }
 
 // GraphMemoryConfigYAML represents graph memory configuration in YAML.
@@ -611,6 +622,11 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Memory.GraphMemory = parseGraphMemoryConfig(yaml.Agent.Memory.GraphMemory)
 	}
 
+	// Convert task board config if specified
+	if yaml.Agent.Memory.TaskBoard != nil {
+		config.Memory.TaskBoard = parseTaskBoardConfig(yaml.Agent.Memory.TaskBoard)
+	}
+
 	// Convert behavior config with safe integer conversions
 	maxIterations, err := safeInt32(yaml.Agent.Behavior.MaxIterations, "MaxIterations")
 	if err != nil {
@@ -882,6 +898,36 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
 		ConversationExtractionCadence: conversationExtractionCadence,
 		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
+	}
+}
+
+// parseTaskBoardConfig converts YAML task board config to proto.
+func parseTaskBoardConfig(yaml *TaskBoardConfigYAML) *loomv1.TaskBoardConfig {
+	if yaml == nil {
+		return nil
+	}
+
+	enabled := false
+	if yaml.Enabled != nil {
+		enabled = *yaml.Enabled
+	}
+
+	maxDepth := int32(yaml.MaxDepth)
+	if maxDepth == 0 {
+		maxDepth = 3
+	}
+	contextBudget := int32(yaml.ContextBudgetTokens)
+	if contextBudget == 0 {
+		contextBudget = 500
+	}
+
+	return &loomv1.TaskBoardConfig{
+		Enabled:             enabled,
+		AutoDecompose:       yaml.AutoDecompose,
+		MaxDepth:            maxDepth,
+		DefaultBoardId:      yaml.DefaultBoardID,
+		DefaultStrategy:     loomv1.DecomposeStrategy(yaml.DefaultStrategy),
+		ContextBudgetTokens: contextBudget,
 	}
 }
 

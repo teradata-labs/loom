@@ -1193,11 +1193,36 @@ func (sm *SegmentedMemory) CompactMemory(ctx context.Context) (int, int) {
 
 	if len(sm.l1Messages) > 0 {
 		// Track metrics before compression
-		messageCount := len(sm.l1Messages)
 		tokensBefore := sm.tokenCount
 
-		sm.compressToL2(ctx, sm.l1Messages)
-		sm.l1Messages = sm.l1Messages[:0] // Clear L1
+		// Find the last user message — keep it and any subsequent
+		// assistant/tool messages in L1 so downstream consumers
+		// (GetMessagesForLLM, convertMessagesToConverse) always have
+		// at least one user-role message to work with.
+		lastUserIdx := -1
+		for i := len(sm.l1Messages) - 1; i >= 0; i-- {
+			if sm.l1Messages[i].Role == "user" {
+				lastUserIdx = i
+				break
+			}
+		}
+
+		var messageCount int
+		if lastUserIdx >= 0 {
+			// Compress everything before the last user message.
+			messageCount = lastUserIdx
+			sm.compressToL2(ctx, sm.l1Messages[:lastUserIdx])
+			// Keep the last user message and everything after it in L1.
+			remaining := make([]Message, len(sm.l1Messages[lastUserIdx:]))
+			copy(remaining, sm.l1Messages[lastUserIdx:])
+			sm.l1Messages = remaining
+		} else {
+			// No user message found — compress all (original behavior).
+			messageCount = len(sm.l1Messages)
+			sm.compressToL2(ctx, sm.l1Messages)
+			sm.l1Messages = sm.l1Messages[:0]
+		}
+
 		sm.updateTokenCount()
 		sm.tokenCountDirty = false
 

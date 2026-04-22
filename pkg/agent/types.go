@@ -29,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
+	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -152,6 +153,11 @@ type Agent struct {
 	// Graph-backed episodic memory (optional).
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
+
+	// Task decomposition and kanban (optional).
+	taskManager     *task.Manager
+	taskDecomposer  *task.Decomposer
+	taskBoardConfig *loomv1.TaskBoardConfig
 
 	// Graph memory automatic extraction (mirrors finding extraction pattern).
 	enableGraphMemoryExtraction        bool

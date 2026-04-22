@@ -109,6 +109,12 @@ just build
 just check
 ```
 
+### 3b. Cleaning (destructive)
+
+`just clean` removes repository build outputs (`bin/`, `gen/`, coverage artifacts), binaries under **`LOOM_BIN_DIR`** (default **`$HOME/.local/bin`**), and **all data** under **`LOOM_DATA_DIR`** (default **`$HOME/.loom`**). It may send **`SIGKILL`** to processes matching `looms`. You are **prompted to confirm** before deletions run. For scripts or automation, use **`just --yes clean`** to skip the prompt.
+
+Values that use a literal **`~/...`** prefix from the environment are normalized to **`$HOME/...`** in the `Justfile` so `rm` targets resolve correctly (see [#112](https://github.com/teradata-labs/loom/issues/112)).
+
 ### 4. Commit Changes
 
 ```bash
@@ -265,6 +271,7 @@ func TestPolicy_ShouldReference(t *testing.T) {
 - Proto lint & breaking changes
 - Go lint (gofmt, go vet)
 - Unit tests with race detection
+- Fuzz tests (merge-blocking; a failing fuzz target fails CI; see the `fuzz` job in `.github/workflows/ci.yml`)
 - Multi-platform build (Linux, macOS, Windows)
 - Security scan (gosec, CodeQL)
 - Coverage check

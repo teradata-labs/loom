@@ -198,11 +198,14 @@ best_practices: |
 # === RELATED_PATTERNS START ===
 related_patterns:
   # --- Pattern 1: TF-IDF ---
-  - tf_idf
+  - tfidf
 
   # --- Pattern 2: Sentiment Analysis ---
-  - sentiment_analysis
+  - sentiment
 
-  # --- Pattern 3: Text Mining ---
-  - text_mining
+  # --- Pattern 3: Text Classification ---
+  - text_classifier
+
+  # --- Pattern 4: Named Entity Recognition ---
+  - ner
 # === RELATED_PATTERNS END ===

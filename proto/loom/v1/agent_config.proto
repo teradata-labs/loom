@@ -8,6 +8,7 @@ syntax = "proto3";
 package loom.v1;
 
 import "loom/v1/skill.proto";
+import "loom/v1/task.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
@@ -257,6 +258,9 @@ message MemoryConfig {
 
   // Graph memory configuration for salience-driven episodic memory.
   GraphMemoryConfig graph_memory = 8;
+
+  // Task board configuration for dependency-aware task decomposition and kanban.
+  TaskBoardConfig task_board = 9;
 }
 
 // GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer.
@@ -312,6 +316,28 @@ message GraphMemoryConfig {
   // Timeout in seconds for each extraction LLM call.
   // Default: 30. Set higher for slower providers or larger context windows.
   int32 extraction_timeout_seconds = 13;
+}
+
+// TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
+message TaskBoardConfig {
+  // Whether the task board is enabled. Default: false (opt-in).
+  bool enabled = 1;
+
+  // Automatically decompose complex goals into task DAGs.
+  bool auto_decompose = 2;
+
+  // Maximum decomposition depth (default: 3).
+  int32 max_depth = 3;
+
+  // Default board ID. If empty, the agent creates/uses a board named after itself.
+  string default_board_id = 4;
+
+  // Default decomposition strategy.
+  DecomposeStrategy default_strategy = 5;
+
+  // Maximum tokens for the task context block injected into the system prompt.
+  // Default: 500. Set to 0 to disable context injection.
+  int32 context_budget_tokens = 6;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases
