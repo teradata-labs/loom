@@ -288,7 +288,7 @@ deps:
 # Run security scanner
 security:
     @echo "Running security scan..."
-    @gosec -exclude-dir=gen -fmt=text ./...
+    @gosec -exclude-dir=gen -exclude-dir=deploy/comparison/langgraph/benchpb -fmt=text ./...
 
 # Clean build artifacts
 [confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]

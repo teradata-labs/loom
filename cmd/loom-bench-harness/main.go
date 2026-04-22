@@ -146,11 +146,11 @@ func writeReport(report *loadtest.BenchmarkReport, outputDir string) {
 			report.ScenarioName,
 			time.Now().UTC().Format("20060102-150405"))
 		path := filepath.Join(outputDir, filename)
-		if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		if err := os.MkdirAll(outputDir, 0o750); err != nil {
 			log.Printf("ERROR: create output dir: %v", err)
 			return
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
 			log.Printf("ERROR: write %s: %v", path, err)
 			return
 		}

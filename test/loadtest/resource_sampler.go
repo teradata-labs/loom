@@ -77,7 +77,7 @@ func (s *ResourceSampler) takeSample() {
 		HeapAllocMB:  float64(mem.HeapAlloc) / (1024 * 1024),
 		HeapSysMB:    float64(mem.HeapSys) / (1024 * 1024),
 		NumGC:        mem.NumGC,
-		GCPauseTotUs: int64(mem.PauseTotalNs) / 1000,
+		GCPauseTotUs: int64(mem.PauseTotalNs) / 1000, //#nosec G115 // PauseTotalNs fits in int64 for any realistic process lifetime
 	}
 
 	s.mu.Lock()

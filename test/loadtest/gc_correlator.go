@@ -45,8 +45,8 @@ func CorrelateGCWithLatency(results []result, runStart time.Time) GCCorrelation 
 	pauses := make([]gcPause, 0, numPauses)
 	for i := range numPauses {
 		idx := (int(mem.NumGC) - numPauses + i) % 256
-		endNs := int64(mem.PauseEnd[idx])
-		durationNs := int64(mem.PauseNs[idx])
+		endNs := int64(mem.PauseEnd[idx])     //#nosec G115 // wall-clock nanoseconds fit in int64 until year ~2262
+		durationNs := int64(mem.PauseNs[idx]) //#nosec G115 // single-pause duration always fits in int64
 		if endNs > 0 && durationNs > 0 {
 			pauses = append(pauses, gcPause{
 				startNs: endNs - durationNs,

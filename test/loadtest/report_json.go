@@ -141,7 +141,7 @@ func (br *BenchmarkReport) ToJSON() *JSONReport {
 func WriteJSON(path string, report *BenchmarkReport) error {
 	jr := report.ToJSON()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
@@ -150,7 +150,7 @@ func WriteJSON(path string, report *BenchmarkReport) error {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 
