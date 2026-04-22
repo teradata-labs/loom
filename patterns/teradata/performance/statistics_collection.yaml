@@ -287,6 +287,171 @@ templates:
         'ACTUAL_COUNT' AS source,
         COUNT(*) AS actual_rows
       FROM {{database}}.{{table}};
+
+  # === COMPOSITE_STATISTICS TEMPLATE ===
+  # LLM-HINT: Multi-column statistics for correlated predicates; critical when columns are not independent
+  composite_statistics:
+    description: "Collect composite (multi-column) statistics for correlated columns"
+    sql: |
+      -- Composite statistics help the optimizer understand correlation
+      -- between columns that are frequently used together in WHERE or JOIN.
+      -- Without composite stats, the optimizer assumes column independence
+      -- and may drastically misestimate cardinality.
+
+      -- Collect composite stats on two correlated columns
+      COLLECT STATISTICS
+        COLUMN({{column1}}, {{column2}})
+      ON {{database}}.{{table}};
+
+      -- Collect composite stats on three columns (e.g., date + region + product)
+      COLLECT STATISTICS
+        COLUMN({{column1}}, {{column2}}, {{column3}})
+      ON {{database}}.{{table}};
+
+      -- Combine single-column and composite stats in one statement
+      COLLECT STATISTICS
+        COLUMN({{column1}}),
+        COLUMN({{column2}}),
+        COLUMN({{column1}}, {{column2}})
+      ON {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+      - column1
+      - column2
+
+  # === INDEX_STATISTICS TEMPLATE ===
+  # LLM-HINT: Collect statistics on index definitions; critical for PI and SI access paths
+  index_statistics:
+    description: "Collect statistics on Primary Index and Secondary Index definitions"
+    sql: |
+      -- Collect statistics on the Primary Index (entire index definition)
+      COLLECT STATISTICS
+        INDEX ({{pi_column}})
+      ON {{database}}.{{table}};
+
+      -- Collect statistics on a Secondary Index
+      COLLECT STATISTICS
+        INDEX ({{si_column}})
+      ON {{database}}.{{table}};
+
+      -- Collect both index stats and column stats together
+      COLLECT STATISTICS
+        INDEX ({{pi_column}}),
+        COLUMN({{pi_column}}),
+        COLUMN({{si_column}})
+      ON {{database}}.{{table}};
+
+      -- For composite Primary Index, collect on the full index definition
+      -- COLLECT STATISTICS
+      --   INDEX (col1, col2)
+      -- ON {{database}}.{{table}};
+    required_parameters:
+      - database
+      - table
+      - pi_column
+      - si_column
+
+  # === CHECK_EXISTING_STATISTICS TEMPLATE ===
+  # LLM-HINT: Query DBC.StatsV to see what statistics exist, their age, and staleness
+  check_existing_statistics:
+    description: "Check existing statistics on a table using DBC.StatsV"
+    sql: |
+      -- View all collected statistics on a table
+      SELECT
+        ColumnName,
+        StatsType,
+        LastCollectTimeStamp,
+        SampleSize,
+        CURRENT_TIMESTAMP - LastCollectTimeStamp AS stats_age
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+      ORDER BY ColumnName;
+
+      -- Find columns WITHOUT statistics (compare ColumnsV to StatsV)
+      SELECT
+        c.ColumnName,
+        c.ColumnType,
+        c.ColumnLength,
+        'MISSING_STATS' AS status
+      FROM DBC.ColumnsV c
+      LEFT JOIN DBC.StatsV s
+        ON c.DatabaseName = s.DatabaseName
+        AND c.TableName = s.TableName
+        AND c.ColumnName = s.ColumnName
+      WHERE c.DatabaseName = '{{database}}'
+        AND c.TableName = '{{table}}'
+        AND s.ColumnName IS NULL
+      ORDER BY c.ColumnId;
+
+      -- Find STALE statistics (older than 7 days)
+      SELECT
+        ColumnName,
+        LastCollectTimeStamp,
+        CURRENT_TIMESTAMP - LastCollectTimeStamp AS age
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND CURRENT_TIMESTAMP - LastCollectTimeStamp > INTERVAL '7' DAY
+      ORDER BY age DESC;
+    required_parameters:
+      - database
+      - table
+
+  # === STATISTICS_REFRESH_STRATEGY TEMPLATE ===
+  # LLM-HINT: Generate a refresh plan based on table velocity and stats age
+  statistics_refresh_strategy:
+    description: "Generate a statistics refresh strategy based on table change velocity"
+    sql: |
+      -- Step 1: Identify tables with stale statistics across a database
+      SELECT
+        s.TableName,
+        s.ColumnName,
+        s.LastCollectTimeStamp,
+        CURRENT_TIMESTAMP - s.LastCollectTimeStamp AS stats_age,
+        ts.size_mb,
+        CASE
+          WHEN CURRENT_TIMESTAMP - s.LastCollectTimeStamp > INTERVAL '30' DAY THEN 'CRITICAL'
+          WHEN CURRENT_TIMESTAMP - s.LastCollectTimeStamp > INTERVAL '7' DAY THEN 'STALE'
+          WHEN CURRENT_TIMESTAMP - s.LastCollectTimeStamp > INTERVAL '1' DAY THEN 'AGING'
+          ELSE 'FRESH'
+        END AS freshness
+      FROM DBC.StatsV s
+      JOIN (
+        SELECT TableName, SUM(CurrentPerm) / 1024 / 1024 AS size_mb
+        FROM DBC.TableSizeV
+        WHERE DatabaseName = '{{database}}'
+        GROUP BY TableName
+      ) ts ON s.TableName = ts.TableName
+      WHERE s.DatabaseName = '{{database}}'
+      ORDER BY freshness, stats_age DESC;
+
+      -- Step 2: Generate refresh commands for stale statistics
+      -- High-velocity fact tables: refresh daily
+      COLLECT STATISTICS
+        COLUMN({{fact_date_column}})
+      ON {{database}}.{{fact_table}};
+
+      -- Slowly-changing dimensions: refresh weekly
+      COLLECT STATISTICS
+      ON {{database}}.{{dim_table}};
+
+      -- Very large tables: use SAMPLE to reduce collection time
+      COLLECT STATISTICS
+        COLUMN({{column}})
+        USING SAMPLE
+      ON {{database}}.{{large_table}};
+
+      -- Step 3: Verify refresh completed
+      SELECT ColumnName, LastCollectTimeStamp
+      FROM DBC.StatsV
+      WHERE DatabaseName = '{{database}}'
+        AND TableName = '{{table}}'
+        AND LastCollectTimeStamp >= CURRENT_TIMESTAMP - INTERVAL '1' HOUR
+      ORDER BY LastCollectTimeStamp DESC;
+    required_parameters:
+      - database
 # === TEMPLATES END ===
 
 # === EXAMPLES START ===
@@ -476,7 +641,18 @@ best_practices: |
 
 # === RELATED_PATTERNS START ===
 related_patterns:
-  - skew_detection  # Statistics reveal PI skew
-  - spool_space_analysis  # Poor stats → excessive spool
-  - query_optimization  # Stats enable better query plans
+  # --- Pattern 1: Query Tuning ---
+  - query_tuning  # Statistics enable tuning strategies to work
+
+  # --- Pattern 2: EXPLAIN Analysis ---
+  - explain_analysis  # EXPLAIN reveals where statistics are missing
+
+  # --- Pattern 3: Catalog Views ---
+  - catalog_views  # DBC.StatsV, DBC.ColumnsV for statistics discovery
+
+  # --- Pattern 4: PI Skew Detection ---
+  - pi_skew_detection  # Statistics reveal PI skew
+
+  # --- Pattern 5: Spool Space Analysis ---
+  - spool_space_analysis  # Poor stats lead to excessive spool
 # === RELATED_PATTERNS END ===

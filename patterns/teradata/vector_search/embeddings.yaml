@@ -1,0 +1,580 @@
+# === METADATA START ===
+name: embeddings
+title: "Text Embedding Generation"
+description: |
+  Generate vector embeddings from text using Teradata's three embedding approaches:
+
+  - AI_TextEmbeddings: Call external LLM embedding endpoints (Azure, AWS Bedrock, GCP,
+    NVIDIA NIM, LiteLLM). Best for modern semantic embeddings when API access is available.
+  - ONNXEmbeddings: Run ONNX-format models entirely in-database (no external calls).
+    Best for air-gapped or latency-sensitive deployments using Hugging Face models.
+  - TD_WordEmbeddings: GloVe-style word/document embeddings from pre-loaded word vector
+    tables. Best for classical NLP pipelines.
+
+  Always use OutputFormat('VECTOR') when embeddings will be stored, indexed, or used
+  for similarity search. The VECTOR type integrates directly with TD_VectorDistance,
+  TD_HNSW, and TD_VectorNormalize.
+
+  AI_TextEmbeddings requires an AUTHORIZATION object for cloud API credentials.
+  See the ai_functions/authorization_objects pattern for setup.
+
+category: vector_search
+difficulty: intermediate
+teradata_function: AI_TextEmbeddings
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - data_preparation
+  - vector_search
+  - similarity_search
+use_cases:
+  # --- Use Case 1: Document Embedding ---
+  - Generate embeddings for documents to enable semantic search
+
+  # --- Use Case 2: RAG Pipeline ---
+  - Embed text corpus for retrieval-augmented generation
+
+  # --- Use Case 3: Sentence Similarity ---
+  - Embed sentences or paragraphs for similarity comparison
+
+  # --- Use Case 4: Air-Gapped Embedding ---
+  - Generate embeddings in-database without external API calls (ONNXEmbeddings)
+
+  # --- Use Case 5: Word-Level Embedding ---
+  - Generate classical word embeddings using pre-trained GloVe vectors
+
+  # --- Use Case 6: Batch Embedding ---
+  - Embed large text tables in bulk for offline indexing
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Database ---
+  - name: database
+    type: string
+    # LLM-HINT: Maps to {{database}} in all SQL templates below
+    required: true
+    description: "Database containing the text data and authorization objects"
+    example: "semantic_search"
+
+  # --- Parameter 2: Table ---
+  - name: table
+    type: string
+    # LLM-HINT: Table with text data to embed; for ONNXEmbeddings the text column MUST be named 'txt'
+    required: true
+    description: "Table containing text data to embed"
+    example: "documents"
+
+  # --- Parameter 3: Text Column ---
+  - name: text_column
+    type: string
+    # LLM-HINT: Column with text to embed; for AI_TextEmbeddings any name works; for ONNXEmbeddings MUST be 'txt'
+    required: true
+    description: "Column containing the text to embed"
+    example: "doc_text"
+
+  # --- Parameter 4: API Type ---
+  - name: api_type
+    type: string
+    # LLM-HINT: For AI_TextEmbeddings only; provider: azure, aws, gcp, nim, litellm
+    required: false
+    description: "Cloud provider for AI_TextEmbeddings: azure, aws, gcp, nim, or litellm"
+    example: "azure"
+
+  # --- Parameter 5: Auth Object ---
+  - name: auth_object
+    type: string
+    # LLM-HINT: AUTHORIZATION object name for cloud API credentials; see ai_functions/authorization_objects pattern
+    required: false
+    description: "Authorization object for cloud API credentials"
+    example: "td_gen_azure_auth"
+
+  # --- Parameter 6: Model Name ---
+  - name: model_name
+    type: string
+    # LLM-HINT: Embedding model identifier; for Azure use DeploymentId, for AWS/NIM use ModelName
+    required: false
+    description: "Embedding model name or deployment ID"
+    example: "text-embedding-ada-002"
+
+  # --- Parameter 7: Accumulate Columns ---
+  - name: accumulate_columns
+    type: array[string]
+    # LLM-HINT: Columns to pass through to output alongside the generated embedding
+    required: false
+    description: "Columns to pass through to the output"
+    example: '["doc_id", "doc_title"]'
+
+  # --- Parameter 8: Output Table ---
+  - name: output_table
+    type: string
+    # LLM-HINT: Target table name for persisting generated embeddings
+    required: false
+    description: "Table name for storing generated embeddings"
+    example: "document_embeddings"
+
+  # --- Parameter 9: Model Table ---
+  - name: model_table
+    type: string
+    # LLM-HINT: For ONNXEmbeddings only; table containing the ONNX model as a BLOB
+    required: false
+    description: "Table containing ONNX model (for ONNXEmbeddings only)"
+    example: "onnx_models"
+
+  # --- Parameter 10: Tokenizer Table ---
+  - name: tokenizer_table
+    type: string
+    # LLM-HINT: For ONNXEmbeddings only; table containing the JSON tokenizer as a BLOB
+    required: false
+    description: "Table containing JSON tokenizer (for ONNXEmbeddings only)"
+    example: "onnx_tokenizers"
+
+  # --- Parameter 11: Model Output Tensor ---
+  - name: model_output_tensor
+    type: string
+    # LLM-HINT: For ONNXEmbeddings only; valid output tensor name from the ONNX model
+    required: false
+    default: "last_hidden_state"
+    description: "Output tensor name for ONNX model"
+    example: "last_hidden_state"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === AI_TEXT_EMBEDDINGS_AZURE TEMPLATE ===
+  # LLM-HINT: Generate embeddings via Azure OpenAI; requires AUTHORIZATION object with Azure credentials
+  ai_text_embeddings_azure:
+    description: "Generate text embeddings using Azure OpenAI embedding model"
+    sql: |
+      -- Generate embeddings via Azure OpenAI
+      -- IMPORTANT: Schema qualifier TD_SYSFNLIB is required
+      -- IMPORTANT: AUTHORIZATION object must exist with Azure credentials
+      -- See ai_functions/authorization_objects pattern for setup
+      SELECT * FROM TD_SYSFNLIB.AI_TextEmbeddings(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('azure')
+              AUTHORIZATION({{database}}.{{auth_object}})
+              DeploymentId('{{model_name}}')
+              TextColumn('{{text_column}}')
+              OutputFormat('VECTOR')
+              Accumulate('{{accumulate_columns}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - auth_object
+      - model_name
+      - text_column
+      - accumulate_columns
+
+  # === AI_TEXT_EMBEDDINGS_AWS TEMPLATE ===
+  # LLM-HINT: Generate embeddings via AWS Bedrock; requires AUTHORIZATION object or inline credentials
+  ai_text_embeddings_aws:
+    description: "Generate text embeddings using AWS Bedrock embedding model"
+    sql: |
+      -- Generate embeddings via AWS Bedrock
+      -- Uses AUTHORIZATION object for credentials (preferred over inline keys)
+      SELECT * FROM TD_SYSFNLIB.AI_TextEmbeddings(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('aws')
+              AUTHORIZATION({{database}}.{{auth_object}})
+              Region('{{aws_region}}')
+              ModelName('{{model_name}}')
+              TextColumn('{{text_column}}')
+              OutputFormat('VECTOR')
+              Accumulate('{{accumulate_columns}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - auth_object
+      - aws_region
+      - model_name
+      - text_column
+      - accumulate_columns
+
+  # === AI_TEXT_EMBEDDINGS_NIM TEMPLATE ===
+  # LLM-HINT: Generate embeddings via NVIDIA NIM; requires AUTHORIZATION object
+  ai_text_embeddings_nim:
+    description: "Generate text embeddings using NVIDIA NIM embedding model"
+    sql: |
+      -- Generate embeddings via NVIDIA NIM
+      SELECT * FROM TD_SYSFNLIB.AI_TextEmbeddings(
+          ON {{database}}.{{table}} AS InputTable
+          USING
+              ApiType('nim')
+              AUTHORIZATION({{database}}.{{auth_object}})
+              ModelName('{{model_name}}')
+              TextColumn('{{text_column}}')
+              OutputFormat('VECTOR')
+              Accumulate('{{accumulate_columns}}')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - auth_object
+      - model_name
+      - text_column
+      - accumulate_columns
+
+  # === ONNX_EMBEDDINGS TEMPLATE ===
+  # LLM-HINT: Generate embeddings in-database with ONNX model; no external API calls; text column MUST be named 'txt'
+  onnx_embeddings:
+    description: "Generate embeddings in-database using an ONNX model (no external API calls)"
+    sql: |
+      -- Generate embeddings using in-database ONNX model
+      -- IMPORTANT: InputTable text column MUST be named 'txt'
+      -- IMPORTANT: Model and tokenizer must be pre-loaded as BLOBs
+      -- See byom-model-loading for model loading instructions
+      SELECT * FROM ONNXEmbeddings(
+          ON {{database}}.{{table}} AS InputTable
+          ON {{database}}.{{model_table}} AS ModelTable DIMENSION
+          ON {{database}}.{{tokenizer_table}} AS TokenizerTable DIMENSION
+          USING
+              Accumulate('{{accumulate_columns}}')
+              ModelOutputTensor('{{model_output_tensor}}')
+              OutputFormat('VECTOR')
+              -- UseCache('true')         -- Uncomment for repeated use (caches model in node memory)
+              -- EncodeMaxLength(512)     -- Uncomment to set max token length (default 512)
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - model_table
+      - tokenizer_table
+      - accumulate_columns
+      - model_output_tensor
+
+  # === ONNX_EMBEDDINGS_MULTI_MODEL TEMPLATE ===
+  # LLM-HINT: When model table has multiple models, use WHERE to select exactly one
+  onnx_embeddings_multi_model:
+    description: "Generate embeddings with a specific ONNX model from a multi-model table"
+    sql: |
+      -- Select a specific ONNX model from a table containing multiple models
+      -- Passing the full table without WHERE causes an error
+      SELECT * FROM ONNXEmbeddings(
+          ON {{database}}.{{table}} AS InputTable
+          ON (SELECT * FROM {{database}}.{{model_table}} WHERE model_id = '{{model_id}}') AS ModelTable DIMENSION
+          ON {{database}}.{{tokenizer_table}} AS TokenizerTable DIMENSION
+          USING
+              Accumulate('{{accumulate_columns}}')
+              ModelOutputTensor('{{model_output_tensor}}')
+              OutputFormat('VECTOR')
+      ) AS t;
+    required_parameters:
+      - database
+      - table
+      - model_table
+      - model_id
+      - tokenizer_table
+      - accumulate_columns
+      - model_output_tensor
+
+  # === GENERATE_AND_STORE TEMPLATE ===
+  # LLM-HINT: Full pipeline: embed text, persist to table, normalize for search
+  generate_and_store:
+    description: "Generate embeddings and store in a persistent table, then normalize"
+    sql: |
+      -- Step 1: Generate embeddings and store as VECTOR
+      CREATE TABLE {{database}}.{{output_table}} AS (
+          SELECT {{accumulate_columns}}, Embeddings AS embedding
+          FROM TD_SYSFNLIB.AI_TextEmbeddings(
+              ON {{database}}.{{table}} AS InputTable
+              USING
+                  ApiType('{{api_type}}')
+                  AUTHORIZATION({{database}}.{{auth_object}})
+                  {{provider_model_arg}}
+                  TextColumn('{{text_column}}')
+                  OutputFormat('VECTOR')
+                  Accumulate('{{accumulate_columns}}')
+          ) AS t
+      ) WITH DATA;
+
+      -- Step 2: Normalize for cosine similarity (do ONCE at storage time)
+      CREATE TABLE {{database}}.{{output_table}}_norm AS (
+          SELECT * FROM TD_VectorNormalize(
+              ON {{database}}.{{output_table}} AS InputTable PARTITION BY ANY
+              USING
+                  IDColumns('{{id_column}}')
+                  TargetColumns('embedding')
+                  Approach('UNITVECTOR')
+                  Accumulate('{{accumulate_columns}}')
+          ) AS t
+      ) WITH DATA;
+    required_parameters:
+      - database
+      - table
+      - output_table
+      - api_type
+      - auth_object
+      - provider_model_arg
+      - text_column
+      - accumulate_columns
+      - id_column
+
+  # === EMBED_QUERY_INLINE TEMPLATE ===
+  # LLM-HINT: Embed a single query string inline for search; use in CTE before TD_VectorDistance or TD_HNSWPredict
+  embed_query_inline:
+    description: "Embed a query string inline for immediate similarity search"
+    sql: |
+      -- Embed a single query string for search
+      -- Use this in a CTE, then pass to TD_VectorDistance or TD_HNSWPredict
+      WITH query_embedded AS (
+          SELECT query_id, Embeddings AS embedding
+          FROM TD_SYSFNLIB.AI_TextEmbeddings(
+              ON (SELECT 1 AS query_id, '{{query_text}}' AS txt) AS InputTable
+              USING
+                  ApiType('{{api_type}}')
+                  AUTHORIZATION({{database}}.{{auth_object}})
+                  {{provider_model_arg}}
+                  TextColumn('txt')
+                  OutputFormat('VECTOR')
+                  Accumulate('query_id')
+          ) AS t
+      ),
+      query_normalized AS (
+          SELECT * FROM TD_VectorNormalize(
+              ON query_embedded AS InputTable PARTITION BY ANY
+              USING
+                  IDColumns('query_id')
+                  TargetColumns('embedding')
+                  Approach('UNITVECTOR')
+          ) AS t
+      )
+      SELECT * FROM query_normalized;
+    required_parameters:
+      - database
+      - auth_object
+      - api_type
+      - provider_model_arg
+      - query_text
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Azure OpenAI Embeddings ---
+  - name: "Generate Document Embeddings with Azure OpenAI"
+    description: "Embed documents using Azure text-embedding-ada-002 and store as VECTOR"
+    parameters:
+      database: "semantic_search"
+      table: "documents"
+      text_column: "doc_text"
+      api_type: "azure"
+      auth_object: "td_gen_azure_auth"
+      model_name: "text-embedding-ada-002"
+      accumulate_columns: "doc_id, doc_title"
+      output_table: "document_embeddings"
+    expected_result: |
+      A new table document_embeddings containing:
+      - doc_id: original document identifier
+      - doc_title: passed through from input
+      - embedding: VECTOR column with 1536-dimension embedding
+
+      Next steps:
+      1. Normalize with TD_VectorNormalize for cosine search
+      2. Build HNSW index with TD_HNSW for fast search
+
+  # --- Example 2: In-Database ONNX Embeddings ---
+  - name: "Generate Embeddings with ONNX Model (No API Calls)"
+    description: "Embed text using an in-database MiniLM ONNX model"
+    parameters:
+      database: "ml_models"
+      table: "documents"
+      text_column: "txt"
+      model_table: "onnx_models"
+      tokenizer_table: "onnx_tokenizers"
+      model_output_tensor: "last_hidden_state"
+      accumulate_columns: "*"
+    expected_result: |
+      Each input row receives a sentence_embedding column (VECTOR type).
+      MiniLM produces 384-dimension embeddings.
+      No external API calls -- everything runs in-database.
+
+      Ideal for:
+      - Air-gapped environments
+      - Low-latency requirements
+      - Large batch processing without API rate limits
+
+  # --- Example 3: AWS Bedrock Embeddings ---
+  - name: "Generate Embeddings with AWS Bedrock Titan"
+    description: "Embed text using Amazon Titan embedding model via Bedrock"
+    parameters:
+      database: "semantic_search"
+      table: "documents"
+      text_column: "doc_text"
+      api_type: "aws"
+      auth_object: "td_gen_aws_auth"
+      aws_region: "us-east-1"
+      model_name: "amazon.titan-embed-text-v1"
+      accumulate_columns: "doc_id"
+    expected_result: |
+      Each document row receives an Embeddings column (VECTOR type).
+      Titan v1 produces 1536-dimension embeddings.
+
+  # --- Example 4: Full Embed-Normalize-Store Pipeline ---
+  - name: "End-to-End Embedding Pipeline"
+    description: "Generate embeddings, normalize, and store ready for search"
+    parameters:
+      database: "semantic_search"
+      table: "documents"
+      text_column: "doc_text"
+      api_type: "azure"
+      auth_object: "td_gen_azure_auth"
+      model_name: "text-embedding-ada-002"
+      accumulate_columns: "doc_id, doc_title"
+      output_table: "document_embeddings"
+      id_column: "doc_id"
+    expected_result: |
+      Two tables created:
+      1. document_embeddings: raw embeddings from API
+      2. document_embeddings_norm: unit-normalized embeddings ready for cosine search
+
+      The normalized table can be directly used with:
+      - TD_VectorDistance for exact nearest-neighbor search
+      - TD_HNSW for building an approximate search index
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: Missing Schema Qualifier ---
+  - error: "Function AI_TextEmbeddings not found"
+    cause: "Missing TD_SYSFNLIB schema qualifier"
+    solution: "Use TD_SYSFNLIB.AI_TextEmbeddings (the schema qualifier is required)"
+
+  # --- Error 2: Missing AUTHORIZATION ---
+  - error: "Authentication failed or AUTHORIZATION object not found"
+    cause: "AUTHORIZATION object not created or wrong name"
+    solution: "Create an AUTHORIZATION object with cloud API credentials before calling AI_TextEmbeddings. See the ai_functions/authorization_objects pattern for setup"
+
+  # --- Error 3: ONNXEmbeddings Text Column Not Named 'txt' ---
+  - error: "ONNXEmbeddings fails to find text column"
+    cause: "InputTable text column is not named 'txt'"
+    solution: "ONNXEmbeddings requires the text column to be named 'txt'. Rename via subquery: ON (SELECT doc_text AS txt, ... FROM db.table) AS InputTable"
+
+  # --- Error 4: Wrong OutputFormat ---
+  - error: "Embeddings not compatible with TD_VectorDistance or TD_HNSW"
+    cause: "Used OutputFormat('VARCHAR') instead of OutputFormat('VECTOR')"
+    solution: "Always use OutputFormat('VECTOR') when embeddings will be used for similarity search, normalization, or indexing"
+
+  # --- Error 5: ONNX Model Not Found ---
+  - error: "ONNXEmbeddings cannot load model"
+    cause: "Model table has multiple models without WHERE filter, or model not loaded"
+    solution: "When model table has multiple models, use WHERE to select exactly one: ON (SELECT * FROM db.models WHERE model_id = 'xxx') AS ModelTable DIMENSION"
+
+  # --- Error 6: VECTOR Byte Size Confusion ---
+  - error: "VECTOR dimensions don't match expected model output"
+    cause: "VECTOR(n) specifies bytes, not dimensions. At DOUBLE precision (8 bytes/value), VECTOR(3072) = 384 dimensions"
+    solution: "VECTOR byte size = dimensions x bytes_per_value. DOUBLE = 8 bytes, FLOAT32 = 4 bytes. For a 384-dim model at DOUBLE: VECTOR(3072)"
+
+  # --- Error 7: OverwriteCachedModel Misuse ---
+  - error: "OOM error after using OverwriteCachedModel"
+    cause: "Using OverwriteCachedModel on unmodified models or in concurrent queries causes garbage collection lag"
+    solution: "Only use OverwriteCachedModel when you have actually updated the model BLOB in the table. Normal usage: UseCache('true') without OverwriteCachedModel"
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Text Embedding Best Practices
+
+  ### 1. Choose the Right Embedding Function
+  | Need | Function | Reason |
+  |------|----------|--------|
+  | Modern semantic embeddings | AI_TextEmbeddings | State-of-the-art LLM models |
+  | No external API access | ONNXEmbeddings | Runs entirely in-database |
+  | Classical word vectors | TD_WordEmbeddings | GloVe-style, pre-trained |
+  | Lowest latency | ONNXEmbeddings | No network round-trip |
+  | Best quality | AI_TextEmbeddings | Latest cloud models |
+
+  ### 2. Always Use VECTOR Output Format
+  ```sql
+  -- VECTOR integrates with all downstream functions
+  OutputFormat('VECTOR')
+  ```
+  Use VECTOR when embeddings will be:
+  - Stored in a table for reuse
+  - Normalized with TD_VectorNormalize
+  - Searched with TD_VectorDistance
+  - Indexed with TD_HNSW
+
+  ### 3. Embedding Pipeline: Embed Once, Search Many
+  ```sql
+  -- Step 1: Embed all documents (run once or on new data)
+  CREATE TABLE db.doc_embeddings AS (
+      SELECT doc_id, doc_title, Embeddings AS embedding
+      FROM TD_SYSFNLIB.AI_TextEmbeddings(
+          ON db.documents AS InputTable
+          USING
+              ApiType('azure')
+              AUTHORIZATION(db.td_gen_azure_auth)
+              DeploymentId('text-embedding-ada-002')
+              TextColumn('doc_text')
+              OutputFormat('VECTOR')
+              Accumulate('doc_id', 'doc_title')
+      ) AS t
+  ) WITH DATA;
+
+  -- Step 2: Normalize once
+  CREATE TABLE db.doc_embeddings_norm AS (
+      SELECT * FROM TD_VectorNormalize(
+          ON db.doc_embeddings AS InputTable PARTITION BY ANY
+          USING IDColumns('doc_id') TargetColumns('embedding') Approach('UNITVECTOR')
+              Accumulate('doc_title')
+      ) AS t
+  ) WITH DATA;
+
+  -- Step 3: Build index once (optional, for large datasets)
+  SELECT * FROM TD_HNSW(
+      ON db.doc_embeddings_norm AS InputTable
+      OUT PERMANENT TABLE ModelTable(db.doc_hnsw_index)
+      USING
+          IdColumn('doc_id') VectorColumn('embedding')
+          DistanceMeasure('cosine') EfConstruction(64)
+  ) AS t;
+  ```
+
+  ### 4. AUTHORIZATION Objects for Security
+  - Use AUTHORIZATION objects instead of inline credentials
+  - Store credentials securely in the database
+  - See ai_functions/authorization_objects for CREATE AUTHORIZATION syntax
+  - One auth object can be reused across multiple embedding calls
+
+  ### 5. ONNXEmbeddings Performance
+  - Enable `UseCache('true')` for repeated calls with the same model
+  - Cached models persist in node memory for up to 7 days
+  - Never use `OverwriteCachedModel` unless the model BLOB has actually changed
+  - Use `EnableMemoryCheck('true')` (default) to prevent OOM on large models
+
+  ### 6. Batch vs Query-Time Embedding
+  **Batch (documents):** Embed entire tables and persist
+  - Run once per data load
+  - Store normalized embeddings permanently
+  - Build HNSW index for fast search
+
+  **Query-time (search queries):** Embed inline in CTE
+  - Only one or a few rows (fast)
+  - Normalize in same CTE chain
+  - Pass to TD_VectorDistance or TD_HNSWPredict
+
+  ### 7. Model Consistency
+  - Use the SAME embedding model for documents and queries
+  - Different models produce incompatible vector spaces
+  - Track which model was used in metadata columns
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  # --- Pattern 1: Vector Normalize ---
+  - vector_normalize
+
+  # --- Pattern 2: Vector Distance ---
+  - vector_distance
+
+  # --- Pattern 3: HNSW ---
+  - hnsw
+
+  # --- Pattern 4: Authorization Objects ---
+  - ai_functions/authorization_objects
+# === RELATED_PATTERNS END ===

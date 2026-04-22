@@ -1,0 +1,705 @@
+# === METADATA START ===
+name: signal_processing
+title: "Digital Signal Processing (DSP)"
+description: |
+  Teradata UAF digital signal processing functions for frequency analysis, wavelet
+  decomposition, and signal filtering. Covers the core DSP functions:
+
+  - TD_DFFT: Discrete Fast Fourier Transform (time domain -> frequency domain)
+  - TD_IDFFT: Inverse Discrete FFT (frequency domain -> time domain)
+  - TD_DWT: Discrete Wavelet Transform (multi-resolution decomposition)
+  - TD_IDWT: Inverse DWT (reconstruct signal from wavelet coefficients)
+  - TD_CONVOLVE: Convolution of a signal with a filter kernel
+
+  Supporting functions: TD_DFFTCONV (format conversion), TD_WINDOWDFFT (windowed FFT),
+  TD_POWERSPEC (power spectrum estimation), TD_LINESPEC (line spectrum).
+
+category: timeseries
+difficulty: advanced
+teradata_function: TD_DFFT, TD_IDFFT, TD_DWT, TD_IDWT, TD_CONVOLVE
+# === METADATA END ===
+
+# === USE_CASES START ===
+intents:
+  - analytics
+  - query_generation
+use_cases:
+  - Frequency analysis of time series (identify dominant periodicities)
+  - Signal denoising and filtering
+  - Spectral analysis for seasonal period detection
+  - Wavelet decomposition for multi-resolution analysis
+  - Convolution-based signal filtering (low-pass, high-pass, band-pass)
+  - Periodicity removal from time series before ARIMA modeling
+  - Vibration analysis and fault detection in sensor data
+  - Audio and signal quality assessment
+# === USE_CASES END ===
+
+# === PARAMETERS START ===
+parameters:
+  # --- Parameter 1: Table Name ---
+  - name: table_name
+    type: string
+    # LLM-HINT: Source table containing series or matrix data
+    required: true
+    description: "Table containing the signal data"
+    example: "sensor_readings"
+
+  # --- Parameter 2: Series ID ---
+  - name: series_id
+    type: string
+    # LLM-HINT: Column(s) identifying each distinct signal/series
+    required: true
+    description: "Column(s) uniquely identifying each signal series"
+    example: "sensor_id"
+
+  # --- Parameter 3: Row Axis Column ---
+  - name: row_axis_column
+    type: string
+    # LLM-HINT: Index column for the signal; typically SEQUENCE for DSP
+    required: true
+    description: "Column used as the signal index (typically integer sequence)"
+    example: "sample_no"
+
+  # --- Parameter 4: Value Column ---
+  - name: value_column
+    type: string
+    # LLM-HINT: The signal amplitude column
+    required: true
+    description: "Column containing signal amplitude values"
+    example: "amplitude"
+
+  # --- Parameter 5: Payload Content ---
+  - name: payload_content
+    type: string
+    # LLM-HINT: REAL for time-domain signals; COMPLEX for frequency-domain data
+    required: true
+    description: "Payload content type: REAL, COMPLEX, MULTIVAR_REAL, MULTIVAR_COMPLEX"
+    example: "REAL"
+
+  # --- Parameter 6: Frequency Style ---
+  - name: freq_style
+    type: string
+    # LLM-HINT: K_INTEGRAL (default), K_SAMPLE_RATE, K_RADIANS, K_HERTZ, K_PERIODICITY
+    required: false
+    default: "K_INTEGRAL"
+    description: "Frequency axis labeling: K_INTEGRAL, K_SAMPLE_RATE, K_RADIANS, K_HERTZ, K_PERIODICITY"
+    example: "K_INTEGRAL"
+
+  # --- Parameter 7: Wavelet Name ---
+  - name: wavelet_name
+    type: string
+    # LLM-HINT: Wavelet family for DWT/IDWT: haar, db2-db38, coif1-coif17, sym2-sym20, dmey, bior*, rbio*
+    required: false
+    description: "Wavelet family name (case-sensitive): haar, db2-db38, coif1-coif17, sym2-sym20, dmey, bior*, rbio*"
+    example: "haar"
+
+  # --- Parameter 8: Filter Table ---
+  - name: filter_table
+    type: string
+    # LLM-HINT: Table containing the filter/kernel series for convolution
+    required: false
+    description: "Table containing the filter kernel for convolution operations"
+    example: "lowpass_filter"
+
+  # --- Parameter 9: Hertz Sample Rate ---
+  - name: hertz_sample_rate
+    type: number
+    # LLM-HINT: Required when freq_style is K_HERTZ; sampling rate in Hz
+    required: false
+    description: "Sample rate in Hz (required when freq_style is K_HERTZ)"
+    example: "44100.0"
+
+  # --- Parameter 10: Decomposition Level ---
+  - name: decomp_level
+    type: integer
+    # LLM-HINT: DWT decomposition level (1-15); higher = coarser approximation
+    required: false
+    default: "1"
+    description: "Wavelet decomposition level (1-15); default 1"
+    example: "3"
+# === PARAMETERS END ===
+
+# === TEMPLATES START ===
+templates:
+  # === FORWARD_FFT TEMPLATE ===
+  # LLM-HINT: Transform time-domain signal to frequency domain; identifies dominant frequencies
+  forward_fft:
+    description: "TD_DFFT: Forward FFT transforms time-domain signal to frequency domain"
+    sql: |
+      -- TD_DFFT: Discrete Fast Fourier Transform
+      -- Converts time-domain signal to frequency-domain representation.
+      -- Output: frequency components with amplitude and phase.
+      EXECUTE FUNCTION INTO VOLATILE ART(dfft_result)
+      TD_DFFT(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FREQ_STYLE("{{freq_style}}"),
+              HUMAN_READABLE(1)
+          ),
+          OUTPUT_FMT(CONTENT(AMPL_PHASE_RADIANS))
+      );
+
+      -- View frequency components (amplitude indicates strength at each frequency)
+      SELECT * FROM dfft_result
+      WHERE AMPLITUDE_{{value_column}} > 0.01
+      ORDER BY AMPLITUDE_{{value_column}} DESC;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+      - freq_style
+
+  # === INVERSE_FFT TEMPLATE ===
+  # LLM-HINT: Reconstruct time-domain signal from frequency-domain FFT output via ART_SPEC
+  inverse_fft:
+    description: "TD_IDFFT: Inverse FFT reconstructs time-domain signal from frequency components"
+    sql: |
+      -- TD_IDFFT: Inverse Discrete Fast Fourier Transform
+      -- Reconstructs the original time-domain signal from FFT coefficients.
+      -- Input via ART_SPEC avoids the RAW format requirement.
+
+      -- Step 1: Forward FFT (produces frequency-domain ART)
+      EXECUTE FUNCTION INTO VOLATILE ART(dfft_art)
+      TD_DFFT(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(FREQ_STYLE("K_INTEGRAL"), HUMAN_READABLE(1)),
+          OUTPUT_FMT(CONTENT(COMPLEX))
+      );
+
+      -- Step 2: Inverse FFT via ART_SPEC (no RAW conversion needed)
+      EXECUTE FUNCTION INTO VOLATILE ART(reconstructed_signal)
+      TD_IDFFT(
+          ART_SPEC(
+              TABLE_NAME(dfft_art),
+              PAYLOAD(FIELDS(REAL_{{value_column}}, IMAGINARY_{{value_column}}), CONTENT(COMPLEX))
+          ),
+          FUNC_PARAMS(HUMAN_READABLE(1))
+      );
+
+      SELECT * FROM reconstructed_signal;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+
+  # === POWER_SPECTRUM TEMPLATE ===
+  # LLM-HINT: Estimate power spectrum to find dominant periodicities; use K_PERIODICITY for period values
+  power_spectrum:
+    description: "TD_POWERSPEC: Estimate power spectrum to identify dominant frequencies/periodicities"
+    sql: |
+      -- TD_POWERSPEC: Power spectrum estimation
+      -- Use FREQ_STYLE(K_PERIODICITY) to get period values directly.
+      -- Higher SPECTRAL_DENSITY = stronger periodic component at that frequency.
+      EXECUTE FUNCTION INTO VOLATILE ART(power_spec_art)
+      TD_POWERSPEC(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              FREQ_STYLE('K_PERIODICITY'),
+              ALGORITHM('AUTOCORR'),
+              WINDOW(WINDOW_NAME('BARTLETT'))
+          )
+      );
+
+      -- Top 5 dominant periodicities
+      SELECT TOP 5 * FROM power_spec_art
+      ORDER BY SPECTRAL_DENSITY_{{value_column}} DESC;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+
+  # === WINDOWED_FFT TEMPLATE ===
+  # LLM-HINT: Apply window function before FFT to reduce spectral leakage; 21 window types available
+  windowed_fft:
+    description: "TD_WINDOWDFFT: Apply window function before FFT to reduce spectral leakage"
+    sql: |
+      -- TD_WINDOWDFFT: Windowed FFT reduces noise and spectral leakage.
+      -- Window types: BARTHANN, BARTLETT, BLACKMAN, BLACKMANHARRIS, BOHMAN, BOXCAR,
+      --   COSINE, EXPONENTIAL, FLATTOP, GAUSSIAN, GENERAL_COSINE, GENERAL_GAUSSIAN,
+      --   GENERAL_HAMMING, HAMMING, HANN, KAISER, NUTTALL, PARZEN, TAYLOR, TRIANG, TUKEY
+      EXECUTE FUNCTION INTO VOLATILE ART(windowed_fft_art)
+      TD_WINDOWDFFT(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              WINDOW(SIZE(NUM(256))),
+              WINDOW(OVERLAP(128)),
+              WINDOW(TYPE(HANN)),
+              WINDOW(IS_SYMMETRIC(1)),
+              WINDOW(SCALE(SPECTRUM)),
+              DFFT(FREQ_STYLE(K_INTEGRAL)),
+              DFFT(HUMAN_READABLE(1)),
+              DFFT(ZERO_PADDING_OK(1))
+          ),
+          OUTPUT_FMT(CONTENT(AMPL_PHASE_RADIANS))
+      );
+
+      SELECT * FROM windowed_fft_art
+      ORDER BY {{series_id}}, COLUMN_I, ROW_I;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+
+  # === WAVELET_DECOMPOSITION TEMPLATE ===
+  # LLM-HINT: TD_DWT decomposes signal into approximation (low-freq) and detail (high-freq) components
+  wavelet_decomposition:
+    description: "TD_DWT: Wavelet decomposition into approximation and detail coefficients"
+    sql: |
+      -- TD_DWT: Discrete Wavelet Transform
+      -- Decomposes signal into approximation (low-frequency trend) and
+      -- detail (high-frequency fluctuations) components.
+      --
+      -- Wavelet families (case-sensitive):
+      --   Daubechies: db1 (=haar), db2-db38
+      --   Coiflets: coif1-coif17
+      --   Symlets: sym2-sym20
+      --   Discrete Meyer: dmey
+      --   Biorthogonal: bior1.1, bior1.3, ..., bior6.8
+      --   Reverse Biorthogonal: rbio1.1, rbio1.3, ..., rbio6.8
+      EXECUTE FUNCTION INTO VOLATILE ART(dwt_result)
+      TD_DWT(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(
+              WAVELET('{{wavelet_name}}'),
+              LEVEL({{decomp_level}})
+          )
+      );
+
+      -- Output columns: A_<field> (approximation) + D_<field> (detail)
+      SELECT * FROM dwt_result;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+      - wavelet_name
+      - decomp_level
+
+  # === WAVELET_RECONSTRUCTION TEMPLATE ===
+  # LLM-HINT: TD_IDWT reconstructs original signal from DWT approximation + detail coefficients
+  wavelet_reconstruction:
+    description: "TD_IDWT: Reconstruct signal from wavelet decomposition coefficients"
+    sql: |
+      -- TD_IDWT: Inverse Discrete Wavelet Transform
+      -- Reconstructs the original signal from approximation + detail coefficients.
+      -- Input requires MULTIVAR_REAL with both approximation and detail fields.
+
+      -- Step 1: Decompose with TD_DWT
+      EXECUTE FUNCTION INTO VOLATILE ART(dwt_art)
+      TD_DWT(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(WAVELET('{{wavelet_name}}'))
+      );
+
+      -- Step 2: Reconstruct from approximation + detail
+      EXECUTE FUNCTION INTO VOLATILE ART(reconstructed)
+      TD_IDWT(
+          SERIES_SPEC(
+              TABLE_NAME(dwt_art),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE(ROW_I)),
+              PAYLOAD(FIELDS(A_{{value_column}}, D_{{value_column}}), CONTENT(MULTIVAR_REAL))
+          ),
+          FUNC_PARAMS(WAVELET('{{wavelet_name}}'))
+      );
+
+      -- Output column: MAGNITUDE (reconstructed signal)
+      SELECT * FROM reconstructed;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+      - wavelet_name
+
+  # === CONVOLUTION TEMPLATE ===
+  # LLM-HINT: TD_CONVOLVE convolves a signal with a filter kernel; INPUT_FMT is mandatory
+  convolution:
+    description: "TD_CONVOLVE: Convolve a signal with a filter kernel for filtering operations"
+    sql: |
+      -- TD_CONVOLVE: Convolve signal with filter kernel.
+      -- First SERIES_SPEC = signal to filter; second = filter kernel.
+      -- INPUT_FMT is mandatory for TD_CONVOLVE.
+      --
+      -- Algorithm auto-selects: CONV_SUMMATION for small inputs,
+      -- CONV_DFFT for larger inputs (signal > 64 or filter > 63 entries).
+      EXECUTE FUNCTION INTO VOLATILE ART(conv_result)
+      TD_CONVOLVE(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          SERIES_SPEC(
+              TABLE_NAME({{filter_table}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          INPUT_FMT(INPUT_MODE(MATCH))
+      );
+
+      -- Output: REAL_<field> + IMAGINARY_<field> (output is always COMPLEX)
+      SELECT * FROM conv_result;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+      - filter_table
+
+  # === PERIODICITY_REMOVAL TEMPLATE ===
+  # LLM-HINT: Identify and remove dominant periodicities before ARIMA modeling
+  periodicity_removal:
+    description: "Identify dominant periodicities and remove them from the signal"
+    sql: |
+      -- Pipeline: Identify periodicities -> Generate sinusoids -> Subtract from original
+
+      -- Step 1: Find dominant periodicities using power spectrum
+      EXECUTE FUNCTION INTO VOLATILE ART(spec_art)
+      TD_POWERSPEC(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(FREQ_STYLE('K_PERIODICITY'))
+      );
+
+      -- Inspect top periodicities (note the period values for step 2)
+      SELECT TOP 5 * FROM spec_art
+      ORDER BY SPECTRAL_DENSITY_{{value_column}} DESC;
+
+      -- Step 2: Generate synthetic sinusoid series at those periodicities
+      -- Replace p1, p2 with actual period values from step 1
+      EXECUTE FUNCTION INTO VOLATILE ART(sinusoid_art)
+      TD_GENSERIES4SINUSOIDS(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          FUNC_PARAMS(PERIODICITIES(p1, p2)),
+          OUTPUT_FMT(INDEX_STYLE(FLOW_THROUGH))
+      );
+
+      -- Step 3: Subtract sinusoids from original to remove periodicities
+      EXECUTE FUNCTION INTO VOLATILE ART(cleaned_signal)
+      TD_BINARYSERIESOP(
+          SERIES_SPEC(
+              TABLE_NAME({{table_name}}),
+              SERIES_ID({{series_id}}),
+              ROW_AXIS(SEQUENCE({{row_axis_column}})),
+              PAYLOAD(FIELDS({{value_column}}), CONTENT(REAL))
+          ),
+          ART_SPEC(TABLE_NAME(sinusoid_art)),
+          FUNC_PARAMS(MATHOP(SUB)),
+          INPUT_FMT(INPUT_MODE(MATCH))
+      );
+
+      SELECT * FROM cleaned_signal;
+    required_parameters:
+      - table_name
+      - series_id
+      - row_axis_column
+      - value_column
+
+  # === FFT_FORMAT_CONVERSION TEMPLATE ===
+  # LLM-HINT: Convert FFT results between human-readable and raw formats using TD_DFFTCONV
+  fft_format_conversion:
+    description: "TD_DFFTCONV: Convert FFT results between human-readable and raw formats"
+    sql: |
+      -- TD_DFFTCONV: Convert existing FFT result to different format.
+      -- More efficient than re-running FFT. Original input data not needed.
+      --
+      -- CONV options: HR_TO_RAW (human-readable to raw), RAW_TO_HR (raw to human-readable)
+      -- RAW format is required for TD_IDFFT when input is not via ART_SPEC.
+
+      -- Convert human-readable FFT to raw format (needed for TD_IDFFT via SERIES_SPEC)
+      EXECUTE FUNCTION INTO VOLATILE ART(raw_fft)
+      TD_DFFTCONV(
+          ART_SPEC(TABLE_NAME(dfft_result)),
+          FUNC_PARAMS(
+              CONV(HR_TO_RAW),
+              FREQ_STYLE(K_INTEGRAL)
+          ),
+          OUTPUT_FMT(CONTENT(COMPLEX))
+      );
+
+      -- Convert raw FFT to human-readable amplitude/phase format
+      EXECUTE FUNCTION INTO VOLATILE ART(hr_fft)
+      TD_DFFTCONV(
+          ART_SPEC(TABLE_NAME(raw_fft)),
+          FUNC_PARAMS(
+              CONV(RAW_TO_HR),
+              FREQ_STYLE(K_INTEGRAL)
+          ),
+          OUTPUT_FMT(CONTENT(AMPL_PHASE_RADIANS))
+      );
+    required_parameters: []
+# === TEMPLATES END ===
+
+# === EXAMPLES START ===
+examples:
+  # --- Example 1: Frequency Analysis of Sensor Data ---
+  - name: "Frequency Analysis of Sensor Data"
+    description: "Identify dominant frequencies in vibration sensor data using FFT"
+    parameters:
+      table_name: "vibration_sensor"
+      series_id: "sensor_id"
+      row_axis_column: "sample_no"
+      value_column: "acceleration"
+      payload_content: "REAL"
+      freq_style: "K_HERTZ"
+      hertz_sample_rate: 1000.0
+    expected_result: |
+      FFT output shows frequency components:
+      - ROW_I: frequency in Hz (with K_HERTZ and HERTZ_SAMPLE_RATE(1000))
+      - AMPLITUDE_acceleration: strength at each frequency
+      - PHASE_acceleration: phase angle in radians
+
+      Dominant frequencies indicate mechanical resonances or fault signatures.
+      Sort by AMPLITUDE descending to find the strongest components.
+
+  # --- Example 2: Wavelet Denoising ---
+  - name: "Wavelet Denoising"
+    description: "Denoise a signal using wavelet decomposition: keep approximation, discard detail"
+    parameters:
+      table_name: "noisy_signal"
+      series_id: "channel_id"
+      row_axis_column: "sample_no"
+      value_column: "voltage"
+      wavelet_name: "db4"
+      decomp_level: 3
+    expected_result: |
+      TD_DWT at level 3 produces:
+      - A_voltage: approximation coefficients (low-frequency trend = denoised signal)
+      - D_voltage: detail coefficients (high-frequency noise)
+
+      For denoising: reconstruct using only the approximation coefficients,
+      or threshold the detail coefficients before reconstruction with TD_IDWT.
+
+  # --- Example 3: Seasonal Period Detection ---
+  - name: "Seasonal Period Detection"
+    description: "Use power spectrum to detect seasonal periods in sales data"
+    parameters:
+      table_name: "daily_sales"
+      series_id: "store_id"
+      row_axis_column: "day_seq"
+      value_column: "revenue"
+      freq_style: "K_PERIODICITY"
+    expected_result: |
+      TD_POWERSPEC with K_PERIODICITY returns:
+      - ROW_I: period value (number of data points per cycle)
+      - SPECTRAL_DENSITY_revenue: power at each period
+
+      Expected dominant periods for daily retail data:
+      - ~7 (weekly seasonality)
+      - ~30 (monthly pattern)
+      - ~365 (yearly seasonality)
+
+      Use these period values as SEASONAL_PERIODS in Holt-Winters
+      or as PERIOD in TD_AUTOARIMA.
+
+  # --- Example 4: Low-Pass Filtering via Convolution ---
+  - name: "Low-Pass Filter via Convolution"
+    description: "Apply a low-pass filter to smooth a noisy signal using TD_CONVOLVE"
+    parameters:
+      table_name: "raw_signal"
+      series_id: "channel_id"
+      row_axis_column: "sample_no"
+      value_column: "amplitude"
+      filter_table: "lowpass_kernel"
+    expected_result: |
+      TD_CONVOLVE output:
+      - REAL_amplitude: real part of convolved signal (filtered signal)
+      - IMAGINARY_amplitude: imaginary part (near-zero for real-valued filter)
+
+      The filtered signal has high-frequency noise removed.
+      Output is always COMPLEX even with REAL inputs.
+# === EXAMPLES END ===
+
+# === COMMON_ERRORS START ===
+common_errors:
+  # --- Error 1: TD_IDFFT RAW Format Requirement ---
+  - error: "TD_IDFFT input not in RAW format"
+    cause: "TD_IDFFT via SERIES_SPEC requires RAW format FFT data, not human-readable"
+    solution: "Either use ART_SPEC input (no RAW requirement) or convert with TD_DFFTCONV(CONV(HR_TO_RAW)) first. Simplest approach: chain TD_DFFT output to TD_IDFFT via ART_SPEC."
+
+  # --- Error 2: Wavelet Name Case Sensitivity ---
+  - error: "Invalid wavelet name"
+    cause: "Wavelet names in TD_DWT/TD_IDWT are case-sensitive"
+    solution: "Use lowercase names exactly: 'haar', 'db2', 'coif1', 'sym2', 'dmey', 'bior1.1', 'rbio1.1'. Note: 'db1' and 'haar' are equivalent."
+
+  # --- Error 3: Missing INPUT_FMT in TD_CONVOLVE ---
+  - error: "INPUT_FMT required for TD_CONVOLVE"
+    cause: "TD_CONVOLVE (and TD_DTW) require INPUT_FMT unlike most UAF functions"
+    solution: "Add INPUT_FMT(INPUT_MODE(ONE2ONE | MANY2ONE | MATCH)). ONE2ONE for single series pairs, MANY2ONE for one filter applied to many signals, MATCH for series matched by SERIES_ID."
+
+  # --- Error 4: K_PERIODICITY Not Supported in TD_DFFT ---
+  - error: "K_PERIODICITY is not valid for TD_DFFT"
+    cause: "TD_DFFT/TD_DFFT2 do not support K_PERIODICITY in FREQ_STYLE"
+    solution: "Use K_PERIODICITY only with TD_POWERSPEC and TD_LINESPEC. For TD_DFFT, use K_INTEGRAL, K_SAMPLE_RATE, K_RADIANS, or K_HERTZ."
+
+  # --- Error 5: HERTZ_SAMPLE_RATE Missing ---
+  - error: "HERTZ_SAMPLE_RATE required with K_HERTZ"
+    cause: "FREQ_STYLE(K_HERTZ) requires HERTZ_SAMPLE_RATE parameter"
+    solution: "Add HERTZ_SAMPLE_RATE(sample_rate_in_hz) to FUNC_PARAMS when using FREQ_STYLE(K_HERTZ). For example: HERTZ_SAMPLE_RATE(44100.0) for audio sampled at 44.1 kHz."
+
+  # --- Error 6: Multivariate Size Limit in FFT ---
+  - error: "Multivariate FFT exceeds size limit"
+    cause: "MULTIVAR_REAL/MULTIVAR_COMPLEX inputs have lower size limits than univariate for TD_DFFT"
+    solution: "Split multivariate payload into separate single-field queries. Process each field independently with CONTENT(REAL) or CONTENT(COMPLEX)."
+# === COMMON_ERRORS END ===
+
+# === BEST_PRACTICES START ===
+best_practices: |
+  ## Digital Signal Processing Best Practices
+
+  ### 1. FFT Usage
+  **Choose the right FREQ_STYLE:**
+  - `K_INTEGRAL`: Frequency as integer index (default, simplest)
+  - `K_SAMPLE_RATE`: Frequency as fraction of sample rate
+  - `K_RADIANS`: Frequency in radians
+  - `K_HERTZ`: Frequency in Hz (requires HERTZ_SAMPLE_RATE)
+  - `K_PERIODICITY`: Period values (TD_POWERSPEC and TD_LINESPEC only)
+
+  **HUMAN_READABLE setting:**
+  - `HUMAN_READABLE(1)`: Symmetric output centered at 0 (e.g., -3,-2,-1,0,1,2,3)
+  - `HUMAN_READABLE(0)`: Sequential from 0 (e.g., 0,1,2,3,4,5,6)
+  - Use `HUMAN_READABLE(1)` for visualization and analysis
+  - Use `HUMAN_READABLE(0)` for round-trip FFT/IFFT (avoids conversion issues)
+
+  **Output content types:**
+  ```sql
+  OUTPUT_FMT(CONTENT(COMPLEX))              -- REAL + IMAGINARY columns
+  OUTPUT_FMT(CONTENT(AMPL_PHASE_RADIANS))   -- AMPLITUDE + PHASE columns
+  OUTPUT_FMT(CONTENT(AMPL_PHASE_DEGREES))   -- AMPLITUDE + PHASE (degrees)
+  ```
+  - AMPL_PHASE for visualization and analysis (amplitude = signal strength)
+  - COMPLEX for computation and round-trip reconstruction
+
+  ### 2. Wavelet Transform Selection
+  **Choose the right wavelet family:**
+  - `haar` (= `db1`): Simplest; good for step-like signals
+  - `db4`-`db8`: General-purpose; good balance of time/frequency resolution
+  - `coif1`-`coif5`: Near-symmetric; good for smooth signals
+  - `sym4`-`sym8`: Symmetric; minimal phase distortion
+  - `dmey`: Discrete Meyer; band-limited in frequency domain
+  - `bior*`: Biorthogonal; linear phase, different analysis/synthesis filters
+
+  **Decomposition levels:**
+  - Level 1: Splits signal into 2 components (approximation + detail)
+  - Level 2-3: Common for denoising (detail at levels 1-2 = high-frequency noise)
+  - Level 5+: Deep decomposition for multi-scale analysis
+  - Max level depends on signal length: max_level = floor(log2(signal_length))
+
+  **Signal extension modes:**
+  - `symmetric` (default): Mirror signal at boundaries
+  - `periodic`: Treat signal as periodic (wraps around)
+  - `zero`: Pad with zeros (can introduce edge artifacts)
+
+  ### 3. Convolution Patterns
+  **Input order matters for TD_CONVOLVE:**
+  - First SERIES_SPEC = signal to filter
+  - Second SERIES_SPEC = filter kernel
+  - For TD_CONVOLVE2 (2D): order does not matter
+
+  **Algorithm selection:**
+  - Auto-selects based on input size (summation for small, DFFT for large)
+  - Override with ALGORITHM("CONV_SUMMATION") or ALGORITHM("CONV_DFFT")
+  - CONV_SUMMATION: exact, for small inputs
+  - CONV_DFFT: faster for large inputs via frequency-domain multiplication
+
+  **INPUT_FMT modes:**
+  - `ONE2ONE`: Both specs identify a single series (via WHERE clause)
+  - `MANY2ONE`: Many signals filtered by one kernel
+  - `MATCH`: Series matched by SERIES_ID values
+
+  ### 4. Spectral Analysis Workflow
+  **Standard periodicity detection pipeline:**
+  1. Run TD_POWERSPEC or TD_LINESPEC with FREQ_STYLE('K_PERIODICITY')
+  2. Sort by SPECTRAL_DENSITY descending to find dominant periods
+  3. Feed period values to TD_GENSERIES4SINUSOIDS to create synthetic series
+  4. Subtract synthetic from original via TD_BINARYSERIESOP(MATHOP(SUB))
+  5. Verify: re-run TD_POWERSPEC on cleaned signal
+
+  **TD_POWERSPEC vs TD_LINESPEC:**
+  - TD_POWERSPEC: More options (algorithm, windowing); use for noise reduction
+  - TD_LINESPEC: Simpler; unique INCLUDE_COEFF flag for sinusoidal coefficients
+  - Both support K_PERIODICITY for direct period values
+
+  ### 5. Round-Trip FFT/IFFT
+  **Ensure correct format chain:**
+  ```
+  TD_DFFT (HUMAN_READABLE(1)) -> ART_SPEC -> TD_IDFFT (HUMAN_READABLE(1))  -- works
+  TD_DFFT (HUMAN_READABLE(0)) -> ART_SPEC -> TD_IDFFT (HUMAN_READABLE(0))  -- works
+  TD_DFFT -> TD_DFFTCONV(HR_TO_RAW) -> SERIES_SPEC -> TD_IDFFT             -- works
+  TD_DFFT (HR) -> SERIES_SPEC -> TD_IDFFT                                   -- FAILS (needs RAW)
+  ```
+  - Simplest round-trip: use ART_SPEC chaining (avoids format conversion)
+  - If SERIES_SPEC input to TD_IDFFT is needed, convert to RAW first
+
+  ### 6. Windowed FFT for Long Signals
+  **Use TD_WINDOWDFFT when:**
+  - Signal is long and non-stationary (frequency content changes over time)
+  - Need to reduce spectral leakage
+  - Want Short-Time Fourier Transform (STFT) behavior
+
+  **Window type selection:**
+  - `HANN`: General-purpose (good frequency resolution)
+  - `HAMMING`: Slightly better sidelobe suppression than Hann
+  - `BLACKMAN`: Excellent sidelobe suppression (wider main lobe)
+  - `FLATTOP`: Accurate amplitude measurement (poor frequency resolution)
+  - `KAISER`: Adjustable (BETA parameter controls main lobe width vs sidelobe level)
+
+  **Overlap guidance:**
+  - 50% overlap (OVERLAP = SIZE/2): Standard for most analyses
+  - 75% overlap: Better time resolution, more computation
+  - No overlap (OVERLAP = 0): Fastest but may miss transient events
+# === BEST_PRACTICES END ===
+
+# === RELATED_PATTERNS START ===
+related_patterns:
+  - uaf_concepts
+  - arima
+  - holt_winters
+  - moving_average
+# === RELATED_PATTERNS END ===
