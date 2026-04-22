@@ -13,6 +13,10 @@
 // limitations under the License.
 package agent
 
+import (
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
+)
+
 // ModelContextLimits defines the context window and output reservation for a model
 type ModelContextLimits struct {
 	MaxContextTokens     int // Total context window size
@@ -151,10 +155,13 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 }
 
 // ResolveContextLimits determines the context limits to use, with fallback precedence:
-// 1. Explicit configuration (if maxContextTokens > 0)
-// 2. Model lookup table
-// 3. Provider defaults
-// 4. System-wide default (200K for backwards compatibility)
+//  1. Explicit configuration (if configuredMax > 0)
+//  2. Built-in catalog entry for provider+model (authoritative ContextWindow /
+//     MaxOutputTokens from pkg/llm/catalog)
+//  3. Legacy prefix-matched lookup table (covers Ollama tags and pre-catalog
+//     model name variants)
+//  4. Provider defaults
+//  5. System-wide conservative fallback
 func ResolveContextLimits(provider, model string, configuredMax, configuredReserved int32) ModelContextLimits {
 	// If both are explicitly configured, use them
 	if configuredMax > 0 && configuredReserved > 0 {
@@ -172,9 +179,23 @@ func ResolveContextLimits(provider, model string, configuredMax, configuredReser
 		}
 	}
 
-	// Try model-specific limits
+	// Built-in catalog is the source of truth for known provider+model pairs.
+	// Reserve the model's documented MaxOutputTokens for output unless the
+	// caller has supplied an explicit override.
+	if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
+		reserved := int(info.MaxOutputTokens)
+		if configuredReserved > 0 {
+			reserved = int(configuredReserved)
+		}
+		return ModelContextLimits{
+			MaxContextTokens:     int(info.ContextWindow),
+			ReservedOutputTokens: reserved,
+		}
+	}
+
+	// Legacy prefix-matched lookup for model names not in the catalog
+	// (e.g. Ollama tags like "llama3.1:8b", older Claude 3.x aliases).
 	if limits := GetModelContextLimits(model); limits != nil {
-		// If reserved is explicitly configured, use it instead of the lookup value
 		if configuredReserved > 0 {
 			limits.ReservedOutputTokens = int(configuredReserved)
 		}

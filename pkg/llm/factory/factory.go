@@ -21,12 +21,18 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 )
+
+// fallbackMaxOutputTokens is used when neither the caller configured MaxTokens
+// nor the built-in catalog has an entry for the selected model. Kept deliberately
+// conservative so unknown models don't trip provider-side token-count errors.
+const fallbackMaxOutputTokens = 4096
 
 // ProviderFactory creates LLM providers dynamically based on configuration.
 type ProviderFactory struct {
@@ -86,11 +92,12 @@ type FactoryConfig struct {
 }
 
 // NewProviderFactory creates a new provider factory.
+//
+// MaxTokens is deliberately left at zero when the caller did not configure it,
+// so that per-provider creation can consult the built-in catalog for the
+// model-specific MaxOutputTokens. A non-zero MaxTokens is treated as an
+// explicit user override and honored as-is.
 func NewProviderFactory(config FactoryConfig) *ProviderFactory {
-	// Set defaults
-	if config.MaxTokens == 0 {
-		config.MaxTokens = 4096
-	}
 	if config.Temperature == 0 {
 		config.Temperature = 1.0
 	}
@@ -101,6 +108,21 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	return &ProviderFactory{
 		config: config,
 	}
+}
+
+// resolveMaxOutput returns the per-request output token cap to use when
+// constructing a provider client. Precedence:
+//  1. Explicit FactoryConfig.MaxTokens (user override, wins over everything)
+//  2. Built-in catalog MaxOutputTokens for the resolved provider+model
+//  3. fallbackMaxOutputTokens (conservative default for unknown models)
+func (f *ProviderFactory) resolveMaxOutput(provider, model string) int {
+	if f.config.MaxTokens > 0 {
+		return f.config.MaxTokens
+	}
+	if info := catalog.Lookup(provider, model); info != nil && info.MaxOutputTokens > 0 {
+		return int(info.MaxOutputTokens)
+	}
+	return fallbackMaxOutputTokens
 }
 
 // CreateProvider creates an LLM provider for the specified provider type and model.
@@ -155,7 +177,7 @@ func (f *ProviderFactory) createAnthropicProvider(model string) (interface{}, er
 	return anthropic.NewClient(anthropic.Config{
 		APIKey:      apiKey,
 		Model:       model,
-		MaxTokens:   f.config.MaxTokens,
+		MaxTokens:   f.resolveMaxOutput("anthropic", model),
 		Temperature: f.config.Temperature,
 	}), nil
 }
@@ -184,7 +206,7 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 		Profile:         f.config.BedrockProfile,
 		BearerToken:     f.config.BedrockBearerToken,
 		ModelID:         model,
-		MaxTokens:       f.config.MaxTokens,
+		MaxTokens:       f.resolveMaxOutput("bedrock", model),
 		Temperature:     f.config.Temperature,
 	})
 }
@@ -208,7 +230,7 @@ func (f *ProviderFactory) createOllamaProvider(model string) (interface{}, error
 	return ollama.NewClient(ollama.Config{
 		Endpoint:    endpoint,
 		Model:       model,
-		MaxTokens:   f.config.MaxTokens,
+		MaxTokens:   f.resolveMaxOutput("ollama", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil
@@ -233,7 +255,7 @@ func (f *ProviderFactory) createOpenAIProvider(model string) (interface{}, error
 	return openai.NewClient(openai.Config{
 		APIKey:      apiKey,
 		Model:       model,
-		MaxTokens:   f.config.MaxTokens,
+		MaxTokens:   f.resolveMaxOutput("openai", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil
@@ -275,7 +297,7 @@ func (f *ProviderFactory) createAzureOpenAIProvider(model string) (interface{}, 
 		DeploymentID: deploymentID,
 		APIKey:       apiKey,
 		EntraToken:   entraToken,
-		MaxTokens:    f.config.MaxTokens,
+		MaxTokens:    f.resolveMaxOutput("azure-openai", model),
 		Temperature:  f.config.Temperature,
 		Timeout:      time.Duration(f.config.Timeout) * time.Second,
 	})
@@ -300,7 +322,7 @@ func (f *ProviderFactory) createMistralProvider(model string) (interface{}, erro
 	return mistral.NewClient(mistral.Config{
 		APIKey:      apiKey,
 		Model:       model,
-		MaxTokens:   f.config.MaxTokens,
+		MaxTokens:   f.resolveMaxOutput("mistral", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil
@@ -325,7 +347,7 @@ func (f *ProviderFactory) createGeminiProvider(model string) (interface{}, error
 	return gemini.NewClient(gemini.Config{
 		APIKey:      apiKey,
 		Model:       model,
-		MaxTokens:   f.config.MaxTokens,
+		MaxTokens:   f.resolveMaxOutput("gemini", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil
@@ -353,7 +375,7 @@ func (f *ProviderFactory) createHuggingFaceProvider(model string) (interface{}, 
 	return huggingface.NewClient(huggingface.Config{
 		Token:       token,
 		Model:       model,
-		MaxTokens:   f.config.MaxTokens,
+		MaxTokens:   f.resolveMaxOutput("huggingface", model),
 		Temperature: f.config.Temperature,
 		Timeout:     time.Duration(f.config.Timeout) * time.Second,
 	}), nil

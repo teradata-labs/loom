@@ -1,0 +1,604 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package catalog is the single source of truth for built-in LLM model
+// metadata (context window, max output tokens, pricing, capabilities).
+//
+// This package exists so consumers outside the factory (e.g. the agent
+// package resolving token budgets) can read catalog entries without
+// depending on provider client packages.
+package catalog
+
+import (
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+)
+
+// BuildCatalog returns the static catalog of all known models across providers.
+// Callers get a fresh map each time; the pointed-to ModelInfo entries are
+// freshly allocated and safe to mutate by the caller.
+//
+// Fields:
+//   - ShowInDropdown: false for bedrock and azure-openai (endpoint-configured, not user-selected)
+//   - IsReasoning: true for o-series, Magistral, extended/adaptive thinking models
+//   - Capabilities: "text", "vision", "tool-use", "thinking", "image-gen"
+func BuildCatalog() map[string][]*loomv1.ModelInfo {
+	return map[string][]*loomv1.ModelInfo{
+		// ── Anthropic ──────────────────────────────────────────────────────────────
+		"anthropic": {
+			{
+				Id:                  "claude-opus-4-6",
+				Name:                "Claude Opus 4.6",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-sonnet-4-6",
+				Name:                "Claude Sonnet 4.6",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  3.0,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-opus-4-5-20251101",
+				Name:                "Claude Opus 4.5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-sonnet-4-5-20250929",
+				Name:                "Claude Sonnet 4.5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  3.0,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-haiku-4-5-20251001",
+				Name:                "Claude Haiku 4.5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  1.0,
+				CostPer_1MOutputUsd: 5.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-opus-4-1-20250805",
+				Name:                "Claude Opus 4.1",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  15.0,
+				CostPer_1MOutputUsd: 75.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+		},
+
+		// ── OpenAI ─────────────────────────────────────────────────────────────────
+		"openai": {
+			{
+				Id:                  "gpt-5",
+				Name:                "GPT-5",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       272_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  2.50,
+				CostPer_1MOutputUsd: 10.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-5-mini",
+				Name:                "GPT-5 Mini",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       272_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  0.40,
+				CostPer_1MOutputUsd: 1.60,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-4.1",
+				Name:                "GPT-4.1",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       1_047_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 8.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-4.1-mini",
+				Name:                "GPT-4.1 Mini",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       1_047_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  0.40,
+				CostPer_1MOutputUsd: 1.60,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gpt-4.1-nano",
+				Name:                "GPT-4.1 Nano",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       1_047_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  0.10,
+				CostPer_1MOutputUsd: 0.40,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "o3",
+				Name:                "o3",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     100_000,
+				CostPer_1MInputUsd:  10.0,
+				CostPer_1MOutputUsd: 40.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "o3-mini",
+				Name:                "o3-mini",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     100_000,
+				CostPer_1MInputUsd:  1.10,
+				CostPer_1MOutputUsd: 4.40,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "o4-mini",
+				Name:                "o4-mini",
+				Provider:            "openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     100_000,
+				CostPer_1MInputUsd:  1.10,
+				CostPer_1MOutputUsd: 4.40,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+		},
+
+		// ── Google Gemini ───────────────────────────────────────────────────────────
+		// GA models only. Gemini 3.x is preview as of 2026-03.
+		"gemini": {
+			{
+				Id:                  "gemini-2.5-pro",
+				Name:                "Gemini 2.5 Pro",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     65_536,
+				CostPer_1MInputUsd:  1.25,
+				CostPer_1MOutputUsd: 10.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemini-2.5-flash",
+				Name:                "Gemini 2.5 Flash",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     65_536,
+				CostPer_1MInputUsd:  0.30,
+				CostPer_1MOutputUsd: 2.50,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemini-2.5-flash-lite",
+				Name:                "Gemini 2.5 Flash-Lite",
+				Provider:            "gemini",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       1_048_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  0.10,
+				CostPer_1MOutputUsd: 0.40,
+				ShowInDropdown:      true,
+			},
+		},
+
+		// ── Mistral ────────────────────────────────────────────────────────────────
+		"mistral": {
+			{
+				Id:                  "mistral-large-latest",
+				Name:                "Mistral Large",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 6.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "mistral-small-latest",
+				Name:                "Mistral Small",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       32_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.10,
+				CostPer_1MOutputUsd: 0.30,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "magistral-medium-latest",
+				Name:                "Magistral Medium",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     131_072,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 8.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "magistral-small-latest",
+				Name:                "Magistral Small",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     131_072,
+				CostPer_1MInputUsd:  0.50,
+				CostPer_1MOutputUsd: 1.50,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "codestral-latest",
+				Name:                "Codestral",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       256_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.30,
+				CostPer_1MOutputUsd: 0.90,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "devstral-medium-latest",
+				Name:                "Devstral",
+				Provider:            "mistral",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.50,
+				CostPer_1MOutputUsd: 1.50,
+				ShowInDropdown:      true,
+			},
+		},
+
+		// ── Ollama (self-hosted) ────────────────────────────────────────────────────
+		// These are static defaults. DiscoverOllamaModels() replaces this list at
+		// runtime with whatever is actually installed on the local Ollama instance.
+		"ollama": {
+			{
+				Id:                  "llama3.3",
+				Name:                "Llama 3.3 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "llama3.2",
+				Name:                "Llama 3.2 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "llama3.2-vision",
+				Name:                "Llama 3.2 Vision (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "vision"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "llama3.1",
+				Name:                "Llama 3.1 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "qwen3",
+				Name:                "Qwen 3 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "qwen2.5",
+				Name:                "Qwen 2.5 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "deepseek-r1",
+				Name:                "DeepSeek R1 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "deepseek-v3",
+				Name:                "DeepSeek V3 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "phi4",
+				Name:                "Phi 4 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       16_000,
+				MaxOutputTokens:     4_096,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "gemma3",
+				Name:                "Gemma 3 (Ollama)",
+				Provider:            "ollama",
+				Capabilities:        []string{"text", "vision"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     8_192,
+				CostPer_1MInputUsd:  0.0,
+				CostPer_1MOutputUsd: 0.0,
+				ShowInDropdown:      true,
+			},
+		},
+
+		// ── AWS Bedrock ─────────────────────────────────────────────────────────────
+		// Claude 4.x models only. ShowInDropdown=false — Bedrock is endpoint-configured
+		// via deployment settings, not selected from a user-facing model picker.
+		"bedrock": {
+			{
+				Id:                  "us.anthropic.claude-opus-4-6-v1",
+				Name:                "Claude Opus 4.6 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-sonnet-4-6-v1:0",
+				Name:                "Claude Sonnet 4.6 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  3.0,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-opus-4-5-20251101-v1:0",
+				Name:                "Claude Opus 4.5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Name:                "Claude Sonnet 4.5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  3.0,
+				CostPer_1MOutputUsd: 15.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				Name:                "Claude Haiku 4.5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  1.0,
+				CostPer_1MOutputUsd: 5.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-opus-4-1-20250805-v1:0",
+				Name:                "Claude Opus 4.1 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  15.0,
+				CostPer_1MOutputUsd: 75.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+		},
+
+		// ── Azure OpenAI ───────────────────────────────────────────────────────────
+		// ShowInDropdown=false — Azure deployments are endpoint-configured, not
+		// selected from a user-facing model picker.
+		"azure-openai": {
+			{
+				Id:                  "gpt-5",
+				Name:                "GPT-5 (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       272_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  2.50,
+				CostPer_1MOutputUsd: 10.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "gpt-4.1",
+				Name:                "GPT-4.1 (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       1_047_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 8.0,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "gpt-4.1-mini",
+				Name:                "GPT-4.1 Mini (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use"},
+				ContextWindow:       1_047_576,
+				MaxOutputTokens:     32_768,
+				CostPer_1MInputUsd:  0.40,
+				CostPer_1MOutputUsd: 1.60,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "o3",
+				Name:                "o3 (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     100_000,
+				CostPer_1MInputUsd:  10.0,
+				CostPer_1MOutputUsd: 40.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "o4-mini",
+				Name:                "o4-mini (Azure)",
+				Provider:            "azure-openai",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     100_000,
+				CostPer_1MInputUsd:  1.10,
+				CostPer_1MOutputUsd: 4.40,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+		},
+	}
+}
+
+// NormalizeProvider returns the canonical form of a provider name as used in
+// catalog keys. Callers may pass "azureopenai" or "azure-openai" interchangeably.
+func NormalizeProvider(provider string) string {
+	if provider == "azureopenai" {
+		return "azure-openai"
+	}
+	return provider
+}
+
+// Lookup returns the ModelInfo for a given provider + model ID, or nil when
+// the exact pair is not in the built-in catalog. This is an exact-match lookup;
+// callers that need prefix or version-suffix matching must handle that above.
+func Lookup(provider, modelID string) *loomv1.ModelInfo {
+	provider = NormalizeProvider(provider)
+	for _, m := range BuildCatalog()[provider] {
+		if m.Id == modelID {
+			return m
+		}
+	}
+	return nil
+}
