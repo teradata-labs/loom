@@ -305,7 +305,7 @@ deps:
 # Run security scanner
 security:
     @echo "Running security scan..."
-    @gosec -exclude-dir=gen -fmt=text ./...
+    @gosec -exclude-dir=gen -exclude-dir=deploy/comparison/langgraph/benchpb -fmt=text ./...
 
 # Clean build artifacts
 [confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]
@@ -416,6 +416,25 @@ race-check:
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/server
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/transport
     GOWORK=off go test -tags fts5 -race -count=50 ./pkg/mcp/apps
+
+# Run load tests against gRPC server with mock LLM (zero tokens consumed)
+load-test:
+    @echo "Running load tests with mock LLM provider..."
+    GOWORK=off go test -tags fts5 -race -v ./test/loadtest/
+
+# Run load test benchmarks (throughput measurement)
+load-test-bench:
+    @echo "Running load test benchmarks..."
+    GOWORK=off go test -tags fts5 -bench=. -benchmem -run=^$ ./test/loadtest/
+
+# Run load/scalability tests without race detector (accurate latency numbers)
+load-test-perf:
+    @echo "Running performance tests (no race detector)..."
+    GOWORK=off go test -tags fts5 -v -run "TestScalability|TestProfile" ./test/loadtest/
+
+# Run a specific load test by name
+load-test-run pattern:
+    GOWORK=off go test -tags fts5 -race -v -run {{pattern}} ./test/loadtest/
 
 # Run specific tests matching pattern
 test-run pattern:
@@ -564,3 +583,69 @@ backup:
             exit 1
         fi
     fi
+
+# =============================================================================
+# Benchmark (AKS publication-grade)
+# =============================================================================
+
+# Build benchmark Docker image and push to ACR
+bench-build:
+    @echo "Building and pushing benchmark image..."
+    bash deploy/benchmark/poc-run.sh
+
+# Run PoC benchmark on AKS (quick validation: 3 runs + 1 warmup)
+bench-poc:
+    bash deploy/benchmark/poc-run.sh
+
+# Create benchmark AKS cluster (one-time setup)
+bench-setup:
+    bash deploy/benchmark/setup-cluster.sh
+
+# Scale benchmark node pools to 0 (cost savings)
+bench-scale-down:
+    bash deploy/benchmark/scale-down.sh
+
+# Pull all results from AKS PVC to local disk
+bench-pull-results dir="./results":
+    bash deploy/benchmark/pull-results.sh {{dir}}
+
+# Tear down benchmark cluster entirely
+bench-teardown:
+    bash deploy/benchmark/teardown-cluster.sh
+
+# Run full publication-grade benchmark suite on AKS (~6 hours)
+load-test-publish server_addr http_addr:
+    @echo "Running full benchmark suite against {{server_addr}}..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{server_addr}} \
+        --http-addr={{http_addr}} \
+        --scenario=all \
+        --runs=10 \
+        --warmup-runs=2 \
+        --output-dir=./results
+
+# Run LangGraph head-to-head comparison
+load-test-comparison loom_addr loom_http langgraph_addr:
+    @echo "Running Loom vs LangGraph comparison..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{loom_addr}} \
+        --http-addr={{loom_http}} \
+        --langgraph-addr={{langgraph_addr}} \
+        --scenario=comparison \
+        --runs=10 \
+        --warmup-runs=2 \
+        --output-dir=./results
+
+# Run a single benchmark scenario on AKS
+load-test-publish-single server_addr http_addr scenario:
+    @echo "Running scenario {{scenario}} against {{server_addr}}..."
+    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
+    /tmp/loom-bench-harness \
+        --server-addr={{server_addr}} \
+        --http-addr={{http_addr}} \
+        --scenario={{scenario}} \
+        --runs=5 \
+        --warmup-runs=1 \
+        --output-dir=./results

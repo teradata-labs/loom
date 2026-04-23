@@ -98,6 +98,17 @@ type SegmentedMemory struct {
 	tokenCount      int           // Actual token count of current context
 	tokenCountDirty bool          // Whether token count needs recalculation
 
+	// Per-layer token count caches (avoids full recalculation on every AddMessage)
+	cachedROMTokens      int  // Tokens in ROM layer (changes only on init)
+	cachedKernelTokens   int  // Tokens in kernel layer (tools + results + schemas)
+	cachedL1Tokens       int  // Tokens in L1 messages
+	cachedL2Tokens       int  // Tokens in L2 summary
+	cachedPatternTokens  int  // Tokens in pattern content
+	cachedSkillTokens    int  // Tokens in skill content
+	cachedPromotedTokens int  // Tokens in promoted context
+	kernelDirty          bool // Whether kernel layer needs recounting
+	l1Dirty              bool // Whether L1 needs full recount (e.g., after compression)
+
 	// Memory compression
 	compressor MemoryCompressor // LLM-powered compression (optional)
 
@@ -200,8 +211,8 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 		compressionProfile: profile,                       // Store profile for adaptive compression
 	}
 
-	// Initialize token count with ROM layer
-	sm.updateTokenCount()
+	// Initialize all per-layer token caches
+	sm.fullRecount()
 	sm.tokenCountDirty = false
 	return sm
 }
@@ -309,15 +320,32 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 
 	sm.l1Messages = append(sm.l1Messages, msg)
 
-	// Recalculate token count if dirty (from schema operations) or after adding message
-	// This ensures accurate budget tracking for compression decisions
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
+	// Incremental L1 token update: count only the new message's tokens
+	// instead of recounting ALL messages. This avoids O(n) tiktoken calls
+	// on every AddMessage.
+	msgTokens := 10 + sm.tokenCounter.CountTokens(msg.Content) // 10 = message overhead
+	if len(msg.ToolCalls) > 0 {
+		msgTokens += sm.tokenCounter.CountTokens(fmt.Sprintf("%v", msg.ToolCalls))
+	}
+	if msg.ToolResult != nil {
+		msgTokens += sm.tokenCounter.CountTokens(fmt.Sprintf("%v", *msg.ToolResult))
+	}
+	sm.cachedL1Tokens += msgTokens
+
+	// If other layers were dirtied (e.g., schema operations between messages),
+	// do a full recount to pick up those changes too.
+	if sm.tokenCountDirty {
+		sm.fullRecount()
+		sm.tokenCountDirty = false
+	} else {
+		// Fast path: just update the total from cached layer values
+		sm.updateTokenCount()
+	}
 
 	// Check if we need to compress based on two criteria:
 	// 1. L1 exceeds token budget (token-based, not message-based)
 	// 2. Overall token budget exceeds warning threshold (profile-dependent)
-	l1Tokens := sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+	l1Tokens := sm.cachedL1Tokens
 	budgetUsage := sm.tokenBudget.UsagePercentage()
 	warningThreshold := float64(sm.compressionProfile.WarningThresholdPercent)
 	shouldCompress := l1Tokens > sm.maxL1Tokens || budgetUsage > warningThreshold
@@ -350,6 +378,10 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 			sm.l1Messages = sm.l1Messages[toCompressCount:]
 
 			sm.compressToL2(ctx, toCompress)
+			// Recount only the layers that changed: L1 (shrunk) and L2 (grew)
+			sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+			sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
+			sm.l1Dirty = false
 			sm.updateTokenCount()
 			sm.tokenCountDirty = false
 
@@ -544,6 +576,8 @@ func (sm *SegmentedMemory) AddToolResult(result CachedToolResult) {
 		}
 	}
 
+	sm.recountKernel()
+	sm.kernelDirty = false
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 }
@@ -591,8 +625,8 @@ func (sm *SegmentedMemory) CacheSchema(key, schema string) {
 		}
 	}
 
-	// Mark token count as dirty for lazy recalculation
-	// Token counting is expensive and not critical for schema caching
+	// Mark kernel dirty for lazy recalculation
+	sm.kernelDirty = true
 	sm.tokenCountDirty = true
 }
 
@@ -897,13 +931,75 @@ func (sm *SegmentedMemory) containsToolCall(msg Message) bool {
 }
 
 // updateTokenCount calculates actual token usage across all memory layers (must hold lock).
+// Uses per-layer caching to avoid expensive tiktoken calls when layers haven't changed.
+// ROM tokens are computed once at construction. Kernel, pattern, skill, L2, and promoted
+// layers are recounted only when their dirty flags are set. L1 is recounted only when
+// l1Dirty is set (e.g., after compression removes messages).
 func (sm *SegmentedMemory) updateTokenCount() {
+	// ROM layer — cached at construction, never changes
+	// (cachedROMTokens is set in constructor and after full recount)
+
+	// Kernel layer — recount only when dirty
+	if sm.kernelDirty {
+		sm.recountKernel()
+		sm.kernelDirty = false
+	}
+
+	// L1 layer — recount only when dirty (compression removed messages)
+	if sm.l1Dirty {
+		sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+		sm.l1Dirty = false
+	}
+
+	// Sum all cached layer values
+	count := sm.cachedROMTokens +
+		sm.cachedKernelTokens +
+		sm.cachedL1Tokens +
+		sm.cachedL2Tokens +
+		sm.cachedPatternTokens +
+		sm.cachedSkillTokens +
+		sm.cachedPromotedTokens
+
+	sm.tokenCount = count
+
+	// Update token budget usage
+	sm.tokenBudget.Reset()
+	sm.tokenBudget.Use(count)
+}
+
+// fullRecount forces a complete recalculation of all layer caches (must hold lock).
+// Used during initialization and when tokenCountDirty is set by operations that
+// change layers without updating their specific cache (backwards compatibility).
+func (sm *SegmentedMemory) fullRecount() {
+	sm.cachedROMTokens = sm.tokenCounter.CountTokens(sm.romContent)
+	sm.recountKernel()
+	sm.cachedL1Tokens = sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
+	sm.cachedL2Tokens = sm.tokenCounter.CountTokens(sm.l2Summary)
+	sm.cachedPatternTokens = sm.tokenCounter.CountTokens(sm.patternContent)
+	sm.cachedSkillTokens = sm.tokenCounter.CountTokens(sm.skillContent)
+	if len(sm.promotedContext) > 0 {
+		sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
+	} else {
+		sm.cachedPromotedTokens = 0
+	}
+	sm.kernelDirty = false
+	sm.l1Dirty = false
+
+	sm.tokenCount = sm.cachedROMTokens +
+		sm.cachedKernelTokens +
+		sm.cachedL1Tokens +
+		sm.cachedL2Tokens +
+		sm.cachedPatternTokens +
+		sm.cachedSkillTokens +
+		sm.cachedPromotedTokens
+
+	sm.tokenBudget.Reset()
+	sm.tokenBudget.Use(sm.tokenCount)
+}
+
+// recountKernel recalculates kernel layer tokens (must hold lock).
+func (sm *SegmentedMemory) recountKernel() {
 	count := 0
-
-	// ROM layer
-	count += sm.tokenCounter.CountTokens(sm.romContent)
-
-	// Kernel layer
 	if len(sm.tools) > 0 {
 		count += sm.tokenCounter.CountTokens(fmt.Sprintf("Available tools: %s", strings.Join(sm.tools, ", ")))
 	}
@@ -911,29 +1007,7 @@ func (sm *SegmentedMemory) updateTokenCount() {
 	for key, schema := range sm.schemaCache {
 		count += sm.tokenCounter.CountTokens(fmt.Sprintf("%s: %s", key, schema))
 	}
-
-	// L1 layer (messages)
-	count += sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages)
-
-	// L2 layer (summary)
-	count += sm.tokenCounter.CountTokens(sm.l2Summary)
-
-	// Pattern content
-	count += sm.tokenCounter.CountTokens(sm.patternContent)
-
-	// Skill content
-	count += sm.tokenCounter.CountTokens(sm.skillContent)
-
-	// Promoted context (from swap layer)
-	if len(sm.promotedContext) > 0 {
-		count += sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
-	}
-
-	sm.tokenCount = count
-
-	// Update token budget usage
-	sm.tokenBudget.Reset()
-	sm.tokenBudget.Use(count)
+	sm.cachedKernelTokens = count
 }
 
 // InjectPattern injects a formatted pattern into the message stream.
@@ -945,7 +1019,8 @@ func (sm *SegmentedMemory) InjectPattern(patternContent string, patternName stri
 
 	sm.patternContent = patternContent
 	sm.patternName = patternName
-	sm.tokenCountDirty = true
+	sm.cachedPatternTokens = sm.tokenCounter.CountTokens(patternContent)
+	sm.updateTokenCount()
 
 	if sm.tracer != nil {
 		sm.tracer.RecordMetric("patterns.injected", 1.0, map[string]string{
@@ -961,7 +1036,8 @@ func (sm *SegmentedMemory) InjectSkills(content string, names []string) {
 	defer sm.mu.Unlock()
 	sm.skillContent = content
 	sm.skillNames = names
-	sm.tokenCountDirty = true
+	sm.cachedSkillTokens = sm.tokenCounter.CountTokens(content)
+	sm.updateTokenCount()
 }
 
 // GetMessagesForLLM builds the full message list for the LLM call.
@@ -1097,9 +1173,11 @@ func (sm *SegmentedMemory) GetTokenCount() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Recalculate if dirty (lazy evaluation for performance)
+	// Recalculate if dirty (lazy evaluation for performance).
+	// tokenCountDirty means a layer changed via an operation that didn't update
+	// its specific cache — do a full recount for correctness.
 	if sm.tokenCountDirty {
-		sm.updateTokenCount()
+		sm.fullRecount()
 		sm.tokenCountDirty = false
 	}
 
@@ -1150,8 +1228,8 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.swapEvictionCount = 0
 	sm.swapRetrievalCount = 0
 
-	// Recalculate token count (should be just ROM + kernel overhead now)
-	sm.updateTokenCount()
+	// Full recount after reset
+	sm.fullRecount()
 	sm.tokenCountDirty = false
 
 	if sm.tracer != nil {
@@ -1197,6 +1275,7 @@ func (sm *SegmentedMemory) ClearL2() {
 	defer sm.mu.Unlock()
 
 	sm.l2Summary = ""
+	sm.cachedL2Tokens = 0
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 }
@@ -1240,7 +1319,10 @@ func (sm *SegmentedMemory) CompactMemory(ctx context.Context) (int, int) {
 			sm.l1Messages = sm.l1Messages[:0]
 		}
 
-		sm.updateTokenCount()
+		// L1 shrank and L2 grew — do a full recount so per-layer token caches
+		// (cachedL1Tokens, cachedL2Tokens) stay consistent with the incremental
+		// updateTokenCount scheme.
+		sm.fullRecount()
 		sm.tokenCountDirty = false
 
 		// Calculate token savings
@@ -1334,10 +1416,10 @@ func (sm *SegmentedMemory) GetMemoryStats() map[string]interface{} {
 		"tool_result_max":    sm.maxToolResults,
 		"schema_cache_count": len(sm.schemaCache),
 		"schema_cache_max":   sm.maxSchemas,
-		"rom_token_count":    sm.tokenCounter.CountTokens(sm.romContent),
-		"kernel_token_count": sm.getKernelTokens(),
-		"l1_token_count":     sm.tokenCounter.EstimateMessagesTokens(sm.l1Messages),
-		"l2_token_count":     sm.tokenCounter.CountTokens(sm.l2Summary),
+		"rom_token_count":    sm.cachedROMTokens,
+		"kernel_token_count": sm.cachedKernelTokens,
+		"l1_token_count":     sm.cachedL1Tokens,
+		"l2_token_count":     sm.cachedL2Tokens,
 		"budget_warning":     sm.getBudgetWarning(),
 	}
 }
@@ -1503,7 +1585,8 @@ func (sm *SegmentedMemory) PromoteMessagesToContext(messages []Message) error {
 	// Add to promoted context
 	sm.promotedContext = append(sm.promotedContext, messages...)
 
-	// Update token count
+	// Update promoted cache and totals
+	sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 
@@ -1517,6 +1600,7 @@ func (sm *SegmentedMemory) ClearPromotedContext() {
 	defer sm.mu.Unlock()
 
 	sm.promotedContext = sm.promotedContext[:0]
+	sm.cachedPromotedTokens = 0
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 }

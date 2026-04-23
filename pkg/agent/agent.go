@@ -3533,6 +3533,12 @@ func (a *Agent) DeleteSession(sessionID string) {
 	a.memory.DeleteSession(sessionID)
 }
 
+// ClearAllSessions removes all sessions from memory.
+// Used by the benchmark server to free memory between scenarios.
+func (a *Agent) ClearAllSessions() {
+	a.memory.ClearAll()
+}
+
 // cleanupSessionReferences releases all shared memory references for a session.
 // Called automatically when sessions are deleted (via cleanup hook).
 // This prevents reference leaks by decrementing RefCount on all pinned references.
