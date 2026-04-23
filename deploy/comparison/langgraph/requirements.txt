@@ -1,6 +1,6 @@
-langgraph==0.4.1
-langchain-core==0.3.51
+langgraph==1.0.10rc1
+langchain-core==1.2.28
 grpcio==1.71.0
 grpcio-tools==1.71.0
-protobuf==5.29.4
+protobuf==5.29.6
 uvloop==0.21.0
