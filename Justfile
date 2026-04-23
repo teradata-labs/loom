@@ -377,8 +377,11 @@ dev-full: build-server
     @kill $$(cat /tmp/loom-server.pid) 2>/dev/null || true
     @rm -f /tmp/loom-server.pid
 
-# Run all checks (matches GitHub CI exactly)
-check: proto-lint proto-format-check proto-gen-check fmt-check vet lint test build security
+# Run all checks (matches GitHub CI exactly).
+# generate-weaver must run before vet/lint/test — CI generates embedded/weaver.yaml
+# from the .tmpl at the start of every job, and our //go:embed weaver.yaml
+# directive will otherwise fail on a clean workspace.
+check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security
     @echo "✅ All checks passed! (matches GitHub CI)"
 
 # Watch for changes and run tests

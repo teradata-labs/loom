@@ -13,17 +13,20 @@ import (
 func TestModelRegistry_GetModelsForProvider(t *testing.T) {
 	reg := NewModelRegistry()
 
+	// Counts updated 2026-04-22 after refreshing the built-in catalog to current
+	// provider offerings (added Opus 4.7, GPT-5.x ladder, Gemini 3.x previews,
+	// new Mistral dated IDs, llama4/gemma4/phi4-mini/qwen3.5).
 	tests := []struct {
 		provider      string
 		expectedCount int
 	}{
-		{"anthropic", 6},
-		{"openai", 8},
-		{"gemini", 3},
-		{"bedrock", 6},
-		{"ollama", 10},
-		{"mistral", 6},
-		{"azure-openai", 5},
+		{"anthropic", 7},
+		{"openai", 16},
+		{"gemini", 7},
+		{"bedrock", 8},
+		{"ollama", 14},
+		{"mistral", 13},
+		{"azure-openai", 8},
 	}
 
 	for _, tt := range tests {
@@ -52,8 +55,8 @@ func TestModelRegistry_GetModelsForProvider_HuggingFaceRemoved(t *testing.T) {
 func TestModelRegistry_GetAllModels_TotalCount(t *testing.T) {
 	reg := NewModelRegistry()
 	all := reg.GetAllModels()
-	// anthropic(6) + openai(8) + gemini(3) + bedrock(6) + ollama(10) + mistral(6) + azure-openai(5) = 44
-	assert.Len(t, all, 44)
+	// anthropic(7) + openai(16) + gemini(7) + bedrock(8) + ollama(14) + mistral(13) + azure-openai(8) = 73
+	assert.Len(t, all, 73)
 }
 
 func TestModelRegistry_NewFields(t *testing.T) {
@@ -166,9 +169,10 @@ func TestModelRegistry_DiscoverOllamaModels_Unreachable(t *testing.T) {
 	err := reg.DiscoverOllamaModels("http://localhost:1")
 	assert.Error(t, err)
 
-	// Static models should remain intact
+	// Static models should remain intact. Count tracks the Ollama section of
+	// the built-in catalog (14 entries as of 2026-04-22).
 	models := reg.GetModelsForProvider("ollama")
-	assert.Len(t, models, 10)
+	assert.Len(t, models, 14)
 }
 
 func TestModelRegistry_DiscoverOllamaModels_EmptyResponse(t *testing.T) {
@@ -184,9 +188,10 @@ func TestModelRegistry_DiscoverOllamaModels_EmptyResponse(t *testing.T) {
 	err := reg.DiscoverOllamaModels(server.URL)
 	require.NoError(t, err)
 
-	// Should keep static defaults when no models discovered
+	// Should keep static defaults when no models discovered. Count tracks the
+	// Ollama section of the built-in catalog (14 entries as of 2026-04-22).
 	models := reg.GetModelsForProvider("ollama")
-	assert.Len(t, models, 10)
+	assert.Len(t, models, 14)
 }
 
 func TestFormatOllamaDisplayName(t *testing.T) {
