@@ -305,7 +305,7 @@ deps:
 # Run security scanner
 security:
     @echo "Running security scan..."
-    @gosec -exclude-dir=gen -exclude-dir=deploy/comparison/langgraph/benchpb -fmt=text ./...
+    @gosec -exclude-dir=gen -fmt=text ./...
 
 # Clean build artifacts
 [confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]
@@ -621,19 +621,6 @@ load-test-publish server_addr http_addr:
         --server-addr={{server_addr}} \
         --http-addr={{http_addr}} \
         --scenario=all \
-        --runs=10 \
-        --warmup-runs=2 \
-        --output-dir=./results
-
-# Run LangGraph head-to-head comparison
-load-test-comparison loom_addr loom_http langgraph_addr:
-    @echo "Running Loom vs LangGraph comparison..."
-    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
-    /tmp/loom-bench-harness \
-        --server-addr={{loom_addr}} \
-        --http-addr={{loom_http}} \
-        --langgraph-addr={{langgraph_addr}} \
-        --scenario=comparison \
         --runs=10 \
         --warmup-runs=2 \
         --output-dir=./results
