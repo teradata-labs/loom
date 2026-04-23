@@ -15,17 +15,76 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/pkoukk/tiktoken-go"
+	"go.uber.org/zap"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
-// encoderPoolSize is the number of pre-allocated tiktoken encoders.
-// Matches typical GOMAXPROCS on modern machines. Goroutines beyond this
-// count block briefly until an encoder is returned — no allocation, no GC churn.
-const encoderPoolSize = 16
+const (
+	// EncoderPoolSizeEnvVar lets operators override the tiktoken encoder pool
+	// size without a recompile. When set to a positive integer, the singleton
+	// TokenCounter uses that value; anything else (unset, non-numeric, <=0)
+	// falls back to the GOMAXPROCS-driven default.
+	EncoderPoolSizeEnvVar = "LOOM_TOKEN_ENCODER_POOL_SIZE"
+
+	// encoderPoolSizeFloor is the minimum pool size. Kept at 16 so dev machines
+	// and small containers (GOMAXPROCS 4-8) behave exactly as they did before
+	// this resolver was introduced.
+	encoderPoolSizeFloor = 16
+)
+
+// encoderPoolSize is resolved once at package init. It is a var, not a const,
+// so the value depends on GOMAXPROCS and env at startup rather than being baked
+// in at compile time. See resolveEncoderPoolSize for the full precedence order.
+//
+// Sizing rationale, from an AKS microbench on a 32 vCPU Intel Xeon 8473C
+// (Platinum, 2026-04-23):
+//
+//	goroutines  pool=8   pool=16  pool=32  pool=64
+//	16          63k      381k     374k     384k ops/s
+//	32          37k      99k      381k     354k
+//	64          30k      60k      111k     369k
+//
+// Once concurrent callers exceed pool size, throughput collapses because every
+// call blocks on <-tc.encoders. At g=32 the hardcoded 16 gave 99k ops/s versus
+// 381k at pool=32 — a 3.8x loss of throughput from a 1 MB memory savings.
+// Memory per extra encoder is ~45 KB (the cl100k_base MergeableRanks map is
+// shared via tiktoken's internal encodingMap cache; only the per-instance
+// decoder map, sortedTokenBytes, and compiled regex are paid per encoder).
+var encoderPoolSize = resolveEncoderPoolSize()
+
+// resolveEncoderPoolSize picks the pool size with this precedence:
+//  1. LOOM_TOKEN_ENCODER_POOL_SIZE env var, if a positive integer
+//  2. runtime.GOMAXPROCS(0), floored at encoderPoolSizeFloor
+//
+// Invalid env values (non-numeric, <=0) silently fall through to the default so
+// a typo or a misconfigured container doesn't take the process down. The
+// chosen value is logged once at GetTokenCounter initialization for ops
+// visibility.
+func resolveEncoderPoolSize() int {
+	if raw := os.Getenv(EncoderPoolSizeEnvVar); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	procs := runtime.GOMAXPROCS(0)
+	if procs < encoderPoolSizeFloor {
+		return encoderPoolSizeFloor
+	}
+	return procs
+}
+
+// EncoderPoolSize returns the resolved size of the singleton TokenCounter's
+// encoder pool. Exposed for tests and startup diagnostics; not a reconfiguration
+// hook — the channel is built once in GetTokenCounter.
+func EncoderPoolSize() int { return encoderPoolSize }
 
 // TokenCounter provides accurate token counting for LLM context management.
 // Uses tiktoken with cl100k_base encoding (Claude-compatible approximation).
@@ -72,6 +131,18 @@ func GetTokenCounter() *TokenCounter {
 		globalTokenCounter = &TokenCounter{
 			encoder:  first, // kept for test introspection (non-nil means encoder available)
 			encoders: encoders,
+		}
+
+		// Log the resolved pool size exactly once. Useful for confirming a
+		// LOOM_TOKEN_ENCODER_POOL_SIZE override took effect or for spotting
+		// GOMAXPROCS-vs-container-quota mismatches in k8s deploys.
+		if logger := zap.L(); logger != nil {
+			logger.Debug("token encoder pool initialized",
+				zap.Int("pool_size", encoderPoolSize),
+				zap.Int("gomaxprocs", runtime.GOMAXPROCS(0)),
+				zap.Int("num_cpu", runtime.NumCPU()),
+				zap.String("env_override", os.Getenv(EncoderPoolSizeEnvVar)),
+			)
 		}
 	})
 	return globalTokenCounter
