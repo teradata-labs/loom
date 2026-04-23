@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package bench.v1;
+
+option go_package = "github.com/teradata-labs/loom/deploy/comparison/langgraph/benchpb";
+
+// BenchService is a minimal gRPC service for framework throughput comparison.
+// Both Loom and LangGraph implement this interface so the same harness can drive both.
+service BenchService {
+  rpc Process(ProcessRequest) returns (ProcessResponse);
+}
+
+message ProcessRequest {
+  string query = 1;
+  string session_id = 2;
+}
+
+message ProcessResponse {
+  string response = 1;
+  string session_id = 2;
+}

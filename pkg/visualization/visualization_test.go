@@ -11,6 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // TestChartSelector_AnalyzeDataset tests data pattern analysis
@@ -340,6 +344,33 @@ func TestStyleGuideClient_FetchStyleWithFallback_NonEmptyEndpoint(t *testing.T) 
 	if style.ColorPrimary == "" {
 		t.Error("ColorPrimary should not be empty after fallback")
 	}
+}
+
+// TestStyleGuideClient_FetchStyleWithFallback_LogsWarn verifies that the
+// fallback path emits a structured warning through the injected logger.
+func TestStyleGuideClient_FetchStyleWithFallback_LogsWarn(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	sgc := NewStyleGuideClient(styleGuideTestEndpoint).WithLogger(zap.New(core))
+
+	_ = sgc.FetchStyleWithFallback(context.Background(), "dark")
+
+	entries := logs.FilterMessage("visualization: style fetch failed, using defaults").All()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 warn log, got %d", len(entries))
+	}
+	ctx := entries[0].ContextMap()
+	if ctx["endpoint"] != styleGuideTestEndpoint {
+		t.Errorf("endpoint field = %v, want %q", ctx["endpoint"], styleGuideTestEndpoint)
+	}
+	if ctx["theme"] != "dark" {
+		t.Errorf("theme field = %v, want %q", ctx["theme"], "dark")
+	}
+}
+
+func TestStyleGuideClient_WithLogger_NilIsNop(t *testing.T) {
+	sgc := NewStyleGuideClient(styleGuideTestEndpoint).WithLogger(nil)
+	// Should not panic even though the endpoint path triggers a warning.
+	_ = sgc.FetchStyleWithFallback(context.Background(), "dark")
 }
 
 // TestStyleConfig_Validation tests style config validation

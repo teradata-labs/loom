@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loom-bench-harness
+  namespace: loom-bench
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: loom-bench-harness
+    spec:
+      restartPolicy: Never
+      serviceAccountName: bench-harness
+      nodeSelector:
+        loom-role: harness
+      tolerations:
+        - key: loom-role
+          value: harness
+          effect: NoSchedule
+      containers:
+        - name: harness
+          image: loomcloudacr.azurecr.io/loom-bench:latest
+          command:
+            - /loom-bench-harness
+          args:
+            - "--server-addr=loom-bench-server:60051"
+            - "--http-addr=loom-bench-server:8080"
+            - "--scenario=sustained_load"
+            - "--runs=3"
+            - "--warmup-runs=1"
+            - "--output-dir=/results"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: results
+              mountPath: /results
+          resources:
+            requests:
+              cpu: "14"
+              memory: "40Gi"
+            limits:
+              cpu: "14"
+              memory: "40Gi"
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: bench-results

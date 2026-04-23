@@ -151,157 +151,122 @@ func (m *Memory) GetOrCreateSession(ctx context.Context, sessionID string) *Sess
 //   - agentID: Agent identity (e.g., "coordinator", "analyzer-sub-agent")
 //   - parentSessionID: Parent session ID (for sub-agents to access coordinator session)
 func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, agentID, parentSessionID string) *Session {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Check in-memory cache first
+	// Fast path: read-lock check for existing session (most common case in
+	// multi-turn conversations). No write lock needed if session already exists
+	// and doesn't need metadata updates.
+	m.mu.RLock()
 	if session, ok := m.sessions[sessionID]; ok {
-		// Update agent metadata if provided (allows setting after creation)
-		updated := false
-		if agentID != "" && session.AgentID == "" {
-			session.AgentID = agentID
-			updated = true
+		needsUpdate := (agentID != "" && session.AgentID == "") ||
+			(parentSessionID != "" && session.ParentSessionID == "") ||
+			session.SegmentedMem == nil ||
+			session.FailureTracker == nil
+		if !needsUpdate {
+			m.mu.RUnlock()
+			return session
 		}
-		if parentSessionID != "" && session.ParentSessionID == "" {
-			session.ParentSessionID = parentSessionID
-			updated = true
-		}
+	}
+	m.mu.RUnlock()
 
-		// Persist updated metadata to store
-		if updated && m.store != nil {
-			if err := m.store.SaveSession(ctx, session); err != nil {
-				m.logger.Warn("Failed to persist session to storage",
-					zap.String("session_id", session.ID),
-					zap.Error(err))
-			}
-		}
+	// Slow path: need to create or update. Read Memory config under read lock
+	// first (to snapshot configuration), then build the session without any lock.
+	m.mu.RLock()
+	store := m.store
+	sharedMem := m.sharedMemory
+	sysFn := m.systemPromptFunc
+	tracer := m.tracer
+	llmProv := m.llmProvider
+	maxCtx := m.maxContextTokens
+	reservedOut := m.reservedOutputTokens
+	compProfile := m.compressionProfile
+	maxToolRes := m.maxToolResults
+	logger := m.logger
+	m.mu.RUnlock()
 
-		// DEFENSIVE FIX: Ensure SegmentedMemory exists even for cached sessions
-		// Protects against edge cases where session might have lost SegmentedMem
-		if session.SegmentedMem == nil {
-			romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
-			if m.systemPromptFunc != nil {
-				romContent = m.systemPromptFunc(ctx)
-			}
+	// Check write-lock path: existing session that needs metadata update
+	m.mu.Lock()
 
-			if m.compressionProfile != nil {
-				session.SegmentedMem = NewSegmentedMemoryWithCompression(romContent, m.maxContextTokens, m.reservedOutputTokens, *m.compressionProfile)
-			} else {
-				session.SegmentedMem = NewSegmentedMemory(romContent, m.maxContextTokens, m.reservedOutputTokens)
-			}
-
-			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-				if m.sharedMemory != nil {
-					segMem.SetSharedMemory(m.sharedMemory)
-				}
-				if m.store != nil {
-					segMem.SetSessionStore(m.store, sessionID)
-				}
-				if m.tracer != nil {
-					segMem.SetTracer(m.tracer)
-				}
-				if m.llmProvider != nil {
-					segMem.SetLLMProvider(m.llmProvider)
-				}
-				if m.maxToolResults > 0 {
-					segMem.maxToolResults = m.maxToolResults
-				}
-			}
-		}
-
+	// Double-check: another goroutine may have created it while we waited for the write lock.
+	// Defensive: also ensure SegmentedMem/FailureTracker are present — in the common
+	// case they already are (ensureSessionMemory is a no-op), but this protects against
+	// edge cases where a cached session has been stripped of these fields.
+	if session, ok := m.sessions[sessionID]; ok {
+		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
+		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
+			sharedMem, store, tracer, llmProv, maxToolRes, ctx)
 		if session.FailureTracker == nil {
 			session.FailureTracker = newConsecutiveFailureTracker()
 		}
-
+		m.mu.Unlock()
 		return session
 	}
 
-	// Try loading from persistent store
-	if m.store != nil {
-		session, err := m.store.LoadSession(ctx, sessionID)
-		// session may be nil with nil err when the backend uses (nil, nil) to
-		// indicate "not found" (e.g. PostgreSQL soft-delete convention). Treat
-		// that the same as SQLite's "not found" error: fall through to create.
+	// Try loading from persistent store (still under write lock to prevent
+	// duplicate loads, but store.LoadSession is typically fast for cache misses)
+	if store != nil {
+		session, err := store.LoadSession(ctx, sessionID)
 		if err == nil && session != nil {
-			// Update agent metadata if provided
-			updated := false
-			if agentID != "" && session.AgentID == "" {
-				session.AgentID = agentID
-				updated = true
-			}
-			if parentSessionID != "" && session.ParentSessionID == "" {
-				session.ParentSessionID = parentSessionID
-				updated = true
-			}
-
-			// Persist updated metadata
-			if updated {
-				if err := m.store.SaveSession(ctx, session); err != nil {
-					m.logger.Warn("Failed to persist updated session to storage",
-						zap.String("session_id", sessionID),
-						zap.Error(err))
-				}
-			}
-
-			// CRITICAL FIX: Re-initialize SegmentedMemory for loaded sessions
-			// Sessions loaded from DB don't have SegmentedMem/FailureTracker (not persisted)
-			// We MUST recreate these for compression and error tracking to work
-			if session.SegmentedMem == nil {
-				// Initialize ROM content
-				romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
-				if m.systemPromptFunc != nil {
-					romContent = m.systemPromptFunc(ctx)
-				}
-
-				// Create SegmentedMemory with compression profile
-				if m.compressionProfile != nil {
-					session.SegmentedMem = NewSegmentedMemoryWithCompression(romContent, m.maxContextTokens, m.reservedOutputTokens, *m.compressionProfile)
-				} else {
-					session.SegmentedMem = NewSegmentedMemory(romContent, m.maxContextTokens, m.reservedOutputTokens)
-				}
-
-				// Inject dependencies
-				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-					if m.sharedMemory != nil {
-						segMem.SetSharedMemory(m.sharedMemory)
-					}
-					if m.store != nil {
-						segMem.SetSessionStore(m.store, sessionID)
-					}
-					if m.tracer != nil {
-						segMem.SetTracer(m.tracer)
-					}
-					if m.llmProvider != nil {
-						segMem.SetLLMProvider(m.llmProvider)
-					}
-					if m.maxToolResults > 0 {
-						segMem.maxToolResults = m.maxToolResults
-					}
-
-					// Replay loaded messages into SegmentedMem to restore LLM context after
-					// server restart. session.Messages has the full DB-loaded history, but
-					// SegmentedMem was just initialized empty. Without this, GetMessagesForLLM()
-					// returns only the system prompt (no history).
-					//
-					// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
-					// compression from firing between an assistant tool_use and its tool_result
-					// — see ReplayMessages doc for details.
-					segMem.ReplayMessages(ctx, session.Messages)
-				}
-			}
-
-			// Re-initialize FailureTracker if missing
+			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
+			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
+			// (they aren't persisted). Recreate them so compression and error
+			// tracking continue to work across restarts.
+			needsReplay := session.SegmentedMem == nil
+			m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
+				sharedMem, store, tracer, llmProv, maxToolRes, ctx)
 			if session.FailureTracker == nil {
 				session.FailureTracker = newConsecutiveFailureTracker()
 			}
-
+			// Replay DB-loaded messages into a freshly built SegmentedMem so
+			// GetMessagesForLLM returns full history after server restart.
+			//
+			// CRITICAL: Use ReplayMessages (not AddMessage in a loop) to prevent
+			// compression from firing between an assistant tool_use and its
+			// tool_result — see ReplayMessages doc for details.
+			if needsReplay {
+				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
+					segMem.ReplayMessages(ctx, session.Messages)
+				}
+			}
 			m.sessions[sessionID] = session
+			m.mu.Unlock()
 			return session
 		}
-		// If not found in store, create new below
 	}
 
-	// Create new session with agent metadata
+	// Not found in cache or store. Release the lock so other goroutines
+	// working on different sessions aren't blocked while we build the
+	// SegmentedMemory (which involves tiktoken calls).
+	m.mu.Unlock()
+
+	// Build SegmentedMemory OUTSIDE any lock — this is the expensive part.
+	romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
+	if sysFn != nil {
+		romContent = sysFn(ctx)
+	}
+
+	var segMem *SegmentedMemory
+	if compProfile != nil {
+		segMem = NewSegmentedMemoryWithCompression(romContent, maxCtx, reservedOut, *compProfile)
+	} else {
+		segMem = NewSegmentedMemory(romContent, maxCtx, reservedOut)
+	}
+
+	// Inject dependencies
+	if sharedMem != nil {
+		segMem.SetSharedMemory(sharedMem)
+	}
+	if store != nil {
+		segMem.SetSessionStore(store, sessionID)
+	}
+	if tracer != nil {
+		segMem.SetTracer(tracer)
+	}
+	if llmProv != nil {
+		segMem.SetLLMProvider(llmProv)
+	}
+	if maxToolRes > 0 {
+		segMem.maxToolResults = maxToolRes
+	}
+
 	session := &Session{
 		ID:              sessionID,
 		AgentID:         agentID,
@@ -310,69 +275,90 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		Context:         make(map[string]interface{}),
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
+		SegmentedMem:    segMem,
+		FailureTracker:  newConsecutiveFailureTracker(),
 	}
 
-	// Initialize segmented memory (tiered memory management for 100+ turn conversations)
-	// ROM content can be customized per agent
-	romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
-	if m.systemPromptFunc != nil {
-		romContent = m.systemPromptFunc(ctx)
+	// Insert fully-built session under write lock.
+	// Double-check: another goroutine may have created the same session
+	// while we were building SegmentedMemory.
+	m.mu.Lock()
+	if existing, ok := m.sessions[sessionID]; ok {
+		// Another goroutine beat us — use theirs, discard ours.
+		m.mu.Unlock()
+		return existing
 	}
-
-	// Use compression profile if configured, otherwise use balanced defaults
-	if m.compressionProfile != nil {
-		session.SegmentedMem = NewSegmentedMemoryWithCompression(romContent, m.maxContextTokens, m.reservedOutputTokens, *m.compressionProfile)
-	} else {
-		session.SegmentedMem = NewSegmentedMemory(romContent, m.maxContextTokens, m.reservedOutputTokens)
-	}
-
-	// Inject shared memory if configured
-	if m.sharedMemory != nil {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-			segMem.SetSharedMemory(m.sharedMemory)
-		}
-	}
-
-	// Enable swap layer if SessionStore is configured (opt-out design)
-	// This enables "forever conversations" by automatically evicting L2 to database
-	if m.store != nil {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-			segMem.SetSessionStore(m.store, sessionID)
-		}
-	}
-
-	// Inject tracer if configured
-	if m.tracer != nil {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-			segMem.SetTracer(m.tracer)
-		}
-	}
-
-	// Inject LLM provider if configured (for semantic search reranking)
-	if m.llmProvider != nil {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-			segMem.SetLLMProvider(m.llmProvider)
-		}
-	}
-
-	// Configure max tool results if set
-	if m.maxToolResults > 0 {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
-			segMem.maxToolResults = m.maxToolResults
-		}
-	}
-
-	// Initialize failure tracker for consecutive error detection
-	session.FailureTracker = newConsecutiveFailureTracker()
-
 	m.sessions[sessionID] = session
+	m.mu.Unlock()
 
-	// Persist to store if configured
-	if m.store != nil {
-		_ = m.store.SaveSession(ctx, session)
+	// Persist to store if configured (outside lock)
+	if store != nil {
+		_ = store.SaveSession(ctx, session)
 	}
 
 	return session
+}
+
+// updateSessionMetadata updates agent/parent metadata if not already set (must hold m.mu write lock or session-specific lock).
+func (m *Memory) updateSessionMetadata(session *Session, agentID, parentSessionID string, store SessionStorage, ctx context.Context, logger *zap.Logger) {
+	updated := false
+	if agentID != "" && session.AgentID == "" {
+		session.AgentID = agentID
+		updated = true
+	}
+	if parentSessionID != "" && session.ParentSessionID == "" {
+		session.ParentSessionID = parentSessionID
+		updated = true
+	}
+	if updated && store != nil {
+		if err := store.SaveSession(ctx, session); err != nil {
+			logger.Warn("Failed to persist session metadata",
+				zap.String("session_id", session.ID),
+				zap.Error(err))
+		}
+	}
+}
+
+// ensureSessionMemory initializes SegmentedMemory if nil (must hold m.mu write lock or session-specific lock).
+func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
+	sysFn SystemPromptFunc, compProfile *CompressionProfile,
+	maxCtx, reservedOut int,
+	sharedMem *storage.SharedMemoryStore, store SessionStorage,
+	tracer observability.Tracer, llmProv LLMProvider, maxToolRes int,
+	ctx context.Context,
+) {
+	if session.SegmentedMem != nil {
+		return
+	}
+
+	romContent := "Use available tools to help the user accomplish their goals. Never fabricate data - only report what tools actually return."
+	if sysFn != nil {
+		romContent = sysFn(ctx)
+	}
+
+	if compProfile != nil {
+		session.SegmentedMem = NewSegmentedMemoryWithCompression(romContent, maxCtx, reservedOut, *compProfile)
+	} else {
+		session.SegmentedMem = NewSegmentedMemory(romContent, maxCtx, reservedOut)
+	}
+
+	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
+		if sharedMem != nil {
+			segMem.SetSharedMemory(sharedMem)
+		}
+		if store != nil {
+			segMem.SetSessionStore(store, sessionID)
+		}
+		if tracer != nil {
+			segMem.SetTracer(tracer)
+		}
+		if llmProv != nil {
+			segMem.SetLLMProvider(llmProv)
+		}
+		if maxToolRes > 0 {
+			segMem.maxToolResults = maxToolRes
+		}
+	}
 }
 
 // GetSession retrieves a session by ID.
