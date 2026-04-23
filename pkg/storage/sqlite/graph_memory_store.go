@@ -17,6 +17,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -720,14 +721,13 @@ func bytesToFloat32(b []byte) []float32 {
 }
 
 // float32ToBytes converts a float32 slice to bytes (little-endian).
+// Uses encoding/binary rather than manual byte shifts so gosec's
+// G115 false-positives on the intentional uint32→byte truncation
+// do not need suppression comments.
 func float32ToBytes(f []float32) []byte {
 	b := make([]byte, len(f)*4)
 	for i, v := range f {
-		bits := math.Float32bits(v)
-		b[i*4] = byte(bits)
-		b[i*4+1] = byte(bits >> 8)
-		b[i*4+2] = byte(bits >> 16)
-		b[i*4+3] = byte(bits >> 24)
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(v))
 	}
 	return b
 }
