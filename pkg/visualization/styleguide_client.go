@@ -9,24 +9,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+
+	"go.uber.org/zap"
 )
 
 // ErrStyleGuideRemoteNotImplemented is returned when a non-empty StyleGuide
 // endpoint is configured but the remote gRPC client is not implemented yet.
 var ErrStyleGuideRemoteNotImplemented = errors.New("styleguide: remote fetch not implemented")
 
-// StyleGuideClient fetches styling from Hawk StyleGuide service
+// StyleGuideClient fetches styling from Hawk StyleGuide service.
 type StyleGuideClient struct {
 	endpoint string
+	logger   *zap.Logger
 	// In future: gRPC client to Hawk StyleGuide service
 }
 
-// NewStyleGuideClient creates a new StyleGuide client
+// NewStyleGuideClient creates a new StyleGuide client. It uses the global
+// [zap.Logger] for any fallback warnings; call [StyleGuideClient.WithLogger]
+// to inject a specific logger.
 func NewStyleGuideClient(endpoint string) *StyleGuideClient {
 	return &StyleGuideClient{
 		endpoint: endpoint,
+		logger:   zap.L(),
 	}
+}
+
+// WithLogger sets the structured logger used by [StyleGuideClient.FetchStyleWithFallback].
+// A nil logger is replaced by [zap.NewNop] so the client never panics on write.
+// The receiver is returned for chaining.
+func (sgc *StyleGuideClient) WithLogger(logger *zap.Logger) *StyleGuideClient {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	sgc.logger = logger
+	return sgc
 }
 
 // FetchStyle retrieves the current style configuration from Hawk.
@@ -64,12 +80,21 @@ func (sgc *StyleGuideClient) FetchStyle(ctx context.Context, theme string) (*Sty
 // FetchStyleWithFallback calls [StyleGuideClient.FetchStyle] and returns [DefaultStyleConfig]
 // on any error, including context cancellation, [ErrStyleGuideRemoteNotImplemented] when the
 // endpoint is non-empty but the remote client is not implemented yet, and future RPC failures.
-// It logs the error with the default package logger (stderr). Callers that need to detect
-// misconfiguration, respect cancellation, or surface errors to users should use FetchStyle instead.
+// It logs the error with the configured [zap.Logger] (see [StyleGuideClient.WithLogger]).
+// Callers that need to detect misconfiguration, respect cancellation, or surface errors to
+// users should use FetchStyle instead.
 func (sgc *StyleGuideClient) FetchStyleWithFallback(ctx context.Context, theme string) *StyleConfig {
 	style, err := sgc.FetchStyle(ctx, theme)
 	if err != nil {
-		log.Printf("visualization: failed to fetch style, using defaults: %v", err)
+		logger := sgc.logger
+		if logger == nil {
+			logger = zap.L()
+		}
+		logger.Warn("visualization: style fetch failed, using defaults",
+			zap.String("endpoint", sgc.endpoint),
+			zap.String("theme", theme),
+			zap.Error(err),
+		)
 		return DefaultStyleConfig()
 	}
 	return style
