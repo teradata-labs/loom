@@ -355,6 +355,16 @@ func (s *MultiAgentServer) SetLLMConcurrencyLimit(limit int) {
 	}
 }
 
+// ClearAllSessions removes all in-memory sessions from every agent.
+// Used by the benchmark server to free memory between scenarios.
+func (s *MultiAgentServer) ClearAllSessions() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ag := range s.agents {
+		ag.ClearAllSessions()
+	}
+}
+
 // GetSharedMemory returns the shared memory store (for testing/inspection).
 func (s *MultiAgentServer) SharedMemoryStore() *storage.SharedMemoryStore {
 	s.mu.RLock()
