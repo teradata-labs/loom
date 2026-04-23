@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
@@ -842,6 +843,39 @@ func runServe(cmd *cobra.Command, args []string) {
 		zap.Bool("graph_memory_available", graphMemoryStore != nil),
 		zap.Bool("task_store_available", taskManager != nil))
 
+	// Create memory embedder from config (optional).
+	var memoryEmbedder memory.Embedder
+	if config.Embedding.Enabled && graphMemoryStore != nil {
+		switch config.Embedding.Provider {
+		case "openai", "":
+			apiKey := config.Embedding.APIKey
+			if apiKey == "" {
+				apiKey = config.LLM.OpenAIAPIKey
+			}
+			if apiKey == "" {
+				apiKey = os.Getenv("OPENAI_API_KEY")
+			}
+			if apiKey != "" {
+				model := config.Embedding.Model
+				if model == "" {
+					model = "text-embedding-3-small"
+				}
+				memoryEmbedder = embedding.NewOpenAIEmbedder(embedding.OpenAIConfig{
+					APIKey:     apiKey,
+					Model:      model,
+					Dimensions: config.Embedding.Dimensions,
+				})
+				logger.Info("Memory embedder initialized",
+					zap.String("provider", "openai"),
+					zap.String("model", model))
+			} else {
+				logger.Warn("Embedding enabled but no OpenAI API key found (set embedding.api_key, llm.openai_api_key, or OPENAI_API_KEY)")
+			}
+		default:
+			logger.Warn("Unknown embedding provider", zap.String("provider", config.Embedding.Provider))
+		}
+	}
+
 	// Initialize artifacts directory
 	loomDataDir := loomconfig.GetLoomDataDir()
 	artifactsDir := filepath.Join(loomDataDir, "artifacts")
@@ -1375,8 +1409,12 @@ func runServe(cmd *cobra.Command, args []string) {
 							gmCfg = agent.DefaultGraphMemoryConfig()
 						}
 						agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+						if memoryEmbedder != nil {
+							agentOpts = append(agentOpts, agent.WithEmbedder(memoryEmbedder))
+						}
 						logger.Info("    Graph memory enabled",
-							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
+							zap.Int32("budget_percent", gmCfg.ContextBudgetPercent),
+							zap.Bool("vector_search", memoryEmbedder != nil))
 					} else {
 						logger.Info("    Graph memory explicitly disabled")
 					}
@@ -2490,8 +2528,12 @@ func runServe(cmd *cobra.Command, args []string) {
 						gmCfg = agent.DefaultGraphMemoryConfig()
 					}
 					agentOpts = append(agentOpts, agent.WithGraphMemoryStore(graphMemoryStore, gmCfg))
+					if memoryEmbedder != nil {
+						agentOpts = append(agentOpts, agent.WithEmbedder(memoryEmbedder))
+					}
 					logger.Info("    Graph memory enabled (hot-reload)",
-						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent))
+						zap.Int32("budget_percent", gmCfg.ContextBudgetPercent),
+						zap.Bool("vector_search", memoryEmbedder != nil))
 				} else {
 					logger.Info("    Graph memory explicitly disabled (hot-reload)")
 				}

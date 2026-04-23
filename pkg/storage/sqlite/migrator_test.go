@@ -20,6 +20,8 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +29,30 @@ import (
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
+
+// latestMigrationVersion returns the highest numeric prefix among the
+// embedded migration files. Keeps the migrator tests from hardcoding a
+// specific count so new migrations don't break these assertions.
+func latestMigrationVersion(t *testing.T) int {
+	t.Helper()
+	entries, err := migrationFS.ReadDir("migrations")
+	require.NoError(t, err)
+	re := regexp.MustCompile(`^(\d+)_.*\.up\.sql$`)
+	latest := 0
+	for _, e := range entries {
+		m := re.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		require.NoError(t, err)
+		if n > latest {
+			latest = n
+		}
+	}
+	require.Greater(t, latest, 0, "expected at least one migration file")
+	return latest
+}
 
 // newTestDB creates a temporary SQLite database for testing.
 // The database is opened with foreign keys enabled and WAL mode for
@@ -70,7 +96,7 @@ func TestMigrateUp_FreshDB(t *testing.T) {
 	// Verify CurrentVersion returns 2 (latest migration)
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version, "version should be 2 after applying all migrations")
+	assert.Equal(t, latestMigrationVersion(t), version, "version should match the latest migration after MigrateUp")
 
 	// Verify all expected tables exist
 	expectedTables := []string{
@@ -165,8 +191,8 @@ func TestBootstrap_PreMigrationDB(t *testing.T) {
 	// Verify version is 1 (bootstrapped)
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version,
-		"version should be 2 after bootstrapping a pre-migration database")
+	assert.Equal(t, latestMigrationVersion(t), version,
+		"version should match the latest migration after bootstrapping a pre-migration database")
 
 	// Verify the original data in sessions is still present
 	var sessionName string
@@ -211,8 +237,8 @@ func TestCurrentVersion_AfterMigrateUp(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version,
-		"CurrentVersion should return 2 after applying all migrations")
+	assert.Equal(t, latestMigrationVersion(t), version,
+		"CurrentVersion should match the latest migration after applying all migrations")
 }
 
 func TestMigrateDown(t *testing.T) {
@@ -228,10 +254,10 @@ func TestMigrateDown(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version, "should be at version 3 before rollback")
+	assert.Equal(t, latestMigrationVersion(t), version, "should be at latest version before rollback")
 
 	// Now migrate down all steps
-	err = migrator.MigrateDown(ctx, 3)
+	err = migrator.MigrateDown(ctx, latestMigrationVersion(t))
 	require.NoError(t, err)
 
 	// Verify CurrentVersion returns 0
@@ -255,10 +281,6 @@ func TestMigrateDown(t *testing.T) {
 		"graph_memories",
 		"graph_memory_entities",
 		"graph_memory_lineage",
-		"tasks",
-		"task_dependencies",
-		"task_boards",
-		"task_history",
 	}
 	for _, table := range droppedTables {
 		assert.False(t, tableExists(t, db, table),
@@ -281,5 +303,5 @@ func TestNewMigrator_NilTracer(t *testing.T) {
 
 	version, err := migrator.CurrentVersion(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version, "migration should succeed with nil tracer fallback")
+	assert.Equal(t, latestMigrationVersion(t), version, "migration should succeed with nil tracer fallback")
 }

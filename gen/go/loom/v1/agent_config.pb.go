@@ -1148,6 +1148,11 @@ type GraphMemoryConfig struct {
 	// Timeout in seconds for each extraction LLM call.
 	// Default: 30. Set higher for slower providers or larger context windows.
 	ExtractionTimeoutSeconds int32 `protobuf:"varint,13,opt,name=extraction_timeout_seconds,json=extractionTimeoutSeconds,proto3" json:"extraction_timeout_seconds,omitempty"`
+	// Number of recent messages to include in each extraction window.
+	// Default: 0 (auto = extraction_cadence * 3, minimum 15).
+	// Set higher to give the extractor more conversational context per cycle.
+	// Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
+	ExtractionWindowMessages int32 `protobuf:"varint,14,opt,name=extraction_window_messages,json=extractionWindowMessages,proto3" json:"extraction_window_messages,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -1269,6 +1274,13 @@ func (x *GraphMemoryConfig) GetConversationExtractionCadence() int32 {
 func (x *GraphMemoryConfig) GetExtractionTimeoutSeconds() int32 {
 	if x != nil {
 		return x.ExtractionTimeoutSeconds
+	}
+	return 0
+}
+
+func (x *GraphMemoryConfig) GetExtractionWindowMessages() int32 {
+	if x != nil {
+		return x.ExtractionWindowMessages
 	}
 	return 0
 }
@@ -2185,7 +2197,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\x12=\n" +
 	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\x127\n" +
 	"\n" +
-	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\x89\x05\n" +
+	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\xc7\x05\n" +
 	"\x11GraphMemoryConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
 	"\x16context_budget_percent\x18\x02 \x01(\x05R\x14contextBudgetPercent\x12,\n" +
@@ -2201,7 +2213,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	" \x01(\x05R\x11extractionCadence\x12=\n" +
 	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\x12F\n" +
 	"\x1fconversation_extraction_cadence\x18\f \x01(\x05R\x1dconversationExtractionCadence\x12<\n" +
-	"\x1aextraction_timeout_seconds\x18\r \x01(\x05R\x18extractionTimeoutSeconds\"\x94\x02\n" +
+	"\x1aextraction_timeout_seconds\x18\r \x01(\x05R\x18extractionTimeoutSeconds\x12<\n" +
+	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\"\x94\x02\n" +
 	"\x0fTaskBoardConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0eauto_decompose\x18\x02 \x01(\bR\rautoDecompose\x12\x1b\n" +

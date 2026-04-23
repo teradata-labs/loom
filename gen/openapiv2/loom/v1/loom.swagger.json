@@ -5235,6 +5235,11 @@
           "type": "integer",
           "format": "int32",
           "description": "Timeout in seconds for each extraction LLM call.\nDefault: 30. Set higher for slower providers or larger context windows."
+        },
+        "extractionWindowMessages": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of recent messages to include in each extraction window.\nDefault: 0 (auto = extraction_cadence * 3, minimum 15).\nSet higher to give the extractor more conversational context per cycle.\nUseful when extraction_cadence is low (e.g., 1) to avoid tiny windows."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."

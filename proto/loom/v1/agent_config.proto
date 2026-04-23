@@ -316,6 +316,12 @@ message GraphMemoryConfig {
   // Timeout in seconds for each extraction LLM call.
   // Default: 30. Set higher for slower providers or larger context windows.
   int32 extraction_timeout_seconds = 13;
+
+  // Number of recent messages to include in each extraction window.
+  // Default: 0 (auto = extraction_cadence * 3, minimum 15).
+  // Set higher to give the extractor more conversational context per cycle.
+  // Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
+  int32 extraction_window_messages = 14;
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.

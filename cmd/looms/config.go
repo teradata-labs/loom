@@ -98,6 +98,32 @@ type Config struct {
 
 	// ActiveProvider names the currently active entry in the Providers pool.
 	ActiveProvider string `mapstructure:"active_provider"`
+
+	// Embedding configures vector embeddings for hybrid semantic memory search.
+	Embedding EmbeddingConfig `mapstructure:"embedding"`
+}
+
+// EmbeddingConfig configures the vector embedding provider for hybrid memory search.
+// Once set, the model should not be changed without re-embedding (different models
+// produce incompatible vector spaces). Embeddings from a previous model are
+// automatically skipped during recall — new extractions gradually replace them.
+type EmbeddingConfig struct {
+	// Enabled activates embedding generation during memory extraction and
+	// vector similarity search during memory recall. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Provider: "openai" (default). Future: "ollama", "bedrock", "gemini".
+	Provider string `mapstructure:"provider"`
+
+	// Model name. Default: "text-embedding-3-small" for OpenAI.
+	Model string `mapstructure:"model"`
+
+	// Dimensions override (0 = use model default). Only supported by some models.
+	Dimensions int `mapstructure:"dimensions"`
+
+	// API key (provider-specific). Resolved: explicit > env > keyring.
+	// OpenAI: OPENAI_API_KEY env var. Ollama: not needed.
+	APIKey string `mapstructure:"api_key"`
 }
 
 // ArtifactsConfig holds artifacts storage configuration.
@@ -1136,6 +1162,12 @@ func setDefaults() {
 	viper.SetDefault("tools.shell_execute.restrict_writes", true)        // Enforce write restrictions
 	viper.SetDefault("tools.shell_execute.restrict_reads", "session")    // Session-only reads by default
 	viper.SetDefault("tools.shell_execute.enable_path_validation", true) // Enable path validation
+
+	// Embedding defaults
+	viper.SetDefault("embedding.enabled", false)
+	viper.SetDefault("embedding.provider", "openai")
+	viper.SetDefault("embedding.model", "text-embedding-3-small")
+	viper.SetDefault("embedding.dimensions", 0) // use model default
 }
 
 // SecretMapping defines how to load a secret from keyring into the config.

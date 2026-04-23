@@ -153,6 +153,7 @@ type Agent struct {
 	// Graph-backed episodic memory (optional).
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
+	embedder          memory.Embedder // vector embeddings for semantic search (optional)
 
 	// Task decomposition and kanban (optional).
 	taskManager     *task.Manager
@@ -163,6 +164,7 @@ type Agent struct {
 	enableGraphMemoryExtraction        bool
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
+	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled
