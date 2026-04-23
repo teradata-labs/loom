@@ -32,6 +32,11 @@ const (
 	// size without a recompile. When set to a positive integer, the singleton
 	// TokenCounter uses that value; anything else (unset, non-numeric, <=0)
 	// falls back to the GOMAXPROCS-driven default.
+	//
+	// The value is parsed with strconv.Atoi and NOT whitespace-trimmed, so
+	// shell-quoting accidents like LOOM_TOKEN_ENCODER_POOL_SIZE="16 " (trailing
+	// space) will silently fall through to the default. If an override you set
+	// does not appear to take effect, re-export without surrounding whitespace.
 	EncoderPoolSizeEnvVar = "LOOM_TOKEN_ENCODER_POOL_SIZE"
 
 	// encoderPoolSizeFloor is the minimum pool size. Kept at 16 so dev machines
@@ -133,17 +138,18 @@ func GetTokenCounter() *TokenCounter {
 			encoders: encoders,
 		}
 
-		// Log the resolved pool size exactly once. Useful for confirming a
-		// LOOM_TOKEN_ENCODER_POOL_SIZE override took effect or for spotting
-		// GOMAXPROCS-vs-container-quota mismatches in k8s deploys.
-		if logger := zap.L(); logger != nil {
-			logger.Debug("token encoder pool initialized",
-				zap.Int("pool_size", encoderPoolSize),
-				zap.Int("gomaxprocs", runtime.GOMAXPROCS(0)),
-				zap.Int("num_cpu", runtime.NumCPU()),
-				zap.String("env_override", os.Getenv(EncoderPoolSizeEnvVar)),
-			)
-		}
+		// Log the resolved pool size exactly once per process. Useful for
+		// confirming a LOOM_TOKEN_ENCODER_POOL_SIZE override took effect or for
+		// spotting GOMAXPROCS-vs-container-quota mismatches in k8s deploys.
+		// Logged at Info because it fires once per process lifetime -- the
+		// ops-visibility goal outweighs the Debug-level default, and volume is
+		// not a concern.
+		zap.L().Info("token encoder pool initialized",
+			zap.Int("pool_size", encoderPoolSize),
+			zap.Int("gomaxprocs", runtime.GOMAXPROCS(0)),
+			zap.Int("num_cpu", runtime.NumCPU()),
+			zap.String("env_override", os.Getenv(EncoderPoolSizeEnvVar)),
+		)
 	})
 	return globalTokenCounter
 }
