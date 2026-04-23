@@ -62,6 +62,7 @@ var (
 	offset        int
 	questionTypes string
 	mode          string
+	isolate       bool
 )
 
 func main() {
@@ -139,12 +140,19 @@ func runCmd() *cobra.Command {
 The server's agent configuration determines how memory works —
 graph memory, context window, LLM provider, etc.
 
-Two benchmark modes:
+Three benchmark modes:
 
-  ingest (default):
-    Feeds each conversation session through the agent via Weave so it
-    builds up memory (graph memory, conversation history, etc.), then
-    asks the question in a separate session.
+  multi-session (default):
+    Creates a separate agent session per haystack conversation, ending
+    each one before starting the next. Messages are persisted to the DB
+    and become FTS5-searchable. The question is asked in a fresh session —
+    the agent must use graph_memory + conversation_memory to recall across
+    prior sessions. Most faithful simulation of real-world Loom usage.
+
+  ingest:
+    Feeds all conversation sessions through the agent in a single session
+    via Weave so it builds up memory (graph memory, conversation history,
+    etc.), then asks the question in the same session.
 
   context-stuffing:
     Puts all session history directly into one Weave call as prompt
@@ -161,13 +169,16 @@ Two benchmark modes:
 	cmd.Flags().IntVar(&limit, "limit", 0, "Max entries to process (0 = all)")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Start from entry N (0-indexed)")
 	cmd.Flags().StringVar(&questionTypes, "types", "", "Comma-separated question types to include (empty = all)")
-	cmd.Flags().StringVar(&mode, "mode", "ingest", "Run mode: ingest or context-stuffing")
+	cmd.Flags().StringVar(&mode, "mode", "ingest", "Run mode: ingest (default), multi-session, or context-stuffing")
+	cmd.Flags().BoolVar(&isolate, "isolate", true, "Create a fresh agent per entry for graph memory isolation (default: true)")
 
 	return cmd
 }
 
 func scoreCmd() *cobra.Command {
 	var resultsPath string
+	var datasetPath string
+	var scoreConcurrency int
 
 	cmd := &cobra.Command{
 		Use:   "score",
@@ -190,6 +201,12 @@ PASS/PARTIAL/FAIL verdicts with scores and explanations.`,
 			}
 			logger.Info("loaded results", zap.Int("count", len(results)))
 
+			// Backfill question text from dataset if available
+			if datasetPath == "" {
+				datasetPath = resolveDatasetPath(nil)
+			}
+			BackfillQuestions(results, datasetPath)
+
 			// Connect to judge service
 			scorer, err := NewScorer(serverAddr, logger)
 			if err != nil {
@@ -197,8 +214,8 @@ PASS/PARTIAL/FAIL verdicts with scores and explanations.`,
 			}
 			defer func() { _ = scorer.Close() }()
 
-			// Score
-			scored := scorer.ScoreResults(context.Background(), results)
+			// Score (with concurrency)
+			scored := scorer.ScoreResults(context.Background(), results, scoreConcurrency)
 
 			// Print
 			PrintScoredSummary(scored)
@@ -222,7 +239,9 @@ PASS/PARTIAL/FAIL verdicts with scores and explanations.`,
 	}
 
 	cmd.Flags().StringVar(&resultsPath, "results", "", "Path to detailed results JSON from a previous run")
+	cmd.Flags().StringVar(&datasetPath, "dataset", "", "Path to dataset JSON for backfilling question text (auto-detected if empty)")
 	cmd.Flags().StringVar(&serverAddr, "server", "localhost:60051", "Loom gRPC server address")
+	cmd.Flags().IntVar(&scoreConcurrency, "concurrency", 3, "Number of concurrent judge evaluations")
 	_ = cmd.MarkFlagRequired("results")
 	return cmd
 }
@@ -321,6 +340,7 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 		zap.String("agent", agentID),
 		zap.Int("entries", len(entries)),
 		zap.Int("concurrency", concurrency),
+		zap.Bool("isolate", isolate),
 	)
 
 	// Create runner (connects to running Loom server via gRPC)
@@ -330,6 +350,7 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 		AgentID:     agentID,
 		Concurrency: concurrency,
 		Verbose:     verbose,
+		Isolate:     isolate,
 	}, logger)
 	if err != nil {
 		return err
