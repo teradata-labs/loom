@@ -441,7 +441,7 @@ func (s *Server) ListSessions(ctx context.Context, req *loomv1.ListSessionsReque
 	}
 
 	filtered := filterListSessions(protoSessions, req)
-	total := int32(len(filtered))
+	total := types.SafeInt32(len(filtered))
 	paged := pageProtoSessions(filtered, req.GetOffset(), req.GetLimit())
 
 	return &loomv1.ListSessionsResponse{

@@ -216,13 +216,25 @@ func WriteSessionArtifactMetadata(meta *SessionArtifactMetadata) error {
 	return nil
 }
 
-// ReadSessionArtifactMetadata reads metadata.json if present.
+// ReadSessionArtifactMetadata reads and parses metadata.json under the session artifact root.
+// The resolved path is checked so the file cannot lie outside that directory. If the file
+// is missing, the error typically wraps [os.ErrNotExist].
 func ReadSessionArtifactMetadata(sessionID string) (*SessionArtifactMetadata, error) {
 	path, err := sessionMetadataPath(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	root, err := SessionArtifactsRoot(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	root = filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+	rel, err := filepath.Rel(root, cleanPath)
+	if err != nil || !filepath.IsLocal(rel) {
+		return nil, fmt.Errorf("invalid session metadata path")
+	}
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, err
 	}

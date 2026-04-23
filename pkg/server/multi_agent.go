@@ -2719,7 +2719,7 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 	}
 
 	filtered := filterListSessions(allSessions, req)
-	total := int32(len(filtered))
+	total := types.SafeInt32(len(filtered))
 	paged := pageProtoSessions(filtered, req.GetOffset(), req.GetLimit())
 
 	return &loomv1.ListSessionsResponse{

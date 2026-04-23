@@ -9,6 +9,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 func sessionMetadataFromContext(s *agent.Session) map[string]string {
@@ -52,7 +53,7 @@ func mergeArtifactMetadataIntoProto(p *loomv1.Session, sessionID string) {
 		p.MetadataStatus = meta.Status
 	}
 	if meta.Artifacts != nil {
-		p.ArtifactCount = int32(meta.Artifacts.Created)
+		p.ArtifactCount = types.SafeInt32(meta.Artifacts.Created)
 	}
 	filtered := artifacts.FilterPublicArtifactContext(meta.Context)
 	if len(filtered) > 0 {
