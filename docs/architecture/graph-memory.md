@@ -225,6 +225,60 @@ Memory.Salience in [0.0, 1.0]
 ```
 
 
+### Event-Date Anchoring
+
+**Responsibility**: Represent the absolute date of a time-bound fact as a structured column rather than as prose inside `content`, so cross-memory ordering questions resolve lexicographically at answer time.
+
+**Problem**: The LLM extractor, when given conversation text like *"I started The Crown about two months ago"* alongside a session date, was instructed (via prompt) to "convert relative dates to absolute." The instruction was fulfilled inconsistently, and even when it was fulfilled the absolute date landed inside the free-text `content` field. Retrieval rendered `content` verbatim; the answering LLM had to re-parse phrases like *"about two months ago"* and *"about a month ago"* from two different sessions and compute their relative order on the fly. Benchmark measurement on LongMemEval temporal-reasoning surfaced this as a distinct failure class (~4% of 100 entries): both facts present in memory, order inverted in the answer.
+
+**Design**:
+
+```
+        Extraction-time              Storage               Retrieval-time
+        ───────────────              ───────               ──────────────
+                                                                      
+  "I started X about 2                graph_memories          "- [2023-03-14] X"
+   months ago" + session_date ──▶    ┌─────────────┐   ──▶   injected into
+   2023-05-14                         │ event_date  │         system prompt
+                                      │ event_date_ │         block
+  LLM emits:                          │ confidence  │
+    event_date=2023-03-14             └─────────────┘
+    confidence=approximate
+```
+
+Two new columns on `graph_memories` (migration `000006_memory_event_date`):
+
+| Column | Type | Nullable | Meaning |
+|--------|------|----------|---------|
+| `event_date` | `TEXT` (`YYYY-MM-DD`) | yes | Absolute date of the described event |
+| `event_date_confidence` | `TEXT` | yes | `exact` / `approximate` / `ambiguous` / `NULL` |
+
+Extraction contract:
+- `exact` -- user gave a specific date (*"on January 15th"*).
+- `approximate` -- user gave a relative phrase the extractor resolved against the session date (*"about two months ago"*).
+- `ambiguous` -- user mentioned a time cue the extractor could not resolve (*"a while back"*). In this case the extractor MUST emit `event_date=""`; fabricating a date is a protocol violation.
+
+**Sanitizer guarantee**: `sanitizeEventDate(date, confidence)` in `pkg/agent/graph_memory_extractor.go` enforces the contract at the ingestion boundary. A malformed date is dropped (date becomes `""`, confidence preserved for telemetry). A non-empty date with `confidence=ambiguous` is a protocol violation; the date is dropped in favor of the self-reported confidence.
+
+**Rendering**: `injectGraphMemoryContext()` in `pkg/agent/agent.go` prepends `[YYYY-MM-DD]` to memories that carry an `event_date` before writing them into the `[Graph Memory Context]` system message. The answering LLM sees explicit absolute dates side by side and orders facts by string comparison instead of date arithmetic.
+
+**Invariants**:
+```
+event_date is "" or parses as YYYY-MM-DD
+event_date_confidence is "" or ∈ {exact, approximate, ambiguous}
+event_date_confidence = "ambiguous" ⇒ event_date = ""
+event_date ≠ "" ⇒ event_date_confidence ∈ {exact, approximate}
+```
+
+**Trade-off -- why not typed timestamps?**: SQLite lacks a native date type; an ISO string column trades 5 bytes vs. a 4-byte integer epoch but keeps the value human-readable in `sqlite3` shells and survives timezone ambiguity. Queries that need comparison do so lexicographically because the ISO string is already sortable. A future migration to Postgres can widen this to `DATE` without API changes.
+
+**Trade-off -- why not a range column?**: The extractor today emits a single anchor date per memory. Durations *(e.g. "I visited Japan for two weeks in April")* lose information -- only the approximate start is captured. A range would add a second column (`event_date_end`) and double the schema surface; extraction-coverage gaps dominate the residual failure rate, so the cost/benefit did not justify the expansion at the time of implementation.
+
+**Limitations**:
+- LLM compliance is not guaranteed -- the extractor sometimes skips the fields for memories that do have a time dimension. Telemetry on `event_date_confidence=""` counts can surface this.
+- Only the first temporal reference in a memory is anchored. Memories that describe multiple time-bound sub-events collapse to the first.
+
+
 ### Memory-Entity Bridge
 
 **Responsibility**: Many-to-many junction linking memories to entities with typed roles.
@@ -452,6 +506,10 @@ Chat Loop      Agent              GraphMemoryStore    Session
          │         ┌───────────────────┐             │ accessed_at         │
          │         │ graph_memory_     │             │ expires_at          │
          └────────▶│ entities          │◀────────────│ deleted_at          │
+                   │                   │             │ embedding BLOB      │
+                   │                   │             │ embedding_model     │
+                   │                   │             │ event_date          │
+                   │                   │             │ event_date_conf.    │
                    │                   │             │ (NO updated_at!)    │
                    │                   │             │ (is_superseded      │
                    ├───────────────────┤             │  computed at read   │
