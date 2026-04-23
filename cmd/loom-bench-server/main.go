@@ -82,6 +82,13 @@ func main() {
 	streamChunkDelay := flag.Duration("stream-chunk-delay", 5*time.Millisecond, "Delay between streaming chunks")
 	flag.Parse()
 
+	// Bound -num-agents so a misconfigured deploy can't panic / OOM on the
+	// make(map[string]*agent.Agent, cfg.numAgents) below. Matches the guard
+	// applied to the HTTP /reconfigure handler.
+	if *numAgents <= 0 || *numAgents > maxNumAgents {
+		log.Fatalf("-num-agents must be between 1 and %d (got %d)", maxNumAgents, *numAgents)
+	}
+
 	cfg := serverConfig{
 		port:                *port,
 		httpPort:            *httpPort,
