@@ -1935,7 +1935,7 @@
           },
           {
             "name": "offset",
-            "description": "Pagination offset",
+            "description": "Pagination offset (sessions skipped; must be \u003e= 0).",
             "in": "query",
             "required": false,
             "type": "integer",
@@ -1943,11 +1943,32 @@
           },
           {
             "name": "limit",
-            "description": "Pagination limit",
+            "description": "Pagination page size. Omitted or \u003c= 0 defaults to 50; values above 500 are capped at 500.",
             "in": "query",
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "agentId",
+            "description": "Filter by agent ID (matches Session.agent_id; often the configured agent name).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "projectId",
+            "description": "Filter by project_id stored in session metadata (context / artifact metadata).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "metadataStatus",
+            "description": "Filter by metadata_status from session artifact metadata (e.g. active, completed).",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -5753,12 +5774,12 @@
             "type": "object",
             "$ref": "#/definitions/v1Session"
           },
-          "title": "Sessions"
+          "description": "Sessions for the current page (after filters, offset, and limit)."
         },
         "totalCount": {
           "type": "integer",
           "format": "int32",
-          "title": "Total count"
+          "description": "Total number of sessions matching the request filters (before applying offset/limit).\nint32 is sufficient for in-memory listings; values above 2^31-1 are not expected."
         }
       },
       "description": "ListSessionsResponse returns sessions."
@@ -7794,6 +7815,31 @@
             "type": "string"
           },
           "title": "Metadata"
+        },
+        "agentId": {
+          "type": "string",
+          "description": "Agent ID for this session (logical agent identifier, often the configured agent name)."
+        },
+        "agentName": {
+          "type": "string",
+          "description": "Human-readable agent name when available (from session context or artifact metadata)."
+        },
+        "startedAt": {
+          "type": "string",
+          "description": "Session start time in RFC3339 UTC (mirrors created_at for API consumers)."
+        },
+        "endedAt": {
+          "type": "string",
+          "description": "Session end time in RFC3339 UTC when recorded in artifact metadata (e.g. after completion)."
+        },
+        "metadataStatus": {
+          "type": "string",
+          "description": "Lifecycle status from artifacts/sessions/\u003cid\u003e/metadata.json (e.g. active, completed)."
+        },
+        "artifactCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Count of indexed artifacts when present in session artifact metadata."
         }
       },
       "description": "Session represents a conversation session."

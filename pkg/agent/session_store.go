@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -444,6 +445,11 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to save session: %w", err)
+	}
+
+	if err := artifacts.SyncSessionArtifactMetadata(ctx, session); err != nil {
+		span.RecordError(err)
+		// Best-effort filesystem metadata; SQLite persistence already succeeded.
 	}
 
 	span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", session.TotalCostUSD))

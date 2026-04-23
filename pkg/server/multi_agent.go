@@ -2704,12 +2704,17 @@ func (s *MultiAgentServer) GetSession(ctx context.Context, req *loomv1.GetSessio
 
 // ListSessions lists all sessions across all agents.
 func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSessionsRequest) (*loomv1.ListSessionsResponse, error) {
+	if err := validateListSessionsRequest(req); err != nil {
+		return nil, err
+	}
+
 	// Extract user ID for multi-tenant isolation (empty for single-tenant SQLite).
 	callerUserID := postgres.UserIDFromContext(ctx)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	enrichDisk := listSessionsNeedsArtifactDisk(req)
 	var allSessions []*loomv1.Session
 	for _, ag := range s.agents {
 		sessions := ag.ListSessions()
@@ -2719,12 +2724,17 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 			if callerUserID != "" && sess.UserID != "" && sess.UserID != callerUserID {
 				continue
 			}
-			allSessions = append(allSessions, ConvertSession(sess))
+			allSessions = append(allSessions, convertSession(sess, enrichDisk))
 		}
 	}
 
+	filtered := filterListSessions(allSessions, req)
+	total := types.SafeInt32(len(filtered))
+	paged := pageProtoSessions(filtered, req.GetOffset(), req.GetLimit())
+
 	return &loomv1.ListSessionsResponse{
-		Sessions: allSessions,
+		Sessions:   paged,
+		TotalCount: total,
 	}, nil
 }
 
@@ -2732,6 +2742,12 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.DeleteSessionRequest) (*loomv1.DeleteSessionResponse, error) {
 	if req.SessionId == "" {
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	if err := artifacts.CompleteSessionArtifactMetadata(req.SessionId); err != nil {
+		s.logger.Warn("session artifact metadata completion failed",
+			zap.String("session_id", req.SessionId),
+			zap.Error(err))
 	}
 
 	// Try to delete the session from any agent that has it
