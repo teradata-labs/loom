@@ -22,11 +22,20 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
+// encoderPoolSize is the number of pre-allocated tiktoken encoders.
+// Matches typical GOMAXPROCS on modern machines. Goroutines beyond this
+// count block briefly until an encoder is returned — no allocation, no GC churn.
+const encoderPoolSize = 16
+
 // TokenCounter provides accurate token counting for LLM context management.
 // Uses tiktoken with cl100k_base encoding (Claude-compatible approximation).
+//
+// Internally uses a fixed-size channel pool of tiktoken encoders so that
+// concurrent goroutines can count tokens without contending on a single mutex.
+// Unlike sync.Pool, the channel pool is not subject to GC draining.
 type TokenCounter struct {
-	encoder *tiktoken.Tiktoken
-	mu      sync.Mutex
+	encoders chan *tiktoken.Tiktoken // Fixed-size pool of encoders
+	encoder  *tiktoken.Tiktoken      // Kept for API compatibility (tests that inspect .encoder)
 }
 
 var (
@@ -40,28 +49,47 @@ func GetTokenCounter() *TokenCounter {
 		// Use cl100k_base encoding (GPT-4/Claude compatible)
 		// This is a good approximation for Claude models
 		encoding := "cl100k_base"
-		tkm, err := tiktoken.GetEncoding(encoding)
-		if err != nil {
-			// Fallback: use approximate counting if tiktoken fails
-			globalTokenCounter = &TokenCounter{encoder: nil}
-			return
+
+		encoders := make(chan *tiktoken.Tiktoken, encoderPoolSize)
+		var first *tiktoken.Tiktoken
+
+		for range encoderPoolSize {
+			tkm, err := tiktoken.GetEncoding(encoding)
+			if err != nil {
+				// If we can't create any encoder, fall back
+				if first == nil {
+					globalTokenCounter = &TokenCounter{encoder: nil, encoders: nil}
+					return
+				}
+				break
+			}
+			if first == nil {
+				first = tkm
+			}
+			encoders <- tkm
 		}
-		globalTokenCounter = &TokenCounter{encoder: tkm}
+
+		globalTokenCounter = &TokenCounter{
+			encoder:  first, // kept for test introspection (non-nil means encoder available)
+			encoders: encoders,
+		}
 	})
 	return globalTokenCounter
 }
 
 // CountTokens returns the accurate token count for a given text.
+// Borrows an encoder from the fixed-size channel pool so concurrent
+// callers don't contend on a single mutex. If all encoders are in use,
+// the caller blocks until one is returned — no allocation, no GC pressure.
 func (tc *TokenCounter) CountTokens(text string) int {
-	if tc.encoder == nil {
+	if tc.encoders == nil {
 		// Fallback to char-based estimation if encoder not available
 		return len(text) / 4
 	}
 
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	tokens := tc.encoder.Encode(text, nil, nil)
+	tkm := <-tc.encoders // borrow
+	tokens := tkm.Encode(text, nil, nil)
+	tc.encoders <- tkm // return
 	return len(tokens)
 }
 

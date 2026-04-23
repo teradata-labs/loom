@@ -358,9 +358,12 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Run Gosec Security Scanner
+        # deploy/comparison/langgraph/benchpb is generated protoc-gen-go output;
+        # the unsafe.Slice/unsafe.StringData calls in RawDescriptor are standard
+        # boilerplate emitted by the generator and also excluded by `just security`.
         uses: securego/gosec@223e19b8856e00f02cc67804499a83f77e208f3c # v2.25.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen -exclude-dir=deploy/comparison/langgraph/benchpb ./...'
 
       - name: Fix SARIF schema compliance
         run: |

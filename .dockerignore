@@ -1,0 +1,9 @@
+.git
+bin/
+dist/
+*.db
+*.prof
+coverage.*
+*.test
+.env
+*.env.local
