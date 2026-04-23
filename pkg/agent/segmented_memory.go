@@ -422,59 +422,51 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	// and the message at boundary is a tool result (role=tool),
 	// we need to EXCLUDE the assistant from compression to keep the pair in L1.
 
-	boundaryIdx := toCompressCount
+	// Scan backward from the proposed boundary to find the safe compression point.
+	// A safe boundary never splits an assistant(tool_calls) from its tool results.
+	//
+	// Three invariants:
+	// 1. An assistant with tool_calls must NOT be compressed unless ALL its tool
+	//    results are also compressed (otherwise tool results are orphaned in L1).
+	// 2. A tool result must NOT remain in L1 if its assistant was compressed
+	//    (otherwise L1 starts with orphaned tool messages).
+	// 3. An assistant with tool_calls whose tool results haven't arrived yet
+	//    (it's the last message, or only partial results exist) must NOT be compressed.
 
-	// Check if previous message is assistant with tool calls
-	if boundaryIdx > 0 && boundaryIdx < len(sm.l1Messages) {
-		prevMsg := sm.l1Messages[boundaryIdx-1]
-		currMsg := sm.l1Messages[boundaryIdx]
-
-		// If prev is assistant with tool_use and curr is tool result,
-		// we're splitting a pair - EXCLUDE the assistant from compression
-		if prevMsg.Role == "assistant" && len(prevMsg.ToolCalls) > 0 && currMsg.Role == "tool" {
-			// Move boundary back to exclude the assistant message
+	// Walk backward from the boundary. If the last message in the compression
+	// batch is an assistant with tool_calls, pull it out — results may not exist yet.
+	for toCompressCount > 0 {
+		msg := sm.l1Messages[toCompressCount-1]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			toCompressCount--
+		} else {
+			break
+		}
+	}
 
-			// Also check if there are more assistant messages with tool_calls before this
-			// and exclude them as well to preserve complete tool interaction sequences
+	// Check if we're splitting an assistant+tool pair at the boundary.
+	// If messages after the boundary start with tool results, their assistant
+	// must also be kept — pull the boundary back to include the assistant.
+	if toCompressCount > 0 && toCompressCount < len(sm.l1Messages) {
+		if sm.l1Messages[toCompressCount].Role == "tool" {
+			// Walk backward to find the owning assistant and exclude it.
 			for toCompressCount > 0 {
-				checkMsg := sm.l1Messages[toCompressCount-1]
-				if checkMsg.Role == "assistant" && len(checkMsg.ToolCalls) > 0 {
-					// Check if there are tool results after this assistant
-					hasToolResults := false
-					for i := toCompressCount; i < len(sm.l1Messages); i++ {
-						if sm.l1Messages[i].Role == "tool" {
-							hasToolResults = true
-							break
-						}
-						// Stop checking if we hit a user message (start of new exchange)
-						if sm.l1Messages[i].Role == "user" {
-							break
-						}
-					}
-					if hasToolResults {
-						toCompressCount--
-					} else {
-						break
-					}
-				} else {
+				toCompressCount--
+				if sm.l1Messages[toCompressCount].Role == "assistant" {
 					break
 				}
 			}
 		}
 	}
 
-	// Final safety check: scan backwards from boundary to ensure we're not
-	// leaving orphaned tool results in L1 after compression
+	// Final safety: scan L1 messages that would remain after compression.
+	// If any tool message's owning assistant would be compressed, pull the
+	// boundary back to keep the assistant.
 	for i := toCompressCount; i < len(sm.l1Messages); i++ {
 		if sm.l1Messages[i].Role == "tool" {
-			// Found a tool message that would remain in L1
-			// Check if its corresponding assistant is being compressed
 			for j := i - 1; j >= 0; j-- {
 				if sm.l1Messages[j].Role == "assistant" && len(sm.l1Messages[j].ToolCalls) > 0 {
 					if j < toCompressCount {
-						// The assistant is being compressed but tool result would stay
-						// Move boundary to exclude this assistant
 						toCompressCount = j
 					}
 					break
@@ -1250,6 +1242,31 @@ func (sm *SegmentedMemory) GetL1MessageCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return len(sm.l1Messages)
+}
+
+// FlushToSwap forces the full compression pipeline: L1 → L2 → swap.
+// Ensures all conversation content is persisted to searchable storage.
+// Call this when a session ends or before cross-session queries.
+func (sm *SegmentedMemory) FlushToSwap(ctx context.Context) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Step 1: Compress any remaining L1 messages into L2.
+	if len(sm.l1Messages) > 0 {
+		sm.compressToL2(ctx, sm.l1Messages)
+		sm.l1Messages = sm.l1Messages[:0]
+	}
+
+	// Step 2: Evict L2 to swap storage so it's searchable.
+	if sm.l2Summary != "" && sm.swapEnabled {
+		if err := sm.evictL2ToSwap(ctx); err != nil {
+			return fmt.Errorf("flush L2 to swap: %w", err)
+		}
+	}
+
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+	return nil
 }
 
 // ClearL2 clears the L2 summary cache.

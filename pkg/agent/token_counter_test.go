@@ -14,10 +14,67 @@
 package agent
 
 import (
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestResolveEncoderPoolSize_EnvOverride(t *testing.T) {
+	// Positive integer wins over GOMAXPROCS.
+	t.Setenv(EncoderPoolSizeEnvVar, "7")
+	if got := resolveEncoderPoolSize(); got != 7 {
+		t.Fatalf("env=7: got %d, want 7", got)
+	}
+
+	// Large value is passed through — memory trade-off is the operator's call.
+	t.Setenv(EncoderPoolSizeEnvVar, "512")
+	if got := resolveEncoderPoolSize(); got != 512 {
+		t.Fatalf("env=512: got %d, want 512", got)
+	}
+}
+
+func TestResolveEncoderPoolSize_InvalidEnvFallsBack(t *testing.T) {
+	// Anything non-numeric or <=0 silently falls through to the default
+	// (GOMAXPROCS, floored at encoderPoolSizeFloor). A typo must not panic.
+	procs := runtime.GOMAXPROCS(0)
+	want := procs
+	if want < encoderPoolSizeFloor {
+		want = encoderPoolSizeFloor
+	}
+
+	for _, bad := range []string{"abc", "-1", "0", " 16 ", "1e3", ""} {
+		t.Run("val="+bad, func(t *testing.T) {
+			t.Setenv(EncoderPoolSizeEnvVar, bad)
+			if got := resolveEncoderPoolSize(); got != want {
+				t.Fatalf("env=%q: got %d, want %d (fallback)", bad, got, want)
+			}
+		})
+	}
+}
+
+func TestResolveEncoderPoolSize_Floor(t *testing.T) {
+	// Without any env override, the returned value must not drop below the
+	// floor even on a 1- or 2-core machine. This preserves the pre-patch
+	// behavior: a dev laptop with GOMAXPROCS=4 still gets 16 encoders.
+	t.Setenv(EncoderPoolSizeEnvVar, "")
+	if got := resolveEncoderPoolSize(); got < encoderPoolSizeFloor {
+		t.Fatalf("got %d, want >= %d (floor)", got, encoderPoolSizeFloor)
+	}
+}
+
+func TestEncoderPoolSizeMatchesSingleton(t *testing.T) {
+	// The exported getter must agree with the channel capacity of the
+	// singleton's encoder pool. This is the bridge between tests that want to
+	// reason about pool size and the actual running TokenCounter.
+	tc := GetTokenCounter()
+	if tc == nil || tc.encoders == nil {
+		t.Skip("token counter or encoder pool unavailable in this environment")
+	}
+	if got, want := cap(tc.encoders), EncoderPoolSize(); got != want {
+		t.Fatalf("channel cap=%d, EncoderPoolSize()=%d (mismatch)", got, want)
+	}
+}
 
 func TestGetTokenCounter(t *testing.T) {
 	tc := GetTokenCounter()
@@ -393,4 +450,24 @@ func BenchmarkTokenBudget_Use(b *testing.B) {
 		tb.Use(1000)
 		tb.Free(1000)
 	}
+}
+
+// BenchmarkTokenCounter_ConcurrentCountTokens exercises the encoder pool under
+// parallel load. Run with -cpu=1,8,32 to reveal contention as goroutines
+// exceed the resolved pool size. This is the regression guard for the 2026-04
+// AKS-measured 3.8×-6× throughput cliff that motivated making encoderPoolSize
+// follow GOMAXPROCS.
+//
+//	go test -tags fts5 -bench=BenchmarkTokenCounter_Concurrent -benchmem \
+//	  -cpu=1,8,32 -run=^$ ./pkg/agent/
+func BenchmarkTokenCounter_ConcurrentCountTokens(b *testing.B) {
+	tc := GetTokenCounter()
+	text := strings.Repeat("medium conversation turn content ", 20)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			tc.CountTokens(text)
+		}
+	})
 }

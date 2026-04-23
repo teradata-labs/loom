@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -63,33 +64,94 @@ type ExtractedMemory struct {
 	Tags       []string              `json:"tags"`
 	Salience   float64               `json:"salience"`
 	Entities   []ExtractedEntityRole `json:"entities"`
+	// EventDate is the absolute ISO date (YYYY-MM-DD) for when the fact
+	// described by this memory occurred. Produced by anchoring any relative
+	// time phrase in the conversation against the current_date the extractor
+	// was given. Empty when no temporal cue is present or when the cue cannot
+	// be resolved to a specific date.
+	EventDate string `json:"event_date,omitempty"`
+	// EventDateConfidence is "exact" | "approximate" | "ambiguous" | "".
+	// "ambiguous" is reserved for cases where the extractor saw a time cue
+	// like "a while back" and declined to fabricate a date.
+	EventDateConfidence string `json:"event_date_confidence,omitempty"`
 }
 
-// buildGraphMemoryExtractionPrompt creates a prompt for the LLM to extract
-// entities, relationships, and memories from recent conversation turns.
-func buildGraphMemoryExtractionPrompt(messages []types.Message, maxEntities int) string {
-	var sb strings.Builder
-	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
-	sb.WriteString("Conversation:\n")
+// extractionContext holds shared context passed to both extraction passes.
+type extractionContext struct {
+	messages         []types.Message
+	maxEntities      int
+	l2Summaries      []string
+	existingEntities []string
+	currentDate      string // ISO date for anchoring relative references
+}
 
-	for i, msg := range messages {
-		preview := msg.Content
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		role := msg.Role
-		if role == "tool" && len(msg.ToolCalls) > 0 {
-			role = "tool:" + msg.ToolCalls[0].Name
-		}
-		sb.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, role, preview))
+// buildConversationBlock renders the shared conversation + context sections
+// used by both extraction passes.
+func buildConversationBlock(ec extractionContext) string {
+	var sb strings.Builder
+
+	if ec.currentDate != "" {
+		fmt.Fprintf(&sb, "Current date: %s\n\n", ec.currentDate)
 	}
 
-	sb.WriteString(fmt.Sprintf("\nExtract up to %d entities. Return a single JSON object:\n", maxEntities))
-	sb.WriteString(`{
-  "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system", "properties": "{}", "is_user": false}],
-  "relationships": [{"source": "entity_name", "target": "entity_name", "relation": "USES|WORKS_ON|KNOWS_ABOUT|CREATED|DEPENDS_ON|RELATED_TO|CONTAINS|PRODUCES"}],
-  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}]}]
+	if len(ec.l2Summaries) > 0 {
+		sb.WriteString("Previous conversation context (compressed summaries of earlier exchanges):\n")
+		for i, summary := range ec.l2Summaries {
+			fmt.Fprintf(&sb, "  [Summary %d]: %s\n", i+1, summary)
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(ec.existingEntities) > 0 {
+		sb.WriteString("Existing entities in the knowledge graph (reuse these names when referencing the same thing):\n")
+		sb.WriteString("  " + strings.Join(ec.existingEntities, ", ") + "\n\n")
+	}
+
+	sb.WriteString("Conversation:\n")
+	for i, msg := range ec.messages {
+		if msg.Role == "tool" {
+			continue
+		}
+		fmt.Fprintf(&sb, "%d. [%s]: %s\n", i+1, msg.Role, msg.Content)
+	}
+
+	return sb.String()
 }
+
+// jsonSchema is the shared output schema for both extraction passes.
+const jsonSchema = `{
+  "entities": [{"name": "lowercase_name", "entity_type": "person|tool|project|concept|organization|dataset|system|event|place", "properties": "{}", "is_user": false}],
+  "relationships": [{"source": "entity_name", "target": "entity_name", "relation": "USES|WORKS_ON|KNOWS_ABOUT|CREATED|DEPENDS_ON|RELATED_TO|CONTAINS|PRODUCES|ATTENDED|PURCHASED|VISITED|MEMBER_OF"}],
+  "memories": [{"content": "factual statement", "summary": "short summary", "memory_type": "fact|preference|decision|experience|failure|observation", "tags": ["tag1"], "salience": 0.5, "entities": [{"name": "entity_name", "role": "about|mentions"}], "event_date": "YYYY-MM-DD or empty", "event_date_confidence": "exact|approximate|ambiguous or empty"}]
+}`
+
+// buildGraphMemoryExtractionPrompt creates PASS 1: main topic extraction.
+// Extracts entities, relationships, and memories from the primary conversation content.
+func buildGraphMemoryExtractionPrompt(messages []types.Message, maxEntities int, l2Summaries []string, existingEntities []string) string {
+	return buildGraphMemoryExtractionPromptWithDate(messages, maxEntities, l2Summaries, existingEntities, "")
+}
+
+// buildGraphMemoryExtractionPromptWithDate creates PASS 1 with date anchoring.
+func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntities int, l2Summaries []string, existingEntities []string, currentDate string) string {
+	ec := extractionContext{
+		messages:         messages,
+		maxEntities:      maxEntities,
+		l2Summaries:      l2Summaries,
+		existingEntities: existingEntities,
+		currentDate:      currentDate,
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
+	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
+	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
+	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior.\n\n")
+
+	sb.WriteString(buildConversationBlock(ec))
+
+	fmt.Fprintf(&sb, "\nExtract up to %d entities. Return a single JSON object:\n", maxEntities)
+	sb.WriteString(jsonSchema)
+	sb.WriteString(`
 
 Rules:
 - Only extract information explicitly stated or clearly implied in the conversation
@@ -97,6 +159,18 @@ Rules:
 - Keep memory content concise and factual (one sentence)
 - Keep summary under 50 characters
 - Set salience proportional to importance: critical decisions 0.8-1.0, routine facts 0.3-0.5
+- CRITICAL: Convert ALL relative dates to absolute dates using the current date as anchor.
+  "last week" → specific date. "three weeks ago" → specific date. "yesterday" → specific date.
+  If current date is not provided, keep the relative reference but note the context.
+- For each memory describing a time-bound event or state change, also populate
+  "event_date" with the absolute ISO date (YYYY-MM-DD) computed by subtracting
+  the relative phrase from the current date, and set "event_date_confidence":
+    * "exact" when the user gave a specific date ("on January 15th")
+    * "approximate" when the user gave a relative phrase you anchored ("about two months ago")
+    * "ambiguous" when the user mentioned a time cue you cannot resolve
+      ("a while back", "recently", "at some point") — in this case leave
+      "event_date" empty. Do NOT fabricate a date.
+  If the memory has no temporal dimension at all, leave both fields empty.
 - Skip redundant or trivial information
 - Return ONLY the JSON object, no explanation
 - If nothing worth extracting, return {"entities":[],"relationships":[],"memories":[]}
@@ -113,6 +187,50 @@ Entity roles:
 	return sb.String()
 }
 
+// buildIncidentalFactsPrompt creates PASS 2: personal context extraction.
+// While PASS 1 extracts what the conversation is about, PASS 2 extracts what
+// the user revealed about themselves — biographical facts, personal timeline,
+// relationships, habits, and preferences that build a long-term user model.
+func buildIncidentalFactsPrompt(ec extractionContext) string {
+	var sb strings.Builder
+	sb.WriteString(`Extract what the USER revealed about themselves in this conversation.
+
+PASS 1 already captured the main discussion topic. Your job is to capture the user's personal context:
+
+- Timeline: when things happened, how long ago, durations, sequences of events
+- Relationships: people mentioned, their roles (colleague, friend, family, etc.)
+- Habits and routines: schedules, recurring activities, regular practices
+- Preferences: likes, dislikes, choices, opinions expressed
+- Affiliations: groups, clubs, teams, organizations, employers
+- Possessions: things owned, purchased, subscribed to
+- Experiences: places visited, events attended, activities participated in
+
+Each fact should be a standalone statement that would be useful if recalled months later.
+
+`)
+
+	sb.WriteString(buildConversationBlock(ec))
+
+	sb.WriteString("\nReturn a single JSON object with the same schema:\n")
+	sb.WriteString(jsonSchema)
+	sb.WriteString(`
+
+Rules:
+- Extract facts about the USER, not about the topic being discussed
+- Convert ALL relative dates to absolute dates using the current date as anchor
+- For each memory with a time dimension, populate "event_date" (YYYY-MM-DD)
+  and "event_date_confidence" ("exact" | "approximate" | "ambiguous").
+  If the time cue is too vague to anchor (e.g., "a while back"), leave
+  "event_date" empty and set confidence to "ambiguous" — do NOT fabricate.
+- Each memory should be a single specific fact (not a summary of the conversation)
+- Set salience 0.6-0.9 for personal facts
+- Return ONLY the JSON object, no explanation
+- If nothing about the user was revealed, return {"entities":[],"relationships":[],"memories":[]}
+`)
+
+	return sb.String()
+}
+
 // extractGraphMemoryAsync extracts entities, relationships, and memories from
 // recent conversation turns and stores them in graph memory. This function is
 // called asynchronously after N tool executions (cadence).
@@ -121,9 +239,13 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		return
 	}
 
-	// Create a timeout context for extraction (5 seconds max).
+	// Create a timeout context for extraction.
 	// Derive from caller's context to propagate RLS user_id and other values.
-	extractCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeout := 30 * time.Second // default
+	if a.graphMemoryConfig != nil && a.graphMemoryConfig.ExtractionTimeoutSeconds > 0 {
+		timeout = time.Duration(a.graphMemoryConfig.ExtractionTimeoutSeconds) * time.Second
+	}
+	extractCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	session, ok := a.memory.GetSession(sessionID)
@@ -137,15 +259,19 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	}
 
 	// Get recent conversation turns (all roles, not just tool results).
-	// Use cadence * 3 to cover roughly cadence exchanges of user/assistant/tool.
-	messageCount := a.graphExtractionCadence * 3
-	if messageCount <= 0 {
-		messageCount = 15
+	// Use configured window size, or fall back to cadence * 3 with a minimum of 15.
+	messageCount := 15
+	if a.graphMemoryConfig != nil && a.graphMemoryConfig.ExtractionWindowMessages > 0 {
+		messageCount = int(a.graphMemoryConfig.ExtractionWindowMessages)
+	} else if a.graphExtractionCadence*3 > messageCount {
+		messageCount = a.graphExtractionCadence * 3
 	}
 	recentMessages := segmentedMem.GetRecentConversationTurns(messageCount)
 	if len(recentMessages) == 0 {
 		return
 	}
+
+	agentID := a.config.Name
 
 	// Determine max entities from config.
 	maxEntities := 10
@@ -153,10 +279,29 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		maxEntities = int(a.graphMemoryConfig.MaxEntitiesPerExtraction)
 	}
 
-	prompt := buildGraphMemoryExtractionPrompt(recentMessages, maxEntities)
+	// Gather L2 summaries for narrative context.
+	var l2Summaries []string
+	if currentL2 := segmentedMem.GetL2Summary(); currentL2 != "" {
+		if snapshots, err := segmentedMem.RetrieveL2Snapshots(extractCtx, 3); err == nil && len(snapshots) > 0 {
+			l2Summaries = append(l2Summaries, snapshots...)
+		}
+		l2Summaries = append(l2Summaries, currentL2)
+	}
 
-	messages := []types.Message{
-		{Role: "user", Content: prompt},
+	// Gather existing entity names so the extractor can link to known nodes.
+	var existingEntities []string
+	if entities, _, err := a.graphMemoryStore.ListEntities(extractCtx, agentID, "", 50, 0); err == nil {
+		for _, e := range entities {
+			existingEntities = append(existingEntities, e.Name)
+		}
+	}
+
+	// Determine the current date for anchoring relative time references.
+	// Try to extract from conversation content (e.g., "session that took place on 2023/05/24"),
+	// fall back to the current wall clock time.
+	currentDate := extractDateFromMessages(recentMessages)
+	if currentDate == "" {
+		currentDate = time.Now().Format("2006-01-02")
 	}
 
 	// Use compressorLLM for extraction (cheaper/smaller model), fall back to main LLM.
@@ -165,24 +310,21 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		llmProvider = a.compressorLLM
 	}
 
-	response, err := llmProvider.Chat(extractCtx, messages, nil)
+	// Single-pass extraction with date anchoring.
+	prompt := buildGraphMemoryExtractionPromptWithDate(
+		recentMessages, maxEntities, l2Summaries, existingEntities, currentDate)
+
+	response, err := llmProvider.Chat(extractCtx, []types.Message{
+		{Role: "user", Content: prompt},
+	}, nil)
 	if err != nil {
 		return
 	}
 
-	// Parse JSON response.
-	content := response.Content
-	content = strings.TrimPrefix(content, "```json\n")
-	content = strings.TrimPrefix(content, "```\n")
-	content = strings.TrimSuffix(content, "\n```")
-	content = strings.TrimSpace(content)
-
-	var data ExtractedGraphData
-	if err := json.Unmarshal([]byte(content), &data); err != nil {
+	data, ok := parseExtractionResponse(response.Content)
+	if !ok {
 		return
 	}
-
-	agentID := a.config.Name
 
 	// Store entities (get-or-create pattern).
 	entityMap := make(map[string]*memory.Entity) // name → entity for relationship resolution
@@ -252,7 +394,25 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		}
 	}
 
+	// Batch-embed memory contents if embedder is available.
+	var embeddings [][]float32
+	if a.embedder != nil && len(data.Memories) > 0 {
+		var texts []string
+		for _, m := range data.Memories {
+			if m.Content != "" {
+				texts = append(texts, m.Content)
+			}
+		}
+		if len(texts) > 0 {
+			embs, err := a.embedder.EmbedBatch(extractCtx, texts)
+			if err == nil && len(embs) == len(texts) {
+				embeddings = embs
+			}
+		}
+	}
+
 	// Store memories.
+	embIdx := 0
 	for _, m := range data.Memories {
 		if m.Content == "" {
 			continue
@@ -283,17 +443,28 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			}
 		}
 
+		eventDate, eventConfidence := sanitizeEventDate(m.EventDate, m.EventDateConfidence)
+
 		mem := &memory.Memory{
-			AgentID:       agentID,
-			Content:       m.Content,
-			Summary:       m.Summary,
-			MemoryType:    memoryType,
-			Source:        "auto_extracted",
-			MemoryAgentID: agentID,
-			Tags:          m.Tags,
-			Salience:      salience,
-			EntityRoles:   entityRoles,
+			AgentID:             agentID,
+			Content:             m.Content,
+			Summary:             m.Summary,
+			MemoryType:          memoryType,
+			Source:              "auto_extracted",
+			MemoryAgentID:       agentID,
+			Tags:                m.Tags,
+			Salience:            salience,
+			EntityRoles:         entityRoles,
+			EventDate:           eventDate,
+			EventDateConfidence: eventConfidence,
 		}
+		// Attach embedding if available.
+		if embIdx < len(embeddings) {
+			mem.Embedding = embeddings[embIdx]
+			mem.EmbeddingModel = a.embedder.Model()
+			embIdx++
+		}
+
 		_, err := a.graphMemoryStore.Remember(extractCtx, mem)
 		if err != nil {
 			zap.L().Debug("graph memory extraction: failed to store memory",
@@ -302,6 +473,51 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		}
 	}
 }
+
+// parseExtractionResponse parses an LLM response into ExtractedGraphData.
+// Handles JSON wrapped in markdown code fences.
+func parseExtractionResponse(content string) (ExtractedGraphData, bool) {
+	content = strings.TrimPrefix(content, "```json\n")
+	content = strings.TrimPrefix(content, "```\n")
+	content = strings.TrimSuffix(content, "\n```")
+	content = strings.TrimSpace(content)
+
+	var data ExtractedGraphData
+	if err := json.Unmarshal([]byte(content), &data); err != nil {
+		return data, false
+	}
+	return data, true
+}
+
+// extractDateFromMessages scans recent messages for date context.
+// Looks for patterns like "took place on 2023/05/24" or "Current date: 2023-05-24"
+// that the benchmark runner or user might include.
+func extractDateFromMessages(messages []types.Message) string {
+	for _, msg := range messages {
+		// Try common date patterns in message content.
+		for _, pattern := range datePatterns {
+			if loc := pattern.FindStringIndex(msg.Content); loc != nil {
+				match := pattern.FindString(msg.Content)
+				// Normalize separators to dash format.
+				match = strings.ReplaceAll(match, "/", "-")
+				return match
+			}
+		}
+	}
+	return ""
+}
+
+// datePatterns matches common date formats in conversation messages.
+var datePatterns = func() []*regexp.Regexp {
+	patterns := []string{
+		`\d{4}[/-]\d{2}[/-]\d{2}`, // 2023-05-24 or 2023/05/24
+	}
+	compiled := make([]*regexp.Regexp, len(patterns))
+	for i, p := range patterns {
+		compiled[i] = regexp.MustCompile(p)
+	}
+	return compiled
+}()
 
 // getOrCreateEntity retrieves an entity by name, creating it if it doesn't exist.
 // If propertiesJSON is non-empty and the entity already exists, it updates properties
@@ -357,6 +573,47 @@ func isValidMemoryType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// sanitizeEventDate validates the (date, confidence) pair the extractor
+// returned and normalizes it for storage.
+//
+// A date is only accepted if it parses as YYYY-MM-DD. A non-empty date with
+// confidence "ambiguous" is treated as a contract violation and the date is
+// dropped (the prompt forbids this combination). An empty date is always
+// allowed; confidence in that case collapses to "ambiguous" or empty
+// depending on what the extractor emitted.
+func sanitizeEventDate(date, confidence string) (string, string) {
+	date = strings.TrimSpace(date)
+	confidence = strings.ToLower(strings.TrimSpace(confidence))
+
+	switch confidence {
+	case "exact", "approximate", "ambiguous", "":
+		// allowed
+	default:
+		confidence = ""
+	}
+
+	if date == "" {
+		return "", confidence
+	}
+
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		// Drop malformed dates; keep confidence so telemetry can flag this.
+		return "", confidence
+	}
+
+	if confidence == "ambiguous" {
+		// Protocol violation: the extractor emitted a date despite saying it
+		// could not resolve one. Prefer trusting the self-reported confidence
+		// and drop the date.
+		return "", confidence
+	}
+
+	if confidence == "" {
+		confidence = "approximate"
+	}
+	return date, confidence
 }
 
 // truncate returns the first n characters of s, appending "..." if truncated.

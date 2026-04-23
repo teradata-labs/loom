@@ -28,16 +28,12 @@ var gitCommit = "unknown"
 func main() {
 	serverAddr := flag.String("server-addr", "", "gRPC server address (required)")
 	httpAddr := flag.String("http-addr", "", "HTTP server address for reconfigure/metrics (default: derived from server-addr)")
-	lgAddr := flag.String("langgraph-addr", "", "LangGraph gRPC server address (for comparison scenario)")
 	scenario := flag.String("scenario", "sustained_load", "Scenario to run (or 'all' for full suite)")
 	outputDir := flag.String("output-dir", "", "Directory to write JSON results (empty = stdout only)")
 	runs := flag.Int("runs", 3, "Number of measured runs per scenario level")
 	warmupRuns := flag.Int("warmup-runs", 1, "Number of warmup runs to discard")
 	resume := flag.Bool("resume", true, "Skip scenarios that already have results in output-dir")
 	flag.Parse()
-
-	// Set global for comparison scenario
-	langgraphAddr = *lgAddr
 
 	if *serverAddr == "" {
 		log.Fatal("--server-addr is required")

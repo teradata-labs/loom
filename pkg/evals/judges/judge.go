@@ -232,13 +232,16 @@ func (h *LLMJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationConte
 
 	startTime := time.Now()
 
-	// Create evidence for LLM judge
+	// Create evidence for LLM judge. Pass Criteria through so the judge honors
+	// the custom rubric registered with JudgeConfig instead of falling back to
+	// the SQL-oriented hardcoded template.
 	evidence := &llmjudge.Evidence{
 		Query:         evalCtx.Prompt,
 		Response:      evalCtx.Response,
 		Success:       true,
 		ExecutionTime: evalCtx.LatencyMs,
 		Model:         h.llmProvider.Model(),
+		Criteria:      h.config.Criteria,
 	}
 
 	// Call LLM judge

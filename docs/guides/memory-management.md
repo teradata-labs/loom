@@ -56,6 +56,8 @@ Loom organizes conversation context into five tiers:
 - ✅ **Shared Memory**: Large tool results can be stored in a `SharedMemoryStore` to save context tokens.
 - ✅ **Session Memory Tool**: Unified access to session lifecycle, cross-session memory, and compact operations.
 - ✅ **Graph Memory**: Salience-driven graph-backed episodic memory with entities, edges, and FTS5 search. Enabled by default for all agents -- no config changes needed. Pre-existing agents get graph memory automatically on server restart. Configure via `graph_memory` in the memory config. See [Graph Memory Architecture](/docs/architecture/graph-memory/).
+- ✅ **Event-Date Anchoring** (v1.2.0, April 2026): Time-bound memories now carry an absolute ISO date (`event_date`) computed at extraction time, plus a confidence level (`exact` / `approximate` / `ambiguous`). Retrieval renders `[YYYY-MM-DD]` alongside the memory content so the answering LLM can order facts without re-resolving relative phrases. Requires migration `000006_memory_event_date`. See [Graph Memory Architecture -- Event-Date Anchoring](/docs/architecture/graph-memory/#event-date-anchoring).
+- ⚠️ **Vector Embeddings for Recall** (v1.2.0, April 2026): `graph_memories` gains an `embedding BLOB` column and the `GraphMemoryStore` interface gains `VectorRecall` (brute-force cosine over persisted vectors, scoped by `embedding_model` for safety). SQLite backend is implemented; Postgres backend returns a not-implemented error pending pgvector wiring. Enable by setting `embedding.enabled: true` in `looms.yaml` with an OpenAI API key.
 
 
 ## Workload Profiles

@@ -17,8 +17,11 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -181,13 +184,14 @@ func (s *GraphMemoryStore) SearchEntities(ctx context.Context, agentID, query st
 		limit = 20
 	}
 
+	ftsQuery := toFTS5OrQuery(query)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.id, e.agent_id, e.name, e.entity_type, e.properties_json, COALESCE(e.owner,''), e.created_at, e.updated_at
 		 FROM graph_entities e
 		 JOIN graph_entities_fts f ON f.entity_id = e.id
 		 WHERE f.graph_entities_fts MATCH ? AND e.agent_id = ?
 		 ORDER BY rank LIMIT ?`,
-		query, agentID, limit,
+		ftsQuery, agentID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search entities: %w", err)
@@ -419,7 +423,8 @@ func (s *GraphMemoryStore) GetMemory(ctx context.Context, agentID, memoryID stri
 		`SELECT id, agent_id, content, summary, memory_type, COALESCE(source,''), COALESCE(source_id,''),
 		        COALESCE(owner,''), COALESCE(memory_agent_id,''), tags, salience,
 		        token_count, summary_token_count, access_count, properties_json,
-		        created_at, accessed_at, expires_at
+		        created_at, accessed_at, expires_at,
+		        COALESCE(event_date,''), COALESCE(event_date_confidence,'')
 		 FROM graph_memories WHERE agent_id = ? AND id = ?`,
 		agentID, memoryID,
 	)
@@ -508,26 +513,33 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 
 	var query string
 	if opts.Query != "" {
+		// Convert query to OR semantics for FTS5. Space-separated terms default
+		// to AND in FTS5 (all must match), which is too strict for memory recall.
+		// OR returns any match and lets BM25 rank multi-term matches higher.
+		ftsQuery := toFTS5OrQuery(opts.Query)
+
 		// FTS search with BM25 ranking.
 		query = fmt.Sprintf(
 			`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
 			        COALESCE(m.source,''), COALESCE(m.source_id,''), COALESCE(m.owner,''),
 			        COALESCE(m.memory_agent_id,''), m.tags, m.salience,
 			        m.token_count, m.summary_token_count, m.access_count, m.properties_json,
-			        m.created_at, m.accessed_at, m.expires_at
+			        m.created_at, m.accessed_at, m.expires_at,
+			        COALESCE(m.event_date,''), COALESCE(m.event_date_confidence,'')
 			 FROM graph_memories m
 			 JOIN graph_memories_fts f ON f.memory_id = m.id
 			 WHERE f.graph_memories_fts MATCH ? AND %s
 			 ORDER BY (m.salience * (-rank)) DESC, m.created_at DESC
 			 LIMIT ?`, where)
-		args = append([]interface{}{opts.Query}, args...)
+		args = append([]interface{}{ftsQuery}, args...)
 	} else {
 		query = fmt.Sprintf(
 			`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
 			        COALESCE(m.source,''), COALESCE(m.source_id,''), COALESCE(m.owner,''),
 			        COALESCE(m.memory_agent_id,''), m.tags, m.salience,
 			        m.token_count, m.summary_token_count, m.access_count, m.properties_json,
-			        m.created_at, m.accessed_at, m.expires_at
+			        m.created_at, m.accessed_at, m.expires_at,
+			        COALESCE(m.event_date,''), COALESCE(m.event_date_confidence,'')
 			 FROM graph_memories m
 			 WHERE %s
 			 ORDER BY m.salience DESC, m.created_at DESC
@@ -565,6 +577,159 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 	}
 
 	return memories, nil
+}
+
+// VectorRecall performs brute-force cosine similarity search over all memories
+// with embeddings for the given agent. Returns memories sorted by similarity.
+// This is O(n) and fine for <100K memories per agent. For larger scale, use
+// PostgreSQL with pgvector HNSW index.
+func (s *GraphMemoryStore) VectorRecall(ctx context.Context, opts memory.VectorRecallOpts) ([]*memory.Memory, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.graph_memory.vector_recall")
+	defer s.tracer.EndSpan(span)
+
+	if len(opts.Embedding) == 0 {
+		return nil, nil
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	}
+
+	if opts.Model == "" {
+		return nil, nil // no model specified, skip vector recall
+	}
+
+	// Fetch non-expired, non-superseded memories with embeddings from the same model.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
+		        COALESCE(m.source,''), COALESCE(m.source_id,''), COALESCE(m.owner,''),
+		        COALESCE(m.memory_agent_id,''), m.tags, m.salience,
+		        m.token_count, m.summary_token_count, m.access_count, m.properties_json,
+		        m.created_at, m.accessed_at, m.expires_at,
+		        COALESCE(m.event_date,''), COALESCE(m.event_date_confidence,''),
+		        m.embedding
+		 FROM graph_memories m
+		 WHERE m.agent_id = ?
+		   AND m.embedding_model = ?
+		   AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))
+		   AND m.embedding IS NOT NULL
+		   AND m.id NOT IN (SELECT old_memory_id FROM graph_memory_lineage WHERE relation_type = 'SUPERSEDES')
+		 ORDER BY m.created_at DESC`,
+		opts.AgentID, opts.Model,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("vector recall query: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	type scored struct {
+		mem   *memory.Memory
+		score float32
+	}
+	var results []scored
+
+	for rows.Next() {
+		mem, embBytes, err := scanMemoryWithEmbedding(rows)
+		if err != nil {
+			continue
+		}
+		emb := bytesToFloat32(embBytes)
+		if len(emb) == 0 {
+			continue
+		}
+		sim := memory.CosineSimilarity(opts.Embedding, emb)
+		if sim >= opts.Threshold {
+			results = append(results, scored{mem: mem, score: sim})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort by similarity descending.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].score > results[j].score
+	})
+
+	// Take top-K.
+	if len(results) > opts.Limit {
+		results = results[:opts.Limit]
+	}
+
+	memories := make([]*memory.Memory, len(results))
+	for i, r := range results {
+		memories[i] = r.mem
+	}
+
+	// Touch accessed memories.
+	if len(memories) > 0 {
+		ids := make([]string, len(memories))
+		for i, m := range memories {
+			ids[i] = m.ID
+		}
+		_ = s.TouchMemories(ctx, ids)
+	}
+
+	return memories, nil
+}
+
+// scanMemoryWithEmbedding scans a memory row that includes an embedding BLOB column.
+func scanMemoryWithEmbedding(rows *sql.Rows) (*memory.Memory, []byte, error) {
+	var m memory.Memory
+	var tagsJSON, createdAtStr string
+	var accessedAt, expiresAt sql.NullString
+	var embBytes []byte
+
+	err := rows.Scan(
+		&m.ID, &m.AgentID, &m.Content, &m.Summary, &m.MemoryType,
+		&m.Source, &m.SourceID, &m.Owner, &m.MemoryAgentID,
+		&tagsJSON, &m.Salience, &m.TokenCount, &m.SummaryTokenCount,
+		&m.AccessCount, &m.PropertiesJSON, &createdAtStr, &accessedAt, &expiresAt,
+		&m.EventDate, &m.EventDateConfidence,
+		&embBytes,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	m.CreatedAt = parseTime(createdAtStr)
+	if tagsJSON != "" && tagsJSON != "null" {
+		_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
+	}
+	if accessedAt.Valid && accessedAt.String != "" {
+		t := parseTime(accessedAt.String)
+		m.AccessedAt = &t
+	}
+	if expiresAt.Valid && expiresAt.String != "" {
+		t := parseTime(expiresAt.String)
+		m.ExpiresAt = &t
+	}
+
+	return &m, embBytes, nil
+}
+
+// bytesToFloat32 converts a byte slice to float32 slice (little-endian).
+func bytesToFloat32(b []byte) []float32 {
+	if len(b) == 0 || len(b)%4 != 0 {
+		return nil
+	}
+	result := make([]float32, len(b)/4)
+	for i := range result {
+		bits := uint32(b[i*4]) | uint32(b[i*4+1])<<8 | uint32(b[i*4+2])<<16 | uint32(b[i*4+3])<<24
+		result[i] = math.Float32frombits(bits)
+	}
+	return result
+}
+
+// float32ToBytes converts a float32 slice to bytes (little-endian).
+// Uses encoding/binary rather than manual byte shifts so gosec's
+// G115 false-positives on the intentional uint32→byte truncation
+// do not need suppression comments.
+func float32ToBytes(f []float32) []byte {
+	b := make([]byte, len(f)*4)
+	for i, v := range f {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(v))
+	}
+	return b
 }
 
 func (s *GraphMemoryStore) Forget(ctx context.Context, memoryID string) error {
@@ -942,6 +1107,28 @@ func (s *GraphMemoryStore) Close() error {
 	return nil // db owned externally
 }
 
+// toFTS5OrQuery converts a natural language query to OR-separated terms for FTS5.
+// FTS5 defaults to AND (all terms must match), which is too strict for memory recall.
+// OR returns any match and BM25 naturally ranks multi-term matches higher.
+// If the query already contains FTS5 operators (OR, AND, NOT, NEAR, quotes), pass through.
+func toFTS5OrQuery(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return query
+	}
+	// Pass through if already using FTS5 operators.
+	for _, op := range []string{" OR ", " AND ", " NOT ", " NEAR ", `"`} {
+		if strings.Contains(query, op) {
+			return query
+		}
+	}
+	words := strings.Fields(query)
+	if len(words) <= 1 {
+		return query
+	}
+	return strings.Join(words, " OR ")
+}
+
 // =============================================================================
 // Transaction Helpers
 // =============================================================================
@@ -975,16 +1162,34 @@ func insertMemoryTx(ctx context.Context, tx *sql.Tx, mem *memory.Memory) error {
 		expiresAt = mem.ExpiresAt.Format(time.RFC3339)
 	}
 
+	var embBytes interface{}
+	var embModel interface{}
+	if len(mem.Embedding) > 0 {
+		embBytes = float32ToBytes(mem.Embedding)
+		embModel = mem.EmbeddingModel
+	}
+
+	var eventDate interface{}
+	if mem.EventDate != "" {
+		eventDate = mem.EventDate
+	}
+	var eventDateConfidence interface{}
+	if mem.EventDateConfidence != "" {
+		eventDateConfidence = mem.EventDateConfidence
+	}
+
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO graph_memories
 		 (id, agent_id, content, summary, memory_type, source, source_id, owner, memory_agent_id,
 		  tags, salience, token_count, summary_token_count, access_count, properties_json,
-		  created_at, accessed_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime(?), NULL, ?)`,
+		  created_at, accessed_at, expires_at, embedding, embedding_model,
+		  event_date, event_date_confidence)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime(?), NULL, ?, ?, ?, ?, ?)`,
 		mem.ID, mem.AgentID, mem.Content, mem.Summary, mem.MemoryType,
 		mem.Source, mem.SourceID, mem.Owner, mem.MemoryAgentID,
 		string(tagsJSON), mem.Salience, mem.TokenCount, mem.SummaryTokenCount,
-		mem.PropertiesJSON, mem.CreatedAt.Format(time.RFC3339), expiresAt,
+		mem.PropertiesJSON, mem.CreatedAt.Format(time.RFC3339), expiresAt, embBytes, embModel,
+		eventDate, eventDateConfidence,
 	)
 	if err != nil {
 		return fmt.Errorf("insert memory: %w", err)
@@ -1094,6 +1299,7 @@ func scanMemory(row *sql.Row) (*memory.Memory, error) {
 		&m.Source, &m.SourceID, &m.Owner, &m.MemoryAgentID,
 		&tagsJSON, &m.Salience, &m.TokenCount, &m.SummaryTokenCount,
 		&m.AccessCount, &m.PropertiesJSON, &createdAtStr, &accessedAt, &expiresAt,
+		&m.EventDate, &m.EventDateConfidence,
 	)
 	if err != nil {
 		return nil, err
@@ -1127,6 +1333,7 @@ func scanMemoryFromRows(rows *sql.Rows) (*memory.Memory, error) {
 		&m.Source, &m.SourceID, &m.Owner, &m.MemoryAgentID,
 		&tagsJSON, &m.Salience, &m.TokenCount, &m.SummaryTokenCount,
 		&m.AccessCount, &m.PropertiesJSON, &createdAtStr, &accessedAt, &expiresAt,
+		&m.EventDate, &m.EventDateConfidence,
 	)
 	if err != nil {
 		return nil, err
