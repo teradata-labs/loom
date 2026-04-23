@@ -73,9 +73,23 @@ func FuzzTokenCounter(f *testing.F) {
 				count, maxReasonable, len(text))
 		}
 
-		// Property 4: Empty or whitespace-only text should have very low token count
-		if strings.TrimSpace(text) == "" && count > 10 {
-			t.Errorf("whitespace-only text has suspiciously high token count: %d", count)
+		// Property 4: Whitespace-only text should not produce more tokens than
+		// it has runes. tiktoken's cl100k_base BPE emits roughly one token per
+		// distinct whitespace-run when whitespace kinds are interleaved (e.g.
+		// " \t\n \t\n ..."), so a fixed small cap like count<=10 is wrong —
+		// the real invariant is that the tokenizer never exceeds one token per
+		// rune on a string that has no meaningful sub-word structure.
+		if strings.TrimSpace(text) == "" {
+			runes := utf8.RuneCountInString(text)
+			switch {
+			case runes == 0:
+				if count != 0 {
+					t.Errorf("empty string produced %d tokens, want 0", count)
+				}
+			case count > runes:
+				t.Errorf("whitespace-only text (%d runes) produced %d tokens; "+
+					"exceeds per-rune worst case", runes, count)
+			}
 		}
 
 		// Property 5: Idempotence - counting twice should give same result

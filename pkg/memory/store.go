@@ -57,6 +57,11 @@ type GraphMemoryStore interface {
 	// Composite query
 	ContextFor(ctx context.Context, opts ContextForOpts) (*EntityRecall, error)
 
+	// Vector similarity search (returns memories ordered by cosine similarity).
+	// Implementations: SQLite uses brute-force in Go; PostgreSQL uses pgvector HNSW.
+	// Returns nil, nil if embeddings are not enabled for this store.
+	VectorRecall(ctx context.Context, opts VectorRecallOpts) ([]*Memory, error)
+
 	// Stats
 	GetStats(ctx context.Context, agentID string) (*GraphStats, error)
 

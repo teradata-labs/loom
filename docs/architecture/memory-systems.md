@@ -1000,10 +1000,13 @@ Default disk cache path: `{os.TempDir()}/loom/cache/`, max 10GB (`DefaultMaxDisk
 **Algorithm**: The `TokenCounter` uses the tiktoken library (cl100k_base encoding) to estimate token counts. It provides methods for counting string tokens and estimating message/tool-result tokens.
 
 ```go
-// TokenCounter uses tiktoken for token estimation (singleton)
+// TokenCounter uses a fixed-size channel pool of tiktoken encoders so
+// concurrent goroutines can count tokens without contending on a single
+// mutex. Pool size is resolved once at startup from GOMAXPROCS (floored
+// at 16), with LOOM_TOKEN_ENCODER_POOL_SIZE as an explicit override.
 type TokenCounter struct {
-    encoder *tiktoken.Tiktoken
-    mu      sync.Mutex
+    encoders chan *tiktoken.Tiktoken
+    encoder  *tiktoken.Tiktoken
 }
 
 // updateTokenCount calculates actual token usage across all memory layers
@@ -1022,7 +1025,18 @@ func (sm *SegmentedMemory) updateTokenCount() {
 
 **Accuracy**: ±5% error margin (acceptable for budget management)
 
-**Performance**: <1ms for 100 messages
+**Performance**: <1ms for 100 messages. Under concurrent load, throughput is
+bounded by the encoder pool size — a caller whose goroutines exceed the pool
+blocks on `<-encoders` until one is returned. On a 32 vCPU Xeon 8473C the
+default pool (sized to GOMAXPROCS) sustained ~380k `CountTokens` ops/s at 32
+concurrent goroutines; the previous hardcoded pool of 16 dropped to ~99k
+ops/s at the same concurrency (measured 2026-04-23).
+
+**Tuning**: `LOOM_TOKEN_ENCODER_POOL_SIZE` overrides the default when
+GOMAXPROCS doesn't match the effective CPU quota (e.g. some older
+cgroup-limited deploys on pre-Go 1.25 runtimes). Each additional encoder
+costs ~45 KB of heap; the cl100k_base BPE rank map is shared across the
+pool via tiktoken's internal `encodingMap` cache.
 
 
 ### Adaptive Compression Triggers

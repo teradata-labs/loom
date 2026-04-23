@@ -122,6 +122,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			a.graphExtractionCadence = 5
 		}
 		a.graphToolExecutionsSinceExtraction = 0
+
+		// Conversation-turn-based extraction (fires on LLM responses, not just tool use).
+		a.graphConversationExtractionCadence = int(a.graphMemoryConfig.ConversationExtractionCadence)
+		a.graphTurnsSinceExtraction = 0
 	}
 
 	// Initialize pattern orchestrator
@@ -257,7 +261,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		}
 	}
 
-	// NOTE: conversation_memory tool (unified recall/search/clear) uses progressive disclosure.
+	// NOTE: conversation_memory tool uses progressive disclosure.
 	// It registers automatically after first L2 swap event.
 	// See checkAndRegisterConversationMemoryTool() for implementation.
 
@@ -780,7 +784,7 @@ When to use the graph_memory tool:
 
 Actions:
 - remember: save facts (salience 0-1: critical decisions 0.8-1.0, casual facts 0.3-0.5)
-- recall: search by keywords, filter by type/tags
+- recall: search by searchQuery, filter by type/tags
 - supersede: correct outdated info (preserves lineage)
 - forget: soft-delete
 - relate: link entities with typed relationships (USES, WORKS_ON, KNOWS_ABOUT)
@@ -1177,6 +1181,17 @@ func (a *Agent) Chat(ctx context.Context, sessionID string, userMessage string) 
 		span.RecordError(err)
 	}
 
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it. The user message is where the
+	// information lives — extract entities/facts before the response comes back.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(ctx, sessionID)
+		}()
+	}
+
 	// Create agent context
 	agentCtx := &agentContext{
 		Context:          ctx,
@@ -1359,6 +1374,16 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 			zap.String("role", userMsg.Role),
 			zap.Error(err))
 		span.RecordError(err)
+	}
+
+	// Fire graph memory extraction on the incoming user message immediately,
+	// in parallel with the LLM processing it.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(ctx, sessionID)
+		}()
 	}
 
 	// Store progressCallback in context so nested operations (tools, backends) can access it
@@ -2417,11 +2442,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
-			// After each tool execution, check if we should extract graph memories
-			if a.enableGraphMemoryExtraction {
+			// After each tool execution, check if we should extract graph memories.
+			// Skip when the tool IS graph_memory — explicit use is higher quality.
+			if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
 				a.graphToolExecutionsSinceExtraction++
 				if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
-					go a.extractGraphMemoryAsync(ctx, session.ID)
+					a.graphExtractionWG.Add(1)
+					go func() {
+						defer a.graphExtractionWG.Done()
+						a.extractGraphMemoryAsync(ctx, session.ID)
+					}()
 					a.graphToolExecutionsSinceExtraction = 0
 				}
 			}
@@ -2787,6 +2817,13 @@ func (a *Agent) graphMemoryTokenBudget() int {
 	return 200000 * int(pct) / 100
 }
 
+// FlushGraphMemoryExtraction blocks until all in-flight async graph memory
+// extractions have completed. Call this before querying graph memory to
+// ensure recently ingested content has been fully extracted.
+func (a *Agent) FlushGraphMemoryExtraction() {
+	a.graphExtractionWG.Wait()
+}
+
 // injectGraphMemoryContext queries graph memory for the current topic and injects
 // relevant context into the conversation as a system message.
 func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
@@ -2794,49 +2831,288 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
+	// Wait for any in-flight extractions to finish before querying.
+	// This ensures recently ingested content is available for recall.
+	a.graphExtractionWG.Wait()
+
 	budget := a.graphMemoryTokenBudget()
 	if budget <= 0 {
 		return
 	}
 
-	// Extract topic from recent user messages.
-	topic := ""
+	// Get the last user message.
+	var userMessage string
 	msgs := session.GetMessages()
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" && msgs[i].Content != "" {
-			topic = msgs[i].Content
-			if len(topic) > 200 {
-				topic = topic[:200]
-			}
+			userMessage = msgs[i].Content
 			break
 		}
 	}
-	if topic == "" {
+	if userMessage == "" {
 		return
 	}
 
-	// Query graph memory for context.
-	recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-		AgentID:    a.config.Name,
-		EntityName: a.config.Name,
-		Topic:      topic,
-		MaxTokens:  budget,
+	// Use LLM to distill the user message into a search query for memory recall.
+	// "What was the first issue I had with my new car after its first service?"
+	// becomes something like "first issue with new car after first service".
+	searchQuery := a.extractSearchQuery(ctx, userMessage)
+	if searchQuery == "" {
+		return
+	}
+
+	// Gather candidate memories from multiple sources.
+	seen := make(map[string]bool)
+	var candidates []*memory.Memory
+
+	// Entity-scoped recall: search entities, get their neighborhoods.
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	if err == nil {
+		for _, e := range entities {
+			recall, err := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
+				AgentID:    a.config.Name,
+				EntityName: e.Name,
+				Topic:      searchQuery,
+				MaxTokens:  budget,
+			})
+			if err == nil && recall != nil {
+				for _, sm := range recall.Memories {
+					if sm.Memory != nil && !seen[sm.Memory.ID] {
+						seen[sm.Memory.ID] = true
+						candidates = append(candidates, sm.Memory)
+					}
+				}
+			}
+		}
+	}
+
+	// Multi-hop recall via user entity: traverse 2 hops from the user node
+	// to surface memories connected through shared relationships (e.g.,
+	// user → ATTENDED → event_a, user → ATTENDED → event_b). This catches
+	// facts that keyword search misses because they use different terms.
+	candidates = append(candidates, a.multiHopRecall(ctx, seen, budget)...)
+
+	// Unscoped recall: broad FTS5 search across all memories.
+	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:   a.config.Name,
+		Query:     searchQuery,
+		Limit:     50,
+		MaxTokens: budget,
 	})
-	if err != nil || recall == nil || len(recall.Memories) == 0 {
+	if recallErr == nil {
+		for _, m := range memories {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				candidates = append(candidates, m)
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
 		return
 	}
 
-	// Format and inject as a system-level context note.
-	content := recall.Format()
-	if content == "" {
+	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	relevant := a.rerankMemories(ctx, userMessage, candidates)
+	if len(relevant) == 0 {
 		return
 	}
 
-	// Add as a system message so it appears in context without polluting conversation.
+	var sb strings.Builder
+	sb.WriteString("Relevant memories from past conversations:\n\n")
+	for _, m := range relevant {
+		sb.WriteString("- ")
+		if m.EventDate != "" {
+			// Surface the absolute date first so the answering LLM can order
+			// facts lexicographically without re-resolving relative phrases
+			// embedded in content.
+			sb.WriteString("[")
+			sb.WriteString(m.EventDate)
+			sb.WriteString("] ")
+		}
+		sb.WriteString(m.Content)
+		sb.WriteString("\n")
+	}
+
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: "[Graph Memory Context]\n" + content,
+		Content: "[Graph Memory Context]\n" + sb.String(),
 	})
+}
+
+// multiHopRecall finds the user entity and traverses 2 hops outward to collect
+// memories from connected entities. This surfaces facts that keyword search misses —
+// e.g., "days between Holi and St. Mary's mass" requires both events, which are
+// connected through the user entity but use different vocabulary.
+func (a *Agent) multiHopRecall(ctx context.Context, seen map[string]bool, budget int) []*memory.Memory {
+	if a.graphMemoryStore == nil {
+		return nil
+	}
+
+	agentID := a.config.Name
+
+	// Find the user entity (marked with is_user:true during extraction).
+	userEntity := a.findUserEntity(ctx, agentID)
+	if userEntity == nil {
+		return nil
+	}
+
+	// Traverse 2 hops from the user entity in both directions.
+	edges, err := a.graphMemoryStore.Neighbors(ctx, userEntity.ID, "", "both", 2)
+	if err != nil || len(edges) == 0 {
+		return nil
+	}
+
+	// Collect unique neighbor entity IDs (excluding user itself).
+	neighborIDs := make(map[string]bool)
+	for _, edge := range edges {
+		if edge.SourceID != userEntity.ID {
+			neighborIDs[edge.SourceID] = true
+		}
+		if edge.TargetID != userEntity.ID {
+			neighborIDs[edge.TargetID] = true
+		}
+	}
+
+	// Recall memories scoped to these neighbor entities.
+	var entityIDs []string
+	for id := range neighborIDs {
+		entityIDs = append(entityIDs, id)
+	}
+
+	memories, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:   agentID,
+		EntityIDs: entityIDs,
+		Limit:     30,
+		MaxTokens: budget,
+	})
+	if err != nil {
+		return nil
+	}
+
+	var result []*memory.Memory
+	for _, m := range memories {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			result = append(result, m)
+		}
+	}
+
+	return result
+}
+
+// findUserEntity locates the entity marked as the human user (is_user:true).
+// Caches the result for the agent's lifetime to avoid repeated lookups.
+func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Entity {
+	// Check person entities for is_user property.
+	entities, _, err := a.graphMemoryStore.ListEntities(ctx, agentID, "person", 20, 0)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entities {
+		if strings.Contains(e.PropertiesJSON, `"is_user":true`) ||
+			strings.Contains(e.PropertiesJSON, `"is_user": true`) {
+			return e
+		}
+	}
+	return nil
+}
+
+// rerankMemories uses the LLM to select the most relevant memories for a user message
+// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	rerankCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	// Build numbered list of candidates.
+	var sb strings.Builder
+	sb.WriteString("User message:\n")
+	sb.WriteString(userMessage)
+	if len(userMessage) > 500 {
+		sb.WriteString(userMessage[:500])
+	} else {
+		sb.WriteString(userMessage)
+	}
+	sb.WriteString("\n\nCandidate memories:\n")
+	for i, m := range candidates {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, m.Content))
+	}
+	sb.WriteString("\nReturn ONLY the numbers of memories that are relevant to the user's message, ")
+	sb.WriteString("comma-separated. Example: 1,3,7\n")
+	sb.WriteString("If none are relevant, return: none")
+
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+
+	resp, err := llmProvider.Chat(rerankCtx, []types.Message{
+		{Role: "user", Content: sb.String()},
+	}, nil)
+	if err != nil {
+		// On failure, return all candidates (no worse than before).
+		return candidates
+	}
+
+	// Parse the response — extract numbers.
+	response := strings.TrimSpace(resp.Content)
+	if strings.EqualFold(response, "none") {
+		return nil
+	}
+
+	var result []*memory.Memory
+	for _, part := range strings.Split(response, ",") {
+		part = strings.TrimSpace(part)
+		var idx int
+		if _, err := fmt.Sscanf(part, "%d", &idx); err == nil {
+			if idx >= 1 && idx <= len(candidates) {
+				result = append(result, candidates[idx-1])
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		// LLM returned something we couldn't parse — fall back to all candidates.
+		return candidates
+	}
+	return result
+}
+
+// extractSearchQuery uses the LLM to distill a user message into a concise
+// search query for memory recall. Returns a natural language query like
+// "car GPS malfunction after March service" — not searchQuery, not the raw prompt.
+func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) string {
+	extractCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf(
+		"Distill this message into a concise search query for looking up relevant memories. "+
+			"Return ONLY the search query, nothing else. Strip away instructions, "+
+			"framing, and filler — just the core topic the user is asking about.\n\n"+
+			"Message: %s\n\nSearch query:", userMessage)
+
+	// Use compressor LLM if available (cheaper/faster), otherwise main LLM.
+	llmProvider := a.llm
+	if a.compressorLLM != nil {
+		llmProvider = a.compressorLLM
+	}
+
+	resp, err := llmProvider.Chat(extractCtx, []types.Message{
+		{Role: "user", Content: prompt},
+	}, nil)
+	if err != nil {
+		return ""
+	}
+
+	query := strings.TrimSpace(resp.Content)
+	if idx := strings.IndexByte(query, '\n'); idx > 0 {
+		query = query[:idx]
+	}
+	return query
 }
 
 func (a *Agent) formatToolResult(ctx Context, sessionID string, toolName string, result *shuttle.Result, err error) string {
@@ -3628,6 +3904,13 @@ func WithTaskBoard(manager *task.Manager, decomposer *task.Decomposer, config *l
 		a.taskManager = manager
 		a.taskDecomposer = decomposer
 		a.taskBoardConfig = config
+	}
+}
+
+// WithEmbedder sets the vector embedding provider for semantic memory search.
+func WithEmbedder(embedder memory.Embedder) Option {
+	return func(a *Agent) {
+		a.embedder = embedder
 	}
 }
 

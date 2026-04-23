@@ -68,10 +68,22 @@ type Memory struct {
 	EntityIDs         []string
 	EntityRoles       []EntityIDRole // takes precedence over EntityIDs when present
 	PropertiesJSON    string
-	CreatedAt         time.Time
-	AccessedAt        *time.Time // nil = never accessed
-	ExpiresAt         *time.Time // nil = never expires
-	IsSuperseded      bool
+	Embedding         []float32 // vector embedding for semantic search (nil = not embedded)
+	EmbeddingModel    string    // model that produced the embedding (for compatibility checks)
+	// EventDate is the absolute ISO date (YYYY-MM-DD) when the fact this
+	// memory describes occurred, computed by the extractor from the session
+	// date and the user's relative time phrase. Empty when the memory has no
+	// temporal dimension, or when the extractor could not resolve an absolute
+	// date (see EventDateConfidence).
+	EventDate string
+	// EventDateConfidence is "exact", "approximate", "ambiguous", or empty.
+	// "ambiguous" signals the extractor saw a time cue but deliberately chose
+	// not to fabricate a date; consumers should treat the memory as undated.
+	EventDateConfidence string
+	CreatedAt           time.Time
+	AccessedAt          *time.Time // nil = never accessed
+	ExpiresAt           *time.Time // nil = never expires
+	IsSuperseded        bool
 }
 
 // MemoryLineage tracks SUPERSEDES and CONSOLIDATES chains.

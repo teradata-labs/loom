@@ -135,6 +135,23 @@ build-hawk: proto
     GOWORK=off go build -tags fts5,hawk -o bin/loom-hawk ./cmd/loom
     @echo "✅ Hawk-enabled binaries: bin/looms-hawk, bin/loom-hawk"
 
+# Build LongMemEval benchmark harness
+build-longmemeval:
+    @echo "Building LongMemEval benchmark harness..."
+    @mkdir -p bin
+    GOWORK=off go build -tags fts5 -o bin/loom-longmemeval ./cmd/loom-longmemeval
+    @echo "✅ LongMemEval binary: bin/loom-longmemeval"
+
+# Download LongMemEval datasets and run benchmark
+longmemeval-download:
+    @just build-longmemeval
+    ./bin/loom-longmemeval download --datasets oracle
+
+# Run LongMemEval benchmark against a running Loom server
+longmemeval server="localhost:60051" mode="ingest" limit="0":
+    @just build-longmemeval
+    ./bin/loom-longmemeval run --server {{server}} --mode {{mode}} --limit {{limit}} -v
+
 # Build with all features (judge is now built-in)
 build-full: proto
     @echo "Building Loom with all features (built-in judge)..."
@@ -288,7 +305,7 @@ deps:
 # Run security scanner
 security:
     @echo "Running security scan..."
-    @gosec -exclude-dir=gen -exclude-dir=deploy/comparison/langgraph/benchpb -fmt=text ./...
+    @gosec -exclude-dir=gen -fmt=text ./...
 
 # Clean build artifacts
 [confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]
@@ -604,19 +621,6 @@ load-test-publish server_addr http_addr:
         --server-addr={{server_addr}} \
         --http-addr={{http_addr}} \
         --scenario=all \
-        --runs=10 \
-        --warmup-runs=2 \
-        --output-dir=./results
-
-# Run LangGraph head-to-head comparison
-load-test-comparison loom_addr loom_http langgraph_addr:
-    @echo "Running Loom vs LangGraph comparison..."
-    go build -o /tmp/loom-bench-harness ./cmd/loom-bench-harness && \
-    /tmp/loom-bench-harness \
-        --server-addr={{loom_addr}} \
-        --http-addr={{loom_http}} \
-        --langgraph-addr={{langgraph_addr}} \
-        --scenario=comparison \
         --runs=10 \
         --warmup-runs=2 \
         --output-dir=./results

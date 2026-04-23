@@ -1254,6 +1254,13 @@ func pgScanMemoryFromRows(rows pgx.Rows) (*memory.Memory, error) {
 	return &m, nil
 }
 
+// VectorRecall is not yet supported by the Postgres backend. The interface
+// requires it for the sqlite brute-force cosine path; once pgvector wiring
+// lands here, replace this stub with a real implementation.
+func (s *GraphMemoryStore) VectorRecall(ctx context.Context, opts memory.VectorRecallOpts) ([]*memory.Memory, error) {
+	return nil, fmt.Errorf("VectorRecall not implemented for postgres backend yet")
+}
+
 func pgLoadMemoryEntityIDs(ctx context.Context, tx pgx.Tx, memoryID string) ([]string, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT entity_id FROM graph_memory_entities WHERE memory_id = $1`, memoryID,

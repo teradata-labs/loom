@@ -306,6 +306,22 @@ message GraphMemoryConfig {
   // Maximum entities to extract per extraction cycle.
   // Default: 10.
   int32 max_entities_per_extraction = 11;
+
+  // Number of conversation turns (LLM responses) between automatic extractions.
+  // Fires independently of extraction_cadence (tool-based).
+  // 0 = disabled (default). Set to 1 to extract after every LLM turn.
+  // Useful for conversational agents that build memory without tool use.
+  int32 conversation_extraction_cadence = 12;
+
+  // Timeout in seconds for each extraction LLM call.
+  // Default: 30. Set higher for slower providers or larger context windows.
+  int32 extraction_timeout_seconds = 13;
+
+  // Number of recent messages to include in each extraction window.
+  // Default: 0 (auto = extraction_cadence * 3, minimum 15).
+  // Set higher to give the extractor more conversational context per cycle.
+  // Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
+  int32 extraction_window_messages = 14;
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.

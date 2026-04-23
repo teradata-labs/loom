@@ -76,16 +76,6 @@ Run a single scenario: `--scenario=sustained_load`
 Run all: `--scenario=all`
 Run multiple: `--scenario=sustained_load,cold_start`
 
-## LangGraph Comparison
-
-The comparison runs both frameworks on the **same server node** with identical resources (31 CPU, 112Gi). The orchestration script deploys them sequentially to ensure fair resource allocation.
-
-```bash
-bash deploy/benchmark/full-benchmark.sh --scenario=sustained_load
-```
-
-The full-benchmark script automatically runs LangGraph after the Loom scenarios complete.
-
 ## Output
 
 Results are written as JSON to a PersistentVolumeClaim (`bench-results`). Each scenario produces a JSON file matching the schema in the spec (Section 6):
@@ -131,10 +121,6 @@ deploy/
     server-deployment.yaml # Loom server pod
     server-service.yaml   # ClusterIP service
     harness-job.yaml      # Benchmark harness job
-    langgraph-deployment.yaml # LangGraph comparison server
-    langgraph-service.yaml
     rbac.yaml             # ServiceAccount for harness
     results-pvc.yaml      # PVC for JSON results
-  comparison/
-    langgraph/            # LangGraph comparison agent
 ```
