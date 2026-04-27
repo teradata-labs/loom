@@ -238,11 +238,20 @@
     if (chartJSPromise) return chartJSPromise;
     chartJSPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
-      s.integrity = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
-      s.crossOrigin = 'anonymous';
+      // Try local path first (served by loom-cloud), fall back to CDN.
+      const localPath = '/chart.umd.min.js';
+      const cdnPath = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+      s.src = localPath;
       s.onload = resolve;
-      s.onerror = () => reject(new Error('Failed to load Chart.js'));
+      s.onerror = () => {
+        // Local not available (e.g. standalone Loom), fall back to CDN.
+        const fallback = document.createElement('script');
+        fallback.src = cdnPath;
+        fallback.crossOrigin = 'anonymous';
+        fallback.onload = resolve;
+        fallback.onerror = () => reject(new Error('Failed to load Chart.js'));
+        document.head.appendChild(fallback);
+      };
       document.head.appendChild(s);
     });
     return chartJSPromise;
