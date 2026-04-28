@@ -93,6 +93,12 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 
 		// Build prompt for this stage
 		prompt := e.buildStagePrompt(stage, currentInput, stageOutputs)
+		e.orchestrator.logger.Debug("Pipeline stage prompt built",
+			zap.Int("stage", stageNum),
+			zap.Int("prompt_length", len(prompt)),
+			zap.Int("previous_output_length", len(currentInput)),
+			zap.String("prompt_preview", func() string { if len(prompt) > 200 { return prompt[:200] } ; return prompt }()),
+		)
 
 		// Execute stage with agent span
 		result, model, err := e.executeStageWithSpan(ctx, workflowID, stage, prompt, stageNum)
