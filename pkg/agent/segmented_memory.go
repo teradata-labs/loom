@@ -404,72 +404,100 @@ func min(a, b int) int {
 // Returns adjusted compression count that doesn't split tool pairs.
 // Must hold lock when calling this method.
 //
-// CRITICAL: Tool pairs must NEVER be compressed because compression converts them to text summaries,
-// losing the tool_use/tool_result block structure that Bedrock/Anthropic API requires.
-// Instead, we EXCLUDE tool pairs from compression entirely.
+// CRITICAL: Tool pairs must NEVER be split because compression converts them to
+// text summaries, losing the tool_use/tool_result block structure that the
+// Bedrock/Anthropic API requires. For parallel tool calls (one assistant message
+// with N tool_use blocks), ALL N tool_result messages must stay with their
+// assistant — compressing even one tool_result orphans it from the API's
+// perspective.
 func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 	if toCompressCount >= len(sm.l1Messages) {
 		return toCompressCount
 	}
 
-	// Check if we're splitting a tool_use/tool_result pair
-	// The compression boundary should be after a complete exchange:
-	// 1. User message
-	// 2. Assistant message (possibly with tool_use blocks)
-	// 3. Tool result messages (role=tool with tool_use_id)
-	//
-	// If the message at boundary-1 is an assistant with tool_calls,
-	// and the message at boundary is a tool result (role=tool),
-	// we need to EXCLUDE the assistant from compression to keep the pair in L1.
+	// Build a set of tool_call IDs for each assistant message, and a reverse
+	// map from tool_use_id → assistant index, so we can reason about complete
+	// groups rather than individual messages.
+	type toolGroup struct {
+		assistantIdx int
+		toolCallIDs  map[string]struct{}
+	}
 
-	// Scan backward from the proposed boundary to find the safe compression point.
-	// A safe boundary never splits an assistant(tool_calls) from its tool results.
-	//
-	// Three invariants:
-	// 1. An assistant with tool_calls must NOT be compressed unless ALL its tool
-	//    results are also compressed (otherwise tool results are orphaned in L1).
-	// 2. A tool result must NOT remain in L1 if its assistant was compressed
-	//    (otherwise L1 starts with orphaned tool messages).
-	// 3. An assistant with tool_calls whose tool results haven't arrived yet
-	//    (it's the last message, or only partial results exist) must NOT be compressed.
+	// Collect all tool groups in the full message list.
+	var groups []toolGroup
+	assistantForToolID := make(map[string]int) // tool_use_id → index into groups
 
-	// Walk backward from the boundary. If the last message in the compression
-	// batch is an assistant with tool_calls, pull it out — results may not exist yet.
-	for toCompressCount > 0 {
-		msg := sm.l1Messages[toCompressCount-1]
+	for i, msg := range sm.l1Messages {
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			toCompressCount--
-		} else {
-			break
+			g := toolGroup{
+				assistantIdx: i,
+				toolCallIDs:  make(map[string]struct{}, len(msg.ToolCalls)),
+			}
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					g.toolCallIDs[tc.ID] = struct{}{}
+					assistantForToolID[tc.ID] = len(groups)
+				}
+			}
+			groups = append(groups, g)
 		}
 	}
 
-	// Check if we're splitting an assistant+tool pair at the boundary.
-	// If messages after the boundary start with tool results, their assistant
-	// must also be kept — pull the boundary back to include the assistant.
-	if toCompressCount > 0 && toCompressCount < len(sm.l1Messages) {
-		if sm.l1Messages[toCompressCount].Role == "tool" {
-			// Walk backward to find the owning assistant and exclude it.
-			for toCompressCount > 0 {
-				toCompressCount--
-				if sm.l1Messages[toCompressCount].Role == "assistant" {
-					break
+	// For each group, find the index of its last tool_result in the message list.
+	// A group is "complete" only when all its tool_results are present.
+	groupLastToolIdx := make(map[int]int, len(groups))
+	groupFoundCount := make(map[int]int, len(groups))
+	for i, msg := range sm.l1Messages {
+		if msg.Role == "tool" && msg.ToolUseID != "" {
+			if gIdx, ok := assistantForToolID[msg.ToolUseID]; ok {
+				groupFoundCount[gIdx]++
+				if i > groupLastToolIdx[gIdx] {
+					groupLastToolIdx[gIdx] = i
 				}
 			}
 		}
 	}
 
-	// Final safety: scan L1 messages that would remain after compression.
-	// If any tool message's owning assistant would be compressed, pull the
-	// boundary back to keep the assistant.
-	for i := toCompressCount; i < len(sm.l1Messages); i++ {
-		if sm.l1Messages[i].Role == "tool" {
-			for j := i - 1; j >= 0; j-- {
-				if sm.l1Messages[j].Role == "assistant" && len(sm.l1Messages[j].ToolCalls) > 0 {
-					if j < toCompressCount {
-						toCompressCount = j
+	// Walk backward from the proposed boundary to find a safe cut point.
+	// A boundary is safe when it doesn't fall inside any tool group — i.e.,
+	// it's not between an assistant(tool_calls) and any of its tool_results,
+	// and it's not between two tool_results of the same parallel call.
+	changed := true
+	for changed {
+		changed = false
+
+		for gIdx, g := range groups {
+			lastToolIdx, hasResults := groupLastToolIdx[gIdx]
+			isComplete := hasResults && groupFoundCount[gIdx] == len(g.toolCallIDs)
+
+			if g.assistantIdx < toCompressCount {
+				// Assistant would be compressed.
+				if !isComplete {
+					// Incomplete group: pull boundary back to exclude assistant.
+					toCompressCount = g.assistantIdx
+					changed = true
+				} else if lastToolIdx >= toCompressCount {
+					// Assistant compressed but some tool_results stay in L1 — pull back.
+					toCompressCount = g.assistantIdx
+					changed = true
+				}
+				// If assistant AND all its results are compressed, that's fine.
+			} else {
+				// Assistant stays in L1.
+				if hasResults {
+					// Some tool_results might be on the compressed side of the boundary.
+					for i := g.assistantIdx + 1; i < len(sm.l1Messages) && i <= lastToolIdx; i++ {
+						if sm.l1Messages[i].Role == "tool" && sm.l1Messages[i].ToolUseID != "" {
+							if _, belongs := g.toolCallIDs[sm.l1Messages[i].ToolUseID]; belongs {
+								if i < toCompressCount {
+									// This tool_result would be compressed but its assistant stays.
+									toCompressCount = g.assistantIdx
+									changed = true
+									break
+								}
+							}
+						}
 					}
-					break
 				}
 			}
 		}
