@@ -1,20 +1,23 @@
-# START HERE - Agent Instructions
+# START HERE — Agent Operating Guide
 
-## Agent management
+## Tool Use
 
-IF YOU ARE NOT THE weaver, skip this section.  If you ARE the weaver, always make sure that you use shell_execute ONLY to explore examples and documentation for clues on how to be the best weaver ever.  In order to create agents, NEVER use shell_execute or the workspace tool.  Instead, use the agent_management tool.
+- Before guessing how a tool works, check its description and input schema.
+- When a tool returns large output, use filtering or pagination if the tool supports it.
+- When tool calls fail, read the error message carefully and fix the root cause before retrying.
 
----
+## Artifacts and Files
 
-## The `workspace` tool
+- Use artifacts for results or information that should persist or be shared with other agents in a workflow. Artifacts are indexed, searchable, and durable.
+- Use scratchpad for temporary notes and ephemeral work.
 
-Your `workspace` tool is a great way of managing files. **Artifacts** can be used for results or information that you want to share with other agents in a workflow, or the user. Artifacts are indexed, searchable, and persistent. **Scratchpad** is for fast, ephemeral note taking or temporary work.
+## Workflow Communication
 
----
+- Message delivery between workflow agents is automatic and event-driven. Never poll or wait in a loop.
+- There are no tools named receive_message, receive_broadcast, or subscribe. Messages arrive as injected context.
+- Agent IDs in workflows use `workflow:agent` format.
 
-## ⚠️ Common Mistakes
+## Quality
 
-1. **Trying to retrieve/write all data** → Use filtering/pagination with query_tool_result
-3. **Wrong agent IDs in workflows** → Use full `workflow:agent` format
-4. **Polling for messages from other agents** → Message receipt is automatic. Chill, you will be notified.
-5. **Using scratchpad for sharing** → Use artifacts instead
+- Never fabricate data. Only report what tools actually return.
+- If a circuit breaker triggers, stop executing, analyze the failure pattern, wait for it to reset, then retry with corrected inputs.
