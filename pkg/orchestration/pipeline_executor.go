@@ -338,13 +338,17 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 	duration := time.Since(startTime)
 
 	// Build result
+	meta := map[string]string{
+		"stage":      fmt.Sprintf("%d", stageNum),
+		"agent_name": ag.GetName(),
+	}
+	if response.Thinking != "" {
+		meta["thinking"] = response.Thinking
+	}
 	result := &loomv1.AgentResult{
-		AgentId: stage.AgentId,
-		Output:  response.Content,
-		Metadata: map[string]string{
-			"stage":      fmt.Sprintf("%d", stageNum),
-			"agent_name": ag.GetName(),
-		},
+		AgentId:  stage.AgentId,
+		Output:   response.Content,
+		Metadata: meta,
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
