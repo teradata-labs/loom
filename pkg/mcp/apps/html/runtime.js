@@ -270,11 +270,14 @@
   function buildSafeChartConfig(props) {
     const chartType = CHART_ALLOWED_TYPES.has(props.chartType) ? props.chartType : 'bar';
 
-    const labels = Array.isArray(props.labels) ? props.labels.map(String) : [];
+    // Support both flat (props.labels/datasets) and nested (props.data.labels/datasets) formats.
+    const dataObj = (props.data && typeof props.data === 'object') ? props.data : props;
+    const labels = Array.isArray(dataObj.labels) ? dataObj.labels.map(String) : [];
 
     const datasets = [];
-    if (Array.isArray(props.datasets)) {
-      for (const ds of props.datasets) {
+    const rawDatasets = Array.isArray(dataObj.datasets) ? dataObj.datasets : [];
+    if (rawDatasets.length > 0) {
+      for (const ds of rawDatasets) {
         if (!ds || typeof ds !== 'object') continue;
         const safeDS = {
           data: Array.isArray(ds.data) ? ds.data.map(Number) : [],
@@ -321,6 +324,19 @@
         scales: {},
       },
     };
+
+    // Merge user-provided options (e.g., indexAxis for horizontal bars, scale hiding).
+    const userOpts = (props.data && typeof props.data === 'object' && props.data.options)
+      ? props.data.options
+      : (props.options || null);
+    if (userOpts) {
+      if (userOpts.indexAxis) config.options.indexAxis = userOpts.indexAxis;
+      if (userOpts.scales) {
+        for (const [axis, axisOpts] of Object.entries(userOpts.scales)) {
+          config.options.scales[axis] = Object.assign(config.options.scales[axis] || {}, axisOpts);
+        }
+      }
+    }
 
     // Stacked mode
     if (props.stacked) {
