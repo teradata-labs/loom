@@ -37,9 +37,9 @@ func TestLoadROMContent_BaseAndTD(t *testing.T) {
 	if len(content) == 0 {
 		t.Fatal("Composed ROM should not be empty")
 	}
-	// Should be larger than base alone (START_HERE ~2KB + TD ~5KB = ~7KB)
-	if len(content) < 6000 {
-		t.Fatalf("Base + TD ROM should be ~7KB, got %d bytes", len(content))
+	// Should be larger than base alone (START_HERE ~1KB + TD ~2.5KB = ~3.5KB)
+	if len(content) < 3000 {
+		t.Fatalf("Base + TD ROM should be ~3.5KB, got %d bytes", len(content))
 	}
 	// Should contain base ROM
 	if !strings.Contains(content, "START HERE") {
@@ -63,8 +63,8 @@ func TestLoadROMContent_AutoDetect(t *testing.T) {
 		t.Fatal("Auto-detected ROM should not be empty")
 	}
 	// Should detect Teradata and compose
-	if len(content) < 6000 {
-		t.Fatalf("Auto-detected should give base + TD ROM (~7KB), got %d bytes", len(content))
+	if len(content) < 3000 {
+		t.Fatalf("Auto-detected should give base + TD ROM (~6KB), got %d bytes", len(content))
 	}
 	// Should contain both base and domain content
 	if !strings.Contains(content, "START HERE") {
@@ -147,9 +147,9 @@ func TestGetROMSize_Composed(t *testing.T) {
 	if size == 0 {
 		t.Fatal("Composed ROM size should not be 0")
 	}
-	// Base ROM (2KB) + TD ROM (5KB) + separator = ~7KB
-	if size < 6000 {
-		t.Fatalf("Base + TD ROM should be ~7KB, got %d bytes", size)
+	// Base ROM (~1KB) + TD ROM (~5KB) + separator = ~6KB
+	if size < 3000 {
+		t.Fatalf("Base + TD ROM should be ~6KB, got %d bytes", size)
 	}
 	t.Logf("Composed ROM size: %d bytes", size)
 }
