@@ -93,7 +93,7 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 
 		// Build prompt for this stage
 		prompt := e.buildStagePrompt(stage, currentInput, stageOutputs)
-		e.orchestrator.logger.Debug("Pipeline stage prompt built",
+		e.orchestrator.logger.Info("Pipeline stage prompt built",
 			zap.Int("stage", stageNum),
 			zap.Int("prompt_length", len(prompt)),
 			zap.Int("previous_output_length", len(currentInput)),
