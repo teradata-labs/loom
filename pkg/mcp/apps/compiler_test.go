@@ -950,10 +950,10 @@ func TestCompiler_SRIHashConsistency(t *testing.T) {
 
 	// Extract SRI hash from runtime.js (the embedded JS used by dynamic apps)
 	runtimeSrc := string(runtimeJS)
-	runtimeHashIdx := strings.Index(runtimeSrc, "s.integrity = '")
+	runtimeHashIdx := strings.Index(runtimeSrc, ".integrity = '")
 	require.NotEqual(t, -1, runtimeHashIdx, "runtime.js must contain an SRI integrity assignment")
 
-	start := runtimeHashIdx + len("s.integrity = '")
+	start := runtimeHashIdx + len(".integrity = '")
 	end := strings.Index(runtimeSrc[start:], "'")
 	require.NotEqual(t, -1, end, "SRI integrity value must have closing quote")
 	runtimeHash := runtimeSrc[start : start+end]

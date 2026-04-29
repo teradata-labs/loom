@@ -238,11 +238,21 @@
     if (chartJSPromise) return chartJSPromise;
     chartJSPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
-      s.integrity = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
-      s.crossOrigin = 'anonymous';
+      // Try local path first (served by loom-cloud), fall back to CDN.
+      const localPath = '/chart.umd.min.js';
+      const cdnPath = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+      s.src = localPath;
       s.onload = resolve;
-      s.onerror = () => reject(new Error('Failed to load Chart.js'));
+      s.onerror = () => {
+        // Local not available (e.g. standalone Loom), fall back to CDN with SRI.
+        const fallback = document.createElement('script');
+        fallback.src = cdnPath;
+        fallback.integrity = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
+        fallback.crossOrigin = 'anonymous';
+        fallback.onload = resolve;
+        fallback.onerror = () => reject(new Error('Failed to load Chart.js'));
+        document.head.appendChild(fallback);
+      };
       document.head.appendChild(s);
     });
     return chartJSPromise;
@@ -261,11 +271,14 @@
   function buildSafeChartConfig(props) {
     const chartType = CHART_ALLOWED_TYPES.has(props.chartType) ? props.chartType : 'bar';
 
-    const labels = Array.isArray(props.labels) ? props.labels.map(String) : [];
+    // Support both flat (props.labels/datasets) and nested (props.data.labels/datasets) formats.
+    const dataObj = (props.data && typeof props.data === 'object') ? props.data : props;
+    const labels = Array.isArray(dataObj.labels) ? dataObj.labels.map(String) : [];
 
     const datasets = [];
-    if (Array.isArray(props.datasets)) {
-      for (const ds of props.datasets) {
+    const rawDatasets = Array.isArray(dataObj.datasets) ? dataObj.datasets : [];
+    if (rawDatasets.length > 0) {
+      for (const ds of rawDatasets) {
         if (!ds || typeof ds !== 'object') continue;
         const safeDS = {
           data: Array.isArray(ds.data) ? ds.data.map(Number) : [],
@@ -312,6 +325,19 @@
         scales: {},
       },
     };
+
+    // Merge user-provided options (e.g., indexAxis for horizontal bars, scale hiding).
+    const userOpts = (props.data && typeof props.data === 'object' && props.data.options)
+      ? props.data.options
+      : (props.options || null);
+    if (userOpts) {
+      if (userOpts.indexAxis) config.options.indexAxis = userOpts.indexAxis;
+      if (userOpts.scales) {
+        for (const [axis, axisOpts] of Object.entries(userOpts.scales)) {
+          config.options.scales[axis] = Object.assign(config.options.scales[axis] || {}, axisOpts);
+        }
+      }
+    }
 
     // Stacked mode
     if (props.stacked) {

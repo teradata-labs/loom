@@ -111,6 +111,22 @@ func (e *PipelineExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		allResults = append(allResults, result)
 		stageOutputs = append(stageOutputs, result.Output)
 
+		// Emit progress with the completed stage's full result so polling
+		// clients can display agent outputs incrementally.
+		totalStages := int32(len(e.pattern.Stages)) // #nosec G115
+		stagePct := int32(float64(stageNum) / float64(totalStages) * 100)
+		nextAgentID := ""
+		if stageNum < len(e.pattern.Stages) {
+			nextAgentID = e.pattern.Stages[stageNum].AgentId
+		}
+		e.orchestrator.emitProgress(WorkflowProgressEvent{
+			PatternType:    "pipeline",
+			Message:        fmt.Sprintf("Stage %d of %d completed", stageNum, totalStages),
+			Progress:       stagePct,
+			CurrentAgentID: nextAgentID,
+			PartialResults: allResults,
+		})
+
 		// Validate output — schema first (cheap), then LLM validation (expensive)
 		var validationFailure string
 
@@ -283,8 +299,15 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 		agentSpan.SetAttribute("stage.number", fmt.Sprintf("%d", stageNum))
 	}
 
-	// Execute agent conversation with session ID for database persistence
-	response, err := ag.Chat(ctx, sessionID, prompt)
+	// Execute agent conversation. If a progress callback exists in the
+	// context, use ChatWithProgress so tool calls and thinking stream
+	// through to the caller (e.g., workflow UI).
+	var response *agent.Response
+	if progressCb := agent.ProgressCallbackFromContext(ctx); progressCb != nil {
+		response, err = ag.ChatWithProgress(ctx, sessionID, prompt, progressCb)
+	} else {
+		response, err = ag.Chat(ctx, sessionID, prompt)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("agent chat failed: %w", err)
 	}
@@ -309,13 +332,17 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 	duration := time.Since(startTime)
 
 	// Build result
+	meta := map[string]string{
+		"stage":      fmt.Sprintf("%d", stageNum),
+		"agent_name": ag.GetName(),
+	}
+	if response.Thinking != "" {
+		meta["thinking"] = response.Thinking
+	}
 	result := &loomv1.AgentResult{
-		AgentId: stage.AgentId,
-		Output:  response.Content,
-		Metadata: map[string]string{
-			"stage":      fmt.Sprintf("%d", stageNum),
-			"agent_name": ag.GetName(),
-		},
+		AgentId:         stage.AgentId,
+		Output:          response.Content,
+		Metadata:        meta,
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
