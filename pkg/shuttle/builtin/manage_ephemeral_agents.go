@@ -58,8 +58,12 @@ type SpawnSubAgentRequest struct {
 type SpawnSubAgentResponse struct {
 	SubAgentID       string   // Full agent ID (with namespace prefix)
 	SessionID        string   // New session ID for the sub-agent
-	Status           string   // Status: "spawned"
+	Status           string   // "spawned", "completed", or "failed"
 	SubscribedTopics []string // Topics the agent auto-subscribed to
+	Output           string   // Sub-agent's final response (when Status="completed")
+	TokensUsed       int64    // Total tokens consumed by the sub-agent
+	CostUSD          float64  // Total cost of the sub-agent's execution
+	DurationMs       int64    // Wall-clock duration in milliseconds
 }
 
 // DespawnSubAgentRequest contains parameters for despawning a sub-agent.
@@ -263,15 +267,31 @@ func (t *ManageEphemeralAgentsTool) executeSpawn(ctx context.Context, params map
 		}, nil
 	}
 
+	data := map[string]any{
+		"command":      "spawn",
+		"sub_agent_id": resp.SubAgentID,
+		"session_id":   resp.SessionID,
+		"status":       resp.Status,
+	}
+	if resp.Output != "" {
+		data["output"] = resp.Output
+	}
+	if resp.TokensUsed > 0 {
+		data["tokens_used"] = resp.TokensUsed
+	}
+	if resp.CostUSD > 0 {
+		data["cost_usd"] = resp.CostUSD
+	}
+	if resp.DurationMs > 0 {
+		data["duration_ms"] = resp.DurationMs
+	}
+	if len(resp.SubscribedTopics) > 0 {
+		data["subscribed_topics"] = resp.SubscribedTopics
+	}
+
 	return &shuttle.Result{
-		Success: true,
-		Data: map[string]any{
-			"command":           "spawn",
-			"sub_agent_id":      resp.SubAgentID,
-			"session_id":        resp.SessionID,
-			"status":            resp.Status,
-			"subscribed_topics": resp.SubscribedTopics,
-		},
+		Success:         true,
+		Data:            data,
 		ExecutionTimeMs: time.Since(start).Milliseconds(),
 	}, nil
 }
