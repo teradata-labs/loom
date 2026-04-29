@@ -679,3 +679,27 @@ func (s *MultiAgentServer) emitPubSubEvent(sessionID string, event *PubSubEvent)
 		},
 	})
 }
+
+// ListAvailableAgents returns the agents currently registered in this server
+// that are available to spawn as sub-agents.
+func (s *MultiAgentServer) ListAvailableAgents(_ context.Context, _ *builtin.ListAvailableAgentsRequest) (*builtin.ListAvailableAgentsResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []builtin.AvailableAgentInfo
+	for id, ag := range s.agents {
+		var tools []string
+		for _, t := range ag.RegisteredTools() {
+			tools = append(tools, t.Name())
+		}
+		result = append(result, builtin.AvailableAgentInfo{
+			ID:          id,
+			Name:        ag.GetName(),
+			Description: ag.GetDescription(),
+			Tools:       tools,
+			Source:      "config",
+		})
+	}
+
+	return &builtin.ListAvailableAgentsResponse{Agents: result}, nil
+}
