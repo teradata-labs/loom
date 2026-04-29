@@ -340,9 +340,9 @@ func (e *PipelineExecutor) executeStageWithSpan(ctx context.Context, workflowID 
 		meta["thinking"] = response.Thinking
 	}
 	result := &loomv1.AgentResult{
-		AgentId:  stage.AgentId,
-		Output:   response.Content,
-		Metadata: meta,
+		AgentId:         stage.AgentId,
+		Output:          response.Content,
+		Metadata:        meta,
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
