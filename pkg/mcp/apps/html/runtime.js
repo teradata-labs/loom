@@ -244,9 +244,10 @@
       s.src = localPath;
       s.onload = resolve;
       s.onerror = () => {
-        // Local not available (e.g. standalone Loom), fall back to CDN.
+        // Local not available (e.g. standalone Loom), fall back to CDN with SRI.
         const fallback = document.createElement('script');
         fallback.src = cdnPath;
+        fallback.integrity = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
         fallback.crossOrigin = 'anonymous';
         fallback.onload = resolve;
         fallback.onerror = () => reject(new Error('Failed to load Chart.js'));
