@@ -64,7 +64,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", session.ID)
 
-	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 
 		contextJSON, err := json.Marshal(session.Context)
@@ -99,12 +99,20 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *agent.Session) 
 			span.RecordError(err)
 			return fmt.Errorf("failed to save session: %w", err)
 		}
-		if err := artifacts.SyncSessionArtifactMetadata(ctx, session); err != nil {
-			span.RecordError(err)
-			// Best-effort filesystem metadata; PostgreSQL persistence already succeeded.
-		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Avoid disk I/O while holding a DB transaction/connection.
+	if syncErr := artifacts.SyncSessionArtifactMetadata(ctx, session); syncErr != nil {
+		span.RecordError(syncErr)
+		s.logger.Warn("session artifact metadata sync failed after DB commit",
+			zap.String("session_id", session.ID),
+			zap.Error(syncErr),
+		)
+	}
+	return nil
 }
 
 // LoadSession retrieves a session and its messages from PostgreSQL.

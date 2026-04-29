@@ -154,6 +154,10 @@ type ArtifactsConfig struct {
 
 	// TempCleanupAgeDays is the age in days for temp artifact cleanup (default: 7)
 	TempCleanupAgeDays int `mapstructure:"temp_cleanup_age_days"`
+
+	// SessionMetadataEnabled writes and reads artifacts/sessions/<id>/metadata.json for attribution
+	// and list/get session API enrichment. Default false (opt-in). Env: LOOM_ARTIFACTS_SESSION_METADATA_ENABLED.
+	SessionMetadataEnabled bool `mapstructure:"session_metadata_enabled"`
 }
 
 // DockerConfig holds Docker daemon configuration.
@@ -1157,6 +1161,7 @@ func setDefaults() {
 	viper.SetDefault("artifacts.session_namespacing", true)         // Enable session-based organization
 	viper.SetDefault("artifacts.temp_cleanup_enabled", true)        // Enable temp cleanup
 	viper.SetDefault("artifacts.temp_cleanup_age_days", 7)          // 7-day cleanup for temp artifacts
+	viper.SetDefault("artifacts.session_metadata_enabled", false)   // Opt-in metadata.json integration
 
 	// Shell execute tool defaults
 	viper.SetDefault("tools.shell_execute.restrict_writes", true)        // Enforce write restrictions

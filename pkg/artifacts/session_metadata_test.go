@@ -7,6 +7,7 @@ package artifacts
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/types"
 )
+
+func enableSessionMetadataForTest(t *testing.T) {
+	t.Helper()
+	prev := SessionMetadataEnabled()
+	SetSessionMetadataEnabled(true)
+	t.Cleanup(func() { SetSessionMetadataEnabled(prev) })
+}
 
 func TestBuildSessionArtifactMetadata_minimal(t *testing.T) {
 	t.Parallel()
@@ -52,6 +60,7 @@ func TestBuildSessionArtifactMetadata_contextAndName(t *testing.T) {
 }
 
 func TestWriteAndReadSessionArtifactMetadata_roundTrip(t *testing.T) {
+	enableSessionMetadataForTest(t)
 	root := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", root)
 
@@ -90,6 +99,7 @@ func TestSessionArtifactsRoot_rejectsBadPath(t *testing.T) {
 }
 
 func TestSyncSessionArtifactMetadata_preservesCompleted(t *testing.T) {
+	enableSessionMetadataForTest(t)
 	root := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", root)
 
@@ -130,6 +140,7 @@ func TestFilterPublicArtifactContext(t *testing.T) {
 }
 
 func TestCompleteSessionArtifactMetadata(t *testing.T) {
+	enableSessionMetadataForTest(t)
 	root := t.TempDir()
 	t.Setenv("LOOM_DATA_DIR", root)
 
@@ -147,4 +158,20 @@ func TestCompleteSessionArtifactMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "completed", meta.Status)
 	require.NotEmpty(t, meta.EndedAt)
+}
+
+func TestSyncSessionArtifactMetadata_disabledNoOp(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", root)
+	prev := SessionMetadataEnabled()
+	SetSessionMetadataEnabled(false)
+	t.Cleanup(func() { SetSessionMetadataEnabled(prev) })
+
+	s := &types.Session{
+		ID:        "off",
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	require.NoError(t, SyncSessionArtifactMetadata(context.Background(), s))
+	_, err := os.Stat(filepath.Join(root, "artifacts", "sessions", "off", SessionMetadataFileName))
+	require.True(t, errors.Is(err, os.ErrNotExist))
 }

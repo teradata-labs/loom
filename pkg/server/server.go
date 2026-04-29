@@ -456,13 +456,26 @@ func (s *Server) DeleteSession(ctx context.Context, req *loomv1.DeleteSessionReq
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
+	_, inMemory := s.agent.GetSession(req.SessionId)
+	inStore := false
+	if s.sessionStore != nil {
+		if loaded, err := s.sessionStore.LoadSession(ctx, req.SessionId); err == nil && loaded != nil {
+			inStore = true
+		}
+	}
+	if !inMemory && !inStore {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+
 	if err := artifacts.CompleteSessionArtifactMetadata(req.SessionId); err != nil {
 		zap.L().Warn("session artifact metadata completion failed",
 			zap.String("session_id", req.SessionId),
 			zap.Error(err))
 	}
 
-	s.agent.DeleteSession(req.SessionId)
+	if inMemory {
+		s.agent.DeleteSession(req.SessionId)
+	}
 
 	// Also delete from persistent store
 	if s.sessionStore != nil {
@@ -1407,10 +1420,12 @@ func convertSession(s *agent.Session, enrichFromArtifactDisk bool) *loomv1.Sessi
 		AgentId:           s.AgentID,
 		AgentName:         artifacts.AgentNameFromSession(s),
 		StartedAt:         s.CreatedAt.UTC().Format(time.RFC3339),
-		MetadataStatus:    "active",
 	}
-	if enrichFromArtifactDisk {
+	if enrichFromArtifactDisk && artifacts.SessionMetadataEnabled() {
 		mergeArtifactMetadataIntoProto(p, s.ID)
+	}
+	if artifacts.SessionMetadataEnabled() && enrichFromArtifactDisk && p.MetadataStatus == "" {
+		p.MetadataStatus = "active"
 	}
 	return p
 }

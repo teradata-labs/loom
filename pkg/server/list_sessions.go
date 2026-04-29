@@ -7,6 +7,7 @@ package server
 
 import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,6 +27,9 @@ func validateListSessionsRequest(req *loomv1.ListSessionsRequest) error {
 
 // listSessionsNeedsArtifactDisk reads metadata.json per session when filters depend on merged fields.
 func listSessionsNeedsArtifactDisk(req *loomv1.ListSessionsRequest) bool {
+	if !artifacts.SessionMetadataEnabled() {
+		return false
+	}
 	if req == nil {
 		return false
 	}

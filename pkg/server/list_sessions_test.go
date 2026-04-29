@@ -9,15 +9,22 @@ import (
 	"testing"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func TestListSessionsNeedsArtifactDisk(t *testing.T) {
-	t.Parallel()
 	if listSessionsNeedsArtifactDisk(nil) {
 		t.Fatal("nil req")
 	}
+	prev := artifacts.SessionMetadataEnabled()
+	artifacts.SetSessionMetadataEnabled(false)
+	defer artifacts.SetSessionMetadataEnabled(prev)
+	if listSessionsNeedsArtifactDisk(&loomv1.ListSessionsRequest{MetadataStatus: "completed"}) {
+		t.Fatal("metadata_status should not require disk when feature disabled")
+	}
+	artifacts.SetSessionMetadataEnabled(true)
 	if listSessionsNeedsArtifactDisk(&loomv1.ListSessionsRequest{}) {
 		t.Fatal("empty filters")
 	}

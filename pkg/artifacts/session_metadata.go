@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
+// Package artifacts provides session artifact directory layout, optional on-disk session
+// attribution in metadata.json, and helpers to read or update that file safely.
 package artifacts
 
 import (
@@ -12,11 +14,46 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/types"
 )
+
+// sessionMetadataEnabled gates all metadata.json reads/writes from the API and stores.
+// Default is off; looms sets this from artifacts.session_metadata_enabled / LOOM_ARTIFACTS_SESSION_METADATA_ENABLED.
+var sessionMetadataEnabled atomic.Bool
+
+// SessionMetadataEnabled reports whether session artifact metadata.json integration is enabled.
+// When false, [SyncSessionArtifactMetadata] and [CompleteSessionArtifactMetadata] are no-ops and
+// callers that gate on this flag skip merging disk metadata into API responses.
+func SessionMetadataEnabled() bool {
+	return sessionMetadataEnabled.Load()
+}
+
+// SetSessionMetadataEnabled sets the process-wide metadata.json feature flag.
+// The looms binary sets this from artifacts.session_metadata_enabled (or env
+// LOOM_ARTIFACTS_SESSION_METADATA_ENABLED) during serve startup. The value is safe to read
+// concurrently; typical usage is set once at startup rather than toggling at runtime.
+func SetSessionMetadataEnabled(v bool) {
+	sessionMetadataEnabled.Store(v)
+}
+
+// sessionMetaLocks serializes read-modify-write per session for metadata.json.
+var sessionMetaLocks sync.Map // sessionID -> *sync.Mutex
+
+func withSessionMetadataLock(sessionID string, fn func() error) error {
+	if sessionID == "" {
+		return fn()
+	}
+	v, _ := sessionMetaLocks.LoadOrStore(sessionID, new(sync.Mutex))
+	m := v.(*sync.Mutex)
+	m.Lock()
+	defer m.Unlock()
+	return fn()
+}
 
 // SessionMetadataFileName is the JSON file stored at the session artifact root.
 // See https://github.com/teradata-labs/loom/issues/111
@@ -105,6 +142,8 @@ func sessionMetadataPath(sessionID string) (string, error) {
 
 // BuildSessionArtifactMetadata maps a conversation session into filesystem metadata.
 // Only whitelisted context keys are copied to avoid persisting secrets from Context.
+// Status is initialized to "active" for live sessions; SyncSessionArtifactMetadata preserves
+// an existing on-disk "completed" status and ended_at so completed sessions are not resurrected.
 func BuildSessionArtifactMetadata(session *types.Session) (*SessionArtifactMetadata, error) {
 	if session == nil {
 		return nil, fmt.Errorf("session is nil")
@@ -231,7 +270,10 @@ func ReadSessionArtifactMetadata(sessionID string) (*SessionArtifactMetadata, er
 	root = filepath.Clean(root)
 	cleanPath := filepath.Clean(path)
 	rel, err := filepath.Rel(root, cleanPath)
-	if err != nil || !filepath.IsLocal(rel) {
+	if err != nil {
+		return nil, fmt.Errorf("invalid session metadata path: %w", err)
+	}
+	if !filepath.IsLocal(rel) {
 		return nil, fmt.Errorf("invalid session metadata path")
 	}
 	data, err := os.ReadFile(cleanPath)
@@ -245,43 +287,68 @@ func ReadSessionArtifactMetadata(sessionID string) (*SessionArtifactMetadata, er
 	return &meta, nil
 }
 
-// SyncSessionArtifactMetadata builds metadata from the session and writes it to disk.
+// SyncSessionArtifactMetadata builds metadata from session and atomically writes metadata.json.
+// It is a no-op when [SessionMetadataEnabled] is false, when session is nil, or when session.ID is empty.
 // If metadata.json already records status "completed", that status and ended_at are preserved
-// so later saves do not resurrect an ended session. Optional artifact stats are preserved.
-// ctx is reserved for future cancellation; writes are currently synchronous and short.
-func SyncSessionArtifactMetadata(_ context.Context, session *types.Session) error {
-	meta, err := BuildSessionArtifactMetadata(session)
-	if err != nil {
-		return err
+// so later saves do not resurrect an ended session; optional artifact stats are preserved.
+// A per-session mutex serializes read-modify-write with [CompleteSessionArtifactMetadata].
+// If ctx is non-nil, ctx.Done() is checked once before disk work; cancellation is not polled mid-write.
+func SyncSessionArtifactMetadata(ctx context.Context, session *types.Session) error {
+	if !SessionMetadataEnabled() {
+		return nil
 	}
-	existing, rerr := ReadSessionArtifactMetadata(session.ID)
-	if rerr == nil {
-		if strings.EqualFold(strings.TrimSpace(existing.Status), "completed") {
-			meta.Status = existing.Status
-			if existing.EndedAt != "" {
-				meta.EndedAt = existing.EndedAt
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+	if session == nil || session.ID == "" {
+		return nil
+	}
+	return withSessionMetadataLock(session.ID, func() error {
+		meta, err := BuildSessionArtifactMetadata(session)
+		if err != nil {
+			return err
+		}
+		existing, rerr := ReadSessionArtifactMetadata(session.ID)
+		if rerr == nil {
+			if strings.EqualFold(strings.TrimSpace(existing.Status), "completed") {
+				meta.Status = existing.Status
+				if existing.EndedAt != "" {
+					meta.EndedAt = existing.EndedAt
+				}
+			}
+			if existing.Artifacts != nil {
+				meta.Artifacts = existing.Artifacts
 			}
 		}
-		if existing.Artifacts != nil {
-			meta.Artifacts = existing.Artifacts
-		}
-	}
-	return WriteSessionArtifactMetadata(meta)
+		return WriteSessionArtifactMetadata(meta)
+	})
 }
 
-// CompleteSessionArtifactMetadata sets ended_at and metadata status to completed when
-// metadata.json exists. Missing files are ignored (backward compatible).
+// CompleteSessionArtifactMetadata sets ended_at and status to "completed" when metadata.json exists.
+// It is a no-op when [SessionMetadataEnabled] is false or sessionID is empty.
+// If the file is missing or unreadable, it returns nil (backward compatible). Context fields are
+// rewritten through [FilterPublicArtifactContext] before save. Serialized with the same per-session
+// lock as [SyncSessionArtifactMetadata].
 func CompleteSessionArtifactMetadata(sessionID string) error {
+	if !SessionMetadataEnabled() {
+		return nil
+	}
 	if sessionID == "" {
 		return nil
 	}
-	meta, err := ReadSessionArtifactMetadata(sessionID)
-	if err != nil {
-		return nil
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	meta.EndedAt = now
-	meta.Status = "completed"
-	meta.Context = FilterPublicArtifactContext(meta.Context)
-	return WriteSessionArtifactMetadata(meta)
+	return withSessionMetadataLock(sessionID, func() error {
+		meta, err := ReadSessionArtifactMetadata(sessionID)
+		if err != nil {
+			return nil
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		meta.EndedAt = now
+		meta.Status = "completed"
+		meta.Context = FilterPublicArtifactContext(meta.Context)
+		return WriteSessionArtifactMetadata(meta)
+	})
 }

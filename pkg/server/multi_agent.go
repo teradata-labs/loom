@@ -2711,11 +2711,10 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 	// Extract user ID for multi-tenant isolation (empty for single-tenant SQLite).
 	callerUserID := postgres.UserIDFromContext(ctx)
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	enrichDisk := listSessionsNeedsArtifactDisk(req)
-	var allSessions []*loomv1.Session
+
+	s.mu.RLock()
+	var memSessions []*agent.Session
 	for _, ag := range s.agents {
 		sessions := ag.ListSessions()
 		for _, sess := range sessions {
@@ -2724,8 +2723,14 @@ func (s *MultiAgentServer) ListSessions(ctx context.Context, req *loomv1.ListSes
 			if callerUserID != "" && sess.UserID != "" && sess.UserID != callerUserID {
 				continue
 			}
-			allSessions = append(allSessions, convertSession(sess, enrichDisk))
+			memSessions = append(memSessions, sess)
 		}
+	}
+	s.mu.RUnlock()
+
+	allSessions := make([]*loomv1.Session, 0, len(memSessions))
+	for _, sess := range memSessions {
+		allSessions = append(allSessions, convertSession(sess, enrichDisk))
 	}
 
 	filtered := filterListSessions(allSessions, req)
@@ -2744,41 +2749,61 @@ func (s *MultiAgentServer) DeleteSession(ctx context.Context, req *loomv1.Delete
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
+	callerUserID := postgres.UserIDFromContext(ctx)
+
+	s.mu.RLock()
+	var deleteAgent *agent.Agent
+	for _, ag := range s.agents {
+		session, ok := ag.GetSession(req.SessionId)
+		if !ok {
+			continue
+		}
+		if callerUserID != "" && session.UserID != "" && session.UserID != callerUserID {
+			continue
+		}
+		deleteAgent = ag
+		break
+	}
+	s.mu.RUnlock()
+
+	var stored *agent.Session
+	if deleteAgent == nil && s.sessionStore != nil {
+		var err error
+		stored, err = s.sessionStore.LoadSession(ctx, req.SessionId)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load session: %v", err)
+		}
+		if stored == nil {
+			return nil, status.Error(codes.NotFound, "session not found")
+		}
+		if callerUserID != "" && stored.UserID != "" && stored.UserID != callerUserID {
+			return nil, status.Error(codes.NotFound, "session not found")
+		}
+	} else if deleteAgent == nil {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+
 	if err := artifacts.CompleteSessionArtifactMetadata(req.SessionId); err != nil {
 		s.logger.Warn("session artifact metadata completion failed",
 			zap.String("session_id", req.SessionId),
 			zap.Error(err))
 	}
 
-	// Try to delete the session from any agent that has it
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	found := false
-	for _, ag := range s.agents {
-		if _, ok := ag.GetSession(req.SessionId); ok {
-			ag.DeleteSession(req.SessionId)
-			found = true
-			break
+	if deleteAgent != nil {
+		if _, ok := deleteAgent.GetSession(req.SessionId); ok {
+			deleteAgent.DeleteSession(req.SessionId)
 		}
 	}
-
-	// Cleanup any spawned sub-agents before deleting parent session
 	s.cleanupSpawnedAgentsByParent(req.SessionId)
-
-	// Also delete from persistent store
 	if s.sessionStore != nil {
 		if err := s.sessionStore.DeleteSession(ctx, req.SessionId); err != nil {
-			// Log but don't fail
 			s.logger.Warn("failed to delete session from persistent store",
 				zap.String("session_id", req.SessionId),
 				zap.Error(err))
 		}
 	}
-
-	if !found {
-		return nil, status.Error(codes.NotFound, "session not found")
-	}
+	s.mu.Unlock()
 
 	return &loomv1.DeleteSessionResponse{
 		Success: true,

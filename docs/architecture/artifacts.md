@@ -925,6 +925,10 @@ Each session directory may contain **`metadata.json`** at:
 
 It records **non-secret attribution** for dashboards and APIs: session id, agent identifiers, start/end times, lifecycle status (`active`, `completed`), optional **`context`** with allowlisted keys only (`user_id`, `project_id`, `conversation_id`), and optional artifact stats. The file is created/updated when the session is persisted; missing files remain valid for older sessions.
 
+**Feature flag (default off):** set `artifacts.session_metadata_enabled: true` in `looms.yaml` or `LOOM_ARTIFACTS_SESSION_METADATA_ENABLED=1` so the server writes `metadata.json` on session save, marks completion on delete, and merges this file into list/get session APIs when filters require it. When disabled, no per-session disk I/O runs for this feature and APIs omit disk-derived lifecycle fields unless another code path sets them.
+
+**Multi-replica / PostgreSQL caveat:** `metadata.json` lives on the server process filesystem (`$LOOM_DATA_DIR/artifacts/sessions/...`). Multiple `looms serve` replicas each have their own local tree unless you mount shared storage; session rows in PostgreSQL are shared, but artifact metadata files are not replicated by the database. For consistent cross-replica attribution, use shared storage for `$LOOM_DATA_DIR` or keep metadata in the database (future work; see project backlog).
+
 API responses merge this file into `Session` fields (for example `metadata_status`, `started_at`, `ended_at`, `artifact_count`) using the same **context allowlist** so tampered files cannot inject arbitrary keys into HTTP/gRPC payloads.
 
 See [GitHub issue #111](https://github.com/teradata-labs/loom/issues/111).

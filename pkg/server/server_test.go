@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -47,6 +48,10 @@ func (m *mockTool) InputSchema() *shuttle.JSONSchema {
 }
 
 func TestConvertSession(t *testing.T) {
+	prev := artifacts.SessionMetadataEnabled()
+	artifacts.SetSessionMetadataEnabled(true)
+	t.Cleanup(func() { artifacts.SetSessionMetadataEnabled(prev) })
+
 	now := time.Now().UTC().Truncate(time.Second)
 	session := &agent.Session{
 		ID:           "sess_123",

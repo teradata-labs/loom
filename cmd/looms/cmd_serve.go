@@ -683,6 +683,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
 
+	artifacts.SetSessionMetadataEnabled(config.Artifacts.SessionMetadataEnabled)
+
 	// Export config values to environment variables for tools
 	exportConfigToEnv(config)
 

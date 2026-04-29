@@ -396,11 +396,10 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 	span.SetAttribute("session_id", session.ID)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Serialize context
 	contextJSON, err := json.Marshal(session.Context)
 	if err != nil {
+		s.mu.Unlock()
 		span.RecordError(err)
 		return fmt.Errorf("failed to marshal context: %w", err)
 	}
@@ -441,6 +440,7 @@ func (s *SessionStore) SaveSession(ctx context.Context, session *Session) error 
 		session.TotalCostUSD,
 		session.TotalTokens,
 	)
+	s.mu.Unlock()
 
 	if err != nil {
 		span.RecordError(err)

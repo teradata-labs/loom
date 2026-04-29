@@ -33,6 +33,9 @@ func mergeArtifactMetadataIntoProto(p *loomv1.Session, sessionID string) {
 	if p == nil || sessionID == "" {
 		return
 	}
+	if !artifacts.SessionMetadataEnabled() {
+		return
+	}
 	meta, err := artifacts.ReadSessionArtifactMetadata(sessionID)
 	if err != nil {
 		return
