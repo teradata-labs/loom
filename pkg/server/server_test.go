@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -47,12 +48,21 @@ func (m *mockTool) InputSchema() *shuttle.JSONSchema {
 }
 
 func TestConvertSession(t *testing.T) {
-	now := time.Now()
+	prev := artifacts.SessionMetadataEnabled()
+	artifacts.SetSessionMetadataEnabled(true)
+	t.Cleanup(func() { artifacts.SetSessionMetadataEnabled(prev) })
+
+	now := time.Now().UTC().Truncate(time.Second)
 	session := &agent.Session{
 		ID:           "sess_123",
 		CreatedAt:    now,
 		UpdatedAt:    now.Add(time.Hour),
 		TotalCostUSD: 0.0123,
+		Context: map[string]interface{}{
+			"project_id": "proj-1",
+			"backend":    "anthropic",
+			"agent_name": "guide",
+		},
 		Messages: []agent.Message{
 			{Role: "user", Content: "Hello"},
 			{Role: "assistant", Content: "Hi there"},
@@ -83,6 +93,22 @@ func TestConvertSession(t *testing.T) {
 
 	if protoSession.ConversationCount != 2 {
 		t.Errorf("Expected conversation_count 2, got %d", protoSession.ConversationCount)
+	}
+
+	if protoSession.Backend != "anthropic" {
+		t.Errorf("Expected backend anthropic, got %s", protoSession.Backend)
+	}
+	if protoSession.Metadata == nil || protoSession.Metadata["project_id"] != "proj-1" {
+		t.Errorf("Expected metadata project_id, got %+v", protoSession.Metadata)
+	}
+	if protoSession.AgentName != "guide" {
+		t.Errorf("Expected agent_name guide, got %s", protoSession.AgentName)
+	}
+	if protoSession.StartedAt != now.Format(time.RFC3339) {
+		t.Errorf("Expected started_at %s, got %s", now.Format(time.RFC3339), protoSession.StartedAt)
+	}
+	if protoSession.MetadataStatus != "active" {
+		t.Errorf("Expected metadata_status active, got %s", protoSession.MetadataStatus)
 	}
 }
 

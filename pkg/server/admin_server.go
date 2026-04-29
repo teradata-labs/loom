@@ -90,7 +90,7 @@ func (s *AdminServer) ListAllSessions(ctx context.Context, req *loomv1.ListAllSe
 	// Convert to proto sessions
 	protoSessions := make([]*loomv1.Session, 0, len(sessions))
 	for _, sess := range sessions {
-		protoSessions = append(protoSessions, ConvertSession(sess.Session))
+		protoSessions = append(protoSessions, convertSession(sess.Session, false))
 	}
 
 	return &loomv1.ListAllSessionsResponse{
