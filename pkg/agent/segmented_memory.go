@@ -1610,8 +1610,36 @@ func (sm *SegmentedMemory) PromoteMessagesToContext(messages []Message) error {
 			promotedTokens, available-used)
 	}
 
-	// Add to promoted context
-	sm.promotedContext = append(sm.promotedContext, messages...)
+	// Sanitize promoted messages: strip tool_use/tool_result blocks that would
+	// break the Anthropic/Bedrock API's strict tool_use→tool_result pairing rules.
+	// Promoted context comes from prior sessions where tool IDs are meaningless.
+	sanitized := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "tool" {
+			continue // Drop tool_result messages entirely — results from another session are noise.
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Keep the text content but drop the tool_calls block.
+			summary := m.Content
+			if summary == "" {
+				// If the assistant message was ONLY tool calls with no text, summarize.
+				var names []string
+				for _, tc := range m.ToolCalls {
+					names = append(names, tc.Name)
+				}
+				summary = fmt.Sprintf("[Used tools: %s]", strings.Join(names, ", "))
+			}
+			sanitized = append(sanitized, Message{
+				Role:      "assistant",
+				Content:   summary,
+				Timestamp: m.Timestamp,
+			})
+			continue
+		}
+		sanitized = append(sanitized, m)
+	}
+
+	sm.promotedContext = append(sm.promotedContext, sanitized...)
 
 	// Update promoted cache and totals
 	sm.cachedPromotedTokens = sm.tokenCounter.EstimateMessagesTokens(sm.promotedContext)
