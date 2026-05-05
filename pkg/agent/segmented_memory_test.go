@@ -1033,6 +1033,176 @@ func TestSegmentedMemory_ReplayMessages_vs_AddMessageLoop(t *testing.T) {
 	}
 }
 
+// TestAdjustCompressionBoundary_ParallelToolCalls verifies that parallel tool
+// calls (one assistant message with N tool_use blocks) are never split by
+// compression. This reproduces the Bedrock 400 error:
+//
+//	"tool_use ids were found without tool_result blocks immediately after"
+//
+// which occurs when the compression boundary falls between two tool_result
+// messages belonging to the same assistant's parallel tool calls.
+func TestAdjustCompressionBoundary_ParallelToolCalls(t *testing.T) {
+	profile := CompressionProfile{
+		Name:                     "aggressive",
+		MaxL1Tokens:              2000,
+		MinL1Messages:            3,
+		WarningThresholdPercent:  40,
+		CriticalThresholdPercent: 60,
+		NormalBatchSize:          3,
+		WarningBatchSize:         5,
+		CriticalBatchSize:        7,
+	}
+	sm := NewSegmentedMemoryWithCompression("ROM", 8000, 2000, profile)
+	ctx := context.Background()
+
+	// Simulate the exact scenario from the crash: multiple single-tool rounds
+	// followed by a parallel tool call, with enough content to trigger compression.
+	messages := []Message{
+		{Role: "user", Content: "What is the average unit price?", Timestamp: time.Now()},
+		// Round 1: single tool call
+		{Role: "assistant", Content: "Let me find the databases.", ToolCalls: []ToolCall{
+			{ID: "tc_1", Name: "base_databaseList"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"DatabaseName":"DB1","DBType":"User"}`, 30), ToolUseID: "tc_1", Timestamp: time.Now()},
+		// Round 2: PARALLEL tool calls (the problematic case)
+		{Role: "assistant", Content: "Let me check user context and databases.", ToolCalls: []ToolCall{
+			{ID: "tc_2a", Name: "whoami"},
+			{ID: "tc_2b", Name: "base_userDatabaseList"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: `{"user":"testuser"}`, ToolUseID: "tc_2a", Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"DatabaseName":"MyDB"}`, 30), ToolUseID: "tc_2b", Timestamp: time.Now()},
+		// Round 3: more single calls to push context and trigger compression
+		{Role: "assistant", Content: "Searching tables.", ToolCalls: []ToolCall{
+			{ID: "tc_3", Name: "base_tableList"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"TableName":"orders","DatabaseName":"MyDB"}`, 30), ToolUseID: "tc_3", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Let me preview the table.", ToolCalls: []ToolCall{
+			{ID: "tc_4", Name: "base_tablePreview"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"col1":"val","col2":123}`, 40), ToolUseID: "tc_4", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Running the query now.", ToolCalls: []ToolCall{
+			{ID: "tc_5", Name: "base_readQuery"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"avg_price":42.50}`, 20), ToolUseID: "tc_5", Timestamp: time.Now()},
+		{Role: "assistant", Content: "The average unit price is $42.50.", Timestamp: time.Now()},
+	}
+
+	sm.ReplayMessages(ctx, messages)
+
+	// Validate: build the message list exactly as the LLM API would receive it.
+	llmMessages := sm.GetMessagesForLLM()
+
+	// Collect all tool_call IDs from assistant messages in the LLM view.
+	expectedToolResults := make(map[string]bool) // tool_call ID → found result?
+	for _, msg := range llmMessages {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					expectedToolResults[tc.ID] = false
+				}
+			}
+		}
+	}
+
+	// Mark which tool results are present.
+	for _, msg := range llmMessages {
+		if msg.Role == "tool" && msg.ToolUseID != "" {
+			if _, expected := expectedToolResults[msg.ToolUseID]; expected {
+				expectedToolResults[msg.ToolUseID] = true
+			}
+		}
+	}
+
+	// Every tool_call in the LLM view must have a matching tool_result.
+	for id, found := range expectedToolResults {
+		assert.True(t, found,
+			"tool_call ID %q appears in an assistant message sent to the LLM but has no matching tool_result — "+
+				"compression boundary split a parallel tool call pair", id)
+	}
+
+	// Also verify no orphaned tool results (tool_result without its assistant).
+	assistantToolIDs := make(map[string]struct{})
+	for _, msg := range llmMessages {
+		for _, tc := range msg.ToolCalls {
+			assistantToolIDs[tc.ID] = struct{}{}
+		}
+	}
+	for _, msg := range llmMessages {
+		if msg.Role == "tool" && msg.ToolUseID != "" {
+			_, ok := assistantToolIDs[msg.ToolUseID]
+			assert.True(t, ok, "orphaned tool_result with ToolUseID=%q has no matching assistant tool_call", msg.ToolUseID)
+		}
+	}
+}
+
+// TestAdjustCompressionBoundary_ParallelToolCalls_AddMessage tests the same
+// parallel tool call scenario but using per-message AddMessage (the live path)
+// instead of ReplayMessages. This is the path that triggered the original crash.
+func TestAdjustCompressionBoundary_ParallelToolCalls_AddMessage(t *testing.T) {
+	profile := CompressionProfile{
+		Name:                     "aggressive",
+		MaxL1Tokens:              2000,
+		MinL1Messages:            3,
+		WarningThresholdPercent:  40,
+		CriticalThresholdPercent: 60,
+		NormalBatchSize:          3,
+		WarningBatchSize:         5,
+		CriticalBatchSize:        7,
+	}
+	sm := NewSegmentedMemoryWithCompression("ROM", 8000, 2000, profile)
+	ctx := context.Background()
+
+	// Add messages one at a time (simulates live conversation).
+	msgs := []Message{
+		{Role: "user", Content: "Analyze the database", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Starting analysis.", ToolCalls: []ToolCall{
+			{ID: "tc_1", Name: "base_databaseList"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"db":"A"}`, 40), ToolUseID: "tc_1", Timestamp: time.Now()},
+		// Parallel call
+		{Role: "assistant", Content: "Checking two things at once.", ToolCalls: []ToolCall{
+			{ID: "tc_2a", Name: "whoami"},
+			{ID: "tc_2b", Name: "base_userDatabaseList"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: `{"user":"test"}`, ToolUseID: "tc_2a", Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"db":"B"}`, 40), ToolUseID: "tc_2b", Timestamp: time.Now()},
+		{Role: "assistant", Content: "More work.", ToolCalls: []ToolCall{
+			{ID: "tc_3", Name: "base_tableList"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"tbl":"orders"}`, 40), ToolUseID: "tc_3", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Even more work.", ToolCalls: []ToolCall{
+			{ID: "tc_4", Name: "base_readQuery"},
+		}, Timestamp: time.Now()},
+		{Role: "tool", Content: strings.Repeat(`{"result":1}`, 40), ToolUseID: "tc_4", Timestamp: time.Now()},
+		{Role: "assistant", Content: "Done.", Timestamp: time.Now()},
+	}
+
+	for _, msg := range msgs {
+		sm.AddMessage(ctx, msg)
+	}
+
+	llmMessages := sm.GetMessagesForLLM()
+
+	// Same validation: every tool_call visible to the LLM must have its result.
+	expectedToolResults := make(map[string]bool)
+	for _, msg := range llmMessages {
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" {
+				expectedToolResults[tc.ID] = false
+			}
+		}
+	}
+	for _, msg := range llmMessages {
+		if msg.Role == "tool" && msg.ToolUseID != "" {
+			expectedToolResults[msg.ToolUseID] = true
+		}
+	}
+	for id, found := range expectedToolResults {
+		assert.True(t, found,
+			"[AddMessage path] tool_call ID %q has no matching tool_result in LLM messages", id)
+	}
+}
+
 // TestSegmentedMemory_ReplayMessages_Empty verifies empty replay is a no-op.
 func TestSegmentedMemory_ReplayMessages_Empty(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 0, 0)
