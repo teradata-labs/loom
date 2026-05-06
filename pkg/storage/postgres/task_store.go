@@ -123,6 +123,37 @@ func (s *TaskStore) GetTask(ctx context.Context, id string) (*task.Task, error) 
 	return result, nil
 }
 
+// HasOpenSkillTasks returns true when any task with skill_idempotency_key
+// matching skill:<name>|sess:<sess>|% is still in flight. See the SQLite
+// counterpart for status semantics.
+func (s *TaskStore) HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error) {
+	if skillName == "" || sessionID == "" {
+		return false, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "pg.task.has_open_skill_tasks")
+	defer s.tracer.EndSpan(span)
+
+	prefix := fmt.Sprintf("skill:%s|sess:%s|%%", skillName, sessionID)
+	var count int
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM tasks
+			WHERE skill_idempotency_key LIKE $1
+			  AND status NOT IN ($2, $3)
+			  AND deleted_at IS NULL
+			LIMIT 1`,
+			prefix,
+			int32(loomv1.TaskStatus_TASK_STATUS_DONE),
+			int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
+		).Scan(&count)
+	})
+	if err != nil {
+		return false, fmt.Errorf("has open skill tasks: %w", err)
+	}
+	return count > 0, nil
+}
+
 // GetTaskByIdempotencyKey returns the task that owns the given idempotency
 // key, or (nil, nil) when no such task exists. Used by the skills task
 // emitter to dedupe concurrent skill activations.

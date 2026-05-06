@@ -88,6 +88,95 @@ func TestTask_IdempotencyKeyUniqueIndex(t *testing.T) {
 	assert.Contains(t, err.Error(), "UNIQUE")
 }
 
+func TestTask_HasOpenSkillTasks(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	ctx := context.Background()
+
+	// Create three tasks under (skill=sql-opt, sess=s1):
+	//   step:0 OPEN   -> in flight
+	//   step:1 DONE   -> not in flight
+	//   step:2 (no skill key) -> excluded from query
+	_, err := store.CreateTask(ctx, &task.Task{
+		Title:               "open",
+		Status:              loomv1.TaskStatus_TASK_STATUS_OPEN,
+		SkillIdempotencyKey: "skill:sql-opt|sess:s1|step:0",
+	})
+	require.NoError(t, err)
+	_, err = store.CreateTask(ctx, &task.Task{
+		Title:               "done",
+		Status:              loomv1.TaskStatus_TASK_STATUS_DONE,
+		SkillIdempotencyKey: "skill:sql-opt|sess:s1|step:1",
+	})
+	require.NoError(t, err)
+	_, err = store.CreateTask(ctx, &task.Task{
+		Title:  "unrelated",
+		Status: loomv1.TaskStatus_TASK_STATUS_OPEN,
+	})
+	require.NoError(t, err)
+
+	open, err := store.HasOpenSkillTasks(ctx, "sql-opt", "s1")
+	require.NoError(t, err)
+	assert.True(t, open, "an OPEN task with the (skill, session) prefix must register as in-flight")
+
+	// Different skill/session must report no open tasks.
+	open, err = store.HasOpenSkillTasks(ctx, "other-skill", "s1")
+	require.NoError(t, err)
+	assert.False(t, open)
+
+	// Empty inputs short-circuit to false.
+	open, err = store.HasOpenSkillTasks(ctx, "", "s1")
+	require.NoError(t, err)
+	assert.False(t, open)
+	open, err = store.HasOpenSkillTasks(ctx, "sql-opt", "")
+	require.NoError(t, err)
+	assert.False(t, open)
+}
+
+func TestTask_HasOpenSkillTasks_AllDone(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	ctx := context.Background()
+
+	// All tasks for (skill=x, sess=y) are DONE or CANCELLED — must report
+	// false so the orchestrator does NOT consider the skill sticky.
+	_, err := store.CreateTask(ctx, &task.Task{
+		Title:               "done-1",
+		Status:              loomv1.TaskStatus_TASK_STATUS_DONE,
+		SkillIdempotencyKey: "skill:x|sess:y|step:0",
+	})
+	require.NoError(t, err)
+	_, err = store.CreateTask(ctx, &task.Task{
+		Title:               "cancelled",
+		Status:              loomv1.TaskStatus_TASK_STATUS_CANCELLED,
+		SkillIdempotencyKey: "skill:x|sess:y|step:1",
+	})
+	require.NoError(t, err)
+
+	open, err := store.HasOpenSkillTasks(ctx, "x", "y")
+	require.NoError(t, err)
+	assert.False(t, open,
+		"DONE+CANCELLED tasks must NOT count as open work")
+}
+
+func TestTask_HasOpenSkillTasks_BlockedCountsAsOpen(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	ctx := context.Background()
+
+	_, err := store.CreateTask(ctx, &task.Task{
+		Title:               "blocked",
+		Status:              loomv1.TaskStatus_TASK_STATUS_BLOCKED,
+		SkillIdempotencyKey: "skill:x|sess:y|step:0",
+	})
+	require.NoError(t, err)
+
+	open, err := store.HasOpenSkillTasks(ctx, "x", "y")
+	require.NoError(t, err)
+	assert.True(t, open,
+		"BLOCKED is still in-flight (waiting on dependencies); must count as open")
+}
+
 func TestTask_IdempotencyKeyEmptyAllowsMany(t *testing.T) {
 	// Partial index covers only non-null keys; many tasks with empty key
 	// must coexist without triggering the constraint.

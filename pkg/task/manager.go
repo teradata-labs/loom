@@ -106,6 +106,13 @@ func (m *Manager) GetTaskByIdempotencyKey(ctx context.Context, key string) (*Tas
 	return m.store.GetTaskByIdempotencyKey(ctx, key)
 }
 
+// HasOpenSkillTasks returns true when at least one task with the given
+// (skill, session) prefix is still in flight. Used by the skills
+// orchestrator to keep skills sticky while they have open work.
+func (m *Manager) HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error) {
+	return m.store.HasOpenSkillTasks(ctx, skillName, sessionID)
+}
+
 // CreateTaskIdempotent looks up an existing task by SkillIdempotencyKey and
 // returns it when present; otherwise it creates the task normally. The
 // boolean return is true when the task was newly created (and history +

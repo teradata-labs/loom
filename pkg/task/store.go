@@ -35,6 +35,11 @@ type TaskStore interface {
 	// keys always return (nil, nil); they are not stored as a unique
 	// constraint and lookups by empty key are meaningless.
 	GetTaskByIdempotencyKey(ctx context.Context, key string) (*Task, error)
+	// HasOpenSkillTasks returns true when at least one task with the given
+	// (skill, session) prefix in skill_idempotency_key is still in flight
+	// (status not DONE and not CANCELLED). Used by the skills orchestrator
+	// to keep skills sticky while they have open work on the board.
+	HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error)
 	UpdateTask(ctx context.Context, task *Task, fields []string) (*Task, error)
 	DeleteTask(ctx context.Context, id string) error
 	ListTasks(ctx context.Context, opts ListTasksOpts) ([]*Task, int, error)

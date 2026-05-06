@@ -651,7 +651,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			libOpts = append(libOpts, skills.WithTracer(r.tracer))
 		}
 		skillLib := skills.NewLibrary(libOpts...)
-		skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(r.tracer))
+		orchOpts := []skills.OrchestratorOption{
+			skills.WithOrchestratorTracer(r.tracer),
+		}
+		if skillsConfig.MaxConcurrentSkills > 0 {
+			orchOpts = append(orchOpts, skills.WithMaxConcurrentSkills(skillsConfig.MaxConcurrentSkills))
+		}
+		skillOrch := skills.NewOrchestrator(skillLib, orchOpts...)
 		opts = append(opts, WithSkillOrchestrator(skillOrch))
 
 		// Build the binding resolver up front; both Discovery wiring paths

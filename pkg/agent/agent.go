@@ -285,6 +285,28 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
 	}
 
+	// Install the sticky-while-open-tasks checker on the orchestrator
+	// when both the skill subsystem and the task subsystem are present.
+	// Eviction will treat any active skill with non-DONE+non-CANCELLED
+	// tasks for this (skill, session) pair as sticky, so in-flight work
+	// is never abandoned mid-turn. (Skills overhaul deferred work C.)
+	if a.skillOrchestrator != nil && a.taskManager != nil {
+		taskMgr := a.taskManager
+		a.skillOrchestrator.SetStickinessChecker(func(skillName, sessionID string) bool {
+			open, err := taskMgr.HasOpenSkillTasks(context.Background(), skillName, sessionID)
+			if err != nil {
+				// Treat lookup failures as "not sticky" so eviction can
+				// still proceed; logging is enough.
+				zap.L().Debug("stickiness check failed",
+					zap.String("skill", skillName),
+					zap.String("session", sessionID),
+					zap.Error(err))
+				return false
+			}
+			return open
+		})
+	}
+
 	return a
 }
 

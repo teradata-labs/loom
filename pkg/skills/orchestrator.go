@@ -25,6 +25,13 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
+// StickinessChecker is consulted during eviction to decide whether an
+// active skill should be treated as sticky for the current activation
+// attempt, regardless of its Skill.Sticky flag. The agent layer typically
+// installs a checker that returns true when the skill has open tasks on
+// the kanban board, so eviction never abandons in-flight work.
+type StickinessChecker func(skillName, sessionID string) bool
+
 // Orchestrator is the activation engine for skills. It evaluates user messages,
 // matches them to skills via slash commands, keywords, or always-on rules,
 // and manages active skill lifecycles within sessions.
@@ -33,6 +40,15 @@ type Orchestrator struct {
 	library        *Library
 	tracer         observability.Tracer
 	activeSessions map[string][]*ActiveSkill // sessionID -> active skills
+
+	// maxConcurrentSkills caps the active set during eviction. <=0 means
+	// "use the legacy default of 3". Set via WithMaxConcurrentSkills, or
+	// at runtime via SetMaxConcurrentSkills (the agent layer pulls it
+	// from SkillsConfig once known).
+	maxConcurrentSkills int
+	// stickinessChecker (optional) is consulted during eviction. nil means
+	// only Skill.Sticky is honored, preserving v1.2.0 behavior.
+	stickinessChecker StickinessChecker
 }
 
 // OrchestratorOption configures an Orchestrator during construction.
@@ -45,6 +61,42 @@ func WithOrchestratorTracer(t observability.Tracer) OrchestratorOption {
 			o.tracer = t
 		}
 	}
+}
+
+// WithMaxConcurrentSkills caps the active-skill set this orchestrator
+// allows per session. The eviction routine consults this; 0 falls back
+// to the legacy default of 3.
+func WithMaxConcurrentSkills(n int) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if n > 0 {
+			o.maxConcurrentSkills = n
+		}
+	}
+}
+
+// WithStickinessChecker installs a callback that the eviction routine
+// consults to decide whether a candidate-for-eviction is sticky. Used by
+// the agent layer to keep skills active while they have open tasks.
+func WithStickinessChecker(checker StickinessChecker) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.stickinessChecker = checker
+	}
+}
+
+// SetMaxConcurrentSkills adjusts the eviction cap at runtime. Safe for
+// concurrent use with ActivateSkill.
+func (o *Orchestrator) SetMaxConcurrentSkills(n int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.maxConcurrentSkills = n
+}
+
+// SetStickinessChecker installs a stickiness checker at runtime. Safe for
+// concurrent use with ActivateSkill.
+func (o *Orchestrator) SetStickinessChecker(checker StickinessChecker) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.stickinessChecker = checker
 }
 
 // NewOrchestrator creates a new skill orchestrator backed by the given library.
@@ -250,7 +302,17 @@ func (o *Orchestrator) MatchSkills(sessionID, userMsg string, config *SkillsConf
 }
 
 // ActivateSkill activates a skill for a session. If the session already has
-// MaxConcurrentSkills active, the lowest-confidence skill is evicted.
+// MaxConcurrentSkills active, the lowest-confidence non-sticky skill is
+// evicted. Sticky-ness is determined by:
+//  1. Skill.Sticky == true (explicit author intent), OR
+//  2. The configured StickinessChecker returning true for the skill —
+//     used by the agent layer to keep skills active while they have open
+//     tasks on the board.
+//
+// When every active skill is sticky, the cap is allowed to overflow for
+// this turn rather than evicting load-bearing skills out from under
+// in-flight work. This matches the design's "sticky-while-open-tasks"
+// guarantee from the skills overhaul.
 func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType, triggerValue string, confidence float64) *ActiveSkill {
 	_, span := o.tracer.StartSpan(context.Background(), "skills.orchestrator.activate_skill")
 	defer o.tracer.EndSpan(span)
@@ -284,19 +346,42 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 
 	sessions = append(sessions, active)
 
-	// Evict lowest confidence if over default limit (3).
-	const defaultMaxConcurrent = 3
-	if len(sessions) > defaultMaxConcurrent {
-		// Find lowest confidence.
-		minIdx := 0
-		for i := 1; i < len(sessions); i++ {
-			if sessions[i].Confidence < sessions[minIdx].Confidence {
+	maxConcurrent := o.maxConcurrentSkills
+	if maxConcurrent <= 0 {
+		maxConcurrent = 3
+	}
+	if len(sessions) > maxConcurrent {
+		// Find lowest-confidence skill among the evictable (non-sticky) set.
+		// Skip the just-appended active record (last index): we never
+		// evict the skill we're about to activate.
+		minIdx := -1
+		for i := 0; i < len(sessions)-1; i++ {
+			as := sessions[i]
+			if as == nil || as.Skill == nil {
+				continue
+			}
+			if as.Skill.Sticky {
+				continue
+			}
+			if o.stickinessChecker != nil && o.stickinessChecker(as.Skill.Name, sessionID) {
+				continue
+			}
+			if minIdx == -1 || sessions[i].Confidence < sessions[minIdx].Confidence {
 				minIdx = i
 			}
 		}
-		// Remove it (swap with last, truncate).
-		sessions[minIdx] = sessions[len(sessions)-1]
-		sessions = sessions[:len(sessions)-1]
+		if minIdx >= 0 {
+			// Remove it (swap with last, truncate).
+			sessions[minIdx] = sessions[len(sessions)-1]
+			sessions = sessions[:len(sessions)-1]
+			if span != nil {
+				span.SetAttribute("eviction", "evicted")
+			}
+		} else if span != nil {
+			// Every existing skill is sticky; the cap overflows for this
+			// turn rather than abandoning load-bearing work.
+			span.SetAttribute("eviction", "overflow_all_sticky")
+		}
 	}
 
 	o.activeSessions[sessionID] = sessions
