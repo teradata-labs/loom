@@ -496,6 +496,95 @@ func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
 	return out
 }
 
+// enforceRequiredSkillTools auto-registers tools listed in active skills'
+// SkillToolConfig.RequiredTools when they are available in the builtin
+// catalog and not already registered. Tools that aren't builtin-known are
+// logged at Warn so operators can see what's missing without breaking the
+// turn — the agent continues with whatever tools ARE registered.
+//
+// MCP servers (SkillToolConfig.MCPServers) are not yet activated by skill
+// activation; the field is parsed but not enforced. A future change can
+// add an MCPManager hook here.
+func (a *Agent) enforceRequiredSkillTools(sessionID string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	active := a.skillOrchestrator.GetActiveSkills(sessionID)
+	if len(active) == 0 {
+		return
+	}
+	for _, as := range active {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, name := range as.Skill.Tools.RequiredTools {
+			if a.tools.IsRegistered(name) {
+				continue
+			}
+			tool := builtin.ByName(name)
+			if tool == nil {
+				zap.L().Warn("skill required tool not available; skipping",
+					zap.String("skill", as.Skill.Name),
+					zap.String("tool", name))
+				continue
+			}
+			a.tools.Register(tool)
+			zap.L().Debug("skill required tool auto-registered",
+				zap.String("skill", as.Skill.Name),
+				zap.String("tool", name))
+		}
+		// Surface MCP-server requests so operators see when a skill has
+		// declared servers that aren't yet honored. Logged once per turn
+		// per skill rather than per server to avoid log spam.
+		if len(as.Skill.Tools.MCPServers) > 0 {
+			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
+				zap.String("skill", as.Skill.Name),
+				zap.Int("count", len(as.Skill.Tools.MCPServers)))
+		}
+	}
+}
+
+// applySkillExcludedTools filters the input tool slice by removing any
+// tool whose name appears in any active skill's
+// SkillToolConfig.ExcludedTools. Multiple active skills' exclusions union;
+// a tool excluded by ANY active skill is removed for this turn.
+//
+// The filter is per-turn (no permanent unregistration) so deactivating a
+// skill restores its excluded tools on subsequent turns automatically.
+func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []shuttle.Tool {
+	if a.skillOrchestrator == nil || session == nil {
+		return in
+	}
+	sessionID := session.ID
+	if sessionID == "" {
+		sessionID = a.id
+	}
+	active := a.skillOrchestrator.GetActiveSkills(sessionID)
+	if len(active) == 0 {
+		return in
+	}
+	excluded := make(map[string]bool)
+	for _, as := range active {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, name := range as.Skill.Tools.ExcludedTools {
+			excluded[name] = true
+		}
+	}
+	if len(excluded) == 0 {
+		return in
+	}
+	out := make([]shuttle.Tool, 0, len(in))
+	for _, tool := range in {
+		if excluded[tool.Name()] {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
 // RegisterTool registers a tool with the agent.
 func (a *Agent) RegisterTool(tool shuttle.Tool) {
 	a.tools.Register(tool)
@@ -1764,9 +1853,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// Inject graph memory context (if enabled and available).
 	a.injectGraphMemoryContext(ctx, session)
 
-	// Get available tools
-	tools := a.tools.ListTools()
-
 	// --- Skill activation ---
 	// The skills overhaul (Phase 9) replaces the per-turn MatchSkills filter
 	// with a four-phase pipeline (Discovery -> Activate -> Emit tasks ->
@@ -1874,8 +1960,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					}
 				}
 			}
+
+			// Enforce SkillToolConfig.required_tools across all active skills.
+			// required_tools that aren't yet registered are auto-registered
+			// from the builtin set when available; missing tools log a Warn
+			// and the skill continues without them (the LLM still has access
+			// to whatever IS registered).
+			a.enforceRequiredSkillTools(sessionID)
 		}
 	}
+
+	// Get available tools. Done AFTER the skill block so any required_tools
+	// that the skill auto-registered show up; the excluded-tools filter
+	// below removes any active skill's excluded set for this turn.
+	tools := a.tools.ListTools()
+	tools = a.applySkillExcludedTools(tools, session)
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
