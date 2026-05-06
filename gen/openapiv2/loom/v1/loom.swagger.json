@@ -7955,6 +7955,47 @@
       },
       "description": "SharedMemoryValue represents a versioned value in shared memory.\nSupports optimistic concurrency control via version field."
     },
+    "v1SkillBinding": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Exact skill name (\"sql-optimization\") or glob (\"enterprise/sql/*\").\nGlob matching uses path.Match semantics. Exact-name bindings win\nprecedence over glob matches for the same underlying skill."
+        },
+        "mode": {
+          "$ref": "#/definitions/v1SkillBindingMode",
+          "description": "Load policy."
+        },
+        "priority": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Higher-priority bindings win when context budget is tight (default 0)."
+        },
+        "labelMatch": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional label selector applied to Skill.metadata.labels (AND across\nall keys). Independent of name; either or both may be set."
+        },
+        "minVersion": {
+          "type": "string",
+          "description": "Minimum semver of the bound skill required (empty = any version)."
+        }
+      },
+      "description": "SkillBinding ties a skill (or a glob/label-selector over the skill\nnamespace) to an agent with a specific load policy. Replaces the legacy\nSkillsConfig.enabled_skills / disabled_skills filter pair."
+    },
+    "v1SkillBindingMode": {
+      "type": "string",
+      "enum": [
+        "SKILL_BINDING_MODE_UNSPECIFIED",
+        "SKILL_BINDING_MODE_EAGER",
+        "SKILL_BINDING_MODE_LAZY",
+        "SKILL_BINDING_MODE_ALWAYS"
+      ],
+      "default": "SKILL_BINDING_MODE_UNSPECIFIED",
+      "description": "SkillBindingMode controls how an agent loads a bound skill into context.\n\n - SKILL_BINDING_MODE_EAGER: Always formatted into the system-prompt budget (subject to budget).\n - SKILL_BINDING_MODE_LAZY: Promoted into the orchestrator only when discovery selects it.\n - SKILL_BINDING_MODE_ALWAYS: Forced active every turn; overrides the skill's own activation mode."
+    },
     "v1SkillsConfig": {
       "type": "object",
       "properties": {
@@ -7967,14 +8008,14 @@
           "items": {
             "type": "string"
           },
-          "title": "Specific skills to enable (empty = all discovered)"
+          "description": "Specific skills to enable (empty = all discovered).\nDeprecated in favor of bindings; preserved for backward compatibility.\nResolver synthesizes EAGER-mode SkillBinding entries from this list when\nbindings is empty."
         },
         "disabledSkills": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "title": "Skills to explicitly disable"
+          "description": "Skills to explicitly disable. Deprecated in favor of bindings."
         },
         "minAutoConfidence": {
           "type": "number",
@@ -7994,6 +8035,40 @@
           "type": "integer",
           "format": "int32",
           "description": "Percentage of max_context_tokens reserved for skills+patterns injection.\nDefault: 5 (i.e., 5%). Skills get priority; patterns fill remainder.\nE.g., Claude 200K context -\u003e 10K tokens for skills+patterns."
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1SkillBinding"
+          },
+          "description": "Declarative skill attachment for this agent. Replaces the\nenabled_skills/disabled_skills filter pair. When non-empty, takes full\nprecedence over the legacy filter; otherwise the resolver synthesizes\nbindings from the legacy fields (backward-compat shim)."
+        },
+        "routerEnabled": {
+          "type": "boolean",
+          "description": "Whether the hierarchical (PageIndex-style) router is the primary\ndiscovery path. Uses proto3 optional so the loader can distinguish\n\"not specified\" (default true) from \"explicitly false\"."
+        },
+        "routerMaxCandidates": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum candidate skills returned from a single router walk (default: 5)."
+        },
+        "routerCacheTtlSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-session router decision cache TTL in seconds (default: 300)."
+        },
+        "routerModelOverride": {
+          "type": "string",
+          "description": "Override LLM provider name used for routing decisions. Empty falls back\nto AgentConfig.classifier_llm; useful for pointing routing at a smaller\n/ cheaper model (Haiku, local Ollama)."
+        },
+        "skillTaskBoardId": {
+          "type": "string",
+          "description": "Task board id used for skill-emitted tasks. Empty reuses the agent's\nprimary board."
+        },
+        "tasksEnabled": {
+          "type": "boolean",
+          "description": "Whether activation emits tracked tasks. Uses proto3 optional so the\nloader can distinguish \"not specified\" (default true) from \"explicitly\nfalse\". This is the agent-level master switch; per-skill emit_tasks\noverrides it for individual skills."
         }
       },
       "description": "SkillsConfig configures the skills system for an agent."

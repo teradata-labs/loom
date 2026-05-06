@@ -7,6 +7,8 @@ syntax = "proto3";
 
 package loom.v1;
 
+import "loom/v1/task.proto";
+
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
 
 // Skill represents an activatable behavior that combines prompt injection,
@@ -31,6 +33,18 @@ message Skill {
   bool sticky = 8;
   // Target backend (empty = agnostic)
   string backend = 9;
+  // Optional explicit decomposition. When nil and emit_tasks is true,
+  // task.Decomposer is invoked at activation with the skill prompt as goal.
+  SkillTaskTemplate task_template = 10;
+  // Index path used by the hierarchical router to place this skill in the
+  // SkillIndex tree, e.g. "enterprise/sql/optimization". Empty means the
+  // index builder will place it under "unclassified/<domain>".
+  string parent_index_path = 11;
+  // Whether activation emits tracked tasks onto the agent's task board.
+  // Default behavior (when unset) is to emit; set explicitly to false to
+  // suppress task emission for this skill. Uses proto3 optional so the
+  // loader can distinguish "not specified" from "explicitly false".
+  optional bool emit_tasks = 12;
 }
 
 // SkillMetadata contains identifying information about a skill.
@@ -145,9 +159,12 @@ message SkillActivation {
 message SkillsConfig {
   // Whether skills are enabled (default: true)
   bool enabled = 1;
-  // Specific skills to enable (empty = all discovered)
+  // Specific skills to enable (empty = all discovered).
+  // Deprecated in favor of bindings; preserved for backward compatibility.
+  // Resolver synthesizes EAGER-mode SkillBinding entries from this list when
+  // bindings is empty.
   repeated string enabled_skills = 2;
-  // Skills to explicitly disable
+  // Skills to explicitly disable. Deprecated in favor of bindings.
   repeated string disabled_skills = 3;
   // Override per-skill auto-detection confidence threshold
   float min_auto_confidence = 4;
@@ -159,4 +176,127 @@ message SkillsConfig {
   // Default: 5 (i.e., 5%). Skills get priority; patterns fill remainder.
   // E.g., Claude 200K context -> 10K tokens for skills+patterns.
   int32 context_budget_percent = 7;
+
+  // Declarative skill attachment for this agent. Replaces the
+  // enabled_skills/disabled_skills filter pair. When non-empty, takes full
+  // precedence over the legacy filter; otherwise the resolver synthesizes
+  // bindings from the legacy fields (backward-compat shim).
+  repeated SkillBinding bindings = 8;
+  // Whether the hierarchical (PageIndex-style) router is the primary
+  // discovery path. Uses proto3 optional so the loader can distinguish
+  // "not specified" (default true) from "explicitly false".
+  optional bool router_enabled = 9;
+  // Maximum candidate skills returned from a single router walk (default: 5).
+  int32 router_max_candidates = 10;
+  // Per-session router decision cache TTL in seconds (default: 300).
+  int32 router_cache_ttl_seconds = 11;
+  // Override LLM provider name used for routing decisions. Empty falls back
+  // to AgentConfig.classifier_llm; useful for pointing routing at a smaller
+  // / cheaper model (Haiku, local Ollama).
+  string router_model_override = 12;
+  // Task board id used for skill-emitted tasks. Empty reuses the agent's
+  // primary board.
+  string skill_task_board_id = 13;
+  // Whether activation emits tracked tasks. Uses proto3 optional so the
+  // loader can distinguish "not specified" (default true) from "explicitly
+  // false". This is the agent-level master switch; per-skill emit_tasks
+  // overrides it for individual skills.
+  optional bool tasks_enabled = 14;
+}
+
+// SkillBindingMode controls how an agent loads a bound skill into context.
+enum SkillBindingMode {
+  SKILL_BINDING_MODE_UNSPECIFIED = 0;
+  // Always formatted into the system-prompt budget (subject to budget).
+  SKILL_BINDING_MODE_EAGER = 1;
+  // Promoted into the orchestrator only when discovery selects it.
+  SKILL_BINDING_MODE_LAZY = 2;
+  // Forced active every turn; overrides the skill's own activation mode.
+  SKILL_BINDING_MODE_ALWAYS = 3;
+}
+
+// SkillBinding ties a skill (or a glob/label-selector over the skill
+// namespace) to an agent with a specific load policy. Replaces the legacy
+// SkillsConfig.enabled_skills / disabled_skills filter pair.
+message SkillBinding {
+  // Exact skill name ("sql-optimization") or glob ("enterprise/sql/*").
+  // Glob matching uses path.Match semantics. Exact-name bindings win
+  // precedence over glob matches for the same underlying skill.
+  string name = 1;
+  // Load policy.
+  SkillBindingMode mode = 2;
+  // Higher-priority bindings win when context budget is tight (default 0).
+  int32 priority = 3;
+  // Optional label selector applied to Skill.metadata.labels (AND across
+  // all keys). Independent of name; either or both may be set.
+  map<string, string> label_match = 4;
+  // Minimum semver of the bound skill required (empty = any version).
+  string min_version = 5;
+}
+
+// SkillTaskTemplate is an authored decomposition that materializes when a
+// skill activates. When absent on a skill, task.Decomposer.Decompose is
+// invoked at activation with the skill prompt as the goal (decomposer
+// fallback). The same max_tasks cap applies to decomposer output.
+message SkillTaskTemplate {
+  // Step is one entry in the authored decomposition.
+  message Step {
+    string title = 1;
+    string objective = 2;
+    string acceptance_criteria = 3;
+    TaskCategory category = 4;
+    TaskPriority priority = 5;
+    // Indices into SkillTaskTemplate.steps that must complete before this
+    // step is unblocked. Materialized as TASK_DEPENDENCY_TYPE_BLOCKS edges.
+    repeated int32 depends_on = 6;
+    string estimated_effort = 7;
+  }
+  repeated Step steps = 1;
+  // Title of the parent task created to group emitted children.
+  string root_title = 2;
+  // When true, emitted tasks that have not yet been claimed (status OPEN)
+  // are deleted on skill deactivation. Tasks already in_progress or done
+  // are preserved.
+  bool ephemeral_on_deactivate = 3;
+  // Cap on emitted tasks (default 8). Applies to authored steps and to
+  // decomposer fallback output alike.
+  int32 max_tasks = 4;
+}
+
+// SkillIndexNode is one node in the hierarchical PageIndex-style tree the
+// router walks during discovery. Built offline (or in a goroutine on first
+// boot) by index.Builder; persisted in SQLite for fast cold-start.
+message SkillIndexNode {
+  // Stable id derived from the node's path in the tree.
+  string id = 1;
+  // Title shown to the router LLM.
+  string title = 2;
+  // 1-2 sentence summary written by the index builder; the router consumes
+  // this to decide which subtree(s) are relevant for a given user message.
+  string summary = 3;
+  // Child node ids, walked by the router on descent.
+  repeated string children = 4;
+  // Leaf skills attached to this node.
+  repeated string skill_refs = 5;
+  // Depth from the root (0 = root).
+  int32 depth = 6;
+  // Free-form labels for filtering / display.
+  map<string, string> labels = 7;
+  // Content hash of the source skills' descriptions+titles+domains+paths.
+  // Used by hot-reload to dirty only the affected subtree on YAML change.
+  string content_hash = 8;
+}
+
+// SkillIndex is the full router tree, persisted to disk and rebuilt only
+// when content hashes drift (or on bulk add/remove).
+message SkillIndex {
+  // Version hash of the entire tree (used for cache invalidation).
+  string id = 1;
+  // Root node id.
+  string root_id = 2;
+  // Flat list; tree traversal follows SkillIndexNode.children pointers.
+  repeated SkillIndexNode nodes = 3;
+  int64 built_at_ms = 4;
+  // Identifier of the LLM that authored summaries (model name or alias).
+  string built_by_model = 5;
 }
