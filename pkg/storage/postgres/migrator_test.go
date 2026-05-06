@@ -25,8 +25,9 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 11 migrations
-	assert.Len(t, migrations, 11, "should have 11 migration versions")
+	// Verify we have all 12 migrations.
+	// Bumped from 11 by 000012_skill_index (skills overhaul Phase 4).
+	assert.Len(t, migrations, 12, "should have 12 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
