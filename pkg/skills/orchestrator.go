@@ -162,7 +162,7 @@ func (o *Orchestrator) MatchSkills(sessionID, userMsg string, config *SkillsConf
 	var results []*MatchResult
 
 	// 1. Check for slash command (highest priority).
-	if cmd, rest := parseSlashCommand(userMsg); cmd != "" {
+	if cmd, rest := ParseSlashCommand(userMsg); cmd != "" {
 		if skill, ok := o.library.FindBySlashCommand(cmd); ok {
 			if o.isSkillAllowed(skill.Name, config) {
 				results = append(results, &MatchResult{
@@ -410,10 +410,10 @@ func (o *Orchestrator) GetLibrary() *Library {
 	return o.library
 }
 
-// parseSlashCommand extracts the slash command from a message.
+// ParseSlashCommand extracts the slash command from a message.
 // Returns command and remaining message, or empty strings if not a slash command.
 // Example: "/review this code" -> ("/review", "this code")
-func parseSlashCommand(msg string) (cmd string, rest string) {
+func ParseSlashCommand(msg string) (cmd string, rest string) {
 	msg = strings.TrimSpace(msg)
 	if len(msg) == 0 || msg[0] != '/' {
 		return "", ""

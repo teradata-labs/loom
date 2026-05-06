@@ -580,7 +580,7 @@ func TestParseSlashCommand(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, rest := parseSlashCommand(tc.msg)
+			cmd, rest := ParseSlashCommand(tc.msg)
 			assert.Equal(t, tc.wantCmd, cmd)
 			assert.Equal(t, tc.wantRest, rest)
 		})
