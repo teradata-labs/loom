@@ -100,6 +100,40 @@ func (m *Manager) CreateTask(ctx context.Context, t *Task) (*Task, error) {
 	return created, nil
 }
 
+// CreateTaskIdempotent looks up an existing task by SkillIdempotencyKey and
+// returns it when present; otherwise it creates the task normally. The
+// boolean return is true when the task was newly created (and history +
+// event were emitted) and false when an existing task was returned.
+//
+// Callers that supply an empty SkillIdempotencyKey degrade to plain
+// CreateTask semantics — the lookup is only meaningful for non-empty keys.
+//
+// Used by the skills task emitter to dedupe concurrent skill activations
+// for the same (skill, session, step) tuple.
+func (m *Manager) CreateTaskIdempotent(ctx context.Context, t *Task) (*Task, bool, error) {
+	ctx, span := m.tracer.StartSpan(ctx, "task_manager.create_idempotent")
+	defer m.tracer.EndSpan(span)
+
+	if t.SkillIdempotencyKey != "" {
+		existing, err := m.store.GetTaskByIdempotencyKey(ctx, t.SkillIdempotencyKey)
+		if err != nil {
+			return nil, false, err
+		}
+		if existing != nil {
+			return existing, false, nil
+		}
+	}
+
+	created, err := m.store.CreateTask(ctx, t)
+	if err != nil {
+		return nil, false, err
+	}
+
+	m.recordHistory(ctx, created.ID, "created", "", StatusName(created.Status), t.OwnerAgentID, "")
+	m.publishEvent(ctx, TopicTaskCreated, created, t.OwnerAgentID)
+	return created, true, nil
+}
+
 // GetTask retrieves a task by ID and populates ChildIDs.
 func (m *Manager) GetTask(ctx context.Context, id string) (*Task, error) {
 	t, err := m.store.GetTask(ctx, id)
