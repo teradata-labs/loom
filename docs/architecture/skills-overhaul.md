@@ -1,6 +1,6 @@
 # Skills Overhaul
 
-**Status:** ⚠️ Partial (Phases 1–11 of 13 implemented; router-in-registry wiring and end-to-end verification still pending)
+**Status:** ✅ Implemented (all 13 phases + deferred-work A, B, C; one remaining gap is `mcp_servers` activation — see Limitations)
 **Branch:** `feat/skills-overhaul`
 **Version target:** post-v1.2.0
 
@@ -138,30 +138,70 @@ These were pinned by the user during planning:
    v1.2.0 YAML files keep working without modification. The
    `loom skills migrate` CLI is non-destructive.
 
+### Deferred-Work Phases (post-Phase-13)
+
+After the initial 13-phase landing, three follow-up phases closed the
+remaining gaps from the design plan:
+
+| Deferred | Subject | Status |
+|---------:|---------|:------:|
+| A | Router wiring in registry + `router_model_override` honored | ✅ |
+| B | `SkillToolConfig` enforcement (`required_tools`, `excluded_tools`) | ✅ |
+| C | Sticky-while-open-tasks eviction policy | ✅ |
+
+**Deferred A** (`pkg/agent/registry.go` `warmSkillIndex`): the registry now
+constructs a full `index.Builder` + `index.MemoryStore` + `index.Router` +
+`index.Cache` for every agent with the router enabled, and kicks off a
+background warm-up goroutine. Cold-start tries `store.LatestIndex` first
+(instant `SetTree` on subsequent boots); then unconditionally rebuilds and
+swaps. Router LLM resolves in priority order: `RouterModelOverride` from
+the provider pool → `classifierLLM` → primary LLM. Build failures log a
+Warn but never bubble — Discovery falls back to FTS5, identical to the
+v1.2.0 baseline.
+
+**Deferred B** (`pkg/agent/agent.go` `enforceRequiredSkillTools` /
+`applySkillExcludedTools`): per-turn enforcement of tool preferences.
+After Phase C activation, `RequiredTools` are auto-registered from the
+builtin catalog when not already present (unknown names log Warn);
+`ExcludedTools` are unioned across all active skills and filtered from
+the LLM tool list for that turn. The `tools := a.tools.ListTools()` call
+moved from before the skill block to after, so required tools land in
+the LLM's view and excluded ones don't. `mcp_servers` is now logged at
+Debug when declared (see Limitations below).
+
+**Deferred C** (`pkg/skills/orchestrator.go` + `pkg/task` storage):
+the orchestrator now respects a `StickinessChecker` callback during
+eviction; the agent installs a checker that consults
+`task.Manager.HasOpenSkillTasks` (LIKE-prefix query against
+`skill_idempotency_key`). Skills with non-DONE+non-CANCELLED tasks
+are treated as sticky regardless of `Skill.Sticky`. When every active
+skill is sticky, `MaxConcurrentSkills` overflows for that turn rather
+than abandoning in-flight work. `WithMaxConcurrentSkills` also fixes a
+pre-existing bug where `ActivateSkill` ignored config and used a
+hardcoded cap of 3.
+
 ### Limitations and Known Gaps
 
-- ⚠️ **Tool preferences not enforced.** `SkillToolConfig.required_tools`,
-  `excluded_tools`, `mcp_servers`, and `preferred_order` are parsed and
-  stored in the proto but not enforced by the agent yet. This was a
-  pre-existing gap before the overhaul (see `pkg/skills/types.go`); the
-  overhaul preserves the surface but does not fill it. Tracked separately.
-- ⚠️ **Router not wired in the registry by default.** Phase 9 wires
-  `Discovery` into the agent registry, but Phase 5's Router is not yet
-  constructed there: it requires a Builder + Source + LLM lifecycle that
-  has not been chosen for production. Discovery degrades to slash + FTS5
-  in that case. Wiring is a one-line `WithRouter(...)` once the Builder
-  schedule is decided.
-- ⚠️ **End-to-end verification (Phase 13) not run.** Each phase has unit
-  tests with `-race`; an end-to-end TUI test against a running
-  loom-server has not been performed.
-- 📋 **Index router-model override is parsed only.** `SkillsConfig.router_model_override`
-  is in the proto and Go mirror but the registry does not yet consult it
-  to pick a separate LLM provider for routing.
-- 📋 **`MaxConcurrentSkills` eviction with open tasks.** The plan called
-  for "skills with open tasks count as sticky for eviction." This is not
-  yet implemented; skills can in principle still be evicted while they
-  have open task rows. The idempotency key keeps re-emission safe but
-  does not address the activation-lifecycle aspect.
+- ⚠️ **`mcp_servers` activation not implemented.** `SkillToolConfig.MCPServers`
+  is parsed and stored in the proto, and Deferred B logs a Debug message
+  when a skill declares non-empty `MCPServers`, but the agent does not
+  yet activate (start/connect) the named servers when a skill activates.
+  Honoring this requires an MCPManager hook that does not exist yet;
+  it is a follow-up to the skills overhaul.
+- 📋 **`preferred_order` is informational.** The field communicates
+  author intent inside the skill prompt; the LLM still chooses tool
+  invocation order. There is no mechanism to enforce ordering at the
+  agent layer, and that's intentional — order is a runtime decision.
+- 📋 **Disk persistence of the skill index.** The registry currently uses
+  `MemoryStore` for the router tree. `SQLStore` is wired-up-ready (Phase 4
+  migrations exist on both backends) for the future case where an
+  enterprise catalog is large enough that re-summarising at every process
+  start outweighs disk I/O.
+- 📋 **HotReloadHandler not auto-wired in registry.** `pkg/skills/index.HotReloadHandler`
+  is implemented and tested (Phase 10), but the registry does not yet
+  install it on the skill library's hot-reloader. This is a one-line
+  wire-up once the user has decided whether hot-reload should be
+  enabled by default for all agents.
 
 ### Migration Path
 
