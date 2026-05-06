@@ -37,6 +37,19 @@ const (
 	ActivationAlways SkillActivationMode = "ALWAYS"
 )
 
+// SkillBindingMode controls how an agent loads a bound skill into context.
+// Mirrors loomv1.SkillBindingMode.
+type SkillBindingMode string
+
+const (
+	// BindingEager keeps the skill formatted into the system-prompt budget every turn.
+	BindingEager SkillBindingMode = "EAGER"
+	// BindingLazy promotes the skill into the orchestrator only when discovery selects it.
+	BindingLazy SkillBindingMode = "LAZY"
+	// BindingAlways forces the skill active every turn, overriding its trigger mode.
+	BindingAlways SkillBindingMode = "ALWAYS"
+)
+
 // maxFormatExamples is the maximum number of examples included in FormatForLLM output.
 const maxFormatExamples = 2
 
@@ -78,6 +91,31 @@ type Skill struct {
 
 	// Target backend (empty = agnostic)
 	Backend string `json:"backend,omitempty"`
+
+	// Optional explicit decomposition. When nil and EmitTasks resolves to true
+	// (default), task.Decomposer is invoked at activation with the skill prompt
+	// as goal. The emitter uses TaskTemplate.Steps to materialize tasks via
+	// task.Manager.CreateTask + AddDependency.
+	TaskTemplate *SkillTaskTemplate `json:"task_template,omitempty"`
+
+	// Index path used by the hierarchical router to place this skill in the
+	// SkillIndex tree, e.g. "enterprise/sql/optimization". Empty falls back to
+	// "unclassified/<domain>".
+	ParentIndexPath string `json:"parent_index_path,omitempty"`
+
+	// Whether activation emits tracked tasks. Pointer mirrors proto3 optional:
+	// nil = not specified (default true), &false = explicitly suppressed.
+	// EffectiveEmitTasks() resolves this against zero-value semantics.
+	EmitTasks *bool `json:"emit_tasks,omitempty"`
+}
+
+// EffectiveEmitTasks returns the resolved emit-tasks decision for this skill,
+// applying default-true semantics when EmitTasks is unset.
+func (s *Skill) EffectiveEmitTasks() bool {
+	if s.EmitTasks == nil {
+		return true
+	}
+	return *s.EmitTasks
 }
 
 // SkillTrigger defines how a skill gets activated.
@@ -158,6 +196,78 @@ type MatchResult struct {
 type ScoredSkill struct {
 	Skill *Skill  `json:"skill"`
 	Score float64 `json:"score"`
+}
+
+// SkillBinding ties a skill (or a glob/label-selector over the skill namespace)
+// to an agent with a specific load policy. Mirrors loomv1.SkillBinding.
+type SkillBinding struct {
+	// Name is an exact skill name or a path.Match-style glob ("enterprise/sql/*").
+	Name string `json:"name"`
+	// Mode controls when the skill is loaded into the orchestrator.
+	Mode SkillBindingMode `json:"mode,omitempty"`
+	// Priority breaks ties when context budget is tight (higher wins).
+	Priority int32 `json:"priority,omitempty"`
+	// LabelMatch is an optional AND-selector against Skill.Labels.
+	LabelMatch map[string]string `json:"label_match,omitempty"`
+	// MinVersion is a semver lower bound; empty means any version.
+	MinVersion string `json:"min_version,omitempty"`
+}
+
+// SkillTaskStep is one entry in an authored skill task template. Category
+// and Priority are plain strings here (e.g. "research", "P1") and are
+// converted to loomv1 enum values by the task emitter at materialization
+// time.
+type SkillTaskStep struct {
+	Title              string   `json:"title"`
+	Objective          string   `json:"objective,omitempty"`
+	AcceptanceCriteria string   `json:"acceptance_criteria,omitempty"`
+	Category           string   `json:"category,omitempty"`
+	Priority           string   `json:"priority,omitempty"`
+	DependsOn          []int32  `json:"depends_on,omitempty"`
+	EstimatedEffort    string   `json:"estimated_effort,omitempty"`
+	// Tags propagate onto the materialized Task.
+	Tags []string `json:"tags,omitempty"`
+}
+
+// SkillTaskTemplate is an optional authored decomposition that materializes
+// when the skill activates. When absent, the emitter falls back to
+// task.Decomposer.Decompose with the skill's prompt as goal.
+type SkillTaskTemplate struct {
+	Steps []SkillTaskStep `json:"steps,omitempty"`
+	// RootTitle names the parent task created to group emitted children.
+	// Empty defaults to the skill's title.
+	RootTitle string `json:"root_title,omitempty"`
+	// EphemeralOnDeactivate deletes unstarted (still-OPEN) tasks if the
+	// skill deactivates before they are claimed. In-progress and done
+	// tasks are always preserved.
+	EphemeralOnDeactivate bool `json:"ephemeral_on_deactivate,omitempty"`
+	// MaxTasks caps the emitted task count. Default 8. Applies to
+	// authored Steps and to decomposer fallback output alike.
+	MaxTasks int32 `json:"max_tasks,omitempty"`
+}
+
+// SkillIndexNode is one node in the hierarchical PageIndex-style router tree.
+// Built by index.Builder, persisted by index.Store, consumed by index.Router.
+type SkillIndexNode struct {
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Summary     string            `json:"summary,omitempty"`
+	Children    []string          `json:"children,omitempty"`
+	SkillRefs   []string          `json:"skill_refs,omitempty"`
+	Depth       int32             `json:"depth"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	// ContentHash dirties only this subtree on YAML hot-reload; full index
+	// rebuilds happen only on bulk add/remove.
+	ContentHash string `json:"content_hash,omitempty"`
+}
+
+// SkillIndex is the full router tree, persisted across boots.
+type SkillIndex struct {
+	ID           string            `json:"id"`
+	RootID       string            `json:"root_id"`
+	Nodes        []*SkillIndexNode `json:"nodes,omitempty"`
+	BuiltAtMs    int64             `json:"built_at_ms,omitempty"`
+	BuiltByModel string            `json:"built_by_model,omitempty"`
 }
 
 // SkillSummary provides lightweight metadata for catalog listing.

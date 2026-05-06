@@ -258,6 +258,29 @@ type SkillsConfigYAML struct {
 	MaxConcurrentSkills  *int     `yaml:"max_concurrent_skills"`
 	SkillsDir            string   `yaml:"skills_dir"`
 	ContextBudgetPercent *int     `yaml:"context_budget_percent"`
+
+	// Declarative skill attachment for this agent. Empty falls back to the
+	// legacy enabled_skills/disabled_skills filter via the resolver shim.
+	Bindings []SkillBindingYAML `yaml:"bindings"`
+
+	// Hierarchical (PageIndex-style) router controls.
+	RouterEnabled         *bool  `yaml:"router_enabled"`
+	RouterMaxCandidates   *int   `yaml:"router_max_candidates"`
+	RouterCacheTTLSeconds *int   `yaml:"router_cache_ttl_seconds"`
+	RouterModelOverride   string `yaml:"router_model_override"`
+
+	// Skill -> task integration controls.
+	SkillTaskBoardID string `yaml:"skill_task_board_id"`
+	TasksEnabled     *bool  `yaml:"tasks_enabled"`
+}
+
+// SkillBindingYAML represents a single skill binding entry in agent YAML.
+type SkillBindingYAML struct {
+	Name       string            `yaml:"name"`
+	Mode       string            `yaml:"mode"`
+	Priority   int32             `yaml:"priority"`
+	LabelMatch map[string]string `yaml:"label_match"`
+	MinVersion string            `yaml:"min_version"`
 }
 
 // PatternConfigYAML represents pattern configuration in YAML
@@ -691,12 +714,27 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 
 	// Build SkillsConfig from YAML and stash as JSON in metadata.
-	// Only serialize when the user explicitly configured skills (sc.Enabled != nil).
+	// Serialize when the user has configured ANY skill-related field (Enabled,
+	// Bindings, router knobs, task knobs). The previous gate was sc.Enabled != nil
+	// only; widened so configs that declare bindings or router settings without
+	// an explicit `enabled: true` still take effect.
 	{
 		sc := yaml.Agent.Behavior.Skills
-		if sc.Enabled != nil {
+		hasSkillSettings := sc.Enabled != nil ||
+			len(sc.Bindings) > 0 ||
+			len(sc.EnabledSkills) > 0 ||
+			len(sc.DisabledSkills) > 0 ||
+			sc.RouterEnabled != nil ||
+			sc.RouterMaxCandidates != nil ||
+			sc.RouterCacheTTLSeconds != nil ||
+			sc.RouterModelOverride != "" ||
+			sc.SkillTaskBoardID != "" ||
+			sc.TasksEnabled != nil
+		if hasSkillSettings {
 			skillsConfig := skills.DefaultSkillsConfig()
-			skillsConfig.Enabled = *sc.Enabled
+			if sc.Enabled != nil {
+				skillsConfig.Enabled = *sc.Enabled
+			}
 			if sc.MinAutoConfidence != nil {
 				skillsConfig.MinAutoConfidence = *sc.MinAutoConfidence
 			}
@@ -711,6 +749,17 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 			}
 			skillsConfig.EnabledSkills = sc.EnabledSkills
 			skillsConfig.DisabledSkills = sc.DisabledSkills
+			skillsConfig.Bindings = convertSkillBindings(sc.Bindings)
+			skillsConfig.RouterEnabled = sc.RouterEnabled
+			if sc.RouterMaxCandidates != nil {
+				skillsConfig.RouterMaxCandidates = *sc.RouterMaxCandidates
+			}
+			if sc.RouterCacheTTLSeconds != nil {
+				skillsConfig.RouterCacheTTLSeconds = *sc.RouterCacheTTLSeconds
+			}
+			skillsConfig.RouterModelOverride = sc.RouterModelOverride
+			skillsConfig.SkillTaskBoardID = sc.SkillTaskBoardID
+			skillsConfig.TasksEnabled = sc.TasksEnabled
 
 			skillsJSON, err := json.Marshal(skillsConfig)
 			if err == nil {
@@ -1104,6 +1153,26 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	}
 
 	return yaml
+}
+
+// convertSkillBindings translates the YAML binding slice into the skills
+// package mirror. Mode strings are uppercased; unknown values fall through
+// as-is and the resolver treats them as zero (LAZY default).
+func convertSkillBindings(in []SkillBindingYAML) []skills.SkillBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]skills.SkillBinding, 0, len(in))
+	for _, b := range in {
+		out = append(out, skills.SkillBinding{
+			Name:       b.Name,
+			Mode:       skills.SkillBindingMode(strings.ToUpper(b.Mode)),
+			Priority:   b.Priority,
+			LabelMatch: b.LabelMatch,
+			MinVersion: b.MinVersion,
+		})
+	}
+	return out
 }
 
 // ExtractSkillsConfig extracts a SkillsConfig from proto metadata.

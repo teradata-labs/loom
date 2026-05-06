@@ -53,17 +53,42 @@ var validModes = map[string]bool{
 
 // SkillYAML represents the YAML structure for a single skill file.
 type SkillYAML struct {
-	APIVersion      string            `yaml:"apiVersion"`
-	Kind            string            `yaml:"kind"`
-	Metadata        SkillMetadataYAML `yaml:"metadata"`
-	Trigger         SkillTriggerYAML  `yaml:"trigger"`
-	Prompt          SkillPromptYAML   `yaml:"prompt"`
-	Tools           SkillToolsYAML    `yaml:"tools"`
-	PatternRefs     []string          `yaml:"pattern_refs"`
-	SkillRefs       []string          `yaml:"skill_refs"`
-	MaxPromptTokens int32             `yaml:"max_prompt_tokens"`
-	Sticky          bool              `yaml:"sticky"`
-	Backend         string            `yaml:"backend"`
+	APIVersion      string                 `yaml:"apiVersion"`
+	Kind            string                 `yaml:"kind"`
+	Metadata        SkillMetadataYAML      `yaml:"metadata"`
+	Trigger         SkillTriggerYAML       `yaml:"trigger"`
+	Prompt          SkillPromptYAML        `yaml:"prompt"`
+	Tools           SkillToolsYAML         `yaml:"tools"`
+	PatternRefs     []string               `yaml:"pattern_refs"`
+	SkillRefs       []string               `yaml:"skill_refs"`
+	MaxPromptTokens int32                  `yaml:"max_prompt_tokens"`
+	Sticky          bool                   `yaml:"sticky"`
+	Backend         string                 `yaml:"backend"`
+	TaskTemplate    *SkillTaskTemplateYAML `yaml:"task_template,omitempty"`
+	ParentIndexPath string                 `yaml:"parent_index_path,omitempty"`
+	// EmitTasks uses *bool so we can distinguish "not specified" (default-true)
+	// from "explicitly false". yaml.v3 leaves the pointer nil when the key is absent.
+	EmitTasks *bool `yaml:"emit_tasks,omitempty"`
+}
+
+// SkillTaskTemplateYAML holds an authored skill task decomposition from YAML.
+type SkillTaskTemplateYAML struct {
+	Steps                 []SkillTaskStepYAML `yaml:"steps"`
+	RootTitle             string              `yaml:"root_title"`
+	EphemeralOnDeactivate bool                `yaml:"ephemeral_on_deactivate"`
+	MaxTasks              int32               `yaml:"max_tasks"`
+}
+
+// SkillTaskStepYAML holds a single template step from YAML.
+type SkillTaskStepYAML struct {
+	Title              string   `yaml:"title"`
+	Objective          string   `yaml:"objective"`
+	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
+	Category           string   `yaml:"category"`
+	Priority           string   `yaml:"priority"`
+	DependsOn          []int32  `yaml:"depends_on"`
+	EstimatedEffort    string   `yaml:"estimated_effort"`
+	Tags               []string `yaml:"tags"`
 }
 
 // SkillMetadataYAML holds skill metadata from YAML.
@@ -280,6 +305,63 @@ func yamlToSkill(sy *SkillYAML) *Skill {
 		MaxPromptTokens: sy.MaxPromptTokens,
 		Sticky:          sy.Sticky,
 		Backend:         sy.Backend,
+		TaskTemplate:    yamlToSkillTaskTemplate(sy.TaskTemplate),
+		ParentIndexPath: sy.ParentIndexPath,
+		EmitTasks:       sy.EmitTasks,
+	}
+}
+
+// yamlToSkillTaskTemplate converts a SkillTaskTemplateYAML to its Go mirror.
+// Returns nil for absent or empty templates.
+func yamlToSkillTaskTemplate(t *SkillTaskTemplateYAML) *SkillTaskTemplate {
+	if t == nil {
+		return nil
+	}
+	steps := make([]SkillTaskStep, 0, len(t.Steps))
+	for _, s := range t.Steps {
+		steps = append(steps, SkillTaskStep{
+			Title:              s.Title,
+			Objective:          s.Objective,
+			AcceptanceCriteria: s.AcceptanceCriteria,
+			Category:           s.Category,
+			Priority:           s.Priority,
+			DependsOn:          s.DependsOn,
+			EstimatedEffort:    s.EstimatedEffort,
+			Tags:               s.Tags,
+		})
+	}
+	return &SkillTaskTemplate{
+		Steps:                 steps,
+		RootTitle:             t.RootTitle,
+		EphemeralOnDeactivate: t.EphemeralOnDeactivate,
+		MaxTasks:              t.MaxTasks,
+	}
+}
+
+// skillTaskTemplateToYAML converts a SkillTaskTemplate Go struct back to YAML.
+// Returns nil for nil templates so the YAML omits the key entirely.
+func skillTaskTemplateToYAML(t *SkillTaskTemplate) *SkillTaskTemplateYAML {
+	if t == nil {
+		return nil
+	}
+	steps := make([]SkillTaskStepYAML, 0, len(t.Steps))
+	for _, s := range t.Steps {
+		steps = append(steps, SkillTaskStepYAML{
+			Title:              s.Title,
+			Objective:          s.Objective,
+			AcceptanceCriteria: s.AcceptanceCriteria,
+			Category:           s.Category,
+			Priority:           s.Priority,
+			DependsOn:          s.DependsOn,
+			EstimatedEffort:    s.EstimatedEffort,
+			Tags:               s.Tags,
+		})
+	}
+	return &SkillTaskTemplateYAML{
+		Steps:                 steps,
+		RootTitle:             t.RootTitle,
+		EphemeralOnDeactivate: t.EphemeralOnDeactivate,
+		MaxTasks:              t.MaxTasks,
 	}
 }
 
@@ -328,6 +410,9 @@ func SkillToYAML(s *Skill) ([]byte, error) {
 		MaxPromptTokens: s.MaxPromptTokens,
 		Sticky:          s.Sticky,
 		Backend:         s.Backend,
+		TaskTemplate:    skillTaskTemplateToYAML(s.TaskTemplate),
+		ParentIndexPath: s.ParentIndexPath,
+		EmitTasks:       s.EmitTasks,
 	}
 
 	data, err := yaml.Marshal(&sy)

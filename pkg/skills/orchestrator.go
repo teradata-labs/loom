@@ -62,23 +62,72 @@ func NewOrchestrator(library *Library, opts ...OrchestratorOption) *Orchestrator
 
 // SkillsConfig controls skill matching behavior for a session.
 type SkillsConfig struct {
-	Enabled              bool
-	EnabledSkills        []string
+	Enabled bool
+	// Deprecated: prefer Bindings. Resolver synthesizes EAGER-mode bindings
+	// from this list when Bindings is empty.
+	EnabledSkills []string
+	// Deprecated: prefer Bindings. Resolver excludes these names when
+	// synthesizing the implicit binding set.
 	DisabledSkills       []string
 	MinAutoConfidence    float64
 	MaxConcurrentSkills  int
 	SkillsDir            string
 	ContextBudgetPercent int
+
+	// Bindings declares the skills attached to this agent. Empty falls back
+	// to the legacy EnabledSkills/DisabledSkills filter pair via the resolver
+	// shim. When non-empty, Bindings takes full precedence.
+	Bindings []SkillBinding
+
+	// RouterEnabled gates the hierarchical PageIndex-style discovery path.
+	// nil mirrors proto3 optional default-true; pointer so callers can
+	// distinguish "not specified" from "explicitly false".
+	RouterEnabled *bool
+	// RouterMaxCandidates caps candidates returned per router walk (default 5).
+	RouterMaxCandidates int
+	// RouterCacheTTLSeconds is the per-session decision cache TTL (default 300).
+	RouterCacheTTLSeconds int
+	// RouterModelOverride names a specific LLM provider for routing decisions.
+	// Empty falls back to AgentConfig.classifier_llm.
+	RouterModelOverride string
+
+	// SkillTaskBoardID names the task board for skill-emitted tasks.
+	// Empty reuses the agent's primary board.
+	SkillTaskBoardID string
+	// TasksEnabled is the agent-level master switch for skill task emission.
+	// nil mirrors proto3 optional default-true. Per-skill EmitTasks overrides
+	// this for individual skills.
+	TasksEnabled *bool
 }
 
 // DefaultSkillsConfig returns a SkillsConfig with sensible defaults.
 func DefaultSkillsConfig() *SkillsConfig {
 	return &SkillsConfig{
-		Enabled:              true,
-		MaxConcurrentSkills:  3,
-		MinAutoConfidence:    0.7,
-		ContextBudgetPercent: 5,
+		Enabled:               true,
+		MaxConcurrentSkills:   3,
+		MinAutoConfidence:     0.7,
+		ContextBudgetPercent:  5,
+		RouterMaxCandidates:   5,
+		RouterCacheTTLSeconds: 300,
 	}
+}
+
+// EffectiveRouterEnabled resolves the router-enabled decision, applying
+// default-true semantics when RouterEnabled is unset.
+func (c *SkillsConfig) EffectiveRouterEnabled() bool {
+	if c == nil || c.RouterEnabled == nil {
+		return true
+	}
+	return *c.RouterEnabled
+}
+
+// EffectiveTasksEnabled resolves the task-emission master switch, applying
+// default-true semantics when TasksEnabled is unset.
+func (c *SkillsConfig) EffectiveTasksEnabled() bool {
+	if c == nil || c.TasksEnabled == nil {
+		return true
+	}
+	return *c.TasksEnabled
 }
 
 // MatchSkills evaluates the user message and returns matching skills.
