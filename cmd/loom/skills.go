@@ -16,6 +16,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -56,13 +57,13 @@ func init() {
 //
 // The transformation rules mirror pkg/skills/binding.selectBindings:
 //   - enabled_skills present  -> bindings synthesized as EAGER (preserves
-//                                v1.2.0 always-on behavior)
+//     v1.2.0 always-on behavior)
 //   - enabled_skills empty    -> no bindings synthesized; agent at runtime
-//                                still picks up disabled_skills as a filter
-//                                via the in-process resolver shim
+//     still picks up disabled_skills as a filter
+//     via the in-process resolver shim
 func runSkillsMigrate(_ *cobra.Command, args []string) error {
-	path := args[0]
-	raw, err := os.ReadFile(path) //nolint:gosec // user-supplied config path
+	path := filepath.Clean(args[0])
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied config path is the documented contract of this CLI subcommand
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}

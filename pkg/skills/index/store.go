@@ -28,7 +28,7 @@ import (
 // Two implementations are provided:
 //   - MemoryStore: in-process, used for unit tests and ephemeral builds.
 //   - SQLStore:    backed by the skill_indices / skill_index_nodes tables
-//                  added by migrations 000007 (SQLite) / 000012 (Postgres).
+//     added by migrations 000007 (SQLite) / 000012 (Postgres).
 type Store interface {
 	// SaveIndex writes or replaces an entire index (metadata + nodes).
 	SaveIndex(ctx context.Context, idx *skills.SkillIndex) error
@@ -164,9 +164,8 @@ func (m *MemoryStore) latestBuiltAtMsLocked() int64 {
 // don't observe partial trees. Reads are not transactional but consume only
 // a single index id at a time, so they're safe.
 type SQLStore struct {
-	db        *sql.DB
-	dialect   Dialect
-	deleteAll bool
+	db      *sql.DB
+	dialect Dialect
 }
 
 // Dialect names the SQL dialect for placeholder rewriting. Defaults to
@@ -397,15 +396,15 @@ func (s *SQLStore) loadNodes(ctx context.Context, rootID string) ([]*skills.Skil
 	if err != nil {
 		return nil, fmt.Errorf("sqlstore: query nodes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*skills.SkillIndexNode
 	for rows.Next() {
 		var (
-			n              skills.SkillIndexNode
-			childrenJSON   string
-			skillRefsJSON  string
-			labelsJSON     string
+			n             skills.SkillIndexNode
+			childrenJSON  string
+			skillRefsJSON string
+			labelsJSON    string
 		)
 		if err := rows.Scan(&n.ID, &n.Title, &n.Summary, &childrenJSON,
 			&skillRefsJSON, &n.Depth, &labelsJSON, &n.ContentHash); err != nil {

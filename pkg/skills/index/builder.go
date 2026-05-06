@@ -160,10 +160,17 @@ func (b *Builder) Build(ctx context.Context, src Source) (*skills.SkillIndex, er
 		}
 		sort.Strings(refs)
 
+		// Skill index trees are bounded by the namespace depth in
+		// parent_index_path; in practice <10 levels. The int32 conversion
+		// is safe; the explicit clamp is for static analysis.
+		depth := len(segments)
+		if depth > int(^int32(0)>>1) {
+			depth = int(^int32(0) >> 1)
+		}
 		node := &skills.SkillIndexNode{
 			ID:          NodeID(p),
 			Title:       title,
-			Depth:       int32(len(segments)),
+			Depth:       int32(depth),
 			SkillRefs:   refs,
 			ContentHash: ContentHash(attached),
 		}
@@ -384,9 +391,9 @@ func humanizeSegment(seg string) string {
 func computeIndexID(idx *skills.SkillIndex) string {
 	h := sha256.New()
 	for _, n := range idx.Nodes {
-		fmt.Fprintf(h, "%s\x00%s\x00", n.ID, n.ContentHash)
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00", n.ID, n.ContentHash)
 	}
-	fmt.Fprintf(h, "%s\x00", idx.BuiltByModel)
+	_, _ = fmt.Fprintf(h, "%s\x00", idx.BuiltByModel)
 	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 

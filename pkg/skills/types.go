@@ -218,13 +218,13 @@ type SkillBinding struct {
 // converted to loomv1 enum values by the task emitter at materialization
 // time.
 type SkillTaskStep struct {
-	Title              string   `json:"title"`
-	Objective          string   `json:"objective,omitempty"`
-	AcceptanceCriteria string   `json:"acceptance_criteria,omitempty"`
-	Category           string   `json:"category,omitempty"`
-	Priority           string   `json:"priority,omitempty"`
-	DependsOn          []int32  `json:"depends_on,omitempty"`
-	EstimatedEffort    string   `json:"estimated_effort,omitempty"`
+	Title              string  `json:"title"`
+	Objective          string  `json:"objective,omitempty"`
+	AcceptanceCriteria string  `json:"acceptance_criteria,omitempty"`
+	Category           string  `json:"category,omitempty"`
+	Priority           string  `json:"priority,omitempty"`
+	DependsOn          []int32 `json:"depends_on,omitempty"`
+	EstimatedEffort    string  `json:"estimated_effort,omitempty"`
 	// Tags propagate onto the materialized Task.
 	Tags []string `json:"tags,omitempty"`
 }
@@ -249,13 +249,13 @@ type SkillTaskTemplate struct {
 // SkillIndexNode is one node in the hierarchical PageIndex-style router tree.
 // Built by index.Builder, persisted by index.Store, consumed by index.Router.
 type SkillIndexNode struct {
-	ID          string            `json:"id"`
-	Title       string            `json:"title"`
-	Summary     string            `json:"summary,omitempty"`
-	Children    []string          `json:"children,omitempty"`
-	SkillRefs   []string          `json:"skill_refs,omitempty"`
-	Depth       int32             `json:"depth"`
-	Labels      map[string]string `json:"labels,omitempty"`
+	ID        string            `json:"id"`
+	Title     string            `json:"title"`
+	Summary   string            `json:"summary,omitempty"`
+	Children  []string          `json:"children,omitempty"`
+	SkillRefs []string          `json:"skill_refs,omitempty"`
+	Depth     int32             `json:"depth"`
+	Labels    map[string]string `json:"labels,omitempty"`
 	// ContentHash dirties only this subtree on YAML hot-reload; full index
 	// rebuilds happen only on bulk add/remove.
 	ContentHash string `json:"content_hash,omitempty"`

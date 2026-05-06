@@ -139,7 +139,7 @@ func ContentHash(skills []*skills.Skill) string {
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Name < recs[j].Name })
 	h := sha256.New()
 	for _, r := range recs {
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\n",
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\n",
 			r.Name, r.Title, r.Description, r.Domain, r.Path)
 	}
 	return hex.EncodeToString(h.Sum(nil))

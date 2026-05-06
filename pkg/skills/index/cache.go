@@ -16,6 +16,7 @@ package index
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"sort"
 	"sync"
@@ -277,7 +278,11 @@ func HashBindings(bindings []skills.SkillBinding) string {
 		h.Write([]byte{0})
 		h.Write([]byte(r.Mode))
 		h.Write([]byte{0})
-		h.Write([]byte{byte(r.Priority), byte(r.Priority >> 8), byte(r.Priority >> 16), byte(r.Priority >> 24)})
+		var pbuf [4]byte
+		// int32 -> uint32 reinterprets the bit pattern; safe for hashing.
+		// #nosec G115 -- intentional bit-pattern conversion for hash input
+		binary.LittleEndian.PutUint32(pbuf[:], uint32(r.Priority))
+		h.Write(pbuf[:])
 		h.Write([]byte(r.MinVersion))
 		for i, k := range r.LabelKeys {
 			h.Write([]byte(k))

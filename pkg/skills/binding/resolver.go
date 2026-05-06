@@ -134,9 +134,12 @@ func selectBindings(config *skills.SkillsConfig, src SkillSource) ([]skills.Skil
 	}
 
 	// Legacy shim: synthesize from EnabledSkills (EAGER) when set.
-	if len(config.EnabledSkills) > 0 {
-		out := make([]skills.SkillBinding, 0, len(config.EnabledSkills))
-		for _, name := range config.EnabledSkills {
+	// SA1019 is suppressed because this IS the legitimate consumer — the
+	// resolver is the only place legacy fields should be read; everywhere
+	// else should use Bindings.
+	if len(config.EnabledSkills) > 0 { //nolint:staticcheck // SA1019: resolver is the legacy shim consumer
+		out := make([]skills.SkillBinding, 0, len(config.EnabledSkills)) //nolint:staticcheck // SA1019: legacy shim
+		for _, name := range config.EnabledSkills {                      //nolint:staticcheck // SA1019: legacy shim
 			out = append(out, skills.SkillBinding{
 				Name: name,
 				Mode: skills.BindingEager,
@@ -148,7 +151,7 @@ func selectBindings(config *skills.SkillsConfig, src SkillSource) ([]skills.Skil
 	// Final fallback: synthesize LAZY bindings for the entire library minus
 	// DisabledSkills. Mirrors the v1.2.0 behavior where any discovered skill
 	// could trigger; the new default is lazy load on trigger.
-	disabled := stringSet(config.DisabledSkills)
+	disabled := stringSet(config.DisabledSkills) //nolint:staticcheck // SA1019: resolver is the legacy shim consumer
 	all := src.List()
 	out := make([]skills.SkillBinding, 0, len(all))
 	for _, s := range all {

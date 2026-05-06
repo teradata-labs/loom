@@ -307,7 +307,7 @@ func TestConfigFingerprint_StableOrderInsensitive(t *testing.T) {
 		"fingerprint must ignore EnabledSkills order")
 
 	c := &skills.SkillsConfig{
-		Enabled: false, // changed
+		Enabled:  false, // changed
 		Bindings: []skills.SkillBinding{{Name: "x"}, {Name: "y"}},
 	}
 	assert.NotEqual(t, configFingerprint(a), configFingerprint(c),

@@ -13,9 +13,9 @@
 // limitations under the License.
 
 // Package discovery composes the per-turn skill discovery pipeline:
-//   1. Slash command fast path (always available, deterministic)
-//   2. Hierarchical PageIndex-style router (LLM-driven, when enabled)
-//   3. FTS5 keyword fallback (always available)
+//  1. Slash command fast path (always available, deterministic)
+//  2. Hierarchical PageIndex-style router (LLM-driven, when enabled)
+//  3. FTS5 keyword fallback (always available)
 //
 // The result is filtered by the resolved bindings so an agent never sees a
 // skill it has not declaratively bound. Discovery is the top-level glue
@@ -286,9 +286,9 @@ func toSkillsBindings(resolved []binding.ResolvedBinding) []skills.SkillBinding 
 // bindingCache memoizes binding resolutions per config snapshot. Keyed on
 // a hash of the SkillsConfig fields the resolver actually consults.
 type bindingCache struct {
-	mu      sync.Mutex
-	last    string
-	cached  []binding.ResolvedBinding
+	mu     sync.Mutex
+	last   string
+	cached []binding.ResolvedBinding
 }
 
 func newBindingCache() *bindingCache {
@@ -332,7 +332,7 @@ func configFingerprint(c *skills.SkillsConfig) string {
 	}
 	bs := make([]skills.SkillBinding, len(c.Bindings))
 	copy(bs, c.Bindings)
-	es := append([]string(nil), c.EnabledSkills...) //nolint:staticcheck // legacy shim
+	es := append([]string(nil), c.EnabledSkills...)  //nolint:staticcheck // legacy shim
 	ds := append([]string(nil), c.DisabledSkills...) //nolint:staticcheck // legacy shim
 	sort.Strings(es)
 	sort.Strings(ds)

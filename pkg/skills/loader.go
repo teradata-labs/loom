@@ -319,16 +319,7 @@ func yamlToSkillTaskTemplate(t *SkillTaskTemplateYAML) *SkillTaskTemplate {
 	}
 	steps := make([]SkillTaskStep, 0, len(t.Steps))
 	for _, s := range t.Steps {
-		steps = append(steps, SkillTaskStep{
-			Title:              s.Title,
-			Objective:          s.Objective,
-			AcceptanceCriteria: s.AcceptanceCriteria,
-			Category:           s.Category,
-			Priority:           s.Priority,
-			DependsOn:          s.DependsOn,
-			EstimatedEffort:    s.EstimatedEffort,
-			Tags:               s.Tags,
-		})
+		steps = append(steps, SkillTaskStep(s))
 	}
 	return &SkillTaskTemplate{
 		Steps:                 steps,
@@ -346,16 +337,7 @@ func skillTaskTemplateToYAML(t *SkillTaskTemplate) *SkillTaskTemplateYAML {
 	}
 	steps := make([]SkillTaskStepYAML, 0, len(t.Steps))
 	for _, s := range t.Steps {
-		steps = append(steps, SkillTaskStepYAML{
-			Title:              s.Title,
-			Objective:          s.Objective,
-			AcceptanceCriteria: s.AcceptanceCriteria,
-			Category:           s.Category,
-			Priority:           s.Priority,
-			DependsOn:          s.DependsOn,
-			EstimatedEffort:    s.EstimatedEffort,
-			Tags:               s.Tags,
-		})
+		steps = append(steps, SkillTaskStepYAML(s))
 	}
 	return &SkillTaskTemplateYAML{
 		Steps:                 steps,

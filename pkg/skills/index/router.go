@@ -451,4 +451,3 @@ func (f *nextFrontier) add(n *skills.SkillIndexNode) {
 	f.seen[n.ID] = true
 	f.list = append(f.list, n)
 }
-

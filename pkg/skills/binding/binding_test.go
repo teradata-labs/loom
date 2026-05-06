@@ -128,10 +128,10 @@ func TestMatchBinding_LabelFilterRejectsNameMatch(t *testing.T) {
 
 func TestMatchBinding_MinVersionGate(t *testing.T) {
 	cases := []struct {
-		name       string
-		actual     string
-		minimum    string
-		wantMatch  bool
+		name      string
+		actual    string
+		minimum   string
+		wantMatch bool
 	}{
 		{"equal", "1.0.0", "1.0.0", true},
 		{"greater patch", "1.0.5", "1.0.0", true},
