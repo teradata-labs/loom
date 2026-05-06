@@ -178,6 +178,19 @@ func (c *Cache) Invalidate(key CacheKey) {
 	}
 }
 
+// Clear drops every entry. Used by hot-reload after a tree rebuild,
+// when prior routing decisions are stale by definition.
+func (c *Cache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[CacheKey]*entryNode)
+	c.head = nil
+	c.tail = nil
+}
+
 // InvalidateSession drops every entry for the given session. Called when
 // bindings change for an agent session.
 func (c *Cache) InvalidateSession(sessionID string) {
