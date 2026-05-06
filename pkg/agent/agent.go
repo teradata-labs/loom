@@ -34,6 +34,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -275,6 +277,14 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
 
+	// Auto-wire the skill task emitter when both the skill subsystem AND
+	// the task subsystem are configured. The emitter is the bridge between
+	// skill activations and task board entries (skills overhaul Phase 6).
+	// Caller can preempt this by setting WithSkillTaskEmitter explicitly.
+	if a.skillTaskEmitter == nil && a.skillOrchestrator != nil && a.taskManager != nil {
+		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
+	}
+
 	return a
 }
 
@@ -449,6 +459,41 @@ func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
 	return func(a *Agent) {
 		a.skillOrchestrator = orch
 	}
+}
+
+// WithSkillDiscovery wires the new top-level Discovery (introduced by the
+// skills overhaul). When set, runConversationLoop uses the four-phase
+// pipeline (binding -> discovery -> activate -> emit tasks) instead of the
+// legacy MatchSkills filter path. Requires WithSkillOrchestrator to also
+// be set so the activation lifecycle still has somewhere to land.
+func WithSkillDiscovery(d *discovery.Discovery) Option {
+	return func(a *Agent) {
+		a.skillDiscovery = d
+	}
+}
+
+// WithSkillTaskEmitter wires the skill task emitter. When set and the
+// skill's EffectiveEmitTasks() returns true, freshly-activated skills
+// materialize tasks onto the agent's task board. Requires that the
+// agent's task manager is also configured.
+func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
+	return func(a *Agent) {
+		a.skillTaskEmitter = e
+	}
+}
+
+// skillNameSet returns the names currently active on a session as a set
+// keyed by skill name. Used by the four-phase pipeline to decide which
+// activations are "new this turn" so the task emitter only fires once per
+// activation event.
+func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
+	out := make(map[string]bool, len(active))
+	for _, as := range active {
+		if as != nil && as.Skill != nil {
+			out[as.Skill.Name] = true
+		}
+	}
+	return out
 }
 
 // RegisterTool registers a tool with the agent.
@@ -1723,51 +1768,88 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	tools := a.tools.ListTools()
 
 	// --- Skill activation ---
+	// The skills overhaul (Phase 9) replaces the per-turn MatchSkills filter
+	// with a four-phase pipeline (Discovery -> Activate -> Emit tasks ->
+	// Format/inject). When skillDiscovery is nil we fall back to the legacy
+	// path so existing tests and configs that don't wire Discovery still
+	// behave exactly as v1.2.0 did.
 	if a.skillOrchestrator != nil && session != nil {
 		sessionID := session.ID
 		if sessionID == "" {
 			sessionID = a.id
 		}
 
-		// Get skills config (use defaults if not set)
 		skillsConfig := a.config.SkillsConfig
 		if skillsConfig == nil {
 			skillsConfig = skills.DefaultSkillsConfig()
 		}
 
 		if skillsConfig.Enabled {
-			// Match skills from user message
 			msgs := session.GetMessages()
 			lastMsg := ""
 			if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
 				lastMsg = msgs[len(msgs)-1].Content
 			}
 
-			if lastMsg != "" {
-				matches, matchErr := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig)
-				if matchErr == nil {
-					for _, match := range matches {
-						a.skillOrchestrator.ActivateSkill(sessionID, match.Skill, match.TriggerType, match.TriggerValue, match.Confidence)
+			// Phase B: discover candidates.
+			activatedThisTurn := map[string]*skills.Skill{}
+			activeBefore := skillNameSet(a.skillOrchestrator.GetActiveSkills(sessionID))
+			if a.skillDiscovery != nil {
+				if candidates, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
+					for _, c := range candidates {
+						if !activeBefore[c.Skill.Name] {
+							activatedThisTurn[c.Skill.Name] = c.Skill
+						}
+						a.skillOrchestrator.ActivateSkill(sessionID, c.Skill,
+							c.TriggerType, c.TriggerValue, c.Confidence)
+					}
+				} else {
+					zap.L().Debug("skill discovery failed; skipping activation",
+						zap.String("session", sessionID),
+						zap.Error(err))
+				}
+			} else if lastMsg != "" {
+				// Legacy path: direct MatchSkills via the orchestrator.
+				if matches, err := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig); err == nil {
+					for _, m := range matches {
+						if !activeBefore[m.Skill.Name] {
+							activatedThisTurn[m.Skill.Name] = m.Skill
+						}
+						a.skillOrchestrator.ActivateSkill(sessionID, m.Skill,
+							m.TriggerType, m.TriggerValue, m.Confidence)
 					}
 				}
 			}
 
-			// Deactivate non-sticky skills from previous turns
-			activeSkills := a.skillOrchestrator.GetActiveSkills(sessionID)
-			for _, as := range activeSkills {
-				if !as.Skill.Sticky {
-					// Non-sticky skills only last one turn -- deactivate if they were activated before this message
-					// (Simplification; more sophisticated turn tracking could be added)
-					_ = as
+			// Phase D: emit tasks for newly-activated skills (overhaul-only).
+			if a.skillTaskEmitter != nil && len(activatedThisTurn) > 0 {
+				agentTasksEnabled := skillsConfig.EffectiveTasksEnabled()
+				boardID := skillsConfig.SkillTaskBoardID
+				if boardID == "" && a.taskBoardConfig != nil {
+					boardID = a.taskBoardConfig.DefaultBoardId
+				}
+				for name, skill := range activatedThisTurn {
+					_, err := a.skillTaskEmitter.EmitForActivation(ctx, skilltasks.EmitRequest{
+						Skill:             skill,
+						SessionID:         sessionID,
+						AgentID:           a.id,
+						BoardID:           boardID,
+						LLM:               a.llm,
+						AgentTasksEnabled: agentTasksEnabled,
+					})
+					if err != nil {
+						zap.L().Warn("skill task emission failed",
+							zap.String("skill", name),
+							zap.Error(err))
+					}
 				}
 			}
 
-			// Build combined skill prompt and inject
-			maxTokens := 1500 // default
+			// Format and inject skill prompts (existing logic).
+			maxTokens := 1500
 			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
 				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
 			}
-
 			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
 			if skillContent != "" {
 				activeNames := make([]string, 0)
@@ -1779,7 +1861,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			// Co-inject pattern refs from active skills
+			// Co-inject pattern refs from active skills (existing logic).
 			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
 				for _, ref := range as.Skill.PatternRefs {
 					if a.orchestrator != nil {

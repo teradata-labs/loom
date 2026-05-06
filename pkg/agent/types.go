@@ -28,6 +28,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -100,8 +102,21 @@ type Agent struct {
 	// Pattern orchestration
 	orchestrator *patterns.Orchestrator
 
-	// Skill orchestration
+	// Skill orchestration. The skillOrchestrator manages activation lifecycle
+	// and prompt injection. The discovery component (when present) is the
+	// new entry point introduced by the skills overhaul: it composes
+	// binding resolution, the hierarchical PageIndex router, and the FTS5
+	// fallback. When discovery is nil, runConversationLoop falls back to
+	// the legacy MatchSkills filter path for backward compatibility.
 	skillOrchestrator *skills.Orchestrator
+	skillDiscovery    *discovery.Discovery
+	// skillTaskEmitter materializes tasks for newly-activated skills onto
+	// the agent's task board. nil means skill activations do not emit tasks
+	// (legacy behavior).
+	skillTaskEmitter *skilltasks.Emitter
+	// skillsTurnState tracks which skills were activated in the current
+	// turn so phase D can emit tasks only for the newly-activated set.
+	skillsTurnState map[string]map[string]bool // sessionID -> skillName -> activated-this-turn
 
 	// Inter-agent communication (optional)
 	refStore     communication.ReferenceStore // Reference storage for agent-to-agent communication

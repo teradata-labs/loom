@@ -35,6 +35,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	skillbinding "github.com/teradata-labs/loom/pkg/skills/binding"
+	skilldiscovery "github.com/teradata-labs/loom/pkg/skills/discovery"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"go.uber.org/zap"
 )
@@ -645,6 +647,18 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		skillLib := skills.NewLibrary(libOpts...)
 		skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(r.tracer))
 		opts = append(opts, WithSkillOrchestrator(skillOrch))
+
+		// Skills overhaul: wire the binding resolver + Discovery so the
+		// agent's runConversationLoop uses the four-phase pipeline.
+		// Router is left unset for now (Phase 10 will wire it from a
+		// background-built SkillIndex); Discovery degrades to
+		// slash + FTS5 in that case, which preserves v1.2.0 behavior.
+		bindingResolver := skillbinding.NewResolver(skillLib)
+		disc := skilldiscovery.New(skillLib, bindingResolver,
+			skilldiscovery.WithTracer(r.tracer),
+			skilldiscovery.WithLogger(r.logger),
+		)
+		opts = append(opts, WithSkillDiscovery(disc))
 	}
 
 	// Create memory with session storage for trace persistence
