@@ -100,6 +100,12 @@ func (m *Manager) CreateTask(ctx context.Context, t *Task) (*Task, error) {
 	return created, nil
 }
 
+// GetTaskByIdempotencyKey returns the task that owns the given idempotency
+// key, or (nil, nil) when no such task exists. Pass-through to the store.
+func (m *Manager) GetTaskByIdempotencyKey(ctx context.Context, key string) (*Task, error) {
+	return m.store.GetTaskByIdempotencyKey(ctx, key)
+}
+
 // CreateTaskIdempotent looks up an existing task by SkillIdempotencyKey and
 // returns it when present; otherwise it creates the task normally. The
 // boolean return is true when the task was newly created (and history +

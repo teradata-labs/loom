@@ -180,8 +180,9 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 				compaction_level=$18, compacted_summary=$19,
 				output_policy_json=$20, estimated_effort=$21,
 				close_reason=$22, claimed_at=$23, closed_at=$24,
-				updated_at=$25
-			WHERE id=$26 AND deleted_at IS NULL`,
+				skill_idempotency_key=$25,
+				updated_at=$26
+			WHERE id=$27 AND deleted_at IS NULL`,
 			t.Title, t.Description, t.Objective, t.Approach,
 			t.AcceptanceCriteria, t.Notes,
 			int32(t.Status), int32(t.Priority), int32(t.Category), tagsJSON,
@@ -191,6 +192,7 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 			t.CompactionLevel, t.CompactedSummary,
 			outputPolicyJSON, t.EstimatedEffort,
 			t.CloseReason, t.ClaimedAt, t.ClosedAt,
+			nilIfEmpty(t.SkillIdempotencyKey),
 			now, t.ID,
 		)
 		if err != nil {
