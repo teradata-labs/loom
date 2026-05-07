@@ -329,13 +329,13 @@ jobs:
           .github/scripts/poll-release-asset.sh "${{ github.ref_name }}" "looms-windows-amd64.exe.zip"
 
       - name: Download loom Windows binary
-        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f  # v1.13
         with:
           tag: ${{ github.ref_name }}
           fileName: loom-windows-amd64.exe.zip
 
       - name: Download looms Windows binary
-        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f  # v1.13
         with:
           tag: ${{ github.ref_name }}
           fileName: looms-windows-amd64.exe.zip
@@ -422,14 +422,14 @@ jobs:
           echo "✅ All required assets are available"
 
       - name: Download release artifacts
-        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f  # v1.13
         with:
           tag: ${{ github.ref_name }}
           fileName: '*.tar.gz'
           out-file-path: artifacts
 
       - name: Download Windows artifacts
-        uses: robinraju/release-downloader@daf26c55d821e836577a15f77d86ddc078948b05  # v1.12
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f  # v1.13
         with:
           tag: ${{ github.ref_name }}
           fileName: '*.zip'
