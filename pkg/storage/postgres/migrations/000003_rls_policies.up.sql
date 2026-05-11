@@ -61,6 +61,3 @@ CREATE POLICY human_requests_tenant_isolation ON human_requests
     USING (agent_id = current_setting('app.current_tenant_id', true)
            OR current_setting('app.current_tenant_id', true) = ''
            OR current_setting('app.current_tenant_id', true) IS NULL);
-
-INSERT INTO schema_migrations (version, description) VALUES (3, 'row-level security policies')
-ON CONFLICT (version) DO NOTHING;

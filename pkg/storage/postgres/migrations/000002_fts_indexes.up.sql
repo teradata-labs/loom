@@ -20,6 +20,3 @@ ALTER TABLE artifacts
     ) STORED;
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_fts ON artifacts USING GIN(artifact_search);
-
-INSERT INTO schema_migrations (version, description) VALUES (2, 'full-text search indexes')
-ON CONFLICT (version) DO NOTHING;

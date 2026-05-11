@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -62,9 +63,7 @@ func TestJudgeInitialization(t *testing.T) {
 	}
 
 	// Verify judge was created
-	if judge == nil {
-		t.Fatal("NewJudge returned nil")
-	}
+	require.NotNil(t, judge, "NewJudge returned nil")
 
 	// promptMgr will be nil when PromptsFS is not provided (uses hardcoded fallback)
 	if judge.promptMgr != nil {

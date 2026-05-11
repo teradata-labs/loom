@@ -70,6 +70,3 @@ BEGIN
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
-
-INSERT INTO schema_migrations (version, description) VALUES (6, 'user_id columns and schema fixes')
-ON CONFLICT (version) DO NOTHING;

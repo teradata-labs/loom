@@ -288,6 +288,104 @@ func TestMigrateDown(t *testing.T) {
 	}
 }
 
+// seedAppliedVersions records the given versions into schema_migrations
+// without running any migration SQL. Used to simulate drifted databases.
+func seedAppliedVersions(t *testing.T, db *sql.DB, versions ...int) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+			description TEXT
+		)
+	`)
+	require.NoError(t, err)
+	for _, v := range versions {
+		_, err := db.ExecContext(ctx,
+			"INSERT INTO schema_migrations(version, description) VALUES (?, ?)",
+			v, "seeded",
+		)
+		require.NoError(t, err)
+	}
+}
+
+// TestMigrateUp_RepairsMissingV3Drift simulates the PR #141 drift state: a
+// pre-existing DB whose schema_migrations records versions 1, 2, 5, 6, 7
+// but never had migration 3 (tasks) applied. MigrateUp must repair it by
+// running migration 3 and then proceed cleanly through later migrations.
+func TestMigrateUp_RepairsMissingV3Drift(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	// Manually run migrations 1 and 2 so their tables (sessions, graph_*)
+	// exist. Migration 3 (tasks) is intentionally NOT run.
+	migrator, err := NewMigrator(db, observability.NewNoOpTracer())
+	require.NoError(t, err)
+	for _, mig := range migrator.migrations {
+		if mig.Version == 1 || mig.Version == 2 {
+			require.NoError(t, migrator.applyMigration(ctx, mig))
+		}
+	}
+
+	// Seed versions 5,6,7 as if they had been applied (simulating the
+	// historical renumber). Migration 3 is missing.
+	seedAppliedVersions(t, db, 5, 6, 7)
+
+	require.False(t, tableExists(t, db, "tasks"),
+		"precondition: tasks table should not exist before MigrateUp")
+
+	// MigrateUp should repair v3, then apply v8 (and anything else newer).
+	err = migrator.MigrateUp(ctx)
+	require.NoError(t, err, "MigrateUp should repair the drift, not fail")
+
+	assert.True(t, tableExists(t, db, "tasks"),
+		"tasks table should exist after repair")
+	assert.True(t, tableExists(t, db, "task_boards"),
+		"task_boards table should exist after repair")
+
+	// Version 3 should now be recorded.
+	var v3Count int
+	err = db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = 3",
+	).Scan(&v3Count)
+	require.NoError(t, err)
+	assert.Equal(t, 1, v3Count, "version 3 should be recorded after repair")
+
+	// All embedded migrations should be applied now.
+	version, err := migrator.CurrentVersion(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, latestMigrationVersion(t), version)
+}
+
+// TestMigrateUp_ValidationCatchesUnrecoverableDrift verifies that a drift
+// pattern outside the known v3 repair case fails loudly instead of being
+// silently skipped. Here we seed versions 1 and 5 without any way for the
+// repair logic to fix versions 2, 3, etc., and require an error.
+func TestMigrateUp_ValidationCatchesUnrecoverableDrift(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	migrator, err := NewMigrator(db, observability.NewNoOpTracer())
+	require.NoError(t, err)
+
+	// Apply migration 1 so its tables exist (sessions, etc.); the repair
+	// path for v3 only triggers if some version > 3 is recorded AND v3 is
+	// missing. We avoid triggering repair by seeding v3 present but v2
+	// missing — that is the unrecoverable pattern.
+	for _, mig := range migrator.migrations {
+		if mig.Version == 1 {
+			require.NoError(t, migrator.applyMigration(ctx, mig))
+		}
+	}
+	seedAppliedVersions(t, db, 3, 5)
+
+	err = migrator.MigrateUp(ctx)
+	require.Error(t, err, "MigrateUp must refuse to proceed on unrecoverable drift")
+	assert.Contains(t, err.Error(), "schema_migrations is inconsistent",
+		"error should identify the inconsistency")
+}
+
 func TestNewMigrator_NilTracer(t *testing.T) {
 	db := newTestDB(t)
 
