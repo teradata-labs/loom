@@ -16,7 +16,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/alecthomas/chroma/v2 v2.24.1
-	github.com/anthropics/anthropic-sdk-go v1.38.0
+	github.com/anthropics/anthropic-sdk-go v1.41.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
@@ -43,7 +43,7 @@ require (
 	github.com/r3labs/sse/v2 v2.10.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/sahilm/fuzzy v0.1.1
+	github.com/sahilm/fuzzy v0.1.2
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
@@ -54,10 +54,10 @@ require (
 	github.com/xuri/excelize/v2 v2.10.1
 	github.com/zalando/go-keyring v0.2.8
 	go.uber.org/zap v1.28.0
-	golang.org/x/mod v0.35.0
+	golang.org/x/mod v0.36.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/term v0.42.0
-	modernc.org/sqlite v1.50.0
+	golang.org/x/term v0.43.0
+	modernc.org/sqlite v1.50.1
 )
 
 require (
@@ -133,6 +133,7 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/standard-webhooks/standard-webhooks/libraries v0.0.0-20260427160145-3afa6683f8b2 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
@@ -158,15 +159,15 @@ require (
 	golang.org/x/tools v0.44.0 // indirect
 	gopkg.in/cenkalti/backoff.v1 v1.1.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
-	modernc.org/libc v1.72.0 // indirect
+	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
 
 require (
 	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0
+	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/text v0.37.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
