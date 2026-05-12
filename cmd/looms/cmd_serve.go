@@ -1795,6 +1795,13 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Task service registered")
 	}
 
+	// Register GraphMemoryService for graph-backed episodic memory management.
+	if graphMemoryStore != nil {
+		graphMemoryServer := server.NewGraphMemoryServer(graphMemoryStore, logger)
+		loomv1.RegisterGraphMemoryServiceServer(grpcServer, graphMemoryServer)
+		logger.Info("Graph memory service registered")
+	}
+
 	// Register JudgeService for multi-judge LLM evaluation capabilities.
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)

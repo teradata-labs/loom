@@ -679,7 +679,7 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 	// Boost salience on related entities asynchronously. This leverages
 	// existing FTS search + TouchMemories (zero LLM calls) to strengthen
 	// the relevance signal for entities related to the completed task.
-	go m.boostRelatedEntitySalience(t)
+	go m.boostRelatedEntitySalience(t) // #nosec G118 -- intentional: background worker must outlive the request context
 }
 
 // boostRelatedEntitySalience searches graph memory for entities related to
