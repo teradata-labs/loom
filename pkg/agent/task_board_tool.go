@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 
+	"go.uber.org/zap"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -201,7 +203,10 @@ func (t *TaskBoardTool) executeDecompose(ctx context.Context, input map[string]i
 	}
 
 	strategy := parseDecomposeStrategy(getStr(input, "strategy"))
-	boardID := t.resolveBoard(input)
+	boardID, err := t.resolveBoardForWrite(ctx, input)
+	if err != nil {
+		return errorResult("DECOMPOSE_ERROR", err.Error()), nil
+	}
 
 	var parentTask *task.Task
 	if parentID := getStr(input, "parent_id"); parentID != "" {
@@ -354,7 +359,10 @@ func (t *TaskBoardTool) executeCreate(ctx context.Context, input map[string]inte
 		return errorResult("INVALID_PARAMETER", "title is required for create"), nil
 	}
 
-	boardID := t.resolveBoard(input)
+	boardID, err := t.resolveBoardForWrite(ctx, input)
+	if err != nil {
+		return errorResult("CREATE_ERROR", err.Error()), nil
+	}
 
 	tk := &task.Task{
 		Title:           title,
@@ -534,6 +542,78 @@ func (t *TaskBoardTool) resolveBoard(input map[string]interface{}) string {
 		return t.config.DefaultBoardId
 	}
 	return ""
+}
+
+// resolveBoardForWrite chooses the board id a write-path action
+// (create / decompose) should target and guarantees the board exists before
+// the caller invokes CreateTask. It extends the read-only resolveBoard
+// fallback chain (input → config.default → "") with two protections against
+// the silent FK-failure footgun the tasks.board_id REFERENCES task_boards(id)
+// constraint creates:
+//
+//  1. If the LLM supplies a board_id that does not exist in storage, the
+//     agent's configured DefaultBoardId is preferred (when set) so an LLM
+//     that hallucinates a board id from a branch name or similar string
+//     doesn't spawn orphan boards every turn.
+//  2. If the chosen id still names a missing board, it is auto-created
+//     with a generic name. This mirrors emitter.ensureBoard for the
+//     skills overhaul Phase D path; without it the agent's task_board
+//     create/decompose calls would FK-fail with no actionable signal to
+//     the model (the error surface is just "FOREIGN KEY constraint failed").
+//
+// An empty resolution is permitted: tasks with NULL board_id are still
+// queryable via owner. Callers that need a board must check for "".
+func (t *TaskBoardTool) resolveBoardForWrite(ctx context.Context, input map[string]interface{}) (string, error) {
+	requested := getStr(input, "board_id")
+	fallback := ""
+	if t.config != nil {
+		fallback = t.config.DefaultBoardId
+	}
+
+	chosen := requested
+	if chosen != "" {
+		if _, err := t.manager.GetBoard(ctx, chosen); err == nil {
+			return chosen, nil
+		}
+		// Requested board is missing. If the agent has a configured default
+		// and it exists, rebind silently — an LLM-supplied id is best-effort
+		// and a working configured board beats spawning orphan rows.
+		if fallback != "" && fallback != requested {
+			if _, err := t.manager.GetBoard(ctx, fallback); err == nil {
+				zap.L().Info("task_board: rebinding missing board_id to configured default",
+					zap.String("agent_id", t.agentID),
+					zap.String("requested", requested),
+					zap.String("default", fallback))
+				return fallback, nil
+			}
+			// Configured default is also missing; create it instead of the
+			// LLM's guess so operators see the documented board id.
+			chosen = fallback
+		}
+		// chosen is either the (still-missing) original requested id or the
+		// (still-missing) configured default. Fall through to auto-create.
+	} else if fallback != "" {
+		chosen = fallback
+		if _, err := t.manager.GetBoard(ctx, chosen); err == nil {
+			return chosen, nil
+		}
+	} else {
+		// No board requested, no default configured — board-less is fine.
+		return "", nil
+	}
+
+	name := fmt.Sprintf("auto-created by agent %q", t.agentID)
+	if _, err := t.manager.CreateBoard(ctx, &task.TaskBoard{ID: chosen, Name: name}); err != nil {
+		// Concurrent ensure may have created it; one more lookup decides.
+		if _, gerr := t.manager.GetBoard(ctx, chosen); gerr == nil {
+			return chosen, nil
+		}
+		return "", fmt.Errorf("ensure board %q: %w", chosen, err)
+	}
+	zap.L().Info("task_board: auto-created board",
+		zap.String("agent_id", t.agentID),
+		zap.String("board_id", chosen))
+	return chosen, nil
 }
 
 func taskSummaryMap(tk *task.Task) map[string]interface{} {
