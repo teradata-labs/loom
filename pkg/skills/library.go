@@ -298,8 +298,13 @@ func (l *Library) FindByKeywords(msg string) []*ScoredSkill {
 
 	var results []*ScoredSkill
 
+	now := time.Now()
 	for _, skill := range l.skillCache {
 		if len(skill.Trigger.Keywords) == 0 {
+			continue
+		}
+		// Skip skills whose confidence has decayed below 0.1 (too stale).
+		if skill.EffectiveConfidence(now) < 0.1 {
 			continue
 		}
 		matches := 0
@@ -315,6 +320,7 @@ func (l *Library) FindByKeywords(msg string) []*ScoredSkill {
 			continue
 		}
 		score := float64(matches) / float64(len(skill.Trigger.Keywords))
+		score *= skill.EffectiveConfidence(now)
 		results = append(results, &ScoredSkill{Skill: skill, Score: score})
 	}
 

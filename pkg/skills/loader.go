@@ -93,13 +93,17 @@ type SkillTaskStepYAML struct {
 
 // SkillMetadataYAML holds skill metadata from YAML.
 type SkillMetadataYAML struct {
-	Name        string            `yaml:"name"`
-	Title       string            `yaml:"title"`
-	Description string            `yaml:"description"`
-	Version     string            `yaml:"version"`
-	Domain      string            `yaml:"domain"`
-	Author      string            `yaml:"author"`
-	Labels      map[string]string `yaml:"labels"`
+	Name            string            `yaml:"name"`
+	Title           string            `yaml:"title"`
+	Description     string            `yaml:"description"`
+	Version         string            `yaml:"version"`
+	Domain          string            `yaml:"domain"`
+	Author          string            `yaml:"author"`
+	Labels          map[string]string `yaml:"labels"`
+	Confidence      float64           `yaml:"confidence"`
+	Status          string            `yaml:"status"`
+	LastValidatedMs int64             `yaml:"last_validated_ms"`
+	RiskLevel       string            `yaml:"risk_level"`
 }
 
 // SkillTriggerYAML holds trigger configuration from YAML.
@@ -273,14 +277,24 @@ func yamlToSkill(sy *SkillYAML) *Skill {
 		examples = append(examples, SkillExample(ex))
 	}
 
+	// Confidence defaults to 1.0 for hand-authored skills.
+	confidence := sy.Metadata.Confidence
+	if confidence == 0 {
+		confidence = 1.0
+	}
+
 	return &Skill{
-		Name:        sy.Metadata.Name,
-		Title:       sy.Metadata.Title,
-		Description: sy.Metadata.Description,
-		Version:     version,
-		Domain:      strings.ToLower(sy.Metadata.Domain),
-		Labels:      sy.Metadata.Labels,
-		Author:      sy.Metadata.Author,
+		Name:            sy.Metadata.Name,
+		Title:           sy.Metadata.Title,
+		Description:     sy.Metadata.Description,
+		Version:         version,
+		Domain:          strings.ToLower(sy.Metadata.Domain),
+		Labels:          sy.Metadata.Labels,
+		Author:          sy.Metadata.Author,
+		Confidence:      confidence,
+		Status:          sy.Metadata.Status,
+		LastValidatedMs: sy.Metadata.LastValidatedMs,
+		RiskLevel:       sy.Metadata.RiskLevel,
 		Trigger: SkillTrigger{
 			SlashCommands:    sy.Trigger.SlashCommands,
 			Keywords:         sy.Trigger.Keywords,
@@ -360,13 +374,17 @@ func SkillToYAML(s *Skill) ([]byte, error) {
 		APIVersion: "loom/v1",
 		Kind:       "Skill",
 		Metadata: SkillMetadataYAML{
-			Name:        s.Name,
-			Title:       s.Title,
-			Description: s.Description,
-			Version:     s.Version,
-			Domain:      s.Domain,
-			Author:      s.Author,
-			Labels:      s.Labels,
+			Name:            s.Name,
+			Title:           s.Title,
+			Description:     s.Description,
+			Version:         s.Version,
+			Domain:          s.Domain,
+			Author:          s.Author,
+			Labels:          s.Labels,
+			Confidence:      s.Confidence,
+			Status:          s.Status,
+			LastValidatedMs: s.LastValidatedMs,
+			RiskLevel:       s.RiskLevel,
 		},
 		Trigger: SkillTriggerYAML{
 			SlashCommands:    s.Trigger.SlashCommands,

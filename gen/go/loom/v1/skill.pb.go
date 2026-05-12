@@ -86,6 +86,119 @@ func (SkillActivationMode) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_skill_proto_rawDescGZIP(), []int{0}
 }
 
+// SkillStatus tracks the lifecycle stage of a skill.
+type SkillStatus int32
+
+const (
+	SkillStatus_SKILL_STATUS_UNSPECIFIED    SkillStatus = 0
+	SkillStatus_SKILL_STATUS_AUTO_GENERATED SkillStatus = 1
+	SkillStatus_SKILL_STATUS_ENRICHED       SkillStatus = 2
+	SkillStatus_SKILL_STATUS_VALIDATED      SkillStatus = 3
+	SkillStatus_SKILL_STATUS_DEPRECATED     SkillStatus = 4
+)
+
+// Enum value maps for SkillStatus.
+var (
+	SkillStatus_name = map[int32]string{
+		0: "SKILL_STATUS_UNSPECIFIED",
+		1: "SKILL_STATUS_AUTO_GENERATED",
+		2: "SKILL_STATUS_ENRICHED",
+		3: "SKILL_STATUS_VALIDATED",
+		4: "SKILL_STATUS_DEPRECATED",
+	}
+	SkillStatus_value = map[string]int32{
+		"SKILL_STATUS_UNSPECIFIED":    0,
+		"SKILL_STATUS_AUTO_GENERATED": 1,
+		"SKILL_STATUS_ENRICHED":       2,
+		"SKILL_STATUS_VALIDATED":      3,
+		"SKILL_STATUS_DEPRECATED":     4,
+	}
+)
+
+func (x SkillStatus) Enum() *SkillStatus {
+	p := new(SkillStatus)
+	*p = x
+	return p
+}
+
+func (x SkillStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SkillStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[1].Descriptor()
+}
+
+func (SkillStatus) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[1]
+}
+
+func (x SkillStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SkillStatus.Descriptor instead.
+func (SkillStatus) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{1}
+}
+
+// SkillRiskLevel indicates the autonomy boundary for a skill.
+// HIGH and RESTRICTED require HITL approval before activation.
+type SkillRiskLevel int32
+
+const (
+	SkillRiskLevel_SKILL_RISK_LEVEL_UNSPECIFIED SkillRiskLevel = 0
+	SkillRiskLevel_SKILL_RISK_LEVEL_LOW         SkillRiskLevel = 1
+	SkillRiskLevel_SKILL_RISK_LEVEL_MEDIUM      SkillRiskLevel = 2
+	SkillRiskLevel_SKILL_RISK_LEVEL_HIGH        SkillRiskLevel = 3
+	SkillRiskLevel_SKILL_RISK_LEVEL_RESTRICTED  SkillRiskLevel = 4
+)
+
+// Enum value maps for SkillRiskLevel.
+var (
+	SkillRiskLevel_name = map[int32]string{
+		0: "SKILL_RISK_LEVEL_UNSPECIFIED",
+		1: "SKILL_RISK_LEVEL_LOW",
+		2: "SKILL_RISK_LEVEL_MEDIUM",
+		3: "SKILL_RISK_LEVEL_HIGH",
+		4: "SKILL_RISK_LEVEL_RESTRICTED",
+	}
+	SkillRiskLevel_value = map[string]int32{
+		"SKILL_RISK_LEVEL_UNSPECIFIED": 0,
+		"SKILL_RISK_LEVEL_LOW":         1,
+		"SKILL_RISK_LEVEL_MEDIUM":      2,
+		"SKILL_RISK_LEVEL_HIGH":        3,
+		"SKILL_RISK_LEVEL_RESTRICTED":  4,
+	}
+)
+
+func (x SkillRiskLevel) Enum() *SkillRiskLevel {
+	p := new(SkillRiskLevel)
+	*p = x
+	return p
+}
+
+func (x SkillRiskLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SkillRiskLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[2].Descriptor()
+}
+
+func (SkillRiskLevel) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[2]
+}
+
+func (x SkillRiskLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SkillRiskLevel.Descriptor instead.
+func (SkillRiskLevel) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{2}
+}
+
 // SkillBindingMode controls how an agent loads a bound skill into context.
 type SkillBindingMode int32
 
@@ -126,11 +239,11 @@ func (x SkillBindingMode) String() string {
 }
 
 func (SkillBindingMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_skill_proto_enumTypes[1].Descriptor()
+	return file_loom_v1_skill_proto_enumTypes[3].Descriptor()
 }
 
 func (SkillBindingMode) Type() protoreflect.EnumType {
-	return &file_loom_v1_skill_proto_enumTypes[1]
+	return &file_loom_v1_skill_proto_enumTypes[3]
 }
 
 func (x SkillBindingMode) Number() protoreflect.EnumNumber {
@@ -139,7 +252,7 @@ func (x SkillBindingMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SkillBindingMode.Descriptor instead.
 func (SkillBindingMode) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{1}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{3}
 }
 
 // Skill represents an activatable behavior that combines prompt injection,
@@ -311,7 +424,16 @@ type SkillMetadata struct {
 	// Arbitrary labels for filtering
 	Labels map[string]string `protobuf:"bytes,6,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Author of the skill
-	Author        string `protobuf:"bytes,7,opt,name=author,proto3" json:"author,omitempty"`
+	Author string `protobuf:"bytes,7,opt,name=author,proto3" json:"author,omitempty"`
+	// Confidence score 0.0-1.0. Hand-authored defaults to 1.0.
+	// Decays over time from last_validated_ms using rate 0.995/day.
+	Confidence float32 `protobuf:"fixed32,8,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	// Lifecycle status.
+	Status SkillStatus `protobuf:"varint,9,opt,name=status,proto3,enum=loom.v1.SkillStatus" json:"status,omitempty"`
+	// Epoch ms of last human validation (decay anchor).
+	LastValidatedMs int64 `protobuf:"varint,10,opt,name=last_validated_ms,json=lastValidatedMs,proto3" json:"last_validated_ms,omitempty"`
+	// Risk level. HIGH/RESTRICTED requires HITL approval.
+	RiskLevel     SkillRiskLevel `protobuf:"varint,11,opt,name=risk_level,json=riskLevel,proto3,enum=loom.v1.SkillRiskLevel" json:"risk_level,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -393,6 +515,34 @@ func (x *SkillMetadata) GetAuthor() string {
 		return x.Author
 	}
 	return ""
+}
+
+func (x *SkillMetadata) GetConfidence() float32 {
+	if x != nil {
+		return x.Confidence
+	}
+	return 0
+}
+
+func (x *SkillMetadata) GetStatus() SkillStatus {
+	if x != nil {
+		return x.Status
+	}
+	return SkillStatus_SKILL_STATUS_UNSPECIFIED
+}
+
+func (x *SkillMetadata) GetLastValidatedMs() int64 {
+	if x != nil {
+		return x.LastValidatedMs
+	}
+	return 0
+}
+
+func (x *SkillMetadata) GetRiskLevel() SkillRiskLevel {
+	if x != nil {
+		return x.RiskLevel
+	}
+	return SkillRiskLevel_SKILL_RISK_LEVEL_UNSPECIFIED
 }
 
 // SkillTrigger defines how a skill gets activated.
@@ -1561,7 +1711,7 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x11parent_index_path\x18\v \x01(\tR\x0fparentIndexPath\x12\"\n" +
 	"\n" +
 	"emit_tasks\x18\f \x01(\bH\x00R\temitTasks\x88\x01\x01B\r\n" +
-	"\v_emit_tasks\"\x9c\x02\n" +
+	"\v_emit_tasks\"\xce\x03\n" +
 	"\rSkillMetadata\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -1569,7 +1719,15 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\aversion\x18\x04 \x01(\tR\aversion\x12\x16\n" +
 	"\x06domain\x18\x05 \x01(\tR\x06domain\x12:\n" +
 	"\x06labels\x18\x06 \x03(\v2\".loom.v1.SkillMetadata.LabelsEntryR\x06labels\x12\x16\n" +
-	"\x06author\x18\a \x01(\tR\x06author\x1a9\n" +
+	"\x06author\x18\a \x01(\tR\x06author\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\b \x01(\x02R\n" +
+	"confidence\x12,\n" +
+	"\x06status\x18\t \x01(\x0e2\x14.loom.v1.SkillStatusR\x06status\x12*\n" +
+	"\x11last_validated_ms\x18\n" +
+	" \x01(\x03R\x0flastValidatedMs\x126\n" +
+	"\n" +
+	"risk_level\x18\v \x01(\x0e2\x17.loom.v1.SkillRiskLevelR\triskLevel\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd7\x01\n" +
@@ -1688,7 +1846,19 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x1cSKILL_ACTIVATION_MODE_MANUAL\x10\x01\x12\x1e\n" +
 	"\x1aSKILL_ACTIVATION_MODE_AUTO\x10\x02\x12 \n" +
 	"\x1cSKILL_ACTIVATION_MODE_HYBRID\x10\x03\x12 \n" +
-	"\x1cSKILL_ACTIVATION_MODE_ALWAYS\x10\x04*\x90\x01\n" +
+	"\x1cSKILL_ACTIVATION_MODE_ALWAYS\x10\x04*\xa0\x01\n" +
+	"\vSkillStatus\x12\x1c\n" +
+	"\x18SKILL_STATUS_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bSKILL_STATUS_AUTO_GENERATED\x10\x01\x12\x19\n" +
+	"\x15SKILL_STATUS_ENRICHED\x10\x02\x12\x1a\n" +
+	"\x16SKILL_STATUS_VALIDATED\x10\x03\x12\x1b\n" +
+	"\x17SKILL_STATUS_DEPRECATED\x10\x04*\xa5\x01\n" +
+	"\x0eSkillRiskLevel\x12 \n" +
+	"\x1cSKILL_RISK_LEVEL_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14SKILL_RISK_LEVEL_LOW\x10\x01\x12\x1b\n" +
+	"\x17SKILL_RISK_LEVEL_MEDIUM\x10\x02\x12\x19\n" +
+	"\x15SKILL_RISK_LEVEL_HIGH\x10\x03\x12\x1f\n" +
+	"\x1bSKILL_RISK_LEVEL_RESTRICTED\x10\x04*\x90\x01\n" +
 	"\x10SkillBindingMode\x12\"\n" +
 	"\x1eSKILL_BINDING_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18SKILL_BINDING_MODE_EAGER\x10\x01\x12\x1b\n" +
@@ -1707,58 +1877,62 @@ func file_loom_v1_skill_proto_rawDescGZIP() []byte {
 	return file_loom_v1_skill_proto_rawDescData
 }
 
-var file_loom_v1_skill_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_loom_v1_skill_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_loom_v1_skill_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_loom_v1_skill_proto_goTypes = []any{
 	(SkillActivationMode)(0),       // 0: loom.v1.SkillActivationMode
-	(SkillBindingMode)(0),          // 1: loom.v1.SkillBindingMode
-	(*Skill)(nil),                  // 2: loom.v1.Skill
-	(*SkillMetadata)(nil),          // 3: loom.v1.SkillMetadata
-	(*SkillTrigger)(nil),           // 4: loom.v1.SkillTrigger
-	(*SkillPrompt)(nil),            // 5: loom.v1.SkillPrompt
-	(*SkillExample)(nil),           // 6: loom.v1.SkillExample
-	(*SkillToolConfig)(nil),        // 7: loom.v1.SkillToolConfig
-	(*SkillLibrary)(nil),           // 8: loom.v1.SkillLibrary
-	(*SkillLibraryMetadata)(nil),   // 9: loom.v1.SkillLibraryMetadata
-	(*SkillActivation)(nil),        // 10: loom.v1.SkillActivation
-	(*SkillsConfig)(nil),           // 11: loom.v1.SkillsConfig
-	(*SkillBinding)(nil),           // 12: loom.v1.SkillBinding
-	(*SkillTaskTemplate)(nil),      // 13: loom.v1.SkillTaskTemplate
-	(*SkillIndexNode)(nil),         // 14: loom.v1.SkillIndexNode
-	(*SkillIndex)(nil),             // 15: loom.v1.SkillIndex
-	nil,                            // 16: loom.v1.SkillMetadata.LabelsEntry
-	nil,                            // 17: loom.v1.SkillLibraryMetadata.LabelsEntry
-	nil,                            // 18: loom.v1.SkillBinding.LabelMatchEntry
-	(*SkillTaskTemplate_Step)(nil), // 19: loom.v1.SkillTaskTemplate.Step
-	nil,                            // 20: loom.v1.SkillIndexNode.LabelsEntry
-	(TaskCategory)(0),              // 21: loom.v1.TaskCategory
-	(TaskPriority)(0),              // 22: loom.v1.TaskPriority
+	(SkillStatus)(0),               // 1: loom.v1.SkillStatus
+	(SkillRiskLevel)(0),            // 2: loom.v1.SkillRiskLevel
+	(SkillBindingMode)(0),          // 3: loom.v1.SkillBindingMode
+	(*Skill)(nil),                  // 4: loom.v1.Skill
+	(*SkillMetadata)(nil),          // 5: loom.v1.SkillMetadata
+	(*SkillTrigger)(nil),           // 6: loom.v1.SkillTrigger
+	(*SkillPrompt)(nil),            // 7: loom.v1.SkillPrompt
+	(*SkillExample)(nil),           // 8: loom.v1.SkillExample
+	(*SkillToolConfig)(nil),        // 9: loom.v1.SkillToolConfig
+	(*SkillLibrary)(nil),           // 10: loom.v1.SkillLibrary
+	(*SkillLibraryMetadata)(nil),   // 11: loom.v1.SkillLibraryMetadata
+	(*SkillActivation)(nil),        // 12: loom.v1.SkillActivation
+	(*SkillsConfig)(nil),           // 13: loom.v1.SkillsConfig
+	(*SkillBinding)(nil),           // 14: loom.v1.SkillBinding
+	(*SkillTaskTemplate)(nil),      // 15: loom.v1.SkillTaskTemplate
+	(*SkillIndexNode)(nil),         // 16: loom.v1.SkillIndexNode
+	(*SkillIndex)(nil),             // 17: loom.v1.SkillIndex
+	nil,                            // 18: loom.v1.SkillMetadata.LabelsEntry
+	nil,                            // 19: loom.v1.SkillLibraryMetadata.LabelsEntry
+	nil,                            // 20: loom.v1.SkillBinding.LabelMatchEntry
+	(*SkillTaskTemplate_Step)(nil), // 21: loom.v1.SkillTaskTemplate.Step
+	nil,                            // 22: loom.v1.SkillIndexNode.LabelsEntry
+	(TaskCategory)(0),              // 23: loom.v1.TaskCategory
+	(TaskPriority)(0),              // 24: loom.v1.TaskPriority
 }
 var file_loom_v1_skill_proto_depIdxs = []int32{
-	3,  // 0: loom.v1.Skill.metadata:type_name -> loom.v1.SkillMetadata
-	4,  // 1: loom.v1.Skill.trigger:type_name -> loom.v1.SkillTrigger
-	5,  // 2: loom.v1.Skill.prompt:type_name -> loom.v1.SkillPrompt
-	7,  // 3: loom.v1.Skill.tools:type_name -> loom.v1.SkillToolConfig
-	13, // 4: loom.v1.Skill.task_template:type_name -> loom.v1.SkillTaskTemplate
-	16, // 5: loom.v1.SkillMetadata.labels:type_name -> loom.v1.SkillMetadata.LabelsEntry
-	0,  // 6: loom.v1.SkillTrigger.mode:type_name -> loom.v1.SkillActivationMode
-	6,  // 7: loom.v1.SkillPrompt.examples:type_name -> loom.v1.SkillExample
-	9,  // 8: loom.v1.SkillLibrary.metadata:type_name -> loom.v1.SkillLibraryMetadata
-	2,  // 9: loom.v1.SkillLibrary.skills:type_name -> loom.v1.Skill
-	17, // 10: loom.v1.SkillLibraryMetadata.labels:type_name -> loom.v1.SkillLibraryMetadata.LabelsEntry
-	12, // 11: loom.v1.SkillsConfig.bindings:type_name -> loom.v1.SkillBinding
-	1,  // 12: loom.v1.SkillBinding.mode:type_name -> loom.v1.SkillBindingMode
-	18, // 13: loom.v1.SkillBinding.label_match:type_name -> loom.v1.SkillBinding.LabelMatchEntry
-	19, // 14: loom.v1.SkillTaskTemplate.steps:type_name -> loom.v1.SkillTaskTemplate.Step
-	20, // 15: loom.v1.SkillIndexNode.labels:type_name -> loom.v1.SkillIndexNode.LabelsEntry
-	14, // 16: loom.v1.SkillIndex.nodes:type_name -> loom.v1.SkillIndexNode
-	21, // 17: loom.v1.SkillTaskTemplate.Step.category:type_name -> loom.v1.TaskCategory
-	22, // 18: loom.v1.SkillTaskTemplate.Step.priority:type_name -> loom.v1.TaskPriority
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	5,  // 0: loom.v1.Skill.metadata:type_name -> loom.v1.SkillMetadata
+	6,  // 1: loom.v1.Skill.trigger:type_name -> loom.v1.SkillTrigger
+	7,  // 2: loom.v1.Skill.prompt:type_name -> loom.v1.SkillPrompt
+	9,  // 3: loom.v1.Skill.tools:type_name -> loom.v1.SkillToolConfig
+	15, // 4: loom.v1.Skill.task_template:type_name -> loom.v1.SkillTaskTemplate
+	18, // 5: loom.v1.SkillMetadata.labels:type_name -> loom.v1.SkillMetadata.LabelsEntry
+	1,  // 6: loom.v1.SkillMetadata.status:type_name -> loom.v1.SkillStatus
+	2,  // 7: loom.v1.SkillMetadata.risk_level:type_name -> loom.v1.SkillRiskLevel
+	0,  // 8: loom.v1.SkillTrigger.mode:type_name -> loom.v1.SkillActivationMode
+	8,  // 9: loom.v1.SkillPrompt.examples:type_name -> loom.v1.SkillExample
+	11, // 10: loom.v1.SkillLibrary.metadata:type_name -> loom.v1.SkillLibraryMetadata
+	4,  // 11: loom.v1.SkillLibrary.skills:type_name -> loom.v1.Skill
+	19, // 12: loom.v1.SkillLibraryMetadata.labels:type_name -> loom.v1.SkillLibraryMetadata.LabelsEntry
+	14, // 13: loom.v1.SkillsConfig.bindings:type_name -> loom.v1.SkillBinding
+	3,  // 14: loom.v1.SkillBinding.mode:type_name -> loom.v1.SkillBindingMode
+	20, // 15: loom.v1.SkillBinding.label_match:type_name -> loom.v1.SkillBinding.LabelMatchEntry
+	21, // 16: loom.v1.SkillTaskTemplate.steps:type_name -> loom.v1.SkillTaskTemplate.Step
+	22, // 17: loom.v1.SkillIndexNode.labels:type_name -> loom.v1.SkillIndexNode.LabelsEntry
+	16, // 18: loom.v1.SkillIndex.nodes:type_name -> loom.v1.SkillIndexNode
+	23, // 19: loom.v1.SkillTaskTemplate.Step.category:type_name -> loom.v1.TaskCategory
+	24, // 20: loom.v1.SkillTaskTemplate.Step.priority:type_name -> loom.v1.TaskPriority
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_skill_proto_init() }
@@ -1774,7 +1948,7 @@ func file_loom_v1_skill_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_skill_proto_rawDesc), len(file_loom_v1_skill_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      4,
 			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,

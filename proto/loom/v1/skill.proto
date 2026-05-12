@@ -63,6 +63,15 @@ message SkillMetadata {
   map<string, string> labels = 6;
   // Author of the skill
   string author = 7;
+  // Confidence score 0.0-1.0. Hand-authored defaults to 1.0.
+  // Decays over time from last_validated_ms using rate 0.995/day.
+  float confidence = 8;
+  // Lifecycle status.
+  SkillStatus status = 9;
+  // Epoch ms of last human validation (decay anchor).
+  int64 last_validated_ms = 10;
+  // Risk level. HIGH/RESTRICTED requires HITL approval.
+  SkillRiskLevel risk_level = 11;
 }
 
 // SkillTrigger defines how a skill gets activated.
@@ -90,6 +99,25 @@ enum SkillActivationMode {
   SKILL_ACTIVATION_MODE_HYBRID = 3;
   // Always active when configured
   SKILL_ACTIVATION_MODE_ALWAYS = 4;
+}
+
+// SkillStatus tracks the lifecycle stage of a skill.
+enum SkillStatus {
+  SKILL_STATUS_UNSPECIFIED = 0;
+  SKILL_STATUS_AUTO_GENERATED = 1;
+  SKILL_STATUS_ENRICHED = 2;
+  SKILL_STATUS_VALIDATED = 3;
+  SKILL_STATUS_DEPRECATED = 4;
+}
+
+// SkillRiskLevel indicates the autonomy boundary for a skill.
+// HIGH and RESTRICTED require HITL approval before activation.
+enum SkillRiskLevel {
+  SKILL_RISK_LEVEL_UNSPECIFIED = 0;
+  SKILL_RISK_LEVEL_LOW = 1;
+  SKILL_RISK_LEVEL_MEDIUM = 2;
+  SKILL_RISK_LEVEL_HIGH = 3;
+  SKILL_RISK_LEVEL_RESTRICTED = 4;
 }
 
 // SkillPrompt defines the instructions injected when a skill is active.

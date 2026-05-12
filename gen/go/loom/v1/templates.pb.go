@@ -129,6 +129,8 @@ const (
 	// Fork-Join (summary merge): 3× research analyst from technical / financial /
 	// strategic angles.
 	WorkflowTemplate_WORKFLOW_TEMPLATE_DEEP_RESEARCH WorkflowTemplate = 6
+	// Pipeline (schedulable, weekly): skill-auditor → report-writer.
+	WorkflowTemplate_WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT WorkflowTemplate = 7
 )
 
 // Enum value maps for WorkflowTemplate.
@@ -141,6 +143,7 @@ var (
 		4: "WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT",
 		5: "WORKFLOW_TEMPLATE_PERFORMANCE_REPORT",
 		6: "WORKFLOW_TEMPLATE_DEEP_RESEARCH",
+		7: "WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT",
 	}
 	WorkflowTemplate_value = map[string]int32{
 		"WORKFLOW_TEMPLATE_UNSPECIFIED":        0,
@@ -150,6 +153,7 @@ var (
 		"WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT": 4,
 		"WORKFLOW_TEMPLATE_PERFORMANCE_REPORT": 5,
 		"WORKFLOW_TEMPLATE_DEEP_RESEARCH":      6,
+		"WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT": 7,
 	}
 )
 
@@ -1160,7 +1164,7 @@ const file_loom_v1_templates_proto_rawDesc = "" +
 	"\x1aAGENT_PRESET_UI_SPECIALIST\x10\x05\x12\x1f\n" +
 	"\x1bAGENT_PRESET_TASK_AUTOMATOR\x10\x06\x12\x1b\n" +
 	"\x17AGENT_PRESET_QUICK_CHAT\x10\a\x12\x1c\n" +
-	"\x18AGENT_PRESET_COORDINATOR\x10\b*\xa7\x02\n" +
+	"\x18AGENT_PRESET_COORDINATOR\x10\b*\xd1\x02\n" +
 	"\x10WorkflowTemplate\x12!\n" +
 	"\x1dWORKFLOW_TEMPLATE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!WORKFLOW_TEMPLATE_RESEARCH_REPORT\x10\x01\x12'\n" +
@@ -1168,7 +1172,8 @@ const file_loom_v1_templates_proto_rawDesc = "" +
 	"#WORKFLOW_TEMPLATE_COMPETITIVE_INTEL\x10\x03\x12(\n" +
 	"$WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT\x10\x04\x12(\n" +
 	"$WORKFLOW_TEMPLATE_PERFORMANCE_REPORT\x10\x05\x12#\n" +
-	"\x1fWORKFLOW_TEMPLATE_DEEP_RESEARCH\x10\x06B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\x1fWORKFLOW_TEMPLATE_DEEP_RESEARCH\x10\x06\x12(\n" +
+	"$WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT\x10\aB5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_templates_proto_rawDescOnce sync.Once

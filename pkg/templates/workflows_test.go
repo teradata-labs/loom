@@ -24,6 +24,7 @@ func TestWorkflowTemplateRegistryCovers(t *testing.T) {
 		loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT,
 		loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_PERFORMANCE_REPORT,
 		loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_DEEP_RESEARCH,
+		loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT,
 	}
 	for _, e := range enumValues {
 		got := GetWorkflowTemplate(e)

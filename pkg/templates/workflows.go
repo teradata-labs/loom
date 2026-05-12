@@ -351,6 +351,44 @@ No fluff. Cite exact numbers from the metrics block.`,
 			},
 		},
 	},
+
+	// 7. Skill Health Audit — Pipeline (schedulable weekly)
+	{
+		Template:          loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT,
+		DisplayName:       "Skill Health Audit",
+		Description:       "Periodic audit of skill library health: staleness detection, confidence decay, and deprecation recommendations.",
+		Icon:              "heart-pulse",
+		Category:          "operations",
+		Schedulable:       true,
+		SuggestedCron:     "0 9 * * 1",
+		SuggestedTimezone: "UTC",
+		DefaultWorkflowPattern: &loomv1.WorkflowPattern{
+			Pattern: &loomv1.WorkflowPattern_Pipeline{
+				Pipeline: &loomv1.PipelinePattern{
+					PassFullHistory: true,
+					Stages: []*loomv1.PipelineStage{
+						{PromptTemplate: "Audit all skill YAML files in the skills directory. For each skill, parse metadata.confidence, metadata.last_validated_ms, and metadata.status. Compute effective confidence using decay rate 0.995/day from last_validated_ms. Flag any skill where effective confidence < 0.7 OR days since validation > 90. Report: skill name, domain, confidence, days since validation, status, recommendation (refresh/deprecate/ok).\n\nScope: {{input}}"},
+						{PromptTemplate: "Produce a concise skill health audit report from the findings. Group by domain. Highlight critical gaps (confidence < 0.5 or validated > 180 days). Suggest specific actions for each flagged skill (refresh content, re-validate, deprecate, or remove).\n\nFindings:\n{{previous}}"},
+					},
+				},
+			},
+		},
+		Agents: []*loomv1.WorkflowTemplateAgentSpec{
+			{
+				Preset:       loomv1.AgentPreset_AGENT_PRESET_RESEARCH_ANALYST,
+				DefaultName:  "skill-audit:auditor",
+				Description:  "Skill library auditor — scans all skills for staleness and confidence decay.",
+				SystemPrompt: "Audit the skill library for health issues. For each skill YAML file:\n- Parse metadata.confidence and metadata.last_validated_ms\n- Compute effective confidence using decay rate 0.995/day from last_validated_ms to today\n- Flag skills where effective confidence < 0.7 OR days since validation > 90\n- Note skills with status: deprecated that are still referenced\n- Check for skills with risk_level: high/restricted lacking recent validation\n\nOutput a structured table: skill name | domain | confidence | days since validation | status | recommendation",
+			},
+			{
+				Preset:              loomv1.AgentPreset_AGENT_PRESET_CREATIVE_WRITER,
+				DefaultName:         "skill-audit:reporter",
+				Description:         "Audit report writer — summarizes findings.",
+				TemperatureOverride: 0.5,
+				SystemPrompt:        "Produce a concise skill health audit report. Structure:\n1. Executive Summary — headline stats (total, healthy, flagged, critical)\n2. Critical Gaps — confidence < 0.5 or validated > 180 days\n3. Watch List — confidence 0.5-0.7 or validated 90-180 days\n4. By Domain — grouped findings with per-domain health score\n5. Recommended Actions — specific next steps per flagged skill\n\nUse only the data provided. Do not fabricate metrics.",
+			},
+		},
+	},
 }
 
 // templateByEnum is a build-time index over workflowTemplateRegistry.
@@ -390,6 +428,8 @@ func WorkflowTemplateEnumFromString(s string) loomv1.WorkflowTemplate {
 		return loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_PERFORMANCE_REPORT
 	case "deep-research":
 		return loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_DEEP_RESEARCH
+	case "skill-health-audit":
+		return loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT
 	default:
 		return loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_UNSPECIFIED
 	}
@@ -411,6 +451,8 @@ func WorkflowTemplateEnumToString(t loomv1.WorkflowTemplate) string {
 		return "performance-report"
 	case loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_DEEP_RESEARCH:
 		return "deep-research"
+	case loomv1.WorkflowTemplate_WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT:
+		return "skill-health-audit"
 	default:
 		return ""
 	}

@@ -19,6 +19,7 @@ package skills
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -68,6 +69,12 @@ type Skill struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Author      string            `json:"author,omitempty"`
 
+	// Confidence score 0.0-1.0. Hand-authored defaults to 1.0.
+	Confidence      float64 `json:"confidence,omitempty"`
+	Status          string  `json:"status,omitempty"`
+	LastValidatedMs int64   `json:"last_validated_ms,omitempty"`
+	RiskLevel       string  `json:"risk_level,omitempty"`
+
 	// Trigger configuration
 	Trigger SkillTrigger `json:"trigger"`
 
@@ -116,6 +123,39 @@ func (s *Skill) EffectiveEmitTasks() bool {
 		return true
 	}
 	return *s.EmitTasks
+}
+
+// SkillConfidenceDecayRate is the daily multiplicative decay applied to
+// skill confidence from the last_validated_ms anchor.
+const SkillConfidenceDecayRate = 0.995
+
+// EffectiveConfidence computes the time-decayed confidence for this skill.
+// Hand-authored skills (Confidence==0) default to 1.0. The decay is
+// 0.995^days from LastValidatedMs.
+func (s *Skill) EffectiveConfidence(now time.Time) float64 {
+	base := s.Confidence
+	if base <= 0 {
+		base = 1.0
+	}
+	if s.LastValidatedMs <= 0 {
+		return base
+	}
+	anchor := time.UnixMilli(s.LastValidatedMs)
+	days := now.Sub(anchor).Hours() / 24.0
+	if days <= 0 {
+		return base
+	}
+	decayed := base * math.Pow(SkillConfidenceDecayRate, days)
+	if decayed < 0 {
+		return 0
+	}
+	return decayed
+}
+
+// IsHighRisk returns true if the skill's risk level is HIGH or RESTRICTED.
+func (s *Skill) IsHighRisk() bool {
+	rl := strings.ToUpper(s.RiskLevel)
+	return rl == "HIGH" || rl == "RESTRICTED"
 }
 
 // SkillTrigger defines how a skill gets activated.

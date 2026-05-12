@@ -10189,10 +10189,11 @@
         "WORKFLOW_TEMPLATE_COMPETITIVE_INTEL",
         "WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT",
         "WORKFLOW_TEMPLATE_PERFORMANCE_REPORT",
-        "WORKFLOW_TEMPLATE_DEEP_RESEARCH"
+        "WORKFLOW_TEMPLATE_DEEP_RESEARCH",
+        "WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT"
       ],
       "default": "WORKFLOW_TEMPLATE_UNSPECIFIED",
-      "description": "WorkflowTemplate enumerates the bundled workflow templates.\n\n - WORKFLOW_TEMPLATE_RESEARCH_REPORT: Pipeline: research analyst → creative writer → UI specialist.\n - WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD: Pipeline: Teradata analyst → UI specialist.\n - WORKFLOW_TEMPLATE_COMPETITIVE_INTEL: Fork-Join (summary merge): 3× research analyst (product / tech / market).\n - WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_PERFORMANCE_REPORT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_DEEP_RESEARCH: Fork-Join (summary merge): 3× research analyst from technical / financial /\nstrategic angles."
+      "description": "WorkflowTemplate enumerates the bundled workflow templates.\n\n - WORKFLOW_TEMPLATE_RESEARCH_REPORT: Pipeline: research analyst → creative writer → UI specialist.\n - WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD: Pipeline: Teradata analyst → UI specialist.\n - WORKFLOW_TEMPLATE_COMPETITIVE_INTEL: Fork-Join (summary merge): 3× research analyst (product / tech / market).\n - WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_PERFORMANCE_REPORT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_DEEP_RESEARCH: Fork-Join (summary merge): 3× research analyst from technical / financial /\nstrategic angles.\n - WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT: Pipeline (schedulable, weekly): skill-auditor → report-writer."
     },
     "v1WorkflowTemplateAgentSpec": {
       "type": "object",

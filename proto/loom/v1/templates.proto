@@ -187,6 +187,9 @@ enum WorkflowTemplate {
   // Fork-Join (summary merge): 3× research analyst from technical / financial /
   // strategic angles.
   WORKFLOW_TEMPLATE_DEEP_RESEARCH = 6;
+
+  // Pipeline (schedulable, weekly): skill-auditor → report-writer.
+  WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT = 7;
 }
 
 // WorkflowTemplateAgentSpec defines one agent slot in a workflow template.
