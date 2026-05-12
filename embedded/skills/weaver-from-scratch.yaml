@@ -1,0 +1,191 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: weaver-from-scratch
+  title: Custom Agent & Workflow Authoring
+  description: Hand-rolled agent / workflow creation when no preset or template fits the user's intent.
+  domain: meta-agent
+  version: "1.0.0"
+  author: loom-core
+  labels:
+    surface: weaver
+trigger:
+  slash_commands:
+    - /from-scratch
+    - /custom
+    - /new-agent
+  keywords:
+    - custom agent
+    - build from scratch
+    - hand-write
+    - bespoke workflow
+    - "no preset fits"
+    - "no template fits"
+  mode: HYBRID
+  min_confidence: 0.6
+prompt:
+  instructions: |
+    Use this flow when a preset or template would force a poor fit:
+    - The user's intent doesn't match any preset role
+    - The workflow needs a pattern the registry doesn't cover (custom
+      conditional routing, iterative restart, pair-programming, teacher-
+      student, ad-hoc swarm)
+    - The user requires a specific provider / model / temperature combo
+      that conflicts with every preset's defaults
+
+    ## Decision: did you really need this skill?
+    Before authoring from scratch, double-check:
+    1. Did you call agent_management {"action": "presets"}? Eight presets
+       cover most single-agent intents.
+    2. Did you call agent_management {"action": "templates"}? Six
+       templates cover the common multi-agent shapes.
+    3. Is the user's pattern actually in the supported list (pipeline,
+       fork_join, debate, parallel, conditional, swarm, iterative,
+       pair_programming, teacher_student)?
+
+    If yes to any of those and a preset / template is "close enough",
+    apply it and let the user iterate.
+
+    ## Flow (when from-scratch is justified)
+    1. Use agent_management {"action": "discover", "type": "pattern_config",
+       "pattern_type": "<chosen>"} to see exact required fields for the
+       pattern (you almost certainly need this).
+    2. Use tool_search to discover available tools — do NOT guess tool
+       names. Names that look right but aren't registered fail at
+       runtime, not at authoring time.
+    3. Create each agent with agent_management {"action": "create_agent",
+       "config": {...}}. One call per agent.
+    4. Create the workflow with agent_management
+       {"action": "create_workflow", "config": {...}} after all agents
+       exist on disk.
+    5. Validate with agent_management {"action": "validate",
+       "type": "workflow", "name": "<n>"}.
+
+    ## Agent skeleton (k8s-style)
+    apiVersion: loom/v1
+    kind: Agent
+    metadata:
+      name: <kebab-case-name>
+      version: "1.0.0"
+      description: <one-line>
+    spec:
+      system_prompt: |
+        <direct task instructions; no role-play>
+      tools: [<list of registered tool names>]
+      config:
+        max_turns: 100
+        max_tool_executions: 50
+        timeout_seconds: 1800
+
+    ## Workflow skeleton
+    apiVersion: loom/v1
+    kind: Workflow
+    metadata:
+      name: <kebab-case-name>
+      version: "1.0.0"
+    spec:
+      type: <pattern>            # pipeline | fork_join | debate | swarm | etc.
+      agent_names: [<agent1>, <agent2>, ...]
+      pipeline:                   # or fork_join: / debate: / swarm: ...
+        stages:
+          - agent_name: <agent1>
+            prompt_template: "{{input}}"
+          - agent_name: <agent2>
+            prompt_template: "{{previous}}"
+
+    ## What to avoid
+    - Do NOT skip the `discover pattern_config` call. Field names differ
+      between patterns; guessing causes silent validation failures.
+    - Do NOT use role-prompting ("You are a SQL expert...") — direct
+      task instructions perform better and cost less.
+    - Do NOT set `llm.provider` unless the user EXPLICITLY requested a
+      provider. Agents inherit the server's default LLM.
+    - Do NOT list auto-injected tools (workspace, query_tool_result,
+      conversation_memory, session_memory, get_error_details, publish,
+      shared_memory_*, send_message) in the tool list — they are
+      always-on for workflow agents and double-listing makes validation
+      noisier.
+    - Do NOT create workflows before their agents exist on disk. The
+      validator will fail.
+  constraints:
+    - Always confirm with the user that no preset / template fits before
+      hand-rolling.
+    - Always call discover pattern_config before assembling a workflow.
+    - Validate every config before moving on (validate, type=agent /
+      workflow).
+  output_format: |
+    A walkthrough of: (a) why neither presets nor templates fit, (b) the
+    agents created with their roles and key tool choices, (c) the
+    workflow pattern + the discover call result that informed the
+    pattern_config, (d) the validate output.
+  examples:
+    - user_input: "Build a 4-stage iterative SQL optimization loop with a critic that can restart any earlier stage"
+      expected_output: |
+        Reasoning: No template covers iterative restart with stage-targeted
+        triggers, and four roles (writer, executor, critic, restart-router)
+        don't map onto any preset cleanly. Going from-scratch.
+
+        1) agent_management discover type=pattern_config pattern_type=iterative
+        2) Create 4 agents via agent_management create_agent (one call each)
+        3) Create the workflow via agent_management create_workflow with the
+           iterative pattern + restart_topic wiring
+      explanation: Justifies the from-scratch choice + lists the discover-driven steps.
+tools:
+  required_tools:
+    - agent_management
+    - tool_search
+  preferred_order:
+    - agent_management
+    - tool_search
+pattern_refs: []
+skill_refs: []
+max_prompt_tokens: 2600
+sticky: true
+parent_index_path: meta-agent/weaver/custom
+emit_tasks: true
+task_template:
+  root_title: Custom Agent / Workflow Authoring
+  max_tasks: 7
+  ephemeral_on_deactivate: false
+  steps:
+    - title: Justify the from-scratch choice
+      objective: Confirm no preset and no template fits — record the reason.
+      acceptance_criteria: A one-paragraph rationale citing which presets / templates were considered and why each was rejected.
+      category: decision
+      priority: P1
+    - title: Discover the required tools
+      objective: Use tool_search to find the registered tool names for every capability the new agent needs.
+      acceptance_criteria: All tool names referenced in the final agent config returned exact-match in tool_search results — none are guesses.
+      category: investigation
+      priority: P1
+      depends_on: [0]
+    - title: Discover the pattern config (multi-agent only)
+      objective: For multi-agent flows, call agent_management discover type=pattern_config pattern_type=<chosen> to see exact required fields.
+      acceptance_criteria: Required fields list captured; or skipped with a note if this is a single-agent build.
+      category: investigation
+      priority: P1
+      depends_on: [0]
+    - title: Author each agent YAML
+      objective: Create every required agent via agent_management create_agent. Direct task prompts (no role-prompting), discovered tool names only.
+      acceptance_criteria: Each agent_management create_agent call returns success=true; no validation errors.
+      category: implementation
+      priority: P1
+      depends_on: [1]
+    - title: Author the workflow YAML (multi-agent only)
+      objective: Create the workflow via agent_management create_workflow after all agents exist.
+      acceptance_criteria: agent_management create_workflow returns success=true; agents_referenced existed before this step.
+      category: implementation
+      priority: P1
+      depends_on: [2, 3]
+    - title: Validate end-to-end
+      objective: Call agent_management validate on each agent + the workflow.
+      acceptance_criteria: Every validate call returns valid=true; warnings reviewed and either acted on or explicitly waived.
+      category: review
+      priority: P1
+      depends_on: [4]
+    - title: Brief the user
+      objective: Summarise the custom build — why from-scratch, agents created, pattern shape, how to invoke.
+      acceptance_criteria: Reply names every artifact written + cites the discover pattern_config result for any non-obvious schema choice.
+      category: writing
+      priority: P2
+      depends_on: [5]

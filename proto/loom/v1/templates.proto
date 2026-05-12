@@ -1,0 +1,313 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "loom/v1/orchestration.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// =============================================================================
+// Agent Preset
+// =============================================================================
+//
+// An AgentPreset is a curated bundle of agent-creation defaults — tools,
+// limits, temperature, thinking budget, memory + graph-memory settings —
+// keyed by a stable enum. The user still supplies a name and system prompt;
+// the preset fills the rest. This is the "single-agent scaffolding"
+// counterpart to the WorkflowTemplate registry below.
+
+// AgentPreset enumerates the bundled agent presets a user can instantiate.
+// Each enum value resolves to an AgentPresetInfo in the server-side registry.
+enum AgentPreset {
+  AGENT_PRESET_UNSPECIFIED = 0;
+
+  // General-purpose assistant: unlimited turns, full tools, deep thinking,
+  // long-term graph memory.
+  AGENT_PRESET_PERSONAL_ASSISTANT = 1;
+
+  // Web research analyst: deep web research, large context window,
+  // systematic data synthesis with citations.
+  AGENT_PRESET_RESEARCH_ANALYST = 2;
+
+  // SQL and Teradata-focused data analyst with TD ROM, data-intensive
+  // workload profile, and visualization tooling.
+  AGENT_PRESET_TERADATA_ANALYST = 3;
+
+  // Creative writer: high temperature, strong memory for continuity
+  // across long-form projects.
+  AGENT_PRESET_CREATIVE_WRITER = 4;
+
+  // UI / dashboard specialist: full internet access for reference,
+  // create_ui_app + workspace tooling.
+  AGENT_PRESET_UI_SPECIALIST = 5;
+
+  // Task automator: sub-agent delegation, max tool use, circuit breaker
+  // disabled for long-running operations.
+  AGENT_PRESET_TASK_AUTOMATOR = 6;
+
+  // Quick chat: fast, lightweight Q&A with minimal overhead. No tools,
+  // short context window.
+  AGENT_PRESET_QUICK_CHAT = 7;
+
+  // Coordinator: decomposes goals into tasks and delegates to sub-agents.
+  // Does no work directly.
+  AGENT_PRESET_COORDINATOR = 8;
+}
+
+// AgentPresetInfo describes a single preset for discovery + UI rendering.
+// All fields except Preset are documentation surface — the actual defaults
+// applied at agent-creation time live in PresetDefaults.
+message AgentPresetInfo {
+  // Stable preset identifier.
+  AgentPreset preset = 1;
+
+  // Human-readable display name (e.g. "Personal Assistant").
+  string display_name = 2;
+
+  // One-line description of the preset's intent and trade-offs.
+  string description = 3;
+
+  // Lucide icon name for UI rendering (e.g. "message-square").
+  string icon = 4;
+
+  // Default values applied at agent-creation time. Only zero-value fields
+  // on the user's CreateAgentRequest are filled from these defaults; user-
+  // supplied values always win.
+  PresetDefaults defaults = 5;
+}
+
+// PresetDefaults carries the agent-creation defaults a preset contributes.
+// Field names mirror AgentConfig + BehaviorConfig + MemoryConfig so the
+// preset can be flattened into a CreateAgentRequest with a simple merge.
+//
+// Boolean fields use proto3 optional so the merge can distinguish
+// "explicitly false" from "not specified by the preset".
+message PresetDefaults {
+  // LLM tuning. Numeric zero means "unset"; only specified knobs apply.
+  float temperature = 1;
+  int32 max_tokens = 2;
+  int32 max_context_tokens = 3;
+  int32 reserved_output_tokens = 4;
+
+  // Tool list this preset enables on the created agent. Empty means no
+  // tools (e.g. Quick Chat). Tool names must resolve in the OSS builtin
+  // catalog or the agent's per-config custom tool map.
+  repeated string tools = 5;
+
+  // BehaviorConfig knobs.
+  int32 max_iterations = 6;
+  int32 max_turns = 7;
+  int32 max_tool_executions = 8;
+  int32 timeout_seconds = 9;
+
+  // Workload profile name — maps to MemoryCompressionProfile.
+  // E.g. "CONVERSATIONAL", "DATA_INTENSIVE", "BALANCED".
+  string workload_profile = 10;
+
+  // Thinking level for providers that support extended thinking
+  // (Anthropic). One of: "none", "low", "medium", "high".
+  string thinking_level = 11;
+
+  // Whether prompt-cache control hints should be emitted on LLM calls.
+  optional bool cache_control_enabled = 12;
+
+  // History sliding window. 0 means "use full history".
+  int32 history_window_size = 13;
+
+  // Graph memory configuration. Each field is independently honored;
+  // the user can override any of them. enabled uses proto3 optional so
+  // "explicitly disabled" (Quick Chat) is distinguishable from "default".
+  optional bool graph_memory_enabled = 14;
+  int32 graph_memory_budget_percent = 15;
+  int32 graph_memory_max_candidates = 16;
+
+  // ROM identifier (e.g. "TD" for Teradata) loaded into the agent's
+  // read-only memory at start. Empty means no ROM.
+  string rom = 17;
+
+  // Output-token circuit-breaker threshold. -1 disables the breaker.
+  int32 output_token_cb_threshold = 18;
+
+  // Tool-result kernel sizing knobs. -1 means "unlimited"; 0 means
+  // "fall back to global default".
+  int64 query_tool_result_threshold_bytes = 19;
+  int32 max_tool_results = 20;
+
+  // Optional backend type to wire on agent creation. UNSPECIFIED means
+  // "no backend override; use server default".
+  string backend_type = 21;
+
+  // Whether code-execution sandboxes are permitted for this preset.
+  optional bool allow_code_execution = 22;
+}
+
+// ListAgentPresetsRequest takes no parameters; returns all presets.
+message ListAgentPresetsRequest {}
+
+// ListAgentPresetsResponse returns every registered preset for UI / tool
+// discovery flows.
+message ListAgentPresetsResponse {
+  repeated AgentPresetInfo presets = 1;
+}
+
+// =============================================================================
+// Workflow Template
+// =============================================================================
+//
+// A WorkflowTemplate bundles N agent specs + a pattern config + optional
+// schedule into a one-click workflow scaffold. The server's
+// CreateWorkflowFromTemplate handler walks the template, creates the
+// agents (reusing by name when present), and creates a workflow that
+// composes them under the template's pattern.
+
+// WorkflowTemplate enumerates the bundled workflow templates.
+enum WorkflowTemplate {
+  WORKFLOW_TEMPLATE_UNSPECIFIED = 0;
+
+  // Pipeline: research analyst → creative writer → UI specialist.
+  WORKFLOW_TEMPLATE_RESEARCH_REPORT = 1;
+
+  // Pipeline: Teradata analyst → UI specialist.
+  WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD = 2;
+
+  // Fork-Join (summary merge): 3× research analyst (product / tech / market).
+  WORKFLOW_TEMPLATE_COMPETITIVE_INTEL = 3;
+
+  // Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.
+  WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT = 4;
+
+  // Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.
+  WORKFLOW_TEMPLATE_PERFORMANCE_REPORT = 5;
+
+  // Fork-Join (summary merge): 3× research analyst from technical / financial /
+  // strategic angles.
+  WORKFLOW_TEMPLATE_DEEP_RESEARCH = 6;
+}
+
+// WorkflowTemplateAgentSpec defines one agent slot in a workflow template.
+// At template-application time the server creates an agent from the spec
+// (or reuses an existing agent with the same name) and substitutes its
+// id into the workflow pattern.
+message WorkflowTemplateAgentSpec {
+  // Base preset whose defaults seed this agent.
+  AgentPreset preset = 1;
+
+  // Default agent name (e.g. "research-report:researcher"). The caller
+  // can override this via CreateWorkflowFromTemplateRequest.agent_name_overrides.
+  string default_name = 2;
+
+  // Human-readable agent description.
+  string description = 3;
+
+  // System prompt tailored to this agent's role within the workflow.
+  // Replaces the (empty) default the preset alone would produce — every
+  // workflow-template agent ships with a curated prompt.
+  string system_prompt = 4;
+
+  // Optional temperature override. 0 means "use the preset's temperature".
+  // Useful for tightening creative_writer down (1.0 → 0.7) when the agent
+  // is producing structured output rather than freeform text.
+  float temperature_override = 5;
+}
+
+// WorkflowTemplateInfo describes a single template for discovery + UI.
+// The default_workflow_pattern carries a fully-realized pattern config
+// with stage prompts pre-filled — agent ids are slotted in by the server
+// when the template is instantiated.
+message WorkflowTemplateInfo {
+  WorkflowTemplate template = 1;
+
+  // Human-readable display name (e.g. "Research & Report Generator").
+  string display_name = 2;
+
+  // Description of what this workflow does.
+  string description = 3;
+
+  // Lucide icon name (e.g. "file-search").
+  string icon = 4;
+
+  // Category for grouping (e.g. "research", "data", "operations").
+  string category = 5;
+
+  // Default workflow pattern with stage prompts pre-filled. Agent ids
+  // inside the pattern are zero-valued; the server fills them in from
+  // the agents created during template application.
+  WorkflowPattern default_workflow_pattern = 6;
+
+  // Ordered list of agent specs to create.
+  repeated WorkflowTemplateAgentSpec agents = 7;
+
+  // Whether this template supports cron scheduling. When false the
+  // ScheduleConfig on CreateWorkflowFromTemplateRequest is ignored.
+  bool schedulable = 8;
+
+  // Suggested cron expression for the UI to pre-populate (e.g.
+  // "0 9 * * 1" for weekly Monday 9 AM). Only meaningful when
+  // schedulable=true.
+  string suggested_cron = 9;
+
+  // Suggested IANA timezone (e.g. "UTC", "America/New_York").
+  string suggested_timezone = 10;
+}
+
+// ListWorkflowTemplatesRequest takes no parameters; returns every template.
+message ListWorkflowTemplatesRequest {}
+
+// ListWorkflowTemplatesResponse returns every registered template.
+message ListWorkflowTemplatesResponse {
+  repeated WorkflowTemplateInfo templates = 1;
+}
+
+// CreateWorkflowFromTemplateRequest instantiates a template: creates
+// every agent in the template (or reuses by name), then creates a
+// workflow that composes them under the template's pattern.
+message CreateWorkflowFromTemplateRequest {
+  // Template to instantiate (required).
+  WorkflowTemplate template = 1;
+
+  // Workflow name (required, must be unique).
+  string workflow_name = 2;
+
+  // Optional workflow description. Empty means "use the template description".
+  string workflow_description = 3;
+
+  // Optional: override default agent names. Key is the 0-based agent
+  // index in the template's agents list. Missing indices use the
+  // default name.
+  map<int32, string> agent_name_overrides = 4;
+
+  // Optional: pool-name LLM provider to assign to every created agent.
+  // Empty means "inherit server default".
+  string active_provider = 5;
+}
+
+// CreateWorkflowFromTemplateResponse returns the materialized agents +
+// workflow pattern. Unlike Loom Cloud (which persists workflow definitions),
+// OSS workflows are transient: callers pass the returned WorkflowPattern
+// straight to ExecuteWorkflow or StreamWorkflow. If the template is
+// schedulable, callers pass it to ScheduleWorkflow along with a cron.
+message CreateWorkflowFromTemplateResponse {
+  // Names of agents created (or reused) — order matches the template's
+  // agents list.
+  repeated string agent_names = 1;
+
+  // GUIDs of agents created (or reused) — order matches agent_names.
+  repeated string agent_ids = 2;
+
+  // True for each index where the agent already existed and was reused
+  // rather than freshly created. Same length and order as agent_names.
+  repeated bool reused = 3;
+
+  // Workflow name (always equals request.workflow_name on success).
+  string workflow_name = 4;
+
+  // Fully-materialized workflow pattern with agent ids slotted into every
+  // stage / participant. The caller is the workflow owner and decides
+  // whether to ExecuteWorkflow / StreamWorkflow / ScheduleWorkflow.
+  WorkflowPattern workflow_pattern = 5;
+}

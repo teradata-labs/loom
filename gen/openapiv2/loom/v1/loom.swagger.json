@@ -1682,6 +1682,29 @@
         ]
       }
     },
+    "/v1/presets/agents": {
+      "get": {
+        "summary": "ListAgentPresets returns the set of preconfigured single-agent presets.",
+        "operationId": "LoomService_ListAgentPresets",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListAgentPresetsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/providers": {
       "get": {
         "summary": "ListProviders lists named providers in the global pool with their active state.",
@@ -2486,6 +2509,63 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1WatchSharedMemoryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/templates/workflows": {
+      "get": {
+        "summary": "ListWorkflowTemplates returns the set of preconfigured workflow templates.",
+        "operationId": "LoomService_ListWorkflowTemplates",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListWorkflowTemplatesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/templates/workflows:apply": {
+      "post": {
+        "summary": "CreateWorkflowFromTemplate instantiates a template: creates each agent\nin the template (reusing by name where possible), then creates a\nworkflow that composes them under the template's pattern.",
+        "operationId": "LoomService_CreateWorkflowFromTemplate",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateWorkflowFromTemplateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "CreateWorkflowFromTemplateRequest instantiates a template: creates\nevery agent in the template (or reuses by name), then creates a\nworkflow that composes them under the template's pattern.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateWorkflowFromTemplateRequest"
             }
           }
         ],
@@ -3890,6 +3970,48 @@
       },
       "description": "AgentPosition represents an agent's argument in a debate."
     },
+    "v1AgentPreset": {
+      "type": "string",
+      "enum": [
+        "AGENT_PRESET_UNSPECIFIED",
+        "AGENT_PRESET_PERSONAL_ASSISTANT",
+        "AGENT_PRESET_RESEARCH_ANALYST",
+        "AGENT_PRESET_TERADATA_ANALYST",
+        "AGENT_PRESET_CREATIVE_WRITER",
+        "AGENT_PRESET_UI_SPECIALIST",
+        "AGENT_PRESET_TASK_AUTOMATOR",
+        "AGENT_PRESET_QUICK_CHAT",
+        "AGENT_PRESET_COORDINATOR"
+      ],
+      "default": "AGENT_PRESET_UNSPECIFIED",
+      "description": "AgentPreset enumerates the bundled agent presets a user can instantiate.\nEach enum value resolves to an AgentPresetInfo in the server-side registry.\n\n - AGENT_PRESET_PERSONAL_ASSISTANT: General-purpose assistant: unlimited turns, full tools, deep thinking,\nlong-term graph memory.\n - AGENT_PRESET_RESEARCH_ANALYST: Web research analyst: deep web research, large context window,\nsystematic data synthesis with citations.\n - AGENT_PRESET_TERADATA_ANALYST: SQL and Teradata-focused data analyst with TD ROM, data-intensive\nworkload profile, and visualization tooling.\n - AGENT_PRESET_CREATIVE_WRITER: Creative writer: high temperature, strong memory for continuity\nacross long-form projects.\n - AGENT_PRESET_UI_SPECIALIST: UI / dashboard specialist: full internet access for reference,\ncreate_ui_app + workspace tooling.\n - AGENT_PRESET_TASK_AUTOMATOR: Task automator: sub-agent delegation, max tool use, circuit breaker\ndisabled for long-running operations.\n - AGENT_PRESET_QUICK_CHAT: Quick chat: fast, lightweight Q\u0026A with minimal overhead. No tools,\nshort context window.\n - AGENT_PRESET_COORDINATOR: Coordinator: decomposes goals into tasks and delegates to sub-agents.\nDoes no work directly."
+    },
+    "v1AgentPresetInfo": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "$ref": "#/definitions/v1AgentPreset",
+          "description": "Stable preset identifier."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable display name (e.g. \"Personal Assistant\")."
+        },
+        "description": {
+          "type": "string",
+          "description": "One-line description of the preset's intent and trade-offs."
+        },
+        "icon": {
+          "type": "string",
+          "description": "Lucide icon name for UI rendering (e.g. \"message-square\")."
+        },
+        "defaults": {
+          "$ref": "#/definitions/v1PresetDefaults",
+          "description": "Default values applied at agent-creation time. Only zero-value fields\non the user's CreateAgentRequest are filled from these defaults; user-\nsupplied values always win."
+        }
+      },
+      "description": "AgentPresetInfo describes a single preset for discovery + UI rendering.\nAll fields except Preset are documentation surface — the actual defaults\napplied at agent-creation time live in PresetDefaults."
+    },
     "v1AgentResult": {
       "type": "object",
       "properties": {
@@ -4562,6 +4684,70 @@
         }
       },
       "description": "CreateUIAppResponse returns the created app and its compiled HTML."
+    },
+    "v1CreateWorkflowFromTemplateRequest": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "$ref": "#/definitions/v1WorkflowTemplate",
+          "description": "Template to instantiate (required)."
+        },
+        "workflowName": {
+          "type": "string",
+          "description": "Workflow name (required, must be unique)."
+        },
+        "workflowDescription": {
+          "type": "string",
+          "description": "Optional workflow description. Empty means \"use the template description\"."
+        },
+        "agentNameOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional: override default agent names. Key is the 0-based agent\nindex in the template's agents list. Missing indices use the\ndefault name."
+        },
+        "activeProvider": {
+          "type": "string",
+          "description": "Optional: pool-name LLM provider to assign to every created agent.\nEmpty means \"inherit server default\"."
+        }
+      },
+      "description": "CreateWorkflowFromTemplateRequest instantiates a template: creates\nevery agent in the template (or reuses by name), then creates a\nworkflow that composes them under the template's pattern."
+    },
+    "v1CreateWorkflowFromTemplateResponse": {
+      "type": "object",
+      "properties": {
+        "agentNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of agents created (or reused) — order matches the template's\nagents list."
+        },
+        "agentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "GUIDs of agents created (or reused) — order matches agent_names."
+        },
+        "reused": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          },
+          "description": "True for each index where the agent already existed and was reused\nrather than freshly created. Same length and order as agent_names."
+        },
+        "workflowName": {
+          "type": "string",
+          "description": "Workflow name (always equals request.workflow_name on success)."
+        },
+        "workflowPattern": {
+          "$ref": "#/definitions/v1WorkflowPattern",
+          "description": "Fully-materialized workflow pattern with agent ids slotted into every\nstage / participant. The caller is the workflow owner and decides\nwhether to ExecuteWorkflow / StreamWorkflow / ScheduleWorkflow."
+        }
+      },
+      "description": "CreateWorkflowFromTemplateResponse returns the materialized agents +\nworkflow pattern. Unlike Loom Cloud (which persists workflow definitions),\nOSS workflows are transient: callers pass the returned WorkflowPattern\nstraight to ExecuteWorkflow or StreamWorkflow. If the template is\nschedulable, callers pass it to ScheduleWorkflow along with a cron."
     },
     "v1CurriculumStep": {
       "type": "object",
@@ -5555,6 +5741,19 @@
       },
       "description": "LetsEncryptConfig for automatic HTTPS with Let's Encrypt."
     },
+    "v1ListAgentPresetsResponse": {
+      "type": "object",
+      "properties": {
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AgentPresetInfo"
+          }
+        }
+      },
+      "description": "ListAgentPresetsResponse returns every registered preset for UI / tool\ndiscovery flows."
+    },
     "v1ListAgentsResponse": {
       "type": "object",
       "properties": {
@@ -5859,6 +6058,19 @@
         }
       },
       "description": "ListWorkflowExecutionsResponse returns workflow executions."
+    },
+    "v1ListWorkflowTemplatesResponse": {
+      "type": "object",
+      "properties": {
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1WorkflowTemplateInfo"
+          }
+        }
+      },
+      "description": "ListWorkflowTemplatesResponse returns every registered template."
     },
     "v1LoadPatternsRequest": {
       "type": "object",
@@ -6880,6 +7092,108 @@
         }
       },
       "description": "PostgresStorageConfig configures the PostgreSQL storage backend."
+    },
+    "v1PresetDefaults": {
+      "type": "object",
+      "properties": {
+        "temperature": {
+          "type": "number",
+          "format": "float",
+          "description": "LLM tuning. Numeric zero means \"unset\"; only specified knobs apply."
+        },
+        "maxTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "maxContextTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "reservedOutputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool list this preset enables on the created agent. Empty means no\ntools (e.g. Quick Chat). Tool names must resolve in the OSS builtin\ncatalog or the agent's per-config custom tool map."
+        },
+        "maxIterations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "BehaviorConfig knobs."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "maxToolExecutions": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "workloadProfile": {
+          "type": "string",
+          "description": "Workload profile name — maps to MemoryCompressionProfile.\nE.g. \"CONVERSATIONAL\", \"DATA_INTENSIVE\", \"BALANCED\"."
+        },
+        "thinkingLevel": {
+          "type": "string",
+          "description": "Thinking level for providers that support extended thinking\n(Anthropic). One of: \"none\", \"low\", \"medium\", \"high\"."
+        },
+        "cacheControlEnabled": {
+          "type": "boolean",
+          "description": "Whether prompt-cache control hints should be emitted on LLM calls."
+        },
+        "historyWindowSize": {
+          "type": "integer",
+          "format": "int32",
+          "description": "History sliding window. 0 means \"use full history\"."
+        },
+        "graphMemoryEnabled": {
+          "type": "boolean",
+          "description": "Graph memory configuration. Each field is independently honored;\nthe user can override any of them. enabled uses proto3 optional so\n\"explicitly disabled\" (Quick Chat) is distinguishable from \"default\"."
+        },
+        "graphMemoryBudgetPercent": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "graphMemoryMaxCandidates": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "rom": {
+          "type": "string",
+          "description": "ROM identifier (e.g. \"TD\" for Teradata) loaded into the agent's\nread-only memory at start. Empty means no ROM."
+        },
+        "outputTokenCbThreshold": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Output-token circuit-breaker threshold. -1 disables the breaker."
+        },
+        "queryToolResultThresholdBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Tool-result kernel sizing knobs. -1 means \"unlimited\"; 0 means\n\"fall back to global default\"."
+        },
+        "maxToolResults": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "backendType": {
+          "type": "string",
+          "description": "Optional backend type to wire on agent creation. UNSPECIFIED means\n\"no backend override; use server default\"."
+        },
+        "allowCodeExecution": {
+          "type": "boolean",
+          "description": "Whether code-execution sandboxes are permitted for this preset."
+        }
+      },
+      "description": "PresetDefaults carries the agent-creation defaults a preset contributes.\nField names mirror AgentConfig + BehaviorConfig + MemoryConfig so the\npreset can be flattened into a CreateAgentRequest with a simple merge.\n\nBoolean fields use proto3 optional so the merge can distinguish\n\"explicitly false\" from \"not specified by the preset\"."
     },
     "v1ProviderEntry": {
       "type": "object",
@@ -9865,6 +10179,96 @@
         }
       },
       "description": "WorkflowResult contains the execution results from a workflow pattern."
+    },
+    "v1WorkflowTemplate": {
+      "type": "string",
+      "enum": [
+        "WORKFLOW_TEMPLATE_UNSPECIFIED",
+        "WORKFLOW_TEMPLATE_RESEARCH_REPORT",
+        "WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD",
+        "WORKFLOW_TEMPLATE_COMPETITIVE_INTEL",
+        "WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT",
+        "WORKFLOW_TEMPLATE_PERFORMANCE_REPORT",
+        "WORKFLOW_TEMPLATE_DEEP_RESEARCH"
+      ],
+      "default": "WORKFLOW_TEMPLATE_UNSPECIFIED",
+      "description": "WorkflowTemplate enumerates the bundled workflow templates.\n\n - WORKFLOW_TEMPLATE_RESEARCH_REPORT: Pipeline: research analyst → creative writer → UI specialist.\n - WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD: Pipeline: Teradata analyst → UI specialist.\n - WORKFLOW_TEMPLATE_COMPETITIVE_INTEL: Fork-Join (summary merge): 3× research analyst (product / tech / market).\n - WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_PERFORMANCE_REPORT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_DEEP_RESEARCH: Fork-Join (summary merge): 3× research analyst from technical / financial /\nstrategic angles."
+    },
+    "v1WorkflowTemplateAgentSpec": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "$ref": "#/definitions/v1AgentPreset",
+          "description": "Base preset whose defaults seed this agent."
+        },
+        "defaultName": {
+          "type": "string",
+          "description": "Default agent name (e.g. \"research-report:researcher\"). The caller\ncan override this via CreateWorkflowFromTemplateRequest.agent_name_overrides."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable agent description."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt tailored to this agent's role within the workflow.\nReplaces the (empty) default the preset alone would produce — every\nworkflow-template agent ships with a curated prompt."
+        },
+        "temperatureOverride": {
+          "type": "number",
+          "format": "float",
+          "description": "Optional temperature override. 0 means \"use the preset's temperature\".\nUseful for tightening creative_writer down (1.0 → 0.7) when the agent\nis producing structured output rather than freeform text."
+        }
+      },
+      "description": "WorkflowTemplateAgentSpec defines one agent slot in a workflow template.\nAt template-application time the server creates an agent from the spec\n(or reuses an existing agent with the same name) and substitutes its\nid into the workflow pattern."
+    },
+    "v1WorkflowTemplateInfo": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "$ref": "#/definitions/v1WorkflowTemplate"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable display name (e.g. \"Research \u0026 Report Generator\")."
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of what this workflow does."
+        },
+        "icon": {
+          "type": "string",
+          "description": "Lucide icon name (e.g. \"file-search\")."
+        },
+        "category": {
+          "type": "string",
+          "description": "Category for grouping (e.g. \"research\", \"data\", \"operations\")."
+        },
+        "defaultWorkflowPattern": {
+          "$ref": "#/definitions/v1WorkflowPattern",
+          "description": "Default workflow pattern with stage prompts pre-filled. Agent ids\ninside the pattern are zero-valued; the server fills them in from\nthe agents created during template application."
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1WorkflowTemplateAgentSpec"
+          },
+          "description": "Ordered list of agent specs to create."
+        },
+        "schedulable": {
+          "type": "boolean",
+          "description": "Whether this template supports cron scheduling. When false the\nScheduleConfig on CreateWorkflowFromTemplateRequest is ignored."
+        },
+        "suggestedCron": {
+          "type": "string",
+          "description": "Suggested cron expression for the UI to pre-populate (e.g.\n\"0 9 * * 1\" for weekly Monday 9 AM). Only meaningful when\nschedulable=true."
+        },
+        "suggestedTimezone": {
+          "type": "string",
+          "description": "Suggested IANA timezone (e.g. \"UTC\", \"America/New_York\")."
+        }
+      },
+      "description": "WorkflowTemplateInfo describes a single template for discovery + UI.\nThe default_workflow_pattern carries a fully-realized pattern config\nwith stage prompts pre-filled — agent ids are slotted in by the server\nwhen the template is instantiated."
     },
     "v1WorkloadProfile": {
       "type": "string",

@@ -1020,23 +1020,38 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
 	}
 
-	// Deploy weaver-creation skill (if not exists)
+	// Deploy bundled weaver skills (if not exists). One block per skill so
+	// users can delete an individual file to opt out without losing the
+	// others.
 	skillsDir := filepath.Join(loomDataDir, "skills")
-	weaverSkillPath := filepath.Join(skillsDir, "weaver-creation.yaml")
-	if _, err := os.Stat(weaverSkillPath); os.IsNotExist(err) {
-		if err := os.MkdirAll(skillsDir, 0750); err != nil {
-			logger.Warn("Failed to create skills directory", zap.Error(err))
-		}
-		skillData := embedded.GetWeaverCreationSkill()
-		if err := os.WriteFile(weaverSkillPath, skillData, 0600); err != nil {
-			logger.Warn("Failed to deploy weaver-creation skill", zap.Error(err))
+	weaverBundledSkills := []struct {
+		name string
+		data []byte
+	}{
+		{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
+		{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
+		{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
+		{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
+	}
+	for _, s := range weaverBundledSkills {
+		path := filepath.Join(skillsDir, s.name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if err := os.MkdirAll(skillsDir, 0750); err != nil {
+				logger.Warn("Failed to create skills directory", zap.Error(err))
+			}
+			if err := os.WriteFile(path, s.data, 0600); err != nil {
+				logger.Warn("Failed to deploy weaver skill",
+					zap.String("name", s.name), zap.Error(err))
+			} else {
+				logger.Info("Weaver skill installed",
+					zap.String("name", s.name),
+					zap.String("dest", path),
+					zap.Int("size", len(s.data)))
+			}
 		} else {
-			logger.Info("Weaver creation skill installed",
-				zap.String("dest", weaverSkillPath),
-				zap.Int("size", len(skillData)))
+			logger.Debug("Weaver skill already exists",
+				zap.String("name", s.name), zap.String("path", path))
 		}
-	} else {
-		logger.Debug("Weaver creation skill already exists", zap.String("path", weaverSkillPath))
 	}
 
 	// Create agent guide in loom data directory (visible to agents)

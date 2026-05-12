@@ -211,6 +211,14 @@ func (o *Orchestrator) MatchSkills(sessionID, userMsg string, config *SkillsConf
 		minConfidence = 0.7
 	}
 
+	// Prime the library's cache before any of the find* calls below.
+	// FindBySlashCommand and FindByKeywords both iterate l.skillCache
+	// without triggering indexing, so an unprimed library returns no
+	// matches even when the requested skill exists on disk. List() walks
+	// the search paths once and populates the cache for the rest of the
+	// process. Subsequent calls are cache hits.
+	_ = o.library.List()
+
 	var results []*MatchResult
 
 	// 1. Check for slash command (highest priority).

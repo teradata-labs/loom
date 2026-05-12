@@ -54,3 +54,7 @@ tools:
     - tool_search
     - agent_management
 sticky: true
+# This skill carries behavioral rules, not concrete work. Setting
+# emit_tasks: false prevents Phase D from running the LLM decomposer on
+# every weaver turn (since mode is ALWAYS and there is no task_template).
+emit_tasks: false
