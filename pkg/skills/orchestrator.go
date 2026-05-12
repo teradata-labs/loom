@@ -49,6 +49,10 @@ type Orchestrator struct {
 	// stickinessChecker (optional) is consulted during eviction. nil means
 	// only Skill.Sticky is honored, preserving v1.2.0 behavior.
 	stickinessChecker StickinessChecker
+	// onSkillEviction (optional) is called after a skill is evicted from
+	// the active set. Used by the agent layer to boost graph memory salience
+	// for entities related to the evicted skill.
+	onSkillEviction func(sessionID string, skill *Skill, activeFor time.Duration)
 }
 
 // OrchestratorOption configures an Orchestrator during construction.
@@ -97,6 +101,24 @@ func (o *Orchestrator) SetStickinessChecker(checker StickinessChecker) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.stickinessChecker = checker
+}
+
+// WithOnSkillEviction installs a callback that fires after a skill is evicted
+// from the active set. The callback receives the session ID, the evicted skill,
+// and how long the skill was active. Used by the agent layer to boost graph
+// memory salience for entities related to the evicted skill.
+func WithOnSkillEviction(fn func(sessionID string, skill *Skill, activeFor time.Duration)) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.onSkillEviction = fn
+	}
+}
+
+// SetOnSkillEviction installs an eviction callback at runtime. Safe for
+// concurrent use with ActivateSkill.
+func (o *Orchestrator) SetOnSkillEviction(fn func(sessionID string, skill *Skill, activeFor time.Duration)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.onSkillEviction = fn
 }
 
 // NewOrchestrator creates a new skill orchestrator backed by the given library.
@@ -379,11 +401,19 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 			}
 		}
 		if minIdx >= 0 {
+			// Capture evicted skill metadata before removal.
+			evicted := sessions[minIdx]
 			// Remove it (swap with last, truncate).
 			sessions[minIdx] = sessions[len(sessions)-1]
 			sessions = sessions[:len(sessions)-1]
 			if span != nil {
 				span.SetAttribute("eviction", "evicted")
+			}
+			// Fire the eviction callback (outside critical path, async).
+			if o.onSkillEviction != nil && evicted != nil && evicted.Skill != nil {
+				fn := o.onSkillEviction
+				activeFor := time.Since(evicted.ActivatedAt)
+				go fn(sessionID, evicted.Skill, activeFor)
 			}
 		} else if span != nil {
 			// Every existing skill is sticky; the cap overflows for this

@@ -307,6 +307,81 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		})
 	}
 
+	// Install an eviction callback that boosts graph memory salience for
+	// entities related to the evicted skill. When a skill is evicted, its
+	// related knowledge becomes more relevant (the agent just used it),
+	// so touching those memories strengthens future retrieval. Zero LLM
+	// calls — pure FTS search + TouchMemories.
+	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
+		store := a.graphMemoryStore
+		agentName := a.config.Name
+		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
+			ctx := context.Background()
+
+			// Build search query from skill name + first 3 keywords.
+			query := skill.Name
+			keywords := skill.Trigger.Keywords
+			if len(keywords) > 3 {
+				keywords = keywords[:3]
+			}
+			for _, kw := range keywords {
+				query += " " + kw
+			}
+
+			entities, err := store.SearchEntities(ctx, agentName, query, 5)
+			if err != nil {
+				zap.L().Debug("eviction salience boost: entity search failed",
+					zap.String("skill", skill.Name),
+					zap.String("session", sessionID),
+					zap.Error(err))
+				return
+			}
+
+			var memoryIDs []string
+			for _, ent := range entities {
+				memories, recallErr := store.Recall(ctx, memory.RecallOpts{
+					AgentID:   agentName,
+					EntityIDs: []string{ent.ID},
+					Limit:     3,
+				})
+				if recallErr != nil {
+					continue
+				}
+				for _, mem := range memories {
+					memoryIDs = append(memoryIDs, mem.ID)
+				}
+			}
+
+			if len(memoryIDs) == 0 {
+				return
+			}
+
+			// Deduplicate.
+			seen := make(map[string]struct{}, len(memoryIDs))
+			deduped := memoryIDs[:0]
+			for _, id := range memoryIDs {
+				if _, exists := seen[id]; !exists {
+					seen[id] = struct{}{}
+					deduped = append(deduped, id)
+				}
+			}
+
+			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
+				zap.L().Debug("eviction salience boost: TouchMemories failed",
+					zap.String("skill", skill.Name),
+					zap.Error(touchErr))
+				return
+			}
+
+			zap.L().Debug("eviction salience boost: touched memories",
+				zap.String("skill", skill.Name),
+				zap.String("session", sessionID),
+				zap.Duration("active_for", activeFor),
+				zap.Int("entity_count", len(entities)),
+				zap.Int("memory_count", len(deduped)))
+		})
+	}
+
 	return a
 }
 

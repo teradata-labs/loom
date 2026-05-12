@@ -665,7 +665,7 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 		SourceID:      t.ID,
 		MemoryAgentID: t.AssigneeAgentID,
 		Tags:          tags,
-		Salience:      0.6, // moderately salient — completed work is worth remembering
+		Salience:      0.75, // high-signal: validated accomplishment with structured acceptance criteria
 		EntityIDs:     t.EntityIDs,
 	}
 
@@ -675,6 +675,101 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 			zap.String("task_id", t.ID),
 			zap.Error(err))
 	}
+
+	// Boost salience on related entities asynchronously. This leverages
+	// existing FTS search + TouchMemories (zero LLM calls) to strengthen
+	// the relevance signal for entities related to the completed task.
+	go m.boostRelatedEntitySalience(t)
+}
+
+// boostRelatedEntitySalience searches graph memory for entities related to
+// the task's subject matter and touches their memories to bump access count
+// and last-accessed timestamp (which the salience ranking function uses).
+// Best-effort, never blocks the caller, zero LLM calls.
+func (m *Manager) boostRelatedEntitySalience(t *Task) {
+	if m.graphMemory == nil || t == nil {
+		return
+	}
+
+	ctx := context.Background()
+
+	// Build a search query from the task's title + objective.
+	query := t.Title
+	if t.Objective != "" {
+		query += " " + t.Objective
+	}
+
+	entities, err := m.graphMemory.SearchEntities(ctx, t.OwnerAgentID, query, 5)
+	if err != nil {
+		m.logger.Debug("salience boost: entity search failed",
+			zap.String("task_id", t.ID),
+			zap.Error(err))
+		return
+	}
+
+	// Collect memory IDs from the found entities.
+	var memoryIDs []string
+	for _, ent := range entities {
+		// Recall memories attached to this entity (limit 3 per entity).
+		memories, recallErr := m.graphMemory.Recall(ctx, memory.RecallOpts{
+			AgentID:   t.OwnerAgentID,
+			EntityIDs: []string{ent.ID},
+			Limit:     3,
+		})
+		if recallErr != nil {
+			continue
+		}
+		for _, mem := range memories {
+			memoryIDs = append(memoryIDs, mem.ID)
+		}
+	}
+
+	// Also search for the skill entity if metadata contains skill_name.
+	if skillName, ok := t.Metadata["skill_name"]; ok && skillName != "" {
+		skillEntities, skillErr := m.graphMemory.SearchEntities(ctx, t.OwnerAgentID, skillName, 1)
+		if skillErr == nil {
+			for _, ent := range skillEntities {
+				memories, recallErr := m.graphMemory.Recall(ctx, memory.RecallOpts{
+					AgentID:   t.OwnerAgentID,
+					EntityIDs: []string{ent.ID},
+					Limit:     3,
+				})
+				if recallErr != nil {
+					continue
+				}
+				for _, mem := range memories {
+					memoryIDs = append(memoryIDs, mem.ID)
+				}
+			}
+		}
+	}
+
+	if len(memoryIDs) == 0 {
+		return
+	}
+
+	// Deduplicate memory IDs.
+	seen := make(map[string]struct{}, len(memoryIDs))
+	deduped := memoryIDs[:0]
+	for _, id := range memoryIDs {
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			deduped = append(deduped, id)
+		}
+	}
+
+	if err := m.graphMemory.TouchMemories(ctx, deduped); err != nil {
+		m.logger.Debug("salience boost: TouchMemories failed",
+			zap.String("task_id", t.ID),
+			zap.Int("memory_count", len(deduped)),
+			zap.Error(err))
+		return
+	}
+
+	m.logger.Debug("salience boost: touched memories on task close",
+		zap.String("task_id", t.ID),
+		zap.Int("entity_count", len(entities)),
+		zap.Int("memory_count", len(deduped)))
 }
 
 // populateChildIDs queries child tasks and fills the ChildIDs field.

@@ -6,8 +6,10 @@
 package skills
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -140,4 +142,129 @@ func TestSetStickinessChecker_RuntimeUpdate(t *testing.T) {
 		"runtime-installed checker must be consulted during eviction")
 	names := activeSkillNamesForSession(o, "s")
 	assert.Contains(t, names, "a", "runtime checker must keep 'a' active")
+}
+
+func TestOnSkillEviction_CalledOnEviction(t *testing.T) {
+	var mu sync.Mutex
+	var evictedSkillName string
+	var evictedSessionID string
+	var evictedDuration time.Duration
+
+	callback := func(sessionID string, skill *Skill, activeFor time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		evictedSkillName = skill.Name
+		evictedSessionID = sessionID
+		evictedDuration = activeFor
+	}
+
+	o := NewOrchestrator(NewLibrary(),
+		WithMaxConcurrentSkills(2),
+		WithOnSkillEviction(callback),
+	)
+
+	o.ActivateSkill("sess-1", &Skill{Name: "a"}, "test", "", 0.1)
+	o.ActivateSkill("sess-1", &Skill{Name: "b"}, "test", "", 0.7)
+	// This should evict "a" (lowest confidence).
+	o.ActivateSkill("sess-1", &Skill{Name: "c"}, "test", "", 0.9)
+
+	// Callback fires asynchronously.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "a", evictedSkillName, "lowest-confidence skill should be evicted")
+	assert.Equal(t, "sess-1", evictedSessionID)
+	assert.Greater(t, evictedDuration, time.Duration(0))
+}
+
+func TestOnSkillEviction_NotCalledWhenNoEviction(t *testing.T) {
+	callCount := atomic.Int32{}
+
+	callback := func(_ string, _ *Skill, _ time.Duration) {
+		callCount.Add(1)
+	}
+
+	o := NewOrchestrator(NewLibrary(),
+		WithMaxConcurrentSkills(3),
+		WithOnSkillEviction(callback),
+	)
+
+	// Activate only 2 skills (cap is 3) — no eviction should happen.
+	o.ActivateSkill("s", &Skill{Name: "a"}, "test", "", 0.5)
+	o.ActivateSkill("s", &Skill{Name: "b"}, "test", "", 0.7)
+
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, int32(0), callCount.Load(),
+		"callback must not fire when no eviction occurs")
+}
+
+func TestSetOnSkillEviction_RuntimeInstall(t *testing.T) {
+	callCount := atomic.Int32{}
+
+	o := NewOrchestrator(NewLibrary(), WithMaxConcurrentSkills(2))
+
+	// Activate 2 skills, then install the callback, then trigger eviction.
+	o.ActivateSkill("s", &Skill{Name: "a"}, "test", "", 0.1)
+	o.ActivateSkill("s", &Skill{Name: "b"}, "test", "", 0.6)
+
+	o.SetOnSkillEviction(func(_ string, _ *Skill, _ time.Duration) {
+		callCount.Add(1)
+	})
+
+	// Trigger eviction.
+	o.ActivateSkill("s", &Skill{Name: "c"}, "test", "", 0.9)
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(1), callCount.Load(),
+		"runtime-installed eviction callback must fire")
+}
+
+func TestOnSkillEviction_ReceivesCorrectSkillData(t *testing.T) {
+	type evictionRecord struct {
+		SessionID string
+		SkillName string
+		Keywords  []string
+	}
+
+	var mu sync.Mutex
+	var records []evictionRecord
+
+	callback := func(sessionID string, skill *Skill, _ time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		records = append(records, evictionRecord{
+			SessionID: sessionID,
+			SkillName: skill.Name,
+			Keywords:  skill.Trigger.Keywords,
+		})
+	}
+
+	o := NewOrchestrator(NewLibrary(),
+		WithMaxConcurrentSkills(2),
+		WithOnSkillEviction(callback),
+	)
+
+	skillA := &Skill{
+		Name: "sql-optimization",
+		Trigger: SkillTrigger{
+			Keywords: []string{"sql", "optimize", "query", "performance"},
+		},
+	}
+	skillB := &Skill{Name: "code-review"}
+	skillC := &Skill{Name: "testing"}
+
+	o.ActivateSkill("s", skillA, "keyword", "sql", 0.2)
+	o.ActivateSkill("s", skillB, "keyword", "review", 0.7)
+	// Evicts skillA.
+	o.ActivateSkill("s", skillC, "keyword", "test", 0.9)
+
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, records, 1)
+	assert.Equal(t, "sql-optimization", records[0].SkillName)
+	assert.Equal(t, "s", records[0].SessionID)
+	assert.Equal(t, []string{"sql", "optimize", "query", "performance"}, records[0].Keywords)
 }
