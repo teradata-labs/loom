@@ -164,6 +164,16 @@ func (e *Emitter) EmitForActivation(ctx context.Context, req EmitRequest) (*Emit
 		return &EmitResult{Source: "none"}, nil
 	}
 
+	// Ensure the referenced board exists before any CreateTask. The tasks
+	// table FK-references task_boards(id); a non-empty BoardID that does
+	// not exist in storage triggers `FOREIGN KEY constraint failed` on
+	// every step, silently turning Phase D into a no-op (failures landed
+	// in zap.L() warns that, until cmd_serve.go wired ReplaceGlobals,
+	// went to a Nop logger). Empty BoardID is fine and skips the ensure.
+	if err := e.ensureBoard(ctx, req.BoardID, req.Skill.Name); err != nil {
+		return nil, fmt.Errorf("emitter: ensure board: %w", err)
+	}
+
 	if req.Skill.TaskTemplate != nil && len(req.Skill.TaskTemplate.Steps) > 0 {
 		return e.emitTemplate(ctx, req)
 	}
@@ -369,6 +379,41 @@ func (e *Emitter) emitDecomposed(ctx context.Context, req EmitRequest) (*EmitRes
 
 // lookupExisting wraps GetTaskByIdempotencyKey + isn't-found semantics for
 // the decomposer's marker check.
+// ensureBoard makes sure the named board exists before emission begins.
+// Empty boardID is a valid "board-less" mode — tasks land with NULL board_id
+// and are still queryable via owner. For a non-empty boardID we probe via
+// GetBoard; if the board is missing (or the probe fails for any reason) we
+// attempt to create it. A concurrent racing emitter that beats us to the
+// create is handled by a second GetBoard probe so we don't surface the
+// duplicate-key error as a Phase D failure.
+//
+// The auto-created board carries a generated name pointing at the skill that
+// triggered creation, so operators inspecting `task_boards` can see where
+// the row came from. Callers (agent.go Phase D) may pre-create the board
+// with a curated name to override this default — the ensure is a safety net,
+// not the documented public API for board provisioning.
+func (e *Emitter) ensureBoard(ctx context.Context, boardID, skillName string) error {
+	if boardID == "" {
+		return nil
+	}
+	if _, err := e.manager.GetBoard(ctx, boardID); err == nil {
+		return nil
+	}
+	name := fmt.Sprintf("auto-created for skill %q", skillName)
+	if _, err := e.manager.CreateBoard(ctx, &task.TaskBoard{ID: boardID, Name: name}); err != nil {
+		// Another goroutine may have created the board between our probe
+		// and our create. One more lookup decides which way that race went.
+		if _, gerr := e.manager.GetBoard(ctx, boardID); gerr == nil {
+			return nil
+		}
+		return err
+	}
+	e.logger.Info("emitter: auto-created board for skill task emission",
+		zap.String("board_id", boardID),
+		zap.String("skill", skillName))
+	return nil
+}
+
 func (e *Emitter) lookupExisting(ctx context.Context, key string) (*task.Task, bool, error) {
 	if key == "" {
 		return nil, false, nil

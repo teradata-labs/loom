@@ -299,3 +299,94 @@ var _ types.LLMProvider = (*scriptedLLM)(nil)
 var _ loomv1.TaskStatus // keep import
 
 // helper kept compatible across go versions
+
+// TestEmit_AutoCreatesReferencedBoard guards against the silent FK-failure
+// path that turned Phase D into a no-op when SkillsConfig.SkillTaskBoardID
+// (or MemoryConfig.TaskBoard.DefaultBoardID) named a board that hadn't been
+// pre-created. The emitter now ensures the board exists before any
+// CreateTask call, so emission lands instead of silently dying inside a
+// `FOREIGN KEY constraint failed` swallowed by a Nop logger.
+func TestEmit_AutoCreatesReferencedBoard(t *testing.T) {
+	m := newTestManager(t)
+	e := NewEmitter(m, nil)
+	ctx := context.Background()
+
+	skill := &skills.Skill{
+		Name:  "release-audit",
+		Title: "Release Audit",
+		TaskTemplate: &skills.SkillTaskTemplate{
+			Steps: []skills.SkillTaskStep{
+				{Title: "step zero", Category: "review"},
+				{Title: "step one", Category: "review", DependsOn: []int32{0}},
+			},
+		},
+	}
+
+	// Sanity: the board does not exist yet.
+	_, err := m.GetBoard(ctx, "ephemeral-board")
+	require.Error(t, err, "board must not exist before emission")
+
+	res, err := e.EmitForActivation(ctx, EmitRequest{
+		Skill:             skill,
+		SessionID:         "sess-1",
+		AgentID:           "agent-1",
+		BoardID:           "ephemeral-board",
+		AgentTasksEnabled: true,
+	})
+	require.NoError(t, err, "emission must succeed instead of FK-failing")
+	require.NotNil(t, res)
+	assert.Len(t, res.Tasks, 2, "both template steps must materialize")
+	assert.Equal(t, 2, res.CreatedCount)
+	assert.Equal(t, "template", res.Source)
+
+	// Verify the board was auto-created with a name that points at the skill.
+	board, err := m.GetBoard(ctx, "ephemeral-board")
+	require.NoError(t, err, "ensureBoard must persist the board")
+	require.NotNil(t, board)
+	assert.Equal(t, "ephemeral-board", board.ID)
+	assert.Contains(t, board.Name, "release-audit",
+		"auto-created board name must reference the originating skill")
+
+	// And the tasks actually landed on that board.
+	for _, tk := range res.Tasks {
+		assert.Equal(t, "ephemeral-board", tk.BoardID, "task must attach to the ensured board")
+	}
+}
+
+// TestEmit_PreexistingBoardNotOverwritten confirms ensureBoard is idempotent:
+// when the named board already exists (e.g. because an operator pre-created
+// it via TaskService.CreateBoard with a curated name), emission must use the
+// existing board rather than overwriting it.
+func TestEmit_PreexistingBoardNotOverwritten(t *testing.T) {
+	m := newTestManager(t)
+	e := NewEmitter(m, nil)
+	ctx := context.Background()
+
+	preCreated, err := m.CreateBoard(ctx, &task.TaskBoard{
+		ID:   "curated-board",
+		Name: "Operator-curated name",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "curated-board", preCreated.ID)
+
+	skill := &skills.Skill{
+		Name:  "release-audit",
+		Title: "Release Audit",
+		TaskTemplate: &skills.SkillTaskTemplate{
+			Steps: []skills.SkillTaskStep{{Title: "only step"}},
+		},
+	}
+	_, err = e.EmitForActivation(ctx, EmitRequest{
+		Skill:             skill,
+		SessionID:         "s",
+		AgentID:           "a",
+		BoardID:           "curated-board",
+		AgentTasksEnabled: true,
+	})
+	require.NoError(t, err)
+
+	got, err := m.GetBoard(ctx, "curated-board")
+	require.NoError(t, err)
+	assert.Equal(t, "Operator-curated name", got.Name,
+		"emitter must not overwrite an existing board's curated name")
+}

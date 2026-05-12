@@ -710,6 +710,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	defer func() { _ = logger.Sync() }()
 
+	// Replace the zap global so library packages that log via zap.L()
+	// (Agent.runConversationLoop Phase D, skill required-tool warnings,
+	// task context errors, etc.) reach the same sink as the structured
+	// server logger. Without this, those diagnostics go to the default
+	// Nop and silently disappear — which is what hid the original
+	// skills-overhaul Phase D wiring gap during initial diagnosis.
+	zap.ReplaceGlobals(logger)
+
 	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
 
 	// Show actual config file used (not just the --config flag)
@@ -1420,13 +1428,18 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Wire task board (opt-in: disabled by default).
-				// To enable for a specific agent, set task_board.enabled: true in its YAML.
+				// Wire task subsystem. The manager is always wired so skills-overhaul
+				// task emission and the sticky-while-open-tasks checker work for every
+				// agent. The per-agent memory.task_board.enabled flag gates only tool
+				// surfacing (task_board builtin, kanban prompt, in-context summary).
 				if taskManager != nil {
 					tbCfg := cfg.Memory.GetTaskBoard()
-					if tbCfg != nil && tbCfg.Enabled {
-						agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
-						logger.Info("    Task board enabled")
+					if tbCfg == nil {
+						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+					}
+					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+					if tbCfg.Enabled {
+						logger.Info("    Task board tool surfacing enabled")
 					}
 				}
 
@@ -1835,6 +1848,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			registry.SetProviderPool(providerPool)
 			logger.Info("Provider pool injected into agent registry",
 				zap.Int("providers", len(providerPool)))
+		}
+		// Inject the task subsystem so registry-built agents reach Phase D
+		// (skills-overhaul task emission) and the sticky-while-open-tasks
+		// eviction checker. The per-agent memory.task_board.enabled flag
+		// still controls task_board tool surfacing; emission is always-on.
+		if registry != nil && taskManager != nil {
+			registry.SetTaskManager(taskManager, taskDecomposer)
+			logger.Info("Task manager injected into agent registry",
+				zap.Bool("decomposer_present", taskDecomposer != nil))
 		}
 		// Wire the eval store for ABTest result persistence.
 		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
@@ -2539,12 +2561,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			// Wire task board (opt-in: disabled by default).
+			// Wire task subsystem. Manager always wired (skills emission unconditional);
+			// per-agent flag gates only tool surfacing.
 			if taskManager != nil {
 				tbCfg := agentConfig.GetMemory().GetTaskBoard()
-				if tbCfg != nil && tbCfg.Enabled {
-					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
-					logger.Info("    Task board enabled (hot-reload)")
+				if tbCfg == nil {
+					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+				}
+				agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+				if tbCfg.Enabled {
+					logger.Info("    Task board tool surfacing enabled (hot-reload)")
 				}
 			}
 

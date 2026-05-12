@@ -38,8 +38,10 @@ import (
 	skillbinding "github.com/teradata-labs/loom/pkg/skills/binding"
 	skilldiscovery "github.com/teradata-labs/loom/pkg/skills/discovery"
 	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
+	"github.com/teradata-labs/loom/pkg/task"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // ReloadCallback is called when an agent config changes.
@@ -76,6 +78,17 @@ type Registry struct {
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
 	// Protected by mu (RW lock shared with the rest of the registry state).
 	providerPool map[string]LLMProvider
+
+	// taskManager + taskDecomposer are the server-level task subsystem
+	// handles injected by cmd_serve.go. When set, every agent built through
+	// buildAgent gets WithTaskBoard wired so the skills-overhaul Phase D
+	// (task emission) path can fire. The agent's per-config
+	// memory.task_board.enabled flag controls only tool surfacing
+	// (task_board builtin + kanban prompt supplement + in-context
+	// injection) — emission and the sticky-while-open-tasks checker are
+	// always-on whenever a manager is present. Protected by mu.
+	taskManager    *task.Manager
+	taskDecomposer *task.Decomposer
 }
 
 // AgentInstanceInfo tracks runtime information about an agent instance
@@ -190,6 +203,26 @@ func (r *Registry) SetProviderPool(pool map[string]LLMProvider) {
 	r.providerPool = pool
 	r.logger.Info("Provider pool configured in registry",
 		zap.Int("providers", len(pool)))
+}
+
+// SetTaskManager injects the server-level task subsystem into the registry.
+// Every agent subsequently built through buildAgent will receive WithTaskBoard
+// so the skills-overhaul task emitter is reachable. The per-agent
+// memory.task_board.enabled flag continues to gate tool/context surfacing
+// (task_board builtin, kanban prompt supplement, in-context task summary),
+// but task emission itself becomes always-on whenever a manager is wired —
+// matching the overhaul-doc invariant that skill activations always produce
+// trackable work.
+//
+// Safe to call concurrently with other registry operations. Must be called
+// before agents are loaded or created to take effect for those agents.
+func (r *Registry) SetTaskManager(manager *task.Manager, decomposer *task.Decomposer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.taskManager = manager
+	r.taskDecomposer = decomposer
+	r.logger.Info("Task manager configured in registry",
+		zap.Bool("decomposer_present", decomposer != nil))
 }
 
 // LoadAgents loads all agent configurations from the agents directory and workflows
@@ -477,8 +510,17 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
-	// Create LLM provider from config
-	llmProvider, err := r.createLLMProvider(config.Llm)
+	// Create LLM provider from config.
+	//
+	// AgentConfig.ActiveProvider is the named-pool selector for the primary
+	// LLM. When the agent supplies no inline llm.provider but does name an
+	// active_provider, synthesize an LLMConfig that points createLLMProvider
+	// at the matching pool entry. Without this, an agent posting only
+	// active_provider silently falls through to the registry's default
+	// provider — see the skills-overhaul E2E regression where every dynamic
+	// agent ran on the server-default model regardless of the named selector.
+	llmCfg := resolvePrimaryLLMConfig(config)
+	llmProvider, err := r.createLLMProvider(llmCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
 	}
@@ -762,6 +804,30 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		opts = append(opts, WithSkillDiscovery(disc))
 	}
 
+	// Wire the task subsystem whenever the registry has a manager, so the
+	// skills-overhaul task emitter (Phase D) is reachable for every agent
+	// built through this path. The per-agent memory.task_board.enabled flag
+	// continues to gate *tool surfacing* downstream
+	// (Agent.checkAndRegisterTaskBoardTool, taskBoardPromptSupplement,
+	// buildTaskContext) — emission is unconditional once a manager is wired.
+	//
+	// We synthesize a disabled TaskBoardConfig when the agent did not
+	// declare one, so a.taskBoardConfig is never nil. That keeps the
+	// emitter's boardID fallback (skill_task_board_id -> default_board_id
+	// -> "") well-defined and avoids requiring agents to opt-in to receive
+	// skill-emitted tasks.
+	r.mu.RLock()
+	taskMgr := r.taskManager
+	taskDec := r.taskDecomposer
+	r.mu.RUnlock()
+	if taskMgr != nil {
+		tbCfg := config.GetMemory().GetTaskBoard()
+		if tbCfg == nil {
+			tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+		}
+		opts = append(opts, WithTaskBoard(taskMgr, taskDec, tbCfg))
+	}
+
 	// Create memory with session storage for trace persistence
 	var memory *Memory
 	var sessionStore SessionStorage
@@ -1009,6 +1075,31 @@ func (r *Registry) isCustomTool(toolName string, config *loomv1.AgentConfig) boo
 		}
 	}
 	return false
+}
+
+// resolvePrimaryLLMConfig returns the LLMConfig that should drive the agent's
+// primary LLM. The inline AgentConfig.Llm wins; when its provider is empty
+// AgentConfig.ActiveProvider is folded in so a pool-name-only agent config
+// resolves the same way an inline {provider: "<pool-name>"} would. The
+// returned value is always non-nil so callers can dereference Provider safely.
+func resolvePrimaryLLMConfig(config *loomv1.AgentConfig) *loomv1.LLMConfig {
+	if config == nil {
+		return &loomv1.LLMConfig{}
+	}
+	if config.Llm == nil {
+		if config.ActiveProvider == "" {
+			return &loomv1.LLMConfig{}
+		}
+		return &loomv1.LLMConfig{Provider: config.ActiveProvider}
+	}
+	if config.Llm.Provider != "" || config.ActiveProvider == "" {
+		return config.Llm
+	}
+	// Clone so we don't mutate the caller's proto. Direct struct copy is
+	// unsafe — generated protos embed sync.Mutex via MessageState.
+	merged, _ := proto.Clone(config.Llm).(*loomv1.LLMConfig)
+	merged.Provider = config.ActiveProvider
+	return merged
 }
 
 // createLLMProvider creates an LLM provider from configuration.

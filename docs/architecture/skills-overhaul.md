@@ -56,7 +56,7 @@ Three structural limits motivated this overhaul:
 | 10 | `pkg/skills/index.HotReloadHandler` | ✅ |
 | 11 | `loom skills migrate` CLI | ✅ |
 | 12 | Architecture docs (this file) | ✅ |
-| 13 | End-to-end verification (`just check`, manual TUI) | 📋 |
+| 13 | End-to-end verification (`just check`, live gRPC drive) | ✅ |
 
 ### Discovery Pipeline
 
@@ -179,6 +179,73 @@ skill is sticky, `MaxConcurrentSkills` overflows for that turn rather
 than abandoning in-flight work. `WithMaxConcurrentSkills` also fixes a
 pre-existing bug where `ActivateSkill` ignored config and used a
 hardcoded cap of 3.
+
+### Wiring Requirements
+
+The four-phase pipeline has two independent integration points that must be
+satisfied at server startup. Phase 13 E2E verification surfaced that "the
+code is merged" is not the same as "the path is reachable" — both injectors
+below must be in place for Phase D (task emission) to fire.
+
+```
+                       cmd/looms/cmd_serve.go
+                              │
+                              │  (1) SetProviderPool(pool)
+                              │  (2) SetTaskManager(mgr, decomposer)
+                              ▼
+                    ┌─────────────────────┐
+                    │   agent.Registry    │
+                    │                     │
+                    │  providerPool       │
+                    │  taskManager   ◀──── injected before LoadAgents
+                    │  taskDecomposer     │
+                    └──────────┬──────────┘
+                               │  buildAgent(config)
+                               │  always: WithTaskBoard(mgr, dec, tbCfg)
+                               ▼
+                    ┌─────────────────────┐
+                    │       Agent         │
+                    │                     │
+                    │  taskManager   ◀──── never nil when (2) is wired
+                    │  skillTaskEmitter◀── auto-built (agent.go:284)
+                    │  taskBoardConfig ◀── always set; Enabled flag
+                    │                     │   gates only tool/context
+                    └─────────────────────┘
+```
+
+**Injection contract (1) — Provider pool.** Without `SetProviderPool`,
+`AgentConfig.active_provider` and `SkillsConfig.router_model_override`
+resolve to the registry default LLM. Mostly cosmetic for primary LLM
+selection but matters for the router cost-control model (see Cost Model
+below).
+
+**Injection contract (2) — Task subsystem.** Without
+`SetTaskManager`, `a.taskManager` stays nil after `buildAgent` returns;
+the auto-emitter constructor at `pkg/agent/agent.go:284`
+(`if a.skillTaskEmitter == nil && a.skillOrchestrator != nil &&
+a.taskManager != nil`) short-circuits, and Phase D silently no-ops.
+The skill still activates (Phase C) and its prompt still injects
+(Phase E) — only the task-emission half of "activations produce
+trackable work" fails. This was the production gap in the initial
+overhaul landing.
+
+**Two-axis separation: emission vs. tool surfacing.** Once contract (2)
+is satisfied:
+
+| Behavior | Gated by |
+|----------|----------|
+| Skill task emission (Phase D) | `taskManager != nil` |
+| Sticky-while-open-tasks check | `taskManager != nil` |
+| `task_board` builtin tool registered | `taskBoardConfig.Enabled` |
+| Kanban prompt supplement injected | `taskBoardConfig.Enabled` |
+| In-context task summary (`buildTaskContext`) | `taskBoardConfig.Enabled` |
+
+The split means a server-level operator decision (wire the task
+subsystem on or off) and a per-agent author decision (does this agent
+need to *interact* with the board, or is it a fire-and-forget producer
+of work for downstream agents?) are now orthogonal — matching the
+overhaul's "activations always produce trackable work" invariant
+without forcing every agent to carry the kanban tool surface.
 
 ### Limitations and Known Gaps
 
