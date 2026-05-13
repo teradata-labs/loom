@@ -247,6 +247,31 @@ of work for downstream agents?) are now orthogonal — matching the
 overhaul's "activations always produce trackable work" invariant
 without forcing every agent to carry the kanban tool surface.
 
+### Skill Governance Extensions
+
+Three governance mechanisms layer on top of the Phase C activation gate:
+
+**Confidence decay.** Each skill carries `confidence` (float, 0.0-1.0), `status`
+(auto_generated / enriched / validated / deprecated), and `last_validated_ms`
+(unix millis). Effective confidence decays at `0.995^days` from `last_validated_ms`,
+computed lazily at query time (same exponential decay math as graph memory salience).
+`FindByKeywords` multiplies the FTS5 relevance score by effective confidence and
+excludes skills whose decayed value drops below 0.1. Hand-authored skills with
+`confidence == 0` default to 1.0 (no decay).
+
+**Risk-level gate.** Skills may declare `risk_level: high` or `risk_level: restricted`
+(proto enum `SKILL_RISK_LEVEL_HIGH`, `SKILL_RISK_LEVEL_RESTRICTED`). During Phase C,
+after discovery returns candidates but before `ActivateSkill` is called, the agent
+checks `Skill.IsHighRisk()`. When the server runs with `--require-approval` (not
+`--yolo`), HIGH/RESTRICTED candidates are blocked and logged; the skill does not
+activate. With `--yolo`, the gate is bypassed and all risk levels activate normally.
+
+**Staleness audit.** The `skill-health-audit` workflow template
+(`WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT`, enum value 7) runs a 2-agent pipeline that
+scans all skills for confidence below threshold, deprecated status, or missing
+`last_validated_ms`, then produces a report. It is schedulable weekly via the
+template service (`/template skill-health-audit`).
+
 ### Limitations and Known Gaps
 
 - ⚠️ **`mcp_servers` activation not implemented.** `SkillToolConfig.MCPServers`

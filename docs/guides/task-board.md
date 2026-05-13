@@ -329,6 +329,10 @@ Re-activation of the same skill on the same session returns existing tasks rathe
 
 The skills config has a `tasks_enabled` flag (default: true). When set to false, no skill emits tasks regardless of per-skill settings.
 
+### Periodic Skill Maintenance
+
+The `skill-health-audit` workflow template (`/template skill-health-audit`) is available for periodic skill library maintenance. It runs a 2-agent pipeline that audits all skills for staleness (confidence decay below threshold, deprecated status, missing validation timestamps) and produces an actionable report. Schedule it weekly to keep the skill library healthy.
+
 ### Sticky-While-Open-Tasks
 
 When a skill has open (non-terminal) tasks on the board, it is treated as "sticky" during eviction. The orchestrator will not evict it to make room for a new skill, even if its confidence is lower. This prevents abandoning in-flight work.
