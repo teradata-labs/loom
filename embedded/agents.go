@@ -41,6 +41,37 @@ func GetWeaverCreationSkill() []byte {
 	return WeaverCreationSkillYAML
 }
 
+// WeaverPresetsSkillYAML wires the weaver-presets skill (slash: /preset).
+//
+//go:embed skills/weaver-presets.yaml
+var WeaverPresetsSkillYAML []byte
+
+// GetWeaverPresetsSkill returns the embedded weaver-presets.yaml content.
+func GetWeaverPresetsSkill() []byte {
+	return WeaverPresetsSkillYAML
+}
+
+// WeaverTemplatesSkillYAML wires the weaver-templates skill (slash: /template).
+//
+//go:embed skills/weaver-templates.yaml
+var WeaverTemplatesSkillYAML []byte
+
+// GetWeaverTemplatesSkill returns the embedded weaver-templates.yaml content.
+func GetWeaverTemplatesSkill() []byte {
+	return WeaverTemplatesSkillYAML
+}
+
+// WeaverFromScratchSkillYAML wires the weaver-from-scratch skill
+// (slash: /from-scratch). Fallback when no preset/template fits.
+//
+//go:embed skills/weaver-from-scratch.yaml
+var WeaverFromScratchSkillYAML []byte
+
+// GetWeaverFromScratchSkill returns the embedded weaver-from-scratch.yaml content.
+func GetWeaverFromScratchSkill() []byte {
+	return WeaverFromScratchSkillYAML
+}
+
 // GetStartHere returns the base ROM (START_HERE.md) content.
 // This delegates to pkg/agent/rom_loader.go which is the single source of truth for ROM files.
 // The ROM is embedded from pkg/agent/roms/START_HERE.md at compile time.

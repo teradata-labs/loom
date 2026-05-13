@@ -292,11 +292,15 @@ func TestDocumentParseTool_CSV_DetailedAnalysis_LowCardinality(t *testing.T) {
 		}
 	}
 
+	// Note: explicit returns after t.Fatal so staticcheck's nilness analyzer
+	// sees the dereferences below as unreachable on the nil paths.
 	if categoryStats == nil {
 		t.Fatal("Expected to find 'category' column")
+		return
 	}
 	if regionStats == nil {
 		t.Fatal("Expected to find 'region' column")
+		return
 	}
 
 	// Check that low cardinality is detected

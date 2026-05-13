@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -79,14 +80,15 @@ func (s *TaskStore) CreateTask(ctx context.Context, t *task.Task) (*task.Task, e
 			owner_agent_id, assignee_agent_id, claimed_by_session,
 			parent_id, board_id, entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
-			created_at, updated_at, close_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime(?), datetime(?), ?)`,
+			created_at, updated_at, close_reason, skill_idempotency_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime(?), datetime(?), ?, ?)`,
 		t.ID, t.Title, t.Description, t.Objective, t.Approach, t.AcceptanceCriteria, t.Notes,
 		int32(t.Status), int32(t.Priority), int32(t.Category), string(tagsJSON),
 		t.OwnerAgentID, nilIfEmpty(t.AssigneeAgentID), nilIfEmpty(t.ClaimedBySession),
 		nilIfEmpty(t.ParentID), nilIfEmpty(t.BoardID), string(entityIDsJSON), string(metadataJSON),
 		t.CompactionLevel, t.CompactedSummary, outputPolicyJSON, t.EstimatedEffort,
 		now.Format(time.RFC3339), now.Format(time.RFC3339), t.CloseReason,
+		nilIfEmpty(t.SkillIdempotencyKey),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
@@ -104,10 +106,75 @@ func (s *TaskStore) GetTask(ctx context.Context, id string) (*task.Task, error) 
 			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
-			created_at, updated_at, claimed_at, closed_at, close_reason
+			created_at, updated_at, claimed_at, closed_at, close_reason,
+			COALESCE(skill_idempotency_key,'')
 		FROM tasks WHERE id = ? AND deleted_at IS NULL`, id)
 
 	return scanTask(row)
+}
+
+// HasOpenSkillTasks returns true when any task with skill_idempotency_key
+// matching skill:<name>|sess:<sess>|% is still in flight (status not DONE
+// and not CANCELLED). Soft-deleted tasks are excluded.
+func (s *TaskStore) HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error) {
+	if skillName == "" || sessionID == "" {
+		return false, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.has_open_skill_tasks")
+	defer s.tracer.EndSpan(span)
+
+	prefix := fmt.Sprintf("skill:%s|sess:%s|%%", skillName, sessionID)
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM tasks
+		WHERE skill_idempotency_key LIKE ?
+		  AND status NOT IN (?, ?)
+		  AND deleted_at IS NULL
+		LIMIT 1`,
+		prefix,
+		int32(loomv1.TaskStatus_TASK_STATUS_DONE),
+		int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("has open skill tasks: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GetTaskByIdempotencyKey returns the task that owns the given idempotency
+// key, or (nil, nil) when no such task exists. Used by the skills task
+// emitter to dedupe concurrent skill activations.
+func (s *TaskStore) GetTaskByIdempotencyKey(ctx context.Context, key string) (*task.Task, error) {
+	if key == "" {
+		return nil, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.get_by_idempotency_key")
+	defer s.tracer.EndSpan(span)
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, title, description, objective, approach, acceptance_criteria, notes,
+			status, priority, category, tags_json,
+			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
+			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
+			compaction_level, compacted_summary, output_policy_json, estimated_effort,
+			created_at, updated_at, claimed_at, closed_at, close_reason,
+			COALESCE(skill_idempotency_key,'')
+		FROM tasks
+		WHERE skill_idempotency_key = ? AND deleted_at IS NULL
+		LIMIT 1`, key)
+
+	t, err := scanTask(row)
+	if err != nil {
+		// scanTask wraps "no rows" as "scan task: sql: no rows in result set".
+		// Surface (nil, nil) instead so callers can distinguish "not found"
+		// from a real I/O failure.
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "no rows") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return t, nil
 }
 
 func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*task.Task, error) {
@@ -139,6 +206,7 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 			compaction_level = ?, compacted_summary = ?,
 			output_policy_json = ?, estimated_effort = ?,
 			close_reason = ?, claimed_at = ?, closed_at = ?,
+			skill_idempotency_key = ?,
 			updated_at = datetime(?)
 		WHERE id = ? AND deleted_at IS NULL`,
 		t.Title, t.Description, t.Objective, t.Approach,
@@ -150,6 +218,7 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 		t.CompactionLevel, t.CompactedSummary,
 		outputPolicyJSON, t.EstimatedEffort,
 		t.CloseReason, formatNullableTime(t.ClaimedAt), formatNullableTime(t.ClosedAt),
+		nilIfEmpty(t.SkillIdempotencyKey),
 		now.Format(time.RFC3339), t.ID,
 	)
 	if err != nil {
@@ -236,7 +305,8 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
-			created_at, updated_at, claimed_at, closed_at, close_reason
+			created_at, updated_at, claimed_at, closed_at, close_reason,
+			COALESCE(skill_idempotency_key,'')
 		FROM tasks t WHERE ` + where + // #nosec G202 -- where is built from validated enum conditions with ? placeholders
 		` ORDER BY t.priority ASC, t.created_at ASC`
 
@@ -473,7 +543,8 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
-			created_at, updated_at, claimed_at, closed_at, close_reason
+			created_at, updated_at, claimed_at, closed_at, close_reason,
+			COALESCE(skill_idempotency_key,'')
 		FROM tasks t WHERE %s
 		ORDER BY t.priority ASC, t.created_at ASC
 		LIMIT %d`, where, limit)
@@ -512,7 +583,8 @@ func (s *TaskStore) GetBlockedTasks(ctx context.Context, boardID string) ([]*tas
 			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
-			created_at, updated_at, claimed_at, closed_at, close_reason
+			created_at, updated_at, claimed_at, closed_at, close_reason,
+			COALESCE(skill_idempotency_key,'')
 		FROM tasks t WHERE t.status = ? AND t.deleted_at IS NULL %s
 		ORDER BY t.priority ASC, t.created_at ASC`, boardFilter)
 
@@ -701,6 +773,7 @@ func scanTask(row *sql.Row) (*task.Task, error) {
 		&t.ParentID, &t.BoardID, &entityIDsJSON, &metadataJSON,
 		&t.CompactionLevel, &t.CompactedSummary, &outputPolicyJSON, &t.EstimatedEffort,
 		&createdAtStr, &updatedAtStr, &claimedAtStr, &closedAtStr, &t.CloseReason,
+		&t.SkillIdempotencyKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -748,6 +821,7 @@ func scanTaskRows(rows *sql.Rows) (*task.Task, error) {
 		&t.ParentID, &t.BoardID, &entityIDsJSON, &metadataJSON,
 		&t.CompactionLevel, &t.CompactedSummary, &outputPolicyJSON, &t.EstimatedEffort,
 		&createdAtStr, &updatedAtStr, &claimedAtStr, &closedAtStr, &t.CloseReason,
+		&t.SkillIdempotencyKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)

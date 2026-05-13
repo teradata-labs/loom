@@ -383,6 +383,10 @@ func protoToBoard(p *loomv1.TaskBoard) *task.TaskBoard {
 		})
 	}
 	return &task.TaskBoard{
+		// Honor a client-supplied id so callers can create boards with
+		// stable, well-known names (e.g. the skill_task_board_id an
+		// agent's YAML pins). Storage layer generates a UUID when empty.
+		ID:         p.Id,
 		Name:       p.Name,
 		WorkflowID: p.WorkflowId,
 		Lanes:      lanes,

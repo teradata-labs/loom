@@ -100,6 +100,53 @@ func (m *Manager) CreateTask(ctx context.Context, t *Task) (*Task, error) {
 	return created, nil
 }
 
+// GetTaskByIdempotencyKey returns the task that owns the given idempotency
+// key, or (nil, nil) when no such task exists. Pass-through to the store.
+func (m *Manager) GetTaskByIdempotencyKey(ctx context.Context, key string) (*Task, error) {
+	return m.store.GetTaskByIdempotencyKey(ctx, key)
+}
+
+// HasOpenSkillTasks returns true when at least one task with the given
+// (skill, session) prefix is still in flight. Used by the skills
+// orchestrator to keep skills sticky while they have open work.
+func (m *Manager) HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error) {
+	return m.store.HasOpenSkillTasks(ctx, skillName, sessionID)
+}
+
+// CreateTaskIdempotent looks up an existing task by SkillIdempotencyKey and
+// returns it when present; otherwise it creates the task normally. The
+// boolean return is true when the task was newly created (and history +
+// event were emitted) and false when an existing task was returned.
+//
+// Callers that supply an empty SkillIdempotencyKey degrade to plain
+// CreateTask semantics — the lookup is only meaningful for non-empty keys.
+//
+// Used by the skills task emitter to dedupe concurrent skill activations
+// for the same (skill, session, step) tuple.
+func (m *Manager) CreateTaskIdempotent(ctx context.Context, t *Task) (*Task, bool, error) {
+	ctx, span := m.tracer.StartSpan(ctx, "task_manager.create_idempotent")
+	defer m.tracer.EndSpan(span)
+
+	if t.SkillIdempotencyKey != "" {
+		existing, err := m.store.GetTaskByIdempotencyKey(ctx, t.SkillIdempotencyKey)
+		if err != nil {
+			return nil, false, err
+		}
+		if existing != nil {
+			return existing, false, nil
+		}
+	}
+
+	created, err := m.store.CreateTask(ctx, t)
+	if err != nil {
+		return nil, false, err
+	}
+
+	m.recordHistory(ctx, created.ID, "created", "", StatusName(created.Status), t.OwnerAgentID, "")
+	m.publishEvent(ctx, TopicTaskCreated, created, t.OwnerAgentID)
+	return created, true, nil
+}
+
 // GetTask retrieves a task by ID and populates ChildIDs.
 func (m *Manager) GetTask(ctx context.Context, id string) (*Task, error) {
 	t, err := m.store.GetTask(ctx, id)
@@ -618,7 +665,7 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 		SourceID:      t.ID,
 		MemoryAgentID: t.AssigneeAgentID,
 		Tags:          tags,
-		Salience:      0.6, // moderately salient — completed work is worth remembering
+		Salience:      0.75, // high-signal: validated accomplishment with structured acceptance criteria
 		EntityIDs:     t.EntityIDs,
 	}
 
@@ -628,6 +675,101 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 			zap.String("task_id", t.ID),
 			zap.Error(err))
 	}
+
+	// Boost salience on related entities asynchronously. This leverages
+	// existing FTS search + TouchMemories (zero LLM calls) to strengthen
+	// the relevance signal for entities related to the completed task.
+	go m.boostRelatedEntitySalience(t) // #nosec G118 -- intentional: background worker must outlive the request context
+}
+
+// boostRelatedEntitySalience searches graph memory for entities related to
+// the task's subject matter and touches their memories to bump access count
+// and last-accessed timestamp (which the salience ranking function uses).
+// Best-effort, never blocks the caller, zero LLM calls.
+func (m *Manager) boostRelatedEntitySalience(t *Task) {
+	if m.graphMemory == nil || t == nil {
+		return
+	}
+
+	ctx := context.Background()
+
+	// Build a search query from the task's title + objective.
+	query := t.Title
+	if t.Objective != "" {
+		query += " " + t.Objective
+	}
+
+	entities, err := m.graphMemory.SearchEntities(ctx, t.OwnerAgentID, query, 5)
+	if err != nil {
+		m.logger.Debug("salience boost: entity search failed",
+			zap.String("task_id", t.ID),
+			zap.Error(err))
+		return
+	}
+
+	// Collect memory IDs from the found entities.
+	var memoryIDs []string
+	for _, ent := range entities {
+		// Recall memories attached to this entity (limit 3 per entity).
+		memories, recallErr := m.graphMemory.Recall(ctx, memory.RecallOpts{
+			AgentID:   t.OwnerAgentID,
+			EntityIDs: []string{ent.ID},
+			Limit:     3,
+		})
+		if recallErr != nil {
+			continue
+		}
+		for _, mem := range memories {
+			memoryIDs = append(memoryIDs, mem.ID)
+		}
+	}
+
+	// Also search for the skill entity if metadata contains skill_name.
+	if skillName, ok := t.Metadata["skill_name"]; ok && skillName != "" {
+		skillEntities, skillErr := m.graphMemory.SearchEntities(ctx, t.OwnerAgentID, skillName, 1)
+		if skillErr == nil {
+			for _, ent := range skillEntities {
+				memories, recallErr := m.graphMemory.Recall(ctx, memory.RecallOpts{
+					AgentID:   t.OwnerAgentID,
+					EntityIDs: []string{ent.ID},
+					Limit:     3,
+				})
+				if recallErr != nil {
+					continue
+				}
+				for _, mem := range memories {
+					memoryIDs = append(memoryIDs, mem.ID)
+				}
+			}
+		}
+	}
+
+	if len(memoryIDs) == 0 {
+		return
+	}
+
+	// Deduplicate memory IDs.
+	seen := make(map[string]struct{}, len(memoryIDs))
+	deduped := memoryIDs[:0]
+	for _, id := range memoryIDs {
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			deduped = append(deduped, id)
+		}
+	}
+
+	if err := m.graphMemory.TouchMemories(ctx, deduped); err != nil {
+		m.logger.Debug("salience boost: TouchMemories failed",
+			zap.String("task_id", t.ID),
+			zap.Int("memory_count", len(deduped)),
+			zap.Error(err))
+		return
+	}
+
+	m.logger.Debug("salience boost: touched memories on task close",
+		zap.String("task_id", t.ID),
+		zap.Int("entity_count", len(entities)),
+		zap.Int("memory_count", len(deduped)))
 }
 
 // populateChildIDs queries child tasks and fills the ChildIDs field.

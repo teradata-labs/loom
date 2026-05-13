@@ -17,6 +17,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockValidator for testing
@@ -36,9 +38,7 @@ func (m *mockValidator) Validate(ctx context.Context, sql string) []Issue {
 func TestNewGuardrailEngine(t *testing.T) {
 	engine := NewGuardrailEngine()
 
-	if engine == nil {
-		t.Fatal("NewGuardrailEngine returned nil")
-	}
+	require.NotNil(t, engine, "NewGuardrailEngine returned nil")
 
 	if engine.errorCache == nil {
 		t.Error("errorCache not initialized")
@@ -138,9 +138,7 @@ func TestHandleError(t *testing.T) {
 
 	correction := engine.HandleError(ctx, sessionID, sql, errorCode, errorMessage)
 
-	if correction == nil {
-		t.Fatal("HandleError returned nil")
-	}
+	require.NotNil(t, correction, "HandleError returned nil")
 
 	if correction.OriginalSQL != sql {
 		t.Errorf("expected OriginalSQL %q, got %q", sql, correction.OriginalSQL)
@@ -148,9 +146,7 @@ func TestHandleError(t *testing.T) {
 
 	// Verify error was recorded
 	record := engine.GetErrorRecord(sessionID)
-	if record == nil {
-		t.Fatal("error record not stored")
-	}
+	require.NotNil(t, record, "error record not stored")
 
 	if record.AttemptCount != 1 {
 		t.Errorf("expected AttemptCount 1, got %d", record.AttemptCount)
@@ -222,9 +218,7 @@ func TestHandleErrorWithAnalysis(t *testing.T) {
 
 			correction := engine.HandleErrorWithAnalysis(ctx, sessionID, sql, analysis)
 
-			if correction == nil {
-				t.Fatal("HandleErrorWithAnalysis returned nil")
-			}
+			require.NotNil(t, correction, "HandleErrorWithAnalysis returned nil")
 
 			if correction.OriginalSQL != sql {
 				t.Errorf("expected OriginalSQL %q, got %q", sql, correction.OriginalSQL)
@@ -232,9 +226,7 @@ func TestHandleErrorWithAnalysis(t *testing.T) {
 
 			// Verify error record was created
 			record := engine.GetErrorRecord(sessionID)
-			if record == nil {
-				t.Fatal("error record not created")
-			}
+			require.NotNil(t, record, "error record not created")
 
 			if record.AttemptCount != 1 {
 				t.Errorf("expected AttemptCount 1, got %d", record.AttemptCount)

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	_ "github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -30,9 +31,7 @@ func TestNewOrchestrator(t *testing.T) {
 	lib := NewLibrary(nil, "")
 	orch := NewOrchestrator(lib)
 
-	if orch == nil {
-		t.Fatal("NewOrchestrator returned nil")
-	}
+	require.NotNil(t, orch, "NewOrchestrator returned nil")
 
 	if orch.library == nil {
 		t.Error("library not initialized")
@@ -219,9 +218,7 @@ func TestOrchestrator_PlanExecution(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 
-			if plan == nil {
-				t.Fatal("Expected plan, got nil")
-			}
+			require.NotNil(t, plan, "Expected plan, got nil")
 
 			if plan.Intent != tt.intent {
 				t.Errorf("Expected intent %s, got %s", tt.intent, plan.Intent)

@@ -710,6 +710,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 	defer func() { _ = logger.Sync() }()
 
+	// Replace the zap global so library packages that log via zap.L()
+	// (Agent.runConversationLoop Phase D, skill required-tool warnings,
+	// task context errors, etc.) reach the same sink as the structured
+	// server logger. Without this, those diagnostics go to the default
+	// Nop and silently disappear — which is what hid the original
+	// skills-overhaul Phase D wiring gap during initial diagnosis.
+	zap.ReplaceGlobals(logger)
+
 	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
 
 	// Show actual config file used (not just the --config flag)
@@ -1012,23 +1020,38 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Debug("Guide agent already exists", zap.String("path", guideDestPath))
 	}
 
-	// Deploy weaver-creation skill (if not exists)
+	// Deploy bundled weaver skills (if not exists). One block per skill so
+	// users can delete an individual file to opt out without losing the
+	// others.
 	skillsDir := filepath.Join(loomDataDir, "skills")
-	weaverSkillPath := filepath.Join(skillsDir, "weaver-creation.yaml")
-	if _, err := os.Stat(weaverSkillPath); os.IsNotExist(err) {
-		if err := os.MkdirAll(skillsDir, 0750); err != nil {
-			logger.Warn("Failed to create skills directory", zap.Error(err))
-		}
-		skillData := embedded.GetWeaverCreationSkill()
-		if err := os.WriteFile(weaverSkillPath, skillData, 0600); err != nil {
-			logger.Warn("Failed to deploy weaver-creation skill", zap.Error(err))
+	weaverBundledSkills := []struct {
+		name string
+		data []byte
+	}{
+		{name: "weaver-creation.yaml", data: embedded.GetWeaverCreationSkill()},
+		{name: "weaver-presets.yaml", data: embedded.GetWeaverPresetsSkill()},
+		{name: "weaver-templates.yaml", data: embedded.GetWeaverTemplatesSkill()},
+		{name: "weaver-from-scratch.yaml", data: embedded.GetWeaverFromScratchSkill()},
+	}
+	for _, s := range weaverBundledSkills {
+		path := filepath.Join(skillsDir, s.name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if err := os.MkdirAll(skillsDir, 0750); err != nil {
+				logger.Warn("Failed to create skills directory", zap.Error(err))
+			}
+			if err := os.WriteFile(path, s.data, 0600); err != nil {
+				logger.Warn("Failed to deploy weaver skill",
+					zap.String("name", s.name), zap.Error(err))
+			} else {
+				logger.Info("Weaver skill installed",
+					zap.String("name", s.name),
+					zap.String("dest", path),
+					zap.Int("size", len(s.data)))
+			}
 		} else {
-			logger.Info("Weaver creation skill installed",
-				zap.String("dest", weaverSkillPath),
-				zap.Int("size", len(skillData)))
+			logger.Debug("Weaver skill already exists",
+				zap.String("name", s.name), zap.String("path", path))
 		}
-	} else {
-		logger.Debug("Weaver creation skill already exists", zap.String("path", weaverSkillPath))
 	}
 
 	// Create agent guide in loom data directory (visible to agents)
@@ -1420,13 +1443,18 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Wire task board (opt-in: disabled by default).
-				// To enable for a specific agent, set task_board.enabled: true in its YAML.
+				// Wire task subsystem. The manager is always wired so skills-overhaul
+				// task emission and the sticky-while-open-tasks checker work for every
+				// agent. The per-agent memory.task_board.enabled flag gates only tool
+				// surfacing (task_board builtin, kanban prompt, in-context summary).
 				if taskManager != nil {
 					tbCfg := cfg.Memory.GetTaskBoard()
-					if tbCfg != nil && tbCfg.Enabled {
-						agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
-						logger.Info("    Task board enabled")
+					if tbCfg == nil {
+						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+					}
+					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+					if tbCfg.Enabled {
+						logger.Info("    Task board tool surfacing enabled")
 					}
 				}
 
@@ -1767,6 +1795,13 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Task service registered")
 	}
 
+	// Register GraphMemoryService for graph-backed episodic memory management.
+	if graphMemoryStore != nil {
+		graphMemoryServer := server.NewGraphMemoryServer(graphMemoryStore, logger)
+		loomv1.RegisterGraphMemoryServiceServer(grpcServer, graphMemoryServer)
+		logger.Info("Graph memory service registered")
+	}
+
 	// Register JudgeService for multi-judge LLM evaluation capabilities.
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
@@ -1835,6 +1870,15 @@ func runServe(cmd *cobra.Command, args []string) {
 			registry.SetProviderPool(providerPool)
 			logger.Info("Provider pool injected into agent registry",
 				zap.Int("providers", len(providerPool)))
+		}
+		// Inject the task subsystem so registry-built agents reach Phase D
+		// (skills-overhaul task emission) and the sticky-while-open-tasks
+		// eviction checker. The per-agent memory.task_board.enabled flag
+		// still controls task_board tool surfacing; emission is always-on.
+		if registry != nil && taskManager != nil {
+			registry.SetTaskManager(taskManager, taskDecomposer)
+			logger.Info("Task manager injected into agent registry",
+				zap.Bool("decomposer_present", taskDecomposer != nil))
 		}
 		// Wire the eval store for ABTest result persistence.
 		if ess, ok := interface{}(loomService).(evalStoreSetter); ok {
@@ -2539,12 +2583,16 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			// Wire task board (opt-in: disabled by default).
+			// Wire task subsystem. Manager always wired (skills emission unconditional);
+			// per-agent flag gates only tool surfacing.
 			if taskManager != nil {
 				tbCfg := agentConfig.GetMemory().GetTaskBoard()
-				if tbCfg != nil && tbCfg.Enabled {
-					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
-					logger.Info("    Task board enabled (hot-reload)")
+				if tbCfg == nil {
+					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+				}
+				agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
+				if tbCfg.Enabled {
+					logger.Info("    Task board tool surfacing enabled (hot-reload)")
 				}
 			}
 

@@ -159,10 +159,3 @@ CREATE TRIGGER IF NOT EXISTS tasks_fts_delete AFTER DELETE ON tasks
 BEGIN
     DELETE FROM tasks_fts WHERE task_id = OLD.id;
 END;
-
--- ============================================================================
--- Record this migration
--- ============================================================================
-
-INSERT INTO schema_migrations (version, applied_at, description)
-VALUES (3, strftime('%s', 'now'), 'tasks');

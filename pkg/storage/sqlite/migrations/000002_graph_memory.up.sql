@@ -185,10 +185,3 @@ CREATE TRIGGER IF NOT EXISTS graph_entities_fts_delete AFTER DELETE ON graph_ent
 BEGIN
     DELETE FROM graph_entities_fts WHERE entity_id = OLD.id;
 END;
-
--- ============================================================================
--- Record this migration
--- ============================================================================
-
-INSERT INTO schema_migrations (version, applied_at, description)
-VALUES (2, strftime('%s', 'now'), 'graph_memory');

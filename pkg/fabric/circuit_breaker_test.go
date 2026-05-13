@@ -19,15 +19,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewCircuitBreaker(t *testing.T) {
 	config := DefaultCircuitBreakerConfig()
 	cb := NewCircuitBreaker(config)
 
-	if cb == nil {
-		t.Fatal("NewCircuitBreaker returned nil")
-	}
+	require.NotNil(t, cb, "NewCircuitBreaker returned nil")
 
 	if cb.state != StateClosed {
 		t.Errorf("expected initial state Closed, got %v", cb.state)
@@ -574,9 +574,7 @@ func TestNewCircuitBreakerManager(t *testing.T) {
 	config := DefaultCircuitBreakerConfig()
 	manager := NewCircuitBreakerManager(config)
 
-	if manager == nil {
-		t.Fatal("NewCircuitBreakerManager returned nil")
-	}
+	require.NotNil(t, manager, "NewCircuitBreakerManager returned nil")
 
 	if manager.breakers == nil {
 		t.Error("breakers map not initialized")

@@ -30,6 +30,16 @@ type TaskStore interface {
 	// Task CRUD
 	CreateTask(ctx context.Context, task *Task) (*Task, error)
 	GetTask(ctx context.Context, id string) (*Task, error)
+	// GetTaskByIdempotencyKey returns the existing task with the given
+	// SkillIdempotencyKey, or (nil, nil) when no such task exists. Empty
+	// keys always return (nil, nil); they are not stored as a unique
+	// constraint and lookups by empty key are meaningless.
+	GetTaskByIdempotencyKey(ctx context.Context, key string) (*Task, error)
+	// HasOpenSkillTasks returns true when at least one task with the given
+	// (skill, session) prefix in skill_idempotency_key is still in flight
+	// (status not DONE and not CANCELLED). Used by the skills orchestrator
+	// to keep skills sticky while they have open work on the board.
+	HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error)
 	UpdateTask(ctx context.Context, task *Task, fields []string) (*Task, error)
 	DeleteTask(ctx context.Context, id string) error
 	ListTasks(ctx context.Context, opts ListTasksOpts) ([]*Task, int, error)
@@ -90,6 +100,11 @@ type Task struct {
 	CompactedSummary   string
 	OutputPolicy       *loomv1.OutputPolicy
 	EstimatedEffort    string
+
+	// SkillIdempotencyKey is the optional dedup key set by the skills task
+	// emitter. Empty for tasks created by other paths. The persistence layer
+	// enforces uniqueness on non-empty values via a partial unique index.
+	SkillIdempotencyKey string
 }
 
 // TaskDependency is a directed edge in the task dependency graph.

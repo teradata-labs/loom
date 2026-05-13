@@ -80,6 +80,7 @@ Support:
 	rootCmd.AddCommand(artifactsCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(providersCmd)
+	rootCmd.AddCommand(skillsCmd)
 }
 
 func main() {

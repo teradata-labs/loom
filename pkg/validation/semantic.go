@@ -355,6 +355,13 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 		"query_tool_result",   // Progressive disclosure (conditionally registered)
 		"conversation_memory", // Memory tool (auto-registered)
 		"session_memory",      // Session memory tool (auto-registered)
+		// Server-registered tools (not in pkg/shuttle/builtin/registry.go but
+		// reachable by name from agent configs — wired in cmd/looms/cmd_serve.go
+		// and referenced by templates/presets):
+		"create_ui_app",           // UI / dashboard authoring tool
+		"manage_ephemeral_agents", // Sub-agent spawn / despawn
+		"task_board",              // Skill task board + kanban
+		"graph_memory",            // Salience-driven graph memory tool
 	}
 	for _, name := range frameworkTools {
 		knownTools[name] = true

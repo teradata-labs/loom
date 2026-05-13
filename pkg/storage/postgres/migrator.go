@@ -88,6 +88,15 @@ func (m *Migrator) MigrateUp(ctx context.Context) error {
 		return err
 	}
 
+	// Refuse to proceed if any embedded migration at or below max(applied)
+	// is missing from schema_migrations. The MigrateUp loop only applies
+	// versions > currentVersion, so a missing earlier migration would
+	// otherwise be silently skipped and produce schema drift.
+	if err := m.validateAppliedMigrations(ctx); err != nil {
+		span.RecordError(err)
+		return err
+	}
+
 	currentVersion, err := m.CurrentVersion(ctx)
 	if err != nil {
 		span.RecordError(err)
@@ -244,6 +253,54 @@ func (m *Migrator) PendingMigrations(ctx context.Context) ([]Migration, error) {
 		}
 	}
 	return pending, nil
+}
+
+// validateAppliedMigrations errors if any embedded migration with version <=
+// max(applied) is missing from schema_migrations. Catches drift where a
+// later version was recorded but an earlier one was skipped, which the
+// MigrateUp loop would otherwise silently ignore.
+func (m *Migrator) validateAppliedMigrations(ctx context.Context) error {
+	rows, err := m.pool.Query(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		return fmt.Errorf("failed to query applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[int]struct{})
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return fmt.Errorf("failed to scan applied version: %w", err)
+		}
+		applied[v] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to iterate applied versions: %w", err)
+	}
+	if len(applied) == 0 {
+		return nil
+	}
+
+	maxApplied := 0
+	for v := range applied {
+		if v > maxApplied {
+			maxApplied = v
+		}
+	}
+
+	var missing []int
+	for _, mig := range m.migrations {
+		if mig.Version > maxApplied {
+			continue
+		}
+		if _, ok := applied[mig.Version]; !ok {
+			missing = append(missing, mig.Version)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("schema_migrations is inconsistent: embedded migrations %v are missing but later versions are applied (max applied=%d). The database schema may have drifted; manual repair required", missing, maxApplied)
 }
 
 // loadMigrations reads all embedded SQL migration files and pairs up/down files.

@@ -55,6 +55,3 @@ ALTER TABLE artifacts FORCE ROW LEVEL SECURITY;
 ALTER TABLE agent_errors FORCE ROW LEVEL SECURITY;
 ALTER TABLE human_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE sql_result_metadata FORCE ROW LEVEL SECURITY;
-
-INSERT INTO schema_migrations (version, description) VALUES (7, 'user-scoped RLS policies')
-ON CONFLICT (version) DO NOTHING;

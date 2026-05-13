@@ -16,6 +16,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -52,7 +53,8 @@ const taskColumns = `id, title, description, objective, approach, acceptance_cri
 	owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
 	COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 	compaction_level, compacted_summary, output_policy_json, estimated_effort,
-	created_at, updated_at, claimed_at, closed_at, close_reason`
+	created_at, updated_at, claimed_at, closed_at, close_reason,
+	COALESCE(skill_idempotency_key,'')`
 
 // =============================================================================
 // Task CRUD
@@ -87,14 +89,14 @@ func (s *TaskStore) CreateTask(ctx context.Context, t *task.Task) (*task.Task, e
 				owner_agent_id, assignee_agent_id, claimed_by_session,
 				parent_id, board_id, entity_ids_json, metadata_json,
 				compaction_level, compacted_summary, output_policy_json, estimated_effort,
-				user_id, created_at, updated_at, close_reason
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+				user_id, created_at, updated_at, close_reason, skill_idempotency_key
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 			t.ID, t.Title, t.Description, t.Objective, t.Approach, t.AcceptanceCriteria, t.Notes,
 			int32(t.Status), int32(t.Priority), int32(t.Category), tagsJSON,
 			t.OwnerAgentID, nilIfEmpty(t.AssigneeAgentID), nilIfEmpty(t.ClaimedBySession),
 			nilIfEmpty(t.ParentID), nilIfEmpty(t.BoardID), entityIDsJSON, metadataJSON,
 			t.CompactionLevel, t.CompactedSummary, outputPolicyJSON, t.EstimatedEffort,
-			userID, now, now, t.CloseReason,
+			userID, now, now, t.CloseReason, nilIfEmpty(t.SkillIdempotencyKey),
 		)
 		return err
 	})
@@ -116,6 +118,66 @@ func (s *TaskStore) GetTask(ctx context.Context, id string) (*task.Task, error) 
 		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// HasOpenSkillTasks returns true when any task with skill_idempotency_key
+// matching skill:<name>|sess:<sess>|% is still in flight. See the SQLite
+// counterpart for status semantics.
+func (s *TaskStore) HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error) {
+	if skillName == "" || sessionID == "" {
+		return false, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "pg.task.has_open_skill_tasks")
+	defer s.tracer.EndSpan(span)
+
+	prefix := fmt.Sprintf("skill:%s|sess:%s|%%", skillName, sessionID)
+	var count int
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM tasks
+			WHERE skill_idempotency_key LIKE $1
+			  AND status NOT IN ($2, $3)
+			  AND deleted_at IS NULL
+			LIMIT 1`,
+			prefix,
+			int32(loomv1.TaskStatus_TASK_STATUS_DONE),
+			int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
+		).Scan(&count)
+	})
+	if err != nil {
+		return false, fmt.Errorf("has open skill tasks: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GetTaskByIdempotencyKey returns the task that owns the given idempotency
+// key, or (nil, nil) when no such task exists. Used by the skills task
+// emitter to dedupe concurrent skill activations.
+func (s *TaskStore) GetTaskByIdempotencyKey(ctx context.Context, key string) (*task.Task, error) {
+	if key == "" {
+		return nil, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "pg.task.get_by_idempotency_key")
+	defer s.tracer.EndSpan(span)
+
+	var result *task.Task
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `SELECT `+taskColumns+
+			` FROM tasks WHERE skill_idempotency_key = $1 AND deleted_at IS NULL LIMIT 1`, key)
+		var err error
+		result, err = pgScanTask(row)
+		return err
+	})
+	if err != nil {
+		// pgx returns pgx.ErrNoRows for empty result sets via the wrapped
+		// QueryRow; surface that as (nil, nil) so callers can distinguish.
+		if errors.Is(err, pgx.ErrNoRows) || strings.Contains(err.Error(), "no rows") {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return result, nil
@@ -149,8 +211,9 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 				compaction_level=$18, compacted_summary=$19,
 				output_policy_json=$20, estimated_effort=$21,
 				close_reason=$22, claimed_at=$23, closed_at=$24,
-				updated_at=$25
-			WHERE id=$26 AND deleted_at IS NULL`,
+				skill_idempotency_key=$25,
+				updated_at=$26
+			WHERE id=$27 AND deleted_at IS NULL`,
 			t.Title, t.Description, t.Objective, t.Approach,
 			t.AcceptanceCriteria, t.Notes,
 			int32(t.Status), int32(t.Priority), int32(t.Category), tagsJSON,
@@ -160,6 +223,7 @@ func (s *TaskStore) UpdateTask(ctx context.Context, t *task.Task, _ []string) (*
 			t.CompactionLevel, t.CompactedSummary,
 			outputPolicyJSON, t.EstimatedEffort,
 			t.CloseReason, t.ClaimedAt, t.ClosedAt,
+			nilIfEmpty(t.SkillIdempotencyKey),
 			now, t.ID,
 		)
 		if err != nil {
@@ -783,6 +847,7 @@ func pgScanTask(row pgx.Row) (*task.Task, error) {
 		&t.ParentID, &t.BoardID, &entityIDsJSON, &metadataJSON,
 		&t.CompactionLevel, &t.CompactedSummary, &outputPolicyJSON, &t.EstimatedEffort,
 		&t.CreatedAt, &t.UpdatedAt, &claimedAt, &closedAt, &t.CloseReason,
+		&t.SkillIdempotencyKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -820,6 +885,7 @@ func pgScanTaskRows(rows pgx.Rows) (*task.Task, error) {
 		&t.ParentID, &t.BoardID, &entityIDsJSON, &metadataJSON,
 		&t.CompactionLevel, &t.CompactedSummary, &outputPolicyJSON, &t.EstimatedEffort,
 		&t.CreatedAt, &t.UpdatedAt, &claimedAt, &closedAt, &t.CloseReason,
+		&t.SkillIdempotencyKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)

@@ -177,10 +177,3 @@ CREATE POLICY graph_memory_lineage_user_isolation ON graph_memory_lineage
     USING (new_memory_id IN (
         SELECT id FROM graph_memories WHERE user_id = current_setting('app.current_user_id', true)
     ));
-
--- ============================================================================
--- Record this migration
--- ============================================================================
-
-INSERT INTO schema_migrations (version, description) VALUES (10, 'graph memory')
-ON CONFLICT (version) DO NOTHING;

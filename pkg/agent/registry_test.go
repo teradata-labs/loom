@@ -1322,3 +1322,123 @@ func TestBuildAgent_PatternConfigFromProto(t *testing.T) {
 		})
 	}
 }
+
+// TestResolvePrimaryLLMConfig covers the active_provider fallback that ties
+// AgentConfig.ActiveProvider into the named-pool selector used by
+// createLLMProvider. The function must never return nil and must not mutate
+// the caller's proto.
+func TestResolvePrimaryLLMConfig(t *testing.T) {
+	cases := []struct {
+		name         string
+		in           *loomv1.AgentConfig
+		wantProvider string
+		wantSamePtr  bool // whether the returned config should be the input's Llm pointer
+	}{
+		{
+			name:         "nil config returns empty non-nil",
+			in:           nil,
+			wantProvider: "",
+		},
+		{
+			name:         "no llm, no active provider returns empty non-nil",
+			in:           &loomv1.AgentConfig{},
+			wantProvider: "",
+		},
+		{
+			name:         "no llm, active provider synthesises selector",
+			in:           &loomv1.AgentConfig{ActiveProvider: "fast"},
+			wantProvider: "fast",
+		},
+		{
+			name:         "inline llm with provider wins, active provider ignored",
+			in:           &loomv1.AgentConfig{Llm: &loomv1.LLMConfig{Provider: "inline"}, ActiveProvider: "fast"},
+			wantProvider: "inline",
+			wantSamePtr:  true,
+		},
+		{
+			name:         "empty inline llm + active provider yields merged copy",
+			in:           &loomv1.AgentConfig{Llm: &loomv1.LLMConfig{Model: "claude-haiku-4-5-20251001"}, ActiveProvider: "fast"},
+			wantProvider: "fast",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origLlm := (*loomv1.LLMConfig)(nil)
+			if tc.in != nil {
+				origLlm = tc.in.Llm
+			}
+			got := resolvePrimaryLLMConfig(tc.in)
+			require.NotNil(t, got, "resolved config must never be nil")
+			assert.Equal(t, tc.wantProvider, got.Provider)
+
+			if tc.wantSamePtr {
+				assert.Same(t, origLlm, got, "should return the inline pointer when no merge is needed")
+			}
+			// Caller's inline Llm must not be mutated.
+			if tc.in != nil && tc.in.Llm != nil && !tc.wantSamePtr {
+				assert.NotSame(t, tc.in.Llm, got, "merged copy must not alias caller proto")
+				if tc.in.ActiveProvider != "" && tc.in.Llm.Provider == "" {
+					assert.Empty(t, tc.in.Llm.Provider, "must not mutate caller proto")
+				}
+			}
+		})
+	}
+}
+
+// TestRegistry_TaskManagerInjection verifies that SetTaskManager threads the
+// task subsystem through buildAgent so the skills-overhaul Phase D emitter
+// becomes reachable. Before this wire-up, every agent created via the
+// registry path silently skipped task emission because a.taskManager stayed
+// nil — the architecture doc claimed Phase 8 ("CreateTaskIdempotent
+// integration") was complete but the registry never called WithTaskBoard.
+func TestRegistry_TaskManagerInjection(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	ctx := context.Background()
+
+	// Build a real task.Manager on a migrated, in-memory SQLite store so the
+	// test exercises the actual constructor pathway. Using a real Manager
+	// (not a stub) protects us from drift between the registry contract and
+	// task.Manager's surface area.
+	store, mgr, dec := newTaskSubsystem(t)
+	_ = store // closed via t.Cleanup inside newTaskSubsystem
+
+	t.Run("manager wires through to built agent", func(t *testing.T) {
+		registry.SetTaskManager(mgr, dec)
+
+		cfg := createTestAgentConfig("with-task-mgr")
+		// Skills must be enabled for the emitter auto-wire branch (agent.go:284)
+		// to fire — that branch is what makes the test meaningful.
+		cfg.Skills = &loomv1.SkillsConfig{Enabled: true}
+
+		ag, err := registry.buildAgent(ctx, cfg)
+		require.NoError(t, err)
+		require.NotNil(t, ag)
+
+		assert.Same(t, mgr, ag.taskManager,
+			"registry must propagate its task.Manager into the agent")
+		assert.Same(t, dec, ag.taskDecomposer,
+			"registry must propagate its task.Decomposer into the agent")
+		require.NotNil(t, ag.taskBoardConfig,
+			"taskBoardConfig must be non-nil so emitter boardID fallback is well-defined")
+		assert.False(t, ag.taskBoardConfig.Enabled,
+			"per-agent tool surfacing stays opt-in when YAML omits memory.task_board")
+		assert.NotNil(t, ag.skillTaskEmitter,
+			"skill task emitter must auto-construct once both subsystems are wired")
+	})
+
+	t.Run("no manager wired leaves emitter nil", func(t *testing.T) {
+		registry.SetTaskManager(nil, nil)
+
+		cfg := createTestAgentConfig("no-task-mgr")
+		cfg.Skills = &loomv1.SkillsConfig{Enabled: true}
+
+		ag, err := registry.buildAgent(ctx, cfg)
+		require.NoError(t, err)
+		require.NotNil(t, ag)
+
+		assert.Nil(t, ag.taskManager,
+			"agent must not pick up a stale task manager when registry has none")
+		assert.Nil(t, ag.skillTaskEmitter,
+			"emitter must stay nil when no manager is available (legacy v1.2.0 parity)")
+	})
+}

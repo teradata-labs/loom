@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
@@ -54,9 +55,7 @@ func TestEmbeddedTracer_StartEndSpan(t *testing.T) {
 		WithAttribute("test_key", "test_value"),
 	)
 
-	if span == nil {
-		t.Fatal("Expected span to be created")
-	}
+	require.NotNil(t, span, "Expected span to be created")
 	if span.Name != "test.operation" {
 		t.Errorf("Expected name 'test.operation', got %q", span.Name)
 	}

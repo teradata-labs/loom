@@ -35,8 +35,13 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	skillbinding "github.com/teradata-labs/loom/pkg/skills/binding"
+	skilldiscovery "github.com/teradata-labs/loom/pkg/skills/discovery"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
+	"github.com/teradata-labs/loom/pkg/task"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // ReloadCallback is called when an agent config changes.
@@ -73,6 +78,17 @@ type Registry struct {
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
 	// Protected by mu (RW lock shared with the rest of the registry state).
 	providerPool map[string]LLMProvider
+
+	// taskManager + taskDecomposer are the server-level task subsystem
+	// handles injected by cmd_serve.go. When set, every agent built through
+	// buildAgent gets WithTaskBoard wired so the skills-overhaul Phase D
+	// (task emission) path can fire. The agent's per-config
+	// memory.task_board.enabled flag controls only tool surfacing
+	// (task_board builtin + kanban prompt supplement + in-context
+	// injection) — emission and the sticky-while-open-tasks checker are
+	// always-on whenever a manager is present. Protected by mu.
+	taskManager    *task.Manager
+	taskDecomposer *task.Decomposer
 }
 
 // AgentInstanceInfo tracks runtime information about an agent instance
@@ -187,6 +203,26 @@ func (r *Registry) SetProviderPool(pool map[string]LLMProvider) {
 	r.providerPool = pool
 	r.logger.Info("Provider pool configured in registry",
 		zap.Int("providers", len(pool)))
+}
+
+// SetTaskManager injects the server-level task subsystem into the registry.
+// Every agent subsequently built through buildAgent will receive WithTaskBoard
+// so the skills-overhaul task emitter is reachable. The per-agent
+// memory.task_board.enabled flag continues to gate tool/context surfacing
+// (task_board builtin, kanban prompt supplement, in-context task summary),
+// but task emission itself becomes always-on whenever a manager is wired —
+// matching the overhaul-doc invariant that skill activations always produce
+// trackable work.
+//
+// Safe to call concurrently with other registry operations. Must be called
+// before agents are loaded or created to take effect for those agents.
+func (r *Registry) SetTaskManager(manager *task.Manager, decomposer *task.Decomposer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.taskManager = manager
+	r.taskDecomposer = decomposer
+	r.logger.Info("Task manager configured in registry",
+		zap.Bool("decomposer_present", decomposer != nil))
 }
 
 // LoadAgents loads all agent configurations from the agents directory and workflows
@@ -474,8 +510,17 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
-	// Create LLM provider from config
-	llmProvider, err := r.createLLMProvider(config.Llm)
+	// Create LLM provider from config.
+	//
+	// AgentConfig.ActiveProvider is the named-pool selector for the primary
+	// LLM. When the agent supplies no inline llm.provider but does name an
+	// active_provider, synthesize an LLMConfig that points createLLMProvider
+	// at the matching pool entry. Without this, an agent posting only
+	// active_provider silently falls through to the registry's default
+	// provider — see the skills-overhaul E2E regression where every dynamic
+	// agent ran on the server-default model regardless of the named selector.
+	llmCfg := resolvePrimaryLLMConfig(config)
+	llmProvider, err := r.createLLMProvider(llmCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
 	}
@@ -521,6 +566,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			opts = append(opts, WithOrchestratorLLM(orchLLM))
 		}
 	}
+	// classifierLLM is captured at function scope so the skills router can
+	// use it as a default for hierarchical-discovery routing decisions when
+	// no router_model_override is set.
+	var classifierLLM LLMProvider
 	if config.ClassifierLlm != nil && config.ClassifierLlm.Provider != "" {
 		classLLM, err := r.createLLMProvider(config.ClassifierLlm)
 		if err != nil {
@@ -533,6 +582,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			if r.tracer != nil {
 				classLLM = llm.NewInstrumentedProvider(classLLM, r.tracer)
 			}
+			classifierLLM = classLLM
 			opts = append(opts, WithClassifierLLM(classLLM))
 		}
 	}
@@ -643,8 +693,137 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			libOpts = append(libOpts, skills.WithTracer(r.tracer))
 		}
 		skillLib := skills.NewLibrary(libOpts...)
-		skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(r.tracer))
+		orchOpts := []skills.OrchestratorOption{
+			skills.WithOrchestratorTracer(r.tracer),
+		}
+		if skillsConfig.MaxConcurrentSkills > 0 {
+			orchOpts = append(orchOpts, skills.WithMaxConcurrentSkills(skillsConfig.MaxConcurrentSkills))
+		}
+		skillOrch := skills.NewOrchestrator(skillLib, orchOpts...)
 		opts = append(opts, WithSkillOrchestrator(skillOrch))
+
+		// Build the binding resolver up front; both Discovery wiring paths
+		// below need it.
+		bindingResolver := skillbinding.NewResolver(skillLib)
+
+		// Resolve the LLM provider for the hierarchical router.
+		// Priority order (consulted only when router is enabled):
+		//   1. SkillsConfig.RouterModelOverride name in providerPool
+		//   2. classifierLLM (already constructed above)
+		//   3. agent's primary llmProvider
+		// The router builder uses the same provider so summary generation
+		// and routing decisions are written in one consistent voice.
+		var routerLLM LLMProvider
+		if skillsConfig.EffectiveRouterEnabled() {
+			switch {
+			case skillsConfig.RouterModelOverride != "" && r.providerPool != nil:
+				if pooled, ok := r.providerPool[skillsConfig.RouterModelOverride]; ok {
+					routerLLM = pooled
+					r.logger.Info("Skills router: using pooled provider override",
+						zap.String("agent", config.Name),
+						zap.String("provider", skillsConfig.RouterModelOverride))
+				} else {
+					r.logger.Warn("Skills router: router_model_override not found in pool; falling back",
+						zap.String("agent", config.Name),
+						zap.String("override", skillsConfig.RouterModelOverride))
+				}
+			}
+			if routerLLM == nil && classifierLLM != nil {
+				routerLLM = classifierLLM
+			}
+			if routerLLM == nil {
+				routerLLM = llmProvider
+			}
+		}
+
+		// Build the discovery options. Router-related options are added
+		// only when router is enabled; absent router yields slash+FTS5
+		// behavior, identical to v1.2.0.
+		discOpts := []skilldiscovery.Option{
+			skilldiscovery.WithTracer(r.tracer),
+			skilldiscovery.WithLogger(r.logger),
+		}
+		var skillRouter *skillindex.Router
+		var skillCache *skillindex.Cache
+		var indexBuilder *skillindex.Builder
+		var indexStore skillindex.Store
+
+		if skillsConfig.EffectiveRouterEnabled() && routerLLM != nil {
+			skillCache = skillindex.NewCache(
+				skillindex.WithDefaultTTL(routerCacheTTL(skillsConfig)),
+			)
+
+			builderOpts := []skillindex.BuilderOption{
+				skillindex.WithLLM(routerLLM),
+				skillindex.WithBuilderModel(routerLLM.Model()),
+			}
+			if r.tracer != nil {
+				builderOpts = append(builderOpts, skillindex.WithBuilderTracer(r.tracer))
+			}
+			if r.logger != nil {
+				builderOpts = append(builderOpts, skillindex.WithBuilderLogger(r.logger))
+			}
+			indexBuilder = skillindex.NewBuilder(builderOpts...)
+
+			// SQLStore persists the skill index to the registry's SQLite DB,
+			// avoiding expensive LLM re-summarisation on cold starts.
+			indexStore = skillindex.NewSQLStore(r.db, skillindex.DialectSQLite)
+
+			routerOpts := []skillindex.RouterOption{
+				skillindex.WithRouterLLM(routerLLM),
+				skillindex.WithRouterCache(skillCache),
+			}
+			if r.tracer != nil {
+				routerOpts = append(routerOpts, skillindex.WithRouterTracer(r.tracer))
+			}
+			if r.logger != nil {
+				routerOpts = append(routerOpts, skillindex.WithRouterLogger(r.logger))
+			}
+			if skillsConfig.RouterMaxCandidates > 0 {
+				routerOpts = append(routerOpts, skillindex.WithRouterMaxCandidates(skillsConfig.RouterMaxCandidates))
+			}
+			skillRouter = skillindex.NewRouter(skillLib, routerOpts...)
+
+			discOpts = append(discOpts,
+				skilldiscovery.WithRouter(skillRouter),
+				skilldiscovery.WithCache(skillCache),
+			)
+
+			// Background-build the index. The agent boots immediately and
+			// Discovery falls back to FTS5 until SetTree fires.
+			//
+			// We use context.Background here intentionally — the index
+			// build outlives the buildAgent call's ctx. A cancelled boot
+			// must not abandon a half-built tree.
+			go r.warmSkillIndex(skillLib, indexBuilder, indexStore, skillRouter)
+		}
+
+		disc := skilldiscovery.New(skillLib, bindingResolver, discOpts...)
+		opts = append(opts, WithSkillDiscovery(disc))
+	}
+
+	// Wire the task subsystem whenever the registry has a manager, so the
+	// skills-overhaul task emitter (Phase D) is reachable for every agent
+	// built through this path. The per-agent memory.task_board.enabled flag
+	// continues to gate *tool surfacing* downstream
+	// (Agent.checkAndRegisterTaskBoardTool, taskBoardPromptSupplement,
+	// buildTaskContext) — emission is unconditional once a manager is wired.
+	//
+	// We synthesize a disabled TaskBoardConfig when the agent did not
+	// declare one, so a.taskBoardConfig is never nil. That keeps the
+	// emitter's boardID fallback (skill_task_board_id -> default_board_id
+	// -> "") well-defined and avoids requiring agents to opt-in to receive
+	// skill-emitted tasks.
+	r.mu.RLock()
+	taskMgr := r.taskManager
+	taskDec := r.taskDecomposer
+	r.mu.RUnlock()
+	if taskMgr != nil {
+		tbCfg := config.GetMemory().GetTaskBoard()
+		if tbCfg == nil {
+			tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+		}
+		opts = append(opts, WithTaskBoard(taskMgr, taskDec, tbCfg))
 	}
 
 	// Create memory with session storage for trace persistence
@@ -894,6 +1073,31 @@ func (r *Registry) isCustomTool(toolName string, config *loomv1.AgentConfig) boo
 		}
 	}
 	return false
+}
+
+// resolvePrimaryLLMConfig returns the LLMConfig that should drive the agent's
+// primary LLM. The inline AgentConfig.Llm wins; when its provider is empty
+// AgentConfig.ActiveProvider is folded in so a pool-name-only agent config
+// resolves the same way an inline {provider: "<pool-name>"} would. The
+// returned value is always non-nil so callers can dereference Provider safely.
+func resolvePrimaryLLMConfig(config *loomv1.AgentConfig) *loomv1.LLMConfig {
+	if config == nil {
+		return &loomv1.LLMConfig{}
+	}
+	if config.Llm == nil {
+		if config.ActiveProvider == "" {
+			return &loomv1.LLMConfig{}
+		}
+		return &loomv1.LLMConfig{Provider: config.ActiveProvider}
+	}
+	if config.Llm.Provider != "" || config.ActiveProvider == "" {
+		return config.Llm
+	}
+	// Clone so we don't mutate the caller's proto. Direct struct copy is
+	// unsafe — generated protos embed sync.Mutex via MessageState.
+	merged, _ := proto.Clone(config.Llm).(*loomv1.LLMConfig)
+	merged.Provider = config.ActiveProvider
+	return merged
 }
 
 // createLLMProvider creates an LLM provider from configuration.
@@ -2010,6 +2214,69 @@ func (r *Registry) loadAgentsFromDB() error {
 // Close closes the registry and cleans up resources
 func (r *Registry) Close() error {
 	return errors.Join(r.watcher.Close(), r.db.Close())
+}
+
+// warmSkillIndex runs in a goroutine kicked off by buildAgent for each
+// agent that has the hierarchical skill router enabled. It attempts to
+// load a previously-built index from the store first (cold-start fast
+// path), then unconditionally rebuilds in the background and SetTrees.
+//
+// Errors are logged but never bubble up: a failed build leaves the router
+// without a tree, which causes Discovery to fall through to FTS5. That's
+// the same fallback the registry would have produced if the router weren't
+// wired at all, so a degraded build is no worse than the v1.2.0 baseline.
+func (r *Registry) warmSkillIndex(
+	lib *skills.Library,
+	builder *skillindex.Builder,
+	store skillindex.Store,
+	router *skillindex.Router,
+) {
+	ctx := context.Background()
+
+	// Cold-start: try to load a previously-built index. This lets the
+	// router serve queries immediately on subsequent boots without waiting
+	// for an LLM summary pass.
+	if existing, err := store.LatestIndex(ctx); err == nil && existing != nil {
+		router.SetTree(skillindex.NewTree(existing))
+		r.logger.Debug("Skill router warmed from persisted index",
+			zap.String("index_id", existing.ID),
+			zap.Int("nodes", len(existing.Nodes)))
+	}
+
+	// Unconditionally rebuild to pick up any YAML changes that landed
+	// since the persisted snapshot. The Builder's deterministic-summary
+	// fallback means this completes even when the LLM is unavailable.
+	idx, err := builder.Build(ctx, lib)
+	if err != nil {
+		r.logger.Warn("Skill index build failed; router will fall back to FTS5",
+			zap.Error(err))
+		return
+	}
+	if idx == nil {
+		return
+	}
+
+	if err := store.SaveIndex(ctx, idx); err != nil {
+		// Not fatal — the in-process router still serves the freshly-built
+		// tree. We just lose the cold-start optimization for next boot.
+		r.logger.Warn("Skill index persist failed (router still active in process)",
+			zap.String("index_id", idx.ID),
+			zap.Error(err))
+	}
+	router.SetTree(skillindex.NewTree(idx))
+	r.logger.Info("Skill router warmed from fresh build",
+		zap.String("index_id", idx.ID),
+		zap.Int("nodes", len(idx.Nodes)))
+}
+
+// routerCacheTTL resolves the per-session router decision cache TTL for a
+// given SkillsConfig, falling back to a sensible default. Centralised so
+// the same value is used by Cache construction and any external observers.
+func routerCacheTTL(c *skills.SkillsConfig) time.Duration {
+	if c == nil || c.RouterCacheTTLSeconds <= 0 {
+		return 300 * time.Second
+	}
+	return time.Duration(c.RouterCacheTTLSeconds) * time.Second
 }
 
 // initRegistryDB initializes the SQLite registry database schema

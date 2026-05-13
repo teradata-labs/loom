@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestParseJudgeVerdict_EdgeCases tests various edge cases in verdict parsing
@@ -290,9 +292,7 @@ func TestJudge_WithMockProvider(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if verdict == nil {
-		t.Fatal("Expected verdict, got nil")
-	}
+	require.NotNil(t, verdict, "Expected verdict, got nil")
 
 	// Verify verdict fields
 	if verdict.Verdict != "PASS" {
