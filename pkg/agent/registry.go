@@ -765,11 +765,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			}
 			indexBuilder = skillindex.NewBuilder(builderOpts...)
 
-			// MemoryStore is the default — skill index is library-scoped and
-			// rebuilds cheaply at process start. SQLStore is a future
-			// optimization for cold-start with very large catalogs (when
-			// the LLM cost of re-summarising 10K+ skills outweighs disk I/O).
-			indexStore = skillindex.NewMemoryStore()
+			// SQLStore persists the skill index to the registry's SQLite DB,
+			// avoiding expensive LLM re-summarisation on cold starts.
+			indexStore = skillindex.NewSQLStore(r.db, skillindex.DialectSQLite)
 
 			routerOpts := []skillindex.RouterOption{
 				skillindex.WithRouterLLM(routerLLM),
