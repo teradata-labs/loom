@@ -1980,12 +1980,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if a.skillDiscovery != nil {
 				if candidates, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
 					for _, c := range candidates {
-						if c.Skill.IsHighRisk() && a.permissionChecker != nil {
-							// High-risk skills require HITL approval before activation.
-							zap.L().Info("high-risk skill requires approval",
+						if c.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
+							zap.L().Info("high-risk skill blocked (requires HITL approval)",
 								zap.String("skill", c.Skill.Name),
 								zap.String("risk_level", c.Skill.RiskLevel))
-							continue // skip activation — operator must whitelist via allowed_tools
+							continue
 						}
 						if !activeBefore[c.Skill.Name] {
 							activatedThisTurn[c.Skill.Name] = c.Skill
@@ -2002,12 +2001,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// Legacy path: direct MatchSkills via the orchestrator.
 				if matches, err := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig); err == nil {
 					for _, m := range matches {
-						if m.Skill.IsHighRisk() && a.permissionChecker != nil {
-							// High-risk skills require HITL approval before activation.
-							zap.L().Info("high-risk skill requires approval",
+						if m.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
+							zap.L().Info("high-risk skill blocked (requires HITL approval)",
 								zap.String("skill", m.Skill.Name),
 								zap.String("risk_level", m.Skill.RiskLevel))
-							continue // skip activation — operator must whitelist via allowed_tools
+							continue
 						}
 						if !activeBefore[m.Skill.Name] {
 							activatedThisTurn[m.Skill.Name] = m.Skill
