@@ -50,7 +50,7 @@ func TestTemplateService_ListWorkflowTemplates(t *testing.T) {
 	res, err := srv.ListWorkflowTemplates(context.Background(), &loomv1.ListWorkflowTemplatesRequest{})
 	require.NoError(t, err)
 	require.NotNil(t, res)
-	assert.Len(t, res.Templates, 6, "registry must return all 6 workflow templates")
+	assert.Len(t, res.Templates, 7, "registry must return all 7 workflow templates")
 
 	for _, tmpl := range res.Templates {
 		require.NotNil(t, tmpl.DefaultWorkflowPattern,
