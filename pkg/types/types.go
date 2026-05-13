@@ -325,6 +325,48 @@ func (s *Session) GetMessages() []Message {
 	return messages
 }
 
+// TrimLastN removes the last n messages from the flat Messages list.
+// If n is 0, it syncs the flat list to match the segmented memory length
+// (used after AggressiveTrim where segmented memory was already trimmed).
+// Respects tool_use/tool_result pair boundaries.
+func (s *Session) TrimLastN(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.Messages) == 0 {
+		return
+	}
+
+	if n == 0 {
+		// Sync mode: trim flat list to match segmented memory message count.
+		if s.SegmentedMem != nil {
+			if segMem, ok := s.SegmentedMem.(SegmentedMemoryInterface); ok {
+				targetLen := len(segMem.GetMessagesForLLM())
+				if targetLen < len(s.Messages) {
+					s.Messages = s.Messages[:targetLen]
+				}
+			}
+		}
+		s.UpdatedAt = time.Now()
+		return
+	}
+
+	if n >= len(s.Messages) {
+		s.Messages = s.Messages[:0]
+		s.UpdatedAt = time.Now()
+		return
+	}
+
+	cutIdx := len(s.Messages) - n
+	// Expand backward to not orphan tool results.
+	for cutIdx > 0 && s.Messages[cutIdx].Role == "tool" {
+		cutIdx--
+	}
+
+	s.Messages = s.Messages[:cutIdx]
+	s.UpdatedAt = time.Now()
+}
+
 // MessageCount returns the total number of messages in the session.
 // Thread-safe via RLock.
 // Returns int32 capped at MaxInt32 to prevent overflow when used in proto messages.
