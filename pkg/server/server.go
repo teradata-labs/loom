@@ -28,6 +28,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
@@ -427,15 +428,25 @@ func (s *Server) GetSession(ctx context.Context, req *loomv1.GetSessionRequest) 
 
 // ListSessions lists all sessions.
 func (s *Server) ListSessions(ctx context.Context, req *loomv1.ListSessionsRequest) (*loomv1.ListSessionsResponse, error) {
-	sessions := s.agent.ListSessions()
-
-	protoSessions := make([]*loomv1.Session, len(sessions))
-	for i, sess := range sessions {
-		protoSessions[i] = ConvertSession(sess)
+	if err := validateListSessionsRequest(req); err != nil {
+		return nil, err
 	}
 
+	sessions := s.agent.ListSessions()
+
+	enrichDisk := listSessionsNeedsArtifactDisk(req)
+	protoSessions := make([]*loomv1.Session, 0, len(sessions))
+	for _, sess := range sessions {
+		protoSessions = append(protoSessions, convertSession(sess, enrichDisk))
+	}
+
+	filtered := filterListSessions(protoSessions, req)
+	total := types.SafeInt32(len(filtered))
+	paged := pageProtoSessions(filtered, req.GetOffset(), req.GetLimit())
+
 	return &loomv1.ListSessionsResponse{
-		Sessions: protoSessions,
+		Sessions:   paged,
+		TotalCount: total,
 	}, nil
 }
 
@@ -445,7 +456,26 @@ func (s *Server) DeleteSession(ctx context.Context, req *loomv1.DeleteSessionReq
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
-	s.agent.DeleteSession(req.SessionId)
+	_, inMemory := s.agent.GetSession(req.SessionId)
+	inStore := false
+	if s.sessionStore != nil {
+		if loaded, err := s.sessionStore.LoadSession(ctx, req.SessionId); err == nil && loaded != nil {
+			inStore = true
+		}
+	}
+	if !inMemory && !inStore {
+		return nil, status.Error(codes.NotFound, "session not found")
+	}
+
+	if err := artifacts.CompleteSessionArtifactMetadata(req.SessionId); err != nil {
+		zap.L().Warn("session artifact metadata completion failed",
+			zap.String("session_id", req.SessionId),
+			zap.Error(err))
+	}
+
+	if inMemory {
+		s.agent.DeleteSession(req.SessionId)
+	}
 
 	// Also delete from persistent store
 	if s.sessionStore != nil {
@@ -1362,17 +1392,42 @@ func (s *Server) RequestToolPermission(ctx context.Context, req *loomv1.ToolPerm
 
 // Helper functions
 
-// ConvertSession converts an agent.Session to proto format.
+// ConvertSession converts an agent.Session to proto format, merging artifacts/sessions/<id>/metadata.json when present.
 func ConvertSession(s *agent.Session) *loomv1.Session {
-	return &loomv1.Session{
+	return convertSession(s, true)
+}
+
+// convertSession optionally skips disk metadata reads (used for ListSessions to avoid O(n) I/O).
+func convertSession(s *agent.Session, enrichFromArtifactDisk bool) *loomv1.Session {
+	if s == nil {
+		return nil
+	}
+	md := sessionMetadataFromContext(s)
+	backend := ""
+	if md != nil {
+		backend = md["backend"]
+	}
+	p := &loomv1.Session{
 		Id:                s.ID,
 		Name:              s.Name,
+		Backend:           backend,
 		CreatedAt:         s.CreatedAt.Unix(),
 		UpdatedAt:         s.UpdatedAt.Unix(),
 		State:             "active",
 		TotalCostUsd:      s.TotalCostUSD,
 		ConversationCount: s.MessageCount(),
+		Metadata:          md,
+		AgentId:           s.AgentID,
+		AgentName:         artifacts.AgentNameFromSession(s),
+		StartedAt:         s.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	if enrichFromArtifactDisk && artifacts.SessionMetadataEnabled() {
+		mergeArtifactMetadataIntoProto(p, s.ID)
+	}
+	if artifacts.SessionMetadataEnabled() && enrichFromArtifactDisk && p.MetadataStatus == "" {
+		p.MetadataStatus = "active"
+	}
+	return p
 }
 
 // ConvertMessage converts an agent.Message to proto format.

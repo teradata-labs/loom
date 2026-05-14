@@ -463,7 +463,8 @@ type Context interface {
 
 // SafeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
 // This prevents gosec G115 integer overflow warnings when converting to proto int32 fields.
-// Use this when converting Go int (which may be int64) to proto int32 fields.
+// Use this when converting Go int (which may be int64) to proto int32 fields
+// (for example ListSessionsResponse.total_count when the filtered session count exceeds MaxInt32).
 func SafeInt32(n int) int32 {
 	const maxInt32 = 2147483647  // math.MaxInt32
 	const minInt32 = -2147483648 // math.MinInt32
