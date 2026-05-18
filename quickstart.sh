@@ -350,17 +350,29 @@ echo ""
 echo -e "${GREEN}[5/9] Configuring environment variables...${NC}"
 echo ""
 
-# Detect shell (ZSH_VERSION is unset under bash; expand safely with set -u)
+# Detect the user's login shell rather than the shell executing this script.
 SHELL_RC=""
-if [ -n "${BASH_VERSION:-}" ]; then
-  SHELL_RC="$HOME/.bashrc"
-elif [ -n "${ZSH_VERSION:-}" ]; then
-  SHELL_RC="$HOME/.zshrc"
+if [ -n "${SHELL:-}" ]; then
+  case "$(basename "$SHELL")" in
+    bash)
+      SHELL_RC="$HOME/.bashrc"
+      ;;
+    zsh)
+      SHELL_RC="$HOME/.zshrc"
+      ;;
+  esac
 fi
 
+LOOM_DATA_DIR_EXPORT="export LOOM_DATA_DIR=\"$DATA_DIR\""
+LOOM_BIN_DIR_EXPORT="export LOOM_BIN_DIR=\"$BIN_DIR\""
+LOOM_PATH_EXPORT="export PATH=\"$BIN_DIR:\$PATH\""
+
 if [ -n "${SHELL_RC:-}" ] && [ "$CI_MODE" = false ]; then
-  echo -e "${YELLOW}Add environment variables to $SHELL_RC?${NC}"
-  read -r -p "This will append export statements to your shell config (Y/n): " add_to_rc
+  echo -e "${YELLOW}Add these environment variables to $SHELL_RC?${NC}"
+  echo -e "${BLUE}  $LOOM_DATA_DIR_EXPORT${NC}"
+  echo -e "${BLUE}  $LOOM_BIN_DIR_EXPORT${NC}"
+  echo -e "${BLUE}  $LOOM_PATH_EXPORT${NC}"
+  read -r -p "This will append the lines above to your shell config (Y/n): " add_to_rc
   add_to_rc=${add_to_rc:-y}
 
   if [[ "$add_to_rc" =~ ^[Yy]$ ]]; then
@@ -369,9 +381,9 @@ if [ -n "${SHELL_RC:-}" ] && [ "$CI_MODE" = false ]; then
       {
         echo ""
         echo "# Loom environment variables"
-        echo "export LOOM_DATA_DIR=\"$DATA_DIR\""
-        echo "export LOOM_BIN_DIR=\"$BIN_DIR\""
-        echo "export PATH=\"$BIN_DIR:\$PATH\""
+        echo "$LOOM_DATA_DIR_EXPORT"
+        echo "$LOOM_BIN_DIR_EXPORT"
+        echo "$LOOM_PATH_EXPORT"
       } >> "$SHELL_RC"
       echo -e "${GREEN}✓ Added environment variables to $SHELL_RC${NC}"
       echo -e "${YELLOW}  Run 'source $SHELL_RC' to reload, or restart your terminal${NC}"
@@ -380,16 +392,16 @@ if [ -n "${SHELL_RC:-}" ] && [ "$CI_MODE" = false ]; then
     fi
   else
     echo -e "${YELLOW}⚠ Skipped shell config - add manually:${NC}"
-    echo -e "${BLUE}  export LOOM_DATA_DIR=\"$DATA_DIR\"${NC}"
-    echo -e "${BLUE}  export LOOM_BIN_DIR=\"$BIN_DIR\"${NC}"
-    echo -e "${BLUE}  export PATH=\"$BIN_DIR:\$PATH\"${NC}"
+    echo -e "${BLUE}  $LOOM_DATA_DIR_EXPORT${NC}"
+    echo -e "${BLUE}  $LOOM_BIN_DIR_EXPORT${NC}"
+    echo -e "${BLUE}  $LOOM_PATH_EXPORT${NC}"
   fi
 else
   echo -e "${YELLOW}⚠ Could not detect shell config file${NC}"
   echo -e "${YELLOW}  Add manually to your shell config:${NC}"
-  echo -e "${BLUE}  export LOOM_DATA_DIR=\"$DATA_DIR\"${NC}"
-  echo -e "${BLUE}  export LOOM_BIN_DIR=\"$BIN_DIR\"${NC}"
-  echo -e "${BLUE}  export PATH=\"$BIN_DIR:\$PATH\"${NC}"
+  echo -e "${BLUE}  $LOOM_DATA_DIR_EXPORT${NC}"
+  echo -e "${BLUE}  $LOOM_BIN_DIR_EXPORT${NC}"
+  echo -e "${BLUE}  $LOOM_PATH_EXPORT${NC}"
 fi
 
 echo ""
