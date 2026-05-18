@@ -40,6 +40,7 @@ var validDomains = map[string]bool{
 	"rest-api":     true,
 	"document":     true,
 	"meta-agent":   true,
+	"teradata":     true,
 }
 
 // validModes lists allowed activation mode values.
@@ -230,7 +231,7 @@ func validateSkillYAML(sy *SkillYAML) error {
 		return fmt.Errorf("metadata.domain is required")
 	}
 	if !validDomains[strings.ToLower(sy.Metadata.Domain)] {
-		return fmt.Errorf("invalid domain: %q (must be one of: sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document)", sy.Metadata.Domain)
+		return fmt.Errorf("invalid domain: %q (must be one of: sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document, meta-agent, teradata)", sy.Metadata.Domain)
 	}
 
 	// trigger.mode must be valid

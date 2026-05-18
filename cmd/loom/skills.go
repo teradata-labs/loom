@@ -50,6 +50,7 @@ Examples:
 
 func init() {
 	skillsCmd.AddCommand(skillsMigrateCmd)
+	skillsCmd.AddCommand(skillsImportCmd)
 }
 
 // runSkillsMigrate reads the input YAML, synthesizes bindings from the legacy
