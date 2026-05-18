@@ -1427,7 +1427,8 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Wire graph memory (opt-out: enabled by default when store is available).
 				// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
-				if graphMemoryStore != nil {
+				// tools.minimal=true also suppresses it across the board.
+				if graphMemoryStore != nil && !viper.GetBool("tools.minimal") {
 					gmCfg := cfg.Memory.GetGraphMemory()
 					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
 					if !explicitlyDisabled {
@@ -1444,16 +1445,24 @@ func runServe(cmd *cobra.Command, args []string) {
 					} else {
 						logger.Info("    Graph memory explicitly disabled")
 					}
+				} else if graphMemoryStore != nil {
+					logger.Info("    Graph memory suppressed by tools.minimal")
 				}
 
 				// Wire task subsystem. The manager is always wired so skills-overhaul
 				// task emission and the sticky-while-open-tasks checker work for every
 				// agent. The per-agent memory.task_board.enabled flag gates only tool
 				// surfacing (task_board builtin, kanban prompt, in-context summary).
+				// tools.minimal=true overrides the per-agent flag and forces the tool
+				// off, while leaving the manager wired for skill task emission.
 				if taskManager != nil {
 					tbCfg := cfg.Memory.GetTaskBoard()
 					if tbCfg == nil {
 						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+					}
+					if viper.GetBool("tools.minimal") && tbCfg.Enabled {
+						tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+						logger.Info("    Task board tool suppressed by tools.minimal")
 					}
 					agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
 					if tbCfg.Enabled {
@@ -1495,23 +1504,27 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)
 
-				// Always register shell_execute for all agents
-				// For weaver, start in LOOM_DATA_DIR/examples/reference so relative paths work naturally
-				var shellTool shuttle.Tool
-				if cfg.Name == "weaver" {
-					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
-					shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
-					logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
-				} else {
-					shellTool = builtin.NewShellExecuteTool("")
-					logger.Info("    Auto-registered shell_execute tool")
-				}
-				ag.RegisterTool(shellTool)
+				// Always register shell_execute and workspace for all agents,
+				// unless tools.minimal=true (--minimal-tools) is set, in which
+				// case the agent only sees what its YAML declares.
+				if !viper.GetBool("tools.minimal") {
+					var shellTool shuttle.Tool
+					if cfg.Name == "weaver" {
+						weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
+						shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
+						logger.Info("    Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
+					} else {
+						shellTool = builtin.NewShellExecuteTool("")
+						logger.Info("    Auto-registered shell_execute tool")
+					}
+					ag.RegisterTool(shellTool)
 
-				// Always register workspace tool for session-scoped file management
-				workspaceTool := builtin.NewWorkspaceTool(artifactStore)
-				ag.RegisterTool(workspaceTool)
-				logger.Info("    Auto-registered workspace tool")
+					workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+					ag.RegisterTool(workspaceTool)
+					logger.Info("    Auto-registered workspace tool")
+				} else {
+					logger.Info("    tools.minimal=true: skipping auto-registration of shell_execute and workspace")
+				}
 
 				// Register builtin tools if specified
 				if cfg.Tools != nil && len(cfg.Tools.Builtin) > 0 {
@@ -1612,8 +1625,9 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Register tool_search and enable dynamic tool registration if tool registry available
-				if toolRegistry != nil {
+				// Register tool_search and enable dynamic tool registration if tool registry available.
+				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
+				if toolRegistry != nil && !viper.GetBool("tools.minimal") {
 					searchTool := toolregistry.NewSearchTool(toolRegistry)
 					ag.RegisterTool(searchTool)
 					logger.Info("    Registered tool_search for dynamic discovery")
@@ -2567,7 +2581,8 @@ func runServe(cmd *cobra.Command, args []string) {
 
 			// Wire graph memory (opt-out: enabled by default when store is available).
 			// To disable for a specific agent, set graph_memory.enabled: false in its YAML.
-			if graphMemoryStore != nil {
+			// tools.minimal=true also suppresses it across the board.
+			if graphMemoryStore != nil && !viper.GetBool("tools.minimal") {
 				gmCfg := agentConfig.GetMemory().GetGraphMemory()
 				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
 				if !explicitlyDisabled {
@@ -2584,14 +2599,21 @@ func runServe(cmd *cobra.Command, args []string) {
 				} else {
 					logger.Info("    Graph memory explicitly disabled (hot-reload)")
 				}
+			} else if graphMemoryStore != nil {
+				logger.Info("    Graph memory suppressed by tools.minimal (hot-reload)")
 			}
 
 			// Wire task subsystem. Manager always wired (skills emission unconditional);
-			// per-agent flag gates only tool surfacing.
+			// per-agent flag gates only tool surfacing. tools.minimal=true forces the
+			// tool surface off while leaving the manager wired for skill task emission.
 			if taskManager != nil {
 				tbCfg := agentConfig.GetMemory().GetTaskBoard()
 				if tbCfg == nil {
 					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+				}
+				if viper.GetBool("tools.minimal") && tbCfg.Enabled {
+					tbCfg = &loomv1.TaskBoardConfig{Enabled: false}
+					logger.Info("    Task board tool suppressed by tools.minimal (hot-reload)")
 				}
 				agentOpts = append(agentOpts, agent.WithTaskBoard(taskManager, taskDecomposer, tbCfg))
 				if tbCfg.Enabled {
@@ -2624,23 +2646,27 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Debug("  Set stable GUID on agent", zap.String("guid", guid))
 			}
 
-			// Always register shell_execute for all agents
-			// For weaver, start in LOOM_DATA_DIR/examples/reference so relative paths work naturally
-			var shellTool shuttle.Tool
-			if agentConfig.Name == "weaver" {
-				weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
-				shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
-				logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
-			} else {
-				shellTool = builtin.NewShellExecuteTool("")
-				logger.Info("  Auto-registered shell_execute tool")
-			}
-			newAgent.RegisterTool(shellTool)
+			// Always register shell_execute and workspace for all agents,
+			// unless tools.minimal=true (--minimal-tools) is set, in which
+			// case the agent only sees what its YAML declares.
+			if !viper.GetBool("tools.minimal") {
+				var shellTool shuttle.Tool
+				if agentConfig.Name == "weaver" {
+					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
+					shellTool = builtin.NewShellExecuteTool(weaverBaseDir)
+					logger.Info("  Auto-registered shell_execute tool (baseDir: LOOM_DATA_DIR/examples/reference)")
+				} else {
+					shellTool = builtin.NewShellExecuteTool("")
+					logger.Info("  Auto-registered shell_execute tool")
+				}
+				newAgent.RegisterTool(shellTool)
 
-			// Always register workspace tool for session-scoped file management
-			workspaceTool := builtin.NewWorkspaceTool(artifactStore)
-			newAgent.RegisterTool(workspaceTool)
-			logger.Info("  Auto-registered workspace tool")
+				workspaceTool := builtin.NewWorkspaceTool(artifactStore)
+				newAgent.RegisterTool(workspaceTool)
+				logger.Info("  Auto-registered workspace tool")
+			} else {
+				logger.Info("  tools.minimal=true: skipping auto-registration of shell_execute and workspace")
+			}
 
 			// Register builtin tools if specified
 			if agentConfig.Tools != nil && len(agentConfig.Tools.Builtin) > 0 {
@@ -2717,8 +2743,9 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			// Register tool_search and enable dynamic tool registration if tool registry available
-			if toolRegistry != nil {
+			// Register tool_search and enable dynamic tool registration if tool registry available.
+			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
+			if toolRegistry != nil && !viper.GetBool("tools.minimal") {
 				searchTool := toolregistry.NewSearchTool(toolRegistry)
 				newAgent.RegisterTool(searchTool)
 				logger.Info("  Registered tool_search for dynamic discovery")
