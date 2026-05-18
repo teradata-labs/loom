@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -39,6 +41,7 @@ type Orchestrator struct {
 	mu             sync.RWMutex
 	library        *Library
 	tracer         observability.Tracer
+	logger         *zap.Logger
 	activeSessions map[string][]*ActiveSkill // sessionID -> active skills
 
 	// maxConcurrentSkills caps the active set during eviction. <=0 means
@@ -63,6 +66,17 @@ func WithOrchestratorTracer(t observability.Tracer) OrchestratorOption {
 	return func(o *Orchestrator) {
 		if t != nil {
 			o.tracer = t
+		}
+	}
+}
+
+// WithOrchestratorLogger sets the zap logger used to surface skill
+// activation/deactivation/eviction events. When unset, the orchestrator
+// uses zap.NewNop() so existing callers see no output change.
+func WithOrchestratorLogger(l *zap.Logger) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if l != nil {
+			o.logger = l
 		}
 	}
 }
@@ -126,6 +140,7 @@ func NewOrchestrator(library *Library, opts ...OrchestratorOption) *Orchestrator
 	o := &Orchestrator{
 		library:        library,
 		tracer:         observability.NewNoOpTracer(),
+		logger:         zap.NewNop(),
 		activeSessions: make(map[string][]*ActiveSkill),
 	}
 	for _, opt := range opts {
@@ -370,6 +385,14 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 				span.SetAttribute("skill.name", skill.Name)
 				span.SetAttribute("action", "replaced")
 			}
+			o.logger.Info("skill replaced",
+				zap.String("skill", skill.Name),
+				zap.String("session", sessionID),
+				zap.String("trigger", triggerType),
+				zap.String("trigger_value", triggerValue),
+				zap.Float64("confidence", confidence),
+				zap.Int("active_count", len(sessions)),
+			)
 			return active
 		}
 	}
@@ -409,16 +432,34 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 			if span != nil {
 				span.SetAttribute("eviction", "evicted")
 			}
+			if evicted != nil && evicted.Skill != nil {
+				o.logger.Info("skill evicted",
+					zap.String("skill", evicted.Skill.Name),
+					zap.String("session", sessionID),
+					zap.Float64("confidence", evicted.Confidence),
+					zap.Duration("active_for", time.Since(evicted.ActivatedAt)),
+					zap.String("reason", "max_concurrent_exceeded"),
+					zap.String("evicted_for", skill.Name),
+				)
+			}
 			// Fire the eviction callback (outside critical path, async).
 			if o.onSkillEviction != nil && evicted != nil && evicted.Skill != nil {
 				fn := o.onSkillEviction
 				activeFor := time.Since(evicted.ActivatedAt)
 				go fn(sessionID, evicted.Skill, activeFor)
 			}
-		} else if span != nil {
-			// Every existing skill is sticky; the cap overflows for this
-			// turn rather than abandoning load-bearing work.
-			span.SetAttribute("eviction", "overflow_all_sticky")
+		} else {
+			if span != nil {
+				// Every existing skill is sticky; the cap overflows for this
+				// turn rather than abandoning load-bearing work.
+				span.SetAttribute("eviction", "overflow_all_sticky")
+			}
+			o.logger.Info("skill cap overflow (all sticky)",
+				zap.String("skill", skill.Name),
+				zap.String("session", sessionID),
+				zap.Int("active_count", len(sessions)),
+				zap.Int("max_concurrent", maxConcurrent),
+			)
 		}
 	}
 
@@ -437,6 +478,16 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 		"trigger": triggerType,
 	})
 
+	o.logger.Info("skill activated",
+		zap.String("skill", skill.Name),
+		zap.String("session", sessionID),
+		zap.String("trigger", triggerType),
+		zap.String("trigger_value", triggerValue),
+		zap.Float64("confidence", confidence),
+		zap.Int("active_count", len(sessions)),
+		zap.Bool("sticky", skill.Sticky),
+	)
+
 	return active
 }
 
@@ -448,12 +499,19 @@ func (o *Orchestrator) DeactivateSkill(sessionID, skillName string) {
 	sessions := o.activeSessions[sessionID]
 	for i, active := range sessions {
 		if active.Skill.Name == skillName {
+			activeFor := time.Since(active.ActivatedAt)
 			// Remove by shifting.
 			o.activeSessions[sessionID] = append(sessions[:i], sessions[i+1:]...)
 			o.tracer.RecordMetric("skills.orchestrator.deactivate_skill", 1.0, map[string]string{
 				"skill":   skillName,
 				"session": sessionID,
 			})
+			o.logger.Info("skill deactivated",
+				zap.String("skill", skillName),
+				zap.String("session", sessionID),
+				zap.Duration("active_for", activeFor),
+				zap.Int("active_count", len(o.activeSessions[sessionID])),
+			)
 			return
 		}
 	}

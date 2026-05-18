@@ -696,6 +696,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		orchOpts := []skills.OrchestratorOption{
 			skills.WithOrchestratorTracer(r.tracer),
 		}
+		if r.logger != nil {
+			orchOpts = append(orchOpts, skills.WithOrchestratorLogger(r.logger))
+		}
 		if skillsConfig.MaxConcurrentSkills > 0 {
 			orchOpts = append(orchOpts, skills.WithMaxConcurrentSkills(skillsConfig.MaxConcurrentSkills))
 		}

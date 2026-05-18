@@ -24,6 +24,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // newTestOrchestrator creates an orchestrator with an in-memory library for testing.
@@ -619,4 +622,59 @@ func TestDefaultSkillsConfig(t *testing.T) {
 	assert.Equal(t, 3, config.MaxConcurrentSkills)
 	assert.InDelta(t, 0.7, config.MinAutoConfidence, 0.001)
 	assert.Equal(t, 5, config.ContextBudgetPercent)
+}
+
+// TestOrchestrator_LogsActivationLifecycle verifies the orchestrator emits
+// info-level log entries for skill activation, replacement, deactivation,
+// and eviction so operators can trace which skills got picked per turn.
+func TestOrchestrator_LogsActivationLifecycle(t *testing.T) {
+	core, observed := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	skillA := &Skill{Name: "skill-a", Domain: "code", Prompt: SkillPrompt{Instructions: "A."}}
+	skillB := &Skill{Name: "skill-b", Domain: "code", Prompt: SkillPrompt{Instructions: "B."}}
+	skillC := &Skill{Name: "skill-c", Domain: "code", Prompt: SkillPrompt{Instructions: "C."}}
+	skillD := &Skill{Name: "skill-d", Domain: "code", Prompt: SkillPrompt{Instructions: "D."}}
+
+	lib := NewLibrary()
+	for _, s := range []*Skill{skillA, skillB, skillC, skillD} {
+		lib.Register(s)
+	}
+	orch := NewOrchestrator(lib,
+		WithOrchestratorLogger(logger),
+		WithMaxConcurrentSkills(3),
+	)
+
+	// Activate a fresh skill -> "skill activated".
+	orch.ActivateSkill("sess", skillA, "slash", "/skill-a", 1.0)
+	// Re-activate same skill -> "skill replaced".
+	orch.ActivateSkill("sess", skillA, "slash", "/skill-a", 0.9)
+	// Fill to cap, then evict.
+	orch.ActivateSkill("sess", skillB, "keyword", "b", 0.6)
+	orch.ActivateSkill("sess", skillC, "keyword", "c", 0.5)
+	orch.ActivateSkill("sess", skillD, "keyword", "d", 0.8) // evicts skill-c (lowest confidence)
+
+	// Deactivate -> "skill deactivated".
+	orch.DeactivateSkill("sess", skillA.Name)
+
+	got := map[string]bool{}
+	for _, e := range observed.All() {
+		got[e.Message] = true
+	}
+	assert.True(t, got["skill activated"], "expected at least one 'skill activated' log; got %v", got)
+	assert.True(t, got["skill replaced"], "expected 'skill replaced' log on duplicate ActivateSkill; got %v", got)
+	assert.True(t, got["skill evicted"], "expected 'skill evicted' log when active set exceeds cap; got %v", got)
+	assert.True(t, got["skill deactivated"], "expected 'skill deactivated' log; got %v", got)
+
+	// Spot-check that the activate entry carries the routing context.
+	for _, e := range observed.FilterMessage("skill activated").All() {
+		fields := e.ContextMap()
+		if fields["skill"] == "skill-a" {
+			assert.Equal(t, "slash", fields["trigger"])
+			assert.Equal(t, "/skill-a", fields["trigger_value"])
+			assert.Equal(t, "sess", fields["session"])
+			return
+		}
+	}
+	t.Fatalf("expected an 'activated' entry for skill-a with trigger=slash; got %v", observed.All())
 }

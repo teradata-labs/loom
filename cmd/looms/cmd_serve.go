@@ -1413,7 +1413,10 @@ func runServe(cmd *cobra.Command, args []string) {
 						libOpts = append(libOpts, skills.WithTracer(tracer))
 					}
 					skillLib := skills.NewLibrary(libOpts...)
-					skillOrch := skills.NewOrchestrator(skillLib, skills.WithOrchestratorTracer(tracer))
+					skillOrch := skills.NewOrchestrator(skillLib,
+						skills.WithOrchestratorTracer(tracer),
+						skills.WithOrchestratorLogger(logger),
+					)
 					agentOpts = append(agentOpts, agent.WithSkillOrchestrator(skillOrch))
 					logger.Info("    Skills orchestrator created",
 						zap.String("skills_dir", sc.SkillsDir),
