@@ -40,14 +40,14 @@ converts each one into a single loom/v1 Skill YAML, written to --out
 Reference markdown files under <skill>/references/ are inlined into the
 generated prompt.instructions under labeled "## Reference: <basename>"
 sections. Cross-skill markdown links of the form
-"[name](../<other>/SKILL.md)" are extracted into skill_refs (capped at 2
+"[name](../<other>/SKILL.md)" are extracted into skill_refs (capped at 3
 to satisfy the loader). Trigger keywords are synthesized from the skill
 name and any "## When to Use" bullets.
 
 Special cases:
   - <name>/SKILL.md ending in "-skill-index" becomes a parent-index meta
     skill (mode: ALWAYS, domain: meta-agent). Its skill_refs are dropped
-    in the prompt body since the loader caps skill_refs at 2.
+    in the prompt body since the loader caps skill_refs at 3.
   - "agent-skill-builder" is skipped (meta-tooling for authoring skills).
 
 Examples:
@@ -100,7 +100,8 @@ type importedSkill struct {
 	Body          string   // SKILL.md body (frontmatter stripped)
 	References    []refDoc // references/*.md, sorted by filename
 	WhenToUse     []string // bullets parsed from a "## When to Use" section
-	LinkedSkills  []string // de-duplicated skill names referenced via markdown links
+	LinkedSkills  []string // skill names found via markdown links (unfiltered, for prompt body)
+	ResolvedRefs  []string // subset of LinkedSkills that resolve to a known importable skill (for skill_refs YAML field)
 	IsParentIndex bool     // true when name ends in "-skill-index"
 }
 
@@ -128,7 +129,19 @@ func runSkillsImport(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	var converted, skipped, failed int
+	// Pass 1: discover all importable skills so we can resolve skill_refs
+	// against the actual catalog. This filters out cross-skill mentions
+	// that look like skill names (e.g. `teradata-python-addons` is a Linux
+	// rpm package name, not a Loom skill) but don't correspond to anything
+	// the importer will produce.
+	type pending struct {
+		entry os.DirEntry
+		dir   string
+		skill *importedSkill
+	}
+	var skipped, failed int
+	pendingSkills := make([]pending, 0, len(entries))
+	knownNames := make(map[string]bool)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -143,23 +156,36 @@ func runSkillsImport(_ *cobra.Command, args []string) error {
 			skipped++
 			continue
 		}
-
 		imp, err := readImportedSkill(skillDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fail %s: %v\n", e.Name(), err)
 			failed++
 			continue
 		}
-
-		// Reject any frontmatter name that could escape the output dir
-		// before it ever reaches a filesystem path. The loader will reject
-		// non-kebab-case names downstream too, but we want defense in depth
-		// here because the name is a path component below.
 		if !safeSkillName(imp.Name) {
 			fmt.Fprintf(os.Stderr, "fail %s: unsafe skill name %q\n", e.Name(), imp.Name)
 			failed++
 			continue
 		}
+		pendingSkills = append(pendingSkills, pending{entry: e, dir: skillDir, skill: imp})
+		knownNames[imp.Name] = true
+	}
+
+	// Pass 2: render and write each skill. Filter LinkedSkills against
+	// the known set so skill_refs only points at things we'll actually
+	// import. The full LinkedSkills list is preserved on importedSkill
+	// because the parent-index prompt body lists every cross-reference,
+	// resolved or not.
+	var converted int
+	for _, p := range pendingSkills {
+		imp, e := p.skill, p.entry
+		resolved := make([]string, 0, len(imp.LinkedSkills))
+		for _, name := range imp.LinkedSkills {
+			if knownNames[name] {
+				resolved = append(resolved, name)
+			}
+		}
+		imp.ResolvedRefs = resolved
 
 		yamlBytes, err := renderSkillYAML(imp)
 		if err != nil {
@@ -474,16 +500,19 @@ func renderSkillYAML(imp *importedSkill) ([]byte, error) {
 	keywords := buildKeywords(imp)
 	slashCmds := buildSlashCommands(imp)
 
-	// skill_refs is loader-capped at 2; only emit the most relevant ones.
+	// skill_refs is loader-capped at 3; only emit the most relevant ones.
 	// Parent-index skills carry their full routing table inline already, so
 	// we leave skill_refs empty for them and let the prompt do the work.
+	// We use ResolvedRefs (filtered against the known importable set) so
+	// dangling references like Linux package names don't leak into the
+	// generated YAML.
 	var skillRefs []string
-	if !imp.IsParentIndex && len(imp.LinkedSkills) > 0 {
-		max := len(imp.LinkedSkills)
-		if max > 2 {
-			max = 2
+	if !imp.IsParentIndex && len(imp.ResolvedRefs) > 0 {
+		maxRefs := len(imp.ResolvedRefs)
+		if maxRefs > 3 {
+			maxRefs = 3
 		}
-		skillRefs = imp.LinkedSkills[:max]
+		skillRefs = imp.ResolvedRefs[:maxRefs]
 	}
 
 	version := imp.Version
@@ -687,47 +716,286 @@ func normalizeCrossSkillLinks(body string) string {
 	})
 }
 
-// buildKeywords synthesizes trigger keywords from the skill name plus the
-// "When to Use" bullets, returning a deduped list capped to a reasonable
-// size so the trigger config does not bloat.
+// keywordStopwords contains common English filler words that make poor
+// trigger keywords because they match too broadly.
+var keywordStopwords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true,
+	"at": true, "be": true, "by": true, "for": true, "from": true,
+	"has": true, "have": true, "in": true, "into": true, "is": true,
+	"it": true, "its": true, "of": true, "on": true, "or": true,
+	"over": true, "the": true, "this": true, "to": true, "use": true,
+	"used": true, "using": true, "via": true, "was": true, "when": true,
+	"with": true, "within": true, "without": true, "you": true, "your": true,
+	"any": true, "all": true, "also": true, "but": true, "can": true,
+	"do": true, "does": true, "if": true, "may": true, "must": true,
+	"not": true, "should": true, "than": true, "that": true, "their": true,
+	"them": true, "they": true, "what": true, "which": true, "while": true,
+	"who": true, "why": true, "will": true, "would": true,
+}
+
+// codeSpan matches markdown inline code spans like `MLPPI` or `RANGE_N`.
+var codeSpan = regexp.MustCompile("`([A-Za-z][A-Za-z0-9_./-]{1,40})`")
+
+// capsAcronym matches all-caps tokens of length 2-12 (PPI, MLPPI, NUPI, NOS, JSON).
+var capsAcronym = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{1,11})\b`)
+
+// quotedPhrase matches "double-quoted" multi-word phrases of up to 4 words.
+// var quotedPhrase = regexp.MustCompile(`"([^"\n]{2,40})"`) // currently unused
+
+// genericSQLKeywords are SQL DML/DDL verbs and structural words that
+// appear all-caps in any SQL-related skill. They are not distinctive
+// enough to route on, so we drop them from the all-caps acronym pass.
+var genericSQLKeywords = map[string]bool{
+	"SELECT": true, "INSERT": true, "UPDATE": true, "DELETE": true,
+	"MERGE": true, "CREATE": true, "DROP": true, "ALTER": true,
+	"GRANT": true, "REVOKE": true, "REPLACE": true, "EXPLAIN": true,
+	"FROM": true, "WHERE": true, "GROUP": true, "ORDER": true,
+	"HAVING": true, "JOIN": true, "INNER": true, "OUTER": true,
+	"LEFT": true, "RIGHT": true, "FULL": true, "UNION": true,
+	"WITH": true, "CASE": true, "WHEN": true, "THEN": true,
+	"ELSE": true, "END": true, "AND": true, "NOT": true,
+	"NULL": true, "INTO": true, "VALUES": true, "SET": true,
+	"AS": true, "BY": true, "OR": true, "ON": true, "IS": true,
+	"DDL": true, "DML": true, "DCL": true,
+	"HELP": true, "SHOW": true,
+	"TRUE": true, "FALSE": true,
+}
+
+// commonShortWords are short tokens that look distinctive but appear too
+// often in casual English to be useful as keyword routing signals. They
+// get filtered even when they'd otherwise pass the length floor.
+var commonShortWords = map[string]bool{
+	"after": true, "alter": true, "build": true, "before": true,
+	"check": true, "could": true, "every": true, "first": true,
+	"given": true, "issue": true, "later": true, "level": true,
+	"means": true, "might": true, "needs": true, "often": true,
+	"order": true, "other": true, "place": true, "since": true,
+	"still": true, "thing": true, "those": true, "under": true,
+	"until": true, "where": true, "whose": true, "write": true,
+	"based": true, "match": true, "items": true,
+}
+
+// kwCandidate carries a keyword candidate plus a priority score so we can
+// rank by distinctiveness before truncating to the 32-entry cap.
+type kwCandidate struct {
+	value    string
+	priority int // higher = more likely to be useful
+}
+
+// buildKeywords synthesizes trigger keywords for FTS5 routing. The matcher
+// in pkg/skills/library.go FindByKeywords scores a hit when a keyword is
+// either an exact tokenized match against the user message or a substring
+// of it. That makes long phrases nearly useless and short, distinctive
+// tokens highly valuable, so we emit:
+//
+//   - the skill name and its bare suffix (e.g. "partitioning")
+//   - markdown inline code spans from the SKILL body (`MLPPI`, `RANGE_N`)
+//   - all-caps acronyms from the SKILL body (PPI, NUPI, NOS, TASM)
+//   - 2- to 3-word non-stopword phrases from each "When to Use" bullet
+//   - distinctive single tokens (>= 6 chars, not a common English short word)
+//
+// Candidates are scored by source priority; the top 32 are emitted.
 func buildKeywords(imp *importedSkill) []string {
-	seen := map[string]bool{}
-	add := func(s string) {
+	seen := map[string]int{} // value -> highest priority seen
+	add := func(s string, priority int) {
 		s = strings.ToLower(strings.TrimSpace(s))
-		if s == "" || len(s) < 3 || len(s) > 60 {
+		if s == "" || len(s) < 3 || len(s) > 40 {
 			return
 		}
-		seen[s] = true
+		single := !strings.Contains(s, " ")
+		if single {
+			if keywordStopwords[s] || commonShortWords[s] {
+				return
+			}
+			// Reject single tokens that are mostly digits.
+			if isAllDigits(s) {
+				return
+			}
+		}
+		if cur, ok := seen[s]; !ok || priority > cur {
+			seen[s] = priority
+		}
 	}
 
-	// The skill name itself, plus the bare suffix after any "teradata-" prefix.
-	add(imp.Name)
+	// Priority 100: skill name itself — always include.
+	add(imp.Name, 100)
 	if strings.HasPrefix(imp.Name, "teradata-") {
-		add(strings.TrimPrefix(imp.Name, "teradata-"))
+		add(strings.TrimPrefix(imp.Name, "teradata-"), 100)
 	}
-	// Every "## When to Use" bullet, lightly cleaned.
+
+	// Priority 90: terms from the description. The description is the most
+	// curated, distilled signal we have — its CAPS acronyms and ngrams are
+	// almost always the right routing terms.
+	for _, m := range capsAcronym.FindAllStringSubmatch(imp.Description, -1) {
+		token := m[1]
+		if len(token) < 3 || len(token) > 12 || hasDigit(token) ||
+			genericSQLKeywords[strings.ToUpper(token)] {
+			continue
+		}
+		add(token, 90)
+	}
+	descSegments := splitOnAny(stripParens(imp.Description), ",;:—-(/)")
+	for _, seg := range descSegments {
+		words := tokenizeWords(seg)
+		for n := 2; n <= 3 && n <= len(words); n++ {
+			for i := 0; i+n <= len(words); i++ {
+				gram := words[i : i+n]
+				if keywordStopwords[gram[0]] || keywordStopwords[gram[len(gram)-1]] {
+					continue
+				}
+				add(strings.Join(gram, " "), 90)
+			}
+		}
+	}
+
+	// Priority 80: inline code spans from the SKILL body. We deliberately do
+	// NOT mine reference bodies — they contain too many citations and
+	// unrelated SQL keywords that pollute the keyword list.
+	for _, m := range codeSpan.FindAllStringSubmatch(imp.Body, -1) {
+		token := m[1]
+		if strings.ContainsAny(token, "/.") {
+			continue
+		}
+		add(token, 80)
+	}
+
+	// Priority 70: all-caps acronyms from the SKILL body. Capped via the
+	// per-source budget below so a body with hundreds of acronym mentions
+	// can't crowd out higher-quality bullet ngrams.
+	for _, m := range capsAcronym.FindAllStringSubmatch(imp.Body, -1) {
+		token := m[1]
+		if len(token) < 3 || len(token) > 12 || hasDigit(token) ||
+			genericSQLKeywords[strings.ToUpper(token)] {
+			continue
+		}
+		add(token, 70)
+	}
+
+	// Priority 60: 2- and 3-word n-grams from "When to Use" bullets.
 	for _, bullet := range imp.WhenToUse {
-		// Strip leading verbs like "Use when " or "Use for "
 		clean := bullet
 		clean = strings.TrimPrefix(clean, "Use when ")
 		clean = strings.TrimPrefix(clean, "Use for ")
 		clean = strings.TrimPrefix(clean, "Using ")
-		// Cut at first comma or em-dash; the prefix is the most distinctive.
-		if i := strings.IndexAny(clean, ",—"); i > 0 {
-			clean = clean[:i]
+		clean = stripParens(clean)
+		segments := splitOnAny(clean, ",;:—-(/)")
+		for _, seg := range segments {
+			words := tokenizeWords(seg)
+			for n := 2; n <= 3 && n <= len(words); n++ {
+				for i := 0; i+n <= len(words); i++ {
+					gram := words[i : i+n]
+					if keywordStopwords[gram[0]] || keywordStopwords[gram[len(gram)-1]] {
+						continue
+					}
+					add(strings.Join(gram, " "), 60)
+				}
+			}
 		}
-		add(clean)
 	}
 
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
+	// Rank by priority desc, then alphabetically for stable output.
+	cands := make([]kwCandidate, 0, len(seen))
+	for v, p := range seen {
+		cands = append(cands, kwCandidate{value: v, priority: p})
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].priority != cands[j].priority {
+			return cands[i].priority > cands[j].priority
+		}
+		return cands[i].value < cands[j].value
+	})
+
+	const maxKeywords = 32
+	if len(cands) > maxKeywords {
+		cands = cands[:maxKeywords]
+	}
+
+	// Sort the final cut alphabetically so the YAML output is stable
+	// regardless of insertion order from regex/parser passes.
+	out := make([]string, len(cands))
+	for i, c := range cands {
+		out[i] = c.value
 	}
 	sort.Strings(out)
-	if len(out) > 24 {
-		out = out[:24]
+	return out
+}
+
+// stripParens removes everything between balanced parentheses.
+func stripParens(s string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+// splitOnAny splits s on any byte from seps, returning trimmed non-empty
+// segments. Mirrors strings.FieldsFunc but with an explicit separator set.
+func splitOnAny(s, seps string) []string {
+	cut := func(r rune) bool { return strings.ContainsRune(seps, r) }
+	parts := strings.FieldsFunc(s, cut)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
+}
+
+// tokenizeWords lowercases s and returns its alphabetic word tokens.
+// Numeric-only tokens are dropped because version numbers and the like
+// produce useless keywords. Hyphenated terms (sql-fundamentals,
+// columnar-production) are preserved as single tokens.
+func tokenizeWords(s string) []string {
+	s = strings.ToLower(s)
+	cut := func(r rune) bool {
+		alpha := r >= 'a' && r <= 'z'
+		digit := r >= '0' && r <= '9'
+		return !alpha && !digit && r != '_' && r != '-'
+	}
+	parts := strings.FieldsFunc(s, cut)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if isAllDigits(p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func hasDigit(s string) bool {
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSlashCommands derives one slash command from the skill name. We do

@@ -244,9 +244,9 @@ func validateSkillYAML(sy *SkillYAML) error {
 		return fmt.Errorf("prompt.instructions is required (non-empty)")
 	}
 
-	// skill_refs max depth 2
-	if len(sy.SkillRefs) > 2 {
-		return fmt.Errorf("skill_refs max depth is 2, got %d refs", len(sy.SkillRefs))
+	// skill_refs max depth 3
+	if len(sy.SkillRefs) > 3 {
+		return fmt.Errorf("skill_refs max depth is 3, got %d refs", len(sy.SkillRefs))
 	}
 
 	return nil

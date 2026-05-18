@@ -87,6 +87,14 @@ metadata:
 | Indexes | ` + "`teradata-architecture`" + ` |
 `
 
+// fixtureStubSkill produces a minimal SKILL.md body for a skill we just
+// need to exist in the catalog so cross-references resolve. It is NOT
+// intended to test rendering of the stub itself — happy-path tests only
+// inspect specific outputs by name.
+func fixtureStubSkill(name string) string {
+	return "---\nname: " + name + "\ndescription: 'Stub for cross-reference testing.'\nmetadata:\n  author: test\n  version: \"1.0\"\n---\n\n# " + name + "\n\nStub.\n"
+}
+
 const fixtureAgentSkillBuilder = `---
 name: agent-skill-builder
 description: 'Build SKILL.md files.'
@@ -108,6 +116,11 @@ func TestRunSkillsImport_HappyPath(t *testing.T) {
 		map[string]string{"transaction-and-session.md": fixtureSqlReference})
 	writeFixtureSkill(t, src, "teradata-skill-index", fixtureSkillIndex, nil)
 	writeFixtureSkill(t, src, "agent-skill-builder", fixtureAgentSkillBuilder, nil)
+	// Stub fixtures so cross-references in fixtureSqlFundamentals and
+	// fixtureSkillIndex resolve to "known" skills during import. Without
+	// these the importer would (correctly) drop them from skill_refs.
+	writeFixtureSkill(t, src, "teradata-architecture", fixtureStubSkill("teradata-architecture"), nil)
+	writeFixtureSkill(t, src, "teradata-statistics", fixtureStubSkill("teradata-statistics"), nil)
 
 	prevOut := skillsImportOutDir
 	prevForce := skillsImportOverride
@@ -134,8 +147,8 @@ func TestRunSkillsImport_HappyPath(t *testing.T) {
 	// References were inlined.
 	assert.Contains(t, sql.Prompt.Instructions, "## Reference: Transaction And Session")
 	assert.Contains(t, sql.Prompt.Instructions, "ANSI vs Teradata mode differences")
-	// Cross-skill markdown link became skill_refs (capped at 2).
-	assert.LessOrEqual(t, len(sql.SkillRefs), 2)
+	// Cross-skill markdown link became skill_refs (capped at 3).
+	assert.LessOrEqual(t, len(sql.SkillRefs), 3)
 	assert.Contains(t, sql.SkillRefs, "teradata-architecture")
 	assert.Contains(t, sql.SkillRefs, "teradata-statistics")
 
@@ -144,7 +157,7 @@ func TestRunSkillsImport_HappyPath(t *testing.T) {
 	assert.Equal(t, "meta-agent", idx.Domain)
 	assert.Equal(t, skills.SkillActivationMode("ALWAYS"), idx.Trigger.Mode)
 	assert.Contains(t, idx.Trigger.SlashCommands, "/skill-index")
-	// Parent index leaves skill_refs empty (loader caps at 2; routing table
+	// Parent index leaves skill_refs empty (loader caps at 3; routing table
 	// is in the prompt body instead).
 	assert.Empty(t, idx.SkillRefs)
 	// The inlined "Linked Skills" block lists each skill referenced by the
@@ -253,6 +266,7 @@ func TestRenderSkillYAML_RoundTripsThroughLoader(t *testing.T) {
 		Version:      "1.0",
 		Body:         "# Body\n\n## When to Use\n\n- Writing SQL\n",
 		LinkedSkills: []string{"teradata-architecture"},
+		ResolvedRefs: []string{"teradata-architecture"},
 	}
 	bs, err := renderSkillYAML(imp)
 	require.NoError(t, err)
