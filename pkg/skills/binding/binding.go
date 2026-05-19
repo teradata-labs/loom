@@ -109,11 +109,18 @@ func MatchBinding(b *skills.SkillBinding, s *skills.Skill) MatchResult {
 		res.Kind = MatchExactName
 
 	case hasGlobMeta(b.Name):
+		// Try FQN first (parent_index_path/name) then bare name. Bare-name
+		// fallback lets simple globs like "teradata-*" continue to match
+		// skills that gained a parent_index_path after the binding was
+		// authored — important since path.Match's "*" doesn't cross "/".
+		// path.Match returns ErrBadPattern only on malformed patterns; we
+		// swallow the error because the resolver validates patterns at
+		// config-load time.
 		matched, err := path.Match(b.Name, fqn)
+		if (err != nil || !matched) && fqn != s.Name {
+			matched, err = path.Match(b.Name, s.Name)
+		}
 		if err != nil || !matched {
-			// path.Match returns ErrBadPattern only on malformed patterns;
-			// fall through as no-match. We swallow the error here because
-			// the resolver enforces pattern validity at config-load time.
 			return res
 		}
 		res.Matched = true

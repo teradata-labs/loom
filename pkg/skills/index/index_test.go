@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -426,6 +427,155 @@ func TestRouter_CacheHitSkipsLLM(t *testing.T) {
 	require.Len(t, second, 1)
 	assert.Equal(t, 1, scripted.calls,
 		"second identical call must hit the cache and skip the LLM")
+}
+
+// TestRouter_FatLeafFilter exercises the per-leaf LLM pick that fires when
+// a terminal leaf carries more skill_refs than maxCandidates. Without this
+// branch the router would dump every attached skill via the
+// "len(children)==0" shortcut, then trim alphabetically — giving the wrong
+// answer for any leaf that wasn't sub-categorized.
+func TestRouter_FatLeafFilter(t *testing.T) {
+	// Leaf with 8 attached skills; maxCandidates is 3.
+	skillNames := []string{
+		"teradata-architecture", "teradata-elasticity", "teradata-load-isolation",
+		"teradata-ml-graph-engines", "teradata-partitioning", "teradata-security",
+		"teradata-statistics", "teradata-stored-procedures",
+	}
+	leaf := &skills.SkillIndexNode{
+		ID: NodeID("teradata"), Title: "Teradata", Depth: 1,
+		SkillRefs: skillNames,
+	}
+	root := &skills.SkillIndexNode{ID: NodeID(Root), Title: "root", Children: []string{leaf.ID}}
+	idx := &skills.SkillIndex{ID: "i", RootID: root.ID, Nodes: []*skills.SkillIndexNode{root, leaf}}
+
+	skillMap := map[string]*skills.Skill{}
+	for _, n := range skillNames {
+		skillMap[n] = &skills.Skill{Name: n}
+	}
+	resolver := &fakeResolver{skills: skillMap}
+
+	scripted := newScriptedLLM([]string{
+		// Step 1: root → descend into leaf.
+		`{"descend":["` + leaf.ID + `"],"skills":[],"reason":"go to teradata"}`,
+		// Step 2: leaf-filter LLM picks the relevant subset.
+		`{"skills":["teradata-statistics","teradata-partitioning"],"reason":"performance question"}`,
+	})
+	router := NewRouter(resolver,
+		WithRouterLLM(scripted),
+		WithRouterCache(NewCache()),
+		WithRouterMaxCandidates(3),
+	)
+	router.SetTree(NewTree(idx))
+
+	got, err := router.Route(context.Background(), "sess",
+		"my optimizer keeps choosing nested-loop joins; how do I refresh statistics?",
+		nil, "h")
+	require.NoError(t, err)
+
+	gotNames := make([]string, 0, len(got))
+	for _, s := range got {
+		gotNames = append(gotNames, s.Name)
+	}
+	sort.Strings(gotNames)
+	assert.Equal(t, []string{"teradata-partitioning", "teradata-statistics"}, gotNames,
+		"leaf filter must surface the LLM-picked subset, not the alphabetical-first slice")
+	assert.Equal(t, 2, scripted.calls,
+		"router must make exactly 2 LLM calls: one descend decision + one leaf pick")
+}
+
+// TestRouter_FatLeafFilter_FallbackOnLLMError verifies deterministic
+// degradation when the leaf-filter LLM call fails: instead of returning
+// nothing (which would fall through to FTS5 and lose all candidates), the
+// router takes the first maxCandidates skills in stable order.
+func TestRouter_FatLeafFilter_FallbackOnLLMError(t *testing.T) {
+	skillNames := []string{"sk-a", "sk-b", "sk-c", "sk-d", "sk-e", "sk-f"}
+	leaf := &skills.SkillIndexNode{
+		ID: NodeID("td"), Title: "Teradata", Depth: 1,
+		SkillRefs: skillNames,
+	}
+	root := &skills.SkillIndexNode{ID: NodeID(Root), Title: "root", Children: []string{leaf.ID}}
+	idx := &skills.SkillIndex{ID: "i", RootID: root.ID, Nodes: []*skills.SkillIndexNode{root, leaf}}
+
+	skillMap := map[string]*skills.Skill{}
+	for _, n := range skillNames {
+		skillMap[n] = &skills.Skill{Name: n}
+	}
+	resolver := &fakeResolver{skills: skillMap}
+
+	// First call (descend decision) succeeds; second call (leaf pick) errors.
+	// Use a custom LLM that returns the first response then errors thereafter.
+	llm := &leafErrorLLM{
+		firstResponse: `{"descend":["` + leaf.ID + `"],"skills":[]}`,
+	}
+	router := NewRouter(resolver,
+		WithRouterLLM(llm),
+		WithRouterCache(NewCache()),
+		WithRouterMaxCandidates(3),
+	)
+	router.SetTree(NewTree(idx))
+
+	got, err := router.Route(context.Background(), "s", "m", nil, "h")
+	require.NoError(t, err)
+	gotNames := make([]string, 0, len(got))
+	for _, s := range got {
+		gotNames = append(gotNames, s.Name)
+	}
+	sort.Strings(gotNames)
+	// Stable order: after expandSkills preserves SkillRefs order, the first 3
+	// of [sk-a, sk-b, sk-c, sk-d, sk-e, sk-f] are [sk-a, sk-b, sk-c].
+	assert.Equal(t, []string{"sk-a", "sk-b", "sk-c"}, gotNames,
+		"on leaf-filter failure, surface stable first-N rather than empty")
+}
+
+// leafErrorLLM returns firstResponse on the first call and errors after.
+// Used to simulate "descend decision works but leaf pick fails".
+type leafErrorLLM struct {
+	mu            sync.Mutex
+	calls         int
+	firstResponse string
+}
+
+func (l *leafErrorLLM) Chat(_ context.Context, _ []types.Message, _ []shuttle.Tool) (*types.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	if l.calls == 1 {
+		return &types.LLMResponse{Content: l.firstResponse}, nil
+	}
+	return nil, assertErr("simulated leaf-pick failure")
+}
+
+func (l *leafErrorLLM) Name() string  { return "leaf-error" }
+func (l *leafErrorLLM) Model() string { return "leaf-error-model" }
+
+// TestRouter_SmallLeafSkipsLLM keeps the original cheap path: when a leaf
+// has skill_refs <= maxCandidates, the router surfaces them all without
+// invoking the leaf-filter LLM.
+func TestRouter_SmallLeafSkipsLLM(t *testing.T) {
+	leaf := &skills.SkillIndexNode{
+		ID: NodeID("td"), Title: "Teradata", Depth: 1,
+		SkillRefs: []string{"sk-a", "sk-b"},
+	}
+	root := &skills.SkillIndexNode{ID: NodeID(Root), Title: "root", Children: []string{leaf.ID}}
+	idx := &skills.SkillIndex{ID: "i", RootID: root.ID, Nodes: []*skills.SkillIndexNode{root, leaf}}
+
+	resolver := &fakeResolver{skills: map[string]*skills.Skill{
+		"sk-a": {Name: "sk-a"}, "sk-b": {Name: "sk-b"},
+	}}
+	scripted := newScriptedLLM([]string{
+		`{"descend":["` + leaf.ID + `"],"skills":[]}`,
+	})
+	router := NewRouter(resolver,
+		WithRouterLLM(scripted),
+		WithRouterMaxCandidates(5),
+	)
+	router.SetTree(NewTree(idx))
+
+	got, err := router.Route(context.Background(), "s", "m", nil, "h")
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	assert.Equal(t, 1, scripted.calls,
+		"small leaf must NOT trigger the leaf-pick LLM call")
 }
 
 func TestRouter_LLMErrorReturnsNoDecision(t *testing.T) {

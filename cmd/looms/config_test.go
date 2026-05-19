@@ -534,6 +534,21 @@ func TestInsecureAdmin_DefaultFalse(t *testing.T) {
 		"server.insecure_admin should default to false for secure-by-default behavior")
 }
 
+// TestMinimalTools_DefaultFalse locks in the opt-in contract for the
+// --minimal-tools flag / tools.minimal viper key. Anything other than
+// explicit false would silently break every existing user by suppressing
+// shell_execute, workspace, tool_search, graph_memory, and task_board.
+func TestMinimalTools_DefaultFalse(t *testing.T) {
+	viper.Reset()
+	setDefaults()
+
+	assert.False(t, viper.GetBool("tools.minimal"),
+		"tools.minimal MUST default to false: this flag is opt-in only and "+
+			"flipping it on by default would suppress all auto-injected tools "+
+			"for every existing agent (shell_execute, workspace, tool_search, "+
+			"graph_memory, task_board)")
+}
+
 func TestInsecureAdmin_ConfigField(t *testing.T) {
 	tests := []struct {
 		name     string

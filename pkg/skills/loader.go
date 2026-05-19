@@ -40,6 +40,7 @@ var validDomains = map[string]bool{
 	"rest-api":     true,
 	"document":     true,
 	"meta-agent":   true,
+	"teradata":     true,
 }
 
 // validModes lists allowed activation mode values.
@@ -230,7 +231,7 @@ func validateSkillYAML(sy *SkillYAML) error {
 		return fmt.Errorf("metadata.domain is required")
 	}
 	if !validDomains[strings.ToLower(sy.Metadata.Domain)] {
-		return fmt.Errorf("invalid domain: %q (must be one of: sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document)", sy.Metadata.Domain)
+		return fmt.Errorf("invalid domain: %q (must be one of: sql, code, data, ops, general, analytics, ml, data-quality, rest-api, document, meta-agent, teradata)", sy.Metadata.Domain)
 	}
 
 	// trigger.mode must be valid
@@ -243,9 +244,9 @@ func validateSkillYAML(sy *SkillYAML) error {
 		return fmt.Errorf("prompt.instructions is required (non-empty)")
 	}
 
-	// skill_refs max depth 2
-	if len(sy.SkillRefs) > 2 {
-		return fmt.Errorf("skill_refs max depth is 2, got %d refs", len(sy.SkillRefs))
+	// skill_refs max depth 3
+	if len(sy.SkillRefs) > 3 {
+		return fmt.Errorf("skill_refs max depth is 3, got %d refs", len(sy.SkillRefs))
 	}
 
 	return nil
