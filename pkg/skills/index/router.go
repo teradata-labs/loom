@@ -259,6 +259,12 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 					zap.Error(err))
 				return nil, nil
 			}
+			r.logger.Debug("router askDecision result",
+				zap.String("node_title", node.Title),
+				zap.Strings("descend", decision.Descend),
+				zap.Strings("skills", decision.Skills),
+				zap.String("reason", decision.Reason),
+			)
 
 			for _, name := range decision.Skills {
 				selectedNames[name] = true
@@ -281,6 +287,12 @@ func (r *Router) Route(ctx context.Context, sessionID, message string,
 		}
 		out = append(out, s)
 	}
+	r.logger.Debug("router walk complete",
+		zap.String("session", sessionID),
+		zap.Int("selected_names", len(selectedNames)),
+		zap.Int("resolved", len(out)),
+		zap.Int("eligible_size", len(eligible)),
+	)
 	out = filterEligible(out, eligible, r.maxCandidates)
 
 	// Cache decision (positive results only; cold results stay cold).

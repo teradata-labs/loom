@@ -1969,9 +1969,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		if skillsConfig.Enabled {
 			msgs := session.GetMessages()
+			// Find the most-recent user message rather than just inspecting
+			// the last entry: system prompts and context messages can be
+			// appended AFTER the user's turn (graph memory inject, ROM
+			// hydration, etc.), so msgs[len-1].Role is often "system".
+			// Mirrors the lazy-tool-disclosure walk above.
 			lastMsg := ""
-			if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
-				lastMsg = msgs[len(msgs)-1].Content
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == "user" {
+					lastMsg = msgs[i].Content
+					break
+				}
 			}
 
 			// Phase B: discover candidates.

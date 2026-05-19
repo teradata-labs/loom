@@ -192,7 +192,7 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("receive progress: %w", err)
+			return describeRPCError("bulk import", err)
 		}
 
 		switch e := ev.Event.(type) {
