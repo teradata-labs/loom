@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package importer
 
 import (
 	"testing"
@@ -20,6 +20,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestParseClassifyResponse exercises the LLM-response validator that
+// rejects hallucinated top-level paths, prefix collisions, and
+// segment-shape violations. The validator is the single source of truth
+// for "what counts as an acceptable parent_index_path"; both the
+// stateless Classify path and the future graph-aware classifier reuse
+// it.
 func TestParseClassifyResponse(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -103,7 +109,7 @@ func TestParseClassifyResponse(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseClassifyResponse(tc.raw, tc.domain)
+			got, err := ParseClassifyResponse(tc.raw, tc.domain)
 			if tc.wantError {
 				assert.Error(t, err)
 				return

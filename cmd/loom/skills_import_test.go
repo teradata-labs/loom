@@ -3,12 +3,13 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
+//go:build fts5
+
 package main
 
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -88,9 +89,7 @@ metadata:
 `
 
 // fixtureStubSkill produces a minimal SKILL.md body for a skill we just
-// need to exist in the catalog so cross-references resolve. It is NOT
-// intended to test rendering of the stub itself — happy-path tests only
-// inspect specific outputs by name.
+// need to exist in the catalog so cross-references resolve.
 func fixtureStubSkill(name string) string {
 	return "---\nname: " + name + "\ndescription: 'Stub for cross-reference testing.'\nmetadata:\n  author: test\n  version: \"1.0\"\n---\n\n# " + name + "\n\nStub.\n"
 }
@@ -116,9 +115,9 @@ func TestRunSkillsImport_HappyPath(t *testing.T) {
 		map[string]string{"transaction-and-session.md": fixtureSqlReference})
 	writeFixtureSkill(t, src, "teradata-skill-index", fixtureSkillIndex, nil)
 	writeFixtureSkill(t, src, "agent-skill-builder", fixtureAgentSkillBuilder, nil)
-	// Stub fixtures so cross-references in fixtureSqlFundamentals and
-	// fixtureSkillIndex resolve to "known" skills during import. Without
-	// these the importer would (correctly) drop them from skill_refs.
+	// Stub fixtures so cross-references in the source skills resolve to
+	// "known" skills during import. Without these the importer would
+	// (correctly) drop them from skill_refs.
 	writeFixtureSkill(t, src, "teradata-architecture", fixtureStubSkill("teradata-architecture"), nil)
 	writeFixtureSkill(t, src, "teradata-statistics", fixtureStubSkill("teradata-statistics"), nil)
 
@@ -213,79 +212,6 @@ func TestRunSkillsImport_RefusesToOverwriteWithoutForce(t *testing.T) {
 	current, err := os.ReadFile(dst)
 	require.NoError(t, err)
 	assert.Equal(t, original, current, "existing file must remain untouched without --force")
-}
-
-func TestSplitFrontmatter(t *testing.T) {
-	t.Run("happy path", func(t *testing.T) {
-		raw := []byte("---\nname: foo\ndescription: bar\nmetadata:\n  author: a\n  version: \"1.0\"\n---\n\n# Body\n\nhello\n")
-		fm, body, err := splitFrontmatter(raw)
-		require.NoError(t, err)
-		assert.Equal(t, "foo", fm.Name)
-		assert.Equal(t, "bar", fm.Description)
-		assert.Equal(t, "a", fm.Metadata.Author)
-		assert.True(t, strings.HasPrefix(body, "# Body"))
-	})
-	t.Run("missing frontmatter", func(t *testing.T) {
-		_, _, err := splitFrontmatter([]byte("# just a heading\n"))
-		assert.Error(t, err)
-	})
-}
-
-func TestExtractLinkedSkillNames(t *testing.T) {
-	body := `Some text.
-
-See [arch](../teradata-architecture/SKILL.md) and ` + "`teradata-statistics`" + ` for context.
-Also [self-ref](../teradata-foo/SKILL.md#section).
-`
-	got := extractLinkedSkillNames(body, "teradata-foo")
-	assert.Equal(t, []string{"teradata-architecture", "teradata-statistics"}, got)
-}
-
-func TestParseWhenToUseBullets(t *testing.T) {
-	body := `# Title
-
-## When to Use
-
-- First bullet
-- Second bullet
-* Third bullet
-
-## Next section
-
-- Should not appear
-`
-	bullets := parseWhenToUseBullets(body)
-	assert.Equal(t, []string{"First bullet", "Second bullet", "Third bullet"}, bullets)
-}
-
-func TestRenderSkillYAML_RoundTripsThroughLoader(t *testing.T) {
-	imp := &importedSkill{
-		Name:         "teradata-sql-fundamentals",
-		Description:  "Teradata SQL fundamentals.",
-		Author:       "teradata",
-		Version:      "1.0",
-		Body:         "# Body\n\n## When to Use\n\n- Writing SQL\n",
-		LinkedSkills: []string{"teradata-architecture"},
-		ResolvedRefs: []string{"teradata-architecture"},
-	}
-	bs, err := renderSkillYAML(imp)
-	require.NoError(t, err)
-
-	tmp := filepath.Join(t.TempDir(), "out.yaml")
-	require.NoError(t, os.WriteFile(tmp, bs, 0o600))
-	got, err := skills.LoadSkill(tmp)
-	require.NoError(t, err)
-	assert.Equal(t, "teradata-sql-fundamentals", got.Name)
-	assert.Equal(t, "teradata", got.Domain)
-	assert.Equal(t, []string{"teradata-architecture"}, got.SkillRefs)
-}
-
-func TestNormalizeCrossSkillLinks(t *testing.T) {
-	in := "See [arch](../teradata-architecture/SKILL.md) and [stats](../teradata-statistics/SKILL.md#section)."
-	out := normalizeCrossSkillLinks(in)
-	assert.Contains(t, out, "[arch](skill:teradata-architecture)")
-	assert.Contains(t, out, "[stats](skill:teradata-statistics)")
-	assert.NotContains(t, out, "../teradata-")
 }
 
 func assertFileExists(t *testing.T, path string) {
