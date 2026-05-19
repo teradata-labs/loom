@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,6 +78,10 @@ func init() {
 		"print what would be written without touching the filesystem")
 	skillsImportCmd.Flags().BoolVar(&skillsImportOverride, "force", false,
 		"overwrite existing destination YAML files")
+	skillsImportCmd.Flags().BoolVar(&classifyEnabled, "classify", false,
+		"call an LLM to assign each skill a parent_index_path from a "+
+			"per-domain taxonomy (improves router precision; requires "+
+			"LOOM_CLASSIFY_PROVIDER plus the provider's standard creds)")
 }
 
 // frontmatter is the minimal Anthropic-style Agent Skill frontmatter.
@@ -97,12 +102,13 @@ type importedSkill struct {
 	Author      string
 	Version     string
 
-	Body          string   // SKILL.md body (frontmatter stripped)
-	References    []refDoc // references/*.md, sorted by filename
-	WhenToUse     []string // bullets parsed from a "## When to Use" section
-	LinkedSkills  []string // skill names found via markdown links (unfiltered, for prompt body)
-	ResolvedRefs  []string // subset of LinkedSkills that resolve to a known importable skill (for skill_refs YAML field)
-	IsParentIndex bool     // true when name ends in "-skill-index"
+	Body            string   // SKILL.md body (frontmatter stripped)
+	References      []refDoc // references/*.md, sorted by filename
+	WhenToUse       []string // bullets parsed from a "## When to Use" section
+	LinkedSkills    []string // skill names found via markdown links (unfiltered, for prompt body)
+	ResolvedRefs    []string // subset of LinkedSkills that resolve to a known importable skill (for skill_refs YAML field)
+	IsParentIndex   bool     // true when name ends in "-skill-index"
+	ParentIndexPath string   // LLM-assigned hierarchical router path; empty falls back to unclassified/<domain>
 }
 
 type refDoc struct {
@@ -111,7 +117,7 @@ type refDoc struct {
 	Body     string // full markdown body (no frontmatter expected)
 }
 
-func runSkillsImport(_ *cobra.Command, args []string) error {
+func runSkillsImport(cmd *cobra.Command, args []string) error {
 	srcRoot := filepath.Clean(args[0])
 	outDir, err := resolveImportOutDir(skillsImportOutDir)
 	if err != nil {
@@ -127,6 +133,25 @@ func runSkillsImport(_ *cobra.Command, args []string) error {
 		if err := os.MkdirAll(outDir, 0o750); err != nil {
 			return fmt.Errorf("create out dir %s: %w", outDir, err)
 		}
+	}
+
+	// Optional LLM classifier. Constructed once and reused across all
+	// skills in this run so we don't re-pay client setup per call. nil
+	// when --classify is unset OR when env vars are missing — see error
+	// returned and stop loudly so the user knows their flag was ignored.
+	classifier, err := buildClassifyLLM()
+	if err != nil {
+		return fmt.Errorf("classify setup: %w", err)
+	}
+	if classifier != nil {
+		fmt.Fprintf(os.Stderr, "classifier enabled: %s\n", classifyProviderInfo())
+	}
+	var classifyCtx context.Context
+	if cmd != nil {
+		classifyCtx = cmd.Context()
+	}
+	if classifyCtx == nil {
+		classifyCtx = context.Background()
 	}
 
 	// Pass 1: discover all importable skills so we can resolve skill_refs
@@ -186,6 +211,20 @@ func runSkillsImport(_ *cobra.Command, args []string) error {
 			}
 		}
 		imp.ResolvedRefs = resolved
+
+		// Classifier assigns a hierarchical parent_index_path (e.g.,
+		// teradata/performance) so the router can sub-categorize within
+		// a domain. Skipped for parent-index meta-skills (they live at
+		// their own well-known location). Failures fall back to the
+		// legacy unclassified/<domain> path computed by SkillPath().
+		if classifier != nil && !imp.IsParentIndex {
+			domain := chooseDomain(imp)
+			path := classifyParentIndexPath(classifyCtx, classifier, imp, domain)
+			imp.ParentIndexPath = path
+			if path != "" {
+				fmt.Fprintf(os.Stderr, "classify %s -> %s\n", imp.Name, path)
+			}
+		}
 
 		yamlBytes, err := renderSkillYAML(imp)
 		if err != nil {
@@ -529,7 +568,7 @@ func renderSkillYAML(imp *importedSkill) ([]byte, error) {
 		author = "imported"
 	}
 
-	root := mappingNode(
+	rootKVs := []kvPair{
 		scalarKV("apiVersion", "loom/v1"),
 		scalarKV("kind", "Skill"),
 		mappingKV("metadata",
@@ -562,7 +601,15 @@ func renderSkillYAML(imp *importedSkill) ([]byte, error) {
 		),
 		seqKV("pattern_refs", nil),
 		seqKV("skill_refs", skillRefs),
-	)
+	}
+	// parent_index_path is loader-aware — when set, the index builder uses
+	// it directly to place the skill in the routing tree. When empty, the
+	// builder falls back to "unclassified/<domain>" via SkillPath(). Emit
+	// the field only when a path was assigned to keep older YAMLs unchanged.
+	if imp.ParentIndexPath != "" {
+		rootKVs = append(rootKVs, scalarKV("parent_index_path", imp.ParentIndexPath))
+	}
+	root := mappingNode(rootKVs...)
 
 	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
 	var buf strings.Builder

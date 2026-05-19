@@ -59,7 +59,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/server"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
-	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -1402,25 +1401,11 @@ func runServe(cmd *cobra.Command, args []string) {
 				} else {
 					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
 				}
-				// Transfer skills configuration from metadata
+				// Skills config: just attach to agentCfg here. Discovery
+				// wiring requires the agent's LLM provider and is performed
+				// below once agentLLMProvider is resolved.
 				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
 					agentCfg.SkillsConfig = sc
-					libOpts := []skills.LibraryOption{}
-					if sc.SkillsDir != "" {
-						libOpts = append(libOpts, skills.WithSearchPaths(sc.SkillsDir))
-					}
-					if tracer != nil {
-						libOpts = append(libOpts, skills.WithTracer(tracer))
-					}
-					skillLib := skills.NewLibrary(libOpts...)
-					skillOrch := skills.NewOrchestrator(skillLib,
-						skills.WithOrchestratorTracer(tracer),
-						skills.WithOrchestratorLogger(logger),
-					)
-					agentOpts = append(agentOpts, agent.WithSkillOrchestrator(skillOrch))
-					logger.Info("    Skills orchestrator created",
-						zap.String("skills_dir", sc.SkillsDir),
-						zap.Int("max_concurrent", sc.MaxConcurrentSkills))
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
@@ -1500,6 +1485,28 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Wrap LLM provider with instrumentation for observability
 				if tracer != nil {
 					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
+				}
+
+				// Wire skills (orchestrator + Discovery + hierarchical router)
+				// via the shared agent.BuildSkillsOptions helper. This is the
+				// single source of truth used by both this static-YAML loader
+				// and registry.buildAgent (dynamic gRPC-created agents). Must
+				// run AFTER agentLLMProvider is finalized so the router can
+				// fall back to it when no override/classifier is configured.
+				if agentCfg.SkillsConfig != nil && agentCfg.SkillsConfig.Enabled {
+					if registry != nil {
+						agentOpts = append(agentOpts,
+							registry.BuildSkillsOptions(agentCfg.SkillsConfig, nil, agentLLMProvider, cfg.Name)...)
+					} else {
+						agentOpts = append(agentOpts,
+							agent.BuildSkillsOptions(agent.SkillsWiringDeps{
+								SkillsConfig: agentCfg.SkillsConfig,
+								PrimaryLLM:   agentLLMProvider,
+								AgentName:    cfg.Name,
+								Tracer:       tracer,
+								Logger:       logger,
+							})...)
+					}
 				}
 
 				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)

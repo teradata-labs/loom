@@ -91,6 +91,23 @@ func TestMatchBinding_GlobOnBareName(t *testing.T) {
 	assert.Equal(t, "sql-tuning", got.FQN)
 }
 
+// TestMatchBinding_GlobOnBareNameForFQNSkill locks the bare-name fallback:
+// a name-only glob like "teradata-*" should still match a skill that has
+// gained a parent_index_path. Without the fallback, the FQN path would
+// require "teradata/*/teradata-*"-style patterns and existing bindings
+// would silently break the moment the importer started classifying skills.
+func TestMatchBinding_GlobOnBareNameForFQNSkill(t *testing.T) {
+	s := mkSkill("teradata-statistics", "teradata/performance", "1.0.0", nil)
+	b := skills.SkillBinding{Name: "teradata-*"}
+
+	got := MatchBinding(&b, s)
+	assert.True(t, got.Matched,
+		"bare-name glob must still match when the skill carries a parent_index_path")
+	assert.Equal(t, MatchGlob, got.Kind)
+	assert.Equal(t, "teradata/performance/teradata-statistics", got.FQN,
+		"FQN field must still report the fully-qualified name for diagnostics")
+}
+
 func TestMatchBinding_LabelOnly(t *testing.T) {
 	s := mkSkill("data-quality-check", "", "1.0.0", map[string]string{
 		"team":  "data-platform",
