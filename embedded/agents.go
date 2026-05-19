@@ -72,6 +72,20 @@ func GetWeaverFromScratchSkill() []byte {
 	return WeaverFromScratchSkillYAML
 }
 
+// SkillsTaxonomyYAML is the default seed taxonomy the skills importer's
+// classifier consults when --classify is set without an explicit
+// --taxonomy file. Edit embedded/taxonomy.yaml to change defaults; users
+// extending Loom for their own domains should copy the file rather than
+// editing this one.
+//
+//go:embed taxonomy.yaml
+var SkillsTaxonomyYAML []byte
+
+// GetSkillsTaxonomy returns the embedded taxonomy.yaml content.
+func GetSkillsTaxonomy() []byte {
+	return SkillsTaxonomyYAML
+}
+
 // GetStartHere returns the base ROM (START_HERE.md) content.
 // This delegates to pkg/agent/rom_loader.go which is the single source of truth for ROM files.
 // The ROM is embedded from pkg/agent/roms/START_HERE.md at compile time.

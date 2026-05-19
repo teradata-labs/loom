@@ -48,6 +48,7 @@ library is read once at boot; see [Hot-reload caveat](#hot-reload-caveat)).
 | `--dry-run` | false | Print what would be written; touch nothing |
 | `--force` | false | Overwrite existing destination YAMLs (without this, the importer skips them) |
 | `--classify` | false | Run the LLM classifier; assigns `parent_index_path` |
+| `--taxonomy <path>` | built-in default | Path to a custom taxonomy YAML; only consulted when `--classify` is set. See [Custom taxonomy](#custom-taxonomy) below. |
 
 ## Environment variables
 
@@ -185,6 +186,79 @@ Same output as a real run, but no files are touched. Useful for sanity-
 checking the classifier's bucket assignments before overwriting your
 live skills directory.
 
+## Custom taxonomy
+
+The classifier prompt presents a list of suggested `parent_index_path`
+buckets to the LLM. The default seed lives in
+[`embedded/taxonomy.yaml`](https://github.com/teradata-labs/loom/blob/main/embedded/taxonomy.yaml)
+and currently covers only the `teradata` domain. If you're importing
+skills for a different domain (Postgres, Elasticsearch, your own
+internal product), pass a custom taxonomy via `--taxonomy <path>`.
+
+### File format
+
+```yaml
+domains:
+  postgres:
+    description: "Postgres skills"
+    buckets:
+      - path: postgres/performance
+        description: "EXPLAIN, pg_stat_statements, vacuum tuning, bloat, index strategy"
+      - path: postgres/replication
+        description: "streaming + logical replication, hot standby, pg_basebackup"
+      - path: postgres/security
+        description: "row-level security, RLS, role + grant model, SCRAM auth, TLS"
+      - path: postgres/extensions
+        description: "PostGIS, pg_partman, pg_cron, TimescaleDB, custom extensions"
+```
+
+The `description` field is the load-bearing part: it reaches the LLM
+verbatim alongside each bucket path, giving the model a vocabulary
+signal so a skill whose own description mentions "EXPLAIN" or
+"pg_stat_statements" matches `postgres/performance` over
+`postgres/<topic>` placeholder.
+
+### Validation rules
+
+The taxonomy file is validated at load time, before the classifier
+makes any LLM calls. A malformed file fails fast:
+
+- Every bucket `path` MUST start with `<domain>/` or equal `<domain>`.
+  Hallucinated unrelated top-levels (e.g., `general/foo` under domain
+  `postgres`) are rejected.
+- Path segments MUST be lowercase kebab-case. No underscores, no
+  uppercase, no embedded spaces. (`postgres/data_types`, `postgres/Foo`,
+  and `postgres/data types` are all rejected.)
+- At least one domain must be declared.
+
+### Example
+
+```bash
+# Save the YAML somewhere stable:
+mkdir -p ~/.loom/taxonomies
+$EDITOR ~/.loom/taxonomies/postgres.yaml
+
+# Use it for an import:
+LOOM_CLASSIFY_PROVIDER=bedrock \
+loom skills import ~/Projects/postgres-skills \
+  --classify \
+  --taxonomy ~/.loom/taxonomies/postgres.yaml
+```
+
+### Replacement, not merge
+
+A user-supplied taxonomy **replaces** the built-in default; it does
+not merge. If you need both `teradata` and your custom domain, copy
+the relevant `domains: teradata: ...` block from
+`embedded/taxonomy.yaml` into your own file and add your domain
+alongside.
+
+### Empty path → fallback to default
+
+`--taxonomy ""` (the default when the flag is omitted) loads
+`embedded/taxonomy.yaml`. Use this when classifying built-in `teradata-*`
+skills.
+
 ## Hot-reload caveat
 
 The skill library is read **once per agent at server boot**. Importing
@@ -235,6 +309,20 @@ The server is reading from a different `LOOM_SKILLS_DIR`. Check
 **Routing decisions don't change after re-classifying**
 The server didn't restart. Check `tail -f /tmp/looms.log | grep "Skill
 router warmed"` to confirm a fresh router build fires.
+
+**`taxonomy: parse taxonomy <path>: domain "X" bucket N: path "Y" does not start with domain root "X/"`**
+The custom taxonomy file has a bucket whose path doesn't anchor to its
+declaring domain. Move the bucket into the right domain block, or
+correct the path prefix. Validation runs at file-load time so this
+error always points at the offending file before any LLM call.
+
+**`taxonomy: parse taxonomy <path>: domain "X" bucket N: non-lowercase segment "Foo" in path "X/Foo"`**
+Path segments must be lowercase kebab-case. Rename the segment.
+Underscores and embedded spaces are also rejected — use hyphens.
+
+**`taxonomy: parse taxonomy <path>: taxonomy has no domains`**
+The file parsed as YAML but has an empty `domains` map. Declare at
+least one domain with at least one bucket.
 
 ## Special cases
 

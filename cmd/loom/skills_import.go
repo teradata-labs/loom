@@ -70,6 +70,7 @@ var (
 	skillsImportOutDir   string
 	skillsImportDryRun   bool
 	skillsImportOverride bool
+	skillsImportTaxonomy string
 )
 
 func init() {
@@ -83,6 +84,11 @@ func init() {
 		"call an LLM to assign each skill a parent_index_path from a "+
 			"per-domain taxonomy (improves router precision; requires "+
 			"LOOM_CLASSIFY_PROVIDER plus the provider's standard creds)")
+	skillsImportCmd.Flags().StringVar(&skillsImportTaxonomy, "taxonomy", "",
+		"path to a custom taxonomy YAML (default: built-in seed shipped "+
+			"in embedded/taxonomy.yaml). Only consulted when --classify "+
+			"is set. See docs/architecture/skills-import.md#taxonomy for "+
+			"the file format.")
 }
 
 // runSkillsImport is the cobra RunE for `loom skills import`. It builds an
@@ -106,6 +112,17 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("classify setup: %w", err)
 	}
 
+	// Load taxonomy when the classifier is on. Empty path -> default
+	// seed (embedded/taxonomy.yaml). Validation runs at load time so a
+	// malformed user file is reported before the first LLM call.
+	var taxonomy importer.Taxonomy
+	if classifier != nil {
+		taxonomy, err = importer.LoadTaxonomy(skillsImportTaxonomy)
+		if err != nil {
+			return fmt.Errorf("taxonomy: %w", err)
+		}
+	}
+
 	var ctx context.Context
 	if cmd != nil {
 		ctx = cmd.Context()
@@ -119,17 +136,22 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 		prefixWidth   int
 		maxNameWidth  int
 		classifyTally = map[string]int{}
-		// Captured during the discovery banner so per-skill lines can use
-		// stable padding without a re-discover pass.
-		total int
+		total         int
 	)
 
-	cfg := importer.Config{
-		SourceDir:  filepath.Clean(args[0]),
-		OutDir:     outDir,
-		DryRun:     skillsImportDryRun,
-		Overwrite:  skillsImportOverride,
-		Classifier: classifier,
+	cfg := importer.DirConfig{
+		SourceDir: filepath.Clean(args[0]),
+		ProcessOptions: importer.ProcessOptions{
+			OutDir:     outDir,
+			DryRun:     skillsImportDryRun,
+			Overwrite:  skillsImportOverride,
+			Classifier: classifier,
+			Taxonomy:   taxonomy,
+
+			OnResult: func(r importer.SkillResult) {
+				renderSkillResult(r, prefixWidth, maxNameWidth, total, classifyTally)
+			},
+		},
 
 		OnBanner: func(d importer.DiscoveryReport) {
 			total = d.TotalImportable
@@ -143,6 +165,9 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 			classifierBanner := "off"
 			if classifier != nil {
 				classifierBanner = classifyProviderInfo()
+				if skillsImportTaxonomy != "" {
+					classifierBanner += " taxonomy=" + displayPath(skillsImportTaxonomy)
+				}
 			}
 			fmt.Fprintf(os.Stderr, "==> import: %d source skills | mode=%s | output=%s | classifier=%s\n",
 				d.TotalImportable, mode, displayPath(d.OutDir), classifierBanner)
@@ -153,24 +178,20 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "        [fail] %s: %s\n", f.Name, f.Err.Error())
 			}
 		},
-
-		OnResult: func(r importer.SkillResult) {
-			renderSkillResult(r, prefixWidth, maxNameWidth, total, classifyTally)
-		},
 	}
 
-	converted, skipped, failed, err := importer.Run(ctx, cfg)
+	totals, err := importer.RunFromDir(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "\n==> summary: %d converted, %d skipped, %d failed\n",
-		converted, skipped, failed)
+		totals.Converted, totals.Skipped, totals.Failed)
 	if len(classifyTally) > 0 {
 		fmt.Fprintf(os.Stderr, "==> classifications: %s\n", formatBucketCounts(classifyTally))
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d skill(s) failed to convert", failed)
+	if totals.Failed > 0 {
+		return fmt.Errorf("%d skill(s) failed to convert", totals.Failed)
 	}
 	return nil
 }
