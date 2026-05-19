@@ -218,8 +218,9 @@ prompt:
 skill_refs:
   - ref1
   - ref2
-  - ref3`,
-			wantErr: "skill_refs max depth is 2",
+  - ref3
+  - ref4`,
+			wantErr: "skill_refs max depth is 3",
 		},
 	}
 
@@ -648,14 +649,14 @@ func TestValidateSkillYAML(t *testing.T) {
 			errMsg:  "prompt.instructions is required",
 		},
 		{
-			name: "invalid: 3 skill_refs",
+			name: "invalid: 4 skill_refs",
 			sy: SkillYAML{
 				Metadata:  SkillMetadataYAML{Name: "test-skill", Domain: "code"},
 				Prompt:    SkillPromptYAML{Instructions: "Do something."},
-				SkillRefs: []string{"a", "b", "c"},
+				SkillRefs: []string{"a", "b", "c", "d"},
 			},
 			wantErr: true,
-			errMsg:  "skill_refs max depth is 2",
+			errMsg:  "skill_refs max depth is 3",
 		},
 	}
 

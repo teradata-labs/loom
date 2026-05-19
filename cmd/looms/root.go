@@ -100,6 +100,16 @@ Support:
 	rootCmd.PersistentFlags().Bool("yolo", false, "Bypass all tool permission prompts (YOLO mode)")
 	rootCmd.PersistentFlags().Bool("require-approval", false, "Require user approval before executing tools")
 
+	// Tool injection flags
+	rootCmd.PersistentFlags().Bool("minimal-tools", false,
+		"Suppress always-on auto-injected tools at agent construction "+
+			"(shell_execute, workspace, tool_search, graph_memory, task_board). "+
+			"Applies to ALL agents including weaver, so a weaver agent run with this flag will not "+
+			"have shell access to LOOM_DATA_DIR/examples/reference. "+
+			"Lazy/progressive tools (conversation_memory, session_memory, get_error_details, "+
+			"query_tool_result, skill required_tools) still fire when their own conditions trigger. "+
+			"Opt-in only — defaults to false.")
+
 	// Bind flags to viper
 	_ = viper.BindPFlag("server.port", rootCmd.PersistentFlags().Lookup("port"))
 	_ = viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
@@ -122,6 +132,7 @@ Support:
 	_ = viper.BindPFlag("logging.format", rootCmd.PersistentFlags().Lookup("log-format"))
 
 	_ = viper.BindPFlag("tools.permissions.yolo", rootCmd.PersistentFlags().Lookup("yolo"))
+	_ = viper.BindPFlag("tools.minimal", rootCmd.PersistentFlags().Lookup("minimal-tools"))
 	_ = viper.BindPFlag("tools.permissions.require_approval", rootCmd.PersistentFlags().Lookup("require-approval"))
 }
 
