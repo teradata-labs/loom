@@ -59,12 +59,15 @@ import (
 	"github.com/teradata-labs/loom/pkg/server"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/skills"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/tls"
 	toolregistry "github.com/teradata-labs/loom/pkg/tools/registry"
 	"github.com/teradata-labs/loom/pkg/tui/components"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -1830,6 +1833,69 @@ func runServe(cmd *cobra.Command, args []string) {
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
 	logger.Info("Judge service registered")
+
+	// Register SkillsImportService — the gRPC surface for the skills
+	// importer (BulkImportSkills streaming + AddSkill + ClassifySkill).
+	// Peer service alongside MultiAgentServer per the "keep skills as
+	// separate as possible" architectural decision.
+	//
+	// The classifier provider is read from LOOM_CLASSIFY_PROVIDER /
+	// LOOM_CLASSIFY_MODEL plus the provider's standard creds (same env
+	// vars the CLI's --classify flag uses). When unset, the server
+	// boots without a classifier; classify=true requests fail with
+	// FAILED_PRECONDITION rather than silently degrading.
+	{
+		var classifyLLM types.LLMProvider
+		if cprov := os.Getenv("LOOM_CLASSIFY_PROVIDER"); cprov != "" {
+			cmodel := os.Getenv("LOOM_CLASSIFY_MODEL")
+			cfgFactory := factory.NewProviderFactory(factory.FactoryConfig{
+				DefaultProvider: cprov,
+				DefaultModel:    cmodel,
+				Temperature:     0.0,
+			})
+			rawLLM, err := cfgFactory.CreateProvider(cprov, cmodel)
+			if err != nil {
+				logger.Warn("SkillsImportService: classify provider construction failed; classify=true requests will fail",
+					zap.String("provider", cprov),
+					zap.Error(err))
+			} else if llm, ok := rawLLM.(types.LLMProvider); ok {
+				classifyLLM = llm
+				logger.Info("SkillsImportService: classify provider configured",
+					zap.String("provider", cprov),
+					zap.String("model", cmodel))
+			}
+		}
+
+		// Read-only skills library shared with the importer service.
+		// Same skills_dir every agent reads from.
+		importLibOpts := []skills.LibraryOption{skills.WithSearchPaths(skillsDir)}
+		if tracer != nil {
+			importLibOpts = append(importLibOpts, skills.WithTracer(tracer))
+		}
+		importLib := skills.NewLibrary(importLibOpts...)
+
+		// Persisted index store backed by the registry's SQLite DB.
+		// Same store the per-agent routers SaveIndex into; reading
+		// LatestIndex here gives the importer the live router's view.
+		importStore := skillindex.NewSQLStore(registry.DB(), skillindex.DialectSQLite)
+
+		importServer, err := server.NewSkillsImportServer(server.SkillsImportServerConfig{
+			Registry:      registry,
+			Store:         importStore,
+			SkillLib:      importLib,
+			DefaultOutDir: skillsDir,
+			Classify:      classifyLLM,
+			Tracer:        tracer,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Error("SkillsImportService registration failed",
+				zap.Error(err))
+		} else {
+			loomv1.RegisterSkillsImportServiceServer(grpcServer, importServer)
+			logger.Info("SkillsImportService registered")
+		}
+	}
 
 	// Register AdminService if the storage backend supports admin operations (PostgreSQL only).
 	// SQLite backends do not provide multi-tenant admin and are silently skipped.
