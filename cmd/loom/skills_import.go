@@ -143,9 +143,6 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("classify setup: %w", err)
 	}
-	if classifier != nil {
-		fmt.Fprintf(os.Stderr, "classifier enabled: %s\n", classifyProviderInfo())
-	}
 	var classifyCtx context.Context
 	if cmd != nil {
 		classifyCtx = cmd.Context()
@@ -164,9 +161,16 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 		dir   string
 		skill *importedSkill
 	}
-	var skipped, failed int
-	pendingSkills := make([]pending, 0, len(entries))
-	knownNames := make(map[string]bool)
+	type skipNote struct{ name, reason string }
+	type failNote struct{ name, err string }
+	var (
+		skipped       int
+		failed        int
+		skipNotes     []skipNote
+		failNotes     []failNote
+		pendingSkills = make([]pending, 0, len(entries))
+		knownNames    = make(map[string]bool)
+	)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -177,23 +181,43 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if isSkippedSkill(e.Name()) {
-			fmt.Fprintf(os.Stderr, "skip %s (meta-tooling, not convertible)\n", e.Name())
+			skipNotes = append(skipNotes, skipNote{e.Name(), "meta-tooling, not convertible"})
 			skipped++
 			continue
 		}
 		imp, err := readImportedSkill(skillDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "fail %s: %v\n", e.Name(), err)
+			failNotes = append(failNotes, failNote{e.Name(), err.Error()})
 			failed++
 			continue
 		}
 		if !safeSkillName(imp.Name) {
-			fmt.Fprintf(os.Stderr, "fail %s: unsafe skill name %q\n", e.Name(), imp.Name)
+			failNotes = append(failNotes, failNote{e.Name(), fmt.Sprintf("unsafe skill name %q", imp.Name)})
 			failed++
 			continue
 		}
 		pendingSkills = append(pendingSkills, pending{entry: e, dir: skillDir, skill: imp})
 		knownNames[imp.Name] = true
+	}
+
+	// Banner shows the user what knobs are in effect for this run, before
+	// any per-skill output. Discovery-phase skip/fail notes are folded in
+	// after the banner so the output reads top-to-bottom.
+	mode := "write"
+	if skillsImportDryRun {
+		mode = "dry-run (no files written)"
+	}
+	classifierBanner := "off"
+	if classifier != nil {
+		classifierBanner = classifyProviderInfo()
+	}
+	fmt.Fprintf(os.Stderr, "==> import: %d source skills | mode=%s | output=%s | classifier=%s\n",
+		len(pendingSkills), mode, displayPath(outDir), classifierBanner)
+	for _, s := range skipNotes {
+		fmt.Fprintf(os.Stderr, "        [skip] %s (%s)\n", s.name, s.reason)
+	}
+	for _, f := range failNotes {
+		fmt.Fprintf(os.Stderr, "        [fail] %s: %s\n", f.name, f.err)
 	}
 
 	// Pass 2: render and write each skill. Filter LinkedSkills against
@@ -202,33 +226,103 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 	// because the parent-index prompt body lists every cross-reference,
 	// resolved or not.
 	var converted int
+	classifyCounts := map[string]int{} // bucket -> count, summarised at the end
+	total := len(pendingSkills)
+	prefixWidth := numWidth(total)
+	maxNameWidth := 0
 	for _, p := range pendingSkills {
-		imp, e := p.skill, p.entry
+		if n := len(p.skill.Name); n > maxNameWidth {
+			maxNameWidth = n
+		}
+	}
+	for i, p := range pendingSkills {
+		imp := p.skill
 		resolved := make([]string, 0, len(imp.LinkedSkills))
+		var dropped []string
 		for _, name := range imp.LinkedSkills {
 			if knownNames[name] {
 				resolved = append(resolved, name)
+			} else {
+				dropped = append(dropped, name)
 			}
 		}
 		imp.ResolvedRefs = resolved
+
+		// Per-skill progress prefix. Padding lines up the columns:
+		//   [12/23] teradata-statistics       classify=teradata/performance  refs=2/3  wrote 41 KB
+		linePrefix := fmt.Sprintf("[%*d/%d] %-*s",
+			prefixWidth, i+1, total, maxNameWidth, imp.Name)
 
 		// Classifier assigns a hierarchical parent_index_path (e.g.,
 		// teradata/performance) so the router can sub-categorize within
 		// a domain. Skipped for parent-index meta-skills (they live at
 		// their own well-known location). Failures fall back to the
 		// legacy unclassified/<domain> path computed by SkillPath().
+		classifyTag := ""
 		if classifier != nil && !imp.IsParentIndex {
 			domain := chooseDomain(imp)
 			path := classifyParentIndexPath(classifyCtx, classifier, imp, domain)
 			imp.ParentIndexPath = path
 			if path != "" {
-				fmt.Fprintf(os.Stderr, "classify %s -> %s\n", imp.Name, path)
+				classifyCounts[path]++
+				classifyTag = fmt.Sprintf("  classify=%s", path)
+			} else {
+				classifyTag = "  classify=fallback(unclassified)"
 			}
+		} else if imp.IsParentIndex {
+			classifyTag = "  classify=skip(parent-index)"
 		}
+
+		// Relational links: how many cross-skill references this skill
+		// declared in markdown vs how many actually resolved against the
+		// known set. Loader caps skill_refs at 3, so resolved>3 just means
+		// "many references; first 3 will land in YAML, rest live in body".
+		linksTag := ""
+		var droppedRefs []string
+		if linksTotal := len(imp.LinkedSkills); linksTotal > 0 {
+			emitted := len(resolved)
+			if emitted > 3 {
+				emitted = 3 // mirrors renderSkillYAML cap
+			}
+			linksTag = fmt.Sprintf("  refs=%d/%d", emitted, linksTotal)
+			droppedRefs = dropped
+		}
+
+		// Metadata tags: surface the structural fields the importer is
+		// about to emit so the user sees what's in the resulting YAML
+		// without diff'ing it. These are previewed *before* render so a
+		// failure during render still tells the user what was attempted.
+		//
+		// Field semantics:
+		//   domain          - skills.metadata.domain (chooseDomain() output)
+		//   trigger         - skills.trigger.mode: ALWAYS for parent-index
+		//                     skills, AUTO for the rest
+		//   keywords        - len(skills.trigger.keywords); capped at 32
+		//                     by buildKeywords. These power the FTS5
+		//                     keyword-routing fallback.
+		//   slash-commands  - len(skills.trigger.slash_commands); typically
+		//                     1 (the kebab name) or 2 for parent-index
+		//   refs-inlined    - count of references/*.md files inlined into
+		//                     prompt.instructions
+		domain := chooseDomain(imp)
+		triggerMode := "AUTO"
+		if imp.IsParentIndex {
+			triggerMode = "ALWAYS"
+		}
+		kwCount := len(buildKeywords(imp))
+		slashCount := len(buildSlashCommands(imp))
+		metaTag := fmt.Sprintf("  domain=%s  trigger=%s  keywords=%d  slash-commands=%d  refs-inlined=%d",
+			domain, triggerMode, kwCount, slashCount, len(imp.References))
+
+		// tags is the right-hand half of every per-skill output line.
+		// Order matches the data-flow order so a partial line still tells
+		// the user where the importer got to:
+		//   classify -> links -> metadata -> outcome
+		tags := classifyTag + linksTag + metaTag
 
 		yamlBytes, err := renderSkillYAML(imp)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "fail %s: render: %v\n", e.Name(), err)
+			fmt.Fprintf(os.Stderr, "%s%s  [fail] render: %v\n", linePrefix, tags, err)
 			failed++
 			continue
 		}
@@ -238,45 +332,125 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 		tmpPath := filepath.Join(os.TempDir(), filepath.Base(imp.Name)+".yaml")
 		tmpPath = filepath.Clean(tmpPath)
 		if err := os.WriteFile(tmpPath, yamlBytes, 0o600); err != nil { //nolint:gosec // G306/G703: path is filepath.Clean(temp + safe-name)
-			fmt.Fprintf(os.Stderr, "fail %s: tmp write: %v\n", e.Name(), err)
+			fmt.Fprintf(os.Stderr, "%s%s  [fail] tmp write: %v\n", linePrefix, tags, err)
 			failed++
 			continue
 		}
 		if _, err := skills.LoadSkill(tmpPath); err != nil {
 			_ = os.Remove(tmpPath) //nolint:gosec // G703: same cleaned tmp path
-			fmt.Fprintf(os.Stderr, "fail %s: validate: %v\n", e.Name(), err)
+			fmt.Fprintf(os.Stderr, "%s%s  [fail] validate: %v\n", linePrefix, tags, err)
 			failed++
 			continue
 		}
 		_ = os.Remove(tmpPath) //nolint:gosec // G703: same cleaned tmp path
 
 		dst := filepath.Clean(filepath.Join(outDir, filepath.Base(imp.Name)+".yaml"))
-		if skillsImportDryRun {
-			fmt.Printf("would write %s (%d bytes, %d refs, %d linked skills)\n",
-				dst, len(yamlBytes), len(imp.References), len(imp.LinkedSkills))
+		switch {
+		case skillsImportDryRun:
+			fmt.Fprintf(os.Stderr, "%s%s  [would-write] %s (%s)\n",
+				linePrefix, tags, displayPath(dst), formatSize(len(yamlBytes)))
 			converted++
-			continue
+		default:
+			if _, err := os.Stat(dst); err == nil && !skillsImportOverride { //nolint:gosec // G304/G703: dst is filepath.Clean(outDir + safe-name)
+				fmt.Fprintf(os.Stderr, "%s%s  [skip] exists (use --force to overwrite)\n", linePrefix, tags)
+				skipped++
+				continue
+			}
+			if err := os.WriteFile(dst, yamlBytes, 0o600); err != nil { //nolint:gosec // G306/G703: dst is filepath.Clean(outDir + safe-name)
+				fmt.Fprintf(os.Stderr, "%s%s  [fail] write: %v\n", linePrefix, tags, err)
+				failed++
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "%s%s  [wrote] %s (%s)\n",
+				linePrefix, tags, displayPath(dst), formatSize(len(yamlBytes)))
+			converted++
 		}
-		if _, err := os.Stat(dst); err == nil && !skillsImportOverride { //nolint:gosec // G304/G703: dst is filepath.Clean(outDir + safe-name)
-			fmt.Fprintf(os.Stderr, "skip %s: %s exists (use --force to overwrite)\n", e.Name(), dst)
-			skipped++
-			continue
+
+		// When refs were dropped (linked names that don't resolve to
+		// importable skills), surface them on a follow-up indented line.
+		// Helps the user see exactly which cross-references won't appear
+		// in skill_refs — e.g., upstream packages, external deps, typos.
+		// Indents to align under the skill-name column.
+		if len(droppedRefs) > 0 {
+			indent := prefixWidth*2 + len("[/] ") + maxNameWidth
+			fmt.Fprintf(os.Stderr, "%*s  refs-dropped: %s\n",
+				indent, "", strings.Join(droppedRefs, ", "))
 		}
-		if err := os.WriteFile(dst, yamlBytes, 0o600); err != nil { //nolint:gosec // G306/G703: dst is filepath.Clean(outDir + safe-name)
-			fmt.Fprintf(os.Stderr, "fail %s: write: %v\n", e.Name(), err)
-			failed++
-			continue
-		}
-		fmt.Printf("wrote %s\n", dst)
-		converted++
 	}
 
-	fmt.Fprintf(os.Stderr, "\nimport summary: %d converted, %d skipped, %d failed\n",
+	fmt.Fprintf(os.Stderr, "\n==> summary: %d converted, %d skipped, %d failed\n",
 		converted, skipped, failed)
+	if len(classifyCounts) > 0 {
+		fmt.Fprintf(os.Stderr, "==> classifications: %s\n", formatBucketCounts(classifyCounts))
+	}
 	if failed > 0 {
 		return fmt.Errorf("%d skill(s) failed to convert", failed)
 	}
 	return nil
+}
+
+// numWidth returns the count of digits needed to render n. Used for
+// right-padding the [N/M] progress prefix so the names line up.
+func numWidth(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	w := 0
+	for n > 0 {
+		w++
+		n /= 10
+	}
+	return w
+}
+
+// formatSize renders a byte count in human-friendly units.
+func formatSize(bytes int) string {
+	switch {
+	case bytes >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+	case bytes >= 1024:
+		return fmt.Sprintf("%d KB", bytes/1024)
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// displayPath collapses $HOME to ~ for cleaner per-line output. Falls back
+// to the original path when home isn't resolvable.
+func displayPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if strings.HasPrefix(p, home) {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	return p
+}
+
+// formatBucketCounts joins {bucket: count} into a single readable line
+// sorted by descending count then alphabetically. Used for the final
+// classifier summary.
+func formatBucketCounts(counts map[string]int) string {
+	type kv struct {
+		k string
+		v int
+	}
+	pairs := make([]kv, 0, len(counts))
+	for k, v := range counts {
+		pairs = append(pairs, kv{k, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		parts = append(parts, fmt.Sprintf("%s:%d", p.k, p.v))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // resolveImportOutDir picks the output directory in this order:
