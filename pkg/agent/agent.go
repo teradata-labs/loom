@@ -35,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	"github.com/teradata-labs/loom/pkg/skills/hygiene"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -305,6 +306,29 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			}
 			return open
 		})
+	}
+
+	// Construct the end-of-turn hygiene auditor + enforcer when both the
+	// skill and task subsystems are wired. The auditor inspects tasks
+	// emitted by currently-active skills via SkillIdempotencyKey; the
+	// enforcer applies the resolved HygienePolicy from SkillsConfig.Hygiene
+	// at end-of-turn (see runConversationLoop). Caller can preempt by
+	// providing a non-nil pair via Option before NewAgent returns.
+	if a.hygieneAuditor == nil && a.skillOrchestrator != nil && a.taskManager != nil {
+		a.hygieneAuditor = hygiene.NewAuditor(
+			a.taskManager,
+			a.skillOrchestrator,
+			hygiene.WithTracer(a.tracer),
+			hygiene.WithLogger(zap.L()),
+		)
+	}
+	if a.hygieneEnforcer == nil && a.taskManager != nil {
+		a.hygieneEnforcer = hygiene.NewEnforcer(
+			a.taskManager,
+			hygiene.WithEnforcerTracer(a.tracer),
+			hygiene.WithEnforcerLogger(zap.L()),
+			hygiene.WithAgentID(a.id),
+		)
 	}
 
 	// Install an eviction callback that boosts graph memory salience for
@@ -1926,7 +1950,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
-	emptyRetried := false // one-shot flag: retry empty LLM response at most once per conversation
+	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
+	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
+	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 
 	// Debug: Print config values
 	if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
@@ -2443,17 +2469,43 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
 			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
 
+			// End-of-turn hygiene check for skill-emitted tasks. Audits the
+			// active skill's tasks and either injects a fixup message and
+			// retries (REQUIRE_FIX), machine-repairs the board (AUTO_FIX), or
+			// logs and continues (WARN_ONLY). See pkg/skills/hygiene.
+			retry, outcome := a.runEndOfTurnHygiene(ctx, session, &hygieneRetries)
+			if outcome != nil {
+				hygieneLast = outcome
+			}
+			if retry {
+				// runEndOfTurnHygiene already appended the synthetic user
+				// message to the session and persisted it. Re-enter the
+				// conversation loop so the LLM sees the fixup request.
+				continue
+			}
+
+			meta := map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"empty_retried":   emptyRetried,
+			}
+			if hygieneLast != nil {
+				meta["hygiene_policy"] = hygieneLast.Policy.String()
+				meta["hygiene_violations_found"] = hygieneLast.ViolationsFound
+				meta["hygiene_by_kind"] = hygieneLast.ViolationsByKind
+				meta["hygiene_resolved"] = hygieneLast.Resolved
+				meta["hygiene_hitl_spawned"] = hygieneLast.HITLSpawned
+				if hygieneLast.FallthroughReason != "" {
+					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
+				}
+			}
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
-				Metadata: map[string]interface{}{
-					"turns":           turnCount,
-					"tool_executions": toolExecutionCount,
-					"stop_reason":     llmResp.StopReason,
-					"empty_retried":   emptyRetried,
-				},
+				Metadata:       meta,
 			}, nil
 		}
 
