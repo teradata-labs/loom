@@ -561,16 +561,16 @@ func (s *SkillsImportServer) extractZipToTempDir(data []byte, prefix string) (st
 		if name == "." || name == "" {
 			continue
 		}
-		// Reject zip-slip: path must stay inside tempDir after
-		// joining + cleaning.
-		if filepath.IsAbs(name) || strings.HasPrefix(name, "..") {
+		// Reject absolute archive paths.
+		if filepath.IsAbs(name) {
 			cleanup()
 			return "", noopCleanup, fmt.Errorf("zip entry %q escapes archive root", f.Name)
 		}
+
 		dest := filepath.Join(tempDir, name)
-		// Belt-and-suspenders: even after Clean, verify the joined
-		// path is under tempDir.
-		if !strings.HasPrefix(dest, tempDir+string(filepath.Separator)) && dest != tempDir {
+		// Resolve destination relative to tempDir and ensure it does not escape.
+		rel, err := filepath.Rel(tempDir, dest)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			cleanup()
 			return "", noopCleanup, fmt.Errorf("zip entry %q escapes archive root", f.Name)
 		}
