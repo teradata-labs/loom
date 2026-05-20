@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -187,6 +188,12 @@ type SkillsConfig struct {
 	// nil mirrors proto3 optional default-true. Per-skill EmitTasks overrides
 	// this for individual skills.
 	TasksEnabled *bool
+
+	// Hygiene controls end-of-turn task-board hygiene enforcement for
+	// skill-emitted tasks. nil falls back to defaults (enabled, REQUIRE_FIX
+	// policy, max_retries=2). The agent layer constructs the auditor when
+	// both skillOrchestrator and taskManager are present.
+	Hygiene *loomv1.HygieneConfig
 }
 
 // DefaultSkillsConfig returns a SkillsConfig with sensible defaults.

@@ -142,6 +142,48 @@ func (s *TaskStore) HasOpenSkillTasks(ctx context.Context, skillName, sessionID 
 	return count > 0, nil
 }
 
+// ListBySkillRun returns every non-deleted task whose skill_idempotency_key
+// matches skill:<name>|sess:<sess>|%, regardless of status. Used by the
+// end-of-turn hygiene auditor to inventory the active skill's tasks.
+func (s *TaskStore) ListBySkillRun(ctx context.Context, skillName, sessionID string) ([]*task.Task, error) {
+	if skillName == "" || sessionID == "" {
+		return []*task.Task{}, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.list_by_skill_run")
+	defer s.tracer.EndSpan(span)
+
+	prefix := fmt.Sprintf("skill:%s|sess:%s|%%", skillName, sessionID)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, title, description, objective, approach, acceptance_criteria, notes,
+			status, priority, category, tags_json,
+			owner_agent_id, COALESCE(assignee_agent_id,''), COALESCE(claimed_by_session,''),
+			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
+			compaction_level, compacted_summary, output_policy_json, estimated_effort,
+			created_at, updated_at, claimed_at, closed_at, close_reason,
+			COALESCE(skill_idempotency_key,'')
+		FROM tasks
+		WHERE skill_idempotency_key LIKE ?
+		  AND deleted_at IS NULL
+		ORDER BY created_at ASC`, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("list by skill run: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	tasks := make([]*task.Task, 0)
+	for rows.Next() {
+		t, err := scanTaskRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 // GetTaskByIdempotencyKey returns the task that owns the given idempotency
 // key, or (nil, nil) when no such task exists. Used by the skills task
 // emitter to dedupe concurrent skill activations.

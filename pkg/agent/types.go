@@ -29,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	"github.com/teradata-labs/loom/pkg/skills/hygiene"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -117,6 +118,13 @@ type Agent struct {
 	// skillsTurnState tracks which skills were activated in the current
 	// turn so phase D can emit tasks only for the newly-activated set.
 	skillsTurnState map[string]map[string]bool // sessionID -> skillName -> activated-this-turn
+
+	// End-of-turn hygiene enforcement for skill-emitted tasks. Constructed
+	// when both skillOrchestrator and taskManager are present; runs at the
+	// conversation-loop return path to audit IN_PROGRESS / BLOCKED /
+	// OPEN-unstarted tasks left dirty by an active skill.
+	hygieneAuditor  *hygiene.Auditor
+	hygieneEnforcer *hygiene.Enforcer
 
 	// Inter-agent communication (optional)
 	refStore     communication.ReferenceStore // Reference storage for agent-to-agent communication
