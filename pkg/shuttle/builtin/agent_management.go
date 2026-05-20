@@ -21,9 +21,40 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SkillWriteHook is invoked after a skill YAML is successfully written
+// to disk by create_skill or update_skill. Used by cmd/looms/cmd_serve.go
+// to trigger Registry.ReloadAllSkillRouters so the new/changed skill
+// becomes routable without a server restart.
+//
+// The hook receives the bare skill name (no .yaml extension) and the
+// absolute path of the written YAML. Errors are logged by the caller;
+// a hook failure does not roll back the write.
+type SkillWriteHook func(skillName, filePath string)
+
+// AgentManagementToolOption configures an AgentManagementTool. Functional
+// options keep the zero-arg constructor working for existing callers
+// while letting cmd_serve.go inject side-effect handlers.
+type AgentManagementToolOption func(*AgentManagementTool)
+
+// WithSkillWriteHook installs a callback fired after a successful skill
+// write (create_skill or update_skill). When unset, writes complete
+// silently — same behavior as before this option existed.
+func WithSkillWriteHook(hook SkillWriteHook) AgentManagementToolOption {
+	return func(t *AgentManagementTool) {
+		t.skillWriteHook = hook
+	}
+}
+
 // AgentManagementTool provides agent and workflow YAML management with validation.
 // This tool is designed for meta-agents like weaver that create and manage agent/workflow configurations.
-type AgentManagementTool struct{}
+type AgentManagementTool struct {
+	// skillWriteHook fires after create_skill / update_skill writes
+	// succeed. nil means "no-op", which is the default zero-value
+	// behavior. The cmd/looms/cmd_serve.go wiring sets this to a
+	// closure that calls Registry.ReloadAllSkillRouters so weaver-
+	// authored skills become routable without a server restart.
+	skillWriteHook SkillWriteHook
+}
 
 // K8sStyleAgentConfig represents the K8s-style agent YAML format.
 // This is a local copy to avoid import cycle with pkg/agent.
@@ -45,8 +76,18 @@ type WorkflowConfig struct {
 }
 
 // NewAgentManagementTool creates a new agent management tool.
-func NewAgentManagementTool() *AgentManagementTool {
-	return &AgentManagementTool{}
+//
+// Options:
+//   - WithSkillWriteHook: install a callback fired after a successful
+//     skill YAML write. Used by cmd/looms/cmd_serve.go to trigger
+//     Registry.ReloadAllSkillRouters so weaver-authored skills become
+//     routable without a server restart.
+func NewAgentManagementTool(opts ...AgentManagementToolOption) *AgentManagementTool {
+	t := &AgentManagementTool{}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 func (t *AgentManagementTool) Name() string {

@@ -108,7 +108,8 @@ func WithMaxBranching(n int) RouterOption {
 	}
 }
 
-// WithRouterMaxCandidates caps the number of skills returned. Default 5.
+// WithRouterMaxCandidates caps the number of skills returned. Default 3,
+// aligned with skills.SkillsConfig.MaxConcurrentSkills.
 func WithRouterMaxCandidates(n int) RouterOption {
 	return func(r *Router) {
 		if n > 0 {
@@ -121,12 +122,20 @@ func WithRouterMaxCandidates(n int) RouterOption {
 // names into full Skill records; library is the typical source.
 func NewRouter(resolver Resolver, opts ...RouterOption) *Router {
 	r := &Router{
-		resolver:      resolver,
-		tracer:        observability.NewNoOpTracer(),
-		logger:        zap.NewNop(),
-		maxDepth:      4,
-		maxBranching:  12,
-		maxCandidates: 5,
+		resolver:     resolver,
+		tracer:       observability.NewNoOpTracer(),
+		logger:       zap.NewNop(),
+		maxDepth:     4,
+		maxBranching: 12,
+		// Aligned with skills.SkillsConfig.MaxConcurrentSkills (default 3).
+		// Keeping these in sync prevents the orchestrator from silently
+		// dropping router decisions: anything the router emits beyond the
+		// orchestrator's cap gets sorted alphabetically and trimmed,
+		// wasting per-leaf LLM picks. Aligning at 3 also lowers the
+		// leaf-filter threshold so any bucket with 4+ skills engages
+		// pickFromFatLeaf, letting the LLM pick the relevant subset
+		// instead of dumping the alphabetical-first slice.
+		maxCandidates: 3,
 		maxRetries:    1,
 	}
 	for _, opt := range opts {

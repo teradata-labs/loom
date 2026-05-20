@@ -1568,7 +1568,27 @@ func runServe(cmd *cobra.Command, args []string) {
 						}
 						// spawn_agent removed
 
-						tool := builtin.ByName(toolName)
+						// agent_management writes skill YAMLs via
+						// create_skill / update_skill. After a successful
+						// write we want every running agent's router to
+						// pick up the new skill on the next chat turn,
+						// without a server restart. Wire a post-write hook
+						// to Registry.ReloadAllSkillRouters; the tool runs
+						// the hook synchronously in its Execute path.
+						var tool shuttle.Tool
+						if toolName == "agent_management" && registry != nil {
+							hook := func(skillName, filePath string) {
+								reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
+								logger.Info("agent_management: skill write triggered router reload",
+									zap.String("skill", skillName),
+									zap.String("file", filePath),
+									zap.Int("reloaded", reloaded),
+									zap.Int("failed", failed))
+							}
+							tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
+						} else {
+							tool = builtin.ByName(toolName)
+						}
 						if tool != nil {
 							ag.RegisterTool(tool)
 							logger.Info("      Tool registered", zap.String("name", toolName))
@@ -2751,7 +2771,23 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 					// spawn_agent removed
 
-					tool := builtin.ByName(toolName)
+					// Mirror the boot path's agent_management wiring: the
+					// hot-reload path also needs the post-write hook so
+					// reloaded weaver agents trigger router rebuilds.
+					var tool shuttle.Tool
+					if toolName == "agent_management" && registry != nil {
+						hook := func(skillName, filePath string) {
+							reloaded, failed := registry.ReloadAllSkillRouters(context.Background())
+							logger.Info("agent_management (reload): skill write triggered router reload",
+								zap.String("skill", skillName),
+								zap.String("file", filePath),
+								zap.Int("reloaded", reloaded),
+								zap.Int("failed", failed))
+						}
+						tool = builtin.NewAgentManagementTool(builtin.WithSkillWriteHook(hook))
+					} else {
+						tool = builtin.ByName(toolName)
+					}
 					if tool != nil {
 						newAgent.RegisterTool(tool)
 						logger.Info("    Tool registered", zap.String("name", toolName))
