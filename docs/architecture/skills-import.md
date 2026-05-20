@@ -1,11 +1,17 @@
 # Skills Import + Classification
 
-**Status:** ✅ Implemented (skills_import.go + skills_classify.go + parent_index_path persistence + router-side leaf filter)
-**Branch:** `feat/skills-import-converter` (PR #182)
+**Status:** ✅ Implemented (pkg/skills/importer + SkillsImportService gRPC surface + parent_index_path persistence + router-side leaf filter + Taxonomy type + graph-aware classifier path)
+**Branches:** `feat/skills-import-converter` (PR #182, merged); `feat/skills-import-rpc` (RPC surface + post-write router reload)
 **Version target:** post-v1.2.0
 
-Architecture reference for `loom skills import [--classify]`. For end-user
-usage see [`guides/skills-import-guide.md`](../guides/skills-import-guide.md).
+Architecture reference for `loom skills import [--classify --taxonomy]`,
+`loom skills add`, and `loom skills classify`. For end-user usage see
+[`guides/skills-import-guide.md`](../guides/skills-import-guide.md).
+
+> **Note on companion services.** The inverse operation —
+> exporting a `loom/v1` Skill YAML back to Anthropic-style
+> `<name>/SKILL.md + references/` source — is tracked separately and
+> ships in its own PR. This doc covers only import + classify.
 
 ## What it does
 
@@ -59,15 +65,17 @@ phase 2: Parse            ─►  for each: split frontmatter from body
 
 phase 3: Classify (opt-in)─►  if --classify:
                                 build LLM provider from env
+                                load taxonomy (--taxonomy or default)
                                 call LLM once per skill with taxonomy hint
+                                  (and graph context, when graph-aware)
                                 validate response, set imp.ParentIndexPath
                               else: leave ParentIndexPath empty
                                     (router falls back to unclassified/<domain>)
 
-phase 4: Render YAML      ─►  buildKeywords() — priority-tiered extraction
-                              buildInstructions() — body + inlined references
-                              buildSlashCommands() — derived from skill name
-                              chooseDomain() — teradata-* → teradata, etc.
+phase 4: Render YAML      ─►  BuildKeywords() — priority-tiered extraction
+                              BuildInstructions() — body + inlined references
+                              BuildSlashCommands() — derived from skill name
+                              ChooseDomain() — teradata-* → teradata, etc.
                               emit loom/v1 Skill YAML; include
                               parent_index_path when set
 
@@ -76,43 +84,153 @@ phase 5: Validate + write ─►  round-trip through skills.LoadSkill (real load
                               write to outDir, or print on --dry-run
 ```
 
-The implementation lives in `cmd/loom/skills_import.go` (pipeline +
-rendering) and `cmd/loom/skills_classify.go` (phase 3). The validator
-in phase 5 is the same `skills.LoadSkill` that runs on every server
-boot, so a successful import guarantees the YAML will load at runtime.
+The transformational logic lives in `pkg/skills/importer/`. The
+**server** holds the only filesystem-write surface and the only LLM
+credential — all import operations are delivered to the server over
+gRPC via the `SkillsImportService` defined in
+`proto/loom/v1/skills_import.proto`. The CLI in `cmd/loom/skills_*.go`
+is a thin gRPC client that streams progress events from the server
+and renders them to stderr.
+
+## gRPC service surface
+
+`SkillsImportService` is a peer of `LoomService`, registered alongside
+the multi-agent server in `cmd/looms/cmd_serve.go`. It exposes three
+RPCs:
+
+```proto
+service SkillsImportService {
+  rpc BulkImportSkills(BulkImportSkillsRequest)
+      returns (stream BulkImportProgress);
+  rpc AddSkill(AddSkillRequest) returns (AddSkillResponse);
+  rpc ClassifySkill(ClassifySkillRequest) returns (ClassifySkillResponse);
+}
+```
+
+### Why peer service, not methods on MultiAgentServer
+
+Skills import is a bounded subsystem with its own lifecycle: it owns
+the classifier provider, the taxonomy seed, the zip-extraction temp
+directory, and the post-write router-reload trigger. Embedding it on
+`MultiAgentServer` would conflate skills management with multi-agent
+coordination state. Treating it as a peer keeps the surface area
+discrete and lets the import service evolve independently (its own
+versioning, its own auth interceptors, its own metrics).
+
+### Source delivery — oneof on every request
+
+Each request takes its source via a proto `oneof`:
+
+| Variant | Use when | Cost |
+|---|---|---|
+| `src_dir` (string) | Server can read the path directly (local serve, shared volume) | Smallest payload |
+| `zip_archive` (bytes) | Remote/containerized server, or non-shared filesystem | Network transfer of zipped tree |
+| `inline` (AddSkill only) | Client constructed SKILL.md in memory (e.g., the weaver agent's `create_skill` flow) | One round-trip |
+
+The CLI auto-selects: if the server address resolves to a loopback
+host, it uses `src_dir`; otherwise it zips client-side. `--zip` forces
+zip mode for any address.
+
+### Streaming progress (BulkImportSkills)
+
+`BulkImportProgress` is a `oneof` of three event types:
+
+```
+banner   → BannerInfo with totals + skip/fail notes (fires once at start)
+result   → SkillResult per skill that reached the rendering phase
+summary  → SummaryInfo with the run totals + classify-bucket tally (fires once at end)
+```
+
+The CLI consumes the stream in order and renders the same per-skill
+output the legacy in-process importer printed. A stream that ends
+without a `summary` event indicates a hard server-side failure.
+
+### Security: zip extraction defenses
+
+Server-side zip extraction in `pkg/server/skills_import.go` enforces:
+- Reject entries with absolute paths or `..` (zip-slip / CVE-2018-1002200 class).
+- Reject entries whose decompressed name lands outside the per-call temp dir.
+- Cap total decompressed size at 64 MB to prevent zip-bombs.
+- Discard the temp dir on every code path (success, failure, or error).
+
+### Post-write router reload
+
+After any successful write — whether from `BulkImportSkills`,
+`AddSkill`, or `ClassifySkill` — the server calls
+`Registry.ReloadAllSkillRouters(ctx)`. This iterates every wired
+`WiredSkillSubsystem` (one per agent), invalidates the library cache,
+rebuilds the router index, persists it, and `SetTree`s the new tree
+onto the agent's running router. Running agents see the new skill on
+their next chat turn without a server restart.
+
+The wiring tracking is set up at agent construction time:
+`SkillsWiringDeps.OnWired` fires once per wired router subsystem,
+and the registry-bound `BuildSkillsOptions` sets that to
+`Registry.RegisterWiredSkillSubsystem` so static-YAML agents (loaded
+via `cmd_serve.go`) and dynamic gRPC-created agents (built via
+`Registry.buildAgent`) both register uniformly.
+
+The RPC response carries `router_reloaded bool` so callers know
+whether the change is live or requires a manual restart (the latter
+only happens on partial failure of the iteration).
+
+### Weaver-authored skills
+
+The `agent_management` builtin tool's `create_skill` and
+`update_skill` actions accept an optional `SkillWriteHook` that
+fires after a successful write. `cmd_serve.go` wires this hook to
+`Registry.ReloadAllSkillRouters` so weaver-authored skills become
+routable on the next chat turn — same semantics as
+`SkillsImportService.AddSkill`, but without the gRPC round trip
+since the tool runs in-process. The hook is opt-in via
+`builtin.WithSkillWriteHook(...)`; the zero-arg
+`builtin.NewAgentManagementTool()` still works for callers that
+don't need the side effect.
 
 ## Phase 3: classifier internals
 
-### Provider construction
+### Provider construction (server-side, at boot)
 
-`buildClassifyLLM` in `skills_classify.go` reads two env vars and any
-provider-standard credential vars:
+The classifier provider is constructed once at server boot in
+`cmd/looms/cmd_serve.go` from two env vars and the provider's standard
+credential chain:
 
 | Env var | Required | Notes |
 |---|---|---|
-| `LOOM_CLASSIFY_PROVIDER` | yes (when `--classify` set) | One of `anthropic`, `bedrock`, `ollama`, `openai`, `azure-openai`, `mistral`, `gemini`, `huggingface`. Falls back to `LOOM_DEFAULT_PROVIDER`. |
+| `LOOM_CLASSIFY_PROVIDER` | yes (when any client passes `--classify`) | One of `anthropic`, `bedrock`, `ollama`, `openai`, `azure-openai`, `mistral`, `gemini`, `huggingface`. Falls back to `LOOM_DEFAULT_PROVIDER`. |
 | `LOOM_CLASSIFY_MODEL` | no | Model identifier; falls back to the provider's catalog default. |
 
 Provider creds are read by the existing `pkg/llm/factory` (e.g.,
 `ANTHROPIC_API_KEY`, AWS standard env/IAM chain for Bedrock,
-`OPENAI_API_KEY`, etc.). The importer doesn't duplicate them.
+`OPENAI_API_KEY`, etc.). The CLI never sees the credentials.
 
-Temperature is forced to **0.0** because classification is a deterministic
-task. (Bedrock's Claude is still mildly non-deterministic at temp 0; see
-"Stability" below.)
+If `LOOM_CLASSIFY_PROVIDER` is unset at boot, the server still registers
+`SkillsImportService` but with `Classify == nil`. Any client request
+with `classify=true` returns `FailedPrecondition` with a clear "server
+has no classify provider configured" message rather than silently
+classifying with the default provider.
+
+Temperature is forced to **0.0** at the factory layer because
+classification is deterministic. (Bedrock's Claude is still mildly
+non-deterministic at temp 0; see "Stability" below.)
 
 ### Suggested taxonomy
 
-A per-domain seed map in `skills_classify.go`:
+The seed taxonomy lives in `embedded/taxonomy.yaml` and loads through
+`pkg/skills/importer/taxonomy.go`'s `LoadTaxonomy` (or `DefaultTaxonomy`
+when no `--taxonomy` is passed). The built-in `teradata` block declares
+nine buckets:
 
-```go
-var suggestedTaxonomies = map[string][]string{
-    "teradata": {
-        "teradata/performance", "teradata/security", "teradata/storage",
-        "teradata/sql", "teradata/cloud", "teradata/admin",
-        "teradata/ml", "teradata/architecture", "teradata/i18n",
-    },
-}
+```yaml
+domains:
+  teradata:
+    description: "Teradata-related skills"
+    buckets:
+      - path: teradata/performance
+        description: "optimizer, statistics, partitioning, intelligent memory, EXPLAIN, plan caching"
+      - path: teradata/security
+        description: "row-level access control (RLAC), constraint columns, encryption, GRANT/REVOKE, TLS"
+      # ... storage, sql, cloud, admin, ml, architecture, i18n
 ```
 
 The taxonomy is a **suggestion, not a closed list**. The prompt instructs
@@ -123,7 +241,9 @@ being forced into a poor fit.
 
 When a skill's domain has no taxonomy entry yet, the prompt falls back
 to a generic `<domain>/<topic>` placeholder. Quality drops; add a
-taxonomy entry for new domains.
+taxonomy entry for new domains. See [Taxonomy: customizable seed
+buckets](#taxonomy-customizable-seed-buckets) below for the full
+schema and validation rules.
 
 ### Per-skill prompt
 
@@ -139,9 +259,9 @@ Constraints:
 - Use kebab-case lowercase segments (no spaces, no underscores).
 
 Suggested buckets:
-  - teradata/performance
-  - teradata/security
-  - ... [seeded from suggestedTaxonomies[domain]]
+  - teradata/performance — <description from taxonomy.yaml>
+  - teradata/security — <description from taxonomy.yaml>
+  - ... [seeded from Taxonomy.Domains[domain].Buckets]
 
 Skill to classify:
   name: <imp.Name>
@@ -315,18 +435,236 @@ generated YAMLs to a repo), import once with `--classify`, commit the
 YAMLs, then re-import only new skills with `--classify --out /tmp/new`
 and selectively merge.
 
+## Package boundaries and entry points
+
+The package separates **transformation** (input source → output YAML)
+from **delivery** (where source comes from, how progress is reported,
+where output goes). Three entry points share the same per-skill
+processor (`ProcessSkill`) so the gRPC server-side path and the CLI
+in-process path don't drift:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   pkg/skills/importer                        │
+│                                                              │
+│   ┌────────────┐    ┌───────────────┐                       │
+│   │ RunFromDir │    │ RunFromSkills │  (peer entry points)  │
+│   │ (CLI path) │    │ (server path) │                       │
+│   └─────┬──────┘    └────────┬──────┘                       │
+│         │                    │                              │
+│         │ phase 1+2          │ banner only                  │
+│         │ (discovery)        │                              │
+│         │                    │                              │
+│         └─────────┬──────────┘                              │
+│                   ▼                                          │
+│         ┌───────────────────┐                               │
+│         │   processLoop     │   ← shared per-skill iterator │
+│         │   (phases 3-5)    │                               │
+│         └─────────┬─────────┘                               │
+│                   │                                          │
+│                   ▼                                          │
+│         ┌───────────────────┐                               │
+│         │  ProcessSkill     │   ← single-skill entry point  │
+│         │  (phases 3-5      │     also exported for direct  │
+│         │   for one skill)  │     use by AddSkill RPC       │
+│         └───────────────────┘                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**RunFromDir(ctx, DirConfig)** is what the CLI calls. It owns
+discovery: walks the source directory, parses each `SKILL.md`,
+partitions into `pendingSkills + skipped + failed`, then delegates to
+`processLoop` with all parsed skills.
+
+**RunFromSkills(ctx, SkillsConfig)** is what the gRPC server calls
+when source arrived as a zip archive (extracted server-side to a temp
+dir then re-parsed) or as `InlineSkill` records over the wire. It skips
+discovery and goes straight to the loop.
+
+**ProcessSkill(ctx, idx, total, skill, knownNames, opts)** processes
+exactly one skill and returns a `SkillResult`. Used internally by
+`processLoop`, exported for direct use by the gRPC `AddSkill` RPC where
+the client added one skill, not a tree.
+
+### Trade-offs of this split
+
+**Chosen**: Three entry points sharing `ProcessSkill`.
+
+**Alternative 1**: One `Run` function with a "source mode" enum.
+Smaller surface area but conflates two unrelated concerns (discovery
+shape vs. per-skill processing) into a single switch statement.
+Rejected.
+
+**Alternative 2**: Functional options pattern with a single `Run`.
+Idiomatic Go but obscures that discovery is qualitatively different
+from per-skill work. The current shape makes the dependency graph
+explicit at the type level.
+
+**Consequence**: Three exported `Run*` symbols where one might do.
+Acceptable because each has a distinct caller (CLI, server-bulk,
+server-single) and the shared processor keeps logic in one place.
+
+## Taxonomy: customizable seed buckets
+
+The classifier prompt presents bucket suggestions to the LLM. These
+suggestions used to be hardcoded in Go source (`SuggestedTaxonomies`
+map for `teradata` only); they now live in `embedded/taxonomy.yaml`
+and load through `LoadTaxonomy` so users with their own skill libraries
+can supply a custom YAML via `--taxonomy <path>`.
+
+### Why YAML, not Go source
+
+**Chosen**: YAML file, embedded as the default via `go:embed`.
+
+**Rationale**:
+- Users can read the canonical seed without grepping Go source.
+- A user extending Loom for their own domain copies the YAML and edits
+  it, instead of forking the Go package.
+- The same loader handles default + user paths uniformly.
+
+**Alternative considered**: Hardcoded Go map. Simpler self-contained
+package but invisible to users — to know "what's the default
+taxonomy?" they'd have to read source.
+
+### Schema
+
+```yaml
+domains:
+  <domain>:
+    description: "<one-line summary>"
+    buckets:
+      - path: <domain>/<bucket-segment>
+        description: "<distinctive vocabulary; reaches the LLM>"
+```
+
+### Validation invariants (enforced by `LoadTaxonomy`)
+
+- Every bucket `path` MUST start with its declaring domain root, or
+  equal the domain root exactly. Hallucinated unrelated top-levels
+  rejected.
+- Path segments MUST be lowercase kebab-case (no underscores, no
+  uppercase, no embedded spaces).
+- Domains correspond to `ChooseDomain()` output.
+- Empty taxonomy (`domains: {}`) rejected — at least one domain required.
+
+The validator is the **same set of rules** the response-parser
+(`ParseClassifyResponse`) enforces on LLM output, so a taxonomy that
+loads cleanly cannot suggest paths the response-parser would later
+reject.
+
+### How it reaches the LLM
+
+Bucket descriptions are the primary signal. Where the old Go source
+had a comment `// optimizer, statistics, partitioning, ...` next to
+the path (which never reached the model), the YAML now puts that
+text in a `description` field that the prompt builder concatenates
+onto each bucket suggestion:
+
+```
+Suggested buckets:
+  - teradata/performance — optimizer, statistics, partitioning,
+    intelligent memory, query plans, EXPLAIN, plan caching, adaptive
+    optimizer
+  - teradata/security — row-level access control (RLAC), constraint
+    columns, encryption, role-based auth, GRANT/REVOKE, TLS
+  - ...
+```
+
+The LLM uses these descriptions as a vocabulary signal: a skill whose
+description mentions "EXPLAIN", "vacuum", or "pg_stat_statements"
+matches the description signal of a postgres/performance bucket better
+than a generic postgres/<topic> placeholder.
+
+## Graph-aware classification
+
+`ClassifyAgainstGraph` extends `Classify` with a `GraphContext`
+parameter describing the current state of the live router tree:
+
+```go
+type GraphContext struct {
+    Buckets []GraphBucket
+}
+type GraphBucket struct {
+    Path    string   // existing bucket path (e.g., "teradata/performance")
+    Members []string // skill names already attached
+}
+```
+
+The prompt grows a "Current catalog" section listing every populated
+bucket plus its members. The LLM is instructed to "prefer joining a
+bucket that already holds related skills over inventing a parallel
+sibling." Same prompt builder, same response validator — the only
+difference is the additional context block.
+
+### Why this matters
+
+The stateless `Classify` (used by the CLI's offline `--classify` flag)
+sees only the seed taxonomy. Two skills imported in separate runs that
+should logically share a bucket can land in different ones because
+neither call knows where the other landed. For a one-shot bulk import
+this is benign — they all classify in the same run, against the same
+taxonomy. For incremental adds (the gRPC server's `AddSkill` RPC), the
+graph context is the difference between a skill joining `teradata/admin`
+where four siblings already live versus inventing a new
+`teradata/operations` because the LLM chose differently this turn.
+
+### Source of GraphContext
+
+Constructed by the gRPC server from `pkg/skills/index.Store.LatestIndex`.
+The CLI's offline path doesn't populate it — it has no live router tree
+to read.
+
 ## Files
+
+### Transformational logic (server + CLI both consume)
 
 | File | Role |
 |---|---|
-| `cmd/loom/skills_import.go` | Pipeline driver, frontmatter parser, YAML renderer, keyword synthesis |
-| `cmd/loom/skills_classify.go` | LLM provider construction, prompt builder, response validator |
-| `cmd/loom/skills_classify_test.go` | 12 cases covering parser happy path + reject paths |
-| `cmd/loom/skills_import_test.go` | Pipeline integration tests |
+| `pkg/skills/importer/types.go` | `Skill`, `Reference`, `Frontmatter` |
+| `pkg/skills/importer/parse.go` | `ReadSkill`, frontmatter splitter, references reader, link extractor, `IsSafeSkillName`, `IsSkippedSkill` |
+| `pkg/skills/importer/keywords.go` | `BuildKeywords`, `BuildSlashCommands`, priority-tier extraction, stopword filtering |
+| `pkg/skills/importer/render.go` | `RenderYAML`, `ChooseDomain`, `DeriveTitle`, `BuildInstructions`, YAML node helpers |
+| `pkg/skills/importer/classify.go` | `Classify` (stateless), `ClassifyAgainstGraph` (graph-aware), `ParseClassifyResponse` |
+| `pkg/skills/importer/graph.go` | `BuildGraphContext` reads the persisted index via `IndexSource`; `FilterGraphByDomain` |
+| `pkg/skills/importer/taxonomy.go` | `Taxonomy`, `TaxonomyDomain`, `TaxonomyBucket`, `LoadTaxonomy`, `DefaultTaxonomy` (embeds `embedded/taxonomy.yaml`) |
+| `pkg/skills/importer/pipeline.go` | `RunFromDir`, `RunFromSkills`, `ProcessSkill`, `Outcome`, `SkillResult`, `Totals`, `DiscoveryReport` |
+| `embedded/taxonomy.yaml` | Default seed taxonomy (built-in `teradata` domain); user-extensible |
+
+### gRPC service (server-side)
+
+| File | Role |
+|---|---|
+| `proto/loom/v1/skills_import.proto` | `SkillsImportService` proto definition (3 RPCs, source oneof, streaming progress) |
+| `gen/go/loom/v1/skills_import.{pb,_grpc.pb,pb.gw}.go` | Generated Go client + server stubs + HTTP gateway |
+| `gen/openapiv2/loom/v1/skills_import.swagger.json` | OpenAPI v2 schema for the HTTP gateway |
+| `pkg/server/skills_import.go` | `SkillsImportServer` implementation (3 RPC handlers, zip extraction with zip-slip + zip-bomb defenses, post-write router reload trigger) |
+| `pkg/server/skills_import_test.go` | 15 cases: constructor validation, all 3 source variants, security rejections, classifier wiring, streaming events, dry-run, taxonomy errors |
+
+### CLI (gRPC client)
+
+| File | Role |
+|---|---|
+| `cmd/loom/skills_import.go` | `loom skills import <src-dir>` — gRPC client for `BulkImportSkills`, source auto-selection (loopback → `src_dir`, remote → zip), per-skill output rendering |
+| `cmd/loom/skills_classify.go` | `loom skills classify <name>` — gRPC client for `ClassifySkill`; also holds shared `dialSkillsImportServer` and `describeRPCError` helpers |
+| `cmd/loom/skills_add.go` | `loom skills add <path>` — gRPC client for `AddSkill`; accepts directory or zip file |
+
+### Router-side integration
+
+| File | Role |
+|---|---|
 | `pkg/skills/loader.go` | YAML schema + `parent_index_path` field |
 | `pkg/skills/index/node.go` | `SkillPath()`: routes `parent_index_path` → tree position |
-| `pkg/skills/index/router.go` | `pickFromFatLeaf`: per-leaf LLM filter for fat buckets |
+| `pkg/skills/index/router.go` | `pickFromFatLeaf`: per-leaf LLM filter for fat buckets; `maxCandidates=3` aligned with orchestrator `MaxConcurrentSkills` |
 | `pkg/skills/binding/binding.go` | Glob match falls back to bare skill name when FQN match misses |
+| `pkg/agent/registry.go` | `WiredSkillSubsystem`, `RegisterWiredSkillSubsystem`, `ReloadAllSkillRouters` for post-write reload across running agents |
+
+### Weaver integration
+
+| File | Role |
+|---|---|
+| `pkg/shuttle/builtin/agent_management.go` | `SkillWriteHook` + `WithSkillWriteHook` option; `create_skill` / `update_skill` fire the hook on successful writes |
+| `pkg/shuttle/builtin/agent_management_skill_hook_test.go` | Tests: hook fires on success, doesn't fire on failure, default constructor preserves nil hook |
+| `cmd/looms/cmd_serve.go` | Wires the hook to `Registry.ReloadAllSkillRouters` when the weaver agent registers `agent_management` |
 
 ## Cross-references
 

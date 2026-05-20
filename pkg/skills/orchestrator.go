@@ -190,13 +190,18 @@ type SkillsConfig struct {
 }
 
 // DefaultSkillsConfig returns a SkillsConfig with sensible defaults.
+//
+// MaxConcurrentSkills and RouterMaxCandidates are aligned at 3 so the
+// router's per-leaf decisions reach the orchestrator without being
+// silently trimmed. See pkg/skills/index/router.go's maxCandidates
+// comment for the rationale.
 func DefaultSkillsConfig() *SkillsConfig {
 	return &SkillsConfig{
 		Enabled:               true,
 		MaxConcurrentSkills:   3,
 		MinAutoConfidence:     0.7,
 		ContextBudgetPercent:  5,
-		RouterMaxCandidates:   5,
+		RouterMaxCandidates:   3,
 		RouterCacheTTLSeconds: 300,
 	}
 }

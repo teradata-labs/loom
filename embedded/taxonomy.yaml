@@ -1,0 +1,52 @@
+# Default skill-import classification taxonomy.
+#
+# This file ships with the loom binary (via go:embed in
+# pkg/skills/importer) and is the seed taxonomy the LLM classifier
+# consults when --classify is set without --taxonomy.
+#
+# Users with their own skill libraries (postgres, openapi, internal
+# domains, ...) should copy this file, edit it, and pass:
+#
+#   loom skills import <src> --classify --taxonomy ~/my-taxonomy.yaml
+#
+# Format:
+#
+#   domains:
+#     <domain>:
+#       description: <one-line summary, used to seed the prompt>
+#       buckets:
+#         - path: <domain>/<bucket-segment>
+#           description: <distinctive vocabulary; this text reaches the LLM>
+#
+# Validation rules enforced by importer.LoadTaxonomy:
+#   - Every bucket path MUST start with its declaring domain root.
+#   - Path segments must be lowercase kebab-case (no underscores or spaces).
+#   - Domains correspond to importer.ChooseDomain output values.
+#
+# The classifier's prompt presents bucket paths plus their descriptions
+# to the LLM; the LLM may propose a NEW sibling bucket under the same
+# domain root when none of the suggestions fit. It must NOT invent
+# unrelated top-level roots — the validator rejects those.
+
+domains:
+  teradata:
+    description: "Teradata Vantage / VantageCloud database skills"
+    buckets:
+      - path: teradata/performance
+        description: "optimizer, statistics, partitioning, intelligent memory, query plans, EXPLAIN, plan caching, adaptive optimizer"
+      - path: teradata/security
+        description: "row-level access control (RLAC), constraint columns, encryption, role-based auth, GRANT/REVOKE, TLS"
+      - path: teradata/storage
+        description: "NoPI tables, primary index choice, native object store, foreign tables, partitioning physics, MLPPI"
+      - path: teradata/sql
+        description: "SQL fundamentals, stored procedures, user-defined functions (UDFs), data types, QUALIFY, SAMPLE, MERGE"
+      - path: teradata/cloud
+        description: "VantageCloud Lake, primary + compute clusters, elasticity, autoscaling, capacity / consumption, OFS buckets"
+      - path: teradata/admin
+        description: "system administration, workload management (TASM), priority scheduling, load isolation, query banding, chargeback"
+      - path: teradata/ml
+        description: "ML/graph engines, in-database analytics functions, PageRank, ANALYZE TABLE, ML modeling functions"
+      - path: teradata/architecture
+        description: "AMP-based architecture, hashing, data distribution, parsing engine, BYNET, hot AMPs"
+      - path: teradata/i18n
+        description: "collation, character sets (UNICODE, KANJISJIS), locale-aware sorting, translate functions"

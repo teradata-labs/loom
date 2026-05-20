@@ -1,0 +1,535 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "loom/v1/skills_import.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "SkillsImportService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/skills": {
+      "post": {
+        "summary": "AddSkill imports a single skill into the catalog. Used by clients\nadding one skill at a time (the weaver's create_skill flow, the\nCLI's `loom skills add`).",
+        "description": "Source can be a directory path containing exactly one \u003cname\u003e/\nsubdirectory, a zip archive containing one skill, or an inline\nrecord (frontmatter + body + references map) for clients that\ngenerate the SKILL.md content programmatically.\n\nWhen request.classify is true, the server runs the graph-aware\nclassifier so the new skill joins an existing bucket where\npossible. After a successful write, the server triggers a router\nrebuild so the new skill becomes routable on the next chat turn.",
+        "operationId": "SkillsImportService_AddSkill",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AddSkillResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AddSkillRequest imports a single skill. Source variants are mutually\nexclusive; pick exactly one via the oneof.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1AddSkillRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SkillsImportService"
+        ]
+      }
+    },
+    "/v1/skills/{skillName}:classify": {
+      "post": {
+        "summary": "ClassifySkill assigns a parent_index_path to an already-imported\nskill in the catalog. Used to re-classify a skill (e.g., after\nhand-editing or after a taxonomy change) without re-running the\nfull SKILL.md → loom/v1 conversion.",
+        "description": "The server reads the skill from skills_dir, builds a GraphContext\nfrom the live index, runs the graph-aware classifier, writes the\nupdated YAML back, and triggers a router rebuild.\n\nWhen the persisted index has not been built yet (fresh server,\npre-warm), the server builds it inline (synchronously) before\nreading. The first call after boot may therefore be slower than\nsubsequent ones.",
+        "operationId": "SkillsImportService_ClassifySkill",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ClassifySkillResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillName",
+            "description": "SkillName is the bare skill name (e.g., \"teradata-statistics\").\nMust already exist in the server's skills_dir.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SkillsImportServiceClassifySkillBody"
+            }
+          }
+        ],
+        "tags": [
+          "SkillsImportService"
+        ]
+      }
+    },
+    "/v1/skills:bulkImport": {
+      "post": {
+        "summary": "BulkImportSkills converts a tree of Anthropic-style Agent Skills\n(one \u003cname\u003e/SKILL.md + references/*.md per directory) into loom/v1\nYAMLs. Streams per-skill progress so the client can render output\nmatching the legacy CLI's per-line format.",
+        "description": "Source can be a directory path on the server's filesystem\n(BulkImportSkillsRequest.source.src_dir) or a zip archive\n(BulkImportSkillsRequest.source.zip_archive). The service unpacks\na zip into a server-side temp directory, runs the pipeline, then\ndiscards the temp directory after writes complete — generated\nYAMLs are the canonical artifact, source files are not preserved.\n\nClassification is opt-in (request.classify); when enabled, the\nserver uses ClassifyAgainstGraph with a GraphContext built from\nthe live router's persisted index, so newly-imported skills tend\nto join existing buckets rather than invent parallel siblings.",
+        "operationId": "SkillsImportService_BulkImportSkills",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/v1BulkImportProgress"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of v1BulkImportProgress"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "BulkImportSkillsRequest is the bulk import call. Source variants are\nmutually exclusive; pick exactly one via the oneof.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1BulkImportSkillsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SkillsImportService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "SkillsImportServiceClassifySkillBody": {
+      "type": "object",
+      "properties": {
+        "taxonomyOverride": {
+          "type": "string",
+          "format": "byte",
+          "description": "TaxonomyOverride mirrors BulkImportSkillsRequest.taxonomy_override."
+        }
+      },
+      "description": "ClassifySkillRequest re-classifies an existing skill in the catalog."
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1AddSkillRequest": {
+      "type": "object",
+      "properties": {
+        "skillDir": {
+          "type": "string",
+          "description": "SkillDir is a directory on the server's filesystem containing\nexactly one \u003cname\u003e/ subdirectory. Same constraints as\nBulkImportSkillsRequest.src_dir."
+        },
+        "zipArchive": {
+          "type": "string",
+          "format": "byte",
+          "description": "ZipArchive is a .zip containing one \u003cname\u003e/ subdirectory."
+        },
+        "inline": {
+          "$ref": "#/definitions/v1InlineSkill",
+          "description": "Inline is a structured submission for clients (e.g., the\nweaver's create_skill flow) that generated the SKILL.md\nprogrammatically."
+        },
+        "outDir": {
+          "type": "string",
+          "description": "OutDir is the destination directory; same default rules as\nBulkImportSkillsRequest."
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Overwrite mirrors BulkImportSkillsRequest.overwrite."
+        },
+        "classify": {
+          "type": "boolean",
+          "description": "Classify enables the graph-aware classifier (same semantics as\nthe bulk path)."
+        },
+        "taxonomyOverride": {
+          "type": "string",
+          "format": "byte",
+          "description": "TaxonomyOverride mirrors BulkImportSkillsRequest.taxonomy_override."
+        }
+      },
+      "description": "AddSkillRequest imports a single skill. Source variants are mutually\nexclusive; pick exactly one via the oneof."
+    },
+    "v1AddSkillResponse": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "$ref": "#/definitions/v1SkillResult",
+          "description": "Result is the per-skill outcome (same shape as the streaming\nBulkImportProgress.result event)."
+        },
+        "routerReloaded": {
+          "type": "boolean",
+          "description": "RouterReloaded is true when the server successfully rebuilt the\nrouter tree to include the new skill. False means the import\nsucceeded but the router will not surface the new skill until the\nnext manual restart."
+        }
+      },
+      "description": "AddSkillResponse is the unary result of AddSkill."
+    },
+    "v1BannerInfo": {
+      "type": "object",
+      "properties": {
+        "sourceDir": {
+          "type": "string",
+          "description": "SourceDir is the resolved directory the server read from. Empty\nwhen the request used zip_archive (server-side temp dir is not\nsurfaced to the client)."
+        },
+        "outDir": {
+          "type": "string",
+          "description": "OutDir is the resolved output directory."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "DryRun mirrors the request's dry_run flag."
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Overwrite mirrors the request's overwrite flag."
+        },
+        "classify": {
+          "type": "boolean",
+          "description": "Classify mirrors the request's classify flag."
+        },
+        "totalImportable": {
+          "type": "integer",
+          "format": "int32",
+          "description": "TotalImportable is the number of skills the per-skill loop will\nprocess (after discovery filtered out skips and failed parses)."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1SkipNote"
+          },
+          "description": "Skipped lists discovery-time skips (e.g., agent-skill-builder).\nThese do not produce SkillResult events."
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1FailNote"
+          },
+          "description": "Failed lists discovery-time parse failures (malformed\nfrontmatter, unsafe skill name). These do not produce SkillResult\nevents."
+        },
+        "maxNameWidth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "MaxNameWidth is the longest skill name in TotalImportable, used\nby the CLI to size its name column for aligned output."
+        }
+      },
+      "description": "BannerInfo carries one-time discovery totals + intentional skip /\nfail notes. Mirrors importer.DiscoveryReport."
+    },
+    "v1BulkImportProgress": {
+      "type": "object",
+      "properties": {
+        "banner": {
+          "$ref": "#/definitions/v1BannerInfo",
+          "description": "Banner fires once after server-side discovery, before any\nper-skill events. Carries totals + intentional skip/fail notes\nfrom the discovery phase."
+        },
+        "result": {
+          "$ref": "#/definitions/v1SkillResult",
+          "description": "Result fires once per skill that reached the rendering phase.\nIncludes classify decision, link counts, and outcome."
+        },
+        "summary": {
+          "$ref": "#/definitions/v1SummaryInfo",
+          "description": "Summary fires once at the end with the run totals. Receiving\nthis event signals the stream is about to close cleanly; if\nthe stream closes without a Summary, treat as a hard failure."
+        }
+      },
+      "description": "BulkImportProgress is one event in the streaming response. Exactly\none of (banner | skip | result | summary) is set per message."
+    },
+    "v1BulkImportSkillsRequest": {
+      "type": "object",
+      "properties": {
+        "srcDir": {
+          "type": "string",
+          "description": "SrcDir is a directory path on the SERVER's filesystem. Suitable\nfor local serve where client and server share a filesystem.\nBreaks for remote/containerized servers — use zip_archive in\nthat case."
+        },
+        "zipArchive": {
+          "type": "string",
+          "format": "byte",
+          "description": "ZipArchive is a .zip containing one \u003cname\u003e/ subdirectory per\nskill, each holding SKILL.md (+ optional references/*.md).\nServer unzips into a temp directory, imports, then deletes the\ntemp directory."
+        },
+        "outDir": {
+          "type": "string",
+          "description": "OutDir is the destination for rendered YAMLs on the server. When\nempty, defaults to $LOOM_SKILLS_DIR or $HOME/.loom/skills (same\nresolution the CLI uses)."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "DryRun reports what would be imported without writing files.\nProgress events still stream; SkillResult.outcome will be\nOUTCOME_WOULD_WRITE for every skill that would have been written."
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Overwrite controls whether existing destination YAMLs are\nreplaced. When false, pre-existing files emit OUTCOME_SKIPPED."
+        },
+        "classify": {
+          "type": "boolean",
+          "description": "Classify enables the LLM classifier. The server's configured\nclassify provider (LOOM_CLASSIFY_PROVIDER + creds) is used; the\nclient does not supply LLM creds."
+        },
+        "taxonomyOverride": {
+          "type": "string",
+          "format": "byte",
+          "description": "TaxonomyOverride is a custom taxonomy YAML, encoded as bytes.\nWhen empty, the server uses its DefaultTaxonomy\n(embedded/taxonomy.yaml). Only consulted when classify is true.\nValidated server-side using the same rules as\nimporter.ParseTaxonomy; a malformed taxonomy fails the request\nbefore the first LLM call."
+        }
+      },
+      "description": "BulkImportSkillsRequest is the bulk import call. Source variants are\nmutually exclusive; pick exactly one via the oneof."
+    },
+    "v1ClassifySkillResponse": {
+      "type": "object",
+      "properties": {
+        "parentIndexPath": {
+          "type": "string",
+          "description": "ParentIndexPath is the path the classifier chose. Empty when the\nclassifier failed (LLM error, validator reject); the YAML is left\nuntouched in that case."
+        },
+        "previousPath": {
+          "type": "string",
+          "description": "PreviousPath is the parent_index_path the YAML carried before\nthis call. Empty when the skill was previously unclassified."
+        },
+        "routerReloaded": {
+          "type": "boolean",
+          "description": "RouterReloaded is true when the server successfully rebuilt the\nrouter tree to reflect the new path."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Reason is a short rationale string the LLM emitted alongside the\npath. May be empty."
+        }
+      },
+      "description": "ClassifySkillResponse reports the chosen path and whether the router\nwas rebuilt to reflect the change."
+    },
+    "v1FailNote": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "description": "FailNote is one entry from BannerInfo.failed."
+    },
+    "v1InlineSkill": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name is the skill name (kebab-case; matches IsSafeSkillName)."
+        },
+        "skillMd": {
+          "type": "string",
+          "description": "SkillMd is the full SKILL.md content including frontmatter."
+        },
+        "references": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "References maps reference filename (e.g.,\n\"transaction-and-session.md\") to its markdown body. Reference\nbodies should not include their own frontmatter."
+        }
+      },
+      "description": "InlineSkill is a structured SKILL.md submission. The server\nreconstructs an in-memory importer.Skill and feeds it through\nimporter.ProcessSkill — equivalent to writing these files to a temp\ndir but without filesystem round-tripping."
+    },
+    "v1Outcome": {
+      "type": "string",
+      "enum": [
+        "OUTCOME_UNSPECIFIED",
+        "OUTCOME_WROTE",
+        "OUTCOME_WOULD_WRITE",
+        "OUTCOME_SKIPPED",
+        "OUTCOME_FAILED"
+      ],
+      "default": "OUTCOME_UNSPECIFIED",
+      "description": "Outcome enumerates the per-skill pipeline outcome. Mirrors\nimporter.Outcome.\n\n - OUTCOME_UNSPECIFIED: Default zero value; should never appear in practice — every\nSkillResult event sets one of the explicit values below.\n - OUTCOME_WROTE: The rendered YAML was written to the destination.\n - OUTCOME_WOULD_WRITE: Dry-run mode; no file was touched.\n - OUTCOME_SKIPPED: The destination YAML already existed and overwrite was false.\n - OUTCOME_FAILED: The skill failed at one of: render, validate, write. Err\ndescribes the cause."
+    },
+    "v1SkillResult": {
+      "type": "object",
+      "properties": {
+        "skillName": {
+          "type": "string",
+          "description": "SkillName is the bare skill name from frontmatter."
+        },
+        "index": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Index is the 1-based position in the run."
+        },
+        "total": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Total is the count of skills in the run."
+        },
+        "outcome": {
+          "$ref": "#/definitions/v1Outcome",
+          "description": "Outcome describes what the pipeline did with this skill."
+        },
+        "destPath": {
+          "type": "string",
+          "description": "DestPath is the absolute path where the YAML was (or would be)\nwritten. Empty when the pipeline failed before write."
+        },
+        "yamlBytes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "YamlBytes is the size of the rendered YAML."
+        },
+        "domain": {
+          "type": "string",
+          "description": "Domain is the skills.metadata.domain field (importer.ChooseDomain\noutput)."
+        },
+        "triggerMode": {
+          "type": "string",
+          "description": "TriggerMode is \"AUTO\" or \"ALWAYS\" (the rendered\nskills.trigger.mode)."
+        },
+        "classifyEnabled": {
+          "type": "boolean",
+          "description": "ClassifyEnabled distinguishes \"we tried and got\nClassifyPath\" from \"the classifier was off this run\"."
+        },
+        "classifyPath": {
+          "type": "string",
+          "description": "ClassifyPath is the assigned parent_index_path. Empty on\nclassifier failure or when the skill was a parent-index\nmeta-skill (deliberately not classified)."
+        },
+        "classifyError": {
+          "type": "string",
+          "description": "ClassifyError is a non-empty message when the LLM call failed or\nthe validator rejected the response. ClassifyPath stays empty in\nthat case; the skill imports with no parent_index_path."
+        },
+        "classifySkipped": {
+          "type": "boolean",
+          "description": "ClassifySkipped is true for parent-index meta-skills, which live\nat unclassified/meta-agent and surface every turn via mode:\nALWAYS — they don't need a router-tree position."
+        },
+        "linkedSkillsTotal": {
+          "type": "integer",
+          "format": "int32",
+          "description": "LinkedSkillsTotal is the count of cross-skill references the\nskill declared in markdown."
+        },
+        "linkedSkillsResolved": {
+          "type": "integer",
+          "format": "int32",
+          "description": "LinkedSkillsResolved is the count that resolved against the\ncatalog this run produced. Capped at importer.SkillRefsCap (3)\nfor the skill_refs YAML field; the rest stay in the prompt body\nfor parent-index skills."
+        },
+        "linkedSkillsDropped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "LinkedSkillsDropped lists names that did not resolve (typos,\nupstream packages, external deps)."
+        },
+        "referencesInlined": {
+          "type": "integer",
+          "format": "int32",
+          "description": "ReferencesInlined is the count of references/*.md inlined into\nskills.prompt.instructions."
+        },
+        "keywordsCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "KeywordsCount is len(skills.trigger.keywords); capped at\nimporter.MaxKeywords (32)."
+        },
+        "slashCommandsCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "SlashCommandsCount is len(skills.trigger.slash_commands)."
+        },
+        "err": {
+          "type": "string",
+          "description": "Err is the failure that produced OUTCOME_FAILED. Empty otherwise."
+        }
+      },
+      "description": "SkillResult is one per-skill record. Mirrors importer.SkillResult,\ntrimmed for the wire — fields like Skill (the parsed in-memory form)\nare dropped because the relevant bits are surfaced as scalars below."
+    },
+    "v1SkipNote": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "description": "SkipNote is one entry from BannerInfo.skipped."
+    },
+    "v1SummaryInfo": {
+      "type": "object",
+      "properties": {
+        "converted": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "skipped": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "failed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "classifyBuckets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": "ClassifyBuckets maps bucket path -\u003e count of skills classified\ninto that bucket during this run. Empty when classify was false."
+        }
+      },
+      "description": "SummaryInfo carries the run totals plus the classify-bucket tally\nwhen classification ran. Mirrors importer.Totals plus the\nper-bucket count map the CLI prints at the end."
+    }
+  }
+}
