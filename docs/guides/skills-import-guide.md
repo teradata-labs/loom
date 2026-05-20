@@ -1,66 +1,156 @@
 # Skills Import Guide
 
-How to import Anthropic-style Agent Skill directories into Loom and
-optionally classify them into a hierarchical routing tree.
+How to import Anthropic-style Agent Skill directories into Loom,
+add or re-classify a single skill, and have running agents pick up
+the change without a server restart.
+
+> **Architecture note:** all three operations go through the
+> `SkillsImportService` gRPC service that `looms serve` exposes on
+> the same port as `LoomService`. The CLI (`loom skills import` /
+> `add` / `classify`) is a thin client. The server is where YAMLs
+> land, where the LLM classifier runs (with its credentials), and
+> where running agents' routers get reloaded after writes. This
+> means: **`looms serve` must be running** for any of these
+> operations to succeed.
 
 For internals — pipeline phases, classifier prompt shape, validator
-rules — see [`architecture/skills-import.md`](../architecture/skills-import.md).
+rules, gRPC service surface — see
+[`architecture/skills-import.md`](../architecture/skills-import.md).
+
+## Subcommands at a glance
+
+| Subcommand | Use for | RPC |
+|---|---|---|
+| `loom skills import <src-dir>` | Bulk import a tree of `<name>/SKILL.md` directories | `BulkImportSkills` (streaming) |
+| `loom skills add <path>` | Add a single skill (from a directory or `.zip`) | `AddSkill` |
+| `loom skills classify <name>` | Re-classify an already-imported skill | `ClassifySkill` |
+
+After any successful write, the server reloads every running agent's
+router so the change takes effect on the next chat turn.
 
 ## Quick start
 
 ```bash
-# Import without classification (default).
-# Skills land at ~/.loom/skills with parent_index_path unset, so the
-# router places them at "unclassified/<domain>".
+# Make sure the server is running.
+looms serve &
+
+# Import without classification.
+# Skills land at the server's $LOOM_SKILLS_DIR (default ~/.loom/skills)
+# with parent_index_path unset.
 loom skills import ~/Projects/skills
 
 # Import + classify into a hierarchical tree.
-# The classifier uses Bedrock (or any other configured provider) to
-# assign each skill a parent_index_path like "teradata/performance".
-LOOM_CLASSIFY_PROVIDER=bedrock \
-LOOM_CLASSIFY_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0 \
+# The server uses its configured classifier provider (see "Environment
+# variables" below).
 loom skills import ~/Projects/skills --classify
+
+# Add a single skill from a directory:
+loom skills add ~/skills-author/teradata-recovery
+
+# Or from a zip archive of the same shape:
+loom skills add ~/Downloads/teradata-recovery.zip --classify
+
+# Re-classify an existing skill in the catalog:
+loom skills classify teradata-statistics
 ```
 
-After import, restart `looms serve` to pick up the new skills (the
-library is read once at boot; see [Hot-reload caveat](#hot-reload-caveat)).
+## What each subcommand does
 
-## What the importer does
+### `loom skills import <src-dir>`
 
-1. **Walks `<src-dir>`** for subdirectories containing a `SKILL.md`.
-2. **Parses each one** — frontmatter (name, description, version),
-   body, references/*.md, cross-skill markdown links.
-3. **Optionally classifies** — when `--classify` is set, calls an LLM
-   to assign each skill a hierarchical `parent_index_path` from a
-   per-domain taxonomy.
-4. **Renders `loom/v1` YAML** with synthesized keywords, slash commands,
-   and inlined references.
-5. **Round-trips through `skills.LoadSkill`** — the same loader the
-   server uses at boot — so a successful import guarantees runtime load.
-6. **Writes** to `--out` (default `$LOOM_SKILLS_DIR` or `~/.loom/skills`).
+1. **Resolves `<src-dir>`** to an absolute path on the client.
+2. **Decides source delivery**: if `--server` resolves to a loopback
+   address (the local-serve case), passes the path as `src_dir` and
+   the server reads it directly. For non-loopback servers, zips the
+   tree client-side and uploads the bytes. Force zip mode with `--zip`.
+3. **Streams progress events** from the server: a banner with totals,
+   one result per skill, a final summary with the classification
+   tally.
+4. **After the run**, the server reloads every running agent's
+   router. The CLI summary reports converted/skipped/failed counts.
+
+### `loom skills add <path>`
+
+1. **`<path>`** is either a directory containing exactly one
+   `<name>/SKILL.md` or a `.zip` of the same shape.
+2. **Sends `AddSkill`** with `skill_dir`, `zip_archive`, or (for
+   weaver-internal use) `inline` source. CLI auto-zips for non-
+   loopback servers.
+3. **Returns** the per-skill outcome plus a `router_reloaded` flag
+   that says whether running agents picked up the change.
+
+### `loom skills classify <skill-name>`
+
+1. **Server reads the existing YAML** from the catalog directory.
+2. **Builds graph context** from the persisted router index — what
+   buckets exist, what skills already live in each — so the LLM
+   prefers joining a populated bucket over inventing a sibling.
+3. **Calls the classifier**, validates the response, writes the
+   updated `parent_index_path` back to the YAML, reloads routers.
+4. **Returns** previous → new path, the LLM's reason, and the
+   reload status.
 
 ## Flags
+
+### `loom skills import`
 
 | Flag | Default | Effect |
 |---|---|---|
 | `<src-dir>` | required | Directory containing one subdir per skill |
-| `--out <path>` | `$LOOM_SKILLS_DIR` or `~/.loom/skills` | Where to write generated YAML |
-| `--dry-run` | false | Print what would be written; touch nothing |
-| `--force` | false | Overwrite existing destination YAMLs (without this, the importer skips them) |
-| `--classify` | false | Run the LLM classifier; assigns `parent_index_path` |
-| `--taxonomy <path>` | built-in default | Path to a custom taxonomy YAML; only consulted when `--classify` is set. See [Custom taxonomy](#custom-taxonomy) below. |
+| `--out <path>` | server's `$LOOM_SKILLS_DIR` or `~/.loom/skills` | Server-side output directory |
+| `--dry-run` | false | Server reports what would be written; no files written |
+| `--force` | false | Overwrite existing destination YAMLs |
+| `--classify` | false | Server runs LLM classifier (server must have `LOOM_CLASSIFY_PROVIDER` configured) |
+| `--taxonomy <path>` | server's built-in seed | Path to a custom taxonomy YAML; uploaded to the server, validated server-side. See [Custom taxonomy](#custom-taxonomy). |
+| `--zip` | false | Force zip upload even when server is on a loopback address |
+
+### `loom skills add`
+
+| Flag | Default | Effect |
+|---|---|---|
+| `<path>` | required | Directory containing one `<name>/SKILL.md`, or a `.zip` of the same shape |
+| `--out <path>` | server default | Server-side output directory |
+| `--force` | false | Overwrite an existing skill with the same name |
+| `--classify` | false | Run the graph-aware classifier |
+| `--taxonomy <path>` | server default | Custom taxonomy YAML |
+| `--zip` | false | Force zip upload (auto-set for `.zip` source paths and non-loopback servers) |
+
+### `loom skills classify`
+
+| Flag | Default | Effect |
+|---|---|---|
+| `<skill-name>` | required | Bare skill name (e.g., `teradata-statistics`) |
+| `--taxonomy <path>` | server default | Custom taxonomy YAML |
+
+### Global flags
+
+These come from the `loom` root command and apply to all subcommands:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--server <addr>` | `127.0.0.1:60051` | gRPC server address |
+| `--tls` | false | Enable TLS |
+| `--tls-insecure` | false | Skip cert verification |
+| `--tls-ca-file <path>` |  | Custom CA cert |
+| `--tls-server-name <name>` |  | Override TLS server name |
 
 ## Environment variables
 
-Read only when `--classify` is set:
+> **Important:** these variables are now read by the **server** at
+> boot, not by the CLI. To run the classifier, restart `looms serve`
+> with these set in its environment, then call
+> `loom skills import --classify`.
+
+Read by `looms serve` only when `--classify` is requested by a
+client:
 
 | Variable | Required? | Notes |
 |---|---|---|
 | `LOOM_CLASSIFY_PROVIDER` | yes | One of `anthropic`, `bedrock`, `ollama`, `openai`, `azure-openai`, `mistral`, `gemini`, `huggingface`. Falls back to `LOOM_DEFAULT_PROVIDER`. |
 | `LOOM_CLASSIFY_MODEL` | no | Model identifier; falls back to provider's catalog default. |
 
-Plus the provider's standard credential env vars (read by `pkg/llm/factory`,
-not by the importer):
+Plus the provider's standard credential env vars (read by
+`pkg/llm/factory`):
 
 | Provider | Vars |
 |---|---|
@@ -72,6 +162,11 @@ not by the importer):
 | `mistral` | `MISTRAL_API_KEY` |
 | `huggingface` | `HUGGINGFACE_TOKEN` |
 | `ollama` | `OLLAMA_ENDPOINT` (defaults to `http://localhost:11434`) |
+
+If the server boots without `LOOM_CLASSIFY_PROVIDER`, requests with
+`--classify` return `FailedPrecondition` from the server with a clear
+"server has no classify provider configured" message — the CLI
+translates this to an actionable error.
 
 ## Per-skill output
 
@@ -121,60 +216,66 @@ filter's LLM call.
 
 ### Initial import with classification
 
-Recommended for catalogs of 5+ skills under a single domain:
+Recommended for catalogs of 5+ skills under a single domain. The
+classifier env vars go on the **server**, not the client:
 
 ```bash
+# Server side (one-time):
 LOOM_CLASSIFY_PROVIDER=bedrock \
 LOOM_CLASSIFY_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0 \
+looms serve &
+
+# Client side:
 loom skills import ~/Projects/skills --classify
 ```
 
 Result: each skill assigned a sub-bucket like `teradata/performance`.
-Most queries hit a bucket with ≤5 skills, bypassing the per-leaf filter
-entirely (saves one LLM call per turn). The 23-skill teradata library
-distributes across 9 buckets; largest is 4-5 skills.
+Most queries hit a bucket with ≤3 skills, bypassing the per-leaf
+filter (saves one LLM call per turn). Larger buckets engage
+`pickFromFatLeaf` so the LLM picks the relevant subset for the user
+message instead of the alphabetical-first slice.
 
-Cost: ~1 LLM call per skill at import time, ~1-2 seconds each on Haiku.
-Total ~30 seconds for 23 skills.
+Cost: ~1 LLM call per skill at import time, ~1-2 seconds each on
+Haiku. Total ~30 seconds for 23 skills.
 
-### Adding a new skill to an existing import set
-
-Drop the new SKILL.md into the source dir, then:
-
-```bash
-LOOM_CLASSIFY_PROVIDER=bedrock loom skills import ~/Projects/skills --classify --force
-```
-
-`--force` is required to overwrite the existing YAMLs. Without it, only
-the new skill's YAML gets written and the existing skills retain their
-prior classifications (good for stability).
-
-### Stable re-import (preserve existing classifications)
-
-Skip `--force` and the importer writes only the new skills:
+### Adding one skill (most common day-2 case)
 
 ```bash
-loom skills import ~/Projects/skills --classify --out /tmp/new-skills
-# Move only files that aren't already in ~/.loom/skills:
-for f in /tmp/new-skills/*.yaml; do
-  base=$(basename "$f")
-  [ -e ~/.loom/skills/$base ] || cp "$f" ~/.loom/skills/
-done
+loom skills add ~/skills-author/teradata-recovery --classify
 ```
 
-### Re-classifying existing YAMLs without re-running the full import
+The server runs the **graph-aware** classifier so the new skill tends
+to join an existing bucket where related skills already live, rather
+than inventing a new sibling. The router reloads automatically — the
+new skill is routable on the next chat turn.
 
-**Not directly supported.** Two workarounds:
+### Re-classifying an existing skill
 
-1. **Re-import from source.** If `<src>/SKILL.md` is still around,
-   `loom skills import ... --classify --force` covers it.
-2. **Hand-edit the YAML.** `parent_index_path: teradata/<bucket>` is a
-   top-level field. Drop it in, restart the server, the index builder
-   picks it up.
+Useful after updating the seed taxonomy or after an LLM mis-bucketing
+shows up in routing decisions:
 
-A standalone `loom skills classify` subcommand that operates on existing
-YAMLs is on the follow-up list — the parser, validator, and prompt
-builder already exist, ~50 lines of plumbing to expose them.
+```bash
+loom skills classify teradata-statistics
+# ==> teradata-statistics: teradata/admin -> teradata/performance
+#     reason: "Statistics collection is fundamentally a performance optimization concern..."
+#     router: reloaded (running agents see the new path immediately)
+```
+
+### Bulk re-classify existing import set
+
+```bash
+loom skills import ~/Projects/skills --classify --force
+```
+
+`--force` overwrites the existing YAMLs. Without it the importer
+skips any skill whose YAML already exists in the catalog.
+
+### Stable bulk re-import (preserve existing YAMLs)
+
+Skip `--force`. The importer only writes skills that don't already
+exist in the catalog directory. Use this when you've added 1-2 new
+skills to the source tree and want them to land alongside the
+existing ones without disturbing them.
 
 ### Dry run before committing
 
@@ -259,33 +360,62 @@ alongside.
 `embedded/taxonomy.yaml`. Use this when classifying built-in `teradata-*`
 skills.
 
-## Hot-reload caveat
+## Reload behavior
 
-The skill library is read **once per agent at server boot**. Importing
-or re-classifying skills while `looms serve` is running won't update
-the router until you restart:
+After a successful `import`, `add`, or `classify`, the server
+automatically reloads every running agent's router so the new or
+changed skill takes effect on the next chat turn. The CLI prints
+the reload status:
 
-```bash
-pkill -f "looms serve"
-nohup ./bin/looms serve > /tmp/looms.log 2>&1 &
+```
+==> router reloaded (running agents see the new skill immediately)
 ```
 
-Watch for `Skill router warmed from fresh build` in the log — that
-confirms the new tree is live. The persisted index in `~/.loom/loom.db`
-is content-hashed against `parent_index_path`, so changing
-classifications invalidates the cached index automatically; no manual
-cache purge needed.
+If a partial failure happens during reload (e.g., one agent's index
+build errored), the CLI reports:
+
+```
+==> router NOT reloaded (restart looms serve to surface the new skill)
+```
+
+In that case the YAML is still on disk and a `looms serve` restart
+will pick it up.
+
+The persisted index in `~/.loom/loom.db` is content-hashed against
+`parent_index_path`, so changing classifications invalidates the
+cached index automatically — no manual cache purge needed.
+
+> **Pre-RPC behavior**: before the SkillsImportService landed,
+> imports happened in the CLI process and the server had to be
+> restarted manually to see new skills. That restart step is no
+> longer required.
 
 ## Troubleshooting
 
-**`--classify requires LOOM_CLASSIFY_PROVIDER or LOOM_DEFAULT_PROVIDER`**
-The flag is set but no provider is configured. Set
-`LOOM_CLASSIFY_PROVIDER=<one of the 8 providers>` in the environment.
+**`bulk import: server at 127.0.0.1:60051 is not reachable`**
+`looms serve` isn't running, or `--server` points at a different
+instance. Start the server (`looms serve`) and try again. The CLI
+prints this for any subcommand against an unreachable server.
 
-**`create classify provider "bedrock": no credentials`**
-The classifier provider is wired but its standard creds aren't reachable.
-For Bedrock: confirm `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, or IAM role is
-set. The factory uses the same chain `looms serve` does.
+**`server rejected request (FailedPrecondition usually means a server-side configuration is missing, e.g., classify=true requires LOOM_CLASSIFY_PROVIDER + creds in the server env)`**
+You passed `--classify` but the server boot didn't have
+`LOOM_CLASSIFY_PROVIDER` set. Stop the server, restart it with the
+provider env vars, then retry:
+
+```bash
+pkill -f "looms serve"
+LOOM_CLASSIFY_PROVIDER=bedrock LOOM_CLASSIFY_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0 \
+  looms serve &
+loom skills import ~/Projects/skills --classify
+```
+
+**`SkillsImportService: classify provider construction failed`** (in server log)
+The server tried to construct the classifier at boot but the
+provider's standard creds weren't reachable. For Bedrock: confirm
+`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, or IAM role is set in the
+server's environment. The classifier provider construction uses the
+same chain `looms serve`'s main LLM does, so if your other agents
+work, the classifier should too.
 
 **`classify <name>: ... (falling back to unclassified/<domain>)`**
 The LLM call failed or returned a malformed/invalid path. The skill
@@ -306,9 +436,17 @@ overwrite.
 The server is reading from a different `LOOM_SKILLS_DIR`. Check
 `~/.loom/looms.yaml` for `skills_dir` and confirm `--out` matched.
 
-**Routing decisions don't change after re-classifying**
-The server didn't restart. Check `tail -f /tmp/looms.log | grep "Skill
-router warmed"` to confirm a fresh router build fires.
+**Routing decisions don't change after import / classify / add**
+Check that the CLI printed `==> router reloaded`. If it printed
+`router NOT reloaded`, the server hit an error rebuilding one or more
+agent indices — check the server log around the same timestamp:
+
+```bash
+tail -100 /tmp/looms.log | grep -E "Skill router|reload|build"
+```
+
+A `looms serve` restart will pick up any YAML on disk regardless of
+whether the live reload succeeded.
 
 **`taxonomy: parse taxonomy <path>: domain "X" bucket N: path "Y" does not start with domain root "X/"`**
 The custom taxonomy file has a bucket whose path doesn't anchor to its
@@ -343,6 +481,14 @@ are treated as meta-skills:
 The Anthropic skill-authoring meta-tool is intentionally skipped during
 discovery. Its progress line shows `[skip] agent-skill-builder
 (meta-tooling, not convertible)`.
+
+### Weaver-authored skills
+
+When the `weaver` agent (or any agent with the `agent_management`
+builtin tool) creates a skill via the `create_skill` action, the same
+post-write router-reload runs in-process — no gRPC round trip. The
+end-user effect is identical to `loom skills add`: the new skill is
+routable on the next chat turn without restarting `looms serve`.
 
 ## Cross-references
 
