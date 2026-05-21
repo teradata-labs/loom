@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,4 +33,12 @@ func TestWeaverYAMLVariable(t *testing.T) {
 
 	// Verify it matches GetWeaver() output
 	assert.Equal(t, WeaverYAML, GetWeaver(), "GetWeaver() should return the same data as WeaverYAML")
+}
+
+func TestWeaverCreationSkillDocumentsThreadChatCommands(t *testing.T) {
+	content := string(GetWeaverCreationSkill())
+
+	assert.Contains(t, content, "loom --thread <agent-id>")
+	assert.Contains(t, content, "loom chat --thread <agent-id>")
+	assert.True(t, strings.Contains(content, "chat requires --thread"))
 }

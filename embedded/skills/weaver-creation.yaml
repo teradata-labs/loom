@@ -46,6 +46,11 @@ prompt:
     2. Exact loom commands to run the agent/workflow
     3. Skill activation commands if skills were configured
     4. Reminder that user can return for modifications
+
+    Agent command syntax:
+    - Open the interactive TUI: `loom --thread <agent-id>`
+    - Send one CLI message: `loom chat --thread <agent-id> "message"`
+    - Never use `loom chat <agent-id>`; chat requires --thread.
 tools:
   required_tools:
     - agent_management
