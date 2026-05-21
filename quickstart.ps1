@@ -504,14 +504,15 @@ if (-not $SkipCredentials) {
     Write-Host ""
     Write-Host "  1) AWS Bedrock (with SSO/Profile) - For users with AWS profiles configured"
     Write-Host "  2) AWS Bedrock (with Access Keys) - For users with AWS access keys"
-    Write-Host "  3) Anthropic API - Direct Anthropic access"
-    Write-Host "  4) OpenAI - GPT-4 models, o1 reasoning models"
-    Write-Host "  5) Azure OpenAI - Enterprise Microsoft integration"
-    Write-Host "  6) Mistral AI - Open & commercial models"
-    Write-Host "  7) Google Gemini - Google's latest AI models"
-    Write-Host "  8) HuggingFace - 1M+ open source models"
-    Write-Host "  9) Ollama - Local/offline models (requires tool calling support)"
-    Write-Host " 10) Skip for now - Configure later manually"
+    Write-Host "  3) AWS Bedrock (with Bearer Token) - For AWS IAM Identity Center bearer tokens"
+    Write-Host "  4) Anthropic API - Direct Anthropic access"
+    Write-Host "  5) OpenAI - GPT-4 models, o1 reasoning models"
+    Write-Host "  6) Azure OpenAI - Enterprise Microsoft integration"
+    Write-Host "  7) Mistral AI - Open & commercial models"
+    Write-Host "  8) Google Gemini - Google's latest AI models"
+    Write-Host "  9) HuggingFace - 1M+ open source models"
+    Write-Host " 10) Ollama - Local/offline models (requires tool calling support)"
+    Write-Host " 11) Skip for now - Configure later manually"
     Write-Host ""
 
     $LLMChoice = Read-Host "Enter choice [1]"
@@ -621,6 +622,48 @@ if (-not $SkipCredentials) {
         }
 
         "3" {
+            # AWS Bedrock with Bearer Token
+            $ConfigureLLM = "y"
+            Write-Host ""
+            Write-Info "Configuring AWS Bedrock with bearer token (stored securely)..."
+            Write-Host ""
+
+            $AWSRegion = Read-Host "Enter your AWS region [us-west-2]"
+            if ([string]::IsNullOrWhiteSpace($AWSRegion)) { $AWSRegion = "us-west-2" }
+
+            Write-Host ""
+            Write-Info "Bedrock inference profile configuration:"
+            Write-Host "Available Claude models on Bedrock:"
+            Write-Host "  1) us.anthropic.claude-sonnet-4-5-20250929-v1:0  (Sonnet 4.5)"
+            Write-Host "  2) us.anthropic.claude-opus-4-5-20251101-v1:0   (Opus 4.5)"
+            Write-Host "  3) us.anthropic.claude-3-5-sonnet-20241022-v2:0 (Sonnet 3.5 v2)"
+            Write-Host ""
+
+            $ModelChoice = Read-Host "Enter Bedrock inference profile [1]"
+            if ([string]::IsNullOrWhiteSpace($ModelChoice)) { $ModelChoice = "1" }
+
+            $LoomModel = switch ($ModelChoice) {
+                "1" { "us.anthropic.claude-sonnet-4-5-20250929-v1:0" }
+                "2" { "us.anthropic.claude-opus-4-5-20251101-v1:0" }
+                "3" { "us.anthropic.claude-3-5-sonnet-20241022-v2:0" }
+                default { $ModelChoice }
+            }
+
+            Write-Host ""
+            Write-Info "Setting Bedrock bearer token..."
+
+            & "$BinDir\looms.exe" config set llm.provider bedrock
+            & "$BinDir\looms.exe" config set llm.bedrock_region $AWSRegion
+            & "$BinDir\looms.exe" config set llm.bedrock_model_id $LoomModel
+            & "$BinDir\looms.exe" config set-key bedrock_bearer_token
+
+            Write-Success "AWS Bedrock configured with bearer token"
+            Write-Success "  Region: $AWSRegion"
+            Write-Success "  Model: $LoomModel"
+            Write-Success "  Bearer token: Stored securely in keyring"
+        }
+
+        "4" {
             # Anthropic
             $ConfigureLLM = "y"
             Write-Host ""
@@ -633,7 +676,7 @@ if (-not $SkipCredentials) {
             Write-Success "Anthropic configured"
         }
 
-        "4" {
+        "5" {
             # OpenAI
             $ConfigureLLM = "y"
             Write-Host ""
@@ -646,7 +689,7 @@ if (-not $SkipCredentials) {
             Write-Success "OpenAI configured"
         }
 
-        "5" {
+        "6" {
             # Azure OpenAI
             $ConfigureLLM = "y"
             Write-Host ""
@@ -691,7 +734,7 @@ if (-not $SkipCredentials) {
             Write-Success "Azure OpenAI configured"
         }
 
-        "6" {
+        "7" {
             # Mistral
             $ConfigureLLM = "y"
             Write-Host ""
@@ -704,7 +747,7 @@ if (-not $SkipCredentials) {
             Write-Success "Mistral AI configured"
         }
 
-        "7" {
+        "8" {
             # Gemini
             $ConfigureLLM = "y"
             Write-Host ""
@@ -717,7 +760,7 @@ if (-not $SkipCredentials) {
             Write-Success "Google Gemini configured"
         }
 
-        "8" {
+        "9" {
             # HuggingFace
             $ConfigureLLM = "y"
             Write-Host ""
@@ -730,7 +773,7 @@ if (-not $SkipCredentials) {
             Write-Success "HuggingFace configured"
         }
 
-        "9" {
+        "10" {
             # Ollama
             $ConfigureLLM = "y"
             Write-Host ""
@@ -882,7 +925,7 @@ Write-Host ""
 $StepNum = 1
 
 # If Ollama, show start instructions
-if ((Get-Variable -Name "LLMChoice" -ErrorAction SilentlyContinue) -and $LLMChoice -eq "9" -and $ConfigureLLM -eq "y") {
+if ((Get-Variable -Name "LLMChoice" -ErrorAction SilentlyContinue) -and $LLMChoice -eq "10" -and $ConfigureLLM -eq "y") {
     Write-ColorOutput "$StepNum. Start Ollama (required for local inference):" "Cyan"
     Write-Host ""
     Write-Info "   In a terminal window:"
