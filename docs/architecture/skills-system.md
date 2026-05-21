@@ -2,9 +2,11 @@
 
 ## Overview
 
-The skills system provides **domain-specific prompt injection and task decomposition** for Loom agents. Skills are YAML-defined units of expertise that get activated based on user intent, injected into the LLM context, and optionally decomposed into tracked tasks on the kanban board.
+The skills system provides **domain-specific prompt injection and task decomposition** for Loom agents. Skills are YAML-defined units of expertise that get activated based on user intent, injected into the LLM context, decomposed into tracked tasks on the kanban board, and audited for board hygiene before each turn returns.
 
-**Status**: v1.2.0 — Hierarchical discovery (skills overhaul) merged.
+**Status**: v1.2.0+ — Hierarchical discovery merged (PR #174); Anthropic-style skill import (PR #182) and the `SkillsImportService` gRPC surface with post-write router reload (PR #183) are live; end-of-turn task-board hygiene (PR #184) gates each turn's return.
+
+**Companion deep-dives**: This document is the cohesive overview. See [`skills-overhaul.md`](./skills-overhaul.md) for the hierarchical discovery design, [`skills-import.md`](./skills-import.md) for the import pipeline and `SkillsImportService` internals, and [`skill-hygiene.md`](./skill-hygiene.md) for the end-of-turn audit design.
 
 ---
 
@@ -45,7 +47,33 @@ The skills system provides **domain-specific prompt injection and task decomposi
                                     v
                              LLM CHAT CALL
                           (skills in context)
+                                    |
+                                    | (no tool calls → end of turn)
+                                    v
+                          Phase F (Hygiene)
+                          +---------------------------+
+                          | Auditor.Audit             |
+                          | for each active skill:    |
+                          |   ListBySkillRun(name,ses)|
+                          |   classify violations     |
+                          +-------------+-------------+
+                                        |
+                              violations? clean?
+                                        |
+                          +-------------v-------------+
+                          | Enforcer.Enforce          |
+                          |   REQUIRE_FIX: inject     |
+                          |     fixup msg, retry      |
+                          |   AUTO_FIX: transition +  |
+                          |     spawn HITL            |
+                          |   WARN_ONLY: log only     |
+                          +-------------+-------------+
+                                        |
+                                        v
+                                  Response → USER
 ```
+
+**Phase F is new in PR #184.** It runs only at the "no more tool calls" return point of the conversation loop; mid-turn tool execution is not audited. The full design is in [`skill-hygiene.md`](./skill-hygiene.md).
 
 ---
 
@@ -347,6 +375,184 @@ Active skills are formatted and injected into the LLM context window:
 
 ---
 
+## Phase F: End-of-Turn Hygiene
+
+At the no-tool-call return path of `runConversationLoop`, before the agent hands control back to the user, the hygiene auditor inspects every active skill's tasks for incoherent end-of-turn state:
+
+```
+  LLM returns text-only response
+       |
+       v
+  +------------------------------------+
+  | Auditor.Audit(sessionID, cfg)      |
+  |                                    |
+  | For each active skill:             |
+  |   ListBySkillRun(name, sessionID)  |
+  |     → tasks via SkillIdempotency-  |
+  |       Key prefix scan              |
+  |   For each task:                   |
+  |     classify(task) → ViolationKind |
+  +------------------------------------+
+       |
+       v
+  +------------------------------------+
+  | ViolationKind taxonomy             |
+  |                                    |
+  | IN_PROGRESS_ORPHAN  agent claimed   |
+  |                     but never closed|
+  | BLOCKED_NO_HITL     never surfaced  |
+  |                     as a question   |
+  | OPEN_UNSTARTED      created but     |
+  |                     never claimed   |
+  |                                    |
+  | DEFERRED/DONE/CANCELLED = healthy   |
+  +------------------------------------+
+       |
+       v
+  +------------------------------------+
+  | Enforcer.Enforce(report, retries,  |
+  |                  maxRetries)       |
+  |                                    |
+  | Policy resolution:                 |
+  |   REQUIRE_FIX (default):            |
+  |     inject synthetic user msg with  |
+  |     violations → continue loop      |
+  |   AUTO_FIX:                         |
+  |     OPEN-unstarted -> DEFERRED      |
+  |     IN_PROGRESS    -> OPEN          |
+  |     BLOCKED        -> HITL request  |
+  |     stamp [hygiene] note on each    |
+  |   WARN_ONLY:                        |
+  |     log + emit event only           |
+  |                                    |
+  | retries >= maxRetries (REQUIRE_FIX) |
+  |   → fall through to AUTO_FIX so the |
+  |     loop terminates                 |
+  +------------------------------------+
+       |
+       v
+  Response.Metadata stamped with:
+    hygiene_policy
+    hygiene_violations_found
+    hygiene_by_kind
+    hygiene_resolved
+    hygiene_hitl_spawned
+    hygiene_fallthrough (if applicable)
+```
+
+**Scope**: only tasks emitted by currently-active skills are audited (matched via `SkillIdempotencyKey` prefix `skill:<name>|sess:<sessionID>|`). Tasks the agent created directly via `TaskBoardTool` with no idempotency key are out of scope — that is general agent task discipline, governed by the agent's prompt and the user's expectations, not by the hygiene mechanism.
+
+**Non-fatal**: audit or enforcement errors are logged and the agent returns its existing response. A broken hygiene path must not become an availability incident.
+
+**Configuration**: `SkillsConfig.Hygiene` (proto `HygieneConfig`):
+- `enabled` — `optional bool`; default `true` (unset = enabled).
+- `policy` — `HygienePolicy`; default `REQUIRE_FIX`.
+- `max_retries` — `int32`; default `2`. `REQUIRE_FIX` retries are capped here.
+
+Full design rationale, classification rules, and trade-off analysis live in [`skill-hygiene.md`](./skill-hygiene.md).
+
+---
+
+## Skill Import Pipeline
+
+Skills can be authored as Loom YAML directly, or imported from Anthropic-style Agent Skill directories (`<name>/SKILL.md` + `references/*.md`). The import pipeline lives in `pkg/skills/importer` and is fronted by the `SkillsImportService` gRPC service (`proto/loom/v1/skills_import.proto`).
+
+```
+  Source (one of):
+    - directory path on server filesystem
+    - zip archive uploaded via gRPC
+    - inline record (frontmatter + body + refs map)
+       |
+       v
+  +----------------------------------------+
+  | parse.go: parseSkill                   |
+  |   YAML frontmatter + body separation   |
+  |   reference file resolution            |
+  | → []*Skill (importer-internal type)    |
+  +----------------------------------------+
+       |
+       | (optional, when classify=true)
+       v
+  +----------------------------------------+
+  | classify.go: ClassifyAgainstGraph      |
+  |   build GraphContext from live router  |
+  |   LLM picks parent_index_path from     |
+  |     valid taxonomy + existing buckets  |
+  |   taxonomy.go validates the response   |
+  | → Skill.ParentIndexPath stamped         |
+  +----------------------------------------+
+       |
+       v
+  +----------------------------------------+
+  | render.go: renderSkill                 |
+  |   importer.Skill → loom/v1 Skill YAML  |
+  |   per-source format normalization      |
+  |   keyword extraction                   |
+  | → []byte YAML                          |
+  +----------------------------------------+
+       |
+       v
+  +----------------------------------------+
+  | pipeline.go: write or report           |
+  |   Outcome ∈ {wrote, would-write,       |
+  |              skip, fail}               |
+  |   skip when dest exists + !overwrite   |
+  +----------------------------------------+
+       |
+       v
+  +----------------------------------------+
+  | Post-write router reload (PR #183)     |
+  |   trigger IndexBuilder.Rebuild         |
+  |   running server picks up new tree     |
+  |   without restart                      |
+  +----------------------------------------+
+```
+
+**RPC surface** (`SkillsImportService`):
+
+| RPC | Purpose | Streaming? |
+|-----|---------|------------|
+| `BulkImportSkills` | Tree of Anthropic-style skills → loom/v1 YAMLs | Server-streaming progress per skill |
+| `AddSkill` | Single skill (dir, zip, or inline) → catalog | Unary |
+| `ClassifySkill` | Re-classify an existing skill in `skills_dir` | Unary |
+
+**Why a separate service** rather than methods on `LoomService`: skills import is a bounded subsystem with its own lifecycle (taxonomy management, classifier provider setup, source-format parsing) that does not share state with multi-agent coordination. The proto comment on `service SkillsImportService` documents the boundary.
+
+**Classification is opt-in**. Without `classify=true`, the importer writes YAML using whatever `parent_index_path` the source declared (or empty → router places it under `unclassified/<domain>`). With it, the importer asks the LLM to pick from the valid taxonomy *as it exists in the live router*, so newly-imported skills tend to join existing buckets rather than invent parallel siblings.
+
+Full design (taxonomy validator, graph-aware classifier, source-format adapters) is in [`skills-import.md`](./skills-import.md).
+
+---
+
+## Hot Reload
+
+`pkg/skills/hotreload.go` watches the configured `skills_dir` and rebuilds the in-memory `Library` cache when YAMLs change on disk. Debounced (default 250ms) so rapid editor saves don't thrash the index.
+
+```
+  fsnotify event (Create | Write | Rename)
+       |
+       v
+  +-----------------------------+
+  | debounce window (250ms)     |
+  | coalesce burst of events    |
+  +-----------------------------+
+       |
+       v
+  +-----------------------------+
+  | extractSkillName(path)      |
+  | Library.LoadFromFile(path)  |
+  | Library.swap(new skill)     |
+  +-----------------------------+
+       |
+       v
+  Router index marked dirty
+  IndexBuilder.Rebuild on next access
+```
+
+**Scope**: hot reload applies only to skill YAML files. Skill *bindings* (declared on agent configs) require an agent reload to pick up. The `SkillsImportService` complements hot reload by triggering an explicit router rebuild after a write completes — it does not depend on fsnotify, and so works even when the server's `skills_dir` is on a volume that doesn't emit reliable filesystem events (some Docker bind mounts, NFS).
+
+---
+
 ## Skill Lifecycle & Confidence
 
 ### Confidence Decay
@@ -477,7 +683,8 @@ pkg/skills/
   +-- loader.go             YAML parser (file → Skill struct)
   +-- library.go            In-memory skill cache + FTS5 search
   +-- orchestrator.go       Activation, eviction, formatting
-  +-- config.go             SkillsConfig defaults + accessors
+  +-- hotreload.go          fsnotify watcher → Library.swap (debounced)
+  +-- format.go             FormatActiveSkillsForLLM (Phase E)
   |
   +-- discovery/
   |     +-- discovery.go    4-phase pipeline (slash → router → FTS5 → always)
@@ -493,18 +700,45 @@ pkg/skills/
   |     +-- node.go         SkillIndexNode utilities
   |
   +-- tasks/
-        +-- emitter.go      Task materialization (template or LLM decomp)
+  |     +-- emitter.go      Task materialization (template or LLM decomp)
+  |
+  +-- importer/                                   [PR #182, #183]
+  |     +-- parse.go        SKILL.md + references → importer.Skill
+  |     +-- classify.go     Graph-aware classifier (LLM + taxonomy)
+  |     +-- taxonomy.go     Valid parent_index_path validator
+  |     +-- graph.go        GraphContext from live router index
+  |     +-- render.go       importer.Skill → loom/v1 YAML
+  |     +-- pipeline.go     Orchestration (RunFromDir, ProcessSkill)
+  |     +-- keywords.go     FTS5 keyword extraction
+  |     +-- types.go        Skill, SkillResult, Outcome
+  |
+  +-- hygiene/                                    [PR #184]
+        +-- auditor.go      Audit(session, cfg) → Report
+        +-- enforcer.go     Enforce(report, retries, max) → Outcome
+        +-- report.go       Violation kinds + FormatToolMessage
 
 
 pkg/agent/agent.go
   |
-  +-- runConversationLoop (lines ~1953-2080)
-  |     Phases A-E orchestration
+  +-- runConversationLoop
+  |     Phases A-F orchestration; Phase F runs at no-tool-call return
+  |
+  +-- hygiene.go            runEndOfTurnHygiene helper (Phase F)
   |
   +-- skillDiscovery field     → discovery.Discovery (new path)
   +-- skillOrchestrator field  → skills.Orchestrator (activation)
   +-- skillTaskEmitter field   → tasks.Emitter (Phase D)
   +-- skillsTurnState field    → map[session][skill]bool (new-this-turn tracker)
+  +-- hygieneAuditor field     → hygiene.Auditor (Phase F)
+  +-- hygieneEnforcer field    → hygiene.Enforcer (Phase F)
+
+
+cmd/looms/cmd_serve.go
+  |
+  +-- SkillsImportService registration              [PR #183]
+        gRPC server for BulkImportSkills / AddSkill / ClassifySkill;
+        wires the importer's classifier provider and triggers router
+        rebuild after every successful write.
 ```
 
 ---
@@ -521,3 +755,9 @@ pkg/agent/agent.go
 | Legacy MatchSkills fallback | Agents without `skillDiscovery` wired still work via the older keyword-only path. |
 | Idempotent task emission | Re-activating a skill in the same session reuses prior tasks instead of duplicating. |
 | Confidence decay (0.995/day) | Skills rot. Stale knowledge is dangerous. Forces periodic re-validation. |
+| Phase F default: `REQUIRE_FIX` over `AUTO_FIX` | Machine state changes destroy diagnostic signal. Forcing the agent to fix its own dirty state preserves audit trail and the agent's learning loop; `AUTO_FIX` is the safety net, not the default. |
+| Hygiene scope: skill-emitted tasks only | Tasks the agent created ad-hoc via `TaskBoardTool` are general agent discipline, not a skill-lifecycle failure mode. Auditing all tasks creates high false-positive rates on long-lived intentional state. |
+| Hygiene: bounded retry with fallthrough | `REQUIRE_FIX` is capped at `max_retries=2` and falls through to `AUTO_FIX` so the loop always terminates even if the LLM is stuck. |
+| `SkillsImportService` as a peer of `LoomService` | Skills import is a bounded subsystem (taxonomy, classifier, source-format parsing) with no shared state with multi-agent coordination. Separation keeps `LoomService` focused on conversation. |
+| Classification opt-in, not default | Source skills often already declare a sensible `parent_index_path`; forcing every import through an LLM classifier costs tokens and risks regressing hand-tuned placements. Opt-in keeps the cheap path cheap. |
+| Post-write router reload triggered by importer | fsnotify hot-reload is unreliable on some Docker bind mounts and NFS. An explicit reload after the import RPC guarantees the new tree is routable on the next chat turn, independent of filesystem watching. |
