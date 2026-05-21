@@ -651,7 +651,8 @@ func (s *sidebarCmp) currentModelBlock() string {
 	// Determine model to display — use the most specific/current source available:
 	// 1. session.Model (actual model from the last LLM cost report — most accurate)
 	// 2. current agent's ModelInfo from the agents list (configured model)
-	// 3. global config fallback
+	// 3. active provider from ListProviders RPC
+	// 4. global config fallback
 	var modelDisplayName string
 	var showReasoning bool
 	contextWindow := 200000 // Reasonable default for frontier models
@@ -663,17 +664,19 @@ func (s *sidebarCmp) currentModelBlock() string {
 		} else {
 			modelDisplayName = s.session.Model
 		}
-	} else if s.activeProvider != "" {
-		// Second: active provider name from ListProviders RPC (e.g., "gemini-flash")
-		modelDisplayName = s.activeProvider
 	} else if s.currentAgent != "" {
-		// Third: agent's configured model from the agents list
+		// Second: agent's configured model from the agents list
 		for _, ag := range s.agents {
 			if ag.ID == s.currentAgent && ag.ModelInfo != "" {
 				modelDisplayName = ag.ModelInfo
 				break
 			}
 		}
+	}
+
+	if modelDisplayName == "" && s.activeProvider != "" {
+		// Third: active provider name from ListProviders RPC (e.g., "gemini-flash")
+		modelDisplayName = s.activeProvider
 	}
 
 	if modelDisplayName == "" {
