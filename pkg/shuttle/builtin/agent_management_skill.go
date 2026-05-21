@@ -227,6 +227,15 @@ func (t *AgentManagementTool) writeSkillFile(name, yamlContent string, isUpdate 
 		}, nil
 	}
 
+	// Fire post-write hook so the server can refresh running agents'
+	// routers. Best-effort: hook errors are ignored here and surface in
+	// the server's own logs (the hook owns its observability). A nil
+	// hook is the default — same behavior the tool had before this
+	// option existed.
+	if t.skillWriteHook != nil {
+		t.skillWriteHook(name, filePath)
+	}
+
 	// Success
 	action := "created"
 	if isUpdate {

@@ -5511,6 +5511,36 @@
       },
       "description": "HealthStatus returns system health."
     },
+    "v1HygieneConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether hygiene auditing runs at end-of-turn. Uses proto3 optional so\nthe loader can distinguish \"not specified\" (default true) from\n\"explicitly false\"."
+        },
+        "policy": {
+          "$ref": "#/definitions/v1HygienePolicy",
+          "description": "Policy applied when violations are found. Unspecified maps to\nREQUIRE_FIX."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum number of REQUIRE_FIX retries per turn before falling through\nto AUTO_FIX. \u003c=0 falls back to the default of 2."
+        }
+      },
+      "description": "HygieneConfig governs end-of-turn task-board hygiene enforcement for\nskill-emitted tasks. The auditor only inspects tasks tied to currently\nactive skills via SkillIdempotencyKey; agent-created tasks without that\nkey are out of scope."
+    },
+    "v1HygienePolicy": {
+      "type": "string",
+      "enum": [
+        "HYGIENE_POLICY_UNSPECIFIED",
+        "HYGIENE_POLICY_REQUIRE_FIX",
+        "HYGIENE_POLICY_AUTO_FIX",
+        "HYGIENE_POLICY_WARN_ONLY"
+      ],
+      "default": "HYGIENE_POLICY_UNSPECIFIED",
+      "description": "HygienePolicy controls how the end-of-turn auditor handles task-board\nviolations left by an active skill.\n\n - HYGIENE_POLICY_REQUIRE_FIX: Inject a synthetic user message describing the violations and re-run the\nLLM turn so the agent resolves them itself. Capped by max_retries; on\nexhaustion the auditor falls through to AUTO_FIX so the loop terminates.\n - HYGIENE_POLICY_AUTO_FIX: Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)\nwith reason notes. Cheaper but hides agent bugs.\n - HYGIENE_POLICY_WARN_ONLY: Emit observability events and add a violations summary to the response\nmetadata; do not change task state and do not retry."
+    },
     "v1IterativeWorkflowPattern": {
       "type": "object",
       "properties": {
@@ -8383,6 +8413,10 @@
         "tasksEnabled": {
           "type": "boolean",
           "description": "Whether activation emits tracked tasks. Uses proto3 optional so the\nloader can distinguish \"not specified\" (default true) from \"explicitly\nfalse\". This is the agent-level master switch; per-skill emit_tasks\noverrides it for individual skills."
+        },
+        "hygiene": {
+          "$ref": "#/definitions/v1HygieneConfig",
+          "description": "End-of-turn hygiene enforcement for skill-emitted tasks. Audits the\nactive skill's tasks before the agent returns control to the user and\nsurfaces or repairs IN_PROGRESS / BLOCKED / OPEN-unstarted violations.\nWhen unset, hygiene is enabled with REQUIRE_FIX policy and max_retries=2."
         }
       },
       "description": "SkillsConfig configures the skills system for an agent."

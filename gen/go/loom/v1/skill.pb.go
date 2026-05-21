@@ -199,6 +199,67 @@ func (SkillRiskLevel) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_skill_proto_rawDescGZIP(), []int{2}
 }
 
+// HygienePolicy controls how the end-of-turn auditor handles task-board
+// violations left by an active skill.
+type HygienePolicy int32
+
+const (
+	HygienePolicy_HYGIENE_POLICY_UNSPECIFIED HygienePolicy = 0
+	// Inject a synthetic user message describing the violations and re-run the
+	// LLM turn so the agent resolves them itself. Capped by max_retries; on
+	// exhaustion the auditor falls through to AUTO_FIX so the loop terminates.
+	HygienePolicy_HYGIENE_POLICY_REQUIRE_FIX HygienePolicy = 1
+	// Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)
+	// with reason notes. Cheaper but hides agent bugs.
+	HygienePolicy_HYGIENE_POLICY_AUTO_FIX HygienePolicy = 2
+	// Emit observability events and add a violations summary to the response
+	// metadata; do not change task state and do not retry.
+	HygienePolicy_HYGIENE_POLICY_WARN_ONLY HygienePolicy = 3
+)
+
+// Enum value maps for HygienePolicy.
+var (
+	HygienePolicy_name = map[int32]string{
+		0: "HYGIENE_POLICY_UNSPECIFIED",
+		1: "HYGIENE_POLICY_REQUIRE_FIX",
+		2: "HYGIENE_POLICY_AUTO_FIX",
+		3: "HYGIENE_POLICY_WARN_ONLY",
+	}
+	HygienePolicy_value = map[string]int32{
+		"HYGIENE_POLICY_UNSPECIFIED": 0,
+		"HYGIENE_POLICY_REQUIRE_FIX": 1,
+		"HYGIENE_POLICY_AUTO_FIX":    2,
+		"HYGIENE_POLICY_WARN_ONLY":   3,
+	}
+)
+
+func (x HygienePolicy) Enum() *HygienePolicy {
+	p := new(HygienePolicy)
+	*p = x
+	return p
+}
+
+func (x HygienePolicy) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HygienePolicy) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[3].Descriptor()
+}
+
+func (HygienePolicy) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[3]
+}
+
+func (x HygienePolicy) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HygienePolicy.Descriptor instead.
+func (HygienePolicy) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{3}
+}
+
 // SkillBindingMode controls how an agent loads a bound skill into context.
 type SkillBindingMode int32
 
@@ -239,11 +300,11 @@ func (x SkillBindingMode) String() string {
 }
 
 func (SkillBindingMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_loom_v1_skill_proto_enumTypes[3].Descriptor()
+	return file_loom_v1_skill_proto_enumTypes[4].Descriptor()
 }
 
 func (SkillBindingMode) Type() protoreflect.EnumType {
-	return &file_loom_v1_skill_proto_enumTypes[3]
+	return &file_loom_v1_skill_proto_enumTypes[4]
 }
 
 func (x SkillBindingMode) Number() protoreflect.EnumNumber {
@@ -252,7 +313,7 @@ func (x SkillBindingMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SkillBindingMode.Descriptor instead.
 func (SkillBindingMode) EnumDescriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{3}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{4}
 }
 
 // Skill represents an activatable behavior that combines prompt injection,
@@ -1102,7 +1163,12 @@ type SkillsConfig struct {
 	// loader can distinguish "not specified" (default true) from "explicitly
 	// false". This is the agent-level master switch; per-skill emit_tasks
 	// overrides it for individual skills.
-	TasksEnabled  *bool `protobuf:"varint,14,opt,name=tasks_enabled,json=tasksEnabled,proto3,oneof" json:"tasks_enabled,omitempty"`
+	TasksEnabled *bool `protobuf:"varint,14,opt,name=tasks_enabled,json=tasksEnabled,proto3,oneof" json:"tasks_enabled,omitempty"`
+	// End-of-turn hygiene enforcement for skill-emitted tasks. Audits the
+	// active skill's tasks before the agent returns control to the user and
+	// surfaces or repairs IN_PROGRESS / BLOCKED / OPEN-unstarted violations.
+	// When unset, hygiene is enabled with REQUIRE_FIX policy and max_retries=2.
+	Hygiene       *HygieneConfig `protobuf:"bytes,15,opt,name=hygiene,proto3" json:"hygiene,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1235,6 +1301,84 @@ func (x *SkillsConfig) GetTasksEnabled() bool {
 	return false
 }
 
+func (x *SkillsConfig) GetHygiene() *HygieneConfig {
+	if x != nil {
+		return x.Hygiene
+	}
+	return nil
+}
+
+// HygieneConfig governs end-of-turn task-board hygiene enforcement for
+// skill-emitted tasks. The auditor only inspects tasks tied to currently
+// active skills via SkillIdempotencyKey; agent-created tasks without that
+// key are out of scope.
+type HygieneConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether hygiene auditing runs at end-of-turn. Uses proto3 optional so
+	// the loader can distinguish "not specified" (default true) from
+	// "explicitly false".
+	Enabled *bool `protobuf:"varint,1,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
+	// Policy applied when violations are found. Unspecified maps to
+	// REQUIRE_FIX.
+	Policy HygienePolicy `protobuf:"varint,2,opt,name=policy,proto3,enum=loom.v1.HygienePolicy" json:"policy,omitempty"`
+	// Maximum number of REQUIRE_FIX retries per turn before falling through
+	// to AUTO_FIX. <=0 falls back to the default of 2.
+	MaxRetries    int32 `protobuf:"varint,3,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HygieneConfig) Reset() {
+	*x = HygieneConfig{}
+	mi := &file_loom_v1_skill_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HygieneConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HygieneConfig) ProtoMessage() {}
+
+func (x *HygieneConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HygieneConfig.ProtoReflect.Descriptor instead.
+func (*HygieneConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *HygieneConfig) GetEnabled() bool {
+	if x != nil && x.Enabled != nil {
+		return *x.Enabled
+	}
+	return false
+}
+
+func (x *HygieneConfig) GetPolicy() HygienePolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return HygienePolicy_HYGIENE_POLICY_UNSPECIFIED
+}
+
+func (x *HygieneConfig) GetMaxRetries() int32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
+}
+
 // SkillBinding ties a skill (or a glob/label-selector over the skill
 // namespace) to an agent with a specific load policy. Replaces the legacy
 // SkillsConfig.enabled_skills / disabled_skills filter pair.
@@ -1259,7 +1403,7 @@ type SkillBinding struct {
 
 func (x *SkillBinding) Reset() {
 	*x = SkillBinding{}
-	mi := &file_loom_v1_skill_proto_msgTypes[10]
+	mi := &file_loom_v1_skill_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1271,7 +1415,7 @@ func (x *SkillBinding) String() string {
 func (*SkillBinding) ProtoMessage() {}
 
 func (x *SkillBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_skill_proto_msgTypes[10]
+	mi := &file_loom_v1_skill_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1284,7 +1428,7 @@ func (x *SkillBinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillBinding.ProtoReflect.Descriptor instead.
 func (*SkillBinding) Descriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{10}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SkillBinding) GetName() string {
@@ -1344,7 +1488,7 @@ type SkillTaskTemplate struct {
 
 func (x *SkillTaskTemplate) Reset() {
 	*x = SkillTaskTemplate{}
-	mi := &file_loom_v1_skill_proto_msgTypes[11]
+	mi := &file_loom_v1_skill_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1356,7 +1500,7 @@ func (x *SkillTaskTemplate) String() string {
 func (*SkillTaskTemplate) ProtoMessage() {}
 
 func (x *SkillTaskTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_skill_proto_msgTypes[11]
+	mi := &file_loom_v1_skill_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1369,7 +1513,7 @@ func (x *SkillTaskTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillTaskTemplate.ProtoReflect.Descriptor instead.
 func (*SkillTaskTemplate) Descriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SkillTaskTemplate) GetSteps() []*SkillTaskTemplate_Step {
@@ -1429,7 +1573,7 @@ type SkillIndexNode struct {
 
 func (x *SkillIndexNode) Reset() {
 	*x = SkillIndexNode{}
-	mi := &file_loom_v1_skill_proto_msgTypes[12]
+	mi := &file_loom_v1_skill_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1441,7 +1585,7 @@ func (x *SkillIndexNode) String() string {
 func (*SkillIndexNode) ProtoMessage() {}
 
 func (x *SkillIndexNode) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_skill_proto_msgTypes[12]
+	mi := &file_loom_v1_skill_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1454,7 +1598,7 @@ func (x *SkillIndexNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillIndexNode.ProtoReflect.Descriptor instead.
 func (*SkillIndexNode) Descriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SkillIndexNode) GetId() string {
@@ -1532,7 +1676,7 @@ type SkillIndex struct {
 
 func (x *SkillIndex) Reset() {
 	*x = SkillIndex{}
-	mi := &file_loom_v1_skill_proto_msgTypes[13]
+	mi := &file_loom_v1_skill_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1544,7 +1688,7 @@ func (x *SkillIndex) String() string {
 func (*SkillIndex) ProtoMessage() {}
 
 func (x *SkillIndex) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_skill_proto_msgTypes[13]
+	mi := &file_loom_v1_skill_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1557,7 +1701,7 @@ func (x *SkillIndex) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillIndex.ProtoReflect.Descriptor instead.
 func (*SkillIndex) Descriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SkillIndex) GetId() string {
@@ -1613,7 +1757,7 @@ type SkillTaskTemplate_Step struct {
 
 func (x *SkillTaskTemplate_Step) Reset() {
 	*x = SkillTaskTemplate_Step{}
-	mi := &file_loom_v1_skill_proto_msgTypes[17]
+	mi := &file_loom_v1_skill_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1625,7 +1769,7 @@ func (x *SkillTaskTemplate_Step) String() string {
 func (*SkillTaskTemplate_Step) ProtoMessage() {}
 
 func (x *SkillTaskTemplate_Step) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_skill_proto_msgTypes[17]
+	mi := &file_loom_v1_skill_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1638,7 +1782,7 @@ func (x *SkillTaskTemplate_Step) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillTaskTemplate_Step.ProtoReflect.Descriptor instead.
 func (*SkillTaskTemplate_Step) Descriptor() ([]byte, []int) {
-	return file_loom_v1_skill_proto_rawDescGZIP(), []int{11, 0}
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{12, 0}
 }
 
 func (x *SkillTaskTemplate_Step) GetTitle() string {
@@ -1775,7 +1919,7 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x0factivated_at_ms\x18\x05 \x01(\x03R\ractivatedAtMs\x12\x19\n" +
 	"\bagent_id\x18\x06 \x01(\tR\aagentId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\a \x01(\tR\tsessionId\"\xaf\x05\n" +
+	"session_id\x18\a \x01(\tR\tsessionId\"\xe1\x05\n" +
 	"\fSkillsConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0eenabled_skills\x18\x02 \x03(\tR\renabledSkills\x12'\n" +
@@ -1792,9 +1936,17 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x18router_cache_ttl_seconds\x18\v \x01(\x05R\x15routerCacheTtlSeconds\x122\n" +
 	"\x15router_model_override\x18\f \x01(\tR\x13routerModelOverride\x12-\n" +
 	"\x13skill_task_board_id\x18\r \x01(\tR\x10skillTaskBoardId\x12(\n" +
-	"\rtasks_enabled\x18\x0e \x01(\bH\x01R\ftasksEnabled\x88\x01\x01B\x11\n" +
+	"\rtasks_enabled\x18\x0e \x01(\bH\x01R\ftasksEnabled\x88\x01\x01\x120\n" +
+	"\ahygiene\x18\x0f \x01(\v2\x16.loom.v1.HygieneConfigR\ahygieneB\x11\n" +
 	"\x0f_router_enabledB\x10\n" +
-	"\x0e_tasks_enabled\"\x95\x02\n" +
+	"\x0e_tasks_enabled\"\x8b\x01\n" +
+	"\rHygieneConfig\x12\x1d\n" +
+	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12.\n" +
+	"\x06policy\x18\x02 \x01(\x0e2\x16.loom.v1.HygienePolicyR\x06policy\x12\x1f\n" +
+	"\vmax_retries\x18\x03 \x01(\x05R\n" +
+	"maxRetriesB\n" +
+	"\n" +
+	"\b_enabled\"\x95\x02\n" +
 	"\fSkillBinding\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\x19.loom.v1.SkillBindingModeR\x04mode\x12\x1a\n" +
@@ -1858,7 +2010,12 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x14SKILL_RISK_LEVEL_LOW\x10\x01\x12\x1b\n" +
 	"\x17SKILL_RISK_LEVEL_MEDIUM\x10\x02\x12\x19\n" +
 	"\x15SKILL_RISK_LEVEL_HIGH\x10\x03\x12\x1f\n" +
-	"\x1bSKILL_RISK_LEVEL_RESTRICTED\x10\x04*\x90\x01\n" +
+	"\x1bSKILL_RISK_LEVEL_RESTRICTED\x10\x04*\x8a\x01\n" +
+	"\rHygienePolicy\x12\x1e\n" +
+	"\x1aHYGIENE_POLICY_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aHYGIENE_POLICY_REQUIRE_FIX\x10\x01\x12\x1b\n" +
+	"\x17HYGIENE_POLICY_AUTO_FIX\x10\x02\x12\x1c\n" +
+	"\x18HYGIENE_POLICY_WARN_ONLY\x10\x03*\x90\x01\n" +
 	"\x10SkillBindingMode\x12\"\n" +
 	"\x1eSKILL_BINDING_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18SKILL_BINDING_MODE_EAGER\x10\x01\x12\x1b\n" +
@@ -1877,62 +2034,66 @@ func file_loom_v1_skill_proto_rawDescGZIP() []byte {
 	return file_loom_v1_skill_proto_rawDescData
 }
 
-var file_loom_v1_skill_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_loom_v1_skill_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_loom_v1_skill_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_loom_v1_skill_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_loom_v1_skill_proto_goTypes = []any{
 	(SkillActivationMode)(0),       // 0: loom.v1.SkillActivationMode
 	(SkillStatus)(0),               // 1: loom.v1.SkillStatus
 	(SkillRiskLevel)(0),            // 2: loom.v1.SkillRiskLevel
-	(SkillBindingMode)(0),          // 3: loom.v1.SkillBindingMode
-	(*Skill)(nil),                  // 4: loom.v1.Skill
-	(*SkillMetadata)(nil),          // 5: loom.v1.SkillMetadata
-	(*SkillTrigger)(nil),           // 6: loom.v1.SkillTrigger
-	(*SkillPrompt)(nil),            // 7: loom.v1.SkillPrompt
-	(*SkillExample)(nil),           // 8: loom.v1.SkillExample
-	(*SkillToolConfig)(nil),        // 9: loom.v1.SkillToolConfig
-	(*SkillLibrary)(nil),           // 10: loom.v1.SkillLibrary
-	(*SkillLibraryMetadata)(nil),   // 11: loom.v1.SkillLibraryMetadata
-	(*SkillActivation)(nil),        // 12: loom.v1.SkillActivation
-	(*SkillsConfig)(nil),           // 13: loom.v1.SkillsConfig
-	(*SkillBinding)(nil),           // 14: loom.v1.SkillBinding
-	(*SkillTaskTemplate)(nil),      // 15: loom.v1.SkillTaskTemplate
-	(*SkillIndexNode)(nil),         // 16: loom.v1.SkillIndexNode
-	(*SkillIndex)(nil),             // 17: loom.v1.SkillIndex
-	nil,                            // 18: loom.v1.SkillMetadata.LabelsEntry
-	nil,                            // 19: loom.v1.SkillLibraryMetadata.LabelsEntry
-	nil,                            // 20: loom.v1.SkillBinding.LabelMatchEntry
-	(*SkillTaskTemplate_Step)(nil), // 21: loom.v1.SkillTaskTemplate.Step
-	nil,                            // 22: loom.v1.SkillIndexNode.LabelsEntry
-	(TaskCategory)(0),              // 23: loom.v1.TaskCategory
-	(TaskPriority)(0),              // 24: loom.v1.TaskPriority
+	(HygienePolicy)(0),             // 3: loom.v1.HygienePolicy
+	(SkillBindingMode)(0),          // 4: loom.v1.SkillBindingMode
+	(*Skill)(nil),                  // 5: loom.v1.Skill
+	(*SkillMetadata)(nil),          // 6: loom.v1.SkillMetadata
+	(*SkillTrigger)(nil),           // 7: loom.v1.SkillTrigger
+	(*SkillPrompt)(nil),            // 8: loom.v1.SkillPrompt
+	(*SkillExample)(nil),           // 9: loom.v1.SkillExample
+	(*SkillToolConfig)(nil),        // 10: loom.v1.SkillToolConfig
+	(*SkillLibrary)(nil),           // 11: loom.v1.SkillLibrary
+	(*SkillLibraryMetadata)(nil),   // 12: loom.v1.SkillLibraryMetadata
+	(*SkillActivation)(nil),        // 13: loom.v1.SkillActivation
+	(*SkillsConfig)(nil),           // 14: loom.v1.SkillsConfig
+	(*HygieneConfig)(nil),          // 15: loom.v1.HygieneConfig
+	(*SkillBinding)(nil),           // 16: loom.v1.SkillBinding
+	(*SkillTaskTemplate)(nil),      // 17: loom.v1.SkillTaskTemplate
+	(*SkillIndexNode)(nil),         // 18: loom.v1.SkillIndexNode
+	(*SkillIndex)(nil),             // 19: loom.v1.SkillIndex
+	nil,                            // 20: loom.v1.SkillMetadata.LabelsEntry
+	nil,                            // 21: loom.v1.SkillLibraryMetadata.LabelsEntry
+	nil,                            // 22: loom.v1.SkillBinding.LabelMatchEntry
+	(*SkillTaskTemplate_Step)(nil), // 23: loom.v1.SkillTaskTemplate.Step
+	nil,                            // 24: loom.v1.SkillIndexNode.LabelsEntry
+	(TaskCategory)(0),              // 25: loom.v1.TaskCategory
+	(TaskPriority)(0),              // 26: loom.v1.TaskPriority
 }
 var file_loom_v1_skill_proto_depIdxs = []int32{
-	5,  // 0: loom.v1.Skill.metadata:type_name -> loom.v1.SkillMetadata
-	6,  // 1: loom.v1.Skill.trigger:type_name -> loom.v1.SkillTrigger
-	7,  // 2: loom.v1.Skill.prompt:type_name -> loom.v1.SkillPrompt
-	9,  // 3: loom.v1.Skill.tools:type_name -> loom.v1.SkillToolConfig
-	15, // 4: loom.v1.Skill.task_template:type_name -> loom.v1.SkillTaskTemplate
-	18, // 5: loom.v1.SkillMetadata.labels:type_name -> loom.v1.SkillMetadata.LabelsEntry
+	6,  // 0: loom.v1.Skill.metadata:type_name -> loom.v1.SkillMetadata
+	7,  // 1: loom.v1.Skill.trigger:type_name -> loom.v1.SkillTrigger
+	8,  // 2: loom.v1.Skill.prompt:type_name -> loom.v1.SkillPrompt
+	10, // 3: loom.v1.Skill.tools:type_name -> loom.v1.SkillToolConfig
+	17, // 4: loom.v1.Skill.task_template:type_name -> loom.v1.SkillTaskTemplate
+	20, // 5: loom.v1.SkillMetadata.labels:type_name -> loom.v1.SkillMetadata.LabelsEntry
 	1,  // 6: loom.v1.SkillMetadata.status:type_name -> loom.v1.SkillStatus
 	2,  // 7: loom.v1.SkillMetadata.risk_level:type_name -> loom.v1.SkillRiskLevel
 	0,  // 8: loom.v1.SkillTrigger.mode:type_name -> loom.v1.SkillActivationMode
-	8,  // 9: loom.v1.SkillPrompt.examples:type_name -> loom.v1.SkillExample
-	11, // 10: loom.v1.SkillLibrary.metadata:type_name -> loom.v1.SkillLibraryMetadata
-	4,  // 11: loom.v1.SkillLibrary.skills:type_name -> loom.v1.Skill
-	19, // 12: loom.v1.SkillLibraryMetadata.labels:type_name -> loom.v1.SkillLibraryMetadata.LabelsEntry
-	14, // 13: loom.v1.SkillsConfig.bindings:type_name -> loom.v1.SkillBinding
-	3,  // 14: loom.v1.SkillBinding.mode:type_name -> loom.v1.SkillBindingMode
-	20, // 15: loom.v1.SkillBinding.label_match:type_name -> loom.v1.SkillBinding.LabelMatchEntry
-	21, // 16: loom.v1.SkillTaskTemplate.steps:type_name -> loom.v1.SkillTaskTemplate.Step
-	22, // 17: loom.v1.SkillIndexNode.labels:type_name -> loom.v1.SkillIndexNode.LabelsEntry
-	16, // 18: loom.v1.SkillIndex.nodes:type_name -> loom.v1.SkillIndexNode
-	23, // 19: loom.v1.SkillTaskTemplate.Step.category:type_name -> loom.v1.TaskCategory
-	24, // 20: loom.v1.SkillTaskTemplate.Step.priority:type_name -> loom.v1.TaskPriority
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	9,  // 9: loom.v1.SkillPrompt.examples:type_name -> loom.v1.SkillExample
+	12, // 10: loom.v1.SkillLibrary.metadata:type_name -> loom.v1.SkillLibraryMetadata
+	5,  // 11: loom.v1.SkillLibrary.skills:type_name -> loom.v1.Skill
+	21, // 12: loom.v1.SkillLibraryMetadata.labels:type_name -> loom.v1.SkillLibraryMetadata.LabelsEntry
+	16, // 13: loom.v1.SkillsConfig.bindings:type_name -> loom.v1.SkillBinding
+	15, // 14: loom.v1.SkillsConfig.hygiene:type_name -> loom.v1.HygieneConfig
+	3,  // 15: loom.v1.HygieneConfig.policy:type_name -> loom.v1.HygienePolicy
+	4,  // 16: loom.v1.SkillBinding.mode:type_name -> loom.v1.SkillBindingMode
+	22, // 17: loom.v1.SkillBinding.label_match:type_name -> loom.v1.SkillBinding.LabelMatchEntry
+	23, // 18: loom.v1.SkillTaskTemplate.steps:type_name -> loom.v1.SkillTaskTemplate.Step
+	24, // 19: loom.v1.SkillIndexNode.labels:type_name -> loom.v1.SkillIndexNode.LabelsEntry
+	18, // 20: loom.v1.SkillIndex.nodes:type_name -> loom.v1.SkillIndexNode
+	25, // 21: loom.v1.SkillTaskTemplate.Step.category:type_name -> loom.v1.TaskCategory
+	26, // 22: loom.v1.SkillTaskTemplate.Step.priority:type_name -> loom.v1.TaskPriority
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_skill_proto_init() }
@@ -1943,13 +2104,14 @@ func file_loom_v1_skill_proto_init() {
 	file_loom_v1_task_proto_init()
 	file_loom_v1_skill_proto_msgTypes[0].OneofWrappers = []any{}
 	file_loom_v1_skill_proto_msgTypes[9].OneofWrappers = []any{}
+	file_loom_v1_skill_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_skill_proto_rawDesc), len(file_loom_v1_skill_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   19,
+			NumEnums:      5,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

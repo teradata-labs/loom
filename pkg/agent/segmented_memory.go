@@ -1825,3 +1825,78 @@ func (sm *SegmentedMemory) formatCandidatesForReranking(candidates []Message) st
 	}
 	return sb.String()
 }
+
+// TrimLastN removes the last N messages from L1, respecting tool_use/tool_result
+// pair boundaries. If removing a message would orphan a tool result (or leave an
+// assistant message without its subsequent tool results), the boundary is expanded
+// to include the full pair. Returns the actual number of messages removed.
+func (sm *SegmentedMemory) TrimLastN(n int) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if n <= 0 || len(sm.l1Messages) == 0 {
+		return 0
+	}
+
+	// Clamp to available messages.
+	if n > len(sm.l1Messages) {
+		n = len(sm.l1Messages)
+	}
+
+	// Walk backward to find the cut point, expanding to respect pair boundaries.
+	cutIdx := len(sm.l1Messages) - n
+
+	// If the cut lands on a "tool" message, walk backward to include its
+	// preceding assistant message (which holds the tool_use blocks).
+	for cutIdx > 0 && sm.l1Messages[cutIdx].Role == "tool" {
+		cutIdx--
+	}
+
+	removed := len(sm.l1Messages) - cutIdx
+	sm.l1Messages = sm.l1Messages[:cutIdx]
+
+	sm.fullRecount()
+	sm.tokenCountDirty = false
+
+	return removed
+}
+
+// AggressiveTrim keeps only the last keepLastN messages in L1 and clears L2
+// summaries entirely. Used as a last-resort recovery when token budget is
+// critically exceeded even after normal compression. Returns before and after
+// token counts for observability.
+func (sm *SegmentedMemory) AggressiveTrim(keepLastN int) (beforeTokens, afterTokens int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	beforeTokens = sm.tokenCount
+
+	if keepLastN < 0 {
+		keepLastN = 0
+	}
+
+	// Trim L1 to last keepLastN messages, respecting pair boundaries.
+	if len(sm.l1Messages) > keepLastN {
+		cutIdx := len(sm.l1Messages) - keepLastN
+		// Expand forward if we'd cut into a tool-result block.
+		for cutIdx < len(sm.l1Messages) && sm.l1Messages[cutIdx].Role == "tool" {
+			cutIdx++
+		}
+		if cutIdx >= len(sm.l1Messages) {
+			// Edge case: all remaining messages are tool results; keep them all.
+			cutIdx = 0
+		}
+		remaining := make([]Message, len(sm.l1Messages[cutIdx:]))
+		copy(remaining, sm.l1Messages[cutIdx:])
+		sm.l1Messages = remaining
+	}
+
+	// Clear L2 entirely.
+	sm.l2Summary = ""
+
+	sm.fullRecount()
+	sm.tokenCountDirty = false
+	afterTokens = sm.tokenCount
+
+	return beforeTokens, afterTokens
+}

@@ -154,6 +154,41 @@ func (s *TaskStore) HasOpenSkillTasks(ctx context.Context, skillName, sessionID 
 	return count > 0, nil
 }
 
+// ListBySkillRun returns every non-deleted task whose skill_idempotency_key
+// matches skill:<name>|sess:<sess>|%, regardless of status. Used by the
+// end-of-turn hygiene auditor to inventory the active skill's tasks.
+func (s *TaskStore) ListBySkillRun(ctx context.Context, skillName, sessionID string) ([]*task.Task, error) {
+	if skillName == "" || sessionID == "" {
+		return []*task.Task{}, nil
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "pg.task.list_by_skill_run")
+	defer s.tracer.EndSpan(span)
+
+	prefix := fmt.Sprintf("skill:%s|sess:%s|%%", skillName, sessionID)
+	tasks := make([]*task.Task, 0)
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+taskColumns+
+			` FROM tasks WHERE skill_idempotency_key LIKE $1 AND deleted_at IS NULL ORDER BY created_at ASC`,
+			prefix)
+		if err != nil {
+			return fmt.Errorf("list by skill run: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			t, err := pgScanTaskRows(rows)
+			if err != nil {
+				return err
+			}
+			tasks = append(tasks, t)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 // GetTaskByIdempotencyKey returns the task that owns the given idempotency
 // key, or (nil, nil) when no such task exists. Used by the skills task
 // emitter to dedupe concurrent skill activations.
