@@ -247,6 +247,7 @@ type BehaviorConfigYAML struct {
 	Patterns               *PatternConfigYAML `yaml:"patterns"`
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
+	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -787,6 +788,14 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	// 0 means use default (8). Negative value (-1) means disabled (handled in agent).
 	if config.Behavior.OutputTokenCbThreshold == 0 {
 		config.Behavior.OutputTokenCbThreshold = 8 // Default CB threshold
+	}
+
+	// Stash enable_self_healing in metadata (not in proto; internal config only).
+	if yaml.Agent.Behavior.EnableSelfHealing != nil && !*yaml.Agent.Behavior.EnableSelfHealing {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_enable_self_healing"] = "false"
 	}
 
 	return config, nil

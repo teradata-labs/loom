@@ -632,6 +632,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
 			MaxTurns:               int(config.Behavior.MaxTurns),
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
+			EnableSelfHealing:      config.Metadata["_enable_self_healing"] != "false",
 		}
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {

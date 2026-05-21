@@ -1954,6 +1954,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 
+	// Self-healing orchestrator (Tier 1 recovery).
+	var recovery *recoveryOrchestrator
+	if a.config.EnableSelfHealing {
+		recovery = newRecoveryOrchestrator(a.config.RecoveryConfig, span)
+	}
+
 	// Debug: Print config values
 	if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
 		fmt.Printf("\n=== CONVERSATION LOOP DEBUG ===\n")
@@ -2258,6 +2264,20 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"trigger": "budget_critical",
 				})
 			}
+
+			// After compression, if still critically over budget, attempt recovery.
+			if checkTokenBudget(segMem).budgetPct > 85 {
+				if recovery != nil {
+					budgetChecker := func() float64 { return checkTokenBudget(segMem).budgetPct }
+					recovered, _ := recovery.recoverTokenBudget(ctx, session, segMem, budgetChecker)
+					if !recovered {
+						budgetErr := fmt.Errorf("token budget critically exceeded (%.1f%%) after aggressive trim", checkTokenBudget(segMem).budgetPct)
+						return nil, recovery.buildRecoverableError("token_budget_exceeded", budgetErr, "reset_context", map[string]any{"budget_pct": checkTokenBudget(segMem).budgetPct})
+					}
+				} else {
+					return nil, fmt.Errorf("token budget critically exceeded (%.1f%%) and self-healing disabled", checkTokenBudget(segMem).budgetPct)
+				}
+			}
 		}
 
 		// Build messages for LLM (will use segmented memory if configured)
@@ -2379,6 +2399,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 							"threshold":          threshold,
 						})
 						span.RecordError(err)
+
+						// Tier 1: attempt self-healing before propagating.
+						if recovery != nil {
+							if segMem, ok := session.SegmentedMem.(TrimableMemory); ok {
+								recovered, _ := recovery.recoverOutputTokenCB(ctx, session, segMem, failureTracker, threshold)
+								if recovered {
+									continue
+								}
+							}
+							return nil, recovery.buildRecoverableError("output_token_circuit_breaker", err, "rewind_and_retry", map[string]any{"threshold": threshold})
+						}
 						return nil, fmt.Errorf("output token circuit breaker: %w", err)
 					}
 
@@ -2634,6 +2665,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// Execute with self-correction (circuit breaker + SQL correction)
 			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
 
+			// Tier 1: if tool CB fired, disable tool and inject synthetic result.
+			if err != nil && strings.Contains(err.Error(), "circuit breaker open") && recovery != nil {
+				_, syntheticResult := recovery.recoverToolCB(ctx, toolCall.Name, &tools)
+				result = syntheticResult
+				err = nil
+			}
+
 			// Record tool execution on conversation_loop span
 			{
 				toolSuccess := err == nil && (result == nil || result.Success)
@@ -2865,7 +2903,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
-	synthesisPrompt := "You have reached the tool execution limit. Summarize what you accomplished: what actions were taken, what results were produced, and any remaining steps the user should know about. You MUST respond with text — do not return an empty response."
+	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
 	synthesisMsg := Message{
 		Role:      "user",
 		Content:   synthesisPrompt,

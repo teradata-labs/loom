@@ -271,6 +271,14 @@ type Config struct {
 	// hits the output token limit AND returns truncated tool calls before the
 	// circuit breaker fires. 0 uses the default (8). -1 disables the CB entirely.
 	OutputTokenCBThreshold int
+
+	// EnableSelfHealing enables Tier 1 automatic recovery (context trimming,
+	// tool disabling) before errors propagate to the caller. Default: true.
+	EnableSelfHealing bool
+
+	// RecoveryConfig holds tunables for the self-healing orchestrator.
+	// Nil uses DefaultRecoveryConfig().
+	RecoveryConfig *RecoveryConfig
 }
 
 // PatternConfig holds pattern injection configuration
@@ -317,6 +325,7 @@ func DefaultConfig() *Config {
 		MaxIterations:     10,
 		SystemPromptKey:   "agent.system.base",
 		EnableTracing:     true,
+		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
 		Retry: RetryConfig{
 			Enabled:      true,
