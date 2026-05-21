@@ -177,6 +177,70 @@ func TestTask_HasOpenSkillTasks_BlockedCountsAsOpen(t *testing.T) {
 		"BLOCKED is still in-flight (waiting on dependencies); must count as open")
 }
 
+func TestTask_ListBySkillRun(t *testing.T) {
+	db := migratedDB(t)
+	store := NewTaskStore(db, observability.NewNoOpTracer())
+	ctx := context.Background()
+
+	// Seed: three tasks under (skill=sql-opt, sess=s1) in different states,
+	// one task under (skill=sql-opt, sess=s2), and one with no skill key.
+	for _, seed := range []struct {
+		title  string
+		key    string
+		status loomv1.TaskStatus
+	}{
+		{"opt-s1-open", "skill:sql-opt|sess:s1|step:0", loomv1.TaskStatus_TASK_STATUS_OPEN},
+		{"opt-s1-inprog", "skill:sql-opt|sess:s1|step:1", loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS},
+		{"opt-s1-done", "skill:sql-opt|sess:s1|step:2", loomv1.TaskStatus_TASK_STATUS_DONE},
+		{"opt-s2-open", "skill:sql-opt|sess:s2|step:0", loomv1.TaskStatus_TASK_STATUS_OPEN},
+		{"no-key", "", loomv1.TaskStatus_TASK_STATUS_OPEN},
+	} {
+		_, err := store.CreateTask(ctx, &task.Task{
+			Title:               seed.title,
+			Status:              seed.status,
+			SkillIdempotencyKey: seed.key,
+		})
+		require.NoError(t, err, seed.title)
+	}
+
+	// All three statuses for (sql-opt, s1) come back regardless of state.
+	// Order isn't load-bearing for the hygiene auditor — rapid inserts share
+	// a created_at timestamp, so the SQL ORDER BY created_at ASC ties resolve
+	// in implementation-defined order. Assert membership only.
+	tasks, err := store.ListBySkillRun(ctx, "sql-opt", "s1")
+	require.NoError(t, err)
+	require.Len(t, tasks, 3)
+	gotTitles := make(map[string]bool, len(tasks))
+	for _, tk := range tasks {
+		gotTitles[tk.Title] = true
+	}
+	assert.Equal(t, map[string]bool{
+		"opt-s1-open":   true,
+		"opt-s1-inprog": true,
+		"opt-s1-done":   true,
+	}, gotTitles, "ListBySkillRun must surface every task for the (skill, session) tuple, regardless of status")
+
+	// Different session is isolated.
+	tasks, err = store.ListBySkillRun(ctx, "sql-opt", "s2")
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "opt-s2-open", tasks[0].Title)
+
+	// Unknown (skill, session) returns an empty slice, not nil.
+	tasks, err = store.ListBySkillRun(ctx, "unknown", "s1")
+	require.NoError(t, err)
+	assert.NotNil(t, tasks)
+	assert.Len(t, tasks, 0)
+
+	// Empty inputs short-circuit to an empty slice.
+	tasks, err = store.ListBySkillRun(ctx, "", "s1")
+	require.NoError(t, err)
+	assert.Len(t, tasks, 0)
+	tasks, err = store.ListBySkillRun(ctx, "sql-opt", "")
+	require.NoError(t, err)
+	assert.Len(t, tasks, 0)
+}
+
 func TestTask_IdempotencyKeyEmptyAllowsMany(t *testing.T) {
 	// Partial index covers only non-null keys; many tasks with empty key
 	// must coexist without triggering the constraint.

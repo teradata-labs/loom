@@ -79,6 +79,19 @@ type Registry struct {
 	// Protected by mu (RW lock shared with the rest of the registry state).
 	providerPool map[string]LLMProvider
 
+	// wiredSkills tracks every router subsystem wired through
+	// BuildSkillsOptions on this registry instance. Populated via the
+	// OnWired callback in SkillsWiringDeps so static-YAML agents (built
+	// in cmd_serve.go) and dynamic gRPC-created agents (built in
+	// buildAgent) both register here uniformly.
+	//
+	// ReloadAllSkillRouters iterates this list to push the latest
+	// persisted index onto every running router after an AddSkill /
+	// ClassifySkill / BulkImportSkills RPC writes a new index version.
+	//
+	// Protected by mu.
+	wiredSkills []WiredSkillSubsystem
+
 	// taskManager + taskDecomposer are the server-level task subsystem
 	// handles injected by cmd_serve.go. When set, every agent built through
 	// buildAgent gets WithTaskBoard wired so the skills-overhaul Phase D
@@ -2100,10 +2113,19 @@ func (r *Registry) Close() error {
 	return errors.Join(r.watcher.Close(), r.db.Close())
 }
 
+// DB returns the registry's underlying SQLite handle. Exported so peer
+// services (e.g., the SkillsImportService) can construct their own
+// index.Store without re-opening the file. Read-only intent: callers
+// should not Close it; lifecycle is owned by Registry.
+func (r *Registry) DB() *sql.DB {
+	return r.db
+}
+
 // BuildSkillsOptions is a Registry-bound convenience wrapper around the
 // free-function BuildSkillsOptions; it forwards r.tracer, r.logger,
 // r.providerPool, and r.db so in-tree callers (buildAgent, cmd/looms/cmd_serve.go)
-// don't have to plumb those manually.
+// don't have to plumb those manually. Also wires OnWired so the registry
+// tracks every router subsystem for ReloadAllSkillRouters.
 //
 // External callers that don't hold a *Registry (loom-cloud, avmo-tera-cloud)
 // should call the free-function form directly with their own SkillsWiringDeps.
@@ -2123,7 +2145,93 @@ func (r *Registry) BuildSkillsOptions(
 		ProviderPool:   r.providerPool,
 		IndexStoreDB:   r.db,
 		WarmIndexAsync: r.warmSkillIndex,
+		OnWired:        r.RegisterWiredSkillSubsystem,
 	})
+}
+
+// RegisterWiredSkillSubsystem records a router subsystem the registry
+// owns for the lifetime of the process. Called via the OnWired callback
+// in SkillsWiringDeps. Safe for concurrent use.
+//
+// External callers (loom-cloud, avmo-tera-cloud) that hold their own
+// *Registry can wire this method into SkillsWiringDeps.OnWired to gain
+// the same hot-reload semantics that the loom server has.
+func (r *Registry) RegisterWiredSkillSubsystem(w WiredSkillSubsystem) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.wiredSkills = append(r.wiredSkills, w)
+}
+
+// ReloadAllSkillRouters rebuilds the persisted index from each wired
+// library and SetTrees the result onto each wired router. Used by the
+// SkillsImportService after AddSkill / ClassifySkill / BulkImportSkills
+// writes new YAMLs so running agents see the new tree without a server
+// restart.
+//
+// Behavior per wired subsystem:
+//
+//  1. InvalidateCache on the library so it re-reads YAMLs from disk.
+//  2. Build a fresh index using the wired Builder against the now-fresh
+//     library catalog.
+//  3. Persist the new index to the wired Store (when non-nil).
+//  4. SetTree the new tree onto the wired Router.
+//
+// Errors from individual subsystems are logged and the iteration
+// continues — a transient build failure on one agent doesn't block
+// reloads on others. Returns the count of successfully reloaded
+// subsystems and the count of failed ones.
+//
+// Safe for concurrent use; takes a read lock on r.mu so concurrent
+// agent registrations don't race the iteration.
+func (r *Registry) ReloadAllSkillRouters(ctx context.Context) (reloaded, failed int) {
+	r.mu.RLock()
+	wired := append([]WiredSkillSubsystem(nil), r.wiredSkills...)
+	r.mu.RUnlock()
+
+	for _, w := range wired {
+		if err := r.reloadOneSkillRouter(ctx, w); err != nil {
+			r.logger.Warn("Skill router reload failed",
+				zap.String("agent", w.AgentName),
+				zap.Error(err))
+			failed++
+			continue
+		}
+		reloaded++
+	}
+	return reloaded, failed
+}
+
+// reloadOneSkillRouter is the per-subsystem reload helper used by
+// ReloadAllSkillRouters. Split out for testability and to keep the
+// loop body small.
+func (r *Registry) reloadOneSkillRouter(ctx context.Context, w WiredSkillSubsystem) error {
+	if w.Library == nil || w.Builder == nil || w.Router == nil {
+		return fmt.Errorf("wired subsystem for agent %q is incomplete", w.AgentName)
+	}
+	w.Library.InvalidateCache()
+	idx, err := w.Builder.Build(ctx, w.Library)
+	if err != nil {
+		return fmt.Errorf("build index: %w", err)
+	}
+	if idx == nil {
+		return fmt.Errorf("build returned nil index")
+	}
+	if w.Store != nil {
+		if err := w.Store.SaveIndex(ctx, idx); err != nil {
+			// Non-fatal: in-process router still serves the freshly-built
+			// tree. We just lose the cold-start optimization for next boot.
+			r.logger.Warn("Skill index persist failed during reload",
+				zap.String("agent", w.AgentName),
+				zap.String("index_id", idx.ID),
+				zap.Error(err))
+		}
+	}
+	w.Router.SetTree(skillindex.NewTree(idx))
+	r.logger.Info("Skill router reloaded",
+		zap.String("agent", w.AgentName),
+		zap.String("index_id", idx.ID),
+		zap.Int("nodes", len(idx.Nodes)))
+	return nil
 }
 
 // SkillsWiringDeps is the explicit dependency bundle for skills wiring.
@@ -2148,6 +2256,13 @@ func (r *Registry) BuildSkillsOptions(
 //   - WarmIndexAsync: optional override for the background warm-up function;
 //     primarily used by the Registry to reuse its existing warmSkillIndex
 //     method. When nil, the helper defaults to a built-in warm-up.
+//   - OnWired: optional callback fired synchronously after the router
+//     subsystem is constructed (router + library + builder + store all
+//     non-nil). Used by the Registry to track every wired router so
+//     ReloadAllSkillRouters can iterate them on AddSkill / ClassifySkill.
+//     Not fired when the router subsystem is disabled (router LLM
+//     unresolvable, EffectiveRouterEnabled false). Free-function callers
+//     who don't care about post-import refresh leave this nil.
 type SkillsWiringDeps struct {
 	SkillsConfig   *skills.SkillsConfig
 	ClassifierLLM  LLMProvider
@@ -2158,6 +2273,23 @@ type SkillsWiringDeps struct {
 	ProviderPool   map[string]LLMProvider
 	IndexStoreDB   *sql.DB
 	WarmIndexAsync func(lib *skills.Library, builder *skillindex.Builder, store skillindex.Store, router *skillindex.Router)
+	OnWired        func(WiredSkillSubsystem)
+}
+
+// WiredSkillSubsystem is the bundle of skills handles a single agent's
+// router was constructed with. Stored on the Registry so the import
+// service can call ReloadAllSkillRouters after writes.
+//
+// AgentName is the agent the wiring belongs to (for logging).
+// Library is the skills.Library serving this agent's catalog.
+// Builder + Store + Router together drive index rebuilds that
+// SetTree onto Router so the running agent picks up the new tree.
+type WiredSkillSubsystem struct {
+	AgentName string
+	Library   *skills.Library
+	Builder   *skillindex.Builder
+	Store     skillindex.Store
+	Router    *skillindex.Router
 }
 
 // BuildSkillsOptions assembles the agent.Options that wire the skills
@@ -2310,6 +2442,20 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 					zap.String("index_id", idx.ID),
 					zap.Int("nodes", len(idx.Nodes)))
 			}()
+		}
+
+		// Notify the caller that a complete router subsystem is wired
+		// for this agent. The Registry uses this to track every running
+		// router so ReloadAllSkillRouters can iterate them after an
+		// import or reclassification.
+		if deps.OnWired != nil {
+			deps.OnWired(WiredSkillSubsystem{
+				AgentName: deps.AgentName,
+				Library:   skillLib,
+				Builder:   indexBuilder,
+				Store:     indexStore,
+				Router:    skillRouter,
+			})
 		}
 	}
 

@@ -40,6 +40,12 @@ type TaskStore interface {
 	// (status not DONE and not CANCELLED). Used by the skills orchestrator
 	// to keep skills sticky while they have open work on the board.
 	HasOpenSkillTasks(ctx context.Context, skillName, sessionID string) (bool, error)
+	// ListBySkillRun returns every non-deleted task whose
+	// skill_idempotency_key matches the (skill, session) prefix, regardless
+	// of status. Used by the end-of-turn hygiene auditor to inventory the
+	// active skill's tasks. Returns an empty slice (never nil) when no
+	// tasks match. Empty skillName or sessionID returns an empty slice.
+	ListBySkillRun(ctx context.Context, skillName, sessionID string) ([]*Task, error)
 	UpdateTask(ctx context.Context, task *Task, fields []string) (*Task, error)
 	DeleteTask(ctx context.Context, id string) error
 	ListTasks(ctx context.Context, opts ListTasksOpts) ([]*Task, int, error)

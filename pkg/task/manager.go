@@ -113,6 +113,14 @@ func (m *Manager) HasOpenSkillTasks(ctx context.Context, skillName, sessionID st
 	return m.store.HasOpenSkillTasks(ctx, skillName, sessionID)
 }
 
+// ListBySkillRun returns every non-deleted task emitted by the given
+// (skill, session) tuple, regardless of status. Used by the end-of-turn
+// hygiene auditor to inventory the active skill's tasks. Returns an
+// empty slice (never nil) when no tasks match.
+func (m *Manager) ListBySkillRun(ctx context.Context, skillName, sessionID string) ([]*Task, error) {
+	return m.store.ListBySkillRun(ctx, skillName, sessionID)
+}
+
 // CreateTaskIdempotent looks up an existing task by SkillIdempotencyKey and
 // returns it when present; otherwise it creates the task normally. The
 // boolean return is true when the task was newly created (and history +

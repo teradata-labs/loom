@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -187,16 +188,27 @@ type SkillsConfig struct {
 	// nil mirrors proto3 optional default-true. Per-skill EmitTasks overrides
 	// this for individual skills.
 	TasksEnabled *bool
+
+	// Hygiene controls end-of-turn task-board hygiene enforcement for
+	// skill-emitted tasks. nil falls back to defaults (enabled, REQUIRE_FIX
+	// policy, max_retries=2). The agent layer constructs the auditor when
+	// both skillOrchestrator and taskManager are present.
+	Hygiene *loomv1.HygieneConfig
 }
 
 // DefaultSkillsConfig returns a SkillsConfig with sensible defaults.
+//
+// MaxConcurrentSkills and RouterMaxCandidates are aligned at 3 so the
+// router's per-leaf decisions reach the orchestrator without being
+// silently trimmed. See pkg/skills/index/router.go's maxCandidates
+// comment for the rationale.
 func DefaultSkillsConfig() *SkillsConfig {
 	return &SkillsConfig{
 		Enabled:               true,
 		MaxConcurrentSkills:   3,
 		MinAutoConfidence:     0.7,
 		ContextBudgetPercent:  5,
-		RouterMaxCandidates:   5,
+		RouterMaxCandidates:   3,
 		RouterCacheTTLSeconds: 300,
 	}
 }
