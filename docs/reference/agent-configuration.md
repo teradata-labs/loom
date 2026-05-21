@@ -486,6 +486,56 @@ Under `spec.config.skills` (k8s-style) or `agent.behavior.skills` (legacy).
 | `max_concurrent_skills` | `*int` | (framework default) | Max concurrent skill executions |
 | `skills_dir` | `string` | `""` | Directory containing skill definitions |
 | `context_budget_percent` | `*int` | (framework default) | % of context for skill output |
+| `hygiene` | `HygieneConfig` | (defaults) | End-of-turn task-board hygiene for skill-emitted tasks. See below. |
+
+#### HygieneConfig
+
+**Available since**: v1.2.0+ (PR #184)
+
+Governs the end-of-turn audit that catches skill-emitted tasks left in `IN_PROGRESS`, `BLOCKED` (with no surfaced HITL), or `OPEN` (never started) state. Scope is strictly skill-emitted tasks (matched via `SkillIdempotencyKey`); tasks created ad-hoc through `TaskBoardTool` are not audited.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `*bool` | `true` (when unset) | Enable end-of-turn auditing. Uses proto3 optional so the loader distinguishes "not specified" (default true) from "explicitly false". |
+| `policy` | enum `HygienePolicy` | `REQUIRE_FIX` | Action taken when violations are found. See enum below. |
+| `max_retries` | `int32` | `2` | Cap on `REQUIRE_FIX` retries per turn before falling through to `AUTO_FIX` so the loop terminates. Values `<= 0` fall back to the default. |
+
+**`HygienePolicy` enum values**:
+
+| Value | Behavior |
+|---|---|
+| `HYGIENE_POLICY_UNSPECIFIED` | Falls back to `REQUIRE_FIX`. |
+| `HYGIENE_POLICY_REQUIRE_FIX` | Inject a synthetic user message describing the violations and re-run the LLM turn. Capped by `max_retries`; on exhaustion the auditor downgrades to `AUTO_FIX` for that pass so the conversation loop terminates. |
+| `HYGIENE_POLICY_AUTO_FIX` | Machine-transition each violating task: `OPEN`-unstarted → `DEFERRED`, `IN_PROGRESS` → `OPEN`, `BLOCKED` → spawn HITL (when a HITL spawner is wired; logged otherwise). Each mutated task gets a `[hygiene]`-prefixed note in `Task.Notes`. |
+| `HYGIENE_POLICY_WARN_ONLY` | Emit observability events + add a violations summary to `Response.Metadata`. Do not change task state and do not retry. |
+
+**Example**:
+
+```yaml
+spec:
+  config:
+    skills:
+      enabled: true
+      hygiene:
+        enabled: true
+        policy: HYGIENE_POLICY_REQUIRE_FIX
+        max_retries: 2
+```
+
+**Response metadata stamped on every turn that ran the auditor**:
+
+| Key | Type | Notes |
+|---|---|---|
+| `hygiene_policy` | string | Resolved policy name. |
+| `hygiene_violations_found` | int | Total violations detected this turn. |
+| `hygiene_by_kind` | `map[string]int` | Counts keyed by violation kind: `in_progress_orphan`, `blocked_no_hitl`, `open_unstarted`. |
+| `hygiene_resolved` | int | Tasks transitioned under `AUTO_FIX`. |
+| `hygiene_hitl_spawned` | int | `BLOCKED` tasks turned into HITL requests. |
+| `hygiene_fallthrough` | string | Set only when `REQUIRE_FIX` exhausted retries and fell through to `AUTO_FIX`. |
+
+**See also**:
+- [`skill-hygiene.md`](../architecture/skill-hygiene.md) — design rationale and trade-off analysis.
+- [`task-system.md`](../architecture/task-system.md) — the `ListBySkillRun` query backing the audit.
 
 ---
 
