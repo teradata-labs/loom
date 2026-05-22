@@ -197,6 +197,7 @@ buf format -w       # Format proto files
 3. ❌ **Don't skip tracing** - Instrument all LLM calls and tool executions
 4. ❌ **Don't change proto without buf lint** - Keep it clean
 5. ❌ **Don't break backwards compatibility** - Use `buf breaking`
+6. ❌ **Don't set risk_level: high on skills without testing** - HIGH/RESTRICTED skills are blocked by default when require_approval=true. Test with --yolo first, then configure the gate.
 
 ### Documentation
 8. ❌ **Don't use marketing speak** - See "Documentation Standards" section

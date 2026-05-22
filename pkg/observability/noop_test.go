@@ -17,6 +17,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNoOpTracer(t *testing.T) {
@@ -29,9 +31,7 @@ func TestNoOpTracer(t *testing.T) {
 			WithSpanKind("test"),
 		)
 
-		if span == nil {
-			t.Fatal("Expected span to be created")
-		}
+		require.NotNil(t, span, "Expected span to be created")
 		if span.Name != "test_span" {
 			t.Errorf("Expected name 'test_span', got %q", span.Name)
 		}

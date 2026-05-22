@@ -1,0 +1,382 @@
+// Copyright © 2026 Teradata Corporation - All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+
+package loom.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
+
+// SkillsImportService is the gRPC surface for the skills importer.
+//
+// The service is a peer of LoomService rather than methods on it: skills
+// import is a bounded subsystem with its own lifecycle (taxonomy
+// management, classifier setup, source-format parsing) that does not
+// share state with multi-agent coordination.
+//
+// All transformation logic lives in pkg/skills/importer; this service
+// is thin glue that:
+//   1. Receives source skills (directory path, zip archive, or inline
+//      records).
+//   2. Drives the importer's pipeline (RunFromDir / RunFromSkills /
+//      ProcessSkill).
+//   3. Triggers a router rebuild after writes so the running server
+//      picks up the new tree without a restart.
+//   4. Streams per-skill progress (BulkImportSkills) or returns a
+//      single result (AddSkill, ClassifySkill).
+//
+// Documented in:
+//   - docs/architecture/skills-import.md (internals + RPC surface)
+//   - docs/guides/skills-import-guide.md (usage)
+service SkillsImportService {
+  // BulkImportSkills converts a tree of Anthropic-style Agent Skills
+  // (one <name>/SKILL.md + references/*.md per directory) into loom/v1
+  // YAMLs. Streams per-skill progress so the client can render output
+  // matching the legacy CLI's per-line format.
+  //
+  // Source can be a directory path on the server's filesystem
+  // (BulkImportSkillsRequest.source.src_dir) or a zip archive
+  // (BulkImportSkillsRequest.source.zip_archive). The service unpacks
+  // a zip into a server-side temp directory, runs the pipeline, then
+  // discards the temp directory after writes complete — generated
+  // YAMLs are the canonical artifact, source files are not preserved.
+  //
+  // Classification is opt-in (request.classify); when enabled, the
+  // server uses ClassifyAgainstGraph with a GraphContext built from
+  // the live router's persisted index, so newly-imported skills tend
+  // to join existing buckets rather than invent parallel siblings.
+  rpc BulkImportSkills(BulkImportSkillsRequest) returns (stream BulkImportProgress) {
+    option (google.api.http) = {
+      post: "/v1/skills:bulkImport"
+      body: "*"
+    };
+  }
+
+  // AddSkill imports a single skill into the catalog. Used by clients
+  // adding one skill at a time (the weaver's create_skill flow, the
+  // CLI's `loom skills add`).
+  //
+  // Source can be a directory path containing exactly one <name>/
+  // subdirectory, a zip archive containing one skill, or an inline
+  // record (frontmatter + body + references map) for clients that
+  // generate the SKILL.md content programmatically.
+  //
+  // When request.classify is true, the server runs the graph-aware
+  // classifier so the new skill joins an existing bucket where
+  // possible. After a successful write, the server triggers a router
+  // rebuild so the new skill becomes routable on the next chat turn.
+  rpc AddSkill(AddSkillRequest) returns (AddSkillResponse) {
+    option (google.api.http) = {
+      post: "/v1/skills"
+      body: "*"
+    };
+  }
+
+  // ClassifySkill assigns a parent_index_path to an already-imported
+  // skill in the catalog. Used to re-classify a skill (e.g., after
+  // hand-editing or after a taxonomy change) without re-running the
+  // full SKILL.md → loom/v1 conversion.
+  //
+  // The server reads the skill from skills_dir, builds a GraphContext
+  // from the live index, runs the graph-aware classifier, writes the
+  // updated YAML back, and triggers a router rebuild.
+  //
+  // When the persisted index has not been built yet (fresh server,
+  // pre-warm), the server builds it inline (synchronously) before
+  // reading. The first call after boot may therefore be slower than
+  // subsequent ones.
+  rpc ClassifySkill(ClassifySkillRequest) returns (ClassifySkillResponse) {
+    option (google.api.http) = {
+      post: "/v1/skills/{skill_name}:classify"
+      body: "*"
+    };
+  }
+}
+
+// BulkImportSkillsRequest is the bulk import call. Source variants are
+// mutually exclusive; pick exactly one via the oneof.
+message BulkImportSkillsRequest {
+  // Source is mutually exclusive: pick exactly one variant.
+  oneof source {
+    // SrcDir is a directory path on the SERVER's filesystem. Suitable
+    // for local serve where client and server share a filesystem.
+    // Breaks for remote/containerized servers — use zip_archive in
+    // that case.
+    string src_dir = 1;
+    // ZipArchive is a .zip containing one <name>/ subdirectory per
+    // skill, each holding SKILL.md (+ optional references/*.md).
+    // Server unzips into a temp directory, imports, then deletes the
+    // temp directory.
+    bytes zip_archive = 2;
+  }
+
+  // OutDir is the destination for rendered YAMLs on the server. When
+  // empty, defaults to $LOOM_SKILLS_DIR or $HOME/.loom/skills (same
+  // resolution the CLI uses).
+  string out_dir = 3;
+
+  // DryRun reports what would be imported without writing files.
+  // Progress events still stream; SkillResult.outcome will be
+  // OUTCOME_WOULD_WRITE for every skill that would have been written.
+  bool dry_run = 4;
+
+  // Overwrite controls whether existing destination YAMLs are
+  // replaced. When false, pre-existing files emit OUTCOME_SKIPPED.
+  bool overwrite = 5;
+
+  // Classify enables the LLM classifier. The server's configured
+  // classify provider (LOOM_CLASSIFY_PROVIDER + creds) is used; the
+  // client does not supply LLM creds.
+  bool classify = 6;
+
+  // TaxonomyOverride is a custom taxonomy YAML, encoded as bytes.
+  // When empty, the server uses its DefaultTaxonomy
+  // (embedded/taxonomy.yaml). Only consulted when classify is true.
+  // Validated server-side using the same rules as
+  // importer.ParseTaxonomy; a malformed taxonomy fails the request
+  // before the first LLM call.
+  bytes taxonomy_override = 7;
+}
+
+// BulkImportProgress is one event in the streaming response. Exactly
+// one of (banner | skip | result | summary) is set per message.
+message BulkImportProgress {
+  oneof event {
+    // Banner fires once after server-side discovery, before any
+    // per-skill events. Carries totals + intentional skip/fail notes
+    // from the discovery phase.
+    BannerInfo banner = 1;
+
+    // Result fires once per skill that reached the rendering phase.
+    // Includes classify decision, link counts, and outcome.
+    SkillResult result = 2;
+
+    // Summary fires once at the end with the run totals. Receiving
+    // this event signals the stream is about to close cleanly; if
+    // the stream closes without a Summary, treat as a hard failure.
+    SummaryInfo summary = 3;
+  }
+}
+
+// BannerInfo carries one-time discovery totals + intentional skip /
+// fail notes. Mirrors importer.DiscoveryReport.
+message BannerInfo {
+  // SourceDir is the resolved directory the server read from. Empty
+  // when the request used zip_archive (server-side temp dir is not
+  // surfaced to the client).
+  string source_dir = 1;
+  // OutDir is the resolved output directory.
+  string out_dir = 2;
+  // DryRun mirrors the request's dry_run flag.
+  bool dry_run = 3;
+  // Overwrite mirrors the request's overwrite flag.
+  bool overwrite = 4;
+  // Classify mirrors the request's classify flag.
+  bool classify = 5;
+  // TotalImportable is the number of skills the per-skill loop will
+  // process (after discovery filtered out skips and failed parses).
+  int32 total_importable = 6;
+  // Skipped lists discovery-time skips (e.g., agent-skill-builder).
+  // These do not produce SkillResult events.
+  repeated SkipNote skipped = 7;
+  // Failed lists discovery-time parse failures (malformed
+  // frontmatter, unsafe skill name). These do not produce SkillResult
+  // events.
+  repeated FailNote failed = 8;
+  // MaxNameWidth is the longest skill name in TotalImportable, used
+  // by the CLI to size its name column for aligned output.
+  int32 max_name_width = 9;
+}
+
+// SkipNote is one entry from BannerInfo.skipped.
+message SkipNote {
+  string name = 1;
+  string reason = 2;
+}
+
+// FailNote is one entry from BannerInfo.failed.
+message FailNote {
+  string name = 1;
+  string error = 2;
+}
+
+// SummaryInfo carries the run totals plus the classify-bucket tally
+// when classification ran. Mirrors importer.Totals plus the
+// per-bucket count map the CLI prints at the end.
+message SummaryInfo {
+  int32 converted = 1;
+  int32 skipped = 2;
+  int32 failed = 3;
+  // ClassifyBuckets maps bucket path -> count of skills classified
+  // into that bucket during this run. Empty when classify was false.
+  map<string, int32> classify_buckets = 4;
+}
+
+// AddSkillRequest imports a single skill. Source variants are mutually
+// exclusive; pick exactly one via the oneof.
+message AddSkillRequest {
+  oneof source {
+    // SkillDir is a directory on the server's filesystem containing
+    // exactly one <name>/ subdirectory. Same constraints as
+    // BulkImportSkillsRequest.src_dir.
+    string skill_dir = 1;
+    // ZipArchive is a .zip containing one <name>/ subdirectory.
+    bytes zip_archive = 2;
+    // Inline is a structured submission for clients (e.g., the
+    // weaver's create_skill flow) that generated the SKILL.md
+    // programmatically.
+    InlineSkill inline = 3;
+  }
+
+  // OutDir is the destination directory; same default rules as
+  // BulkImportSkillsRequest.
+  string out_dir = 4;
+  // Overwrite mirrors BulkImportSkillsRequest.overwrite.
+  bool overwrite = 5;
+  // Classify enables the graph-aware classifier (same semantics as
+  // the bulk path).
+  bool classify = 6;
+  // TaxonomyOverride mirrors BulkImportSkillsRequest.taxonomy_override.
+  bytes taxonomy_override = 7;
+}
+
+// InlineSkill is a structured SKILL.md submission. The server
+// reconstructs an in-memory importer.Skill and feeds it through
+// importer.ProcessSkill — equivalent to writing these files to a temp
+// dir but without filesystem round-tripping.
+message InlineSkill {
+  // Name is the skill name (kebab-case; matches IsSafeSkillName).
+  string name = 1;
+  // SkillMd is the full SKILL.md content including frontmatter.
+  string skill_md = 2;
+  // References maps reference filename (e.g.,
+  // "transaction-and-session.md") to its markdown body. Reference
+  // bodies should not include their own frontmatter.
+  map<string, string> references = 3;
+}
+
+// AddSkillResponse is the unary result of AddSkill.
+message AddSkillResponse {
+  // Result is the per-skill outcome (same shape as the streaming
+  // BulkImportProgress.result event).
+  SkillResult result = 1;
+  // RouterReloaded is true when the server successfully rebuilt the
+  // router tree to include the new skill. False means the import
+  // succeeded but the router will not surface the new skill until the
+  // next manual restart.
+  bool router_reloaded = 2;
+}
+
+// ClassifySkillRequest re-classifies an existing skill in the catalog.
+message ClassifySkillRequest {
+  // SkillName is the bare skill name (e.g., "teradata-statistics").
+  // Must already exist in the server's skills_dir.
+  string skill_name = 1;
+  // TaxonomyOverride mirrors BulkImportSkillsRequest.taxonomy_override.
+  bytes taxonomy_override = 2;
+}
+
+// ClassifySkillResponse reports the chosen path and whether the router
+// was rebuilt to reflect the change.
+message ClassifySkillResponse {
+  // ParentIndexPath is the path the classifier chose. Empty when the
+  // classifier failed (LLM error, validator reject); the YAML is left
+  // untouched in that case.
+  string parent_index_path = 1;
+  // PreviousPath is the parent_index_path the YAML carried before
+  // this call. Empty when the skill was previously unclassified.
+  string previous_path = 2;
+  // RouterReloaded is true when the server successfully rebuilt the
+  // router tree to reflect the new path.
+  bool router_reloaded = 3;
+  // Reason is a short rationale string the LLM emitted alongside the
+  // path. May be empty.
+  string reason = 4;
+}
+
+// SkillResult is one per-skill record. Mirrors importer.SkillResult,
+// trimmed for the wire — fields like Skill (the parsed in-memory form)
+// are dropped because the relevant bits are surfaced as scalars below.
+message SkillResult {
+  // SkillName is the bare skill name from frontmatter.
+  string skill_name = 1;
+  // Index is the 1-based position in the run.
+  int32 index = 2;
+  // Total is the count of skills in the run.
+  int32 total = 3;
+
+  // Outcome describes what the pipeline did with this skill.
+  Outcome outcome = 4;
+  // DestPath is the absolute path where the YAML was (or would be)
+  // written. Empty when the pipeline failed before write.
+  string dest_path = 5;
+  // YamlBytes is the size of the rendered YAML.
+  int32 yaml_bytes = 6;
+
+  // Domain is the skills.metadata.domain field (importer.ChooseDomain
+  // output).
+  string domain = 7;
+  // TriggerMode is "AUTO" or "ALWAYS" (the rendered
+  // skills.trigger.mode).
+  string trigger_mode = 8;
+
+  // ClassifyEnabled distinguishes "we tried and got
+  // ClassifyPath" from "the classifier was off this run".
+  bool classify_enabled = 9;
+  // ClassifyPath is the assigned parent_index_path. Empty on
+  // classifier failure or when the skill was a parent-index
+  // meta-skill (deliberately not classified).
+  string classify_path = 10;
+  // ClassifyError is a non-empty message when the LLM call failed or
+  // the validator rejected the response. ClassifyPath stays empty in
+  // that case; the skill imports with no parent_index_path.
+  string classify_error = 11;
+  // ClassifySkipped is true for parent-index meta-skills, which live
+  // at unclassified/meta-agent and surface every turn via mode:
+  // ALWAYS — they don't need a router-tree position.
+  bool classify_skipped = 12;
+
+  // LinkedSkillsTotal is the count of cross-skill references the
+  // skill declared in markdown.
+  int32 linked_skills_total = 13;
+  // LinkedSkillsResolved is the count that resolved against the
+  // catalog this run produced. Capped at importer.SkillRefsCap (3)
+  // for the skill_refs YAML field; the rest stay in the prompt body
+  // for parent-index skills.
+  int32 linked_skills_resolved = 14;
+  // LinkedSkillsDropped lists names that did not resolve (typos,
+  // upstream packages, external deps).
+  repeated string linked_skills_dropped = 15;
+  // ReferencesInlined is the count of references/*.md inlined into
+  // skills.prompt.instructions.
+  int32 references_inlined = 16;
+  // KeywordsCount is len(skills.trigger.keywords); capped at
+  // importer.MaxKeywords (32).
+  int32 keywords_count = 17;
+  // SlashCommandsCount is len(skills.trigger.slash_commands).
+  int32 slash_commands_count = 18;
+
+  // Err is the failure that produced OUTCOME_FAILED. Empty otherwise.
+  string err = 19;
+}
+
+// Outcome enumerates the per-skill pipeline outcome. Mirrors
+// importer.Outcome.
+enum Outcome {
+  // Default zero value; should never appear in practice — every
+  // SkillResult event sets one of the explicit values below.
+  OUTCOME_UNSPECIFIED = 0;
+  // The rendered YAML was written to the destination.
+  OUTCOME_WROTE = 1;
+  // Dry-run mode; no file was touched.
+  OUTCOME_WOULD_WRITE = 2;
+  // The destination YAML already existed and overwrite was false.
+  OUTCOME_SKIPPED = 3;
+  // The skill failed at one of: render, validate, write. Err
+  // describes the cause.
+  OUTCOME_FAILED = 4;
+}

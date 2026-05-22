@@ -34,6 +34,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -275,6 +278,134 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
 
+	// Auto-wire the skill task emitter when both the skill subsystem AND
+	// the task subsystem are configured. The emitter is the bridge between
+	// skill activations and task board entries (skills overhaul Phase 6).
+	// Caller can preempt this by setting WithSkillTaskEmitter explicitly.
+	if a.skillTaskEmitter == nil && a.skillOrchestrator != nil && a.taskManager != nil {
+		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
+	}
+
+	// Install the sticky-while-open-tasks checker on the orchestrator
+	// when both the skill subsystem and the task subsystem are present.
+	// Eviction will treat any active skill with non-DONE+non-CANCELLED
+	// tasks for this (skill, session) pair as sticky, so in-flight work
+	// is never abandoned mid-turn. (Skills overhaul deferred work C.)
+	if a.skillOrchestrator != nil && a.taskManager != nil {
+		taskMgr := a.taskManager
+		a.skillOrchestrator.SetStickinessChecker(func(skillName, sessionID string) bool {
+			open, err := taskMgr.HasOpenSkillTasks(context.Background(), skillName, sessionID)
+			if err != nil {
+				// Treat lookup failures as "not sticky" so eviction can
+				// still proceed; logging is enough.
+				zap.L().Debug("stickiness check failed",
+					zap.String("skill", skillName),
+					zap.String("session", sessionID),
+					zap.Error(err))
+				return false
+			}
+			return open
+		})
+	}
+
+	// Construct the end-of-turn hygiene auditor + enforcer when both the
+	// skill and task subsystems are wired. The auditor inspects tasks
+	// emitted by currently-active skills via SkillIdempotencyKey; the
+	// enforcer applies the resolved HygienePolicy from SkillsConfig.Hygiene
+	// at end-of-turn (see runConversationLoop). Caller can preempt by
+	// providing a non-nil pair via Option before NewAgent returns.
+	if a.hygieneAuditor == nil && a.skillOrchestrator != nil && a.taskManager != nil {
+		a.hygieneAuditor = hygiene.NewAuditor(
+			a.taskManager,
+			a.skillOrchestrator,
+			hygiene.WithTracer(a.tracer),
+			hygiene.WithLogger(zap.L()),
+		)
+	}
+	if a.hygieneEnforcer == nil && a.taskManager != nil {
+		a.hygieneEnforcer = hygiene.NewEnforcer(
+			a.taskManager,
+			hygiene.WithEnforcerTracer(a.tracer),
+			hygiene.WithEnforcerLogger(zap.L()),
+			hygiene.WithAgentID(a.id),
+		)
+	}
+
+	// Install an eviction callback that boosts graph memory salience for
+	// entities related to the evicted skill. When a skill is evicted, its
+	// related knowledge becomes more relevant (the agent just used it),
+	// so touching those memories strengthens future retrieval. Zero LLM
+	// calls — pure FTS search + TouchMemories.
+	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
+		store := a.graphMemoryStore
+		agentName := a.config.Name
+		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
+			ctx := context.Background()
+
+			// Build search query from skill name + first 3 keywords.
+			query := skill.Name
+			keywords := skill.Trigger.Keywords
+			if len(keywords) > 3 {
+				keywords = keywords[:3]
+			}
+			for _, kw := range keywords {
+				query += " " + kw
+			}
+
+			entities, err := store.SearchEntities(ctx, agentName, query, 5)
+			if err != nil {
+				zap.L().Debug("eviction salience boost: entity search failed",
+					zap.String("skill", skill.Name),
+					zap.String("session", sessionID),
+					zap.Error(err))
+				return
+			}
+
+			var memoryIDs []string
+			for _, ent := range entities {
+				memories, recallErr := store.Recall(ctx, memory.RecallOpts{
+					AgentID:   agentName,
+					EntityIDs: []string{ent.ID},
+					Limit:     3,
+				})
+				if recallErr != nil {
+					continue
+				}
+				for _, mem := range memories {
+					memoryIDs = append(memoryIDs, mem.ID)
+				}
+			}
+
+			if len(memoryIDs) == 0 {
+				return
+			}
+
+			// Deduplicate.
+			seen := make(map[string]struct{}, len(memoryIDs))
+			deduped := memoryIDs[:0]
+			for _, id := range memoryIDs {
+				if _, exists := seen[id]; !exists {
+					seen[id] = struct{}{}
+					deduped = append(deduped, id)
+				}
+			}
+
+			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
+				zap.L().Debug("eviction salience boost: TouchMemories failed",
+					zap.String("skill", skill.Name),
+					zap.Error(touchErr))
+				return
+			}
+
+			zap.L().Debug("eviction salience boost: touched memories",
+				zap.String("skill", skill.Name),
+				zap.String("session", sessionID),
+				zap.Duration("active_for", activeFor),
+				zap.Int("entity_count", len(entities)),
+				zap.Int("memory_count", len(deduped)))
+		})
+	}
+
 	return a
 }
 
@@ -449,6 +580,130 @@ func WithSkillOrchestrator(orch *skills.Orchestrator) Option {
 	return func(a *Agent) {
 		a.skillOrchestrator = orch
 	}
+}
+
+// WithSkillDiscovery wires the new top-level Discovery (introduced by the
+// skills overhaul). When set, runConversationLoop uses the four-phase
+// pipeline (binding -> discovery -> activate -> emit tasks) instead of the
+// legacy MatchSkills filter path. Requires WithSkillOrchestrator to also
+// be set so the activation lifecycle still has somewhere to land.
+func WithSkillDiscovery(d *discovery.Discovery) Option {
+	return func(a *Agent) {
+		a.skillDiscovery = d
+	}
+}
+
+// WithSkillTaskEmitter wires the skill task emitter. When set and the
+// skill's EffectiveEmitTasks() returns true, freshly-activated skills
+// materialize tasks onto the agent's task board. Requires that the
+// agent's task manager is also configured.
+func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
+	return func(a *Agent) {
+		a.skillTaskEmitter = e
+	}
+}
+
+// skillNameSet returns the names currently active on a session as a set
+// keyed by skill name. Used by the four-phase pipeline to decide which
+// activations are "new this turn" so the task emitter only fires once per
+// activation event.
+func skillNameSet(active []*skills.ActiveSkill) map[string]bool {
+	out := make(map[string]bool, len(active))
+	for _, as := range active {
+		if as != nil && as.Skill != nil {
+			out[as.Skill.Name] = true
+		}
+	}
+	return out
+}
+
+// enforceRequiredSkillTools auto-registers tools listed in active skills'
+// SkillToolConfig.RequiredTools when they are available in the builtin
+// catalog and not already registered. Tools that aren't builtin-known are
+// logged at Warn so operators can see what's missing without breaking the
+// turn — the agent continues with whatever tools ARE registered.
+//
+// MCP servers (SkillToolConfig.MCPServers) are not yet activated by skill
+// activation; the field is parsed but not enforced. A future change can
+// add an MCPManager hook here.
+func (a *Agent) enforceRequiredSkillTools(sessionID string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	active := a.skillOrchestrator.GetActiveSkills(sessionID)
+	if len(active) == 0 {
+		return
+	}
+	for _, as := range active {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, name := range as.Skill.Tools.RequiredTools {
+			if a.tools.IsRegistered(name) {
+				continue
+			}
+			tool := builtin.ByName(name)
+			if tool == nil {
+				zap.L().Warn("skill required tool not available; skipping",
+					zap.String("skill", as.Skill.Name),
+					zap.String("tool", name))
+				continue
+			}
+			a.tools.Register(tool)
+			zap.L().Debug("skill required tool auto-registered",
+				zap.String("skill", as.Skill.Name),
+				zap.String("tool", name))
+		}
+		// Surface MCP-server requests so operators see when a skill has
+		// declared servers that aren't yet honored. Logged once per turn
+		// per skill rather than per server to avoid log spam.
+		if len(as.Skill.Tools.MCPServers) > 0 {
+			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
+				zap.String("skill", as.Skill.Name),
+				zap.Int("count", len(as.Skill.Tools.MCPServers)))
+		}
+	}
+}
+
+// applySkillExcludedTools filters the input tool slice by removing any
+// tool whose name appears in any active skill's
+// SkillToolConfig.ExcludedTools. Multiple active skills' exclusions union;
+// a tool excluded by ANY active skill is removed for this turn.
+//
+// The filter is per-turn (no permanent unregistration) so deactivating a
+// skill restores its excluded tools on subsequent turns automatically.
+func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []shuttle.Tool {
+	if a.skillOrchestrator == nil || session == nil {
+		return in
+	}
+	sessionID := session.ID
+	if sessionID == "" {
+		sessionID = a.id
+	}
+	active := a.skillOrchestrator.GetActiveSkills(sessionID)
+	if len(active) == 0 {
+		return in
+	}
+	excluded := make(map[string]bool)
+	for _, as := range active {
+		if as == nil || as.Skill == nil {
+			continue
+		}
+		for _, name := range as.Skill.Tools.ExcludedTools {
+			excluded[name] = true
+		}
+	}
+	if len(excluded) == 0 {
+		return in
+	}
+	out := make([]shuttle.Tool, 0, len(in))
+	for _, tool := range in {
+		if excluded[tool.Name()] {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
 }
 
 // RegisterTool registers a tool with the agent.
@@ -1695,7 +1950,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
-	emptyRetried := false // one-shot flag: retry empty LLM response at most once per conversation
+	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
+	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
+	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
+
+	// Self-healing orchestrator (Tier 1 recovery).
+	var recovery *recoveryOrchestrator
+	if a.config.EnableSelfHealing {
+		recovery = newRecoveryOrchestrator(a.config.RecoveryConfig, span)
+	}
 
 	// Debug: Print config values
 	if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
@@ -1719,55 +1982,109 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// Inject graph memory context (if enabled and available).
 	a.injectGraphMemoryContext(ctx, session)
 
-	// Get available tools
-	tools := a.tools.ListTools()
-
 	// --- Skill activation ---
+	// The skills overhaul (Phase 9) replaces the per-turn MatchSkills filter
+	// with a four-phase pipeline (Discovery -> Activate -> Emit tasks ->
+	// Format/inject). When skillDiscovery is nil we fall back to the legacy
+	// path so existing tests and configs that don't wire Discovery still
+	// behave exactly as v1.2.0 did.
 	if a.skillOrchestrator != nil && session != nil {
 		sessionID := session.ID
 		if sessionID == "" {
 			sessionID = a.id
 		}
 
-		// Get skills config (use defaults if not set)
 		skillsConfig := a.config.SkillsConfig
 		if skillsConfig == nil {
 			skillsConfig = skills.DefaultSkillsConfig()
 		}
 
 		if skillsConfig.Enabled {
-			// Match skills from user message
 			msgs := session.GetMessages()
+			// Find the most-recent user message rather than just inspecting
+			// the last entry: system prompts and context messages can be
+			// appended AFTER the user's turn (graph memory inject, ROM
+			// hydration, etc.), so msgs[len-1].Role is often "system".
+			// Mirrors the lazy-tool-disclosure walk above.
 			lastMsg := ""
-			if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
-				lastMsg = msgs[len(msgs)-1].Content
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == "user" {
+					lastMsg = msgs[i].Content
+					break
+				}
 			}
 
-			if lastMsg != "" {
-				matches, matchErr := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig)
-				if matchErr == nil {
-					for _, match := range matches {
-						a.skillOrchestrator.ActivateSkill(sessionID, match.Skill, match.TriggerType, match.TriggerValue, match.Confidence)
+			// Phase B: discover candidates.
+			activatedThisTurn := map[string]*skills.Skill{}
+			activeBefore := skillNameSet(a.skillOrchestrator.GetActiveSkills(sessionID))
+			if a.skillDiscovery != nil {
+				if candidates, err := a.skillDiscovery.Discover(ctx, sessionID, lastMsg, skillsConfig); err == nil {
+					for _, c := range candidates {
+						if c.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
+							zap.L().Info("high-risk skill blocked (requires HITL approval)",
+								zap.String("skill", c.Skill.Name),
+								zap.String("risk_level", c.Skill.RiskLevel))
+							continue
+						}
+						if !activeBefore[c.Skill.Name] {
+							activatedThisTurn[c.Skill.Name] = c.Skill
+						}
+						a.skillOrchestrator.ActivateSkill(sessionID, c.Skill,
+							c.TriggerType, c.TriggerValue, c.Confidence)
+					}
+				} else {
+					zap.L().Debug("skill discovery failed; skipping activation",
+						zap.String("session", sessionID),
+						zap.Error(err))
+				}
+			} else if lastMsg != "" {
+				// Legacy path: direct MatchSkills via the orchestrator.
+				if matches, err := a.skillOrchestrator.MatchSkills(sessionID, lastMsg, skillsConfig); err == nil {
+					for _, m := range matches {
+						if m.Skill.IsHighRisk() && a.permissionChecker != nil && !a.permissionChecker.IsYOLOMode() {
+							zap.L().Info("high-risk skill blocked (requires HITL approval)",
+								zap.String("skill", m.Skill.Name),
+								zap.String("risk_level", m.Skill.RiskLevel))
+							continue
+						}
+						if !activeBefore[m.Skill.Name] {
+							activatedThisTurn[m.Skill.Name] = m.Skill
+						}
+						a.skillOrchestrator.ActivateSkill(sessionID, m.Skill,
+							m.TriggerType, m.TriggerValue, m.Confidence)
 					}
 				}
 			}
 
-			// Deactivate non-sticky skills from previous turns
-			activeSkills := a.skillOrchestrator.GetActiveSkills(sessionID)
-			for _, as := range activeSkills {
-				if !as.Skill.Sticky {
-					// Non-sticky skills only last one turn -- deactivate if they were activated before this message
-					// (Simplification; more sophisticated turn tracking could be added)
-					_ = as
+			// Phase D: emit tasks for newly-activated skills (overhaul-only).
+			if a.skillTaskEmitter != nil && len(activatedThisTurn) > 0 {
+				agentTasksEnabled := skillsConfig.EffectiveTasksEnabled()
+				boardID := skillsConfig.SkillTaskBoardID
+				if boardID == "" && a.taskBoardConfig != nil {
+					boardID = a.taskBoardConfig.DefaultBoardId
+				}
+				for name, skill := range activatedThisTurn {
+					_, err := a.skillTaskEmitter.EmitForActivation(ctx, skilltasks.EmitRequest{
+						Skill:             skill,
+						SessionID:         sessionID,
+						AgentID:           a.id,
+						BoardID:           boardID,
+						LLM:               a.llm,
+						AgentTasksEnabled: agentTasksEnabled,
+					})
+					if err != nil {
+						zap.L().Warn("skill task emission failed",
+							zap.String("skill", name),
+							zap.Error(err))
+					}
 				}
 			}
 
-			// Build combined skill prompt and inject
-			maxTokens := 1500 // default
+			// Format and inject skill prompts (existing logic).
+			maxTokens := 1500
 			if skillsConfig.ContextBudgetPercent > 0 && a.config.MaxContextTokens > 0 {
 				maxTokens = skills.ComputeSkillBudget(a.config.MaxContextTokens, skillsConfig.ContextBudgetPercent)
 			}
-
 			skillContent := a.skillOrchestrator.FormatActiveSkillsForLLM(sessionID, maxTokens)
 			if skillContent != "" {
 				activeNames := make([]string, 0)
@@ -1779,7 +2096,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 			}
 
-			// Co-inject pattern refs from active skills
+			// Co-inject pattern refs from active skills (existing logic).
 			for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
 				for _, ref := range as.Skill.PatternRefs {
 					if a.orchestrator != nil {
@@ -1792,8 +2109,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					}
 				}
 			}
+
+			// Enforce SkillToolConfig.required_tools across all active skills.
+			// required_tools that aren't yet registered are auto-registered
+			// from the builtin set when available; missing tools log a Warn
+			// and the skill continues without them (the LLM still has access
+			// to whatever IS registered).
+			a.enforceRequiredSkillTools(sessionID)
 		}
 	}
+
+	// Get available tools. Done AFTER the skill block so any required_tools
+	// that the skill auto-registered show up; the excluded-tools filter
+	// below removes any active skill's excluded set for this turn.
+	tools := a.tools.ListTools()
+	tools = a.applySkillExcludedTools(tools, session)
 
 	// Emit pattern selection progress
 	emitProgress(ctx, StagePatternSelection, 10, "Analyzing query and selecting patterns", "")
@@ -1934,6 +2264,20 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"trigger": "budget_critical",
 				})
 			}
+
+			// After compression, if still critically over budget, attempt recovery.
+			if checkTokenBudget(segMem).budgetPct > 85 {
+				if recovery != nil {
+					budgetChecker := func() float64 { return checkTokenBudget(segMem).budgetPct }
+					recovered, _ := recovery.recoverTokenBudget(ctx, session, segMem, budgetChecker)
+					if !recovered {
+						budgetErr := fmt.Errorf("token budget critically exceeded (%.1f%%) after aggressive trim", checkTokenBudget(segMem).budgetPct)
+						return nil, recovery.buildRecoverableError("token_budget_exceeded", budgetErr, "reset_context", map[string]any{"budget_pct": checkTokenBudget(segMem).budgetPct})
+					}
+				} else {
+					return nil, fmt.Errorf("token budget critically exceeded (%.1f%%) and self-healing disabled", checkTokenBudget(segMem).budgetPct)
+				}
+			}
 		}
 
 		// Build messages for LLM (will use segmented memory if configured)
@@ -2055,6 +2399,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 							"threshold":          threshold,
 						})
 						span.RecordError(err)
+
+						// Tier 1: attempt self-healing before propagating.
+						if recovery != nil {
+							if segMem, ok := session.SegmentedMem.(TrimableMemory); ok {
+								recovered, _ := recovery.recoverOutputTokenCB(ctx, session, segMem, failureTracker, threshold)
+								if recovered {
+									continue
+								}
+							}
+							return nil, recovery.buildRecoverableError("output_token_circuit_breaker", err, "rewind_and_retry", map[string]any{"threshold": threshold})
+						}
 						return nil, fmt.Errorf("output token circuit breaker: %w", err)
 					}
 
@@ -2145,17 +2500,43 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
 			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
 
+			// End-of-turn hygiene check for skill-emitted tasks. Audits the
+			// active skill's tasks and either injects a fixup message and
+			// retries (REQUIRE_FIX), machine-repairs the board (AUTO_FIX), or
+			// logs and continues (WARN_ONLY). See pkg/skills/hygiene.
+			retry, outcome := a.runEndOfTurnHygiene(ctx, session, &hygieneRetries)
+			if outcome != nil {
+				hygieneLast = outcome
+			}
+			if retry {
+				// runEndOfTurnHygiene already appended the synthetic user
+				// message to the session and persisted it. Re-enter the
+				// conversation loop so the LLM sees the fixup request.
+				continue
+			}
+
+			meta := map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"empty_retried":   emptyRetried,
+			}
+			if hygieneLast != nil {
+				meta["hygiene_policy"] = hygieneLast.Policy.String()
+				meta["hygiene_violations_found"] = hygieneLast.ViolationsFound
+				meta["hygiene_by_kind"] = hygieneLast.ViolationsByKind
+				meta["hygiene_resolved"] = hygieneLast.Resolved
+				meta["hygiene_hitl_spawned"] = hygieneLast.HITLSpawned
+				if hygieneLast.FallthroughReason != "" {
+					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
+				}
+			}
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
-				Metadata: map[string]interface{}{
-					"turns":           turnCount,
-					"tool_executions": toolExecutionCount,
-					"stop_reason":     llmResp.StopReason,
-					"empty_retried":   emptyRetried,
-				},
+				Metadata:       meta,
 			}, nil
 		}
 
@@ -2283,6 +2664,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			// Execute with self-correction (circuit breaker + SQL correction)
 			result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+
+			// Tier 1: if tool CB fired, disable tool and inject synthetic result.
+			if err != nil && strings.Contains(err.Error(), "circuit breaker open") && recovery != nil {
+				_, syntheticResult := recovery.recoverToolCB(ctx, toolCall.Name, &tools)
+				result = syntheticResult
+				err = nil
+			}
 
 			// Record tool execution on conversation_loop span
 			{
@@ -2515,7 +2903,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
-	synthesisPrompt := "You have reached the tool execution limit. Summarize what you accomplished: what actions were taken, what results were produced, and any remaining steps the user should know about. You MUST respond with text — do not return an empty response."
+	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
 	synthesisMsg := Message{
 		Role:      "user",
 		Content:   synthesisPrompt,

@@ -26,6 +26,7 @@ import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
 import "loom/v1/storage.proto";
+import "loom/v1/templates.proto";
 import "loom/v1/tools.proto";
 
 option go_package = "github.com/teradata-labs/loom/gen/go/loom/v1;loomv1";
@@ -592,6 +593,30 @@ service LoomService {
   // for building dynamic UI apps.
   rpc ListComponentTypes(ListComponentTypesRequest) returns (ListComponentTypesResponse) {
     option (google.api.http) = {get: "/v1/apps/component-types"};
+  }
+
+  // Templates & Presets — the scaffolding registries the weaver uses to
+  // create agents and workflows from curated bundles. See
+  // proto/loom/v1/templates.proto for the registry shape.
+
+  // ListAgentPresets returns the set of preconfigured single-agent presets.
+  rpc ListAgentPresets(ListAgentPresetsRequest) returns (ListAgentPresetsResponse) {
+    option (google.api.http) = {get: "/v1/presets/agents"};
+  }
+
+  // ListWorkflowTemplates returns the set of preconfigured workflow templates.
+  rpc ListWorkflowTemplates(ListWorkflowTemplatesRequest) returns (ListWorkflowTemplatesResponse) {
+    option (google.api.http) = {get: "/v1/templates/workflows"};
+  }
+
+  // CreateWorkflowFromTemplate instantiates a template: creates each agent
+  // in the template (reusing by name where possible), then creates a
+  // workflow that composes them under the template's pattern.
+  rpc CreateWorkflowFromTemplate(CreateWorkflowFromTemplateRequest) returns (CreateWorkflowFromTemplateResponse) {
+    option (google.api.http) = {
+      post: "/v1/templates/workflows:apply"
+      body: "*"
+    };
   }
 }
 

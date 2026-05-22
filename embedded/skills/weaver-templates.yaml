@@ -1,0 +1,168 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: weaver-templates
+  title: Workflow Template Scaffolding
+  description: Curated multi-agent workflow templates the weaver applies via agent_management apply_template.
+  domain: meta-agent
+  version: "1.0.0"
+  author: loom-core
+  labels:
+    surface: weaver
+trigger:
+  slash_commands:
+    - /template
+    - /templates
+    - /workflow
+  keywords:
+    - workflow template
+    - research report
+    - data dashboard
+    - competitive intel
+    - data quality audit
+    - performance report
+    - deep research
+    - "multi-agent workflow"
+    - pipeline
+    - fork-join
+    - schedulable
+  mode: HYBRID
+  min_confidence: 0.65
+prompt:
+  instructions: |
+    Use a workflow template whenever the user asks for a multi-agent
+    workflow that matches one of the curated patterns. Applying a
+    template creates N agents (each from a preset + curated system prompt)
+    and a workflow YAML linking them — one tool call instead of N+1.
+
+    ## Flow
+    1. Call agent_management with {"action": "templates"} to list the
+       templates, their pattern types, and the agents they create.
+    2. Pick the template whose intent matches. If the user wants
+       something none of the templates cover, fall back to
+       weaver-from-scratch.
+    3. Call agent_management with apply_template, passing the template
+       name and an optional workflow_name. The default workflow name is
+       the template id; agent names default to the spec defaults
+       (e.g. "research-report:researcher").
+    4. Confirm with the user — show the agents created (or reused) and
+       the workflow file written. Mention that hot-reload picks the
+       files up automatically.
+
+    ## Template cheatsheet
+    - **research-report** (pipeline, 3 agents) — researcher → writer →
+      dashboard. Use when the user wants a report + visualization on any
+      topic.
+    - **data-to-dashboard** (pipeline, 2 agents) — TD analyst → UI
+      specialist. Use when the user wants an SQL question turned into a
+      dashboard.
+    - **competitive-intel** (fork-join, 3 analysts) — product /
+      tech / market researchers, summary merge. Use for competitor
+      research that needs SWOT-style synthesis.
+    - **data-quality-audit** (pipeline, 3 agents, schedulable) — analyst
+      → investigator → dashboard. Suggests weekly Monday 09:00 UTC.
+    - **performance-report** (pipeline, 3 agents, schedulable) — daily
+      KPI report with narrative and dashboard. Suggests daily 09:00 UTC.
+    - **deep-research** (fork-join, 3 angles) — technical / financial /
+      strategic perspectives merged into a synthesis.
+
+    ## Required parameters for apply_template
+    - name: the template id (kebab-case, exactly as listed above)
+    - workflow_name (optional): your chosen workflow name; defaults to
+      the template id
+    - agent_name_overrides (optional): map of slot index → custom name,
+      useful when the user wants project-specific names instead of the
+      "research-report:writer" defaults
+    - active_provider (optional): named pool entry assigned to every
+      created agent (e.g. "claude-haiku")
+
+    ## Schedulable templates
+    When the user wants a recurring run (daily report, weekly audit),
+    confirm the schedule template choice, then point them at the
+    `looms` schedule CLI or the ScheduleWorkflow RPC. The template
+    writes a `schedule:` block with `enabled: false` — they must opt in.
+
+    ## What to avoid
+    - Do NOT create the agents one-by-one with create_agent when a
+      template already bundles them; you spend more tool calls and
+      lose the curated system prompts.
+    - Do NOT call apply_template if the user wants a custom pattern
+      the registry doesn't cover (e.g. swarm voting on a non-binary
+      question, debate with specific personas) — go to
+      weaver-from-scratch.
+    - Do NOT silently overwrite existing agent files. The handler reuses
+      by name; if names collide and the user wanted fresh agents,
+      surface this and ask before retrying with overrides.
+  constraints:
+    - 'Always call agent_management with action=templates first when the user is browsing.'
+    - 'Always confirm template + workflow name with the user before applying.'
+    - 'Report agents_created + agents_reused so the user understands what changed on disk.'
+  output_format: |
+    On listing: a short summary per template (id, pattern, agents) and
+    a recommendation tailored to the user's intent.
+    On apply: a confirmation citing template + workflow name + which
+    agents were created / reused.
+  examples:
+    - user_input: "I want a workflow that researches a topic and gives me a dashboard"
+      expected_output: |
+        Call agent_management:
+        {"action": "apply_template", "name": "research-report",
+         "workflow_name": "renewable-energy-report"}
+      explanation: research-report matches the intent (research + report + dashboard); pipeline is the right pattern.
+    - user_input: "Schedule a daily performance check for our key KPIs"
+      expected_output: |
+        {"action": "apply_template", "name": "performance-report",
+         "workflow_name": "daily-kpi-snapshot"}
+        Then point the user at: looms schedule create --workflow daily-kpi-snapshot --cron "0 9 * * *"
+      explanation: performance-report is schedulable; the template writes a disabled schedule the user must opt-in to.
+tools:
+  required_tools:
+    - agent_management
+  preferred_order:
+    - agent_management
+pattern_refs: []
+skill_refs: []
+max_prompt_tokens: 2400
+sticky: true
+parent_index_path: meta-agent/weaver/templates
+emit_tasks: true
+task_template:
+  root_title: Apply Workflow Template
+  max_tasks: 6
+  ephemeral_on_deactivate: false
+  steps:
+    - title: Confirm template choice with user
+      objective: Verify the template's pattern + agent roles match the user's intent.
+      acceptance_criteria: User explicitly approved the template, or the message specifies "apply directly".
+      category: decision
+      priority: P1
+    - title: Decide workflow_name + any agent name overrides
+      objective: Pin the workflow's stored name and decide whether any default agent names should be overridden.
+      acceptance_criteria: workflow_name chosen; agent_name_overrides drafted if the user requested project-specific names.
+      category: planning
+      priority: P2
+      depends_on: [0]
+    - title: Apply the template via agent_management
+      objective: Call agent_management with action=apply_template, name, workflow_name.
+      acceptance_criteria: Tool returns success=true; agents_created + agents_reused arrays sum to template.agents length.
+      category: implementation
+      priority: P1
+      depends_on: [1]
+    - title: Verify agents + workflow files on disk
+      objective: Confirm each agent YAML and the workflow YAML exist via agent_management read.
+      acceptance_criteria: read of every agent name + the workflow name returns valid YAML; no FILE_EXISTS errors.
+      category: review
+      priority: P2
+      depends_on: [2]
+    - title: (Schedulable only) explain the suggested cron and how to enable it
+      objective: If the template ships a suggested_cron, tell the user how to opt in via ScheduleWorkflow or looms schedule CLI.
+      acceptance_criteria: User has a copy-pasteable schedule activation instruction OR is told the template is not schedulable.
+      category: writing
+      priority: P3
+      depends_on: [3]
+    - title: Brief the user on what was built
+      objective: Summarise agents created/reused, workflow name, pattern type, and a how-to-run line.
+      acceptance_criteria: Reply includes the full materialised flow plus the next-step command for the user.
+      category: writing
+      priority: P2
+      depends_on: [3]

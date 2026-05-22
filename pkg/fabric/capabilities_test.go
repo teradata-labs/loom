@@ -15,14 +15,14 @@ package fabric
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewCapabilities(t *testing.T) {
 	caps := NewCapabilities()
 
-	if caps == nil {
-		t.Fatal("Expected non-nil capabilities")
-	}
+	require.NotNil(t, caps, "Expected non-nil capabilities")
 
 	if caps.SupportsTransactions {
 		t.Error("Expected SupportsTransactions to be false by default")

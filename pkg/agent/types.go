@@ -28,6 +28,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/skills/discovery"
+	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -100,8 +103,28 @@ type Agent struct {
 	// Pattern orchestration
 	orchestrator *patterns.Orchestrator
 
-	// Skill orchestration
+	// Skill orchestration. The skillOrchestrator manages activation lifecycle
+	// and prompt injection. The discovery component (when present) is the
+	// new entry point introduced by the skills overhaul: it composes
+	// binding resolution, the hierarchical PageIndex router, and the FTS5
+	// fallback. When discovery is nil, runConversationLoop falls back to
+	// the legacy MatchSkills filter path for backward compatibility.
 	skillOrchestrator *skills.Orchestrator
+	skillDiscovery    *discovery.Discovery
+	// skillTaskEmitter materializes tasks for newly-activated skills onto
+	// the agent's task board. nil means skill activations do not emit tasks
+	// (legacy behavior).
+	skillTaskEmitter *skilltasks.Emitter
+	// skillsTurnState tracks which skills were activated in the current
+	// turn so phase D can emit tasks only for the newly-activated set.
+	skillsTurnState map[string]map[string]bool // sessionID -> skillName -> activated-this-turn
+
+	// End-of-turn hygiene enforcement for skill-emitted tasks. Constructed
+	// when both skillOrchestrator and taskManager are present; runs at the
+	// conversation-loop return path to audit IN_PROGRESS / BLOCKED /
+	// OPEN-unstarted tasks left dirty by an active skill.
+	hygieneAuditor  *hygiene.Auditor
+	hygieneEnforcer *hygiene.Enforcer
 
 	// Inter-agent communication (optional)
 	refStore     communication.ReferenceStore // Reference storage for agent-to-agent communication
@@ -248,6 +271,14 @@ type Config struct {
 	// hits the output token limit AND returns truncated tool calls before the
 	// circuit breaker fires. 0 uses the default (8). -1 disables the CB entirely.
 	OutputTokenCBThreshold int
+
+	// EnableSelfHealing enables Tier 1 automatic recovery (context trimming,
+	// tool disabling) before errors propagate to the caller. Default: true.
+	EnableSelfHealing bool
+
+	// RecoveryConfig holds tunables for the self-healing orchestrator.
+	// Nil uses DefaultRecoveryConfig().
+	RecoveryConfig *RecoveryConfig
 }
 
 // PatternConfig holds pattern injection configuration
@@ -294,6 +325,7 @@ func DefaultConfig() *Config {
 		MaxIterations:     10,
 		SystemPromptKey:   "agent.system.base",
 		EnableTracing:     true,
+		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
 		Retry: RetryConfig{
 			Enabled:      true,

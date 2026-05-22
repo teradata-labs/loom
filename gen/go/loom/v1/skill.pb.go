@@ -86,6 +86,236 @@ func (SkillActivationMode) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_skill_proto_rawDescGZIP(), []int{0}
 }
 
+// SkillStatus tracks the lifecycle stage of a skill.
+type SkillStatus int32
+
+const (
+	SkillStatus_SKILL_STATUS_UNSPECIFIED    SkillStatus = 0
+	SkillStatus_SKILL_STATUS_AUTO_GENERATED SkillStatus = 1
+	SkillStatus_SKILL_STATUS_ENRICHED       SkillStatus = 2
+	SkillStatus_SKILL_STATUS_VALIDATED      SkillStatus = 3
+	SkillStatus_SKILL_STATUS_DEPRECATED     SkillStatus = 4
+)
+
+// Enum value maps for SkillStatus.
+var (
+	SkillStatus_name = map[int32]string{
+		0: "SKILL_STATUS_UNSPECIFIED",
+		1: "SKILL_STATUS_AUTO_GENERATED",
+		2: "SKILL_STATUS_ENRICHED",
+		3: "SKILL_STATUS_VALIDATED",
+		4: "SKILL_STATUS_DEPRECATED",
+	}
+	SkillStatus_value = map[string]int32{
+		"SKILL_STATUS_UNSPECIFIED":    0,
+		"SKILL_STATUS_AUTO_GENERATED": 1,
+		"SKILL_STATUS_ENRICHED":       2,
+		"SKILL_STATUS_VALIDATED":      3,
+		"SKILL_STATUS_DEPRECATED":     4,
+	}
+)
+
+func (x SkillStatus) Enum() *SkillStatus {
+	p := new(SkillStatus)
+	*p = x
+	return p
+}
+
+func (x SkillStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SkillStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[1].Descriptor()
+}
+
+func (SkillStatus) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[1]
+}
+
+func (x SkillStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SkillStatus.Descriptor instead.
+func (SkillStatus) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{1}
+}
+
+// SkillRiskLevel indicates the autonomy boundary for a skill.
+// HIGH and RESTRICTED require HITL approval before activation.
+type SkillRiskLevel int32
+
+const (
+	SkillRiskLevel_SKILL_RISK_LEVEL_UNSPECIFIED SkillRiskLevel = 0
+	SkillRiskLevel_SKILL_RISK_LEVEL_LOW         SkillRiskLevel = 1
+	SkillRiskLevel_SKILL_RISK_LEVEL_MEDIUM      SkillRiskLevel = 2
+	SkillRiskLevel_SKILL_RISK_LEVEL_HIGH        SkillRiskLevel = 3
+	SkillRiskLevel_SKILL_RISK_LEVEL_RESTRICTED  SkillRiskLevel = 4
+)
+
+// Enum value maps for SkillRiskLevel.
+var (
+	SkillRiskLevel_name = map[int32]string{
+		0: "SKILL_RISK_LEVEL_UNSPECIFIED",
+		1: "SKILL_RISK_LEVEL_LOW",
+		2: "SKILL_RISK_LEVEL_MEDIUM",
+		3: "SKILL_RISK_LEVEL_HIGH",
+		4: "SKILL_RISK_LEVEL_RESTRICTED",
+	}
+	SkillRiskLevel_value = map[string]int32{
+		"SKILL_RISK_LEVEL_UNSPECIFIED": 0,
+		"SKILL_RISK_LEVEL_LOW":         1,
+		"SKILL_RISK_LEVEL_MEDIUM":      2,
+		"SKILL_RISK_LEVEL_HIGH":        3,
+		"SKILL_RISK_LEVEL_RESTRICTED":  4,
+	}
+)
+
+func (x SkillRiskLevel) Enum() *SkillRiskLevel {
+	p := new(SkillRiskLevel)
+	*p = x
+	return p
+}
+
+func (x SkillRiskLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SkillRiskLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[2].Descriptor()
+}
+
+func (SkillRiskLevel) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[2]
+}
+
+func (x SkillRiskLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SkillRiskLevel.Descriptor instead.
+func (SkillRiskLevel) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{2}
+}
+
+// HygienePolicy controls how the end-of-turn auditor handles task-board
+// violations left by an active skill.
+type HygienePolicy int32
+
+const (
+	HygienePolicy_HYGIENE_POLICY_UNSPECIFIED HygienePolicy = 0
+	// Inject a synthetic user message describing the violations and re-run the
+	// LLM turn so the agent resolves them itself. Capped by max_retries; on
+	// exhaustion the auditor falls through to AUTO_FIX so the loop terminates.
+	HygienePolicy_HYGIENE_POLICY_REQUIRE_FIX HygienePolicy = 1
+	// Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)
+	// with reason notes. Cheaper but hides agent bugs.
+	HygienePolicy_HYGIENE_POLICY_AUTO_FIX HygienePolicy = 2
+	// Emit observability events and add a violations summary to the response
+	// metadata; do not change task state and do not retry.
+	HygienePolicy_HYGIENE_POLICY_WARN_ONLY HygienePolicy = 3
+)
+
+// Enum value maps for HygienePolicy.
+var (
+	HygienePolicy_name = map[int32]string{
+		0: "HYGIENE_POLICY_UNSPECIFIED",
+		1: "HYGIENE_POLICY_REQUIRE_FIX",
+		2: "HYGIENE_POLICY_AUTO_FIX",
+		3: "HYGIENE_POLICY_WARN_ONLY",
+	}
+	HygienePolicy_value = map[string]int32{
+		"HYGIENE_POLICY_UNSPECIFIED": 0,
+		"HYGIENE_POLICY_REQUIRE_FIX": 1,
+		"HYGIENE_POLICY_AUTO_FIX":    2,
+		"HYGIENE_POLICY_WARN_ONLY":   3,
+	}
+)
+
+func (x HygienePolicy) Enum() *HygienePolicy {
+	p := new(HygienePolicy)
+	*p = x
+	return p
+}
+
+func (x HygienePolicy) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HygienePolicy) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[3].Descriptor()
+}
+
+func (HygienePolicy) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[3]
+}
+
+func (x HygienePolicy) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HygienePolicy.Descriptor instead.
+func (HygienePolicy) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{3}
+}
+
+// SkillBindingMode controls how an agent loads a bound skill into context.
+type SkillBindingMode int32
+
+const (
+	SkillBindingMode_SKILL_BINDING_MODE_UNSPECIFIED SkillBindingMode = 0
+	// Always formatted into the system-prompt budget (subject to budget).
+	SkillBindingMode_SKILL_BINDING_MODE_EAGER SkillBindingMode = 1
+	// Promoted into the orchestrator only when discovery selects it.
+	SkillBindingMode_SKILL_BINDING_MODE_LAZY SkillBindingMode = 2
+	// Forced active every turn; overrides the skill's own activation mode.
+	SkillBindingMode_SKILL_BINDING_MODE_ALWAYS SkillBindingMode = 3
+)
+
+// Enum value maps for SkillBindingMode.
+var (
+	SkillBindingMode_name = map[int32]string{
+		0: "SKILL_BINDING_MODE_UNSPECIFIED",
+		1: "SKILL_BINDING_MODE_EAGER",
+		2: "SKILL_BINDING_MODE_LAZY",
+		3: "SKILL_BINDING_MODE_ALWAYS",
+	}
+	SkillBindingMode_value = map[string]int32{
+		"SKILL_BINDING_MODE_UNSPECIFIED": 0,
+		"SKILL_BINDING_MODE_EAGER":       1,
+		"SKILL_BINDING_MODE_LAZY":        2,
+		"SKILL_BINDING_MODE_ALWAYS":      3,
+	}
+)
+
+func (x SkillBindingMode) Enum() *SkillBindingMode {
+	p := new(SkillBindingMode)
+	*p = x
+	return p
+}
+
+func (x SkillBindingMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SkillBindingMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_skill_proto_enumTypes[4].Descriptor()
+}
+
+func (SkillBindingMode) Type() protoreflect.EnumType {
+	return &file_loom_v1_skill_proto_enumTypes[4]
+}
+
+func (x SkillBindingMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SkillBindingMode.Descriptor instead.
+func (SkillBindingMode) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{4}
+}
+
 // Skill represents an activatable behavior that combines prompt injection,
 // tool preferences, trigger conditions, and optional persistence across turns.
 // Skills are LLM-agnostic and work across all providers.
@@ -108,7 +338,19 @@ type Skill struct {
 	// Persist across turns once activated
 	Sticky bool `protobuf:"varint,8,opt,name=sticky,proto3" json:"sticky,omitempty"`
 	// Target backend (empty = agnostic)
-	Backend       string `protobuf:"bytes,9,opt,name=backend,proto3" json:"backend,omitempty"`
+	Backend string `protobuf:"bytes,9,opt,name=backend,proto3" json:"backend,omitempty"`
+	// Optional explicit decomposition. When nil and emit_tasks is true,
+	// task.Decomposer is invoked at activation with the skill prompt as goal.
+	TaskTemplate *SkillTaskTemplate `protobuf:"bytes,10,opt,name=task_template,json=taskTemplate,proto3" json:"task_template,omitempty"`
+	// Index path used by the hierarchical router to place this skill in the
+	// SkillIndex tree, e.g. "enterprise/sql/optimization". Empty means the
+	// index builder will place it under "unclassified/<domain>".
+	ParentIndexPath string `protobuf:"bytes,11,opt,name=parent_index_path,json=parentIndexPath,proto3" json:"parent_index_path,omitempty"`
+	// Whether activation emits tracked tasks onto the agent's task board.
+	// Default behavior (when unset) is to emit; set explicitly to false to
+	// suppress task emission for this skill. Uses proto3 optional so the
+	// loader can distinguish "not specified" from "explicitly false".
+	EmitTasks     *bool `protobuf:"varint,12,opt,name=emit_tasks,json=emitTasks,proto3,oneof" json:"emit_tasks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -206,6 +448,27 @@ func (x *Skill) GetBackend() string {
 	return ""
 }
 
+func (x *Skill) GetTaskTemplate() *SkillTaskTemplate {
+	if x != nil {
+		return x.TaskTemplate
+	}
+	return nil
+}
+
+func (x *Skill) GetParentIndexPath() string {
+	if x != nil {
+		return x.ParentIndexPath
+	}
+	return ""
+}
+
+func (x *Skill) GetEmitTasks() bool {
+	if x != nil && x.EmitTasks != nil {
+		return *x.EmitTasks
+	}
+	return false
+}
+
 // SkillMetadata contains identifying information about a skill.
 type SkillMetadata struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -222,7 +485,16 @@ type SkillMetadata struct {
 	// Arbitrary labels for filtering
 	Labels map[string]string `protobuf:"bytes,6,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Author of the skill
-	Author        string `protobuf:"bytes,7,opt,name=author,proto3" json:"author,omitempty"`
+	Author string `protobuf:"bytes,7,opt,name=author,proto3" json:"author,omitempty"`
+	// Confidence score 0.0-1.0. Hand-authored defaults to 1.0.
+	// Decays over time from last_validated_ms using rate 0.995/day.
+	Confidence float32 `protobuf:"fixed32,8,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	// Lifecycle status.
+	Status SkillStatus `protobuf:"varint,9,opt,name=status,proto3,enum=loom.v1.SkillStatus" json:"status,omitempty"`
+	// Epoch ms of last human validation (decay anchor).
+	LastValidatedMs int64 `protobuf:"varint,10,opt,name=last_validated_ms,json=lastValidatedMs,proto3" json:"last_validated_ms,omitempty"`
+	// Risk level. HIGH/RESTRICTED requires HITL approval.
+	RiskLevel     SkillRiskLevel `protobuf:"varint,11,opt,name=risk_level,json=riskLevel,proto3,enum=loom.v1.SkillRiskLevel" json:"risk_level,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -304,6 +576,34 @@ func (x *SkillMetadata) GetAuthor() string {
 		return x.Author
 	}
 	return ""
+}
+
+func (x *SkillMetadata) GetConfidence() float32 {
+	if x != nil {
+		return x.Confidence
+	}
+	return 0
+}
+
+func (x *SkillMetadata) GetStatus() SkillStatus {
+	if x != nil {
+		return x.Status
+	}
+	return SkillStatus_SKILL_STATUS_UNSPECIFIED
+}
+
+func (x *SkillMetadata) GetLastValidatedMs() int64 {
+	if x != nil {
+		return x.LastValidatedMs
+	}
+	return 0
+}
+
+func (x *SkillMetadata) GetRiskLevel() SkillRiskLevel {
+	if x != nil {
+		return x.RiskLevel
+	}
+	return SkillRiskLevel_SKILL_RISK_LEVEL_UNSPECIFIED
 }
 
 // SkillTrigger defines how a skill gets activated.
@@ -822,9 +1122,12 @@ type SkillsConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Whether skills are enabled (default: true)
 	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Specific skills to enable (empty = all discovered)
+	// Specific skills to enable (empty = all discovered).
+	// Deprecated in favor of bindings; preserved for backward compatibility.
+	// Resolver synthesizes EAGER-mode SkillBinding entries from this list when
+	// bindings is empty.
 	EnabledSkills []string `protobuf:"bytes,2,rep,name=enabled_skills,json=enabledSkills,proto3" json:"enabled_skills,omitempty"`
-	// Skills to explicitly disable
+	// Skills to explicitly disable. Deprecated in favor of bindings.
 	DisabledSkills []string `protobuf:"bytes,3,rep,name=disabled_skills,json=disabledSkills,proto3" json:"disabled_skills,omitempty"`
 	// Override per-skill auto-detection confidence threshold
 	MinAutoConfidence float32 `protobuf:"fixed32,4,opt,name=min_auto_confidence,json=minAutoConfidence,proto3" json:"min_auto_confidence,omitempty"`
@@ -836,8 +1139,38 @@ type SkillsConfig struct {
 	// Default: 5 (i.e., 5%). Skills get priority; patterns fill remainder.
 	// E.g., Claude 200K context -> 10K tokens for skills+patterns.
 	ContextBudgetPercent int32 `protobuf:"varint,7,opt,name=context_budget_percent,json=contextBudgetPercent,proto3" json:"context_budget_percent,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Declarative skill attachment for this agent. Replaces the
+	// enabled_skills/disabled_skills filter pair. When non-empty, takes full
+	// precedence over the legacy filter; otherwise the resolver synthesizes
+	// bindings from the legacy fields (backward-compat shim).
+	Bindings []*SkillBinding `protobuf:"bytes,8,rep,name=bindings,proto3" json:"bindings,omitempty"`
+	// Whether the hierarchical (PageIndex-style) router is the primary
+	// discovery path. Uses proto3 optional so the loader can distinguish
+	// "not specified" (default true) from "explicitly false".
+	RouterEnabled *bool `protobuf:"varint,9,opt,name=router_enabled,json=routerEnabled,proto3,oneof" json:"router_enabled,omitempty"`
+	// Maximum candidate skills returned from a single router walk (default: 5).
+	RouterMaxCandidates int32 `protobuf:"varint,10,opt,name=router_max_candidates,json=routerMaxCandidates,proto3" json:"router_max_candidates,omitempty"`
+	// Per-session router decision cache TTL in seconds (default: 300).
+	RouterCacheTtlSeconds int32 `protobuf:"varint,11,opt,name=router_cache_ttl_seconds,json=routerCacheTtlSeconds,proto3" json:"router_cache_ttl_seconds,omitempty"`
+	// Override LLM provider name used for routing decisions. Empty falls back
+	// to AgentConfig.classifier_llm; useful for pointing routing at a smaller
+	// / cheaper model (Haiku, local Ollama).
+	RouterModelOverride string `protobuf:"bytes,12,opt,name=router_model_override,json=routerModelOverride,proto3" json:"router_model_override,omitempty"`
+	// Task board id used for skill-emitted tasks. Empty reuses the agent's
+	// primary board.
+	SkillTaskBoardId string `protobuf:"bytes,13,opt,name=skill_task_board_id,json=skillTaskBoardId,proto3" json:"skill_task_board_id,omitempty"`
+	// Whether activation emits tracked tasks. Uses proto3 optional so the
+	// loader can distinguish "not specified" (default true) from "explicitly
+	// false". This is the agent-level master switch; per-skill emit_tasks
+	// overrides it for individual skills.
+	TasksEnabled *bool `protobuf:"varint,14,opt,name=tasks_enabled,json=tasksEnabled,proto3,oneof" json:"tasks_enabled,omitempty"`
+	// End-of-turn hygiene enforcement for skill-emitted tasks. Audits the
+	// active skill's tasks before the agent returns control to the user and
+	// surfaces or repairs IN_PROGRESS / BLOCKED / OPEN-unstarted violations.
+	// When unset, hygiene is enabled with REQUIRE_FIX policy and max_retries=2.
+	Hygiene       *HygieneConfig `protobuf:"bytes,15,opt,name=hygiene,proto3" json:"hygiene,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SkillsConfig) Reset() {
@@ -919,11 +1252,593 @@ func (x *SkillsConfig) GetContextBudgetPercent() int32 {
 	return 0
 }
 
+func (x *SkillsConfig) GetBindings() []*SkillBinding {
+	if x != nil {
+		return x.Bindings
+	}
+	return nil
+}
+
+func (x *SkillsConfig) GetRouterEnabled() bool {
+	if x != nil && x.RouterEnabled != nil {
+		return *x.RouterEnabled
+	}
+	return false
+}
+
+func (x *SkillsConfig) GetRouterMaxCandidates() int32 {
+	if x != nil {
+		return x.RouterMaxCandidates
+	}
+	return 0
+}
+
+func (x *SkillsConfig) GetRouterCacheTtlSeconds() int32 {
+	if x != nil {
+		return x.RouterCacheTtlSeconds
+	}
+	return 0
+}
+
+func (x *SkillsConfig) GetRouterModelOverride() string {
+	if x != nil {
+		return x.RouterModelOverride
+	}
+	return ""
+}
+
+func (x *SkillsConfig) GetSkillTaskBoardId() string {
+	if x != nil {
+		return x.SkillTaskBoardId
+	}
+	return ""
+}
+
+func (x *SkillsConfig) GetTasksEnabled() bool {
+	if x != nil && x.TasksEnabled != nil {
+		return *x.TasksEnabled
+	}
+	return false
+}
+
+func (x *SkillsConfig) GetHygiene() *HygieneConfig {
+	if x != nil {
+		return x.Hygiene
+	}
+	return nil
+}
+
+// HygieneConfig governs end-of-turn task-board hygiene enforcement for
+// skill-emitted tasks. The auditor only inspects tasks tied to currently
+// active skills via SkillIdempotencyKey; agent-created tasks without that
+// key are out of scope.
+type HygieneConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether hygiene auditing runs at end-of-turn. Uses proto3 optional so
+	// the loader can distinguish "not specified" (default true) from
+	// "explicitly false".
+	Enabled *bool `protobuf:"varint,1,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
+	// Policy applied when violations are found. Unspecified maps to
+	// REQUIRE_FIX.
+	Policy HygienePolicy `protobuf:"varint,2,opt,name=policy,proto3,enum=loom.v1.HygienePolicy" json:"policy,omitempty"`
+	// Maximum number of REQUIRE_FIX retries per turn before falling through
+	// to AUTO_FIX. <=0 falls back to the default of 2.
+	MaxRetries    int32 `protobuf:"varint,3,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HygieneConfig) Reset() {
+	*x = HygieneConfig{}
+	mi := &file_loom_v1_skill_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HygieneConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HygieneConfig) ProtoMessage() {}
+
+func (x *HygieneConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HygieneConfig.ProtoReflect.Descriptor instead.
+func (*HygieneConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *HygieneConfig) GetEnabled() bool {
+	if x != nil && x.Enabled != nil {
+		return *x.Enabled
+	}
+	return false
+}
+
+func (x *HygieneConfig) GetPolicy() HygienePolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return HygienePolicy_HYGIENE_POLICY_UNSPECIFIED
+}
+
+func (x *HygieneConfig) GetMaxRetries() int32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
+}
+
+// SkillBinding ties a skill (or a glob/label-selector over the skill
+// namespace) to an agent with a specific load policy. Replaces the legacy
+// SkillsConfig.enabled_skills / disabled_skills filter pair.
+type SkillBinding struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact skill name ("sql-optimization") or glob ("enterprise/sql/*").
+	// Glob matching uses path.Match semantics. Exact-name bindings win
+	// precedence over glob matches for the same underlying skill.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Load policy.
+	Mode SkillBindingMode `protobuf:"varint,2,opt,name=mode,proto3,enum=loom.v1.SkillBindingMode" json:"mode,omitempty"`
+	// Higher-priority bindings win when context budget is tight (default 0).
+	Priority int32 `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
+	// Optional label selector applied to Skill.metadata.labels (AND across
+	// all keys). Independent of name; either or both may be set.
+	LabelMatch map[string]string `protobuf:"bytes,4,rep,name=label_match,json=labelMatch,proto3" json:"label_match,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Minimum semver of the bound skill required (empty = any version).
+	MinVersion    string `protobuf:"bytes,5,opt,name=min_version,json=minVersion,proto3" json:"min_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkillBinding) Reset() {
+	*x = SkillBinding{}
+	mi := &file_loom_v1_skill_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillBinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillBinding) ProtoMessage() {}
+
+func (x *SkillBinding) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillBinding.ProtoReflect.Descriptor instead.
+func (*SkillBinding) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SkillBinding) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SkillBinding) GetMode() SkillBindingMode {
+	if x != nil {
+		return x.Mode
+	}
+	return SkillBindingMode_SKILL_BINDING_MODE_UNSPECIFIED
+}
+
+func (x *SkillBinding) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *SkillBinding) GetLabelMatch() map[string]string {
+	if x != nil {
+		return x.LabelMatch
+	}
+	return nil
+}
+
+func (x *SkillBinding) GetMinVersion() string {
+	if x != nil {
+		return x.MinVersion
+	}
+	return ""
+}
+
+// SkillTaskTemplate is an authored decomposition that materializes when a
+// skill activates. When absent on a skill, task.Decomposer.Decompose is
+// invoked at activation with the skill prompt as the goal (decomposer
+// fallback). The same max_tasks cap applies to decomposer output.
+type SkillTaskTemplate struct {
+	state protoimpl.MessageState    `protogen:"open.v1"`
+	Steps []*SkillTaskTemplate_Step `protobuf:"bytes,1,rep,name=steps,proto3" json:"steps,omitempty"`
+	// Title of the parent task created to group emitted children.
+	RootTitle string `protobuf:"bytes,2,opt,name=root_title,json=rootTitle,proto3" json:"root_title,omitempty"`
+	// When true, emitted tasks that have not yet been claimed (status OPEN)
+	// are deleted on skill deactivation. Tasks already in_progress or done
+	// are preserved.
+	EphemeralOnDeactivate bool `protobuf:"varint,3,opt,name=ephemeral_on_deactivate,json=ephemeralOnDeactivate,proto3" json:"ephemeral_on_deactivate,omitempty"`
+	// Cap on emitted tasks (default 8). Applies to authored steps and to
+	// decomposer fallback output alike.
+	MaxTasks      int32 `protobuf:"varint,4,opt,name=max_tasks,json=maxTasks,proto3" json:"max_tasks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkillTaskTemplate) Reset() {
+	*x = SkillTaskTemplate{}
+	mi := &file_loom_v1_skill_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillTaskTemplate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillTaskTemplate) ProtoMessage() {}
+
+func (x *SkillTaskTemplate) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillTaskTemplate.ProtoReflect.Descriptor instead.
+func (*SkillTaskTemplate) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SkillTaskTemplate) GetSteps() []*SkillTaskTemplate_Step {
+	if x != nil {
+		return x.Steps
+	}
+	return nil
+}
+
+func (x *SkillTaskTemplate) GetRootTitle() string {
+	if x != nil {
+		return x.RootTitle
+	}
+	return ""
+}
+
+func (x *SkillTaskTemplate) GetEphemeralOnDeactivate() bool {
+	if x != nil {
+		return x.EphemeralOnDeactivate
+	}
+	return false
+}
+
+func (x *SkillTaskTemplate) GetMaxTasks() int32 {
+	if x != nil {
+		return x.MaxTasks
+	}
+	return 0
+}
+
+// SkillIndexNode is one node in the hierarchical PageIndex-style tree the
+// router walks during discovery. Built offline (or in a goroutine on first
+// boot) by index.Builder; persisted in SQLite for fast cold-start.
+type SkillIndexNode struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable id derived from the node's path in the tree.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Title shown to the router LLM.
+	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// 1-2 sentence summary written by the index builder; the router consumes
+	// this to decide which subtree(s) are relevant for a given user message.
+	Summary string `protobuf:"bytes,3,opt,name=summary,proto3" json:"summary,omitempty"`
+	// Child node ids, walked by the router on descent.
+	Children []string `protobuf:"bytes,4,rep,name=children,proto3" json:"children,omitempty"`
+	// Leaf skills attached to this node.
+	SkillRefs []string `protobuf:"bytes,5,rep,name=skill_refs,json=skillRefs,proto3" json:"skill_refs,omitempty"`
+	// Depth from the root (0 = root).
+	Depth int32 `protobuf:"varint,6,opt,name=depth,proto3" json:"depth,omitempty"`
+	// Free-form labels for filtering / display.
+	Labels map[string]string `protobuf:"bytes,7,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Content hash of the source skills' descriptions+titles+domains+paths.
+	// Used by hot-reload to dirty only the affected subtree on YAML change.
+	ContentHash   string `protobuf:"bytes,8,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkillIndexNode) Reset() {
+	*x = SkillIndexNode{}
+	mi := &file_loom_v1_skill_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillIndexNode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillIndexNode) ProtoMessage() {}
+
+func (x *SkillIndexNode) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillIndexNode.ProtoReflect.Descriptor instead.
+func (*SkillIndexNode) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SkillIndexNode) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SkillIndexNode) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *SkillIndexNode) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *SkillIndexNode) GetChildren() []string {
+	if x != nil {
+		return x.Children
+	}
+	return nil
+}
+
+func (x *SkillIndexNode) GetSkillRefs() []string {
+	if x != nil {
+		return x.SkillRefs
+	}
+	return nil
+}
+
+func (x *SkillIndexNode) GetDepth() int32 {
+	if x != nil {
+		return x.Depth
+	}
+	return 0
+}
+
+func (x *SkillIndexNode) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *SkillIndexNode) GetContentHash() string {
+	if x != nil {
+		return x.ContentHash
+	}
+	return ""
+}
+
+// SkillIndex is the full router tree, persisted to disk and rebuilt only
+// when content hashes drift (or on bulk add/remove).
+type SkillIndex struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Version hash of the entire tree (used for cache invalidation).
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Root node id.
+	RootId string `protobuf:"bytes,2,opt,name=root_id,json=rootId,proto3" json:"root_id,omitempty"`
+	// Flat list; tree traversal follows SkillIndexNode.children pointers.
+	Nodes     []*SkillIndexNode `protobuf:"bytes,3,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	BuiltAtMs int64             `protobuf:"varint,4,opt,name=built_at_ms,json=builtAtMs,proto3" json:"built_at_ms,omitempty"`
+	// Identifier of the LLM that authored summaries (model name or alias).
+	BuiltByModel  string `protobuf:"bytes,5,opt,name=built_by_model,json=builtByModel,proto3" json:"built_by_model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkillIndex) Reset() {
+	*x = SkillIndex{}
+	mi := &file_loom_v1_skill_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillIndex) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillIndex) ProtoMessage() {}
+
+func (x *SkillIndex) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillIndex.ProtoReflect.Descriptor instead.
+func (*SkillIndex) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SkillIndex) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SkillIndex) GetRootId() string {
+	if x != nil {
+		return x.RootId
+	}
+	return ""
+}
+
+func (x *SkillIndex) GetNodes() []*SkillIndexNode {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+func (x *SkillIndex) GetBuiltAtMs() int64 {
+	if x != nil {
+		return x.BuiltAtMs
+	}
+	return 0
+}
+
+func (x *SkillIndex) GetBuiltByModel() string {
+	if x != nil {
+		return x.BuiltByModel
+	}
+	return ""
+}
+
+// Step is one entry in the authored decomposition.
+type SkillTaskTemplate_Step struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Title              string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
+	Objective          string                 `protobuf:"bytes,2,opt,name=objective,proto3" json:"objective,omitempty"`
+	AcceptanceCriteria string                 `protobuf:"bytes,3,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"`
+	Category           TaskCategory           `protobuf:"varint,4,opt,name=category,proto3,enum=loom.v1.TaskCategory" json:"category,omitempty"`
+	Priority           TaskPriority           `protobuf:"varint,5,opt,name=priority,proto3,enum=loom.v1.TaskPriority" json:"priority,omitempty"`
+	// Indices into SkillTaskTemplate.steps that must complete before this
+	// step is unblocked. Materialized as TASK_DEPENDENCY_TYPE_BLOCKS edges.
+	DependsOn       []int32 `protobuf:"varint,6,rep,packed,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	EstimatedEffort string  `protobuf:"bytes,7,opt,name=estimated_effort,json=estimatedEffort,proto3" json:"estimated_effort,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SkillTaskTemplate_Step) Reset() {
+	*x = SkillTaskTemplate_Step{}
+	mi := &file_loom_v1_skill_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillTaskTemplate_Step) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillTaskTemplate_Step) ProtoMessage() {}
+
+func (x *SkillTaskTemplate_Step) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_skill_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillTaskTemplate_Step.ProtoReflect.Descriptor instead.
+func (*SkillTaskTemplate_Step) Descriptor() ([]byte, []int) {
+	return file_loom_v1_skill_proto_rawDescGZIP(), []int{12, 0}
+}
+
+func (x *SkillTaskTemplate_Step) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *SkillTaskTemplate_Step) GetObjective() string {
+	if x != nil {
+		return x.Objective
+	}
+	return ""
+}
+
+func (x *SkillTaskTemplate_Step) GetAcceptanceCriteria() string {
+	if x != nil {
+		return x.AcceptanceCriteria
+	}
+	return ""
+}
+
+func (x *SkillTaskTemplate_Step) GetCategory() TaskCategory {
+	if x != nil {
+		return x.Category
+	}
+	return TaskCategory_TASK_CATEGORY_UNSPECIFIED
+}
+
+func (x *SkillTaskTemplate_Step) GetPriority() TaskPriority {
+	if x != nil {
+		return x.Priority
+	}
+	return TaskPriority_TASK_PRIORITY_UNSPECIFIED
+}
+
+func (x *SkillTaskTemplate_Step) GetDependsOn() []int32 {
+	if x != nil {
+		return x.DependsOn
+	}
+	return nil
+}
+
+func (x *SkillTaskTemplate_Step) GetEstimatedEffort() string {
+	if x != nil {
+		return x.EstimatedEffort
+	}
+	return ""
+}
+
 var File_loom_v1_skill_proto protoreflect.FileDescriptor
 
 const file_loom_v1_skill_proto_rawDesc = "" +
 	"\n" +
-	"\x13loom/v1/skill.proto\x12\aloom.v1\"\xea\x02\n" +
+	"\x13loom/v1/skill.proto\x12\aloom.v1\x1a\x12loom/v1/task.proto\"\x8a\x04\n" +
 	"\x05Skill\x122\n" +
 	"\bmetadata\x18\x01 \x01(\v2\x16.loom.v1.SkillMetadataR\bmetadata\x12/\n" +
 	"\atrigger\x18\x02 \x01(\v2\x15.loom.v1.SkillTriggerR\atrigger\x12,\n" +
@@ -934,7 +1849,13 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"skill_refs\x18\x06 \x03(\tR\tskillRefs\x12*\n" +
 	"\x11max_prompt_tokens\x18\a \x01(\x05R\x0fmaxPromptTokens\x12\x16\n" +
 	"\x06sticky\x18\b \x01(\bR\x06sticky\x12\x18\n" +
-	"\abackend\x18\t \x01(\tR\abackend\"\x9c\x02\n" +
+	"\abackend\x18\t \x01(\tR\abackend\x12?\n" +
+	"\rtask_template\x18\n" +
+	" \x01(\v2\x1a.loom.v1.SkillTaskTemplateR\ftaskTemplate\x12*\n" +
+	"\x11parent_index_path\x18\v \x01(\tR\x0fparentIndexPath\x12\"\n" +
+	"\n" +
+	"emit_tasks\x18\f \x01(\bH\x00R\temitTasks\x88\x01\x01B\r\n" +
+	"\v_emit_tasks\"\xce\x03\n" +
 	"\rSkillMetadata\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -942,7 +1863,15 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\aversion\x18\x04 \x01(\tR\aversion\x12\x16\n" +
 	"\x06domain\x18\x05 \x01(\tR\x06domain\x12:\n" +
 	"\x06labels\x18\x06 \x03(\v2\".loom.v1.SkillMetadata.LabelsEntryR\x06labels\x12\x16\n" +
-	"\x06author\x18\a \x01(\tR\x06author\x1a9\n" +
+	"\x06author\x18\a \x01(\tR\x06author\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\b \x01(\x02R\n" +
+	"confidence\x12,\n" +
+	"\x06status\x18\t \x01(\x0e2\x14.loom.v1.SkillStatusR\x06status\x12*\n" +
+	"\x11last_validated_ms\x18\n" +
+	" \x01(\x03R\x0flastValidatedMs\x126\n" +
+	"\n" +
+	"risk_level\x18\v \x01(\x0e2\x17.loom.v1.SkillRiskLevelR\triskLevel\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd7\x01\n" +
@@ -990,7 +1919,7 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x0factivated_at_ms\x18\x05 \x01(\x03R\ractivatedAtMs\x12\x19\n" +
 	"\bagent_id\x18\x06 \x01(\tR\aagentId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\a \x01(\tR\tsessionId\"\xb1\x02\n" +
+	"session_id\x18\a \x01(\tR\tsessionId\"\xe1\x05\n" +
 	"\fSkillsConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0eenabled_skills\x18\x02 \x03(\tR\renabledSkills\x12'\n" +
@@ -999,13 +1928,99 @@ const file_loom_v1_skill_proto_rawDesc = "" +
 	"\x15max_concurrent_skills\x18\x05 \x01(\x05R\x13maxConcurrentSkills\x12\x1d\n" +
 	"\n" +
 	"skills_dir\x18\x06 \x01(\tR\tskillsDir\x124\n" +
-	"\x16context_budget_percent\x18\a \x01(\x05R\x14contextBudgetPercent*\xc2\x01\n" +
+	"\x16context_budget_percent\x18\a \x01(\x05R\x14contextBudgetPercent\x121\n" +
+	"\bbindings\x18\b \x03(\v2\x15.loom.v1.SkillBindingR\bbindings\x12*\n" +
+	"\x0erouter_enabled\x18\t \x01(\bH\x00R\rrouterEnabled\x88\x01\x01\x122\n" +
+	"\x15router_max_candidates\x18\n" +
+	" \x01(\x05R\x13routerMaxCandidates\x127\n" +
+	"\x18router_cache_ttl_seconds\x18\v \x01(\x05R\x15routerCacheTtlSeconds\x122\n" +
+	"\x15router_model_override\x18\f \x01(\tR\x13routerModelOverride\x12-\n" +
+	"\x13skill_task_board_id\x18\r \x01(\tR\x10skillTaskBoardId\x12(\n" +
+	"\rtasks_enabled\x18\x0e \x01(\bH\x01R\ftasksEnabled\x88\x01\x01\x120\n" +
+	"\ahygiene\x18\x0f \x01(\v2\x16.loom.v1.HygieneConfigR\ahygieneB\x11\n" +
+	"\x0f_router_enabledB\x10\n" +
+	"\x0e_tasks_enabled\"\x8b\x01\n" +
+	"\rHygieneConfig\x12\x1d\n" +
+	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12.\n" +
+	"\x06policy\x18\x02 \x01(\x0e2\x16.loom.v1.HygienePolicyR\x06policy\x12\x1f\n" +
+	"\vmax_retries\x18\x03 \x01(\x05R\n" +
+	"maxRetriesB\n" +
+	"\n" +
+	"\b_enabled\"\x95\x02\n" +
+	"\fSkillBinding\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
+	"\x04mode\x18\x02 \x01(\x0e2\x19.loom.v1.SkillBindingModeR\x04mode\x12\x1a\n" +
+	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12F\n" +
+	"\vlabel_match\x18\x04 \x03(\v2%.loom.v1.SkillBinding.LabelMatchEntryR\n" +
+	"labelMatch\x12\x1f\n" +
+	"\vmin_version\x18\x05 \x01(\tR\n" +
+	"minVersion\x1a=\n" +
+	"\x0fLabelMatchEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdc\x03\n" +
+	"\x11SkillTaskTemplate\x125\n" +
+	"\x05steps\x18\x01 \x03(\v2\x1f.loom.v1.SkillTaskTemplate.StepR\x05steps\x12\x1d\n" +
+	"\n" +
+	"root_title\x18\x02 \x01(\tR\trootTitle\x126\n" +
+	"\x17ephemeral_on_deactivate\x18\x03 \x01(\bR\x15ephemeralOnDeactivate\x12\x1b\n" +
+	"\tmax_tasks\x18\x04 \x01(\x05R\bmaxTasks\x1a\x9b\x02\n" +
+	"\x04Step\x12\x14\n" +
+	"\x05title\x18\x01 \x01(\tR\x05title\x12\x1c\n" +
+	"\tobjective\x18\x02 \x01(\tR\tobjective\x12/\n" +
+	"\x13acceptance_criteria\x18\x03 \x01(\tR\x12acceptanceCriteria\x121\n" +
+	"\bcategory\x18\x04 \x01(\x0e2\x15.loom.v1.TaskCategoryR\bcategory\x121\n" +
+	"\bpriority\x18\x05 \x01(\x0e2\x15.loom.v1.TaskPriorityR\bpriority\x12\x1d\n" +
+	"\n" +
+	"depends_on\x18\x06 \x03(\x05R\tdependsOn\x12)\n" +
+	"\x10estimated_effort\x18\a \x01(\tR\x0festimatedEffort\"\xbc\x02\n" +
+	"\x0eSkillIndexNode\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x18\n" +
+	"\asummary\x18\x03 \x01(\tR\asummary\x12\x1a\n" +
+	"\bchildren\x18\x04 \x03(\tR\bchildren\x12\x1d\n" +
+	"\n" +
+	"skill_refs\x18\x05 \x03(\tR\tskillRefs\x12\x14\n" +
+	"\x05depth\x18\x06 \x01(\x05R\x05depth\x12;\n" +
+	"\x06labels\x18\a \x03(\v2#.loom.v1.SkillIndexNode.LabelsEntryR\x06labels\x12!\n" +
+	"\fcontent_hash\x18\b \x01(\tR\vcontentHash\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaa\x01\n" +
+	"\n" +
+	"SkillIndex\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\aroot_id\x18\x02 \x01(\tR\x06rootId\x12-\n" +
+	"\x05nodes\x18\x03 \x03(\v2\x17.loom.v1.SkillIndexNodeR\x05nodes\x12\x1e\n" +
+	"\vbuilt_at_ms\x18\x04 \x01(\x03R\tbuiltAtMs\x12$\n" +
+	"\x0ebuilt_by_model\x18\x05 \x01(\tR\fbuiltByModel*\xc2\x01\n" +
 	"\x13SkillActivationMode\x12%\n" +
 	"!SKILL_ACTIVATION_MODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cSKILL_ACTIVATION_MODE_MANUAL\x10\x01\x12\x1e\n" +
 	"\x1aSKILL_ACTIVATION_MODE_AUTO\x10\x02\x12 \n" +
 	"\x1cSKILL_ACTIVATION_MODE_HYBRID\x10\x03\x12 \n" +
-	"\x1cSKILL_ACTIVATION_MODE_ALWAYS\x10\x04B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\x1cSKILL_ACTIVATION_MODE_ALWAYS\x10\x04*\xa0\x01\n" +
+	"\vSkillStatus\x12\x1c\n" +
+	"\x18SKILL_STATUS_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bSKILL_STATUS_AUTO_GENERATED\x10\x01\x12\x19\n" +
+	"\x15SKILL_STATUS_ENRICHED\x10\x02\x12\x1a\n" +
+	"\x16SKILL_STATUS_VALIDATED\x10\x03\x12\x1b\n" +
+	"\x17SKILL_STATUS_DEPRECATED\x10\x04*\xa5\x01\n" +
+	"\x0eSkillRiskLevel\x12 \n" +
+	"\x1cSKILL_RISK_LEVEL_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14SKILL_RISK_LEVEL_LOW\x10\x01\x12\x1b\n" +
+	"\x17SKILL_RISK_LEVEL_MEDIUM\x10\x02\x12\x19\n" +
+	"\x15SKILL_RISK_LEVEL_HIGH\x10\x03\x12\x1f\n" +
+	"\x1bSKILL_RISK_LEVEL_RESTRICTED\x10\x04*\x8a\x01\n" +
+	"\rHygienePolicy\x12\x1e\n" +
+	"\x1aHYGIENE_POLICY_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aHYGIENE_POLICY_REQUIRE_FIX\x10\x01\x12\x1b\n" +
+	"\x17HYGIENE_POLICY_AUTO_FIX\x10\x02\x12\x1c\n" +
+	"\x18HYGIENE_POLICY_WARN_ONLY\x10\x03*\x90\x01\n" +
+	"\x10SkillBindingMode\x12\"\n" +
+	"\x1eSKILL_BINDING_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18SKILL_BINDING_MODE_EAGER\x10\x01\x12\x1b\n" +
+	"\x17SKILL_BINDING_MODE_LAZY\x10\x02\x12\x1d\n" +
+	"\x19SKILL_BINDING_MODE_ALWAYS\x10\x03B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_skill_proto_rawDescOnce sync.Once
@@ -1019,39 +2034,66 @@ func file_loom_v1_skill_proto_rawDescGZIP() []byte {
 	return file_loom_v1_skill_proto_rawDescData
 }
 
-var file_loom_v1_skill_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_loom_v1_skill_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_loom_v1_skill_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_loom_v1_skill_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_loom_v1_skill_proto_goTypes = []any{
-	(SkillActivationMode)(0),     // 0: loom.v1.SkillActivationMode
-	(*Skill)(nil),                // 1: loom.v1.Skill
-	(*SkillMetadata)(nil),        // 2: loom.v1.SkillMetadata
-	(*SkillTrigger)(nil),         // 3: loom.v1.SkillTrigger
-	(*SkillPrompt)(nil),          // 4: loom.v1.SkillPrompt
-	(*SkillExample)(nil),         // 5: loom.v1.SkillExample
-	(*SkillToolConfig)(nil),      // 6: loom.v1.SkillToolConfig
-	(*SkillLibrary)(nil),         // 7: loom.v1.SkillLibrary
-	(*SkillLibraryMetadata)(nil), // 8: loom.v1.SkillLibraryMetadata
-	(*SkillActivation)(nil),      // 9: loom.v1.SkillActivation
-	(*SkillsConfig)(nil),         // 10: loom.v1.SkillsConfig
-	nil,                          // 11: loom.v1.SkillMetadata.LabelsEntry
-	nil,                          // 12: loom.v1.SkillLibraryMetadata.LabelsEntry
+	(SkillActivationMode)(0),       // 0: loom.v1.SkillActivationMode
+	(SkillStatus)(0),               // 1: loom.v1.SkillStatus
+	(SkillRiskLevel)(0),            // 2: loom.v1.SkillRiskLevel
+	(HygienePolicy)(0),             // 3: loom.v1.HygienePolicy
+	(SkillBindingMode)(0),          // 4: loom.v1.SkillBindingMode
+	(*Skill)(nil),                  // 5: loom.v1.Skill
+	(*SkillMetadata)(nil),          // 6: loom.v1.SkillMetadata
+	(*SkillTrigger)(nil),           // 7: loom.v1.SkillTrigger
+	(*SkillPrompt)(nil),            // 8: loom.v1.SkillPrompt
+	(*SkillExample)(nil),           // 9: loom.v1.SkillExample
+	(*SkillToolConfig)(nil),        // 10: loom.v1.SkillToolConfig
+	(*SkillLibrary)(nil),           // 11: loom.v1.SkillLibrary
+	(*SkillLibraryMetadata)(nil),   // 12: loom.v1.SkillLibraryMetadata
+	(*SkillActivation)(nil),        // 13: loom.v1.SkillActivation
+	(*SkillsConfig)(nil),           // 14: loom.v1.SkillsConfig
+	(*HygieneConfig)(nil),          // 15: loom.v1.HygieneConfig
+	(*SkillBinding)(nil),           // 16: loom.v1.SkillBinding
+	(*SkillTaskTemplate)(nil),      // 17: loom.v1.SkillTaskTemplate
+	(*SkillIndexNode)(nil),         // 18: loom.v1.SkillIndexNode
+	(*SkillIndex)(nil),             // 19: loom.v1.SkillIndex
+	nil,                            // 20: loom.v1.SkillMetadata.LabelsEntry
+	nil,                            // 21: loom.v1.SkillLibraryMetadata.LabelsEntry
+	nil,                            // 22: loom.v1.SkillBinding.LabelMatchEntry
+	(*SkillTaskTemplate_Step)(nil), // 23: loom.v1.SkillTaskTemplate.Step
+	nil,                            // 24: loom.v1.SkillIndexNode.LabelsEntry
+	(TaskCategory)(0),              // 25: loom.v1.TaskCategory
+	(TaskPriority)(0),              // 26: loom.v1.TaskPriority
 }
 var file_loom_v1_skill_proto_depIdxs = []int32{
-	2,  // 0: loom.v1.Skill.metadata:type_name -> loom.v1.SkillMetadata
-	3,  // 1: loom.v1.Skill.trigger:type_name -> loom.v1.SkillTrigger
-	4,  // 2: loom.v1.Skill.prompt:type_name -> loom.v1.SkillPrompt
-	6,  // 3: loom.v1.Skill.tools:type_name -> loom.v1.SkillToolConfig
-	11, // 4: loom.v1.SkillMetadata.labels:type_name -> loom.v1.SkillMetadata.LabelsEntry
-	0,  // 5: loom.v1.SkillTrigger.mode:type_name -> loom.v1.SkillActivationMode
-	5,  // 6: loom.v1.SkillPrompt.examples:type_name -> loom.v1.SkillExample
-	8,  // 7: loom.v1.SkillLibrary.metadata:type_name -> loom.v1.SkillLibraryMetadata
-	1,  // 8: loom.v1.SkillLibrary.skills:type_name -> loom.v1.Skill
-	12, // 9: loom.v1.SkillLibraryMetadata.labels:type_name -> loom.v1.SkillLibraryMetadata.LabelsEntry
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	6,  // 0: loom.v1.Skill.metadata:type_name -> loom.v1.SkillMetadata
+	7,  // 1: loom.v1.Skill.trigger:type_name -> loom.v1.SkillTrigger
+	8,  // 2: loom.v1.Skill.prompt:type_name -> loom.v1.SkillPrompt
+	10, // 3: loom.v1.Skill.tools:type_name -> loom.v1.SkillToolConfig
+	17, // 4: loom.v1.Skill.task_template:type_name -> loom.v1.SkillTaskTemplate
+	20, // 5: loom.v1.SkillMetadata.labels:type_name -> loom.v1.SkillMetadata.LabelsEntry
+	1,  // 6: loom.v1.SkillMetadata.status:type_name -> loom.v1.SkillStatus
+	2,  // 7: loom.v1.SkillMetadata.risk_level:type_name -> loom.v1.SkillRiskLevel
+	0,  // 8: loom.v1.SkillTrigger.mode:type_name -> loom.v1.SkillActivationMode
+	9,  // 9: loom.v1.SkillPrompt.examples:type_name -> loom.v1.SkillExample
+	12, // 10: loom.v1.SkillLibrary.metadata:type_name -> loom.v1.SkillLibraryMetadata
+	5,  // 11: loom.v1.SkillLibrary.skills:type_name -> loom.v1.Skill
+	21, // 12: loom.v1.SkillLibraryMetadata.labels:type_name -> loom.v1.SkillLibraryMetadata.LabelsEntry
+	16, // 13: loom.v1.SkillsConfig.bindings:type_name -> loom.v1.SkillBinding
+	15, // 14: loom.v1.SkillsConfig.hygiene:type_name -> loom.v1.HygieneConfig
+	3,  // 15: loom.v1.HygieneConfig.policy:type_name -> loom.v1.HygienePolicy
+	4,  // 16: loom.v1.SkillBinding.mode:type_name -> loom.v1.SkillBindingMode
+	22, // 17: loom.v1.SkillBinding.label_match:type_name -> loom.v1.SkillBinding.LabelMatchEntry
+	23, // 18: loom.v1.SkillTaskTemplate.steps:type_name -> loom.v1.SkillTaskTemplate.Step
+	24, // 19: loom.v1.SkillIndexNode.labels:type_name -> loom.v1.SkillIndexNode.LabelsEntry
+	18, // 20: loom.v1.SkillIndex.nodes:type_name -> loom.v1.SkillIndexNode
+	25, // 21: loom.v1.SkillTaskTemplate.Step.category:type_name -> loom.v1.TaskCategory
+	26, // 22: loom.v1.SkillTaskTemplate.Step.priority:type_name -> loom.v1.TaskPriority
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_skill_proto_init() }
@@ -1059,13 +2101,17 @@ func file_loom_v1_skill_proto_init() {
 	if File_loom_v1_skill_proto != nil {
 		return
 	}
+	file_loom_v1_task_proto_init()
+	file_loom_v1_skill_proto_msgTypes[0].OneofWrappers = []any{}
+	file_loom_v1_skill_proto_msgTypes[9].OneofWrappers = []any{}
+	file_loom_v1_skill_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_skill_proto_rawDesc), len(file_loom_v1_skill_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   12,
+			NumEnums:      5,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

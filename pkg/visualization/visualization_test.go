@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -297,9 +298,7 @@ func TestStyleGuideClient_FetchStyleWithFallback(t *testing.T) {
 	sgc := NewStyleGuideClient("")
 	style := sgc.FetchStyleWithFallback(context.Background(), "dark")
 
-	if style == nil {
-		t.Fatal("FetchStyleWithFallback returned nil")
-	}
+	require.NotNil(t, style, "FetchStyleWithFallback returned nil")
 	if style.ColorPrimary == "" {
 		t.Error("ColorPrimary should not be empty")
 	}
@@ -338,9 +337,7 @@ func TestStyleGuideClient_FetchStyle_ContextCanceled(t *testing.T) {
 func TestStyleGuideClient_FetchStyleWithFallback_NonEmptyEndpoint(t *testing.T) {
 	sgc := NewStyleGuideClient(styleGuideTestEndpoint)
 	style := sgc.FetchStyleWithFallback(context.Background(), "dark")
-	if style == nil {
-		t.Fatal("FetchStyleWithFallback returned nil")
-	}
+	require.NotNil(t, style, "FetchStyleWithFallback returned nil")
 	if style.ColorPrimary == "" {
 		t.Error("ColorPrimary should not be empty after fallback")
 	}

@@ -141,10 +141,3 @@ CREATE POLICY task_history_via_tasks ON task_history
                 OR current_setting('app.current_user_id', true) = ''
                 OR current_setting('app.current_user_id', true) IS NULL))
     );
-
--- ============================================================================
--- Record migration
--- ============================================================================
-
-INSERT INTO schema_migrations (version, applied_at, description)
-VALUES (11, EXTRACT(EPOCH FROM NOW())::bigint, 'tasks');

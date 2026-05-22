@@ -40,6 +40,3 @@ CREATE POLICY tool_executions_user_isolation ON tool_executions
 CREATE POLICY memory_snapshots_user_isolation ON memory_snapshots
     USING (user_id = current_setting('app.current_user_id', true))
     WITH CHECK (user_id = current_setting('app.current_user_id', true));
-
-INSERT INTO schema_migrations (version, description) VALUES (8, 'tool_executions and memory_snapshots user_id columns')
-ON CONFLICT (version) DO NOTHING;

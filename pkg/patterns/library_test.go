@@ -18,14 +18,14 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewLibrary(t *testing.T) {
 	lib := NewLibrary(nil, "")
 
-	if lib == nil {
-		t.Fatal("NewLibrary returned nil")
-	}
+	require.NotNil(t, lib, "NewLibrary returned nil")
 
 	if lib.patternCache == nil {
 		t.Error("patternCache not initialized")

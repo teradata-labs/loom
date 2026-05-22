@@ -1095,6 +1095,13 @@ func setDefaults() {
 	viper.SetDefault("tools.permissions.yolo", true) // Default to YOLO mode for autonomous operation
 	viper.SetDefault("tools.permissions.default_action", "deny")
 	viper.SetDefault("tools.permissions.timeout_seconds", 300)
+
+	// Tool injection defaults. tools.minimal=true suppresses the five
+	// always-on auto-injected tools (shell_execute, workspace, tool_search,
+	// graph_memory, task_board) so an agent only sees what its YAML
+	// declares. Default false preserves all existing behavior — set
+	// explicitly via --minimal-tools or tools.minimal: true in config.
+	viper.SetDefault("tools.minimal", false)
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
