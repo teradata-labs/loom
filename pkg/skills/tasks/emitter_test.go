@@ -86,8 +86,8 @@ func TestEmit_TemplatePath_MaterializesStepsWithDeps(t *testing.T) {
 		Title: "SQL Optimization",
 		TaskTemplate: &skills.SkillTaskTemplate{
 			Steps: []skills.SkillTaskStep{
-				{Title: "Analyze", Objective: "find issues", Category: "analysis", Priority: "P1"},
-				{Title: "Fix", Objective: "apply changes", Priority: "P1", DependsOn: []int32{0}},
+				{ID: "analyze", Title: "Analyze", Objective: "find issues", Category: "analysis", Priority: "P1"},
+				{ID: "fix", Title: "Fix", Objective: "apply changes", Priority: "P1", DependsOnIDs: []string{"analyze"}},
 			},
 		},
 	}
@@ -316,8 +316,8 @@ func TestEmit_AutoCreatesReferencedBoard(t *testing.T) {
 		Title: "Release Audit",
 		TaskTemplate: &skills.SkillTaskTemplate{
 			Steps: []skills.SkillTaskStep{
-				{Title: "step zero", Category: "review"},
-				{Title: "step one", Category: "review", DependsOn: []int32{0}},
+				{ID: "step-zero", Title: "step zero", Category: "review"},
+				{ID: "step-one", Title: "step one", Category: "review", DependsOnIDs: []string{"step-zero"}},
 			},
 		},
 	}

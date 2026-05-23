@@ -148,44 +148,51 @@ task_template:
   max_tasks: 7
   ephemeral_on_deactivate: false
   steps:
-    - title: Justify the from-scratch choice
+    - id: justify-choice
+      title: Justify the from-scratch choice
       objective: Confirm no preset and no template fits — record the reason.
       acceptance_criteria: A one-paragraph rationale citing which presets / templates were considered and why each was rejected.
       category: decision
       priority: P1
-    - title: Discover the required tools
+    - id: discover-tools
+      title: Discover the required tools
       objective: Use tool_search to find the registered tool names for every capability the new agent needs.
       acceptance_criteria: All tool names referenced in the final agent config returned exact-match in tool_search results — none are guesses.
       category: investigation
       priority: P1
-      depends_on: [0]
-    - title: Discover the pattern config (multi-agent only)
+      depends_on_ids: [justify-choice]
+    - id: discover-pattern
+      title: Discover the pattern config (multi-agent only)
       objective: For multi-agent flows, call agent_management discover type=pattern_config pattern_type=<chosen> to see exact required fields.
       acceptance_criteria: Required fields list captured; or skipped with a note if this is a single-agent build.
       category: investigation
       priority: P1
-      depends_on: [0]
-    - title: Author each agent YAML
+      depends_on_ids: [justify-choice]
+    - id: author-agents
+      title: Author each agent YAML
       objective: Create every required agent via agent_management create_agent. Direct task prompts (no role-prompting), discovered tool names only.
       acceptance_criteria: Each agent_management create_agent call returns success=true; no validation errors.
       category: implementation
       priority: P1
-      depends_on: [1]
-    - title: Author the workflow YAML (multi-agent only)
+      depends_on_ids: [discover-tools]
+    - id: author-workflow
+      title: Author the workflow YAML (multi-agent only)
       objective: Create the workflow via agent_management create_workflow after all agents exist.
       acceptance_criteria: agent_management create_workflow returns success=true; agents_referenced existed before this step.
       category: implementation
       priority: P1
-      depends_on: [2, 3]
-    - title: Validate end-to-end
+      depends_on_ids: [discover-pattern, author-agents]
+    - id: validate-e2e
+      title: Validate end-to-end
       objective: Call agent_management validate on each agent + the workflow.
       acceptance_criteria: Every validate call returns valid=true; warnings reviewed and either acted on or explicitly waived.
       category: review
       priority: P1
-      depends_on: [4]
-    - title: Brief the user
+      depends_on_ids: [author-workflow]
+    - id: brief-user
+      title: Brief the user
       objective: Summarise the custom build — why from-scratch, agents created, pattern shape, how to invoke.
       acceptance_criteria: Reply names every artifact written + cites the discover pattern_config result for any non-obvious schema choice.
       category: writing
       priority: P2
-      depends_on: [5]
+      depends_on_ids: [validate-e2e]

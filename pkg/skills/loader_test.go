@@ -781,11 +781,13 @@ task_template:
 	assert.Equal(t, "P1", step0.Priority)
 	assert.Equal(t, "30m", step0.EstimatedEffort)
 	assert.Equal(t, []string{"sql", "perf"}, step0.Tags)
-	assert.Empty(t, step0.DependsOn)
+	assert.Equal(t, "step-0", step0.ID)
+	assert.Empty(t, step0.DependsOnIDs)
 
 	step1 := skill.TaskTemplate.Steps[1]
 	assert.Equal(t, "Apply fix", step1.Title)
-	assert.Equal(t, []int32{0}, step1.DependsOn)
+	assert.Equal(t, "step-1", step1.ID)
+	assert.Equal(t, []string{"step-0"}, step1.DependsOnIDs)
 }
 
 // TestSkillToYAML_RoundTrip_NewFields ensures the new fields survive a Go ->
@@ -809,15 +811,17 @@ func TestSkillToYAML_RoundTrip_NewFields(t *testing.T) {
 			MaxTasks:              4,
 			Steps: []SkillTaskStep{
 				{
+					ID:        "step-a",
 					Title:     "Step A",
 					Objective: "Do A",
 					Category:  "research",
 					Priority:  "P2",
 				},
 				{
-					Title:     "Step B",
-					Objective: "Do B",
-					DependsOn: []int32{0},
+					ID:           "step-b",
+					Title:        "Step B",
+					Objective:    "Do B",
+					DependsOnIDs: []string{"step-a"},
 				},
 			},
 		},
@@ -843,5 +847,5 @@ func TestSkillToYAML_RoundTrip_NewFields(t *testing.T) {
 	assert.Equal(t, original.TaskTemplate.MaxTasks, loaded.TaskTemplate.MaxTasks)
 	require.Len(t, loaded.TaskTemplate.Steps, 2)
 	assert.Equal(t, original.TaskTemplate.Steps[0].Title, loaded.TaskTemplate.Steps[0].Title)
-	assert.Equal(t, original.TaskTemplate.Steps[1].DependsOn, loaded.TaskTemplate.Steps[1].DependsOn)
+	assert.Equal(t, original.TaskTemplate.Steps[1].DependsOnIDs, loaded.TaskTemplate.Steps[1].DependsOnIDs)
 }

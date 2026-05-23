@@ -131,38 +131,44 @@ task_template:
   max_tasks: 6
   ephemeral_on_deactivate: false
   steps:
-    - title: Confirm template choice with user
+    - id: confirm-template
+      title: Confirm template choice with user
       objective: Verify the template's pattern + agent roles match the user's intent.
       acceptance_criteria: User explicitly approved the template, or the message specifies "apply directly".
       category: decision
       priority: P1
-    - title: Decide workflow_name + any agent name overrides
+    - id: decide-names
+      title: Decide workflow_name + any agent name overrides
       objective: Pin the workflow's stored name and decide whether any default agent names should be overridden.
       acceptance_criteria: workflow_name chosen; agent_name_overrides drafted if the user requested project-specific names.
       category: planning
       priority: P2
-      depends_on: [0]
-    - title: Apply the template via agent_management
+      depends_on_ids: [confirm-template]
+    - id: apply-template
+      title: Apply the template via agent_management
       objective: Call agent_management with action=apply_template, name, workflow_name.
       acceptance_criteria: Tool returns success=true; agents_created + agents_reused arrays sum to template.agents length.
       category: implementation
       priority: P1
-      depends_on: [1]
-    - title: Verify agents + workflow files on disk
+      depends_on_ids: [decide-names]
+    - id: verify-files
+      title: Verify agents + workflow files on disk
       objective: Confirm each agent YAML and the workflow YAML exist via agent_management read.
       acceptance_criteria: read of every agent name + the workflow name returns valid YAML; no FILE_EXISTS errors.
       category: review
       priority: P2
-      depends_on: [2]
-    - title: (Schedulable only) explain the suggested cron and how to enable it
+      depends_on_ids: [apply-template]
+    - id: explain-schedule
+      title: (Schedulable only) explain the suggested cron and how to enable it
       objective: If the template ships a suggested_cron, tell the user how to opt in via ScheduleWorkflow or looms schedule CLI.
       acceptance_criteria: User has a copy-pasteable schedule activation instruction OR is told the template is not schedulable.
       category: writing
       priority: P3
-      depends_on: [3]
-    - title: Brief the user on what was built
+      depends_on_ids: [verify-files]
+    - id: brief-user
+      title: Brief the user on what was built
       objective: Summarise agents created/reused, workflow name, pattern type, and a how-to-run line.
       acceptance_criteria: Reply includes the full materialised flow plus the next-step command for the user.
       category: writing
       priority: P2
-      depends_on: [3]
+      depends_on_ids: [verify-files]

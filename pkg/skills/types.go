@@ -258,13 +258,19 @@ type SkillBinding struct {
 // converted to loomv1 enum values by the task emitter at materialization
 // time.
 type SkillTaskStep struct {
-	Title              string  `json:"title"`
-	Objective          string  `json:"objective,omitempty"`
-	AcceptanceCriteria string  `json:"acceptance_criteria,omitempty"`
-	Category           string  `json:"category,omitempty"`
-	Priority           string  `json:"priority,omitempty"`
-	DependsOn          []int32 `json:"depends_on,omitempty"`
-	EstimatedEffort    string  `json:"estimated_effort,omitempty"`
+	// Stable identifier within the template (e.g. "analyze-plan").
+	// Auto-set to "step-N" by the loader when absent. Used by DependsOnIDs.
+	ID                 string   `json:"id,omitempty"`
+	Title              string   `json:"title"`
+	Objective          string   `json:"objective,omitempty"`
+	AcceptanceCriteria string   `json:"acceptance_criteria,omitempty"`
+	Category           string   `json:"category,omitempty"`
+	Priority           string   `json:"priority,omitempty"`
+	// Deprecated: use DependsOnIDs. Retained for JSON round-trip compat
+	// with older serialized state; the loader migrates this on read.
+	DependsOn    []int32  `json:"depends_on,omitempty"`
+	DependsOnIDs []string `json:"depends_on_ids,omitempty"`
+	EstimatedEffort string `json:"estimated_effort,omitempty"`
 	// Tags propagate onto the materialized Task.
 	Tags []string `json:"tags,omitempty"`
 }

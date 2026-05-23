@@ -196,7 +196,10 @@ func (e *Emitter) emitTemplate(ctx context.Context, req EmitRequest) (*EmitResul
 
 	created := make([]*task.Task, 0, len(steps))
 	createdCount := 0
-	stepID := make([]string, len(steps))
+	// stepTaskID maps step.ID (string) → created task.Task.ID for dep wiring.
+	stepTaskID := make(map[string]string, len(steps))
+	// stepOrder preserves creation order so we can detect self-deps by position.
+	stepOrder := make([]string, len(steps))
 
 	for i, step := range steps {
 		key := buildIdempotencyKey(req.Skill.Name, req.SessionID, i)
@@ -227,26 +230,27 @@ func (e *Emitter) emitTemplate(ctx context.Context, req EmitRequest) (*EmitResul
 			createdCount++
 		}
 		created = append(created, out)
-		stepID[i] = out.ID
+		stepTaskID[step.ID] = out.ID
+		stepOrder[i] = step.ID
 	}
 
-	// Wire depends_on edges. Skip when the dependency is out of range or
-	// when both endpoints already existed (the dep was created previously).
+	// Wire depends_on_ids edges as TASK_DEPENDENCY_TYPE_BLOCKS.
 	for i, step := range steps {
-		for _, dep := range step.DependsOn {
-			if int(dep) < 0 || int(dep) >= len(stepID) {
-				e.logger.Debug("skill template dep out of range; skipping",
+		for _, depID := range step.DependsOnIDs {
+			toTaskID, ok := stepTaskID[depID]
+			if !ok {
+				e.logger.Debug("skill template dep ID not found; skipping",
 					zap.String("skill", req.Skill.Name),
 					zap.Int("step", i),
-					zap.Int32("dep", dep))
+					zap.String("dep_id", depID))
 				continue
 			}
-			if dep == int32(i) {
+			if depID == stepOrder[i] {
 				continue // self-dep
 			}
 			edge := &task.TaskDependency{
-				FromTaskID: stepID[i],
-				ToTaskID:   stepID[dep],
+				FromTaskID: stepTaskID[stepOrder[i]],
+				ToTaskID:   toTaskID,
 				Type:       loomv1.TaskDependencyType_TASK_DEPENDENCY_TYPE_BLOCKS,
 				CreatedBy:  req.AgentID,
 				Metadata:   map[string]string{"emitted_by_skill": req.Skill.Name},
@@ -258,7 +262,7 @@ func (e *Emitter) emitTemplate(ctx context.Context, req EmitRequest) (*EmitResul
 					e.logger.Warn("skill template dep add failed",
 						zap.String("skill", req.Skill.Name),
 						zap.Int("step", i),
-						zap.Int32("dep", dep),
+						zap.String("dep_id", depID),
 						zap.Error(err))
 				}
 			}

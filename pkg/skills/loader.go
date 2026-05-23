@@ -82,12 +82,17 @@ type SkillTaskTemplateYAML struct {
 
 // SkillTaskStepYAML holds a single template step from YAML.
 type SkillTaskStepYAML struct {
+	// Stable step ID; auto-generated as "step-N" when absent.
+	ID                 string   `yaml:"id"`
 	Title              string   `yaml:"title"`
 	Objective          string   `yaml:"objective"`
 	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
 	Category           string   `yaml:"category"`
 	Priority           string   `yaml:"priority"`
+	// Deprecated: use DependsOnIDs. Read for backward compat with existing
+	// YAML files that use integer indices.
 	DependsOn          []int32  `yaml:"depends_on"`
+	DependsOnIDs       []string `yaml:"depends_on_ids"`
 	EstimatedEffort    string   `yaml:"estimated_effort"`
 	Tags               []string `yaml:"tags"`
 }
@@ -328,14 +333,52 @@ func yamlToSkill(sy *SkillYAML) *Skill {
 
 // yamlToSkillTaskTemplate converts a SkillTaskTemplateYAML to its Go mirror.
 // Returns nil for absent or empty templates.
+//
+// Migration: when a step uses the legacy integer depends_on array instead of
+// depends_on_ids, we auto-assign each step an "step-N" ID and convert the
+// integer refs to string IDs so the rest of the system is ID-based throughout.
 func yamlToSkillTaskTemplate(t *SkillTaskTemplateYAML) *SkillTaskTemplate {
 	if t == nil {
 		return nil
 	}
-	steps := make([]SkillTaskStep, 0, len(t.Steps))
-	for _, s := range t.Steps {
-		steps = append(steps, SkillTaskStep(s))
+
+	// First pass: assign IDs to every step so the second pass can resolve refs.
+	ids := make([]string, len(t.Steps))
+	for i, s := range t.Steps {
+		if s.ID != "" {
+			ids[i] = s.ID
+		} else {
+			ids[i] = fmt.Sprintf("step-%d", i)
+		}
 	}
+
+	steps := make([]SkillTaskStep, 0, len(t.Steps))
+	for i, s := range t.Steps {
+		step := SkillTaskStep{
+			ID:                 ids[i],
+			Title:              s.Title,
+			Objective:          s.Objective,
+			AcceptanceCriteria: s.AcceptanceCriteria,
+			Category:           s.Category,
+			Priority:           s.Priority,
+			EstimatedEffort:    s.EstimatedEffort,
+			Tags:               s.Tags,
+		}
+		switch {
+		case len(s.DependsOnIDs) > 0:
+			step.DependsOnIDs = s.DependsOnIDs
+		case len(s.DependsOn) > 0:
+			// Migrate legacy integer indices → string IDs.
+			step.DependsOnIDs = make([]string, 0, len(s.DependsOn))
+			for _, dep := range s.DependsOn {
+				if int(dep) >= 0 && int(dep) < len(ids) {
+					step.DependsOnIDs = append(step.DependsOnIDs, ids[dep])
+				}
+			}
+		}
+		steps = append(steps, step)
+	}
+
 	return &SkillTaskTemplate{
 		Steps:                 steps,
 		RootTitle:             t.RootTitle,
@@ -352,7 +395,17 @@ func skillTaskTemplateToYAML(t *SkillTaskTemplate) *SkillTaskTemplateYAML {
 	}
 	steps := make([]SkillTaskStepYAML, 0, len(t.Steps))
 	for _, s := range t.Steps {
-		steps = append(steps, SkillTaskStepYAML(s))
+		steps = append(steps, SkillTaskStepYAML{
+			ID:                 s.ID,
+			Title:              s.Title,
+			Objective:          s.Objective,
+			AcceptanceCriteria: s.AcceptanceCriteria,
+			Category:           s.Category,
+			Priority:           s.Priority,
+			DependsOnIDs:       s.DependsOnIDs,
+			EstimatedEffort:    s.EstimatedEffort,
+			Tags:               s.Tags,
+		})
 	}
 	return &SkillTaskTemplateYAML{
 		Steps:                 steps,

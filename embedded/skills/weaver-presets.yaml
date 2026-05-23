@@ -118,32 +118,37 @@ task_template:
   max_tasks: 5
   ephemeral_on_deactivate: false
   steps:
-    - title: Confirm preset choice with user
+    - id: confirm-preset
+      title: Confirm preset choice with user
       objective: Verify the chosen preset is the best fit for the user's stated intent.
       acceptance_criteria: User has explicitly approved the preset OR the message already specifies "apply directly".
       category: decision
       priority: P1
-    - title: Draft the agent's system prompt
+    - id: draft-system-prompt
+      title: Draft the agent's system prompt
       objective: Write a direct, task-oriented system prompt (no role-prompting).
       acceptance_criteria: Prompt is 1-4 paragraphs, action-focused, contains no "you are an expert..." framing.
       category: writing
       priority: P1
-      depends_on: [0]
-    - title: Apply the preset via agent_management
+      depends_on_ids: [confirm-preset]
+    - id: apply-preset
+      title: Apply the preset via agent_management
       objective: Call agent_management with action=apply_preset, name, system_prompt.
       acceptance_criteria: Tool returns success=true, agent YAML lands in agents/ dir, no validation errors.
       category: implementation
       priority: P1
-      depends_on: [1]
-    - title: Verify the agent loaded
+      depends_on_ids: [draft-system-prompt]
+    - id: verify-agent
+      title: Verify the agent loaded
       objective: Confirm the new agent appears via agent_management list and read.
       acceptance_criteria: read returns the freshly-written YAML and the preset label is set.
       category: review
       priority: P2
-      depends_on: [2]
-    - title: Brief the user on what was built
+      depends_on_ids: [apply-preset]
+    - id: brief-user
+      title: Brief the user on what was built
       objective: Summarise preset + tools + key limits + how to use the agent.
       acceptance_criteria: Reply includes agent name, preset id, tool list, and an example invocation.
       category: writing
       priority: P2
-      depends_on: [3]
+      depends_on_ids: [verify-agent]

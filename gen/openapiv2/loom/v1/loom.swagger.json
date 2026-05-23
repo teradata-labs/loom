@@ -1682,15 +1682,15 @@
         ]
       }
     },
-    "/v1/plans/{planId}": {
+    "/v1/presets/agents": {
       "get": {
-        "summary": "GetPlan retrieves a specific execution plan.",
-        "operationId": "LoomService_GetPlan",
+        "summary": "ListAgentPresets returns the set of preconfigured single-agent presets.",
+        "operationId": "LoomService_ListAgentPresets",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1ExecutionPlan"
+              "$ref": "#/definitions/v1ListAgentPresetsResponse"
             }
           },
           "default": {
@@ -1700,95 +1700,6 @@
             }
           }
         },
-        "parameters": [
-          {
-            "name": "planId",
-            "description": "Plan ID",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "LoomService"
-        ]
-      }
-    },
-    "/v1/plans/{planId}/approve": {
-      "post": {
-        "summary": "ApprovePlan approves or rejects an execution plan created in PLAN mode.",
-        "operationId": "LoomService_ApprovePlan",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v1ApprovePlanResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "planId",
-            "description": "Plan ID to approve/reject",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/LoomServiceApprovePlanBody"
-            }
-          }
-        ],
-        "tags": [
-          "LoomService"
-        ]
-      }
-    },
-    "/v1/plans/{planId}/execute": {
-      "post": {
-        "summary": "ExecutePlan executes an approved plan by running its tools.",
-        "operationId": "LoomService_ExecutePlan",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v1ExecutePlanResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "planId",
-            "description": "Plan ID to execute",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/LoomServiceExecutePlanBody"
-            }
-          }
-        ],
         "tags": [
           "LoomService"
         ]
@@ -2209,70 +2120,6 @@
         ]
       }
     },
-    "/v1/sessions/{sessionId}/plans": {
-      "get": {
-        "summary": "ListPlans lists execution plans for a session.",
-        "operationId": "LoomService_ListPlans",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v1ListPlansResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "sessionId",
-            "description": "Session ID",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "statusFilter",
-            "description": "Optional status filter\n\n - PLAN_STATUS_UNSPECIFIED: Unspecified status\n - PLAN_STATUS_PENDING: Pending approval\n - PLAN_STATUS_APPROVED: User approved, ready to execute\n - PLAN_STATUS_REJECTED: User rejected\n - PLAN_STATUS_EXECUTING: Currently executing\n - PLAN_STATUS_COMPLETED: Successfully completed\n - PLAN_STATUS_FAILED: Execution failed",
-            "in": "query",
-            "required": false,
-            "type": "string",
-            "enum": [
-              "PLAN_STATUS_UNSPECIFIED",
-              "PLAN_STATUS_PENDING",
-              "PLAN_STATUS_APPROVED",
-              "PLAN_STATUS_REJECTED",
-              "PLAN_STATUS_EXECUTING",
-              "PLAN_STATUS_COMPLETED",
-              "PLAN_STATUS_FAILED"
-            ],
-            "default": "PLAN_STATUS_UNSPECIFIED"
-          },
-          {
-            "name": "pageSize",
-            "description": "Pagination",
-            "in": "query",
-            "required": false,
-            "type": "integer",
-            "format": "int32"
-          },
-          {
-            "name": "pageOffset",
-            "in": "query",
-            "required": false,
-            "type": "integer",
-            "format": "int32"
-          }
-        ],
-        "tags": [
-          "LoomService"
-        ]
-      }
-    },
     "/v1/sessions/{sessionId}:subscribe": {
       "get": {
         "summary": "SubscribeToSession subscribes to real-time updates for a session.\nReturns a stream of updates when new messages arrive or session state changes.\nThis allows clients to receive asynchronous responses from workflow coordinators\nand sub-agents without polling.",
@@ -2662,6 +2509,63 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1WatchSharedMemoryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/templates/workflows": {
+      "get": {
+        "summary": "ListWorkflowTemplates returns the set of preconfigured workflow templates.",
+        "operationId": "LoomService_ListWorkflowTemplates",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListWorkflowTemplatesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/templates/workflows:apply": {
+      "post": {
+        "summary": "CreateWorkflowFromTemplate instantiates a template: creates each agent\nin the template (reusing by name where possible), then creates a\nworkflow that composes them under the template's pattern.",
+        "operationId": "LoomService_CreateWorkflowFromTemplate",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateWorkflowFromTemplateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "CreateWorkflowFromTemplateRequest instantiates a template: creates\nevery agent in the template (or reuses by name), then creates a\nworkflow that composes them under the template's pattern.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateWorkflowFromTemplateRequest"
             }
           }
         ],
@@ -3404,24 +3308,6 @@
       },
       "description": "AnswerClarificationRequest provides an answer to a clarification question."
     },
-    "LoomServiceApprovePlanBody": {
-      "type": "object",
-      "properties": {
-        "approved": {
-          "type": "boolean",
-          "title": "Whether to approve or reject"
-        },
-        "feedback": {
-          "type": "string",
-          "title": "Optional user feedback/modifications"
-        }
-      },
-      "description": "ApprovePlanRequest requests approval of an execution plan."
-    },
-    "LoomServiceExecutePlanBody": {
-      "type": "object",
-      "description": "ExecutePlanRequest executes an approved plan."
-    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -3640,19 +3526,6 @@
         }
       },
       "description": "UpdateUIAppRequest updates an existing dynamic app's spec."
-    },
-    "PlannedToolExecutionStepStatus": {
-      "type": "string",
-      "enum": [
-        "STEP_STATUS_UNSPECIFIED",
-        "STEP_STATUS_PENDING",
-        "STEP_STATUS_EXECUTING",
-        "STEP_STATUS_COMPLETED",
-        "STEP_STATUS_FAILED",
-        "STEP_STATUS_SKIPPED"
-      ],
-      "default": "STEP_STATUS_UNSPECIFIED",
-      "title": "Execution status"
     },
     "PolicyOverrideOverrideType": {
       "type": "string",
@@ -4097,6 +3970,48 @@
       },
       "description": "AgentPosition represents an agent's argument in a debate."
     },
+    "v1AgentPreset": {
+      "type": "string",
+      "enum": [
+        "AGENT_PRESET_UNSPECIFIED",
+        "AGENT_PRESET_PERSONAL_ASSISTANT",
+        "AGENT_PRESET_RESEARCH_ANALYST",
+        "AGENT_PRESET_TERADATA_ANALYST",
+        "AGENT_PRESET_CREATIVE_WRITER",
+        "AGENT_PRESET_UI_SPECIALIST",
+        "AGENT_PRESET_TASK_AUTOMATOR",
+        "AGENT_PRESET_QUICK_CHAT",
+        "AGENT_PRESET_COORDINATOR"
+      ],
+      "default": "AGENT_PRESET_UNSPECIFIED",
+      "description": "AgentPreset enumerates the bundled agent presets a user can instantiate.\nEach enum value resolves to an AgentPresetInfo in the server-side registry.\n\n - AGENT_PRESET_PERSONAL_ASSISTANT: General-purpose assistant: unlimited turns, full tools, deep thinking,\nlong-term graph memory.\n - AGENT_PRESET_RESEARCH_ANALYST: Web research analyst: deep web research, large context window,\nsystematic data synthesis with citations.\n - AGENT_PRESET_TERADATA_ANALYST: SQL and Teradata-focused data analyst with TD ROM, data-intensive\nworkload profile, and visualization tooling.\n - AGENT_PRESET_CREATIVE_WRITER: Creative writer: high temperature, strong memory for continuity\nacross long-form projects.\n - AGENT_PRESET_UI_SPECIALIST: UI / dashboard specialist: full internet access for reference,\ncreate_ui_app + workspace tooling.\n - AGENT_PRESET_TASK_AUTOMATOR: Task automator: sub-agent delegation, max tool use, circuit breaker\ndisabled for long-running operations.\n - AGENT_PRESET_QUICK_CHAT: Quick chat: fast, lightweight Q\u0026A with minimal overhead. No tools,\nshort context window.\n - AGENT_PRESET_COORDINATOR: Coordinator: decomposes goals into tasks and delegates to sub-agents.\nDoes no work directly."
+    },
+    "v1AgentPresetInfo": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "$ref": "#/definitions/v1AgentPreset",
+          "description": "Stable preset identifier."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable display name (e.g. \"Personal Assistant\")."
+        },
+        "description": {
+          "type": "string",
+          "description": "One-line description of the preset's intent and trade-offs."
+        },
+        "icon": {
+          "type": "string",
+          "description": "Lucide icon name for UI rendering (e.g. \"message-square\")."
+        },
+        "defaults": {
+          "$ref": "#/definitions/v1PresetDefaults",
+          "description": "Default values applied at agent-creation time. Only zero-value fields\non the user's CreateAgentRequest are filled from these defaults; user-\nsupplied values always win."
+        }
+      },
+      "description": "AgentPresetInfo describes a single preset for discovery + UI rendering.\nAll fields except Preset are documentation surface — the actual defaults\napplied at agent-creation time live in PresetDefaults."
+    },
     "v1AgentResult": {
       "type": "object",
       "properties": {
@@ -4149,6 +4064,10 @@
             "type": "string"
           },
           "title": "Optional: Task metadata"
+        },
+        "outputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Optional: Output validation policy for this task's output."
         }
       },
       "description": "AgentTask represents a single agent task with its own prompt."
@@ -4170,16 +4089,6 @@
         }
       },
       "description": "AnswerClarificationResponse acknowledges the answer."
-    },
-    "v1ApprovePlanResponse": {
-      "type": "object",
-      "properties": {
-        "plan": {
-          "$ref": "#/definitions/v1ExecutionPlan",
-          "title": "Updated plan"
-        }
-      },
-      "description": "ApprovePlanResponse contains the result of plan approval."
     },
     "v1Artifact": {
       "type": "object",
@@ -4549,9 +4458,44 @@
         "defaultBranch": {
           "$ref": "#/definitions/v1WorkflowPattern",
           "title": "Optional: Default branch if condition doesn't match any branch"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when condition output doesn't match any branch key.\nOn retry, the agent receives a prompt listing valid branch keys and its\nprevious failed output. Each retry uses a fresh session ID."
         }
       },
       "description": "ConditionalPattern routes execution based on an agent's decision.\nA classifier agent evaluates the condition and selects the workflow branch."
+    },
+    "v1ContextState": {
+      "type": "object",
+      "properties": {
+        "activePattern": {
+          "type": "string",
+          "title": "Active pattern name (empty if none)"
+        },
+        "contextTokensUsed": {
+          "type": "string",
+          "format": "int64",
+          "title": "Context tokens currently used"
+        },
+        "contextTokensMax": {
+          "type": "string",
+          "format": "int64",
+          "title": "Context token budget (max context window)"
+        },
+        "rom": {
+          "type": "string",
+          "title": "ROM identifier loaded (empty if none)"
+        },
+        "toolsLoaded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool names currently registered on the agent"
+        }
+      },
+      "description": "ContextState reports the agent's memory and context window state after a response.\nThis is a per-session cumulative view (how full is the window, what's loaded),\ndistinct from ExecutionMetadata which is per-turn (tokens, cost, duration)."
     },
     "v1ConversationHistory": {
       "type": "object",
@@ -4741,6 +4685,70 @@
       },
       "description": "CreateUIAppResponse returns the created app and its compiled HTML."
     },
+    "v1CreateWorkflowFromTemplateRequest": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "$ref": "#/definitions/v1WorkflowTemplate",
+          "description": "Template to instantiate (required)."
+        },
+        "workflowName": {
+          "type": "string",
+          "description": "Workflow name (required, must be unique)."
+        },
+        "workflowDescription": {
+          "type": "string",
+          "description": "Optional workflow description. Empty means \"use the template description\"."
+        },
+        "agentNameOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional: override default agent names. Key is the 0-based agent\nindex in the template's agents list. Missing indices use the\ndefault name."
+        },
+        "activeProvider": {
+          "type": "string",
+          "description": "Optional: pool-name LLM provider to assign to every created agent.\nEmpty means \"inherit server default\"."
+        }
+      },
+      "description": "CreateWorkflowFromTemplateRequest instantiates a template: creates\nevery agent in the template (or reuses by name), then creates a\nworkflow that composes them under the template's pattern."
+    },
+    "v1CreateWorkflowFromTemplateResponse": {
+      "type": "object",
+      "properties": {
+        "agentNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of agents created (or reused) — order matches the template's\nagents list."
+        },
+        "agentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "GUIDs of agents created (or reused) — order matches agent_names."
+        },
+        "reused": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          },
+          "description": "True for each index where the agent already existed and was reused\nrather than freshly created. Same length and order as agent_names."
+        },
+        "workflowName": {
+          "type": "string",
+          "description": "Workflow name (always equals request.workflow_name on success)."
+        },
+        "workflowPattern": {
+          "$ref": "#/definitions/v1WorkflowPattern",
+          "description": "Fully-materialized workflow pattern with agent ids slotted into every\nstage / participant. The caller is the workflow owner and decides\nwhether to ExecuteWorkflow / StreamWorkflow / ScheduleWorkflow."
+        }
+      },
+      "description": "CreateWorkflowFromTemplateResponse returns the materialized agents +\nworkflow pattern. Unlike Loom Cloud (which persists workflow definitions),\nOSS workflows are transient: callers pass the returned WorkflowPattern\nstraight to ExecuteWorkflow or StreamWorkflow. If the template is\nschedulable, callers pass it to ScheduleWorkflow along with a cron."
+    },
     "v1CurriculumStep": {
       "type": "object",
       "properties": {
@@ -4913,6 +4921,17 @@
       },
       "description": "DebateRound captures one round of debate discussion."
     },
+    "v1DecomposeStrategy": {
+      "type": "string",
+      "enum": [
+        "DECOMPOSE_STRATEGY_UNSPECIFIED",
+        "DECOMPOSE_STRATEGY_BACKWARD",
+        "DECOMPOSE_STRATEGY_FORWARD",
+        "DECOMPOSE_STRATEGY_PARALLEL"
+      ],
+      "default": "DECOMPOSE_STRATEGY_UNSPECIFIED",
+      "description": "DecomposeStrategy controls how the LLM decomposes a goal.\n\n - DECOMPOSE_STRATEGY_BACKWARD: Walk backward from the goal to prerequisites (beads model).\n - DECOMPOSE_STRATEGY_FORWARD: Plan sequentially from current state toward the goal.\n - DECOMPOSE_STRATEGY_PARALLEL: Maximize tasks that can run concurrently."
+    },
     "v1DeleteAgentResponse": {
       "type": "object",
       "properties": {
@@ -5018,20 +5037,6 @@
       },
       "description": "EphemeralAgentPolicy defines when and how to spawn ephemeral agents.\nAgents declare these policies to dynamically create other agents based on runtime conditions."
     },
-    "v1ExecutePlanResponse": {
-      "type": "object",
-      "properties": {
-        "plan": {
-          "$ref": "#/definitions/v1ExecutionPlan",
-          "title": "Updated plan with execution results"
-        },
-        "summary": {
-          "type": "string",
-          "title": "Execution summary"
-        }
-      },
-      "description": "ExecutePlanResponse contains the result of plan execution."
-    },
     "v1ExecuteWorkflowRequest": {
       "type": "object",
       "properties": {
@@ -5112,58 +5117,6 @@
         }
       },
       "description": "ExecutionMetadata contains execution metadata."
-    },
-    "v1ExecutionPlan": {
-      "type": "object",
-      "properties": {
-        "planId": {
-          "type": "string",
-          "title": "Unique plan ID"
-        },
-        "sessionId": {
-          "type": "string",
-          "title": "Session ID this plan belongs to"
-        },
-        "query": {
-          "type": "string",
-          "title": "User query that generated this plan"
-        },
-        "tools": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1PlannedToolExecution"
-          },
-          "title": "Planned tool executions"
-        },
-        "reasoning": {
-          "type": "string",
-          "title": "Agent's reasoning for the plan"
-        },
-        "status": {
-          "$ref": "#/definitions/v1PlanStatus",
-          "title": "Status of the plan"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "int64",
-          "title": "Created timestamp (Unix seconds)"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "int64",
-          "title": "Updated timestamp (Unix seconds)"
-        },
-        "result": {
-          "$ref": "#/definitions/v1ExecutionResult",
-          "title": "Execution result (populated after execution)"
-        },
-        "errorMessage": {
-          "type": "string",
-          "title": "Error message (if status is FAILED)"
-        }
-      },
-      "description": "ExecutionPlan represents a plan created in PLAN mode.\nThe agent generates this plan and waits for user approval before execution."
     },
     "v1ExecutionResult": {
       "type": "object",
@@ -5251,6 +5204,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Optional: Timeout for all parallel executions"
+        },
+        "agentOutputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Optional: Output validation policy applied to each agent's output."
         }
       },
       "description": "ForkJoinPattern executes multiple agents in parallel on the same prompt,\nthen merges their results according to the specified strategy."
@@ -5399,6 +5356,80 @@
       },
       "description": "GetUIAppResponse returns the app metadata and HTML content."
     },
+    "v1GraphMemoryConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether graph memory is enabled."
+        },
+        "contextBudgetPercent": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Memory budget as percentage of max context window (0-100).\nDefault: 10 (10% of context). For 200K context -\u003e 20K tokens.\nSet to 0 to use max_context_tokens instead."
+        },
+        "maxContextTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Fixed token budget (overrides context_budget_percent if \u003e 0).\nDefault: 0 (use percentage-based budget)."
+        },
+        "decayRate": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience decay rate per day. Default: 0.995.\n0.995^138 ~ 0.5 (half-life ~138 days)."
+        },
+        "boostAmount": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience boost per access. Default: 0.05."
+        },
+        "minSalienceThreshold": {
+          "type": "number",
+          "format": "float",
+          "description": "Minimum salience for recall. Default: 0.1."
+        },
+        "maxRecallCandidates": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Max memories to consider during recall. Default: 50."
+        },
+        "defaultSalience": {
+          "type": "number",
+          "format": "float",
+          "description": "Default salience for new memories. Default: 0.5."
+        },
+        "enableExtraction": {
+          "type": "boolean",
+          "description": "Enable automatic memory extraction from conversation context.\nWhen enabled, an LLM subprocess periodically extracts entities,\nrelationships, and memories from recent conversation turns.\nDefault: true (when graph memory is enabled)."
+        },
+        "extractionCadence": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of tool executions between automatic graph memory extractions.\nDefault: 5."
+        },
+        "maxEntitiesPerExtraction": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum entities to extract per extraction cycle.\nDefault: 10."
+        },
+        "conversationExtractionCadence": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of conversation turns (LLM responses) between automatic extractions.\nFires independently of extraction_cadence (tool-based).\n0 = disabled (default). Set to 1 to extract after every LLM turn.\nUseful for conversational agents that build memory without tool use."
+        },
+        "extractionTimeoutSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Timeout in seconds for each extraction LLM call.\nDefault: 30. Set higher for slower providers or larger context windows."
+        },
+        "extractionWindowMessages": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of recent messages to include in each extraction window.\nDefault: 0 (auto = extraction_cadence * 3, minimum 15).\nSet higher to give the extractor more conversational context per cycle.\nUseful when extraction_cadence is low (e.g., 1) to avoid tiny windows."
+        }
+      },
+      "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
+    },
     "v1HITLRequestInfo": {
       "type": "object",
       "properties": {
@@ -5479,6 +5510,36 @@
         }
       },
       "description": "HealthStatus returns system health."
+    },
+    "v1HygieneConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether hygiene auditing runs at end-of-turn. Uses proto3 optional so\nthe loader can distinguish \"not specified\" (default true) from\n\"explicitly false\"."
+        },
+        "policy": {
+          "$ref": "#/definitions/v1HygienePolicy",
+          "description": "Policy applied when violations are found. Unspecified maps to\nREQUIRE_FIX."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum number of REQUIRE_FIX retries per turn before falling through\nto AUTO_FIX. \u003c=0 falls back to the default of 2."
+        }
+      },
+      "description": "HygieneConfig governs end-of-turn task-board hygiene enforcement for\nskill-emitted tasks. The auditor only inspects tasks tied to currently\nactive skills via SkillIdempotencyKey; agent-created tasks without that\nkey are out of scope."
+    },
+    "v1HygienePolicy": {
+      "type": "string",
+      "enum": [
+        "HYGIENE_POLICY_UNSPECIFIED",
+        "HYGIENE_POLICY_REQUIRE_FIX",
+        "HYGIENE_POLICY_AUTO_FIX",
+        "HYGIENE_POLICY_WARN_ONLY"
+      ],
+      "default": "HYGIENE_POLICY_UNSPECIFIED",
+      "description": "HygienePolicy controls how the end-of-turn auditor handles task-board\nviolations left by an active skill.\n\n - HYGIENE_POLICY_REQUIRE_FIX: Inject a synthetic user message describing the violations and re-run the\nLLM turn so the agent resolves them itself. Capped by max_retries; on\nexhaustion the auditor falls through to AUTO_FIX so the loop terminates.\n - HYGIENE_POLICY_AUTO_FIX: Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)\nwith reason notes. Cheaper but hides agent bugs.\n - HYGIENE_POLICY_WARN_ONLY: Emit observability events and add a violations summary to the response\nmetadata; do not change task state and do not retry."
     },
     "v1IterativeWorkflowPattern": {
       "type": "object",
@@ -5710,6 +5771,19 @@
       },
       "description": "LetsEncryptConfig for automatic HTTPS with Let's Encrypt."
     },
+    "v1ListAgentPresetsResponse": {
+      "type": "object",
+      "properties": {
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AgentPresetInfo"
+          }
+        }
+      },
+      "description": "ListAgentPresetsResponse returns every registered preset for UI / tool\ndiscovery flows."
+    },
     "v1ListAgentsResponse": {
       "type": "object",
       "properties": {
@@ -5865,25 +5939,6 @@
       },
       "description": "ListPatternsResponse returns patterns."
     },
-    "v1ListPlansResponse": {
-      "type": "object",
-      "properties": {
-        "plans": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1ExecutionPlan"
-          },
-          "title": "Plans"
-        },
-        "totalCount": {
-          "type": "integer",
-          "format": "int32",
-          "title": "Total count (for pagination)"
-        }
-      },
-      "description": "ListPlansResponse contains a list of plans."
-    },
     "v1ListProvidersResponse": {
       "type": "object",
       "properties": {
@@ -6033,6 +6088,19 @@
         }
       },
       "description": "ListWorkflowExecutionsResponse returns workflow executions."
+    },
+    "v1ListWorkflowTemplatesResponse": {
+      "type": "object",
+      "properties": {
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1WorkflowTemplateInfo"
+          }
+        }
+      },
+      "description": "ListWorkflowTemplatesResponse returns every registered template."
     },
     "v1LoadPatternsRequest": {
       "type": "object",
@@ -6283,6 +6351,24 @@
         "memoryCompression": {
           "$ref": "#/definitions/v1MemoryCompressionConfig",
           "title": "Memory compression configuration (conversation history compression)"
+        },
+        "sharedMemoryThresholdBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Shared memory threshold in bytes for large tool results.\n0 = always reference (default), -1 = never reference (inline everything), \u003e0 = reference only if result exceeds N bytes."
+        },
+        "maxToolResults": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum number of tool results to keep in the conversation kernel.\n0 = use default (5). Higher values give the LLM more context from recent tool calls."
+        },
+        "graphMemory": {
+          "$ref": "#/definitions/v1GraphMemoryConfig",
+          "description": "Graph memory configuration for salience-driven episodic memory."
+        },
+        "taskBoard": {
+          "$ref": "#/definitions/v1TaskBoardConfig",
+          "description": "Task board configuration for dependency-aware task decomposition and kanban."
         }
       },
       "title": "MemoryConfig defines agent memory and session storage"
@@ -6433,6 +6519,19 @@
         "available": {
           "type": "boolean",
           "title": "Whether model is currently available"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "title": "Maximum output tokens supported by this model"
+        },
+        "isReasoning": {
+          "type": "boolean",
+          "title": "Whether this model supports extended thinking / reasoning"
+        },
+        "showInDropdown": {
+          "type": "boolean",
+          "title": "Whether this model should appear in UI dropdowns (false = API-only or deprecated)"
         }
       },
       "description": "ModelInfo provides information about an LLM model."
@@ -6485,6 +6584,60 @@
         }
       },
       "description": "NewMessageUpdate indicates a new message was added to the conversation."
+    },
+    "v1OutputPolicy": {
+      "type": "object",
+      "properties": {
+        "outputSchema": {
+          "type": "string",
+          "description": "JSON Schema string for structural validation (instant, free, deterministic)."
+        },
+        "acceptanceCriteria": {
+          "type": "string",
+          "description": "Semantic validation criteria evaluated by LLM. Use {{output}} placeholder."
+        },
+        "validatorAgentId": {
+          "type": "string",
+          "description": "Optional: another agent evaluates the output."
+        },
+        "judgeConfigId": {
+          "type": "string",
+          "description": "Optional: judge config ID for multi-dimensional quality evaluation."
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Retry behavior when any validation fails."
+        }
+      },
+      "description": "OutputPolicy defines how agent output is validated and optionally retried.\nAttachable to workflow stages, tasks, parallel agent executions, or direct invocations."
+    },
+    "v1OutputRetryPolicy": {
+      "type": "object",
+      "properties": {
+        "maxRetries": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum retries before falling back to default branch or graceful degradation.\n0 = no retries (default behavior, preserves backwards compatibility)."
+        },
+        "includeValidValues": {
+          "type": "boolean",
+          "description": "Whether to include valid output values in the retry prompt.\nFor conditionals: lists valid branch keys.\nFor pipelines: includes the JSON schema or validation criteria.\nFor swarms: includes the vote format template.\nCode treats unset (false) as true (include values by default)."
+        },
+        "sessionMode": {
+          "$ref": "#/definitions/v1RetrySessionMode",
+          "description": "Session behavior on retry. Default (UNSPECIFIED) = FRESH for backward compatibility."
+        },
+        "feedbackTemplate": {
+          "type": "string",
+          "description": "Custom feedback template injected into the retry prompt.\nVariables: {{error}}, {{previous_output}}, {{attempt}}, {{max_retries}}.\nIf empty, a default feedback template is used."
+        },
+        "cooldownMs": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Cooldown between retries in milliseconds. Default: 0 (no cooldown)."
+        }
+      },
+      "description": "OutputRetryPolicy defines retry behavior when agent output doesn't match expectations.\nUsed by conditional executors (branch matching fails), pipeline executors\n(validation_prompt or output_schema fails), and swarm executors (vote parsing fails)."
     },
     "v1PairProgrammingPattern": {
       "type": "object",
@@ -6782,17 +6935,6 @@
       },
       "description": "PayloadMetadata provides information about the payload."
     },
-    "v1PermissionMode": {
-      "type": "string",
-      "enum": [
-        "PERMISSION_MODE_UNSPECIFIED",
-        "PERMISSION_MODE_ASK_BEFORE",
-        "PERMISSION_MODE_AUTO_ACCEPT",
-        "PERMISSION_MODE_PLAN"
-      ],
-      "default": "PERMISSION_MODE_UNSPECIFIED",
-      "description": "PermissionMode controls how the agent handles tool execution permissions.\nThis can be set per-request to dynamically control agent behavior.\n\n - PERMISSION_MODE_UNSPECIFIED: Unspecified - use agent's default configuration\n - PERMISSION_MODE_ASK_BEFORE: Ask before executing each tool (default behavior)\n - PERMISSION_MODE_AUTO_ACCEPT: Automatically execute all tools without asking (YOLO mode)\n - PERMISSION_MODE_PLAN: Create execution plan and wait for approval before executing"
-    },
     "v1PipelinePattern": {
       "type": "object",
       "properties": {
@@ -6828,66 +6970,22 @@
         },
         "validationPrompt": {
           "type": "string",
-          "title": "Optional: Validation function to check output before proceeding"
+          "description": "Optional: LLM-based validation — asks an LLM if the output meets criteria.\nUse {{output}} placeholder to reference the stage output."
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when validation fails (schema or LLM validation).\nEach retry includes the failure reason and expected format in the prompt.\nEach retry uses a fresh session ID."
+        },
+        "outputSchema": {
+          "type": "string",
+          "description": "Optional: JSON Schema for validating stage output.\nInstant, free, deterministic validation — no LLM call required.\nWhen both output_schema and validation_prompt are set, schema is checked\nfirst (cheap), then validation_prompt only if schema passes (semantic check)."
+        },
+        "outputPolicy": {
+          "$ref": "#/definitions/v1OutputPolicy",
+          "description": "Optional: Unified output validation policy. When set, takes precedence\nover the legacy validation_prompt + output_schema + retry_policy fields."
         }
       },
       "description": "PipelineStage represents a single stage in a pipeline."
-    },
-    "v1PlanStatus": {
-      "type": "string",
-      "enum": [
-        "PLAN_STATUS_UNSPECIFIED",
-        "PLAN_STATUS_PENDING",
-        "PLAN_STATUS_APPROVED",
-        "PLAN_STATUS_REJECTED",
-        "PLAN_STATUS_EXECUTING",
-        "PLAN_STATUS_COMPLETED",
-        "PLAN_STATUS_FAILED"
-      ],
-      "default": "PLAN_STATUS_UNSPECIFIED",
-      "description": "PlanStatus represents the status of an execution plan.\n\n - PLAN_STATUS_UNSPECIFIED: Unspecified status\n - PLAN_STATUS_PENDING: Pending approval\n - PLAN_STATUS_APPROVED: User approved, ready to execute\n - PLAN_STATUS_REJECTED: User rejected\n - PLAN_STATUS_EXECUTING: Currently executing\n - PLAN_STATUS_COMPLETED: Successfully completed\n - PLAN_STATUS_FAILED: Execution failed"
-    },
-    "v1PlannedToolExecution": {
-      "type": "object",
-      "properties": {
-        "step": {
-          "type": "integer",
-          "format": "int32",
-          "title": "Step number in the plan (1-indexed)"
-        },
-        "toolName": {
-          "type": "string",
-          "title": "Tool name"
-        },
-        "paramsJson": {
-          "type": "string",
-          "title": "Tool parameters (JSON)"
-        },
-        "rationale": {
-          "type": "string",
-          "title": "Rationale for this step"
-        },
-        "dependsOn": {
-          "type": "array",
-          "items": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "title": "Dependencies (step numbers that must complete first)"
-        },
-        "result": {
-          "type": "string",
-          "title": "Actual execution result (populated after execution)"
-        },
-        "error": {
-          "type": "string",
-          "title": "Error (if execution failed)"
-        },
-        "status": {
-          "$ref": "#/definitions/PlannedToolExecutionStepStatus"
-        }
-      },
-      "description": "PlannedToolExecution represents a single tool call in a plan."
     },
     "v1PolicyOverride": {
       "type": "object",
@@ -7024,6 +7122,108 @@
         }
       },
       "description": "PostgresStorageConfig configures the PostgreSQL storage backend."
+    },
+    "v1PresetDefaults": {
+      "type": "object",
+      "properties": {
+        "temperature": {
+          "type": "number",
+          "format": "float",
+          "description": "LLM tuning. Numeric zero means \"unset\"; only specified knobs apply."
+        },
+        "maxTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "maxContextTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "reservedOutputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool list this preset enables on the created agent. Empty means no\ntools (e.g. Quick Chat). Tool names must resolve in the OSS builtin\ncatalog or the agent's per-config custom tool map."
+        },
+        "maxIterations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "BehaviorConfig knobs."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "maxToolExecutions": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "workloadProfile": {
+          "type": "string",
+          "description": "Workload profile name — maps to MemoryCompressionProfile.\nE.g. \"CONVERSATIONAL\", \"DATA_INTENSIVE\", \"BALANCED\"."
+        },
+        "thinkingLevel": {
+          "type": "string",
+          "description": "Thinking level for providers that support extended thinking\n(Anthropic). One of: \"none\", \"low\", \"medium\", \"high\"."
+        },
+        "cacheControlEnabled": {
+          "type": "boolean",
+          "description": "Whether prompt-cache control hints should be emitted on LLM calls."
+        },
+        "historyWindowSize": {
+          "type": "integer",
+          "format": "int32",
+          "description": "History sliding window. 0 means \"use full history\"."
+        },
+        "graphMemoryEnabled": {
+          "type": "boolean",
+          "description": "Graph memory configuration. Each field is independently honored;\nthe user can override any of them. enabled uses proto3 optional so\n\"explicitly disabled\" (Quick Chat) is distinguishable from \"default\"."
+        },
+        "graphMemoryBudgetPercent": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "graphMemoryMaxCandidates": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "rom": {
+          "type": "string",
+          "description": "ROM identifier (e.g. \"TD\" for Teradata) loaded into the agent's\nread-only memory at start. Empty means no ROM."
+        },
+        "outputTokenCbThreshold": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Output-token circuit-breaker threshold. -1 disables the breaker."
+        },
+        "queryToolResultThresholdBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Tool-result kernel sizing knobs. -1 means \"unlimited\"; 0 means\n\"fall back to global default\"."
+        },
+        "maxToolResults": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "backendType": {
+          "type": "string",
+          "description": "Optional backend type to wire on agent creation. UNSPECIFIED means\n\"no backend override; use server default\"."
+        },
+        "allowCodeExecution": {
+          "type": "boolean",
+          "description": "Whether code-execution sandboxes are permitted for this preset."
+        }
+      },
+      "description": "PresetDefaults carries the agent-creation defaults a preset contributes.\nField names mirror AgentConfig + BehaviorConfig + MemoryConfig so the\npreset can be flattened into a CreateAgentRequest with a simple merge.\n\nBoolean fields use proto3 optional so the merge can distinguish\n\"explicitly false\" from \"not specified by the preset\"."
     },
     "v1ProviderEntry": {
       "type": "object",
@@ -7283,6 +7483,17 @@
       },
       "description": "RestartPolicy defines rules for stage restart coordination."
     },
+    "v1RetrySessionMode": {
+      "type": "string",
+      "enum": [
+        "RETRY_SESSION_MODE_UNSPECIFIED",
+        "RETRY_SESSION_MODE_CONTINUE",
+        "RETRY_SESSION_MODE_FRESH",
+        "RETRY_SESSION_MODE_ESCALATE"
+      ],
+      "default": "RETRY_SESSION_MODE_UNSPECIFIED",
+      "description": "RetrySessionMode controls how agent sessions are handled across retries.\n\n - RETRY_SESSION_MODE_UNSPECIFIED: Default: FRESH (preserves existing behavior — each retry gets a fresh session).\n - RETRY_SESSION_MODE_CONTINUE: Continue in the same session. Validation feedback is appended as a new\nuser message. The agent sees its previous attempt and what went wrong.\n - RETRY_SESSION_MODE_FRESH: Fresh session. New conversation with original prompt + error feedback.\n - RETRY_SESSION_MODE_ESCALATE: Escalate: first retry uses CONTINUE mode, subsequent retries use FRESH\nwith an upgraded LLM (switches to orchestrator_llm if available)."
+    },
     "v1ReviewComment": {
       "type": "object",
       "properties": {
@@ -7433,6 +7644,10 @@
             "type": "string"
           },
           "title": "Variables to pass to workflow execution"
+        },
+        "sessionMode": {
+          "$ref": "#/definitions/v1ScheduledSessionMode",
+          "title": "Session mode for workflow agents (NEW = fresh each tick, RESUME = continue previous)"
         }
       },
       "description": "ScheduleConfig defines when a workflow should execute automatically.\nUsed in workflow YAML files under 'schedule:' section and in RPC calls."
@@ -7466,6 +7681,10 @@
           "type": "string",
           "format": "int64",
           "title": "Duration in milliseconds"
+        },
+        "workflowId": {
+          "type": "string",
+          "title": "Workflow ID used for this execution"
         }
       },
       "description": "ScheduleExecution represents a single execution of a scheduled workflow."
@@ -7543,6 +7762,16 @@
       },
       "description": "ScheduleWorkflowResponse returns the created schedule."
     },
+    "v1ScheduledSessionMode": {
+      "type": "string",
+      "enum": [
+        "SCHEDULED_SESSION_MODE_UNSPECIFIED",
+        "SCHEDULED_SESSION_MODE_NEW",
+        "SCHEDULED_SESSION_MODE_RESUME"
+      ],
+      "default": "SCHEDULED_SESSION_MODE_UNSPECIFIED",
+      "description": "ScheduledSessionMode controls session lifecycle for scheduled workflow executions.\n\n - SCHEDULED_SESSION_MODE_UNSPECIFIED: Default: each execution starts fresh (random workflow_id).\n - SCHEDULED_SESSION_MODE_NEW: Each cron tick creates fresh sessions for all agents.\n - SCHEDULED_SESSION_MODE_RESUME: Each cron tick resumes agent sessions from the previous execution.\nThe scheduler sets workflow_id to a stable value derived from the schedule ID."
+    },
     "v1ScheduledWorkflow": {
       "type": "object",
       "properties": {
@@ -7593,6 +7822,10 @@
           "type": "string",
           "format": "int64",
           "title": "Last updated timestamp (Unix seconds)"
+        },
+        "lastWorkflowId": {
+          "type": "string",
+          "title": "Workflow ID used in the last execution (for RESUME mode tracking)"
         }
       },
       "description": "ScheduledWorkflow represents a workflow with automatic execution schedule.\nSchedules can be created via YAML files or RPC calls."
@@ -8066,6 +8299,47 @@
       },
       "description": "SharedMemoryValue represents a versioned value in shared memory.\nSupports optimistic concurrency control via version field."
     },
+    "v1SkillBinding": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Exact skill name (\"sql-optimization\") or glob (\"enterprise/sql/*\").\nGlob matching uses path.Match semantics. Exact-name bindings win\nprecedence over glob matches for the same underlying skill."
+        },
+        "mode": {
+          "$ref": "#/definitions/v1SkillBindingMode",
+          "description": "Load policy."
+        },
+        "priority": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Higher-priority bindings win when context budget is tight (default 0)."
+        },
+        "labelMatch": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Optional label selector applied to Skill.metadata.labels (AND across\nall keys). Independent of name; either or both may be set."
+        },
+        "minVersion": {
+          "type": "string",
+          "description": "Minimum semver of the bound skill required (empty = any version)."
+        }
+      },
+      "description": "SkillBinding ties a skill (or a glob/label-selector over the skill\nnamespace) to an agent with a specific load policy. Replaces the legacy\nSkillsConfig.enabled_skills / disabled_skills filter pair."
+    },
+    "v1SkillBindingMode": {
+      "type": "string",
+      "enum": [
+        "SKILL_BINDING_MODE_UNSPECIFIED",
+        "SKILL_BINDING_MODE_EAGER",
+        "SKILL_BINDING_MODE_LAZY",
+        "SKILL_BINDING_MODE_ALWAYS"
+      ],
+      "default": "SKILL_BINDING_MODE_UNSPECIFIED",
+      "description": "SkillBindingMode controls how an agent loads a bound skill into context.\n\n - SKILL_BINDING_MODE_EAGER: Always formatted into the system-prompt budget (subject to budget).\n - SKILL_BINDING_MODE_LAZY: Promoted into the orchestrator only when discovery selects it.\n - SKILL_BINDING_MODE_ALWAYS: Forced active every turn; overrides the skill's own activation mode."
+    },
     "v1SkillsConfig": {
       "type": "object",
       "properties": {
@@ -8078,14 +8352,14 @@
           "items": {
             "type": "string"
           },
-          "title": "Specific skills to enable (empty = all discovered)"
+          "description": "Specific skills to enable (empty = all discovered).\nDeprecated in favor of bindings; preserved for backward compatibility.\nResolver synthesizes EAGER-mode SkillBinding entries from this list when\nbindings is empty."
         },
         "disabledSkills": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "title": "Skills to explicitly disable"
+          "description": "Skills to explicitly disable. Deprecated in favor of bindings."
         },
         "minAutoConfidence": {
           "type": "number",
@@ -8105,6 +8379,44 @@
           "type": "integer",
           "format": "int32",
           "description": "Percentage of max_context_tokens reserved for skills+patterns injection.\nDefault: 5 (i.e., 5%). Skills get priority; patterns fill remainder.\nE.g., Claude 200K context -\u003e 10K tokens for skills+patterns."
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1SkillBinding"
+          },
+          "description": "Declarative skill attachment for this agent. Replaces the\nenabled_skills/disabled_skills filter pair. When non-empty, takes full\nprecedence over the legacy filter; otherwise the resolver synthesizes\nbindings from the legacy fields (backward-compat shim)."
+        },
+        "routerEnabled": {
+          "type": "boolean",
+          "description": "Whether the hierarchical (PageIndex-style) router is the primary\ndiscovery path. Uses proto3 optional so the loader can distinguish\n\"not specified\" (default true) from \"explicitly false\"."
+        },
+        "routerMaxCandidates": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum candidate skills returned from a single router walk (default: 5)."
+        },
+        "routerCacheTtlSeconds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-session router decision cache TTL in seconds (default: 300)."
+        },
+        "routerModelOverride": {
+          "type": "string",
+          "description": "Override LLM provider name used for routing decisions. Empty falls back\nto AgentConfig.classifier_llm; useful for pointing routing at a smaller\n/ cheaper model (Haiku, local Ollama)."
+        },
+        "skillTaskBoardId": {
+          "type": "string",
+          "description": "Task board id used for skill-emitted tasks. Empty reuses the agent's\nprimary board."
+        },
+        "tasksEnabled": {
+          "type": "boolean",
+          "description": "Whether activation emits tracked tasks. Uses proto3 optional so the\nloader can distinguish \"not specified\" (default true) from \"explicitly\nfalse\". This is the agent-level master switch; per-skill emit_tasks\noverrides it for individual skills."
+        },
+        "hygiene": {
+          "$ref": "#/definitions/v1HygieneConfig",
+          "description": "End-of-turn hygiene enforcement for skill-emitted tasks. Audits the\nactive skill's tasks before the agent returns control to the user and\nsurfaces or repairs IN_PROGRESS / BLOCKED / OPEN-unstarted violations.\nWhen unset, hygiene is enabled with REQUIRE_FIX policy and max_retries=2."
         }
       },
       "description": "SkillsConfig configures the skills system for an agent."
@@ -8455,6 +8767,10 @@
         "judgeAgentId": {
           "type": "string",
           "title": "Optional: Judge agent to break ties"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/v1OutputRetryPolicy",
+          "description": "Optional: Retry policy when vote parsing fails (agent doesn't output\nVOTE:/CONFIDENCE:/REASONING: format). Each retry includes the expected\nformat template and the agent's failed output."
         }
       },
       "description": "SwarmPattern orchestrates multiple agents to vote on decisions.\nAgents independently evaluate a question and vote, with configurable\nconsensus thresholds for decision-making."
@@ -8597,6 +8913,38 @@
         }
       },
       "description": "TLSStatus reports the current TLS status of the server."
+    },
+    "v1TaskBoardConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the task board is enabled. Default: false (opt-in)."
+        },
+        "autoDecompose": {
+          "type": "boolean",
+          "description": "Automatically decompose complex goals into task DAGs."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum decomposition depth (default: 3)."
+        },
+        "defaultBoardId": {
+          "type": "string",
+          "description": "Default board ID. If empty, the agent creates/uses a board named after itself."
+        },
+        "defaultStrategy": {
+          "$ref": "#/definitions/v1DecomposeStrategy",
+          "description": "Default decomposition strategy."
+        },
+        "contextBudgetTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum tokens for the task context block injected into the system prompt.\nDefault: 500. Set to 0 to disable context injection."
+        }
+      },
+      "description": "TaskBoardConfig configures the dependency-aware task decomposition and kanban system."
     },
     "v1TeacherStudentPattern": {
       "type": "object",
@@ -9552,21 +9900,9 @@
           "type": "string",
           "title": "Unique identifier correlating started/completed events for the same tool call"
         },
-        "isPlanCreated": {
-          "type": "boolean",
-          "title": "True if this is a plan-created event"
-        },
-        "isPlanApproved": {
-          "type": "boolean",
-          "title": "True if this is a plan-approved event"
-        },
-        "isPlanRejected": {
-          "type": "boolean",
-          "title": "True if this is a plan-rejected event"
-        },
-        "plan": {
-          "$ref": "#/definitions/v1ExecutionPlan",
-          "title": "Execution plan (populated when is_plan_created/approved/rejected)"
+        "contextState": {
+          "$ref": "#/definitions/v1ContextState",
+          "title": "Context window state (included in completion event)"
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."
@@ -9618,9 +9954,9 @@
           "type": "string",
           "title": "Agent ID to route request to (optional, uses default if not specified)"
         },
-        "permissionMode": {
-          "$ref": "#/definitions/v1PermissionMode",
-          "title": "Permission mode for this request/session (optional)\nIf not set, uses agent's default configuration\nAllows Canvas AI and other clients to switch modes dynamically"
+        "resetContext": {
+          "type": "boolean",
+          "description": "Clear context window before processing this message.\nWhen true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)\nbefore the query is processed, giving a fresh context window."
         }
       },
       "description": "WeaveRequest initiates a query execution."
@@ -9663,6 +9999,10 @@
         "agentId": {
           "type": "string",
           "title": "Agent ID that handled this request"
+        },
+        "contextState": {
+          "$ref": "#/definitions/v1ContextState",
+          "title": "Context window state after this response"
         }
       },
       "description": "WeaveResponse contains the execution result."
@@ -9761,6 +10101,10 @@
         },
         "iterative": {
           "$ref": "#/definitions/v1IterativeWorkflowPattern"
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Stable workflow ID for session determinism across scheduled executions.\nIf set, executors use this as the workflowID prefix instead of generating a random UUID.\nThis makes agent session IDs deterministic (e.g., \"{workflow_id}-stage1-{agent_id}\"),\nenabling conversation continuity across cron ticks.\nIf empty, executors generate a random UUID (default behavior)."
         }
       },
       "description": "WorkflowPattern defines orchestration patterns for multi-agent coordination.\nThis message uses a oneof to represent different workflow patterns,\nenabling type-safe pattern selection and composition."
@@ -9869,6 +10213,97 @@
         }
       },
       "description": "WorkflowResult contains the execution results from a workflow pattern."
+    },
+    "v1WorkflowTemplate": {
+      "type": "string",
+      "enum": [
+        "WORKFLOW_TEMPLATE_UNSPECIFIED",
+        "WORKFLOW_TEMPLATE_RESEARCH_REPORT",
+        "WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD",
+        "WORKFLOW_TEMPLATE_COMPETITIVE_INTEL",
+        "WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT",
+        "WORKFLOW_TEMPLATE_PERFORMANCE_REPORT",
+        "WORKFLOW_TEMPLATE_DEEP_RESEARCH",
+        "WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT"
+      ],
+      "default": "WORKFLOW_TEMPLATE_UNSPECIFIED",
+      "description": "WorkflowTemplate enumerates the bundled workflow templates.\n\n - WORKFLOW_TEMPLATE_RESEARCH_REPORT: Pipeline: research analyst → creative writer → UI specialist.\n - WORKFLOW_TEMPLATE_DATA_TO_DASHBOARD: Pipeline: Teradata analyst → UI specialist.\n - WORKFLOW_TEMPLATE_COMPETITIVE_INTEL: Fork-Join (summary merge): 3× research analyst (product / tech / market).\n - WORKFLOW_TEMPLATE_DATA_QUALITY_AUDIT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_PERFORMANCE_REPORT: Pipeline (schedulable): Teradata analyst → research analyst → UI specialist.\n - WORKFLOW_TEMPLATE_DEEP_RESEARCH: Fork-Join (summary merge): 3× research analyst from technical / financial /\nstrategic angles.\n - WORKFLOW_TEMPLATE_SKILL_HEALTH_AUDIT: Pipeline (schedulable, weekly): skill-auditor → report-writer."
+    },
+    "v1WorkflowTemplateAgentSpec": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "$ref": "#/definitions/v1AgentPreset",
+          "description": "Base preset whose defaults seed this agent."
+        },
+        "defaultName": {
+          "type": "string",
+          "description": "Default agent name (e.g. \"research-report:researcher\"). The caller\ncan override this via CreateWorkflowFromTemplateRequest.agent_name_overrides."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable agent description."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt tailored to this agent's role within the workflow.\nReplaces the (empty) default the preset alone would produce — every\nworkflow-template agent ships with a curated prompt."
+        },
+        "temperatureOverride": {
+          "type": "number",
+          "format": "float",
+          "description": "Optional temperature override. 0 means \"use the preset's temperature\".\nUseful for tightening creative_writer down (1.0 → 0.7) when the agent\nis producing structured output rather than freeform text."
+        }
+      },
+      "description": "WorkflowTemplateAgentSpec defines one agent slot in a workflow template.\nAt template-application time the server creates an agent from the spec\n(or reuses an existing agent with the same name) and substitutes its\nid into the workflow pattern."
+    },
+    "v1WorkflowTemplateInfo": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "$ref": "#/definitions/v1WorkflowTemplate"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable display name (e.g. \"Research \u0026 Report Generator\")."
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of what this workflow does."
+        },
+        "icon": {
+          "type": "string",
+          "description": "Lucide icon name (e.g. \"file-search\")."
+        },
+        "category": {
+          "type": "string",
+          "description": "Category for grouping (e.g. \"research\", \"data\", \"operations\")."
+        },
+        "defaultWorkflowPattern": {
+          "$ref": "#/definitions/v1WorkflowPattern",
+          "description": "Default workflow pattern with stage prompts pre-filled. Agent ids\ninside the pattern are zero-valued; the server fills them in from\nthe agents created during template application."
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1WorkflowTemplateAgentSpec"
+          },
+          "description": "Ordered list of agent specs to create."
+        },
+        "schedulable": {
+          "type": "boolean",
+          "description": "Whether this template supports cron scheduling. When false the\nScheduleConfig on CreateWorkflowFromTemplateRequest is ignored."
+        },
+        "suggestedCron": {
+          "type": "string",
+          "description": "Suggested cron expression for the UI to pre-populate (e.g.\n\"0 9 * * 1\" for weekly Monday 9 AM). Only meaningful when\nschedulable=true."
+        },
+        "suggestedTimezone": {
+          "type": "string",
+          "description": "Suggested IANA timezone (e.g. \"UTC\", \"America/New_York\")."
+        }
+      },
+      "description": "WorkflowTemplateInfo describes a single template for discovery + UI.\nThe default_workflow_pattern carries a fully-realized pattern config\nwith stage prompts pre-filled — agent ids are slotted in by the server\nwhen the template is instantiated."
     },
     "v1WorkloadProfile": {
       "type": "string",

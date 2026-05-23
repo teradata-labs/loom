@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -274,14 +273,6 @@ type Session struct {
 
 	// TotalTokens is the accumulated token usage
 	TotalTokens int
-
-	// PermissionMode controls tool execution permissions for this session
-	// Can be updated dynamically via WeaveRequest to switch between:
-	// - ASK_BEFORE: Request approval before each tool
-	// - AUTO_ACCEPT: Execute tools automatically (YOLO mode)
-	// - PLAN: Create execution plan, wait for approval
-	// Defaults to UNSPECIFIED (uses agent configuration)
-	PermissionMode loomv1.PermissionMode
 }
 
 // SegmentedMemoryInterface defines the interface for segmented memory.
@@ -390,40 +381,6 @@ func (s *Session) MessageCount() int32 {
 	return int32(count)
 }
 
-// GetContext returns a copy of the session context map.
-// Thread-safe via RLock.
-func (s *Session) GetContext() map[string]interface{} {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.Context == nil {
-		return nil
-	}
-
-	// Return a deep copy to prevent external modifications
-	contextCopy := make(map[string]interface{}, len(s.Context))
-	for k, v := range s.Context {
-		contextCopy[k] = v
-	}
-	return contextCopy
-}
-
-// SetContext merges the provided context map into the session context.
-// Thread-safe via Lock.
-func (s *Session) SetContext(ctx map[string]interface{}) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.Context == nil {
-		s.Context = make(map[string]interface{})
-	}
-
-	// Merge provided context into session context
-	for k, v := range ctx {
-		s.Context[k] = v
-	}
-}
-
 // ExecutionStage represents the current stage of agent execution.
 type ExecutionStage string
 
@@ -520,20 +477,6 @@ type ProgressEvent struct {
 
 	// ToolCallID is a unique identifier correlating started/completed events for the same tool call
 	ToolCallID string
-
-	// Plan execution fields (for PERMISSION_MODE_PLAN)
-
-	// IsPlanCreated indicates this event is a plan-created update
-	IsPlanCreated bool
-
-	// IsPlanApproved indicates this event is a plan-approved update
-	IsPlanApproved bool
-
-	// IsPlanRejected indicates this event is a plan-rejected update
-	IsPlanRejected bool
-
-	// Plan contains the execution plan (populated when IsPlanCreated/Approved/Rejected)
-	Plan *loomv1.ExecutionPlan
 }
 
 // ProgressCallback is called when agent execution progress occurs.
