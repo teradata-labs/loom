@@ -639,6 +639,17 @@ message LoomPlugin {
 
   // Server-populated after successful install: IDs of agents installed.
   repeated string installed_agent_ids = 11;
+
+  // Unified invocation surface for this plugin. Defines the slash commands and
+  // keywords that activate the plugin regardless of what components it contains.
+  // When a trigger fires, ActivatePlugin is called; the runtime then wires
+  // every component (workflows, skills, MCP tools, agents) in sequence.
+  PluginTrigger trigger = 12;
+
+  // Default binding mode applied when this plugin is declared in
+  // AgentConfig.plugin_ids. Controls how the runtime activates the plugin at
+  // session start. Defaults to LAZY (trigger-driven) when unspecified.
+  PluginBindingMode default_binding_mode = 13;
 }
 
 // PluginMeta holds identity, versioning, and provenance for a LoomPlugin.
@@ -678,6 +689,96 @@ message PluginMeta {
 
   // Minimum Loom server version required (semver, e.g. "1.2.0").
   string min_loom_version = 12;
+}
+
+// PluginTrigger is the unified invocation surface for a LoomPlugin.
+// A single trigger definition activates the whole plugin — regardless of whether
+// it contains workflows, skills, MCP tools, agents, or a mix.
+message PluginTrigger {
+  // Slash commands that activate this plugin: e.g. ["/sql-optimizer", "/td-perf"].
+  repeated string slash_commands = 1;
+
+  // Keywords for auto-detection from the user's message.
+  repeated string keywords = 2;
+
+  // Minimum confidence for keyword-based activation (default: 0.7).
+  float min_confidence = 3;
+
+  // Short description surfaced to the router LLM to aid discovery.
+  string description = 4;
+}
+
+// PluginBindingMode controls how the runtime activates a plugin that is
+// declared in AgentConfig.plugin_ids (i.e. permanently bound to an agent).
+enum PluginBindingMode {
+  PLUGIN_BINDING_MODE_UNSPECIFIED = 0;
+
+  // Activate the plugin at the start of every session for this agent.
+  // Equivalent to calling ActivatePlugin on each new session automatically.
+  PLUGIN_BINDING_MODE_EAGER = 1;
+
+  // Activate only when a trigger fires (slash command or keyword match).
+  // Skills and tools are registered but NOT injected until the trigger fires.
+  PLUGIN_BINDING_MODE_LAZY = 2;
+
+  // Force the plugin active on every turn. Overrides the plugin's own trigger.
+  // Use for essential infrastructure plugins (e.g. a security policy plugin).
+  PLUGIN_BINDING_MODE_ALWAYS = 3;
+}
+
+// PluginActivation records the runtime state of an active plugin in a session.
+// Created by ActivatePlugin; updated by DeactivatePlugin.
+message PluginActivation {
+  // Server-assigned activation UUID.
+  string id = 1;
+
+  // Plugin that was activated.
+  string plugin_id = 2;
+
+  // Session in which the plugin is active.
+  string session_id = 3;
+
+  // Agent that activated the plugin.
+  string agent_id = 4;
+
+  // Epoch ms when the plugin became active.
+  int64 activated_at_ms = 5;
+
+  // IDs of workflows activated by this plugin activation.
+  repeated string activated_workflow_ids = 6;
+
+  // Names of skills injected by this plugin activation.
+  repeated string activated_skill_names = 7;
+
+  // MCP server names connected by this plugin activation.
+  repeated string activated_mcp_servers = 8;
+
+  // IDs of agents made available by this plugin activation.
+  repeated string activated_agent_ids = 9;
+
+  // Idempotency key supplied in the request. Repeated activations with the
+  // same key return the same PluginActivation without re-wiring components.
+  string activation_key = 10;
+
+  // Current lifecycle state of this activation.
+  PluginActivationStatus status = 11;
+}
+
+// PluginActivationStatus is the lifecycle state of a PluginActivation.
+enum PluginActivationStatus {
+  PLUGIN_ACTIVATION_STATUS_UNSPECIFIED = 0;
+
+  // Plugin is wired and active in the session.
+  PLUGIN_ACTIVATION_STATUS_ACTIVE = 1;
+
+  // Graceful deactivation in progress (drain).
+  PLUGIN_ACTIVATION_STATUS_DEACTIVATING = 2;
+
+  // Plugin has been deactivated; components detached.
+  PLUGIN_ACTIVATION_STATUS_DEACTIVATED = 3;
+
+  // Activation failed; components may be partially wired.
+  PLUGIN_ACTIVATION_STATUS_FAILED = 4;
 }
 
 // =============================================================================
@@ -877,8 +978,10 @@ service CapabilityService {
 
   // ─── Workflow Lifecycle ───────────────────────────────────────────────────────
 
-  // ActivateWorkflow wires agents, injects skills, configures MCP tools, and
-  // optionally emits the task blueprint. Returns the activation state.
+  // ActivateWorkflow wires a single workflow's agents, skills, and MCP tools and
+  // optionally emits the task blueprint. Prefer ActivatePlugin for plugin-delivered
+  // workflows; use this RPC directly only for standalone workflows (those registered
+  // without a parent plugin) or advanced per-workflow control.
   //
   // Supports idempotent activation via activation_key (same key = same activation).
   // Supports optimistic-locking via expected_generation to prevent double-activation.
@@ -976,6 +1079,46 @@ service CapabilityService {
   // ListPlugins lists registered plugins with optional filters.
   rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse) {
     option (google.api.http) = {get: "/v1/capabilities/plugins"};
+  }
+
+  // ─── Plugin Activation ────────────────────────────────────────────────────────
+
+  // ActivatePlugin is the primary invocation path for any plugin.
+  // It wires ALL of the plugin's components for the given session, in order:
+  //   1. Workflows with ALWAYS trigger (or all workflows when no trigger is set)
+  //   2. Skills — injected as eager SkillBindings
+  //   3. MCP tool groups — servers registered for the session
+  //   4. Agents — made available for delegation
+  //
+  // The plugin does not need to contain workflows for this RPC to succeed.
+  // Idempotent: same activation_key returns the existing PluginActivation.
+  rpc ActivatePlugin(ActivatePluginRequest) returns (ActivatePluginResponse) {
+    option (google.api.http) = {
+      post: "/v1/capabilities/plugins/{plugin_id}/activate"
+      body: "*"
+    };
+  }
+
+  // DeactivatePlugin detaches all components wired by a prior ActivatePlugin call.
+  // Set drain=true to wait for any in-flight workflow executions to complete first.
+  rpc DeactivatePlugin(DeactivatePluginRequest) returns (DeactivatePluginResponse) {
+    option (google.api.http) = {
+      post: "/v1/capabilities/plugins/{plugin_id}/deactivate"
+      body: "*"
+    };
+  }
+
+  // GetPluginActivation returns the current activation state for a plugin in a session.
+  rpc GetPluginActivation(GetPluginActivationRequest) returns (PluginActivation) {
+    option (google.api.http) = {
+      get: "/v1/capabilities/plugins/{plugin_id}/activations/{session_id}"
+    };
+  }
+
+  // ListPluginActivations lists plugin activations, optionally filtered by session,
+  // agent, plugin, or status.
+  rpc ListPluginActivations(ListPluginActivationsRequest) returns (ListPluginActivationsResponse) {
+    option (google.api.http) = {get: "/v1/capabilities/plugins/activations"};
   }
 }
 
@@ -1349,5 +1492,115 @@ message ListPluginsResponse {
   string next_page_token = 2;
 
   // Total number of matching plugins (across all pages).
+  int32 total = 3;
+}
+
+// =============================================================================
+// Request / Response messages — Plugin Activation
+// =============================================================================
+
+// ActivatePluginRequest activates a plugin for a session.
+message ActivatePluginRequest {
+  // Plugin UUID or name to activate.
+  string plugin_id = 1;
+
+  // Session to activate the plugin in.
+  string session_id = 2;
+
+  // Agent performing the activation.
+  string agent_id = 3;
+
+  // Context variables passed through to any workflow activations triggered by
+  // this plugin. Keys override JobToBeDone.default_context_vars.
+  map<string, string> context = 4;
+
+  // Idempotency key: a second call with the same key returns the existing
+  // PluginActivation without re-wiring components.
+  string activation_key = 5;
+
+  // When true, validate and plan the activation without executing it.
+  // Returns what would be wired in activation.* fields; no state is changed.
+  bool dry_run = 6;
+
+  // Persona passed to any workflow activations. Must match one of the values
+  // in JobToBeDone.personas on each activated workflow; ignored for plugins
+  // with no workflows.
+  string persona = 7;
+}
+
+// ActivatePluginResponse returns the plugin activation record.
+message ActivatePluginResponse {
+  // Activation record with all wired component IDs populated.
+  PluginActivation activation = 1;
+
+  // Non-fatal issues: degraded capabilities, optional components not found.
+  // Activation still succeeds when only warnings are present.
+  repeated ValidationIssue warnings = 2;
+}
+
+// DeactivatePluginRequest deactivates a plugin in a session.
+message DeactivatePluginRequest {
+  // Plugin UUID or name to deactivate.
+  string plugin_id = 1;
+
+  // Session from which to deactivate the plugin.
+  string session_id = 2;
+
+  // When true, wait for any in-flight workflow executions to complete before
+  // detaching components. Equivalent to DrainWorkflow for each active workflow.
+  bool drain = 3;
+}
+
+// DeactivatePluginResponse returns the deactivation summary.
+message DeactivatePluginResponse {
+  // True if all components were cleanly detached.
+  bool success = 1;
+
+  // Number of workflows that were deactivated.
+  int32 deactivated_workflows = 2;
+
+  // Errors encountered during deactivation (non-fatal; partial success possible).
+  repeated string errors = 3;
+}
+
+// GetPluginActivationRequest retrieves a plugin's activation state in a session.
+message GetPluginActivationRequest {
+  // Plugin UUID or name.
+  string plugin_id = 1;
+
+  // Session ID to look up.
+  string session_id = 2;
+}
+
+// ListPluginActivationsRequest lists plugin activations with optional filters.
+message ListPluginActivationsRequest {
+  // Filter by session. Empty = all sessions.
+  string session_id = 1;
+
+  // Filter by agent. Empty = all agents.
+  string agent_id = 2;
+
+  // Filter by plugin. Empty = all plugins.
+  string plugin_id = 3;
+
+  // Filter by activation status. UNSPECIFIED = all statuses.
+  PluginActivationStatus status = 4;
+
+  // Maximum number of results per page.
+  int32 page_size = 5;
+
+  // Pagination token from a previous ListPluginActivations response.
+  string page_token = 6;
+}
+
+// ListPluginActivationsResponse contains a page of matching activations.
+message ListPluginActivationsResponse {
+  // Activations matching the request filters.
+  repeated PluginActivation activations = 1;
+
+  // Token to retrieve the next page. Empty if this is the last page.
+  string next_page_token = 2;
+
+  // Total number of matching activations (across all pages).
   int32 total = 3;
 }

@@ -91,6 +91,12 @@ message AgentConfig {
 
   // Skills configuration for this agent
   SkillsConfig skills = 20;
+
+  // Plugins bound to this agent. Each entry is a plugin UUID or name.
+  // At session start, the runtime calls ActivatePlugin for each entry using
+  // the plugin's default_binding_mode (LAZY by default).
+  // Skills-only or tools-only plugins are fully supported — no workflow required.
+  repeated string plugin_ids = 21;
 }
 
 // ProviderEntry is a named LLM configuration in the global provider pool.
