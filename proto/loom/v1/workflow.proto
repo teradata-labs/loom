@@ -650,6 +650,11 @@ message LoomPlugin {
   // AgentConfig.plugin_ids. Controls how the runtime activates the plugin at
   // session start. Defaults to LAZY (trigger-driven) when unspecified.
   PluginBindingMode default_binding_mode = 13;
+
+  // Controls what happens at activation time when a referenced component
+  // cannot be resolved (e.g. a skill was deleted after install).
+  // Unspecified defaults: required missing → FAIL, optional missing → SKIP_WARN.
+  RefResolutionPolicy resolution = 14;
 }
 
 // PluginMeta holds identity, versioning, and provenance for a LoomPlugin.
@@ -793,8 +798,13 @@ message WorkflowRef {
   // Minimum semver version required (empty = any version).
   string min_version = 2;
 
-  // When true, install fails if this workflow cannot be resolved.
+  // When true, install/activation fails if this workflow cannot be resolved.
+  // When false, the missing workflow is skipped per RefResolutionPolicy.
   bool required = 3;
+
+  // Human-readable description of what this workflow does in this plugin's context.
+  // Surfaced in validation output and plugin listings.
+  string description = 4;
 }
 
 // SkillRef is a reference to a skill by name, with an optional version constraint.
@@ -805,8 +815,18 @@ message SkillRef {
   // Minimum semver version required (empty = any version).
   string min_version = 2;
 
-  // When true, install fails if this skill cannot be resolved.
+  // When true, install/activation fails if this skill cannot be resolved.
   bool required = 3;
+
+  // Human-readable description of what this skill does in this plugin's context.
+  // Also used as the generation prompt when synthesize=true and the skill is missing.
+  string description = 4;
+
+  // When true and the skill cannot be resolved, the runtime generates a new skill
+  // using description as the goal. The generated skill is marked
+  // SKILL_STATUS_AUTO_GENERATED with reduced confidence (0.5) and is scoped to
+  // this plugin (deleted on UninstallPlugin). Requires description to be non-empty.
+  bool synthesize = 5;
 }
 
 // AgentRef is a reference to an agent by ID with an optional role annotation.
@@ -817,8 +837,17 @@ message AgentRef {
   // Semantic role of this agent in the plugin context (e.g. "primary", "judge").
   string role = 2;
 
-  // When true, install fails if this agent cannot be resolved.
+  // When true, install/activation fails if this agent cannot be resolved.
   bool required = 3;
+
+  // Human-readable description of what this agent does in this plugin's context.
+  // Also used as the system-prompt seed when synthesize=true and the agent is missing.
+  string description = 4;
+
+  // When true and the agent cannot be resolved, the runtime creates a minimal agent
+  // using description as the system prompt. The synthesized agent is scoped to this
+  // plugin (deleted on UninstallPlugin). Requires description to be non-empty.
+  bool synthesize = 5;
 }
 
 // MCPToolRef is a reference to a specific MCP tool, optionally scoped to a server.
@@ -832,8 +861,49 @@ message MCPToolRef {
   // provides this tool by scanning registered servers.
   string server_name = 2;
 
-  // When true, install fails if this tool cannot be resolved to a server.
+  // When true, install/activation fails if this tool cannot be resolved to a server.
   bool required = 3;
+
+  // Human-readable description of what this tool does in this plugin's context.
+  string description = 4;
+}
+
+// =============================================================================
+// Reference resolution — activation-time failure policy
+// =============================================================================
+
+// RefActivationFailureMode controls what happens at ActivatePlugin time when a
+// referenced component (skill, workflow, agent, MCP tool) cannot be resolved.
+enum RefActivationFailureMode {
+  REF_ACTIVATION_FAILURE_MODE_UNSPECIFIED = 0;
+
+  // Abort the entire ActivatePlugin call. No components are wired.
+  REF_ACTIVATION_FAILURE_MODE_FAIL = 1;
+
+  // Skip the unresolvable component; continue wiring remaining components.
+  // Adds a ValidationIssue warning to ActivatePluginResponse.warnings.
+  REF_ACTIVATION_FAILURE_MODE_SKIP_WARN = 2;
+
+  // Skip silently. No warning is emitted. Use for truly optional capabilities.
+  REF_ACTIVATION_FAILURE_MODE_SKIP_SILENT = 3;
+}
+
+// RefResolutionPolicy governs activation-time resolution failures for a plugin.
+// Covers the case where a component existed at install time but was removed
+// (or updated to an incompatible version) before activation.
+message RefResolutionPolicy {
+  // Behaviour when a required=true ref cannot be resolved at activation time.
+  // Unspecified defaults to FAIL.
+  RefActivationFailureMode on_required_missing = 1;
+
+  // Behaviour when a required=false ref cannot be resolved at activation time.
+  // Unspecified defaults to SKIP_WARN.
+  RefActivationFailureMode on_optional_missing = 2;
+
+  // When true, re-attempt synthesis for refs with synthesize=true that were
+  // generated at install time but have since been deleted. Requires the
+  // original description to be present on the ref.
+  bool resynthesize_on_activation = 3;
 }
 
 // =============================================================================

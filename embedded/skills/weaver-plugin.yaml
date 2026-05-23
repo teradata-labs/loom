@@ -1,0 +1,256 @@
+apiVersion: loom/v1
+kind: Skill
+metadata:
+  name: weaver-plugin
+  title: Plugin Authoring
+  description: Creates a LoomPlugin YAML by discovering available capabilities and matching them to user intent.
+  domain: meta-agent
+  version: "1.0.0"
+  author: loom-core
+  labels:
+    surface: weaver
+trigger:
+  slash_commands:
+    - /plugin
+    - /create-plugin
+    - /new-plugin
+  keywords:
+    - create a plugin
+    - build a plugin
+    - new plugin
+    - package capabilities
+    - bundle skills
+    - "plugin for"
+  mode: HYBRID
+  min_confidence: 0.65
+prompt:
+  instructions: |
+    Create a plugin YAML that bundles the right capabilities for the user's
+    stated intent. A plugin is the unit of invocation: one slash command or
+    keyword activates everything inside it — workflows, skills, MCP tools,
+    and agents — regardless of what combination is present.
+
+    ## Flow
+
+    1. **Clarify the job-to-be-done.** Ask one focused question if the intent
+       is ambiguous: what problem does this plugin solve, for whom, and how
+       often will it be invoked? Do NOT ask multiple questions at once.
+
+    2. **Discover what exists.**
+       - Call `agent_management` with `{"action": "list"}` to see available agents.
+       - Call `agent_management` with `{"action": "discover", "type": "skills"}` to
+         see registered skills.
+       - Call `tool_search` with relevant keywords to find MCP tools.
+       - Check for matching workflows with `agent_management` `{"action": "discover",
+         "type": "workflows"}`.
+
+    3. **Match intent to components.** For each component type:
+       - **Workflows**: include if there is a workflow that covers the primary
+         use case end-to-end. Leave empty if no workflow fits.
+       - **Skills**: include every skill that contributes to the JTBD. Mark
+         `required: true` for the core capability; `required: false` for
+         enhancement skills. Set `synthesize: true` for skills that don't exist
+         yet but are clearly needed — include a precise `description` so the
+         generator knows what to build.
+       - **Agents**: include only if the plugin needs a named agent for
+         delegation. Mark `synthesize: true` with a concise system-prompt
+         description if the agent doesn't exist.
+       - **MCP tools**: include every tool the skills or workflow will call.
+         Mark `required: true` for tools the plugin cannot function without.
+
+    4. **Design the trigger.** Pick slash commands that are short, memorable,
+       and specific (e.g. `/td-perf`, not `/run-teradata-performance-analysis`).
+       Add 4–8 keywords that a user would naturally type when they want this
+       capability. Set `min_confidence: 0.7` unless the keywords are highly
+       ambiguous, in which case raise to 0.8.
+
+    5. **Set resolution policy.** Default: `on_required_missing: FAIL`,
+       `on_optional_missing: SKIP_WARN`. Only use `SKIP_SILENT` for cosmetic
+       enhancements; never for core functionality.
+
+    6. **Draft and confirm.** Show the full plugin YAML and a one-paragraph
+       summary of what it does and what each component contributes. Ask the
+       user to confirm or adjust before writing.
+
+    7. **Write the plugin.** Use `file_write` to save the plugin YAML to
+       `plugins/<name>.yaml`. Tell the user to run:
+         `loom plugin install <name>`
+       to register and install it, or activate it immediately with:
+         `loom plugin activate <name>`
+
+    ## Synthesize flag
+
+    `synthesize: true` on a skill or agent tells the runtime to generate it
+    automatically if it is missing at install/activation time. Only set this
+    when:
+    - The capability is clearly needed for the JTBD.
+    - The description is specific enough to generate something useful (2–4
+      sentences describing inputs, outputs, and constraints).
+    - You have confirmed the capability does not already exist under a
+      different name.
+
+    Auto-generated components get confidence 0.5 and are marked
+    AUTO_GENERATED. They can be validated and promoted to VALIDATED later.
+
+    ## What to avoid
+
+    - Do NOT create a plugin with only a trigger and no components — that is
+      just a slash command alias, not a plugin.
+    - Do NOT mark everything `required: true`. Optional enhancements should
+      be `required: false` so the plugin activates with degraded capability
+      rather than failing when one enhancement is missing.
+    - Do NOT set `synthesize: true` without a description. The generator
+      will reject it.
+    - Do NOT write to disk without user confirmation.
+    - Do NOT create a plugin that duplicates an existing one. Check
+      `agent_management discover type=plugins` first.
+
+  constraints:
+    - Always discover existing capabilities before drafting the plugin YAML.
+    - Always confirm the YAML with the user before writing to disk.
+    - Never set synthesize=true without a non-empty description on the ref.
+    - Always include at least one slash command in the trigger.
+
+  output_format: |
+    On discovery: a table of matched components (name, type, exists/synthesize).
+    On draft: the full plugin YAML in a fenced code block, followed by a
+    one-paragraph plain-English summary.
+    On write: a single confirmation line: plugin name + path written + install command.
+
+  examples:
+    - user_input: "I want a plugin that helps me optimize slow Teradata queries"
+      expected_output: |
+        Discovery finds: teradata-sql skill (exists), td_explain tool (exists),
+        explain-plan skill (missing → synthesize), query-optimizer workflow (exists).
+
+        ```yaml
+        apiVersion: loom/v1
+        kind: Plugin
+        metadata:
+          name: teradata-optimizer
+          title: Teradata Query Optimizer
+          description: Analyze and optimize slow Teradata SQL queries using EXPLAIN plans and rule-based rewrites.
+          version: "1.0.0"
+          domains: [teradata, sql, performance]
+        trigger:
+          slash_commands: [/td-opt, /slow-query]
+          keywords: [slow query, optimize sql, explain plan, query performance, teradata slow]
+          min_confidence: 0.72
+          description: Analyze and optimize Teradata SQL query performance
+        workflows:
+          - name: query-optimizer
+            required: true
+            description: End-to-end query optimization workflow
+        skills:
+          - name: teradata-sql
+            required: true
+            description: SQL analysis and rewrite rules for Teradata
+          - name: explain-plan
+            required: false
+            synthesize: true
+            description: >
+              Parse Teradata EXPLAIN output. Identify full-table scans, product
+              joins, skewed AMPs, and missing statistics. Return a prioritized
+              list of optimization recommendations with estimated impact.
+        mcp_tools:
+          - tool_name: td_explain
+            required: true
+            description: Execute EXPLAIN on a Teradata SQL statement
+        default_binding_mode: LAZY
+        resolution:
+          on_required_missing: FAIL
+          on_optional_missing: SKIP_WARN
+        ```
+
+        This plugin activates via `/td-opt` or when the user mentions slow queries.
+        It runs the query-optimizer workflow end-to-end, injects the teradata-sql
+        skill for rewrite rules, and generates the explain-plan skill on first
+        install (it does not yet exist in the registry).
+      explanation: >
+        Discovery identified the workflow and core skill; flagged the missing
+        explain-plan skill with a precise synthesize description; trigger uses
+        short slash commands and natural-language keywords.
+
+tools:
+  required_tools:
+    - agent_management
+    - tool_search
+    - file_write
+  preferred_order:
+    - agent_management
+    - tool_search
+    - file_write
+
+pattern_refs: []
+skill_refs: []
+max_prompt_tokens: 3200
+sticky: true
+parent_index_path: meta-agent/weaver/plugin
+emit_tasks: true
+task_template:
+  root_title: Create Plugin
+  max_tasks: 8
+  ephemeral_on_deactivate: false
+  steps:
+    - id: clarify-intent
+      title: Clarify user intent and job-to-be-done
+      objective: Establish what problem the plugin solves, for whom, and how it will be invoked.
+      acceptance_criteria: JTBD is stated in one sentence; invocation pattern (slash command or keyword) is confirmed.
+      category: decision
+      priority: P1
+    - id: discover-skills
+      title: Discover available skills matching the intent
+      objective: Call agent_management discover type=skills and filter results to capabilities relevant to the JTBD.
+      acceptance_criteria: A list of matching skill names is produced; missing-but-needed skills are identified.
+      category: investigation
+      priority: P1
+      depends_on_ids: [clarify-intent]
+    - id: discover-tools
+      title: Discover available MCP tools matching the intent
+      objective: Call tool_search with relevant keywords to find MCP tools the plugin will need.
+      acceptance_criteria: All required tool names are confirmed via tool_search; none are guessed.
+      category: investigation
+      priority: P1
+      depends_on_ids: [clarify-intent]
+    - id: discover-workflows-agents
+      title: Discover available workflows and agents
+      objective: Check for existing workflows and agents that map to the JTBD.
+      acceptance_criteria: Workflow candidates are listed; agent candidates are noted (or absence is noted).
+      category: investigation
+      priority: P2
+      depends_on_ids: [clarify-intent]
+    - id: draft-plugin-yaml
+      title: Draft the plugin YAML
+      objective: >
+        Assemble the plugin YAML from discovered components. Mark required/optional
+        and synthesize flags correctly. Design the trigger.
+      acceptance_criteria: >
+        YAML is valid (apiVersion, kind, metadata, trigger, at least one component ref).
+        synthesize=true refs all have non-empty descriptions.
+        At least one slash command is present.
+      category: implementation
+      priority: P1
+      depends_on_ids: [discover-skills, discover-tools, discover-workflows-agents]
+    - id: confirm-with-user
+      title: Confirm plugin YAML with user
+      objective: Show the full YAML and plain-English summary; wait for explicit approval or adjustments.
+      acceptance_criteria: User has approved the YAML or requested specific changes that have been applied.
+      category: decision
+      priority: P1
+      depends_on_ids: [draft-plugin-yaml]
+    - id: write-plugin
+      title: Write plugin YAML to plugins/ directory
+      objective: Use file_write to save the plugin to plugins/<name>.yaml.
+      acceptance_criteria: File exists at plugins/<name>.yaml; content matches confirmed YAML.
+      category: implementation
+      priority: P1
+      depends_on_ids: [confirm-with-user]
+    - id: brief-user
+      title: Brief the user on next steps
+      objective: Tell the user the file path, install command, and activate command.
+      acceptance_criteria: >
+        Reply includes the file path, `loom plugin install <name>`, and
+        `loom plugin activate <name>` commands.
+      category: writing
+      priority: P2
+      depends_on_ids: [write-plugin]
